@@ -1990,3 +1990,48 @@ let ``loadConfig tolerates a declared input that is not on disk yet — but the 
 
         let tree = FsHotWatch.TreeHash.compute tmpDir []
         test <@ tree.AbsentDeclarationCount = 1 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``registered test owner honors the actual declared project identity`` () =
+    withTempDir "cfg-test-scope" (fun tmpDir ->
+        let relative = "tests/Alias/RealRulesTests.fsproj"
+        let project = Path.Combine(tmpDir, relative)
+        Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
+        File.WriteAllText(project, "<Project />")
+        File.WriteAllText(Path.Combine(tmpDir, "Repo.slnx"), $"<Solution><Project Path=\"{relative}\" /></Solution>")
+
+        let config =
+            parseConfig
+                """{"tests":{"projects":[{"project":"P1","command":"sh","args":"-c \"exit 0\"","coverage":false,"timeoutSec":5}],"excluded":[{"project":"tests/Alias","reason":"separate harness gate"}]}}"""
+                (stripConfig defaults)
+
+        let config = { config with Format = Off }
+        let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root tmpDir, "test-impact.db")
+        Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore
+        let db = TestPrune.Database.Database.create dbPath
+
+        FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.seedCoveredSymbol
+            db
+            "Lib.owned"
+            "Lib.fs"
+            "RealRulesTests"
+            "RulesTests"
+            "checksRules"
+
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.owned")
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        daemon.Graph.RegisterProject(FsHotWatch.Events.AbsProjectPath.create project, [], [])
+        registerPlugins daemon tmpDir config
+
+        try
+            let terminal = beginAwaitNextTerminal daemon.Host "test-prune"
+            daemon.Host.EmitBuildCompleted(FsHotWatch.Events.BuildSucceeded)
+            Assert.True(terminal.Wait(System.TimeSpan.FromSeconds 15.0))
+            waitForQuiescent daemon.Host 15000
+            Assert.Empty(FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.loadQueue tmpDir)
+            Assert.Empty(daemon.Host.FailedWork())
+        finally
+            daemon.Host.Teardown())

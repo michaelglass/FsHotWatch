@@ -126,7 +126,7 @@ let ``command captures stdout output`` () =
     waitUntil
         (fun () ->
             match host.GetStatus("echo-test") with
-            | Some(Completed _) -> true
+            | Some(Completed _) -> not (host.AnyPluginBusy())
             | _ -> false)
         5000
 
@@ -353,7 +353,7 @@ let ``status command returns false when command failed`` () =
     waitUntil
         (fun () ->
             match host.GetStatus("fail-status") with
-            | Some(Failed _) -> true
+            | Some(Failed _) -> not (host.AnyPluginBusy())
             | _ -> false)
         5000
 
@@ -979,7 +979,7 @@ let ``afterTests events are never cacheable across runs, whether filtered or ful
             "/tmp"
             None
 
-    let key = handler.CacheKey.Value
+    let key = (handler.CacheKey.Value handler.Init)
 
     let completed (verification: RunVerification) (results: (string * TestResult) list) : PluginEvent<unit> =
         TestRunCompleted
@@ -1034,7 +1034,7 @@ let private cacheKeyFnFor (command: string) (args: string) =
         5000
     |> ignore
 
-    handler.CacheKey.Value
+    (handler.CacheKey.Value handler.Init)
 
 [<Fact(Timeout = 20000)>]
 let ``cache key is independent of commit_id`` () =
@@ -1063,7 +1063,7 @@ let ``cache key is independent of commit_id`` () =
             5000
         |> ignore
 
-        handler.CacheKey.Value
+        (handler.CacheKey.Value handler.Init)
 
     let keyFnA = buildKeyFn ()
     let keyFnB = buildKeyFn ()
@@ -1330,6 +1330,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           EmitCommandCompleted = fun _ -> ()
           Checker = Unchecked.defaultof<_>
           RepoRoot = "/tmp"
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           Post = fun _ -> ()
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()

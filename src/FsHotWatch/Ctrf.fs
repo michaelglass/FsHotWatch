@@ -4,10 +4,9 @@
 /// `--report-ctrf`, and fshw reads it back as the AUTHORITATIVE pass/fail verdict (the
 /// process exit code is only a tie-break — see `TestPrunePlugin.classifyTestOutcome`).
 ///
-/// `trySummary` is the one summary reader: the verdict layer, the flakiness recorder
-/// and the verdict file all read the same block through it, so they cannot disagree
-/// about what a report says. Reports are retained on disk (bounded, newest-per-run) so
-/// a consumer can be pointed at them.
+/// `trySummary` reads diagnostic counts; `tryVerdictReport` additionally validates
+/// the evidence before a caller may treat a clean summary as a verdict. Reports are
+/// retained on disk (bounded, newest-per-run) so a consumer can be pointed at them.
 module FsHotWatch.Ctrf
 
 open System
@@ -103,10 +102,110 @@ let trySummary (json: string) : Summary option =
     | :? JsonException
     | :? InvalidOperationException -> None
 
+/// Evidence that a report has valid counters and that a clean summary agrees
+/// with its actual rows. Only the parser can construct this proof. It does not
+/// establish run ownership, scope, or that a nonempty suite executed.
+type VerdictReport = private VerdictReport of Summary
+
+module VerdictReport =
+    /// Read the validated summary without granting callers a proof constructor.
+    let summary (VerdictReport value) = value
+
+let private requiredCounter (summary: JsonNode) (name: string) : Result<int, string> =
+    match summary.[name] with
+    | null -> Error $"CTRF summary is missing required '{name}' counter"
+    | value ->
+        try
+            let count = value.GetValue<decimal>()
+
+            if count < 0M || Decimal.Truncate count <> count || count > decimal Int32.MaxValue then
+                Error $"CTRF summary '{name}' counter must be a nonnegative integer"
+            else
+                Ok(int count)
+        with
+        | :? InvalidOperationException
+        | :? FormatException
+        | :? OverflowException -> Error $"CTRF summary '{name}' counter must be a nonnegative integer"
+
+let private verdictCounters (summary: JsonNode) =
+    let counter name next =
+        requiredCounter summary name |> Result.bind next
+
+    counter "tests" (fun total ->
+        counter "passed" (fun passed ->
+            counter "failed" (fun failed ->
+                counter "pending" (fun pending ->
+                    counter "skipped" (fun skipped ->
+                        requiredCounter summary "other"
+                        |> Result.map (fun other ->
+                            { Total = total
+                              Passed = passed
+                              Failed = failed
+                              Skipped = skipped
+                              Other = other },
+                            pending))))))
+
+let private cleanStatus (row: JsonNode) =
+    match row with
+    | :? JsonObject as entry ->
+        match entry.["status"] with
+        | :? JsonValue as value ->
+            match value.TryGetValue<string>() with
+            | true, ("passed" | "pending" | "skipped" as status) -> Some status
+            | _ -> None
+        | _ -> None
+    | _ -> None
+
+let private reconcileRows (summary: Summary) pending (tests: JsonArray) =
+    // MTP's raw-exception reports omit rows and count `other` inside `failed`.
+    // Their red summary remains authoritative; clean reports have no such excuse.
+    if summary.Failed > 0 || summary.Other > 0 then
+        Ok(VerdictReport summary)
+    elif tests.Count <> summary.Total then
+        Error $"CTRF summary says {summary.Total} test(s), but results.tests lists {tests.Count}"
+    else
+        let statuses = tests |> Seq.map cleanStatus |> Seq.toList
+
+        if statuses |> List.exists Option.isNone then
+            Error "CTRF clean summary has a test row without a clean status"
+        else
+            let count status =
+                statuses |> List.filter ((=) (Some status)) |> List.length
+
+            if
+                count "passed" <> summary.Passed
+                || count "pending" <> pending
+                || count "skipped" <> summary.Skipped
+            then
+                Error "CTRF clean summary counters do not match results.tests"
+            else
+                Ok(VerdictReport summary)
+
+/// Validate requested report evidence before allowing a clean summary to override
+/// a runner's exit code. Diagnostic summary readers deliberately remain permissive.
+let tryVerdictReport (json: string) : Result<VerdictReport, string> =
+    try
+        match JsonNode.Parse json with
+        | null -> Error "CTRF report is empty"
+        | root ->
+            let results =
+                match root.["results"] with
+                | null -> root
+                | nested -> nested
+
+            match results.["summary"], results.["tests"] with
+            | (:? JsonObject as summary), (:? JsonArray as tests) ->
+                verdictCounters summary
+                |> Result.bind (fun (counts, pending) -> reconcileRows counts pending tests)
+            | _ -> Error "CTRF report requires a summary object and tests array"
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> Error "CTRF report is not valid JSON report structure"
+
 /// Read one report file. `None` for anything that is not a well-formed fshw CTRF
 /// report — unreadable, unparseable, or carrying no summary. A report we cannot
 /// read is not evidence, and is never counted as a zero-failure pass.
-let tryReadReport (runId: string) (path: string) : Report option =
+let private tryReadReportWith parse (runId: string) (path: string) : Report option =
     let fileName = Path.GetFileName(path)
 
     if not (fileName.EndsWith(ReportSuffix, StringComparison.Ordinal)) then
@@ -120,12 +219,19 @@ let tryReadReport (runId: string) (path: string) : Report option =
             | :? UnauthorizedAccessException -> None
 
         json
-        |> Option.bind trySummary
+        |> Option.bind parse
         |> Option.map (fun summary ->
             { Project = fileName.Substring(0, fileName.Length - ReportSuffix.Length)
               RunId = runId
               Path = path
               Summary = summary })
+
+/// Read retained diagnostic counts, without treating them as verdict evidence.
+let tryReadReport runId path = tryReadReportWith trySummary runId path
+
+/// Read a requested report only when its summary and rows can support a verdict.
+let tryReadVerdictReport runId path =
+    tryReadReportWith (tryVerdictReport >> Result.toOption >> Option.map VerdictReport.summary) runId path
 
 /// Did this run happen at all? The run-dir is created before anything executes, so its
 /// existence records that a run took place, whether or not it produced a report.
@@ -133,7 +239,7 @@ let runExists (repoRoot: string) (runId: Guid) : bool = Directory.Exists(runDir 
 
 /// The reports THIS RUN produced — the files in the run's own directory. An empty list
 /// from an existing run-dir means the run executed no tests.
-let reportsForRun (repoRoot: string) (runId: Guid) : Report list =
+let private reportsForRunWith readReport (repoRoot: string) (runId: Guid) : Report list =
     let dir = runDir repoRoot runId
 
     if not (Directory.Exists dir) then
@@ -142,11 +248,19 @@ let reportsForRun (repoRoot: string) (runId: Guid) : Report list =
         try
             Directory.GetFiles(dir, "*" + ReportSuffix)
             |> Array.toList
-            |> List.choose (tryReadReport (runId.ToString("N")))
+            |> List.choose (readReport (runId.ToString("N")))
             |> List.sortBy (fun r -> r.Project)
         with
         | :? IOException
         | :? UnauthorizedAccessException -> []
+
+/// Retained reports for diagnostics, including summaries that are not verdict proof.
+let reportsForRun repoRoot runId =
+    reportsForRunWith tryReadReport repoRoot runId
+
+/// Only coherent reports may contribute counts to a durable suite verdict.
+let verdictReportsForRun repoRoot runId =
+    reportsForRunWith tryReadVerdictReport repoRoot runId
 
 /// Every retained run directory, newest first (by write time of the directory).
 let private runDirs (repoRoot: string) : DirectoryInfo list =

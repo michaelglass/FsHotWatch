@@ -121,7 +121,16 @@ let internal applyDepsGate
 let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string list) =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
-    Discovery.findFsprojFiles repoRoot
+    // C# projects can be loaded transitively by an F# root. Their project
+    // edits must invalidate the scan plan even when no watcher event arrived.
+    // They remain dependency inputs, not additional F# discovery roots.
+    let csharpProjects =
+        Discovery.existingDiscoveryRoots repoRoot
+        |> List.collect (fun directory ->
+            SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*.csproj" directory
+            |> List.ofSeq)
+
+    (Discovery.findFsprojFiles repoRoot @ csharpProjects)
     |> List.filter (fun f -> not (isExcluded f))
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
@@ -249,17 +258,14 @@ let internal waitForVerdictUnlessDiscoveryFailed
 /// number returned by Ionide/MSBuild into the project graph; `Registered` is the
 /// later FCS pipeline count. Keeping both prevents a registration defect from
 /// being mislabeled as the AUTOMATION-290 loader failure.
-type internal DiscoverySnapshot =
-    { Discovered: int
-      Loaded: int
-      OptionsMapped: int
-      Registered: int }
+type internal DiscoverySnapshot = ProjectModel.Counts
 
 /// Serializes every clear/load/map/register transaction and publishes only one
 /// immutable, completed outcome. `InProgress` deliberately hides the preceding
 /// outcome: a check arriving while a repair discovery is running must wait for
 /// that attempt, not fail from either transient empty stores or stale failure.
-type internal DiscoveryCoordinator() =
+type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
+    let publish = defaultArg publish ignore
     let admission = new SemaphoreSlim(1, 1)
     let stateGate = obj ()
     let mutable generation = 0L
@@ -276,8 +282,11 @@ type internal DiscoveryCoordinator() =
                 let observed =
                     lock stateGate (fun () ->
                         if pendingAttempts = 0 then
-                            let snapshot = completed |> Option.map snd
-                            Choice1Of2(generation, snapshot)
+                            Choice1Of2(
+                                match completed with
+                                | Some(epoch, snapshot) -> epoch, Some snapshot
+                                | None -> generation, None
+                            )
                         else
                             Choice2Of2(quiescence.Value.Task))
 
@@ -299,6 +308,33 @@ type internal DiscoveryCoordinator() =
             else
                 None)
 
+    /// Read the published model state without waiting for a slow loader. The
+    /// completed epoch stays hidden while any clear/load transaction is pending.
+    member _.Observation =
+        lock stateGate (fun () ->
+            if pendingAttempts > 0 then
+                ProjectModel.Observation.Rediscovering generation
+            else
+                match completed with
+                | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
+                | None -> ProjectModel.Observation.Unobserved)
+
+    /// Publish only while the captured model is still current. The check and the
+    /// short publication share discovery admission's lock, so a writer cannot
+    /// invalidate the model between validation and dispatch.
+    member _.WithCurrent<'T>((epoch, snapshot): int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
+        lock stateGate (fun () ->
+            let expected = snapshot |> Option.map (fun counts -> epoch, counts)
+
+            if pendingAttempts <> 0 || completed <> expected then
+                raise (
+                    InvalidOperationException(
+                        $"The captured project model generation {epoch} was invalidated before scan publication."
+                    )
+                )
+
+            write ())
+
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
@@ -308,6 +344,27 @@ type internal DiscoveryCoordinator() =
         }
 
     member _.WaitForStableAdmission() = waitForStableAdmission ()
+
+    /// Copy the scan inputs while no writer can clear or repopulate the model.
+    /// The callback must only copy state: build settlement and FCS checks run after
+    /// this short lease is released, against those immutable inputs.
+    member _.Capture<'T>(read: int64 * DiscoverySnapshot option -> 'T) : Async<'T> =
+        async {
+            let! _ = waitForStableAdmission () |> Async.AwaitTask
+            let! ct = Async.CancellationToken
+            do! admission.WaitAsync(ct) |> Async.AwaitTask
+
+            try
+                let epoch =
+                    lock stateGate (fun () ->
+                        match completed with
+                        | Some(generation, snapshot) -> generation, Some snapshot
+                        | None -> generation, None)
+
+                return read epoch
+            finally
+                admission.Release() |> ignore
+        }
 
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
@@ -320,6 +377,7 @@ type internal DiscoveryCoordinator() =
                         quiescence <-
                             Some(TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously))
 
+                    publish (ProjectModel.Observation.Rediscovering generation)
                     generation)
 
             do! admission.WaitAsync() |> Async.AwaitTask
@@ -334,6 +392,7 @@ type internal DiscoveryCoordinator() =
                             pendingAttempts <- pendingAttempts - 1
 
                             if pendingAttempts = 0 then
+                                publish (ProjectModel.ofCompleted attempt snapshot)
                                 let completion = quiescence
                                 quiescence <- None
                                 completion
@@ -349,6 +408,7 @@ type internal DiscoveryCoordinator() =
 
                             if pendingAttempts = 0 then
                                 completed <- None
+                                publish ProjectModel.Observation.Unobserved
                                 let completion = quiescence
                                 quiescence <- None
                                 completion
@@ -467,8 +527,38 @@ let private discoverAndRegisterProjects
                     // `<AssemblyName>`, which the filename-based inference cannot.
                     graph.RegisterProjectOutput(absProject, proj.TargetPath)
 
-            let fcsOptionsList = mapOptions loaded
+            // Availability belongs to the complete required F# model. A mapped
+            // C# dependency (whose checkable source set is empty) cannot rescue a
+            // missing F# mapping. Counts describe admitted stage outputs: reject
+            // the whole mapping cohort before admitting any options on failure.
+            let projectIdentity = AbsProjectPath.create
+
+            let isFSharpProject (path: string) =
+                Path.GetExtension(path).Equals(".fsproj", StringComparison.OrdinalIgnoreCase)
+
+            let requiredFSharpProjects =
+                (fsprojFiles @ (loaded |> List.map (fun project -> project.ProjectFileName)))
+                |> List.filter (fun path -> isFSharpProject path && not (isExcluded path))
+                |> List.map projectIdentity
+                |> Set.ofList
+
+            let fcsOptionsList =
+                mapOptions loaded
+                |> List.filter (fun options -> not (isExcluded options.ProjectFileName))
+
+            let mappedProjects =
+                fcsOptionsList
+                |> List.map (fun options -> projectIdentity options.ProjectFileName)
+                |> Set.ofList
+
+            let missingMappings = Set.difference requiredFSharpProjects mappedProjects
+
+            if not missingMappings.IsEmpty then
+                let names = missingMappings |> Seq.map AbsProjectPath.value |> String.concat ", "
+                invalidOp $"Required F# project mapping failed: {names}; no partial options cohort was admitted."
+
             optionsMappedCount <- fcsOptionsList.Length
+            let mutable registeredFSharpProjects = Set.empty
             sw.Stop()
 
             Logging.info
@@ -493,6 +583,11 @@ let private discoverAndRegisterProjects
                         let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                         pipeline.RegisterProject(absProject, fcsOptions)
                         registeredCount <- registeredCount + 1
+                        let identity = projectIdentity absProject
+
+                        if Set.contains identity requiredFSharpProjects then
+                            registeredFSharpProjects <- Set.add identity registeredFSharpProjects
+
                         dumpProjectOptions logDir fcsOptions
                         let refCount = countReferences fcsOptions.OtherOptions
 
@@ -503,6 +598,20 @@ let private discoverAndRegisterProjects
                         Logging.error
                             "discover"
                             $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
+
+            let missingRegistrations =
+                Set.difference requiredFSharpProjects registeredFSharpProjects
+
+            if not missingRegistrations.IsEmpty then
+                let names =
+                    missingRegistrations |> Seq.map AbsProjectPath.value |> String.concat ", "
+
+                Logging.error
+                    "discover"
+                    $"Required F# project registration failed: {names}; retiring the partial model."
+
+                pipeline.PrepareForRediscovery(clearCheckCache = false)
+                registeredCount <- 0
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
@@ -627,146 +736,168 @@ let private rediscoverAndClearRemoved
             return completed, (completed, removedFiles)
         })
 
-/// Manages TaskCompletionSource instances for signal-based WaitForScan.
+/// Scan waits observe the actual supervised request receipt, including failures.
 [<NoComparison; NoEquality>]
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
-    /// Test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
-    /// for the rationale. Production messages don't have a natural failure
-    /// mode, so this is the only realistic way to verify the agent surfaces
-    /// programming bugs instead of swallowing them.
+    | ObserveScan of Task<unit>
+    | ScanSettled of Task<unit> * Result<int64, exn>
     | RaiseFaultForTest of exn
 
 type ScanSignal(?cancellationToken: CancellationToken) =
+    let satisfied afterGeneration generation =
+        if afterGeneration >= 0L then
+            generation > afterGeneration
+        else
+            generation > 0L
+
     let agent =
         MailboxProcessor.Start(
             (fun inbox ->
-                // latestGeneration latches the most recent SignalGeneration so a
-                // WaitFor that arrives after the signal can resolve immediately.
-                // Without this, a race between performScan signalling completion
-                // and the client posting WaitFor leaves the waiter hanging.
-                let rec loop (latestGeneration: int64) (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                let rec loop
+                    latestGeneration
+                    (latestReceipt: Task<unit> option)
+                    (waiters: (int64 * Task<unit> option * TaskCompletionSource<unit>) list)
+                    =
                     async {
                         let! msg = inbox.Receive()
 
-                        // No inner try/with: the body is a typed match over messages
-                        // we own, so anything that throws is a programming bug and
-                        // must surface via `agent.Error` (exposed as `AgentCrashed`)
-                        // rather than silently looping in the original state.
                         match msg with
-                        | WaitFor(afterGeneration, tcs) ->
-                            let alreadySatisfied =
-                                if afterGeneration >= 0L then
-                                    latestGeneration > afterGeneration
-                                else
-                                    latestGeneration > 0L
-
-                            if alreadySatisfied then
-                                Logging.debug
-                                    "scan-signal"
-                                    $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
-
-                                tcs.TrySetResult(()) |> ignore
-                                return! loop latestGeneration waiters
+                        | WaitFor(afterGeneration, reply) ->
+                            if satisfied afterGeneration latestGeneration then
+                                reply.TrySetResult(()) |> ignore
+                                return! loop latestGeneration latestReceipt waiters
                             else
-                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
-                                return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
+                                let receipt =
+                                    latestReceipt |> Option.filter (fun task -> not task.IsCompletedSuccessfully)
 
-                        | Signal newGeneration ->
-                            let toSignal, remaining =
+                                match receipt with
+                                | Some task when task.IsFaulted ->
+                                    reply.TrySetException(task.Exception.GetBaseException()) |> ignore
+                                    return! loop latestGeneration latestReceipt waiters
+                                | Some task when task.IsCanceled ->
+                                    reply.TrySetException(TaskCanceledException(task)) |> ignore
+                                    return! loop latestGeneration latestReceipt waiters
+                                | _ ->
+                                    return!
+                                        loop
+                                            latestGeneration
+                                            latestReceipt
+                                            ((afterGeneration, receipt, reply) :: waiters)
+                        | ObserveScan receipt ->
+                            // Already-bound waiters belong to that exact request. A
+                            // queued recovery cannot turn its predecessor's failure green.
+                            let assigned =
                                 waiters
-                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+                                |> List.map (fun (generation, previous, reply) ->
+                                    match previous with
+                                    | Some task when not task.IsCompletedSuccessfully -> generation, previous, reply
+                                    | _ -> generation, Some receipt, reply)
 
-                            Logging.debug
-                                "scan-signal"
-                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                            return! loop latestGeneration (Some receipt) assigned
+                        | ScanSettled(receipt, Result.Error failure) ->
+                            let failed, remaining =
+                                waiters
+                                |> List.partition (fun (_, pending, _) ->
+                                    pending |> Option.exists (fun task -> obj.ReferenceEquals(task, receipt)))
 
-                            for _, tcs in toSignal do
-                                tcs.TrySetResult(()) |> ignore
+                            for _, _, reply in failed do
+                                reply.TrySetException(failure) |> ignore
 
-                            return! loop (max latestGeneration newGeneration) remaining
+                            return! loop latestGeneration latestReceipt remaining
+                        | ScanSettled(_, Ok generation)
+                        | Signal generation ->
+                            let completed, remaining =
+                                waiters
+                                |> List.partition (fun (afterGeneration, receipt, _) ->
+                                    satisfied afterGeneration generation
+                                    && (receipt |> Option.forall (fun task -> task.IsCompletedSuccessfully)))
 
-                        | RaiseFaultForTest ex -> raise ex
+                            for _, _, reply in completed do
+                                reply.TrySetResult(()) |> ignore
+
+                            return! loop (max latestGeneration generation) latestReceipt remaining
+                        | RaiseFaultForTest failure -> raise failure
                     }
 
-                loop 0L []),
+                loop 0L None []),
             ?cancellationToken = cancellationToken
         )
 
     do
-        agent.Error.Add(fun ex ->
-            // An unhandled exception inside the agent loop is a programming bug.
-            // Logged with the full stack trace (ex.ToString(), not ex.Message); the
-            // agent stops and pending waiters' WaitForGeneration tasks remain
-            // unresolved, which is a visible hang at the next caller.
-            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
+        agent.Error.Add(fun failure ->
+            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): {failure}")
 
-    /// Register a waiter that resolves when generation exceeds afterGeneration.
-    /// If afterGeneration < 0, resolves on the next generation increment.
+    /// Wait for a successful generation, or propagate the admitted scan's failure.
     member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
-        let alreadySatisfied =
-            if afterGeneration >= 0L then
-                currentGeneration > afterGeneration
-            else
-                currentGeneration > 0L
-
-        if alreadySatisfied then
-            Logging.debug
-                "scan-signal"
-                $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — already satisfied, returning immediately"
-
+        if satisfied afterGeneration currentGeneration then
             Task.FromResult(())
         else
-            let tcs =
+            let reply =
                 TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            agent.Post(WaitFor(afterGeneration, tcs))
-            tcs.Task
+            agent.Post(WaitFor(afterGeneration, reply))
+            reply.Task
 
-    /// Signal all waiters whose afterGeneration is now satisfied.
+    /// Observe independently of the caller's cancellation: the request only settles
+    /// after actual worker and child cleanup. A later request replaces the latest
+    /// receipt, so failure is retained for late waiters without poisoning recovery.
+    member _.ObserveScan(receipt: Task<unit>, generation: unit -> int64) =
+        agent.Post(ObserveScan receipt)
+
+        receipt.ContinueWith(
+            (fun (completed: Task<unit>) ->
+                let outcome =
+                    try
+                        completed.GetAwaiter().GetResult()
+                        Ok(generation ())
+                    with failure ->
+                        Result.Error failure
+
+                agent.Post(ScanSettled(receipt, outcome))),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        )
+        |> ignore
+
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
-
-    /// Unhandled exceptions inside the mailbox loop surface here. Subscribe to
-    /// observe programming bugs.
     member _.AgentCrashed: IEvent<exn> = agent.Error
+    member internal _.RaiseFaultForTest(failure: exn) = agent.Post(RaiseFaultForTest failure)
 
-    /// Test seam: deterministically raise inside the agent loop. See
-    /// `ErrorLedger.RaiseFaultForTest` for rationale.
-    member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
-
-/// Messages handled by the scan agent. The agent owns ScanState + Generation
-/// in its loop's recursion — readers round-trip via PostAndReply so they never
-/// see a stale snapshot.
-[<NoComparison; NoEquality>]
-type private ScanMsg =
-    | RequestScan of CancellationToken * AsyncReplyChannel<unit>
-    | GetState of AsyncReplyChannel<ScanState>
-    | GetGeneration of AsyncReplyChannel<int64>
-    | SetState of ScanState * AsyncReplyChannel<unit>
-
-/// Internal state managed by the scan agent.
+/// Published scan state; external discovery/checks never run in its writer.
 type private ScanAgentState =
     { ScanState: ScanState
       Generation: int64
       LastFingerprint: Set<string * int64> }
 
-/// Opaque handle to the scan MailboxProcessor. State (ScanState, Generation)
-/// lives inside the loop body; reads are sub-microsecond mailbox round-trips.
 [<NoComparison; NoEquality>]
-type ScanAgent = private ScanAgent of MailboxProcessor<ScanMsg>
+type private ScanRequest =
+    | RunScan
+    | SetScanState of ScanState
 
-let private requestScan (ScanAgent agent) ct =
-    agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
+[<NoComparison; NoEquality>]
+type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanRequest> * ScanSignal
 
-let private getScanGeneration (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetGeneration ch)
+let private requestScan (ScanAgent(owner, signal)) ct =
+    async {
+        let receipt = owner.Submit(RunScan, ct)
+        signal.ObserveScan(receipt, fun () -> owner.State.Generation)
+        do! receipt |> Async.AwaitTask
+    }
 
-let private getScanStatus (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetState ch)
+let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
+let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
 
-let private setScanStatus (ScanAgent agent) state =
-    agent.PostAndReply(fun ch -> SetState(state, ch))
+let private setScanStatus (ScanAgent(owner, _)) state =
+    owner
+        .Submit(SetScanState state, CancellationToken.None)
+        .WaitAsync(TimeSpan.FromSeconds 5.0)
+        .GetAwaiter()
+        .GetResult()
+
+let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
 /// Centralized failure handler for daemon batch/scan steps. `processBatch` and
 /// `performScan` transitively call FCS, MSBuild, and arbitrary plugin Update
@@ -858,6 +989,11 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 
         $"format refused — %s{reasons}"
 
+[<NoComparison; NoEquality>]
+type private ChangeRequest =
+    { Changes: FileChangeKind list
+      FormatResult: TaskCompletionSource<string> option }
+
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
 let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
@@ -866,6 +1002,47 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         // change provokes while a check is already waiting — is daemon wall time no
         // plugin owns. One record per batch, on every exit.
         use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
+
+        let captureBatchModel () =
+            ctx.Discovery.Capture(fun epoch ->
+                let projects = ctx.Graph.GetAllProjects()
+
+                {| Epoch = epoch
+                   RegisteredProjects = ctx.Pipeline.GetRegisteredProjects()
+                   SourceFiles =
+                    projects
+                    |> List.map (fun project -> project, ctx.Graph.GetSourceFiles project)
+                    |> Map.ofList
+                   Options =
+                    projects
+                    |> List.map (fun project -> project, ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project))
+                    |> Map.ofList
+                   Dependents =
+                    projects
+                    |> List.map (fun project -> project, ctx.Graph.GetTransitiveDependents project)
+                    |> Map.ofList
+                   Tiers = ctx.Graph.GetParallelTiers() |})
+
+        let! initialModel = captureBatchModel ()
+        let mutable batchModel = initialModel
+
+        let projectOptions project =
+            batchModel.Options
+            |> Map.tryFind (AbsProjectPath.create project)
+            |> Option.flatten
+
+        let sourceFilesFor project =
+            batchModel.SourceFiles |> Map.tryFind project |> Option.defaultValue []
+
+        let dependentsFor project =
+            batchModel.Dependents |> Map.tryFind project |> Option.defaultValue []
+
+        let publishCurrent write =
+            ctx.Discovery.WithCurrent(batchModel.Epoch, write)
+
+        let modelGeneration () =
+            snd batchModel.Epoch |> Option.map (fun _ -> fst batchModel.Epoch)
+
         let mutable sourceFiles = []
         let mutable projFiles = []
         let mutable hasSolution = false
@@ -924,19 +1101,23 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         if hasSolution then
             ctx.Host.EmitFileChanged(SolutionChanged)
 
-        if not projFilesChanged.IsEmpty || hasSolution then
-            // Generated obj/ files (MSBuild's AssemblyInfo / AssemblyAttributes)
-            // are in the ProjectGraph (it stores the raw ProjInfo SourceFiles)
-            // but the CheckPipeline filters them out of its options, so feeding
-            // them to FCS yields a spurious "not part of the project" error.
-            // The pipeline's source list is authoritative for what's checkable.
-            let checkableFilesOf (projects: AbsProjectPath list) =
-                projects
-                |> List.collect ctx.Graph.GetSourceFiles
-                |> List.map AbsFilePath.value
-                |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
-                |> List.distinct
+        // Discovery keeps raw MSBuild sources in the graph, including generated
+        // obj/bin files that the pipeline deliberately excludes. Both project
+        // refresh and ordinary source dependency fanout must schedule the inputs
+        // belonging to the options that FCS will actually check.
+        let checkableFilesOf (projects: AbsProjectPath list) =
+            projects
+            |> List.collect (fun project ->
+                match projectOptions (AbsProjectPath.value project) with
+                | Some options -> options.SourceFiles |> Array.toList
+                | None ->
+                    sourceFilesFor project
+                    |> List.map AbsFilePath.value
+                    |> List.filter (fun file ->
+                        PathFilter.isFSharpSource file && not (PathFilter.isGeneratedPath file)))
+            |> List.distinct
 
+        if not projFilesChanged.IsEmpty || hasSolution then
             // Decide scoped vs. full. Scoped applies only when every changed
             // path maps to a known project (no `.props`, no new project, no
             // solution edit) AND a scoped FCS invalidator is wired.
@@ -944,7 +1125,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 if hasSolution then
                     None
                 else
-                    resolveAffectedProjects (ctx.Pipeline.GetRegisteredProjects()) projFilesChanged
+                    resolveAffectedProjects (batchModel.RegisteredProjects) projFilesChanged
 
             match scopedProjects, ctx.InvalidateFcsForProjects with
             | Some affectedFsprojs, Some invalidateScoped when not (List.isEmpty affectedFsprojs) ->
@@ -956,7 +1137,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 let recheckProjects =
                     affectedFsprojs
                     |> List.map AbsProjectPath.create
-                    |> List.collect ctx.Graph.GetTransitiveDependents
+                    |> List.collect dependentsFor
                     |> List.distinct
 
                 // Snapshot current options BEFORE re-discovery — these are the
@@ -966,7 +1147,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 // recompute instead of serving a stale cached result.
                 let oldOpts =
                     recheckProjects
-                    |> List.choose (fun p -> ctx.Pipeline.GetProjectOptions(AbsProjectPath.value p))
+                    |> List.choose (fun p -> projectOptions (AbsProjectPath.value p))
 
                 for f in checkableFilesOf recheckProjects |> List.map AbsFilePath.create do
                     ctx.Pipeline.InvalidateFile f
@@ -990,12 +1171,21 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         false // keep unrelated projects' check cache
 
+                let! refreshedModel = captureBatchModel ()
+                batchModel <- refreshedModel
+
                 if not projFilesChanged.IsEmpty then
                     ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                 // Re-derive source files from the refreshed graph (membership
                 // may have shifted) for the same project set.
-                allSourceFiles <- (allSourceFiles @ checkableFilesOf recheckProjects) |> List.distinct
+                let refreshedProjects =
+                    affectedFsprojs
+                    |> List.map AbsProjectPath.create
+                    |> List.collect dependentsFor
+                    |> List.distinct
+
+                allSourceFiles <- (allSourceFiles @ checkableFilesOf refreshedProjects) |> List.distinct
 
             | _ ->
                 // ── Full path ────────────────────────────────────────────────
@@ -1019,22 +1209,27 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         true
 
+                let! refreshedModel = captureBatchModel ()
+                batchModel <- refreshedModel
+
                 Logging.info
                     "daemon"
-                    $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
+                    $"Re-discovery complete: %d{(batchModel.SourceFiles |> Map.keys |> Seq.toList).Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
 
                 if not projFilesChanged.IsEmpty then
                     ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                 allSourceFiles <-
-                    (allSourceFiles @ checkableFilesOf (ctx.Graph.GetAllProjects()))
+                    (allSourceFiles
+                     @ checkableFilesOf (batchModel.SourceFiles |> Map.keys |> Seq.toList))
                     |> List.distinct
 
         let batchStartedAt = System.DateTime.UtcNow
         let dispatchedFiles = ResizeArray<AbsFilePath>()
 
         if not allSourceFiles.IsEmpty then
-            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            let modifiedByPreprocessors =
+                ctx.Host.RunPreprocessors(allSourceFiles |> List.filter PathFilter.isFSharpSource).Modified
 
             let newSuppressed =
                 Set.union remainingSuppressed (Set.ofList modifiedByPreprocessors)
@@ -1043,30 +1238,39 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             let changedProjects =
                 absSourceFiles
-                |> List.collect (fun f -> ctx.Graph.GetProjectsForFile(f))
+                |> List.collect (fun f ->
+                    (batchModel.SourceFiles
+                     |> Map.toList
+                     |> List.choose (fun (project, files) -> if List.contains f files then Some project else None)))
                 |> List.distinct
 
             let changedProjectSet = Set.ofList changedProjects
 
             let dependentProjectFiles =
                 changedProjects
-                |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
+                |> List.collect (fun p -> dependentsFor (p))
                 |> List.distinct
                 |> List.filter (fun p -> not (Set.contains p changedProjectSet))
-                |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
-                |> List.map AbsFilePath.value
+                |> checkableFilesOf
 
             let allFilesToCheck =
                 (allSourceFiles @ dependentProjectFiles)
+                |> List.filter PathFilter.isFSharpSource
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
-            ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value))
+            publishCurrent (fun () ->
+                ctx.Host.EmitFileChanged(
+                    SourceChanged(
+                        (allSourceFiles @ (allFilesToCheck |> List.map AbsFilePath.value))
+                        |> List.distinct
+                    )
+                ))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
             let filesToCheckSet = allFilesToCheck |> Set.ofList
-            let tiers = ctx.Graph.GetParallelTiers()
+            let tiers = batchModel.Tiers
 
             let emitResults (results: FileCheckResult option array) =
                 for result in results do
@@ -1076,9 +1280,14 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                             "daemon"
                             $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
-                        dispatchedFiles.Add(checkResult.File)
-                        ctx.Host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration () }
+
+                            dispatchedFiles.Add(checkResult.File)
+                            ctx.Host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
                     // Unlike the cold scan (see `runChecksWithRetry`), the batch
                     // path does NOT retry a cancelled (`None`) check. Batch
                     // cancellations are self-healing: `CancelPreviousCheck` only
@@ -1094,14 +1303,13 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 for proj in tier do
                     let projPath = AbsProjectPath.value proj
 
-                    let projFiles =
-                        ctx.Graph.GetSourceFiles(proj) |> List.filter filesToCheckSet.Contains
+                    let projFiles = sourceFilesFor proj |> List.filter filesToCheckSet.Contains
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
                     // Deps-freshness gate — see `applyDepsGate`.
                     if applyDepsGate ctx.DepsGate ctx.Host projPath then
-                        match ctx.Pipeline.GetProjectOptions(projPath) with
+                        match projectOptions projPath with
                         | Some options ->
                             for file in projFiles do
                                 tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
@@ -1123,19 +1331,19 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
                 emitResults results
 
-            // Empty cohorts (every file filtered as content-unchanged or no
-            // results from the pipeline) skip the emit — there's nothing to
-            // "flush and decide" against.
-            if dispatchedFiles.Count > 0 then
-                let nextGen =
-                    System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+            // A non-F# build input can change without an FCS result. Seal that
+            // accepted cohort so analysis and runtime-debt owners can settle it.
+            let nextGen =
+                System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
 
+            publishCurrent (fun () ->
                 ctx.Host.EmitBatchChecked
                     { Trigger = InSessionBatch changes
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = nextGen
+                      ModelGeneration = modelGeneration ()
                       StartedAt = batchStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+                      CompletedAt = System.DateTime.UtcNow })
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
@@ -1175,15 +1383,6 @@ let formatPluginWait
 
     $"%s{pluginName} (%s{elapsed}){subtaskPart}"
 
-/// Quiescence window applied after the last host activity (event dispatch or
-/// plugin status transition) before WaitForComplete declares the host idle.
-/// Picks up the "plugin transitioned through Idle between cycles" race: a
-/// plugin that's about to start a new cycle in response to a freshly-emitted
-/// event won't have updated its status yet, so the waiter must give the
-/// dispatch pipeline a chance to land before returning.
-let internal waitForAllTerminalQuiescenceWindow =
-    System.TimeSpan.FromMilliseconds(200.0)
-
 /// How long "nothing is Running, yet some plugin still reports work in flight"
 /// may persist before the wait declares that plugin WEDGED and fails.
 ///
@@ -1203,323 +1402,133 @@ let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(
 [<Literal>]
 let internal daemonShuttingDownMessage = "daemon shutting down"
 
-/// Wait for all plugins to settle. A plugin "settles" when:
-///   1. It's in a non-Running status (Idle / Completed / Failed) AND its
-///      work-cycle generation has advanced past the snapshot taken at call
-///      time — i.e. it has actually completed at least one cycle since we
-///      started waiting; OR
-///   2. It's been quiet through a 200ms quiescence window measured from the
-///      most recent host activity (event dispatch or status change). This
-///      handles plugins that legitimately have no work to do during this
-///      cycle (don't subscribe to a relevant event), and makes the wait
-///      bounded when nothing is happening.
-///
-/// The quiescence window also closes the race that motivated this design:
-/// without it, WaitForComplete could observe `allTerminal=true` in the brief
-/// window between a plugin emitting BuildCompleted, transitioning Completed,
-/// and a downstream plugin's mailbox actually picking up the BuildCompleted
-/// event and transitioning into Running. Times out with TimeoutException
-/// after the specified timeout.
-///
-/// `ct` is the daemon's shutdown token. When it fires mid-wait, the returned
-/// task faults with OperationCanceledException so the in-flight WaitForComplete
-/// RPC propagates to the client as an error — without this, foreground
-/// processes blocked on the daemon could either hang (in-process callers) or
-/// race the OS pipe teardown for a clean exit.
-///
-/// `requireVerdict`: when true (the `WaitForComplete` verdict path) the host is
-/// only "at rest" once at least one plugin has reached a real terminal state, so a
-/// cold all-Idle daemon that has simply never run cannot resolve as a vacuous "No
-/// errors" exit-0; the wait blocks until a real verdict arrives, faulting on
-/// shutdown/timeout. When false (the in-process `RunOnce`/scan-settling path, and
-/// every other caller) an all-Idle host is tolerated, so the wait cannot hang on a
-/// plugin that legitimately has no work this cycle. `allPluginsAdvancedToTerminal`
-/// already requires Completed/Failed for every plugin, so the guard only constrains
-/// the quiescence (`allPluginsAtRest`) path.
+/// Work completion and evidence observation are distinct contracts. Neither
+/// consumes UI status: all decisions pin one immutable host publication.
+[<RequireQualifiedAccess>]
+type internal WaitPurpose =
+    | Settle
+    | Evidence
+
 let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
-    (requireVerdict: bool)
+    (purpose: WaitPurpose)
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
-    // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
-    // deadline computation entirely in that case and rely on the MaxValue guard in loop.
-    let deadline =
-        if timeout = System.TimeSpan.MaxValue then
-            System.DateTime.MaxValue
-        else
-            System.DateTime.UtcNow + timeout
-
-    let mutable lastLogTime = System.DateTime.UtcNow
-
-    // Snapshot per-plugin generations at call time. A plugin satisfies the
-    // "advanced a generation" leg of the wait condition once its current
-    // generation exceeds the snapshot value AND it's in a non-Running status.
-    // Plugins registered after the snapshot default to 0, which any later
-    // Idle->Running transition will exceed.
-    let snapshotGenerations = host.WorkCycleGenerations()
-
-    let generationOf (name: string) (gens: Map<string, int64>) =
-        Map.tryFind name gens |> Option.defaultValue 0L
-
-    let getRunningPlugins () =
-        let now = System.DateTime.UtcNow
-
-        host.GetAllStatuses()
-        |> Map.toList
-        |> List.choose (fun (name, s) ->
-            match s with
-            | Running since ->
-                let subtasks =
-                    host.GetActivitySnapshot(name).Subtasks
-                    |> List.map (fun t -> t.Key, t.StartedAt)
-
-                Some(formatPluginWait now name since subtasks)
-            | _ -> None)
-
-    /// Is anything Running? `getRunningPlugins` answers this too, but pays for a
-    /// per-plugin activity snapshot (up to 64 log lines and a 16-element history
-    /// array) plus a formatted wait string, all of which the 50ms poll loop throws
-    /// away.
-    let anyRunning () =
-        host.GetAllStatuses()
-        |> Map.exists (fun _ s ->
-            match s with
-            | Running _ -> true
-            | _ -> false)
-
-    let formatTimeoutDetail () =
-        match getRunningPlugins () with
-        | [] ->
-            // Nothing is Running, so the wait died on one of the OTHER legs
-            // `allPluginsAtRest` requires — a stuck inflight counter, a quiescence
-            // window that never closes, or an unmet verdict guard. Name the one
-            // that actually blocked rather than reporting all three at once.
-            let busy = host.BusyPluginNames()
-            let sinceActivity = System.DateTime.UtcNow - host.LastActivityAt()
-
-            let statuses = host.GetAllStatuses()
-
-            let hasVerdict = statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
-
-            if statuses.IsEmpty then
-                // The whole answer, and it implies the verdict reason below, which
-                // would otherwise be printed alongside it saying the same thing.
-                "nothing running, and no plugins are registered"
-            else
-                let busyNames = String.concat ", " busy
-
-                let reasons =
-                    [ if not busy.IsEmpty then
-                          $"plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{busyNames}"
-
-                      if sinceActivity < waitForAllTerminalQuiescenceWindow then
-                          $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
-
-                      if requireVerdict && not hasVerdict then
-                          "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report" ]
-
-                match reasons with
-                | [] ->
-                    // Every named leg looks satisfiable, yet the loop did not exit:
-                    // report the raw state rather than a reassuring summary.
-                    let dump =
-                        statuses
-                        |> Map.toList
-                        |> List.map (fun (n, s) -> $"%s{n}=%A{s}")
-                        |> String.concat ", "
-
-                    $"all legs appear satisfied yet the wait did not resolve — statuses: %s{dump}"
-                | rs -> "nothing running, but " + String.concat "; " rs
-        | running -> $"""still running: %s{String.concat ", " running}"""
-
-    let logRunningPlugins () =
-        let now = System.DateTime.UtcNow
-
-        if (now - lastLogTime).TotalSeconds >= 10.0 then
-            lastLogTime <- now
-
-            // "still running: X" is progress, which is what someone watching a
-            // check wants, so it stays at info. The "nothing running, but ..."
-            // breakdown is a DIAGNOSTIC at debug: a healthy run emits it for
-            // minutes at a stretch while a plugin drains a large FileChecked
-            // backlog, and it is not the wedge signature (a dead agent is
-            // identified by `FaultedPlugins`). It is still printed in full where it
-            // decides something — the timeout message and the wedge failure below.
-            //
-            // `Logging.debug` takes an ALREADY-BUILT string, so guard the debug arm
-            // on the level: at the default Info level the whole detail would
-            // otherwise be computed every 10s and thrown away — a status
-            // round-trip, an activity snapshot per running plugin, and in the
-            // all-legs-satisfied case a reflection-based `%A` dump of every status.
-            if anyRunning () then
-                Logging.info "wait" (formatTimeoutDetail ())
-            elif Logging.isEnabled Logging.LogLevel.Debug then
-                Logging.debug "wait" (formatTimeoutDetail ())
-
-    let isQuiescent () =
-        System.DateTime.UtcNow - host.LastActivityAt()
-        >= waitForAllTerminalQuiescenceWindow
-
-    let allPluginsAdvancedToTerminal () =
-        let statuses = host.GetAllStatuses()
-        let currentGens = host.WorkCycleGenerations()
-
-        not statuses.IsEmpty
-        // Even when every plugin has reached terminal AND its generation has
-        // advanced past the snapshot, a downstream plugin can still have an
-        // event queued in its mailbox (or be inside a handler that hasn'''t yet
-        // returned). The BuildCompleted -> TestPrune.PendingRerun -> Running
-        // edge is the canonical case: BuildCompleted is dispatched
-        // (inflight=1) while TestPrune is still showing Completed from the
-        // prior FileChecked cycle. Without this gate the wait would resolve
-        // in that window.
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun name s ->
-               match s with
-               | Completed _
-               | Failed _ ->
-                   let snap = generationOf name snapshotGenerations
-                   let cur = generationOf name currentGens
-                   // Plugin must have completed a cycle DURING this wait.
-                   // For plugins already terminal at snapshot with the same
-                   // generation, that means no work happened — fall back to
-                   // quiescence in the caller.
-                   cur > snap
-               | _ -> false)
-
-    let allPluginsAtRest () =
-        // Conservative quiescence-based completion: no plugin is Running, no
-        // plugin has events still inflight (queued or being processed by its
-        // mailbox), and no host-level activity has happened in the quiescence
-        // window. Together these prove there's no work in flight that we could
-        // miss by returning now.
-        let statuses = host.GetAllStatuses()
-
-        not statuses.IsEmpty
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun _ s ->
-               match s with
-               | Running _ -> false
-               | _ -> true)
-        // Verdict guard: on the WaitForComplete path at least ONE plugin must have
-        // reached a real terminal state. An all-Idle host is not at rest for
-        // verdict purposes — see `requireVerdict`.
-        && (not requireVerdict
-            || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
-        && isQuiescent ()
-
-    // Wedge detection state: how much work the host had FINISHED when we last
-    // saw progress, and when that was.
-    //
-    // Keyed on progress, NOT on busy-set identity: one plugin draining a long
-    // `FileChecked` backlog is busy continuously with nothing Running, and the busy
-    // set stays exactly `["test-prune"]` for the whole drain, so a clock keyed on
-    // that set never resets and fires on a healthy check of a large repo (observed:
-    // three uninterrupted minutes of it on a green run). `CompletedDispatches` moves
-    // on every event a plugin finishes, so a drain can never look stalled and a
-    // stopped agent always does.
+    let started = System.Diagnostics.Stopwatch.StartNew()
     let mutable lastProgress = -1L
-    let mutable lastProgressAt = System.DateTime.UtcNow
-
-    let checkForWedgedPlugin () =
-        // A plugin whose message loop died reports work in flight forever, so
-        // waiting on it can only time out. This is the cheapest check and the only
-        // certain one — no threshold, no inference from silence. Everything below
-        // is the heuristic backstop for a stall nobody reported.
-        match host.FaultedPlugins() with
-        | (name, ex) :: _ ->
-            raise (
-                System.TimeoutException(
-                    $"WaitForComplete: plugin '%s{name}' is DEAD — its message loop crashed, so it will report work in flight forever and this wait can never resolve. "
-                    + $"The crash: %s{ex.Message}. "
-                    + "This is a bug in fshw, not in the tree being checked. See logs/daemon.log for the full stack, then `fshw stop` to reclaim the daemon."
-                )
-            )
-        | [] ->
-
-            // Cheapest test first, and the one that is almost always false.
-            // `AnyPluginBusy` is N volatile reads with short-circuiting and no
-            // allocation; everything below it costs a blocking round-trip to the
-            // status agent, and this runs 20x a second for a wait designed to last
-            // up to an hour (~72,000 round-trips, each copying every running
-            // plugin's activity tail).
-            let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
-
-            let progress = host.CompletedDispatches()
-
-            if progress <> lastProgress then
-                lastProgress <- progress
-                lastProgressAt <- System.DateTime.UtcNow
-
-            // Only meaningful when NOTHING is Running: a busy plugin that is also
-            // Running is simply working. `anyRunning` is checked LAST because it is
-            // the dearest of the three and, given no progress for the threshold, the
-            // rarest to change the answer.
-            if
-                not busy.IsEmpty
-                && System.DateTime.UtcNow - lastProgressAt >= stallThreshold
-                && not (anyRunning ())
-            then
-                let joined = String.concat ", " busy
-
-                raise (
-                    System.TimeoutException(
-                        $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %s{formatElapsed stallThreshold} with nothing Running and no event finishing anywhere in the host. "
-                        + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
-                        + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
-                    )
-                )
+    let mutable lastProgressAt = TimeSpan.Zero
+    let mutable lastLogAt = TimeSpan.Zero
 
     let rec loop () =
         async {
-            // Catches the race between cancellation and the first Async.Sleep —
-            // see waitForAllTerminal's doc-comment for the full contract.
             if ct.IsCancellationRequested then
                 raise (System.OperationCanceledException(daemonShuttingDownMessage, ct))
 
-            checkForWedgedPlugin ()
+            let snapshot = host.WorkSnapshot
 
-            if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
-                let detail = formatTimeoutDetail ()
+            let faultContext () =
+                match snapshot.Faults with
+                | [] -> ""
+                | faults ->
+                    let causes =
+                        faults
+                        |> List.map (fun (name, failure) -> $"{name}: {failure.Message}")
+                        |> String.concat "; "
 
-                raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
+                    "; committed faults awaiting settlement: " + causes
 
-            // Two satisfaction paths:
-            //   1. Every plugin started a new cycle since the snapshot AND has
-            //      reached terminal — clearly all the work triggered while we
-            //      were waiting has completed.
-            //   2. No plugin is Running, no plugin has inflight events, and the
-            //      host has been quiet for the quiescence window. This handles
-            //      plugins that legitimately have nothing to do this cycle, and
-            //      bounds the wait when nothing is happening.
-            if allPluginsAdvancedToTerminal () || allPluginsAtRest () then
+            match snapshot.Faults with
+            | (name, failure) :: _ when not snapshot.IsBusy ->
+                // A fault is final evidence only once every admitted owner has
+                // retired. Publishing it earlier can lose another owner's result
+                // or return while cleanup still owns a child process.
+                let isExecutor =
+                    snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+
+                raise (PluginWorkOwner.WorkFailedException(name, failure, isExecutor))
+            | _ -> ()
+
+            if snapshot.CompletedEvents <> lastProgress then
+                lastProgress <- snapshot.CompletedEvents
+                lastProgressAt <- started.Elapsed
+
+            // A finite recovery bound remains for callbacks which never finish.
+            // Reported Running is diagnostic context for this stall classification,
+            // never authority for successfully completing the wait.
+            if snapshot.IsBusy && started.Elapsed - lastProgressAt >= stallThreshold then
+                let hasRunningReport =
+                    host.GetAllStatuses()
+                    |> Map.exists (fun _ status ->
+                        match status with
+                        | Running _ -> true
+                        | _ -> false)
+
+                if not hasRunningReport then
+                    let names = String.concat ", " snapshot.BusyNames
+
+                    raise (
+                        TimeoutException(
+                            $"WaitForComplete: owned work WEDGED — {names}{faultContext ()}; no completion for {formatElapsed stallThreshold}"
+                        )
+                    )
+
+            let evidence =
+                match snapshot.ProjectModel with
+                | ProjectModel.Observation.Available model ->
+                    snapshot.Evidence
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
+                | _ -> []
+
+            let analysisEvidence =
+                match snapshot.ProjectModel with
+                | ProjectModel.Observation.Available model ->
+                    snapshot.AnalysisEvidence
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
+                | _ -> []
+
+            let satisfied =
+                if snapshot.IsBusy then
+                    false
+                else
+                    match purpose with
+                    | WaitPurpose.Settle -> true
+                    | WaitPurpose.Evidence ->
+                        // A completed failing/refused outcome is still an answer.
+                        // Its typed receipt crosses with the model; CLI publication
+                        // cannot turn its refusal reasons into a green verdict.
+                        not evidence.IsEmpty || not analysisEvidence.IsEmpty
+
+            if satisfied then
                 return ()
             else
-                logRunningPlugins ()
+                let detail () =
+                    if snapshot.IsBusy then
+                        "owned work remains: " + String.concat ", " snapshot.BusyNames + faultContext ()
+                    else
+                        "no earned verdict for the current completed project model"
+
+                if timeout <> TimeSpan.MaxValue && started.Elapsed >= timeout then
+                    raise (TimeoutException($"WaitForComplete timed out after {timeout} — {detail ()}"))
+
+                if started.Elapsed - lastLogAt >= TimeSpan.FromSeconds 10.0 then
+                    lastLogAt <- started.Elapsed
+                    Logging.info "daemon" ("waiting: " + detail ())
+
                 do! Async.Sleep 50
                 return! loop ()
         }
 
     Async.StartAsTask(loop (), cancellationToken = ct)
 
-/// Settling wait that tolerates an all-Idle host (no plugin needed work this
-/// cycle). This is the original `waitForAllTerminal` behavior, preserved for the
-/// in-process `RunOnce`/scan path and every existing caller — it must never hang
-/// on a legitimately never-run plugin. Defers to `waitForAllTerminalCore` with
-/// `requireVerdict=false`.
+/// Wait for all admitted work to settle, including callback completion and cleanup.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout false waitForAllTerminalBusyStallThreshold ct
+    waitForAllTerminalCore host timeout WaitPurpose.Settle waitForAllTerminalBusyStallThreshold ct
 
-/// Verdict-bearing wait used ONLY by the `WaitForComplete` RPC path: resolves
-/// only once at least one plugin has produced a real verdict (Completed/Failed),
-/// so a cold/never-ran daemon does not report a vacuous clean. Defers to
-/// `waitForAllTerminalCore` with `requireVerdict=true`.
+/// Wait for a committed receipt earned by actual outcomes for the current model.
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout true waitForAllTerminalBusyStallThreshold ct
+    waitForAllTerminalCore host timeout WaitPurpose.Evidence waitForAllTerminalBusyStallThreshold ct
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by
@@ -1652,7 +1661,8 @@ type Daemon
         // Taken as a PARAMETER, never constructed here: `createWith` must install
         // it before anything captures an ExecutionContext (see the comment there),
         // and a parameter makes that ordering the only constructible one.
-        processRegistry: ProcessRegistry.Registry
+        processRegistry: ProcessRegistry.Registry,
+        closeChanges: unit -> unit
     ) =
 
     let mutable disposed = false
@@ -1665,7 +1675,9 @@ type Daemon
     // the accessor's contract ("dependents, excluding self") holds.
     do
         host.SetProjectGraph
-            { GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
+            { ObserveModel = fun () -> host.WorkStore.Snapshot.ProjectModel
+              ObserveCheckableFiles = fun () -> host.WorkStore.Snapshot.ProjectModelFiles
+              GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
                     let self = AbsProjectPath.create fsproj
@@ -1703,6 +1715,8 @@ type Daemon
     /// attempt has completed or one is currently between clear and completion.
     member internal _.DiscoverySnapshot() : DiscoverySnapshot option = discovery.Completed
 
+    member internal _.ProjectModelObservation() : ProjectModel.Observation = discovery.Observation
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -1719,15 +1733,26 @@ type Daemon
                 |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded)
         }
 
-    member internal _.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
+    member internal _.WaitForProjectModel() : Task<ProjectModel.Observation> =
         task {
             let! generation, completed = discovery.WaitForStableAdmission()
 
             return
-                { Generation = generation
-                  Failure =
-                    completed
-                    |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded) }
+                completed
+                |> Option.map (ProjectModel.ofCompleted generation)
+                |> Option.defaultValue ProjectModel.Observation.Unobserved
+        }
+
+    member internal this.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
+        task {
+            let! observation = this.WaitForProjectModel()
+
+            match observation with
+            | ProjectModel.Observation.Available snapshot ->
+                return
+                    { Generation = snapshot.Generation
+                      Failure = None }
+            | _ -> return raise (ProjectModel.UnavailableException observation)
         }
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
@@ -1751,6 +1776,8 @@ type Daemon
         member this.Dispose() =
             if not disposed then
                 disposed <- true
+                closeChanges ()
+                closeScan scanAgent
                 // Call directly on the daemon's own registry rather than the
                 // AsyncLocal current one — Dispose may run from a different
                 // async context than the one that installed it.
@@ -1808,7 +1835,7 @@ type Daemon
     /// to wait for a run that is already in flight.
     ///
     /// Tolerates an all-Idle host (plugins with no work this cycle) — it must never
-    /// hang on a legitimately never-run plugin (`requireVerdict=false`).
+    /// hang on a legitimately never-run plugin (settling observes owned work).
     member _.Settle() =
         waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
         |> Async.AwaitTask
@@ -1894,15 +1921,6 @@ type Daemon
                 // FormatScanStatus via the daemon-level `liveCoverage`.
                 let getUncheckedCount () = snd (liveCoverage ())
 
-                // Count of in-flight `WaitForComplete`/verdict waits (connected
-                // check clients blocked on the daemon's authoritative settle).
-                // Feeds the idle-exit `Busy` predicate below so the daemon is NEVER
-                // treated as idle while a client is waiting for a verdict — a
-                // client can be blocked on one even while every plugin is
-                // momentarily quiet, and idle-exit firing mid-wait drops it with a
-                // connection error instead of a verdict.
-                let activeVerdictWaits = ref 0
-
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
@@ -1930,29 +1948,17 @@ type Daemon
                                     raise (System.OperationCanceledException(daemonShuttingDownMessage, cts.Token))
 
                                 linked.Cancel()
+                                do! waiter
                                 return ()
                             }
-                      // requireVerdict=true: this is the WaitForComplete RPC
-                      // path — it must not report a vacuous clean on a cold /
-                      // never-ran daemon (block until a real verdict). Bracketed
-                      // with the `activeVerdictWaits` counter so an in-flight
-                      // client wait inhibits idle-exit (see `Busy` below); the
-                      // increment runs synchronously as the task is started and
-                      // the decrement is guaranteed by `finally` on every exit
-                      // (verdict, timeout, or shutdown cancellation).
                       WaitForAllTerminal =
                         fun timeout ->
                             waitForVerdictUnlessDiscoveryFailed
                                 this.WaitForDiscoveryAdmission
                                 (fun timeout ->
                                     task {
-                                        System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
-
-                                        try
-                                            return! waitForVerdict host timeout cts.Token
-                                        finally
-                                            System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents)
-                                            |> ignore
+                                        use _observer = host.ObserveWork()
+                                        return! waitForVerdict host timeout cts.Token
                                     })
                                 timeout
                       RerunPlugin = rerunPlugin
@@ -2016,7 +2022,7 @@ type Daemon
                                 fun () ->
                                     IdleExit.idleInhibitors
                                         (host.AnyPluginBusy())
-                                        (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                        host.WorkSnapshot.ObserverCount
                                         (ScanActivity.ScanLeases.inFlight scanLeases)
                               LastActivityAt = host.LastActivityAt
                               Shutdown = fun () -> cts.Cancel()
@@ -2047,7 +2053,7 @@ type Daemon
                             fun () ->
                                 Heartbeat.runActive
                                     (host.AnyPluginBusy())
-                                    (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                    host.WorkSnapshot.ObserverCount
                                     (ScanActivity.ScanLeases.anyInFlight scanLeases)
                           Write = Heartbeat.writeTo repoRoot
                           Log = Logging.warn "heartbeat"
@@ -2245,9 +2251,9 @@ let private scanKindFor (state: ScanAgentState) =
 let private performScan
     (ctx: BatchContext)
     (scanLeases: ScanActivity.ScanLeases)
-    (scanSignal: ScanSignal)
     (state: ScanAgentState)
     (ct: CancellationToken)
+    (publish: ScanAgentState -> unit)
     =
     let scanBody =
         async {
@@ -2293,7 +2299,38 @@ let private performScan
                 if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
                     lastFingerprint <- currentFingerprint
 
-            let registeredProjects = pipeline.GetRegisteredProjects()
+            // A fingerprint hit skips OUR discovery, not a concurrent writer's.
+            // Capture membership, dependency tiers and options together before that
+            // writer can clear any of them; never revisit the live graph mid-scan.
+            let! capturedModel, registeredProjects, registeredFiles, buildOnlyFiles, scanTiers =
+                ctx.Discovery.Capture(fun epoch ->
+                    let projects = pipeline.GetRegisteredProjects()
+                    let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
+                    let tiers =
+                        graph.GetParallelTiers()
+                        |> List.map (
+                            List.map (fun project ->
+                                project,
+                                graph.GetSourceFiles(project) |> List.map AbsFilePath.value,
+                                pipeline.GetProjectOptions(AbsProjectPath.value project))
+                        )
+
+                    let buildOnlyFiles =
+                        graph.GetAllProjects()
+                        |> List.collect graph.GetSourceFiles
+                        |> List.map AbsFilePath.value
+                        |> List.filter (fun file ->
+                            not (PathFilter.isFSharpSource file) && not (PathFilter.isGeneratedPath file))
+                        |> List.distinct
+
+                    epoch, projects, files, buildOnlyFiles, tiers)
+
+            let modelGeneration = snd capturedModel |> Option.map (fun _ -> fst capturedModel)
+
+            let publishCurrent write =
+                ctx.Discovery.WithCurrent(capturedModel, write)
+
 
             // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
             //
@@ -2310,8 +2347,6 @@ let private performScan
             // `.fsproj` byte-identical — a glob-matched file — never reaches it.
             // Checking existence here is the backstop that does not depend on how the
             // rename happened to touch the project files.
-            let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
             let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
             if not vanished.IsEmpty then
@@ -2329,6 +2364,7 @@ let private performScan
             let sw = System.Diagnostics.Stopwatch.StartNew()
             let scanStartedAt = System.DateTime.UtcNow
             let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
+            publish { state with ScanState = scanState }
             let dispatchedFiles = ResizeArray<AbsFilePath>()
             // Files whose check never returned Some, even after the bounded
             // scan-retry budget (the silent-truncation race: a scan-side check
@@ -2344,14 +2380,16 @@ let private performScan
             // `if` so the metrics record can read it on an empty scan too.
             let mutable checkedTotal = 0
 
-            if not files.IsEmpty then
-                // Run preprocessors (e.g., formatter) before dispatching
+            let buildInputs = List.distinct (files @ buildOnlyFiles)
+
+            if not buildInputs.IsEmpty then
+                // Run preprocessors (e.g., formatter) only on FCS-supported inputs.
                 let modified = host.RunPreprocessors(files).Modified
 
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-                host.EmitFileChanged(SourceChanged files)
+                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged buildInputs))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
                 // read the obj/ refs it rewrites. See
@@ -2366,7 +2404,7 @@ let private performScan
                 let filesToCheckSet = Set.ofList files
 
                 // Check files in parallel tiers based on project dependency graph
-                let tiers = graph.GetParallelTiers()
+                let tiers = scanTiers
 
                 // Bounded retry budget for cancelled/aborted/failed scan checks.
                 // The common case (a single processBatch race per file) converges
@@ -2382,19 +2420,15 @@ let private performScan
                     let tierThunks =
                         System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-                    for proj in tier do
+                    for proj, capturedFiles, capturedOptions in tier do
                         let projPath = AbsProjectPath.value proj
+                        let projFiles = capturedFiles |> List.filter filesToCheckSet.Contains
 
-                        let projFiles =
-                            graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+                        skippedCount <- skippedCount + (capturedFiles.Length - projFiles.Length)
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
-                            match pipeline.GetProjectOptions(projPath) with
+                            match capturedOptions with
                             | Some options ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
@@ -2402,19 +2436,27 @@ let private performScan
                             | None ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
-                                    tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
+                                    // Missing captured options is missing evidence. Do
+                                    // not borrow a different epoch's live registration.
+                                    tierThunks[absFile] <- async { return None }
                         else
                             skippedCount <- skippedCount + projFiles.Length
 
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
                     let emitChecked (checkResult: FileCheckResult) =
-                        checkedCount <- checkedCount + 1
-                        dispatchedFiles.Add(checkResult.File)
-                        host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                        completed <- completed + 1
-                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration }
+
+                            checkedCount <- checkedCount + 1
+                            dispatchedFiles.Add(checkResult.File)
+                            host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                            completed <- completed + 1
+                            scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                            publish { state with ScanState = scanState })
 
                     let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
@@ -2444,6 +2486,7 @@ let private performScan
 
                 checkedTotal <- checkedCount
 
+            publishCurrent ignore
             sw.Stop()
             let finalScanState = ScanComplete(sw.Elapsed)
 
@@ -2456,17 +2499,18 @@ let private performScan
 
             // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
             // callers (IPC) safely assume BatchChecked has already been dispatched
-            // by the time `fshw scan --wait` returns. Empty cohorts (no registered
-            // files) skip — there's nothing to "flush and decide" against.
-            if dispatchedFiles.Count > 0 then
+            // by the time `fshw scan --wait` returns. A loaded model with zero
+            // source files still needs its empty analysis cohort sealed; absence
+            // of a batch would leave that successful scan without any evidence.
+            publishCurrent (fun () ->
                 host.EmitBatchChecked
                     { Trigger = BootScan
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = newGeneration
+                      ModelGeneration = modelGeneration
                       StartedAt = scanStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+                      CompletedAt = System.DateTime.UtcNow })
 
-            scanSignal.SignalGeneration(newGeneration)
 
             // AUTOMATION-610 — one measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
@@ -2710,7 +2754,15 @@ module Daemon =
                     let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
                     WorkspaceLoader.Create(toolsPath, [])
 
-            let discovery = DiscoveryCoordinator()
+            let discovery =
+                DiscoveryCoordinator(
+                    publish =
+                        fun observation ->
+                            host.WorkStore.PublishProjectModelWithFiles(
+                                observation,
+                                pipeline.GetAllRegisteredFiles() |> Set.ofList
+                            )
+                )
 
             let daemonCtRef = ref CancellationToken.None
 
@@ -2768,70 +2820,61 @@ module Daemon =
                                 tracker
                                 projPath) }
 
-            let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
-                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+            let changeWorker =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    Set.empty,
+                    Ipc.ambientRpcDeadline (),
+                    (fun state (_: ChangeRequest) -> state),
+                    (fun state _ -> state),
+                    ignore,
+                    (fun suppressed request ct _ ->
+                        async {
+                            let! nextSuppressed =
+                                if request.Changes.IsEmpty then
+                                    async.Return suppressed
+                                else
+                                    processBatch { batchCtx with DaemonCt = ref ct } request.Changes suppressed
 
-                let run = host.RunPreprocessors(files)
-                let newSuppressed = Set.union suppressed (Set.ofList run.Modified)
-                replyChannel.Reply(renderFormatAll files run)
-                newSuppressed
+                            match request.FormatResult with
+                            | None -> return nextSuppressed
+                            | Some reply ->
+                                ct.ThrowIfCancellationRequested()
+                                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+                                let run = host.RunPreprocessors(files)
+                                reply.TrySetResult(renderFormatAll files run) |> ignore
+                                return Set.union nextSuppressed (Set.ofList run.Modified)
+                        })
+                )
 
-            let changeAgent =
-                MailboxProcessor<Choice<FileChangeKind, AsyncReplyChannel<string>>>
-                    .Start(
-                        (fun inbox ->
-                            let rec idle (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.Receive()
-
-                                    match msg with
-                                    | Choice2Of2 replyChannel ->
-                                        let newSuppressed = formatAllAndSuppress suppressed replyChannel
-                                        return! idle newSuppressed
-                                    | Choice1Of2 change ->
-                                        let delayMs = delayForChange change
-                                        return! debouncing [ change ] delayMs suppressed
-                                }
-
-                            and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.TryReceive(delayMs)
-
-                                    match msg with
-                                    | Some(Choice1Of2 change) ->
-                                        let newDelay = max delayMs (delayForChange change)
-                                        return! debouncing (change :: pending) newDelay suppressed
-                                    | Some(Choice2Of2 replyChannel) ->
-                                        // Failure policy lives in `runDaemonStep`.
-                                        match!
-                                            runDaemonStep
-                                                "processChanges (with replyChannel)"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
-                                        with
-                                        | Ok newSuppressed ->
-                                            let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
-                                            return! idle finalSuppressed
-                                        | Result.Error _ ->
-                                            replyChannel.Reply("format failed")
-                                            return! idle suppressed
-                                    | None ->
-                                        // Debounce expired — process the batch.
-                                        match!
-                                            runDaemonStep
-                                                "processChanges"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
-                                        with
-                                        | Ok newSuppressed -> return! idle newSuppressed
-                                        | Result.Error _ -> return! idle suppressed
-                                }
-
-                            idle Set.empty),
-                        cancellationToken = lifetime.Token
-                    )
+            let changeInput =
+                DebouncedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    changeWorker,
+                    (fun earlier later ->
+                        { Changes = earlier.Changes @ later.Changes
+                          FormatResult = later.FormatResult })
+                )
 
             let onChange change =
                 Logging.debug "watcher" $"%O{change}"
-                changeAgent.Post(Choice1Of2 change)
+
+                let receipt =
+                    changeInput.Post(
+                        { Changes = [ change ]
+                          FormatResult = None },
+                        TimeSpan.FromMilliseconds(float (delayForChange change))
+                    )
+
+                receipt.ContinueWith(
+                    (fun (failed: Task<unit>) -> Logging.error "changes" $"watcher change failed: {failed.Exception}"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default
+                )
+                |> ignore
 
             // The ONLY place a watcher can come from. A `OneShot` host never reaches
             // the factory, so its verdict cannot depend on native watcher startup.
@@ -2854,49 +2897,47 @@ module Daemon =
             // of every scan, the idle-exit scheduler and heartbeat read it.
             let scanLeases = ScanActivity.ScanLeases.create ()
 
-            let scanMailbox =
-                MailboxProcessor.Start(
-                    (fun inbox ->
-                        let rec loop (state: ScanAgentState) =
-                            async {
-                                let! msg = inbox.Receive()
-
-                                match msg with
-                                | RequestScan(ct, reply) ->
-                                    // Failure policy lives in `runDaemonStep`.
-                                    match!
-                                        runDaemonStep
-                                            "performScan"
-                                            (performScan batchCtx scanLeases scanSignal state ct)
-                                    with
-                                    | Ok newState ->
-                                        reply.Reply(())
-                                        return! loop newState
-                                    | Result.Error _ ->
-                                        reply.Reply(())
-                                        return! loop state
-                                | GetState reply ->
-                                    reply.Reply(state.ScanState)
-                                    return! loop state
-                                | GetGeneration reply ->
-                                    reply.Reply(state.Generation)
-                                    return! loop state
-                                | SetState(newScanState, reply) ->
-                                    reply.Reply(())
-                                    return! loop { state with ScanState = newScanState }
-                            }
-
-                        loop
-                            { ScanState = ScanIdle
-                              Generation = 0L
-                              LastFingerprint = Set.empty }),
-                    cancellationToken = lifetime.Token
+            let scanOwner =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "scan",
+                    { ScanState = ScanIdle
+                      Generation = 0L
+                      LastFingerprint = Set.empty },
+                    Ipc.ambientRpcDeadline (),
+                    (fun state request ->
+                        match request with
+                        | RunScan ->
+                            { state with
+                                ScanState = Scanning(0, 0, DateTime.UtcNow) }
+                        | SetScanState _ -> state),
+                    (fun state _ -> { state with ScanState = ScanIdle }),
+                    ignore,
+                    (fun state request ct publish ->
+                        async {
+                            match request with
+                            | SetScanState value -> return { state with ScanState = value }
+                            | RunScan -> return! performScan batchCtx scanLeases state ct publish
+                        })
                 )
 
-            let scanAgentWrapper = ScanAgent scanMailbox
+            let scanAgentWrapper = ScanAgent(scanOwner, scanSignal)
 
             let formatAllViaAgent () =
-                changeAgent.PostAndAsyncReply(Choice2Of2)
+                async {
+                    let reply =
+                        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+                    let receipt =
+                        changeInput.Post(
+                            { Changes = []
+                              FormatResult = Some reply },
+                            TimeSpan.Zero
+                        )
+
+                    do! receipt |> Async.AwaitTask
+                    return! reply.Task |> Async.AwaitTask
+                }
 
             new Daemon(
                 host,
@@ -2918,7 +2959,8 @@ module Daemon =
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
                 scanLeases,
-                processRegistry
+                processRegistry,
+                changeInput.Close
             )
         with _ ->
             lifetime.Dispose()
@@ -2973,6 +3015,18 @@ module Daemon =
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
         createWithCore checker repoRoot opts (Some loader) mapProjectOptions None FileWatcher.create
+
+    /// Compose the existing loader and watcher seams so a change can be
+    /// delivered deterministically without relying on native filesystem events.
+    let internal createWithWorkspaceLoaderAndWatcher
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (loader: IWorkspaceLoader)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherFactory: WatcherFactory)
+        =
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None watcherFactory
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

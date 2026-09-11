@@ -31,7 +31,7 @@
     "notInputs": [
       {
         "path": "CHANGELOG.md",
-        "reason": "AUTOMATION-165. Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
+        "reason": "AUTOMATION-165. Release prose. No plugin reads it, so it cannot change what a check concludes \u2014 and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
       },
       {
         "path": "semantic-tagger.json",
@@ -60,7 +60,11 @@
     "excluded": [
       {
         "project": "tests/FsHotWatch.IntegrationTests",
-        "reason": "AUTOMATION-158. 67 END-TO-END tests (IntegrationTests 58, PluginTimeout 2, PluginActivityConcurrency 2, NuGetToolBarrierOracle 3, TestPruneStorm 1, ProcessHelperTimeout 1) that stand up REAL infrastructure — live plugin hosts and daemons over temp repos, real file watchers, real child `dotnet` processes — and assert on WALL-CLOCK behaviour: plugin timeouts, process reaping, activity concurrency, TestPrune under a storm of edits. Run from inside the daemon that IS the gate, they nest a daemon in a daemon and contend for the box the outer run is being timed on, so their timing assertions become a function of machine load rather than of the code. Their coverage is excluded for the same family of reasons (no Microsoft.Testing.Extensions.CodeCoverage reference: SDK-reflection paths fire nondeterministically and would make the ratchet flaky — see CLAUDE.md). NOT UNGATED: `mise run test-integration` runs them, and CI's reusable workflow runs a solution-wide `dotnet test` that includes them, so they must be green to merge — just not from inside the warm-daemon inner loop. The exclusion is DECLARED: it is logged on every green load and recorded in verdict.json's `scope.excluded`, so a consumer of a `kind: full` verdict sees the gap instead of inferring completeness from a count."
+        "reason": "AUTOMATION-158. 70 END-TO-END tests (IntegrationTests 58, PluginTimeout 2, PluginActivityConcurrency 2, NuGetToolBarrierOracle 3, TestPruneStorm 1, ProcessHelperTimeout 1, LauncherGroupSurvival 1, SupervisedProcess 2) that stand up REAL infrastructure \u2014 live plugin hosts and daemons over temp repos, real file watchers, real child `dotnet` processes \u2014 and assert on WALL-CLOCK behaviour: plugin timeouts, process reaping, activity concurrency, TestPrune under a storm of edits. Run from inside the daemon that IS the gate, they nest a daemon in a daemon and contend for the box the outer run is being timed on, so their timing assertions become a function of machine load rather than of the code. Their coverage is excluded for the same family of reasons (no Microsoft.Testing.Extensions.CodeCoverage reference: SDK-reflection paths fire nondeterministically and would make the ratchet flaky \u2014 see CLAUDE.md). NOT UNGATED: `mise run test-integration` runs them, and CI's reusable workflow runs a solution-wide `dotnet test` that includes them, so they must be green to merge \u2014 just not from inside the warm-daemon inner loop. The exclusion is DECLARED: it is logged on every green load and recorded in verdict.json's `scope.excluded`, so a consumer of a `kind: full` verdict sees the gap instead of inferring completeness from a count."
+      },
+      {
+        "project": "tests/Fixtures/Xunit4RunnerFixture",
+        "reason": "Runner fixture exercised by FsHotWatch.Tests/TestPruneRunnerFamilyTests through the real xUnit v4 runner and CTRF harness. It is built through a project reference and is not a separate top-level gate suite; the configured parent tests verify its runner behavior."
       }
     ]
   }

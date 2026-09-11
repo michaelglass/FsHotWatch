@@ -60,6 +60,48 @@ type FileWatcher =
 let internal isProjectAssetsJson (path: string) =
     Path.GetFileName(path).Equals("project.assets.json", StringComparison.OrdinalIgnoreCase)
 
+/// The extensions a change can arrive on. A SET rather than a chain of `||`,
+/// because the watch globs below are DERIVED from it: an extension added here
+/// reaches every path that detects a change, and cannot be added to the predicate
+/// while being forgotten by the watchers (`.fsi` was missing from
+/// the predicate and from both glob lists, so a signature-only edit raised no
+/// event at all and selection saw an empty change set).
+let internal relevantExtensions =
+    set
+        [ ".fs"
+          ".fsi"
+          ".fsx"
+          ".fsproj"
+          ".cs"
+          ".csproj"
+          ".sln"
+          ".slnx"
+          ".props" ]
+
+/// Excluded from `watchedSourceGlobs` rather than absent from the extension set:
+/// these reach the daemon by a different route on each platform. On the
+/// `FileSystemWatcher` path a dedicated non-recursive repo-root watcher carries
+/// them (`Filters = [ "*.sln"; "*.slnx" ]`, below); on macOS they arrive through
+/// the native event stream and are admitted by `isRelevantFile`.
+///
+/// Known gap, pre-existing and NOT widened here: the macOS coalesced rescan walks
+/// `watchedSourceGlobs`, so a solution change that lands inside a coalesced window
+/// is seen only by the native path. The globs it replaced omitted `*.sln` too, so
+/// this is unchanged behaviour, but it is a real hole and wants its own ticket
+/// rather than a silent fix riding along with signature-file detection.
+let internal solutionExtensions = set [ ".sln"; ".slnx" ]
+
+/// The globs both event paths watch: the coalesced-rescan walk and the
+/// `FileSystemWatcher` filters. Derived from `relevantExtensions` so the two
+/// cannot disagree with each other or with the predicate.
+let internal watchedSourceGlobs: string array =
+    let sourceGlobs =
+        Set.difference relevantExtensions solutionExtensions
+        |> Set.toArray
+        |> Array.map (fun ext -> "*" + ext)
+
+    Array.append sourceGlobs [| "project.assets.json" |]
+
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
 /// `project.assets.json` is the documented exception: it lives in obj/ but is the
 /// canonical post-`dotnet restore` signal that a project's package graph changed.
@@ -69,16 +111,7 @@ let internal isRelevantFile (path: string) =
         true
     else
         let ext = Path.GetExtension(path).ToLowerInvariant()
-
-        let isRelevantExt =
-            ext = ".fs"
-            || ext = ".fsx"
-            || ext = ".fsproj"
-            || ext = ".sln"
-            || ext = ".slnx"
-            || ext = ".props"
-
-        isRelevantExt && not (PathFilter.isGeneratedPath path)
+        relevantExtensions.Contains ext && not (PathFilter.isGeneratedPath path)
 
 /// How a FileCommandPlugin pattern string matches paths. Parsed once at
 /// config-load time via `FilePattern.parse` so downstream code never has to
@@ -160,7 +193,7 @@ let internal classifyChange (path: string) =
 
     if ext = ".sln" || ext = ".slnx" then
         SolutionChanged
-    elif ext = ".fsproj" || ext = ".props" || isProjectAssetsJson path then
+    elif ext = ".fsproj" || ext = ".csproj" || ext = ".props" || isProjectAssetsJson path then
         ProjectChanged [ path ]
     else
         SourceChanged [ path ]
@@ -547,7 +580,7 @@ module FileWatcher =
             // event means Apple requires a recursive scan of that subtree.
             let onCoalesced dirPath =
                 if Directory.Exists(dirPath) then
-                    for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
+                    for pattern in watchedSourceGlobs do
                         for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
                             if isRelevantFile file then
                                 onChange (classifyChange file)
@@ -668,7 +701,7 @@ module FileWatcher =
                             handle
                             { Directory = dir
                               IncludeSubdirectories = true
-                              Filters = [ "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" ] }
+                              Filters = List.ofArray watchedSourceGlobs }
                     )
                 else
                     None

@@ -359,6 +359,22 @@ type IpcOps =
       IsRunning: string -> bool
       LaunchDaemon: string -> string -> string -> unit }
 
+/// Production launch boundary shared with owned-process lifetime fixtures.
+let internal launchDaemonProcess
+    (exe: string)
+    (toolPrefix: string)
+    (repoRoot: string)
+    (extraArgs: string)
+    (logFile: string)
+    =
+    let quote (value: string) =
+        "'" + value.Replace("'", "'\"'\"'") + "'"
+
+    let command =
+        $"nohup {quote exe} {toolPrefix}{extraArgs}start </dev/null >> {quote logFile} 2>&1 &"
+
+    DetachedLaunch.launch repoRoot command
+
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
     { Shutdown = IpcClient.shutdown
@@ -384,16 +400,7 @@ let defaultIpcOps: IpcOps =
 
             let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
 
-            let psi =
-                System.Diagnostics.ProcessStartInfo(
-                    "/bin/sh",
-                    $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
-                )
-
-            psi.WorkingDirectory <- repoRoot
-            psi.UseShellExecute <- false
-            let proc = System.Diagnostics.Process.Start(psi)
-            proc.WaitForExit() }
+            launchDaemonProcess exe toolPrefix repoRoot extraArgs logFile }
 
 /// Unwrap nested AggregateException down to the most informative inner exception
 /// so we don't print "One or more errors occurred. (...)" wrapping the real message.
@@ -873,6 +880,12 @@ let private ensureAndQueryErrors
 /// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:
 /// binary staleness is the DaemonIdentity handshake's job (assembly version +
 /// content hash, recorded by the daemon, compared by the CLI), not an mtime here.
+let internal configContentHash (configContent: string) =
+    let hash =
+        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
+
+    Convert.ToHexStringLower(hash).Substring(0, 16)
+
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
@@ -882,10 +895,7 @@ let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
         else
             ""
 
-    let hash =
-        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
-
-    Convert.ToHexStringLower(hash).Substring(0, 16)
+    configContentHash configContent
 
 /// Compute a hash of the config file for staleness detection.
 let private computeConfigHash (repoRoot: string) =
@@ -964,12 +974,10 @@ let startFreshDaemonWith
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let stateDir = Path.Combine(repoRoot, ".fshw")
 
     let logDir =
         if Path.IsPathRooted(logDirName) then
@@ -981,8 +989,8 @@ let startFreshDaemonWith
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
     ipc.LaunchDaemon repoRoot extraArgs logFile
-    fileOps.CreateDirectory stateDir
-    fileOps.WriteAllText (Path.Combine(stateDir, "config.hash")) currentHash
+    // Only the daemon can publish the identity of the configuration it loaded.
+    // A launcher write here can arrive after startup and overwrite newer evidence.
     let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
     let mutable isUp = ipc.IsRunning pipeName
 
@@ -996,12 +1004,11 @@ let private startFreshDaemon
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 let private ensureDaemon
     (ipc: IpcOps)
@@ -1017,7 +1024,7 @@ let private ensureDaemon
 
     if not (ipc.IsRunning pipeName) then
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+        startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
     else
         let storedHash =
             if File.Exists hashPath then
@@ -1043,7 +1050,7 @@ let private ensureDaemon
                 eprintfn "  Shutdown request failed: %s" ex.Message
 
             killStaleDaemon repoRoot
-            startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate.
@@ -1635,8 +1642,9 @@ let withRunHooksFor
     : int =
     withRunHooksForInvocation verb repoRoot config (fun _ -> action ())
 
-/// Execute a parsed command with injectable dependencies.
+/// Execute a parsed command with the identity captured from its loaded configuration source.
 let executeCommand
+    (loadedConfigHash: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
     (repoRoot: string)
@@ -1739,14 +1747,7 @@ let executeCommand
 
             killStaleDaemon repoRoot
 
-            startFreshDaemon
-                ipc
-                repoRoot
-                pipeName
-                (computeConfigHash repoRoot)
-                opts.DaemonExtraArgs
-                config.LogDir
-                startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -1878,6 +1879,9 @@ let executeCommand
                     // therefore never finds a pidfile naming a process that never ran.
                     try
                         try
+                            // Publish the exact loaded snapshot while holding the singleton
+                            // lock, before any client can observe our IPC endpoint.
+                            File.WriteAllText(Path.Combine(stateDir, "config.hash"), loadedConfigHash)
                             let daemon = createDaemon repoRoot
                             registerPlugins daemon repoRoot config
                             let cts = new CancellationTokenSource()
@@ -2366,8 +2370,7 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
-[<EntryPoint>]
-let main args =
+let private runMain args =
     let argList = args |> Array.toList
 
     // Bare `--help` / `-h` / `help` (no subcommand) prints global help with global flags.
@@ -2416,9 +2419,9 @@ let main args =
             | RunCommand(globals, command) ->
                 let opts = applyGlobalFlags globals
 
-                let config =
+                let config, loadedConfigSource =
                     try
-                        loadConfig repoRoot
+                        loadConfigWithSource repoRoot
                     with ConfigError msg ->
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
@@ -2457,7 +2460,16 @@ let main args =
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
-                executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+                executeCommand
+                    (configContentHash loadedConfigSource)
+                    createDaemon
+                    defaultIpcOps
+                    repoRoot
+                    pipeName
+                    command
+                    opts
+                    config
+                    30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.
@@ -2472,3 +2484,9 @@ let main args =
                 forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
+
+[<EntryPoint>]
+let main args =
+    match DetachedLaunch.tryRun args with
+    | Some exitCode -> exitCode
+    | None -> runMain args

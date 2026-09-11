@@ -39,6 +39,10 @@ let ``isRelevantFile accepts .props files`` () =
     test <@ isRelevantFile "/repo/Directory.Build.props" @>
 
 [<Fact(Timeout = 15000)>]
+let ``isRelevantFile accepts .fsi signature files`` () =
+    test <@ isRelevantFile "/repo/src/Lib.fsi" @>
+
+[<Fact(Timeout = 15000)>]
 let ``isRelevantFile rejects files in obj directory`` () =
     test <@ not (isRelevantFile "/repo/src/obj/Debug/Generated.fs") @>
 
@@ -47,8 +51,14 @@ let ``isRelevantFile rejects files in bin directory`` () =
     test <@ not (isRelevantFile "/repo/src/bin/Debug/App.fs") @>
 
 [<Fact(Timeout = 15000)>]
-let ``isRelevantFile rejects .cs files`` () =
-    test <@ not (isRelevantFile "/repo/src/Program.cs") @>
+let ``CSharp dependency inputs are watched and classified without pretending they are FSharp`` () =
+    test <@ isRelevantFile "/repo/src/Program.cs" @>
+    test <@ isRelevantFile "/repo/src/Helper.csproj" @>
+    test <@ classifyChange "/repo/src/Program.cs" = SourceChanged [ "/repo/src/Program.cs" ] @>
+    test <@ classifyChange "/repo/src/Helper.csproj" = ProjectChanged [ "/repo/src/Helper.csproj" ] @>
+    Assert.Contains("*.cs", watchedSourceGlobs)
+    Assert.Contains("*.csproj", watchedSourceGlobs)
+    test <@ not (isRelevantFile "/repo/src/obj/Generated.cs") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFile rejects .txt files`` () =
@@ -612,6 +622,46 @@ let private countingPolling () =
 let private inertSystem _handle _spec = inert "system"
 
 [<Fact(Timeout = 15000)>]
+let ``coalesced native events discover signatures and exclude generated sources`` () =
+    withTempDir "watcher-coalesced-signature" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        let generatedDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(generatedDir) |> ignore
+        let signature = Path.Combine(srcDir, "Library.fsi")
+        let implementation = Path.Combine(srcDir, "Library.fs")
+        let generated = Path.Combine(generatedDir, "Generated.fsi")
+
+        for file in [ signature; implementation; generated ] do
+            File.WriteAllText(file, "module Library")
+
+        let mutable coalesced = None
+
+        let native _dirs _onFile onCoalesced _latency =
+            coalesced <- Some onCoalesced
+            inert "native"
+
+        let changes = ResizeArray<FileChangeKind>()
+        let retry, _ = recordingRetry []
+        let polling, _ = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir changes.Add [] 0.05 retry native inertSystem polling
+
+        let notify =
+            coalesced
+            |> Option.defaultWith (fun () -> failwith "native callback was not registered")
+
+        notify srcDir
+        test <@ changes.Contains(SourceChanged [ implementation ]) @>
+        test <@ changes.Contains(SourceChanged [ signature ]) @>
+        test <@ not (changes.Contains(SourceChanged [ generated ])) @>
+
+        // A disappeared coalesced directory is harmless and emits no invented change.
+        let count = changes.Count
+        notify (Path.Combine(tmpDir, "removed"))
+        test <@ changes.Count = count @>)
+
+[<Fact(Timeout = 15000)>]
 let ``macOS native start refused once then accepted keeps the native watcher`` () =
     withTempDir "watcher-native-transient" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -869,7 +919,7 @@ type RealFileWatcherTests() =
         test <@ changes.Count >= 1 @>
         Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = 75000)>]
 let ``FileWatcher fallback delivers every built-in recursive filter through one root watcher`` () =
     withTempDir "watcher-fsw-filters" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -881,6 +931,7 @@ let ``FileWatcher fallback delivers every built-in recursive filter through one 
 
         let cases =
             [ Path.Combine(srcDir, "BuiltIn.fs"), SourceChanged []
+              Path.Combine(srcDir, "BuiltIn.fsi"), SourceChanged []
               Path.Combine(srcDir, "BuiltIn.fsx"), SourceChanged []
               Path.Combine(srcDir, "BuiltIn.fsproj"), ProjectChanged []
               Path.Combine(srcDir, "BuiltIn.props"), ProjectChanged []
@@ -952,7 +1003,7 @@ let ``isRelevantFileOrExtra accepts files matching literal filename pattern`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
-    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.cs") @>
+    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.txt") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =

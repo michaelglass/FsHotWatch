@@ -294,28 +294,49 @@ let private runOnceAndVerdictIn
         let settledTree = ref IpcOutput.NeverSettled
 
         let awaitDiscovery () =
-            match daemon.WaitForDiscoveryFailure().GetAwaiter().GetResult() with
+            let observation = daemon.WaitForProjectModel().GetAwaiter().GetResult()
+
+            match FsHotWatch.ProjectModel.failure observation with
             | Some message ->
                 // Publish BEFORE Program.fs converts ConfigError to exit 2. Otherwise a
                 // prior green remains readable after this failed run and lies about the
                 // current tree — the most dangerous form of the original incident.
                 settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
 
-                IpcOutput.publishTerminalIncompleteForInvocation
+                IpcOutput.publishModelUnavailableForInvocation
                     invocation
                     repoRoot
                     config.Exclude
                     checkMode
-                    message
+                    observation
                     settledTree.Value
                 |> ignore
 
                 raise (ConfigError message)
             | None -> ()
 
+        let rec committedPluginFailure (error: exn) =
+            match error with
+            | :? FsHotWatch.PluginWorkOwner.WorkFailedException as failure ->
+                not daemon.Host.WorkSnapshot.IsBusy
+                && (daemon.Host.WorkSnapshot.Faults
+                    |> List.exists (fun (name, _) -> name = failure.Name))
+                && (daemon.Host.GetAllStatuses() |> Map.containsKey failure.Name)
+            | :? System.AggregateException as aggregate ->
+                aggregate.InnerExceptions.Count = 1
+                && committedPluginFailure aggregate.InnerExceptions.[0]
+            | _ -> false
+
         let scanAndSettle () : Map<string, PluginStatus> =
-            let statuses = runScan daemon
-            awaitDiscovery ()
+            let statuses, failedOwner =
+                try
+                    runScan daemon, false
+                with error when committedPluginFailure error ->
+                    daemon.Host.GetAllStatuses(), true
+
+            if not failedOwner then
+                awaitDiscovery ()
+
             daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
             settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
             statuses

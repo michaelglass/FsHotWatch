@@ -500,3 +500,256 @@ let ``solutionNameFor names the authority, or says there is none to name`` () =
 [<Fact(Timeout = 15000)>]
 let ``solutionCandidates on a directory that is not there is empty, not a throw`` () =
     test <@ List.isEmpty (solutionCandidates (Path.Combine(Path.GetTempPath(), "fshw-no-such-dir-158"))) @>
+
+[<Theory>]
+[<InlineData("tests/Fixture/RealRulesTests.fsproj")>]
+[<InlineData("tests/Fixture")>]
+[<InlineData("fixture")>]
+[<InlineData("REALRULESTESTS")>]
+let ``exclusion aliases resolve to actual indexed filename without forgiving directory-name impostor`` alias =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+    let inventory = [ project; "other/Fixture.fsproj" ]
+
+    let result =
+        resolveExcludedProjectNames
+            [ project ]
+            inventory
+            [ { Project = alias
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Theory>]
+[<InlineData("other/RealRulesTests.fsproj")>]
+[<InlineData("other/realrulestests.fsproj")>]
+let ``an unknown project colliding with excluded indexed stem refuses exclusion`` other =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ project ]
+            [ project; other ]
+            [ { Project = project
+                Reason = "owned harness" } ]
+
+    match result with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "A name-only database cannot safely forgive one of two owners."
+
+[<Fact>]
+let ``directory aliases spanning different actual projects are ambiguous`` () =
+    let projects = [ "one/Fixture/First.fsproj"; "two/Fixture/Second.fsproj" ]
+
+    match
+        resolveExcludedProjectNames
+            projects
+            projects
+            [ { Project = "Fixture"
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("alias Fixture is ambiguous", reason)
+    | Ok _ -> Assert.Fail "A colliding alias cannot choose an arbitrary solution entry."
+
+[<Theory>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``empty or unrelated graph inventory cannot authorize a solution exclusion`` unrelated =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+    let inventory = if unrelated then [ "other/Unrelated.fsproj" ] else []
+
+    match
+        resolveExcludedProjectNames
+            [ project ]
+            inventory
+            [ { Project = project
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("absent from the discovered project inventory", reason)
+    | Ok _ -> Assert.Fail "An unobserved project identity cannot authorize debt retirement."
+
+[<Fact>]
+let ``an indexed namesake without the actual excluded project is not identity evidence`` () =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ project ]
+            [ "other/RealRulesTests.fsproj" ]
+            [ { Project = project
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "The graph must contain the declared project itself."
+
+[<Fact(Timeout = 15000)>]
+let ``exclusion authority refuses a newly discovered name collision`` () =
+    withTempDir "scope-identity-inventory" (fun root ->
+        let project = "tests/Fixture/RealRulesTests.fsproj"
+        File.WriteAllText(Path.Combine(root, "Repo.slnx"), $"<Solution><Project Path=\"{project}\" /></Solution>")
+        let mutable inventory = [ Path.Combine(root, project) ]
+
+        let resolve =
+            createExclusionResolver
+                root
+                None
+                [ { Project = project
+                    Reason = "owned harness" } ]
+                (fun () -> inventory)
+
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
+        inventory <- inventory @ [ Path.Combine(root, "other/RealRulesTests.fsproj") ]
+
+        let error =
+            Assert.Throws<System.InvalidOperationException>(fun () -> resolve () |> ignore)
+
+        Assert.Contains("ambiguous indexed identity", error.Message))
+
+[<Fact>]
+let ``case-distinct inventory paths remain distinct ownership candidates`` () =
+    let first = "tests/A/Fixture.fsproj"
+    let second = "tests/a/Fixture.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ first ]
+            [ first; second ]
+            [ { Project = first
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "Case-sensitive filesystems can contain both actual projects."
+
+[<Fact>]
+let ``case-insensitive solution alias returns the actual discovered filename spelling`` () =
+    let declared = "tests/fixture/realrulestests.fsproj"
+    let discovered = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ declared ]
+            [ discovered ]
+            [ { Project = declared
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Theory>]
+[<InlineData("")>]
+[<InlineData("   ")>]
+let ``a resolved exclusion still requires its written reason`` reason =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    match resolveExcludedProjectNames [ project ] [ project ] [ { Project = project; Reason = reason } ] with
+    | Error error -> Assert.Contains("requires a non-empty reason", error)
+    | Ok _ -> Assert.Fail "A known project alone cannot authorize an unexplained exclusion."
+
+[<Fact>]
+let ``a discovered project outside the authority cannot be declared excluded`` () =
+    let project = "other/UnknownTests.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ "tests/KnownTests.fsproj" ]
+            [ project ]
+            [ { Project = project
+                Reason = "claimed harness" } ]
+    with
+    | Error error -> Assert.Contains("does not resolve to an authoritative solution project", error)
+    | Ok _ -> Assert.Fail "Discovery does not grant authority to invent an exclusion."
+
+[<Fact>]
+let ``dot relative exclusion aliases preserve the actual project owner`` () =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ "./" + project ]
+            [ project ]
+            [ { Project = "./" + project
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Fact>]
+let ``no declared exclusions need neither solution nor discovered inventory`` () =
+    let missing = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    let resolver =
+        createExclusionResolver missing None [] (fun () -> failwith "inventory must not be consulted")
+
+    test <@ resolver () = Map.empty @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``nonempty exclusions refuse an absent or ambiguous solution authority`` ambiguous =
+    withTempDir "scope-exclusion-authority" (fun root ->
+        if ambiguous then
+            File.WriteAllText(Path.Combine(root, "One.slnx"), "<Solution />")
+            File.WriteAllText(Path.Combine(root, "Two.slnx"), "<Solution />")
+
+        let error =
+            Assert.Throws<System.InvalidOperationException>(fun () ->
+                createExclusionResolver
+                    root
+                    None
+                    [ { Project = "Fixture"
+                        Reason = "owned harness" } ]
+                    (fun () -> [])
+                |> ignore)
+
+        Assert.Contains("one unambiguous authoritative solution", error.Message))
+
+[<Fact(Timeout = 15000)>]
+let ``explicit solution authority resolves paths relative to its own directory`` () =
+    withTempDir "scope-exclusion-override" (fun root ->
+        let solutionDirectory = Directory.CreateDirectory(Path.Combine(root, "solutions"))
+        File.WriteAllText(Path.Combine(root, "Unrelated.slnx"), "<Solution />")
+
+        File.WriteAllText(
+            Path.Combine(solutionDirectory.FullName, "Chosen.slnx"),
+            "<Solution><Project Path=\"../tests/Fixture/RealRulesTests.fsproj\" /></Solution>"
+        )
+
+        let project = Path.Combine(root, "tests/Fixture/RealRulesTests.fsproj")
+
+        let resolve =
+            createExclusionResolver
+                root
+                (Some "solutions/Chosen.slnx")
+                [ { Project = "Fixture"
+                    Reason = "owned harness" } ]
+                (fun () -> [ project ])
+
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>)
+
+[<Theory>]
+[<InlineData("../tests/Fixture.fsproj", "../tests/Fixture.fsproj")>]
+[<InlineData("/repo/tests/Fixture.fsproj", "/repo/tests/Fixture.fsproj")>]
+[<InlineData("./tests/Fixture.fsproj", "tests/Fixture.fsproj")>]
+let ``solution project parsing preserves path roots and parent traversal`` (declared: string) (expected: string) =
+    let xml = $"<Solution><Project Path=\"{declared}\" /></Solution>"
+    Assert.Equal<string list>([ expected ], solutionProjects xml)
+
+[<Fact(Timeout = 15000)>]
+let ``nested solution reconciliation refuses omitted real test projects`` () =
+    withTempDir "scope-nested-reconcile" (fun root ->
+        stageRepo root "Repo.slnx" [ "tests/P1", testProjectXml; "tests/P2", testProjectXml ]
+        let nested = Path.Combine(root, "solutions", "Chosen.slnx")
+        Directory.CreateDirectory(Path.GetDirectoryName nested) |> ignore
+        let original = Path.Combine(root, "Repo.slnx")
+        File.WriteAllText(nested, File.ReadAllText(original).Replace("Path=\"tests/", "Path=\"../tests/"))
+        File.Delete original
+        let configured = [ gated "P1" "run --project tests/P1 --" ]
+        let findings = reconcile root (Some "solutions/Chosen.slnx") configured []
+        Assert.Contains(UndeclaredTestProject "tests/P2", findings)
+
+        let governed =
+            reconcile
+                root
+                (Some "solutions/Chosen.slnx")
+                configured
+                [ excluded "tests/P2" "separate integration gate" ]
+
+        Assert.Empty(governed))

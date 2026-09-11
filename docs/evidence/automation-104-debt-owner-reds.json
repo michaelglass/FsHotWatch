@@ -1,0 +1,84 @@
+{
+  "scope": "A104/A106 debt publication and failed update receipt",
+  "actualReds": [
+    {
+      "runId": "090580b8442f48aab24a1c9cf1a3a113",
+      "sha256": "d7e472b42baaa572f2c1a68eaf167c50b0a065805a859c61d0bf0152e73f6655",
+      "summary": {
+        "tests": 3172,
+        "passed": 3167,
+        "failed": 5,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788918755478,
+        "stop": 1788918847846
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"disk\\\")",
+          "message": "restart must retain symbol debt or durable unknown debt after failed publication"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"cache\\\")",
+          "message": "the retained owner still owes the symbol after a failed completion fold"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a retained owner cannot learn a full suite baseline earned by a later completion",
+          "message": "Assert.Equal() Failure: Values differ\nExpected: Tuple (\\\"null\\\", \\\"\\\\\\\"no full-suite run has been recorded on this ledg\\\"\u00b7\u00b7\u00b7)\nActual:   Tuple (\\\"{\\\\\\\"earnedAt\\\\\\\":\\\\\\\"2026-09-09T01:52:42.0176230Z\\\\\\\",\\\\\\\"p\\\"\u00b7\u00b7\u00b7, \\\"null\\\")"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a successful completion discharges only its returned pending debt snapshot",
+          "message": "retained snapshots must not learn a later queue discharge"
+        }
+      ]
+    },
+    {
+      "runId": "912b419ef99746d68c4ddd31bf66d062",
+      "sha256": "22c37b92ce01185fe1eb21390dc05d0f83bcce8f26d02537bdd3907666a28535",
+      "summary": {
+        "tests": 3173,
+        "passed": 3167,
+        "failed": 6,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788918875612,
+        "stop": 1788918963440
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.a failed update cannot acknowledge its event as committed",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.InvalidOperationException)"
+        },
+        {
+          "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"disk\\\")",
+          "message": "restart must retain symbol debt or durable unknown debt after failed publication"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"cache\\\")",
+          "message": "the retained owner still owes the symbol after a failed completion fold"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a retained owner cannot learn a full suite baseline earned by a later completion",
+          "message": "Assert.Equal() Failure: Values differ\nExpected: Tuple (\\\"null\\\", \\\"\\\\\\\"no full-suite run has been recorded on this ledg\\\"\u00b7\u00b7\u00b7)\nActual:   Tuple (\\\"{\\\\\\\"earnedAt\\\\\\\":\\\\\\\"2026-09-09T01:54:39.2888160Z\\\\\\\",\\\\\\\"p\\\"\u00b7\u00b7\u00b7, \\\"null\\\")"
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a successful completion discharges only its returned pending debt snapshot",
+          "message": "retained snapshots must not learn a later queue discharge"
+        }
+      ]
+    }
+  ],
+  "status": "Debt production migration not applied: automatic approval review rejected three rewrite alternatives. Explicit user approval requested. Only immutable-record initialization scaffolding and PrepareCommit=None accepted. Separate framework receipt/commit boundary correction in progress; no corrected-run or full-green claim."
+}

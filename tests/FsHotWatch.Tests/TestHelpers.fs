@@ -26,7 +26,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ParseResults = dummyParseResults ()
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
@@ -36,6 +37,7 @@ let fakeBatchChecked (files: string list) : BatchChecked =
     { Trigger = BootScan
       Files = files |> List.map AbsFilePath.create
       Generation = 1L
+      ModelGeneration = None
       StartedAt = now
       CompletedAt = now }
 
@@ -209,6 +211,7 @@ let buildRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> receivedBuild), handler)
@@ -233,6 +236,7 @@ let commandRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> receivedCommand), handler)
@@ -258,6 +262,7 @@ let commandCounter (pluginName: string) =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> count.Value), handler)
@@ -283,6 +288,7 @@ let testProgressRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestProgress ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> received |> Seq.toList), handler)
@@ -308,6 +314,7 @@ let testRunCompletedRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestRunCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> received |> Seq.toList), handler)
@@ -683,6 +690,14 @@ let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string
 /// One fixture, so a test that grades a green names the SAME baseline the daemon reply
 /// it mocks reports — a green and its baseline are one value, not two settings.
 module BaselineFixtures =
+    let model =
+        FsHotWatch.ProjectModel.ofCompleted
+            1L
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 1
+              Registered = 1 }
+
     let runId = System.Guid.Parse("b0000000-1100-4000-8000-000000000110")
 
     let earnedAt = System.DateTime(2026, 9, 6, 12, 0, 0, System.DateTimeKind.Utc)
@@ -704,6 +719,11 @@ module BaselineFixtures =
     /// the scope, the comparison or the rendering, not the baseline.
     let reportOf (scope: FsHotWatch.Cli.IpcParsing.TestScope) : FsHotWatch.Cli.IpcParsing.TestRunReport =
         { FsHotWatch.Cli.IpcParsing.TestRunReport.ofScopeOnly scope with
+            RunId =
+                match scope with
+                | FsHotWatch.Cli.IpcParsing.FullSuite _
+                | FsHotWatch.Cli.IpcParsing.ImpactFiltered _ -> Some runId
+                | _ -> None
             Baseline = reading }
 
     let isGreen (o: FsHotWatch.Cli.Verdict.Outcome) =
@@ -711,3 +731,59 @@ module BaselineFixtures =
         | FsHotWatch.Cli.Verdict.Green _ -> true
         | FsHotWatch.Cli.Verdict.Red
         | FsHotWatch.Cli.Verdict.Incomplete _ -> false
+
+/// Explicit transport fixtures belong in tests; production never derives a model
+/// receipt from the public test report it is supposed to validate.
+let modelEvidence runIds =
+    let receipts: FsHotWatch.Cli.IpcParsing.ModelReceipt list =
+        runIds
+        |> List.map (fun runId ->
+            { RunId = Some runId
+              Generation = 1L
+              Refusals = [] })
+
+    FsHotWatch.Cli.IpcParsing.DaemonEvidence.Served([], BaselineFixtures.model, receipts)
+
+let internal publishVerdict
+    evidence
+    repoRoot
+    excludePatterns
+    checkMode
+    noWarnFail
+    runReport
+    checkScoped
+    statuses
+    redCauses
+    settledTree
+    outcome
+    =
+    FsHotWatch.Cli.IpcOutput.publishVerdictForInvocation
+        (FsHotWatch.Cli.Verdict.Invocation.start ())
+        repoRoot
+        excludePatterns
+        checkMode
+        noWarnFail
+        runReport
+        checkScoped
+        statuses
+        evidence
+        redCauses
+        settledTree
+        outcome
+
+let completedDiagnosticsJsonForRun (runId: Guid) =
+    System.Text.Json.JsonSerializer.Serialize(
+        {| count = 0
+           files = Map.empty<string, string>
+           statuses = Map.empty<string, string>
+           unchecked = 0
+           daemonPhases = ([||]: string array)
+           projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+           modelReceipts =
+            [ {| runId = runId.ToString("N")
+                 modelGeneration = 1L
+                 refusals = ([]: string list) |} ] |}
+    )
+
+let completedDiagnosticsJson () =
+    completedDiagnosticsJsonForRun BaselineFixtures.runId

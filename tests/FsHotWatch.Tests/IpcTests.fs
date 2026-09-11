@@ -55,6 +55,7 @@ let ``server responds to GetStatus`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -85,9 +86,12 @@ let ``server responds to RunCommand`` () =
         { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
+          Commands =
+            [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -121,6 +125,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -182,13 +187,15 @@ let ``RunCommand with plugin that returns a result`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "echo",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let msg = if args.Length > 0 then args.[0] else "empty"
                       return $"echoed: {msg}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -258,6 +265,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-p" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -434,6 +442,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
     )
 
@@ -499,13 +508,15 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "hello",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let arg = if args.Length > 0 then args.[0] else "world"
                       return $"hello {arg}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -544,6 +555,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -646,6 +658,53 @@ let ``WaitForGeneration does not hang when scan completes before waiter is regis
     let task = signal.WaitForGeneration(-1L, 0L)
     task.Wait(System.TimeSpan.FromSeconds(2.0)) |> ignore
     test <@ task.IsCompleted @>
+
+[<Fact(Timeout = 15000)>]
+let ``model failure crosses RPC as versioned data without relying on diagnostic prose`` () =
+    let pipeName = $"fshw-model-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cancellation = new CancellationTokenSource()
+
+    let observation =
+        FsHotWatch.ProjectModel.ofCompleted
+            7L
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 0
+              Registered = 0 }
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForAllTerminal =
+                fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+
+    let server = Async.StartAsTask(IpcServer.start pipeName config cancellation)
+    waitForServer pipeName
+
+    try
+        let fault =
+            Assert.Throws<AggregateException>(fun () ->
+                (IpcClient.waitForComplete pipeName 1000 |> Async.StartAsTask).GetAwaiter().GetResult()
+                |> ignore)
+
+        let remote =
+            Assert.IsType<StreamJsonRpc.RemoteInvocationException>(Assert.Single(fault.InnerExceptions))
+
+        Assert.Equal(523, remote.ErrorCode)
+
+        match FsHotWatch.Cli.IpcOutput.modelUnavailable fault with
+        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot,
+                                                               FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
+            Assert.Equal(7L, snapshot.Generation)
+            Assert.Equal(0, snapshot.Counts.Registered)
+        | other -> failwithf "Expected structured mapping refusal, got %A" other
+    finally
+        cancellation.Cancel()
+
+        try
+            server.GetAwaiter().GetResult()
+        with :? OperationCanceledException ->
+            ()
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
@@ -967,6 +1026,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -993,8 +1053,20 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 20000)>]
-let ``WaitForComplete times out when plugin stays Running`` () =
+let ``WaitForComplete times out while plugin owns unfinished work`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1003,7 +1075,10 @@ let ``WaitForComplete times out when plugin stays Running`` () =
             fun ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1011,18 +1086,15 @@ let ``WaitForComplete times out when plugin stays Running`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("stuck-plugin") with
-            | Some(Running _) -> true
-            | _ -> false)
-        5000
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy() @>
 
     let config =
         { defaultRpcConfig host with
@@ -1040,12 +1112,24 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 [<Fact(Timeout = 30000)>]
 let ``WaitForComplete client observes failure when daemon is shut down mid-wait`` () =
     // Real IPC over a real named pipe: the client blocks in WaitForComplete on a
-    // stuck-Running plugin, we cancel the server CTS, and the client must observe a
+    // plugin holding an actual unfinished event. We cancel the server CTS; the client must observe a
     // failure within a bounded time. Catches regressions where the daemon-side wait
     // stops observing the shutdown token and the client hangs, or races OS pipe
     // teardown into a clean exit.
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1054,7 +1138,10 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
             fun ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1062,24 +1149,28 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("stuck-plugin") with
-            | Some(Running _) -> true
-            | _ -> false)
-        5000
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy() @>
 
-    let cts = new CancellationTokenSource()
+    use cts = new CancellationTokenSource()
+
+    let waitEntered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let config =
         { defaultRpcConfig host with
             RequestShutdown = fun () -> cts.Cancel()
-            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout cts.Token }
+            WaitForAllTerminal =
+                fun timeout ->
+                    let pending = waitForAllTerminal host timeout cts.Token
+                    waitEntered.TrySetResult(()) |> ignore
+                    pending }
 
     let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
     waitForServer pipeName
@@ -1096,8 +1187,8 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
                 }
             )
 
-        // Give the client time to establish the connection and enter the wait.
-        Thread.Sleep(500)
+        // Observe the actual RPC callback entering its owned-work wait.
+        test <@ waitEntered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
         test <@ not clientTask.IsCompleted @>
 
         // Simulate daemon shutdown.
@@ -1270,6 +1361,7 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1431,6 +1523,59 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     // The wedge report's inline recovery rides along, so the client knows what to do.
     test <@ inner.Message.Contains("fshw stop") @>
 
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-106: RPC deadline includes a synchronous callback before its task is returned`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use entered = new System.Threading.ManualResetEventSlim(false)
+    use release = new System.Threading.ManualResetEventSlim(false)
+
+    let callbackExited =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration =
+                fun _ ->
+                    entered.Set()
+
+                    try
+                        release.Wait()
+                        Task.FromResult(())
+                    finally
+                        callbackExited.TrySetResult(()) |> ignore }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 100.0)
+
+    // Invoke off the test thread: the current callback blocks before returning
+    // its task, which is precisely the part the RPC deadline must also bound.
+    let invocation: Task<string> =
+        Task.Run<string>(System.Func<Task<string>>(fun () -> target.WaitForScan(-1L)))
+
+    try
+        Assert.True(entered.Wait(5000), "the callback must enter before observing its deadline")
+
+        let winner =
+            Task.WhenAny([| invocation :> Task; Task.Delay(2000) |]).GetAwaiter().GetResult()
+
+        Assert.True(
+            obj.ReferenceEquals(invocation, winner),
+            "RPC deadline did not cover the synchronous callback before it returned a task"
+        )
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () -> invocation.GetAwaiter().GetResult() |> ignore)
+
+        Assert.Contains("WaitForScan", failure.Message)
+    finally
+        // Neither the intended red nor a future passing timeout may strand work.
+        release.Set()
+        Assert.True(callbackExited.Task.Wait(5000), "the released callback must leave its blocking prefix")
+
+        let drained =
+            Task.WhenAny([| invocation :> Task; Task.Delay(5000) |]).GetAwaiter().GetResult()
+
+        Assert.True(obj.ReferenceEquals(invocation, drained), "the released callback must drain")
+
 [<Fact(Timeout = 15000)>]
 let ``an RPC that completes inside the deadline returns normally`` () =
     // The seam must not fire on healthy work — the deadline is a backstop, not a
@@ -1456,3 +1601,156 @@ let ``the seam refuses an infinite deadline rather than obeying it`` () =
 
     // Healthy work still returns — the fallback deadline is finite but ample, not zero.
     test <@ target.WaitForScan(-1L).Result = "idle" @>
+
+[<Fact(Timeout = 10000)>]
+let ``scan waiters retain their request when recovery is queued before failure settles`` () =
+    let signal = ScanSignal()
+
+    let first =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let recovery =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    signal.ObserveScan(first.Task, fun () -> 0L)
+    let originalWaiter = signal.WaitForGeneration(0L, 0L)
+    signal.ObserveScan(recovery.Task, fun () -> 1L)
+    let recoveryWaiter = signal.WaitForGeneration(0L, 0L)
+    first.SetException(InvalidOperationException("first scan failed"))
+
+    let failure =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            originalWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult())
+
+    test <@ failure.Message = "first scan failed" @>
+    test <@ not recoveryWaiter.IsCompleted @>
+    recovery.SetResult(())
+    recoveryWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(0)>]
+[<InlineData(1)>]
+[<InlineData(2)>]
+[<InlineData(3)>]
+let ``cache clear RPC preserves entries outside its requested filter`` (selection: int) =
+    let pipeName = $"fc-{Guid.NewGuid():N}"
+
+    let repoRoot =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-cache-filter-{Guid.NewGuid():N}")
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+    use cts = new CancellationTokenSource()
+    let key = ContentHash.create "unchanged-input"
+    let entries = [ "p", "a.fs"; "p", "b.fs"; "q", "a.fs"; "q", "b.fs" ]
+
+    let composite plugin file : FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = plugin
+          File = Some(FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) (System.IO.Path.Combine(repoRoot, file))) }
+
+    for plugin, file in entries do
+        cache.Set
+            (composite plugin file)
+            key
+            { CacheKey = key
+              Errors = []
+              Status = FsHotWatch.TaskCache.CachedRunCompleted(RunVerdict.create file TimeSpan.Zero)
+              EmittedEvents = [] }
+
+        test <@ (cache.TryGet (composite plugin file) key).IsSome @>
+
+    let absoluteA = System.IO.Path.Combine(repoRoot, "a.fs")
+
+    let filter, survivors =
+        match selection with
+        | 0 -> ClearAll, []
+        | 1 -> ClearPlugin "p", [ "q", "a.fs"; "q", "b.fs" ]
+        | 2 -> ClearFile absoluteA, [ "p", "b.fs"; "q", "b.fs" ]
+        | _ -> ClearPluginFile("p", absoluteA), [ "p", "b.fs"; "q", "a.fs"; "q", "b.fs" ]
+
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        waitForServer pipeName
+        let response = IpcClient.cacheClear pipeName filter |> Async.RunSynchronously
+        test <@ response = "ok" @>
+
+        let remaining =
+            entries
+            |> List.filter (fun (plugin, file) -> (cache.TryGet (composite plugin file) key).IsSome)
+
+        test <@ remaining = survivors @>
+    finally
+        cts.Cancel()
+
+        try
+            server.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        with :? OperationCanceledException ->
+            ()
+
+        host.Teardown()
+
+[<Fact(Timeout = 15000)>]
+let ``daemon probe follows a listening server through shutdown`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+
+    test <@ not (IpcClient.isRunning pipeName) @>
+
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        // A successful RPC witnesses readiness before the lightweight probe.
+        waitForServer pipeName
+        test <@ IpcClient.isRunning pipeName @>
+    finally
+        cts.Cancel()
+
+        try
+            server.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        with :? OperationCanceledException ->
+            ()
+
+        host.Teardown()
+
+    // The acceptors observe cancellation independently of the server loop.
+    waitUntil (fun () -> not (IpcClient.isRunning pipeName)) 5000
+    test <@ not (IpcClient.isRunning pipeName) @>
+
+[<Fact>]
+let ``diagnostics preserve timing phases with and without detail`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let startedAt = DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc)
+
+    try
+        host.Phases.Record(FsHotWatch.DaemonPhases.Phase.Check, startedAt, TimeSpan.FromMilliseconds 125.0, None)
+
+        host.Phases.Record(
+            FsHotWatch.DaemonPhases.Phase.Discover,
+            startedAt,
+            TimeSpan.FromMilliseconds 250.0,
+            Some "two projects"
+        )
+
+        let target = DaemonRpcTarget(defaultRpcConfig host)
+        use status = System.Text.Json.JsonDocument.Parse(target.GetDiagnostics(""))
+
+        let phases =
+            status.RootElement.GetProperty("daemonPhases").EnumerateArray()
+            |> Seq.map (fun phase -> phase.GetProperty("scope").GetString(), phase)
+            |> Map.ofSeq
+
+        test <@ phases.Count = 2 @>
+        let check = phases.["daemon.check"]
+        let discover = phases.["daemon.discover"]
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, check.GetProperty("detail").ValueKind)
+        Assert.Equal<string>("two projects", discover.GetProperty("detail").GetString())
+        Assert.Equal(125L, check.GetProperty("elapsedMs").GetInt64())
+        Assert.Equal(250L, discover.GetProperty("elapsedMs").GetInt64())
+        Assert.Equal<string>(startedAt.ToString("O"), check.GetProperty("startedAt").GetString())
+        Assert.Equal<string>(startedAt.ToString("O"), discover.GetProperty("startedAt").GetString())
+    finally
+        host.Teardown()

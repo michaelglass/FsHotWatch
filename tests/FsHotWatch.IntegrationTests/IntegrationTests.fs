@@ -1230,6 +1230,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let handler =
@@ -1275,6 +1276,7 @@ let ``BuildPlugin fails with false command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
@@ -1685,6 +1687,7 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     // A slow build command so the second emit certainly arrives mid-build.
@@ -1869,33 +1872,50 @@ let ``ProcessRegistry.killAll terminates tracked live processes`` () =
         proc.WaitForExit(5000) |> ignore
         Assert.True(proc.HasExited))
 
-// Outer timeout 20s leaves headroom over the internal ceiling (8s registration
-// deadline + 5s task.Wait = 13s) so a real failure surfaces as an assertion
-// rather than a silent xUnit timeout.
-[<Fact(Timeout = 20000)>]
+// Leave room for the startup handshake, registry cleanup and bounded task join.
+[<Fact(Timeout = 30000)>]
 let ``ProcessRegistry.killAll kills a child started via runProcess from another thread`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
+    use started = new System.Threading.ManualResetEventSlim(false)
 
-    // The Task captures the AsyncLocal context at start, so the spawned child
-    // registers against this test's registry — not a process-wide global.
+    // Registration precedes admission. Output from the actual target proves that
+    // this control kills admitted work, rather than racing admission cancellation.
     let task =
         System.Threading.Tasks.Task.Run(fun () ->
-            runProcess "sleep" "30" "." [] (ProcessBounds.silent System.Threading.Timeout.InfiniteTimeSpan))
+            try
+                runProcessTo
+                    (Some(fun chunk ->
+                        if not (String.IsNullOrEmpty chunk) then
+                            started.Set()))
+                    "/bin/sh"
+                    "-c \"printf ready; exec sleep 30\""
+                    "."
+                    []
+                    (ProcessBounds.silent System.Threading.Timeout.InfiniteTimeSpan)
+                |> Result.Ok
+            with error ->
+                Result.Error error)
 
-    // 8s tolerates thread-pool contention from parallel tests — a Task.Run body can take
-    // seconds to reach Process.Start under load.
-    let deadline = DateTime.UtcNow.AddSeconds 8.0
+    try
+        Assert.True(started.Wait(TimeSpan.FromSeconds 8.), "target did not reach its startup handshake")
+        Assert.NotEmpty(registry.Snapshot())
+        registry.KillAll()
+        Assert.True(task.Wait(5000), "runProcess did not settle after killAll")
 
-    while registry.Snapshot().IsEmpty && DateTime.UtcNow < deadline do
-        System.Threading.Thread.Sleep 25
+        // Verified containment cleanup is not an original-target exit receipt.
+        match task.Result with
+        | Result.Error(:? IOException as error) -> Assert.Contains("without the required receipt", error.Message)
+        | Result.Error error -> Assert.Fail $"unexpected cancellation failure: {error}"
+        | Result.Ok outcome -> Assert.Fail $"intentional cancellation must not invent a target result: {outcome}"
 
-    Assert.NotEmpty(registry.Snapshot())
-
-    registry.KillAll()
-
-    let completed = task.Wait(5000)
-    Assert.True(completed, "runProcess did not return after killAll")
+        Assert.Empty(registry.Snapshot())
+        Assert.Empty(registry.Leaks)
+    finally
+        registry.KillAll()
+        // Also join after a failed startup assertion, so this test does not leave
+        // a late Task.Run admission racing the following integration control.
+        Assert.True(task.Wait(5000), "process task remained alive after final cleanup")
 
 // ===========================================================================
 // Lives here because it spawns a real `sleep 10` under a 1s timeout: the kill-on-
@@ -2063,6 +2083,7 @@ let ``concurrent FileChanged events run two builds sequentially`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
@@ -2164,6 +2185,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -2247,6 +2269,7 @@ let private makeControllablePlugin (name: string) =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     {| Handler = handler
@@ -2420,6 +2443,7 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChecked ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let checker =
@@ -2507,6 +2531,7 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let cts = new CancellationTokenSource()
@@ -2708,6 +2733,7 @@ let private fileCheckCounter (name: string) (targetCanonical: string) =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> count.Value), handler)

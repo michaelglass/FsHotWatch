@@ -1,0 +1,32 @@
+{
+  "command": "mise run test-direct",
+  "tree": "33fd141b19d06a3b153893fef1e196a16b1158af",
+  "exitCode": 2,
+  "summary": {
+    "total": 3207,
+    "passed": 3190,
+    "failed": 17,
+    "skipped": 0
+  },
+  "logSha256": "c43984e732392857407b88a497f030435be07304093bfe8396b5401459cf0bf6",
+  "failures": [
+    "FsHotWatch.Tests.RunOnceOutputTests.run-once publishes a versioned unavailable model after successful loading(mappingProducedOptions: True, expectedReason: \"registration-failed\") (398ms)",
+    "FsHotWatch.Tests.RunOnceOutputTests.run-once publishes a versioned unavailable model after successful loading(mappingProducedOptions: False, expectedReason: \"mapping-failed\") (473ms)",
+    "FsHotWatch.Tests.RunOnceOutputTests.the verdict file can NEVER say green while a plugin says fail (519ms)",
+    "FsHotWatch.Tests.IpcTests.WaitForComplete times out when plugin stays Running (5ms)",
+    "FsHotWatch.Tests.TestPruneSelectionSoundnessTests.AUTOMATION-110: a symbol covered only by an unlisted test project is REPORTED as owed-but-unrunnable, not silently dropped (397ms)",
+    "FsHotWatch.Tests.RunOnceOutputTests.check --run-once goes RED on a plugin that FAILED without writing a diagnostic (832ms)",
+    "FsHotWatch.Tests.IpcTests.WaitForComplete client observes failure when daemon is shut down mid-wait (616ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than greening on nothing (170ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.restart persistence: a non-empty queue survives a daemon restart and is re-flagged (59ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.partial failure: symbols whose only covering project passed commit; symbols touching a failed project stay queued (139ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the verdict red (120ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting on a stale verdict (63ms)",
+    "FsHotWatch.Tests.TestPrunePendingVerificationTests.no-covering-test symbol drops from the queue at flush without wedging it (88ms)",
+    "(canceled) FsHotWatch.Tests.TestPrunePluginTests.AUTOMATION-357: a project-scoped rerun cannot satisfy the next whole-suite check (20s 001ms)",
+    "FsHotWatch.Tests.TestPrunePluginTests.ParseOnly FileChecked fails closed and reports the file as unanalysable (58ms)",
+    "FsHotWatch.Tests.PluginHostTests.waitForAllTerminal faults with OperationCanceledException when shutdown token fires mid-wait (203ms)",
+    "FsHotWatch.Tests.DaemonTests.discovery publishes model unavailability before loader entry and completed generation before receipt (2ms)"
+  ],
+  "previousDebtSnapshotFailures": "All four original A104 debt snapshot assertions passed; original private-verdict control passed. This run is red, not merge evidence."
+}

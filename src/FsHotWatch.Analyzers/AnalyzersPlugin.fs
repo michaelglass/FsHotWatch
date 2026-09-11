@@ -570,6 +570,7 @@ let internal createWithSlowHook
                              diagnostics = totalDiags |}
                       )
               } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key (file source + analyzer identity + fcs-signature).
@@ -610,7 +611,8 @@ let internal createWithSlowHook
                 )
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state -> cacheKey)
+      PrepareCommit = None
       Teardown =
         Some(fun () ->
             // Cancellation is cooperative. Do not dispose tokens/semaphores while

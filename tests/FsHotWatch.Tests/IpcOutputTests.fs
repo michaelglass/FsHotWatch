@@ -83,7 +83,9 @@ let ``positive bounded filtered project counts are retainable executed evidence`
 let ``an executed-looking scope without a run id is not retainable evidence`` (fullSuite: bool) =
     let scope = if fullSuite then FullSuite 4 else ImpactFiltered(2, 4)
 
-    let scopeOnly = BaselineFixtures.reportOf scope
+    let scopeOnly =
+        { BaselineFixtures.reportOf scope with
+            RunId = None }
 
     let effective, retained =
         TestRunEvidence.reconcile (evidenceTree "sha256:no-run") scopeOnly None
@@ -191,13 +193,38 @@ let ``retained test evidence cannot hide a later plugin failure`` () =
     test <@ outcome = CheckVerdict.CheckOutcome.FailuresFound @>
     test <@ CheckVerdict.exitCode outcome = 1 @>
 
+/// A completed runner report includes the rows supporting its summary counts.
+let private completedSuiteReport (reportId: string) (count: int) =
+    let rows =
+        [| for index in 1..count ->
+               {| name = $"Fixture.case{index}"
+                  status = "passed" |} |]
+
+    System.Text.Json.JsonSerializer.Serialize
+        {| reportFormat = "CTRF"
+           specVersion = "0.0.0"
+           reportId = reportId
+           results =
+            {| tool = {| name = "xUnit.net v3" |}
+               summary =
+                {| tests = count
+                   passed = count
+                   failed = 0
+                   pending = 0
+                   skipped = 0
+                   other = 0
+                   suites = 1
+                   start = 1
+                   stop = 2 |}
+               tests = rows |} |}
+
 let private writeEvidenceSuite (repoRoot: string) (runId: System.Guid) =
     let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
     System.IO.Directory.CreateDirectory(runDir) |> ignore
 
     System.IO.File.WriteAllText(
         System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        completedSuiteReport "a" 3
     )
 
 [<Theory(Timeout = 15000)>]
@@ -218,7 +245,7 @@ let ``daemon command retains executed evidence across a same-tree quiet converge
             elif failSecondRead then
                 """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0}"""
             else
-                """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+                (completedDiagnosticsJsonForRun runId)
 
         // AUTOMATION-533. The FIRST read is the driver's baseline, taken before the scan
         // so it can tell this check's runs from the ones that preceded it; the executed
@@ -642,7 +669,7 @@ let private diagnosticsJsonFor (testRunFinished: bool) : string =
     if testRunFinished then
         """{"count":1,"files":{"tests/Foo.fs":[{"plugin":"test-prune","message":"1 test failed","severity":"error","line":0,"column":0,"detail":null}]},"statuses":{},"unchecked":0}"""
     else
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+        (completedDiagnosticsJson ())
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)`` () =
@@ -737,8 +764,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
 
         statusJsonFor true
 
-    let cleanDiagnostics () : string =
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+    let cleanDiagnostics () : string = (completedDiagnosticsJson ())
 
     // AUTOMATION-555. The verdict the daemon transport publishes is stamped with the
     // invocation that drove it, so the wrapping CLI can attach its hook timing to THIS
@@ -784,9 +810,7 @@ let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: str
     let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
     System.IO.Directory.CreateDirectory(runDir) |> ignore
 
-    let json =
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"batch","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":N,"passed":N,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
-            .Replace("N", string<int> tests)
+    let json = completedSuiteReport "batch" tests
 
     System.IO.File.WriteAllText(System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix), json)
 
@@ -819,8 +843,7 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
 
         statusJsonFor true
 
-    let cleanDiagnostics () : string =
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+    let cleanDiagnostics () : string = (completedDiagnosticsJson ())
 
     let earlier = System.Guid.NewGuid()
     let firstBatch = System.Guid.NewGuid()
@@ -974,7 +997,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () -> "idle") // waitForScan
                 waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () -> (completedDiagnosticsJson ())) // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                 // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1029,7 +1052,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () -> "idle") // waitForScan
                 waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () -> (completedDiagnosticsJson ())) // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                 // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1073,7 +1096,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 (fun () -> "idle") // waitForScan
                 (fun () -> "idle") // waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () -> (completedDiagnosticsJson ())) // getErrors
                 getTestRun
                 // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1111,7 +1134,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> "idle")
                 (fun () -> "idle")
                 (fun () -> "{}")
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                (fun () -> (completedDiagnosticsJson ()))
                 (fun () -> BaselineFixtures.reportOf (FullSuite 1))
                 // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1168,7 +1191,7 @@ let private driveConfirmForVerdict
             (fun () -> "idle")
             (fun () -> "idle")
             (fun () -> "{}")
-            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+            (fun () -> (completedDiagnosticsJsonForRun driveRunId))
             getTestRun
             getCheckReach
             (fun () -> forceCalls <- forceCalls + 1)
@@ -1336,11 +1359,14 @@ let ``an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass
 
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false mixedNoOp = 3 @>
 
-    // Every all-non-executing combination, not just the one that was reported.
+    // An explicit execution error is known failure (1), even when no project
+    // produced counts. Only incomplete/deferred evidence without a known failure
+    // uses 3. This agrees with the timed-out legacy payload below and the mixed
+    // passed/errored case; none of these may become a success.
     let deferredAndErrored =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"errored","output":""},{"project":"B","status":"deferred","output":""}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 3 @>
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 1 @>
 
     // POSITIVE CONTROL: the refusal is derived from "nothing executed", not from "some
     // project was not `passed`". One project that really ran keeps the run a pass.
@@ -1513,7 +1539,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 moved <- true
                 System.IO.File.WriteAllText(tracked, "an edit that landed while the check was finishing")
 
-            """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+            (completedDiagnosticsJson ())
 
         let exitCode =
             pollAndRender
@@ -1582,7 +1608,7 @@ let private writeSevenSuiteRun (repoRoot: string) (runId: System.Guid) : string 
     for project in projects do
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix),
-            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"seven","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            completedSuiteReport "seven" 3
         )
 
     List.sort projects
@@ -1625,6 +1651,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
 
         let initialExitCode =
             publishVerdict
+                (modelEvidence [ runId ])
                 repoRoot
                 []
                 CheckVerdict.Confirmation
@@ -1682,6 +1709,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
 
         let zeroTestExitCode =
             publishVerdict
+                (modelEvidence [ runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1734,6 +1762,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 42\n")
 
         publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             CheckVerdict.Confirmation
@@ -1750,6 +1779,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
 
         let exitCode =
             publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1773,6 +1803,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
 let private publishA643Prior (repoRoot: string) (kind: string) =
     let publish scope outcome statuses =
         publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             CheckVerdict.InnerLoop
@@ -1839,6 +1870,7 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
 
         let exitCode =
             publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1876,9 +1908,6 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
     (confirmation: bool)
     =
     TestHelpers.withTempDir "ipcoutput-290-discovery" (fun repoRoot ->
-        let reason =
-            "PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of 18 discovered project(s). Read LoadProject FAILED."
-
         let mode =
             if confirmation then
                 CheckVerdict.Confirmation
@@ -1886,6 +1915,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 CheckVerdict.InnerLoop
 
         publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             mode
@@ -1911,11 +1941,21 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun _ -> [])
                 false
                 (fun () -> "complete: 0 files checked")
-                (fun () -> raise (System.InvalidOperationException reason))
+                (fun () ->
+                    raise (
+                        FsHotWatch.ProjectModel.UnavailableException(
+                            FsHotWatch.ProjectModel.ofCompleted
+                                1L
+                                { Discovered = 1
+                                  Loaded = 0
+                                  OptionsMapped = 0
+                                  Registered = 0 }
+                        )
+                    ))
                 (fun () -> "{}")
                 (fun () ->
                     diagnosticsReads <- diagnosticsReads + 1
-                    """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (completedDiagnosticsJson ()))
                 (fun () -> BaselineFixtures.reportOf (ImpactFiltered(1, 3)))
                 (fun () -> IpcParsing.ReachUnavailable "must not be read")
                 (fun () -> forcedRuns <- forcedRuns + 1)
@@ -1933,7 +1973,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             test <@ v.ExitCode = 2 @>
 
             match v.Outcome with
-            | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT LOADING FAILED") @>
+            | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT MODEL UNAVAILABLE") @>
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected a published discovery verdict, got %A" other)
 
@@ -2042,7 +2082,7 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
                     (fun () -> "idle")
                     waitForComplete
                     (fun () -> "{}")
-                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () -> (completedDiagnosticsJson ()))
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
@@ -2053,3 +2093,91 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
         match Verdict.read repoRoot with
         | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
         | _ -> ())
+
+[<Theory>]
+[<InlineData("matching", 0)>]
+[<InlineData("missing", 2)>]
+[<InlineData("different-run", 2)>]
+[<InlineData("analysis-only", 2)>]
+[<InlineData("different-model", 2)>]
+[<InlineData("refused", 2)>]
+let ``green publication requires the graded run's current model receipt`` kind expectedExit =
+    withTempDir "ipcoutput-model-receipt" (fun repoRoot ->
+        let receipts =
+            if kind = "missing" then
+                []
+            else
+                [ { RunId =
+                      if kind = "analysis-only" then
+                          None
+                      else
+                          Some(
+                              if kind = "different-run" then
+                                  System.Guid.NewGuid()
+                              else
+                                  BaselineFixtures.runId
+                          )
+                    Generation = if kind = "different-model" then 2L else 1L
+                    Refusals = if kind = "refused" then [ "unknown debt" ] else [] } ]
+
+        let evidence = DaemonEvidence.Served([], BaselineFixtures.model, receipts)
+
+        let exitCode =
+            TestHelpers.publishVerdict
+                evidence
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                (BaselineFixtures.reportOf (FullSuite 1))
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
+        test <@ exitCode = expectedExit @>)
+
+[<Theory>]
+[<InlineData("matching", 0)>]
+[<InlineData("missing", 2)>]
+[<InlineData("test-run", 2)>]
+[<InlineData("different-model", 2)>]
+[<InlineData("refused", 2)>]
+let ``analysis-only green requires its own completed model receipt`` kind expectedExit =
+    withTempDir "ipcoutput-analysis-model-receipt" (fun repoRoot ->
+        let receipts =
+            if kind = "missing" then
+                []
+            else
+                [ {| runId =
+                      if kind = "test-run" then
+                          BaselineFixtures.runId.ToString("N")
+                      else
+                          (null: string)
+                     modelGeneration = if kind = "different-model" then 2L else 1L
+                     refusals = if kind = "refused" then [ "unchecked file" ] else [] |} ]
+
+        let evidence =
+            System.Text.Json.JsonSerializer.Serialize(
+                {| daemonPhases = ([||]: string array)
+                   projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+                   modelReceipts = receipts |}
+            )
+            |> DaemonEvidence.parse
+
+        let exitCode =
+            TestHelpers.publishVerdict
+                evidence
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                TestRunReport.noTestSuite
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite)
+
+        test <@ exitCode = expectedExit @>)

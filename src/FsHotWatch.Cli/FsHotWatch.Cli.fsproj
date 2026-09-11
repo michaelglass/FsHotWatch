@@ -39,6 +39,9 @@
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
             <_Parameter1>FsHotWatch.IntegrationTests</_Parameter1>
         </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>FsHotWatch.LauncherLifetimeFixture</_Parameter1>
+        </AssemblyAttribute>
     </ItemGroup>
 
     <ItemGroup>
@@ -55,6 +58,7 @@
         <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
+        <Compile Include="DetachedLaunch.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

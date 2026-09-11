@@ -1013,14 +1013,14 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
 
 /// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
-let loadConfig (repoRoot: string) : DaemonConfiguration =
+let internal loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     let defaults = defaultConfigFor repoRoot
 
     if not (File.Exists configPath) then
         Logging.info "config" "No .fshw.json found, using defaults (build + format + lint)"
-        defaults
+        defaults, ""
     else
         let json =
             try
@@ -1033,10 +1033,13 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
             validateVerdictInputs repoRoot json
             validateTestScope repoRoot config
             Logging.info "config" "Loaded .fshw.json"
-            config
+            config, json
         with
         | ConfigError _ -> reraise ()
         | ex -> raise (ConfigError $".fshw.json: %s{ex.Message}")
+
+/// Load and validate the current configuration without retaining its source snapshot.
+let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.
@@ -1700,11 +1703,30 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
+        let excludedProjects =
+            SolutionScope.createExclusionResolver repoRoot t.Solution t.Excluded (fun () ->
+                daemon.Graph.GetAllProjects() |> List.map AbsProjectPath.value)
+
         let handler =
-            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths t.DependsOn
+            createWithScope
+                excludedProjects
+                dbPath
+                repoRoot
+                (Some testConfigs)
+                buildExtensions
+                beforeRun
+                None
+                coveragePaths
+                t.DependsOn
 
         daemon.RegisterHandler(handler)
-    | None -> ()
+    | None ->
+        // A repository without a test suite still owes current-model FCS/symbol
+        // analysis. This handler seals that evidence without inventing a test run
+        // or exposing full-suite commands.
+        let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
+        daemon.RegisterHandler(create dbPath repoRoot None None None None None [])
 
     // File commands
     for fc in config.FileCommands do

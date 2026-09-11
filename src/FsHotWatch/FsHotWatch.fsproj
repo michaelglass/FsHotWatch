@@ -49,17 +49,25 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FsHotWatch.Cli</_Parameter1>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.TestPrune</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="Logging.fs" />
     <Compile Include="OperationWatchdog.fs" />
 <Compile Include="Lifecycle.fs" />
+    <Compile Include="ProjectModel.fs" />
+    <Compile Include="ProjectModelWire.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="CachePathIdentity.fs" />
     <Compile Include="PathFilter.fs" />
     <Compile Include="SafeWalk.fs" />
     <Compile Include="ProcessRegistry.fs" />
+    <Compile Include="WindowsProcessJob.fs" />
+    <Compile Include="ProcessContainment.fs" />
+    <Compile Include="OwnedChild.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="ContentHash.fs" />
@@ -76,6 +84,9 @@
     <Compile Include="FileTaskCache.fs" />
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
+    <Compile Include="PluginWorkOwner.fs" />
+    <Compile Include="SupervisedWork.fs" />
+    <Compile Include="DebouncedWork.fs" />
     <Compile Include="PluginFramework.fs" />
     <Compile Include="DaemonPhases.fs" />
     <Compile Include="PluginActivity.fs" />
@@ -110,5 +121,11 @@
     <PackageReference Include="FSharp.Compiler.Service" Version="43.*" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FsHotWatch.ProcessHost/FsHotWatch.ProcessHost.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <Content Include="../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.dll;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.deps.json;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.runtimeconfig.json"
+             Link="fshw-process-host/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="true" PackagePath="tools/net10.0/" />
+    <None Include="buildTransitive/FsHotWatch.targets" Pack="true" PackagePath="buildTransitive/FsHotWatch.targets" />
   </ItemGroup>
 </Project>

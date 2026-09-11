@@ -30,6 +30,27 @@ open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
+
+let private withCacheKeyObservation (handler: PluginHandler<TestPruneState, TestPruneMsg>) =
+    let observe =
+        PluginCommand.Observe(fun (_: CommandReadCtx) state (_: string array) ->
+            async {
+                return
+                    handler.CacheKey.Value state (BuildCompleted BuildSucceeded)
+                    |> Option.map ContentHash.value
+                    |> Option.defaultValue ""
+            })
+
+    { handler with
+        Commands = ("fixture-build-cache-key", observe) :: handler.Commands }
+
+let private readBuildCacheKey (host: PluginHost) =
+    waitUntil (fun () -> not (host.AnyPluginBusy())) 10000
+
+    host.RunCommand("fixture-build-cache-key", [||])
+    |> Async.RunSynchronously
+    |> Option.bind (fun key -> if key = "" then None else Some(ContentHash.create key))
+
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
@@ -2385,7 +2406,9 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check comment-only source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result ->
+            env.Host.EmitFileCheckedTracked(result)
+            |> List.iter (fun receipt -> receipt.Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -2401,7 +2424,9 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check AST-changed source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result ->
+            env.Host.EmitFileCheckedTracked(result)
+            |> List.iter (fun receipt -> receipt.Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -2672,7 +2697,19 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
 
         File.WriteAllText(
             reportPath,
-            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0}}}"""
+            JsonSerializer.Serialize
+                {| results =
+                    {| summary =
+                        {| tests = 7
+                           passed = 6
+                           failed = 0
+                           pending = 0
+                           skipped = 1
+                           other = 0 |}
+                       tests =
+                        [| for index in 1..7 ->
+                               {| name = $"Fixture.case{index}"
+                                  status = if index = 7 then "skipped" else "passed" |} |] |} |}
         )
 
         let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")
@@ -4320,15 +4357,14 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
-        host.RegisterHandler(handler)
+        host.RegisterHandler(handler |> withCacheKeyObservation)
 
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 10000
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
-        let cacheKeyFn = handler.CacheKey.Value
-        let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
+        let computedKey = readBuildCacheKey host
         test <@ computedKey.IsSome @>
 
         // `cache.Set` runs AFTER the handler's Update returns, while
@@ -4490,7 +4526,7 @@ let ``AUTOMATION-357: a project-scoped rerun cannot satisfy the next whole-suite
                 None
                 []
 
-        host.RegisterHandler(handler)
+        host.RegisterHandler(handler |> withCacheKeyObservation)
 
         let partialTerminal = beginAwaitNextTerminal host "test-prune"
 
@@ -4501,7 +4537,7 @@ let ``AUTOMATION-357: a project-scoped rerun cannot satisfy the next whole-suite
         partialTerminal.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
-        let wholeTreeKey = handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+        let wholeTreeKey = readBuildCacheKey host
         test <@ wholeTreeKey.IsSome @>
         test <@ (cacheIface.TryGet key wholeTreeKey.Value).IsNone @>
 
@@ -4575,7 +4611,7 @@ let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` 
         File.WriteAllText(migration, "CREATE TABLE a (id int);")
 
         let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
 
@@ -4593,7 +4629,7 @@ let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache ke
         File.WriteAllText(Path.Combine(migrationsDir, "001_init.sql"), "CREATE TABLE a (id int);")
 
         let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
         File.WriteAllText(Path.Combine(migrationsDir, "002_more.sql"), "ALTER TABLE a ADD COLUMN x int;")
@@ -4613,8 +4649,11 @@ let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to t
         let salted = create ":memory:" tmpDir None None None None None []
         let unsalted = create ":memory:" tmpDir None None None None None [] // identical: [] dependsOn
 
-        let kSalted = ((salted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
-        let kUnsalted = ((unsalted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+        let kSalted =
+            (((salted.CacheKey.Value salted.Init)) (BuildCompleted BuildSucceeded)).Value
+
+        let kUnsalted =
+            (((unsalted.CacheKey.Value unsalted.Init)) (BuildCompleted BuildSucceeded)).Value
 
         test <@ kSalted = kUnsalted @>
         // "" means no merkle entry was added at all, not an entry with an empty value.
@@ -4628,10 +4667,11 @@ let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-d
         let handlerNoMatch =
             create ":memory:" tmpDir None None None None None [ "does-not-exist/**" ]
 
-        let kEmpty = ((handlerEmpty.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+        let kEmpty =
+            (((handlerEmpty.CacheKey.Value handlerEmpty.Init)) (BuildCompleted BuildSucceeded)).Value
 
         let kNoMatch =
-            ((handlerNoMatch.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+            (((handlerNoMatch.CacheKey.Value handlerNoMatch.Init)) (BuildCompleted BuildSucceeded)).Value
 
         test <@ kEmpty = kNoMatch @>
         test <@ externalDependencyHash tmpDir [ "does-not-exist/**" ] = "" @>)
@@ -4921,6 +4961,8 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
         host.RegisterHandler(handler)
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
+        // UI completion precedes the owning TestsFinished state publication.
+        waitUntil (fun () -> not (host.AnyPluginBusy())) 10000
 
         let json = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ json.IsSome @>

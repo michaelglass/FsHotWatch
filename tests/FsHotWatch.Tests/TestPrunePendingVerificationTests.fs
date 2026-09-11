@@ -202,6 +202,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
               Commands = []
               Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         host.RegisterHandler(lifecycleRecorder)
@@ -390,6 +391,7 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        waitForQuiescent host 20000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -560,11 +562,9 @@ let ``AUTOMATION-228: a rerun queued for debt the active run clears preserves th
         host.EmitBuildCompleted(BuildSucceeded)
         waitUntil (fun () -> File.Exists started) 10000
 
-        // Re-observe the same debt while its covering run is active. RunCommand is a
-        // mailbox barrier: when it returns, the preceding BatchChecked has set
-        // PendingRerun, so releasing the runner cannot race the setup.
-        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        // The cohort receipt commits PendingRerun before the runner is released.
+        host.EmitBatchCheckedTracked(fakeBatchChecked [ "Lib.fs" ])
+        |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         File.WriteAllText(release, "")
         waitForQuiescent host 20000
@@ -581,7 +581,7 @@ type private A163ScenarioOutcome =
       Queue: Set<string>
       Status: PluginStatus option }
 
-let private runA163CohortScenario name trigger testExitCode =
+let private runA163CohortScenario name trigger testExitCode editAfterSeal restoreAfterEdit =
     withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
@@ -658,15 +658,28 @@ let fooTest () = assert (foo 1 = 2)
         | Some result -> host.EmitFileChecked(result)
         | None -> failwith "cold-scan changed-file check failed"
 
-        host.EmitBatchChecked(
+        host.EmitBatchCheckedTracked(
             { fakeBatchChecked [ libFile ] with
                 Trigger = trigger }
         )
+        |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
-        // The command is deliberately held until the cohort seal is observed. A fixed
-        // sleep made this test assert scheduler speed on loaded Linux runners: the full
-        // run could finish before CheckFile, turning BootScan into a real second run.
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        // Each recipient has committed this exact cohort while the full run is held.
+        if editAfterSeal then
+            let sources =
+                [ "module Lib\nlet foo (x: int) = x + 3\n"
+                  if restoreAfterEdit then
+                      libSource2 ]
+
+            for source in sources do
+                File.WriteAllText(libFile, source)
+
+                match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+                | Some result ->
+                    host.EmitFileCheckedTracked(result)
+                    |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+                | None -> failwith "post-seal changed-file check failed"
+
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
@@ -681,7 +694,7 @@ let ``AUTOMATION-163: boot-scan symbols discovered during a green full run are c
     // when its cohort seal arrives during the full run that a cold confirm launched.
     // The scan is a baseline over the same built tree, so that full run covers its
     // symbols; queueing another run silently doubles CI.
-    let outcome = runA163CohortScenario "tp-a163-boot-scan" BootScan 0
+    let outcome = runA163CohortScenario "tp-a163-boot-scan" BootScan 0 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -694,7 +707,7 @@ let ``AUTOMATION-163: an in-session cohort discovered during a full run still qu
     // Mutation caught: matching every BatchChecked as BootScan would disable the real
     // edit queue. The only difference from the regression above is cohort provenance.
     let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
-    let outcome = runA163CohortScenario "tp-a163-in-session" trigger 0
+    let outcome = runA163CohortScenario "tp-a163-in-session" trigger 0 false false
     Assert.Equal(2, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -706,13 +719,24 @@ let ``AUTOMATION-163: an in-session cohort discovered during a full run still qu
 let ``AUTOMATION-163: a failing full run cannot discharge boot-scan debt`` () =
     // Mutation caught: absorbing boot debt on the requested scope rather than the
     // completed run's actual green evidence would erase work that no passing test proved.
-    let outcome = runA163CohortScenario "tp-a163-failed-full" BootScan 1
+    let outcome = runA163CohortScenario "tp-a163-failed-full" BootScan 1 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ outcome.Queue.Contains "Lib.foo" @>
 
     match outcome.Status with
     | Some(Failed _) -> ()
     | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a source edit after a boot cohort seal cannot borrow the held full run`` restoreAfterEdit =
+    let outcome =
+        runA163CohortScenario "tp-boot-seal-edited" BootScan 0 true restoreAfterEdit
+    // No successor cohort was sealed yet. The old run must leave this new
+    // revision owed until that cohort can select and execute its covering tests.
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Queue.Contains "Lib.foo" @>
 
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
@@ -750,6 +774,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
         test <@ File.Exists ranMarker @>
 
@@ -790,6 +815,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -869,12 +895,29 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
 
 open FsHotWatch.ProcessHelper
 
-let private rep total passed failed skipped other : Flakiness.TestReport =
-    { Total = total
-      Passed = passed
-      Failed = failed
-      Skipped = skipped
-      Other = other }
+let private rep total passed failed skipped other =
+    let rows =
+        [ for index in 1..passed do
+              yield
+                  {| name = $"Fixture.passed{index}"
+                     status = "passed" |}
+          for index in 1..skipped do
+              yield
+                  {| name = $"Fixture.skipped{index}"
+                     status = "skipped" |} ]
+
+    System.Text.Json.JsonSerializer.Serialize(
+        {| results =
+            {| summary =
+                {| tests = total
+                   passed = passed
+                   failed = failed
+                   skipped = skipped
+                   pending = 0
+                   other = other |}
+               tests = rows |} |}
+    )
+    |> FsHotWatch.Ctrf.tryVerdictReport
 
 let private isFailed result =
     match result with
@@ -884,7 +927,7 @@ let private isFailed result =
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
     // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
-    let report = Some(rep 12 12 0 0 0)
+    let report = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -897,7 +940,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
-    let report = Some(rep 3 2 1 0 0)
+    let report = rep 3 2 1 0 0
 
     let result =
         classifyTestOutcome
@@ -910,7 +953,7 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with an other (raw-throw) result is RED`` () =
-    let report = Some(rep 3 2 0 0 1)
+    let report = rep 3 2 0 0 1
 
     let result =
         classifyTestOutcome
@@ -925,7 +968,7 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
 let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "aborted"))
@@ -947,19 +990,20 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: clean exit with no report is PASSED`` () =
+let ``classify: clean exit with a missing requested report verifies nothing`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
-    test <@ TestResult.verifiedGreen result @>
+    test <@ TestResult.isErrored result @>
+    test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
-    let report = Some(rep 0 0 0 0 0)
+let ``classify: unfiltered zero-test report with non-zero exit verifies nothing`` () =
+    let report = rep 0 0 0 0 0
 
     let result =
         classifyTestOutcome
@@ -968,11 +1012,11 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
             TimeSpan.Zero
             (ProcessOutcome.Failed(8, ProcessOutput.Drained "Zero tests ran"))
 
-    test <@ isFailed result @>
+    test <@ TestResult.isErrored result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
-    let report = Some(rep 5 5 0 0 0)
+    let report = rep 5 5 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1001,7 +1045,7 @@ let ``AUTOMATION-294: a SIGKILLed host is an ABORT even though it flushed a repo
     // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
     // Reading that report as the verdict is what minted the phantom mass regression.
-    let phantomMassRegression = Some(rep 2171 2032 139 0 0)
+    let phantomMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1032,7 +1076,7 @@ let ``AUTOMATION-294: THE OTHER DIRECTION — a real mass failure is still RED, 
     // instead of being killed. This must stay a red, or the fix has merely inverted the
     // lie: a gate that reported every genuine regression as "the machine was busy" would
     // be worse than the bug it replaced.
-    let realMassRegression = Some(rep 2171 2032 139 0 0)
+    let realMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1052,7 +1096,7 @@ let ``AUTOMATION-294: a SIGABRTed host is an abort even when it wrote a CLEAN re
     // that never reached its own exit describes the part of the suite it got through, and
     // outcome 2 ("a report showing zero failures beats the exit code") would have called
     // that a pass.
-    let partialButClean = Some(rep 812 812 0 0 0)
+    let partialButClean = rep 812 812 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1070,7 +1114,7 @@ let ``AUTOMATION-294: the dirty-shutdown flake (exit 7) is STILL green — no re
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
     // swallowed it, every dirty shutdown would stop being a pass.
-    let clean = Some(rep 12 12 0 0 0)
+    let clean = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1156,7 +1200,7 @@ let ``AUTOMATION-294: an aborted project is a HostAborted ledger entry, and a fa
 let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             (TimeSpan.FromSeconds 300.0)
             (ProcessOutcome.TimedOut(
@@ -1229,6 +1273,7 @@ let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting o
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
         // It RAN the covering tests rather than reporting on them ...
         test <@ File.Exists ranMarker @>
@@ -1305,6 +1350,7 @@ let ``AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than 
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
         // It RAN — an unreadable ledger owes MORE testing, never less ...
         test <@ File.Exists p1Ran @>
@@ -1386,9 +1432,7 @@ let ``AUTOMATION-150: a genuinely EMPTY ledger stays a fast no-op (not a widened
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the verdict red``
-    ()
-    =
+let ``A104: a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
     // set of projects fshw is configured to run. A symbol covered only by an unconfigured
     // project can never be proven green: its covering project never executes, so it never
@@ -1426,15 +1470,14 @@ let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
-        // Unverifiable by construction, so dropped rather than retained forever.
         let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ not (queue.Contains("Lib.orphan")) @>
+        Assert.Contains("Lib.orphan", queue)
 
         match host.GetStatus("test-prune") with
-        | Some(PluginStatus.Failed(msg, _, _)) ->
-            Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
-        | _ -> ())
+        | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
+        | other -> Assert.Fail($"unrunnable debt must deny green and name its project: {other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =
@@ -2000,8 +2043,120 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
             test <@ json.IsSome @>
             test <@ json.Value.Contains("\"busy\"") @>
             test <@ not (json.Value.Contains("\"projects\"")) @>
+            // The reply deadline also covers queued/preparation time. It is not
+            // evidence that the runner reached its marker within that same second.
+            test <@ host.AnyPluginBusy() @>
+            waitUntil (fun () -> File.Exists started) 10000
             test <@ File.Exists started @>
         finally
             // Let the daemon-side run finish so the temp dir can be cleaned.
             File.WriteAllText(release, "")
             waitUntil (fun () -> not (host.AnyPluginBusy())) 30000)
+
+[<Fact(Timeout = 5000)>]
+let ``classify: clean unfiltered zero-test report verifies nothing`` () =
+    let result =
+        classifyTestOutcome
+            (ReportRequested(rep 0 0 0 0 0))
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained "no tests"))
+
+    Assert.True(TestResult.isErrored result)
+    Assert.False(TestResult.verifiedGreen result)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(true, "separate integration gate", false)>]
+[<InlineData(false, "separate integration gate", false)>]
+[<InlineData(true, null, true)>]
+[<InlineData(true, "", true)>]
+[<InlineData(true, "   ", true)>]
+let ``A104 declared exclusions retire only governed covering debt`` (mixed: bool) (reason: string) (remainsOwed: bool) =
+    withTempDir "tp-declared-scope" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P2" "P2Tests" "sharedTest"
+
+        if mixed then
+            PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+
+        let coverers =
+            db.QueryAffectedTests [ "Lib.shared" ]
+            |> List.map (fun t -> t.TestProject)
+            |> Set.ofList
+
+        Assert.Contains("P2", coverers)
+
+        if mixed then
+            Assert.Contains("P1", coverers)
+
+        PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+
+        let configs =
+            [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
+        let run exclusions =
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+            let handler =
+                createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
+
+            host.RegisterHandler(handler)
+
+            try
+                let terminal = beginAwaitNextTerminal host "test-prune"
+                host.EmitBuildCompleted(BuildSucceeded)
+                Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0))
+                waitForQuiescent host 20000
+                PendingQueueHelpers.loadQueue tmpDir
+            finally
+                host.Teardown()
+
+        let exclusions =
+            if isNull reason then
+                Map.empty
+            else
+                Map.ofList [ "P2", reason ]
+
+        Assert.Equal(remainsOwed, run exclusions |> Set.contains "Lib.shared")
+
+        if not remainsOwed then
+            // A later edit is new debt; removing the declaration restores the
+            // requirement despite the prior successful configured-suite receipt.
+            PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+            Assert.Contains("Lib.shared", run Map.empty))
+
+[<Fact(Timeout = 20000)>]
+let ``A104 scope resolution failure at completion settles owned work and retains debt`` () =
+    withTempDir "tp-scope-failure" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+        PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+        let completedFlag = Path.Combine(tmpDir, "runner-completed")
+
+        let config =
+            { PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) with
+                Args = $"-c \"touch {completedFlag}; exit 0\"" }
+
+        let failure =
+            InvalidOperationException("ambiguous exclusion project after runner completion")
+
+        let resolve () =
+            if File.Exists completedFlag then
+                raise failure
+
+            Map.empty
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(createWithScope resolve dbPath tmpDir (Some [ config ]) None None None None [])
+
+        try
+            host.EmitBuildCompleted(BuildSucceeded)
+            Assert.True(waitUntilTrue (fun () -> not (List.isEmpty (host.FailedWork()))) 15000)
+            waitForQuiescent host 15000
+            Assert.False(host.AnyPluginBusy())
+            Assert.Contains(host.FailedWork(), fun (_, error) -> obj.ReferenceEquals(error, failure))
+            Assert.Contains("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+        finally
+            host.Teardown())

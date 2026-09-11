@@ -20,6 +20,7 @@
     <Compile Include="TestHelpersTests.fs" />
     <Compile Include="StringHelpersTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
+    <Compile Include="ProcessOwnershipTests.fs" />
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
@@ -34,12 +35,16 @@
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
+    <Compile Include="SupervisedWorkTests.fs" />
+    <Compile Include="DebouncedWorkTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
+    <Compile Include="VerdictEvidenceTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
     <Compile Include="PluginHostActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
+    <Compile Include="ProjectModelTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
@@ -57,9 +62,12 @@
          and MUST stay first: F# is order-dependent. -->
     <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="AnalysisEvidenceTests.fs" />
+    <Compile Include="TestPruneRatchetTransactionTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
+    <Compile Include="TestPruneReceiptBoundaryTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
@@ -90,6 +98,7 @@
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="LauncherLifetimeTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />

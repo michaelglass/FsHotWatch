@@ -52,6 +52,23 @@ type SharedRunStarter<'Msg> =
         -> (exn -> 'Msg)
         -> SharedRunClaim
 
+/// A failed starter retains its local obligation until the scheduler has
+/// completed resource handoff. The acknowledgement carries cleanup failure too.
+[<NoComparison; NoEquality>]
+type SharedRunStart =
+    | SharedStarted
+    | SharedStartFailed of afterRelease: (Result<unit, exn> -> unit)
+
+let private finishSharedStartFailure release afterRelease =
+    let outcome =
+        try
+            release ()
+            Ok()
+        with ex ->
+            Result.Error ex
+
+    afterRelease outcome
+
 /// Fair host-wide scheduler for resources shared by otherwise independent plugins.
 /// Ownership is handed directly to the oldest waiter, so a releasing plugin cannot
 /// repeatedly reacquire ahead of already-owed work.
@@ -63,9 +80,12 @@ type SharedRunScheduler() =
         System.Collections.Generic.Dictionary<string, SharedResourceState>()
 
     let waiters =
-        System.Collections.Generic.Dictionary<string, System.Collections.Generic.Queue<SharedResourceState -> bool>>()
+        System.Collections.Generic.Dictionary<
+            string,
+            System.Collections.Generic.Queue<SharedResourceState -> SharedRunStart>
+         >()
 
-    member _.ClaimOrQueue(key: string, start: SharedResourceState -> bool) =
+    member _.ClaimOrQueue(key: string, start: SharedResourceState -> SharedRunStart) =
         lock gate (fun () ->
             if owners.Add key then
                 match resourceStates.TryGetValue key with
@@ -76,7 +96,9 @@ type SharedRunScheduler() =
                     match waiters.TryGetValue key with
                     | true, existing -> existing
                     | _ ->
-                        let created = System.Collections.Generic.Queue<SharedResourceState -> bool>()
+                        let created =
+                            System.Collections.Generic.Queue<SharedResourceState -> SharedRunStart>()
+
                         waiters[key] <- created
                         created
 
@@ -103,10 +125,12 @@ type SharedRunScheduler() =
                     try
                         start state
                     with _ ->
-                        false
+                        SharedStartFailed(fun _ -> ())
 
-                if not started then
-                    handOff (Invalid "shared waiter failed to start")
+                match started with
+                | SharedStarted -> ()
+                | SharedStartFailed afterRelease ->
+                    finishSharedStartFailure (fun () -> handOff (Invalid "shared waiter failed to start")) afterRelease
 
         handOff resourceState
 
@@ -142,6 +166,10 @@ type PluginCtx<'Msg> =
         RepoRoot: string
         /// Post a custom message back to this plugin's agent.
         Post: 'Msg -> unit
+        /// Queue owner-resolved intent through the current exclusive result fold.
+        /// Some key coalesces pending automatic intents; None preserves command FIFO.
+        /// The returned task acknowledges this exact event's committed transition.
+        EnqueueExclusiveIntent: string -> string option -> 'Msg -> System.Threading.Tasks.Task<unit>
         /// Start a named concurrent subtask. Duplicate keys are no-ops.
         StartSubtask: string -> string -> unit
         /// Update an existing subtask's label in-place. No-op if not started.
@@ -200,6 +228,10 @@ type PluginCtx<'Msg> =
 /// path is the canonical `bin/Debug/<TFM>/<name>.dll`.
 and [<NoComparison; NoEquality>] ProjectGraphAccessor =
     {
+        /// Completed discovery identity. Unavailable or changing models cannot earn test proof.
+        ObserveModel: unit -> ProjectModel.Observation
+        /// Exact checkable files published atomically with their completed model generation.
+        ObserveCheckableFiles: unit -> (int64 * Set<AbsFilePath>) option
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -216,7 +248,9 @@ module ProjectGraphAccessor =
     /// No-op accessor: no graph wired (tests, null-checker daemon). Every query
     /// returns empty/None, so dependency-fanout consumers fall back cleanly.
     let none: ProjectGraphAccessor =
-        { GetAllProjects = fun () -> []
+        { ObserveModel = fun () -> ProjectModel.Observation.Unobserved
+          ObserveCheckableFiles = fun () -> None
+          GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
           GetCanonicalDllPath = fun _ -> None }
@@ -238,11 +272,42 @@ type CommandCtx<'Msg> =
         /// Post a message to the plugin's agent — the only way a command may
         /// cause work to happen.
         Post: 'Msg -> unit
+        /// Queue owner-resolved intent through the current exclusive result fold.
+        /// Some key coalesces pending automatic intents; None preserves command FIFO.
+        /// The returned task acknowledges this exact event's committed transition.
+        EnqueueExclusiveIntent: string -> string option -> 'Msg -> System.Threading.Tasks.Task<unit>
         /// Whether `key` is currently running under `RunExclusive`.
         IsRunning: string -> bool
         /// Read-only project-graph accessor.
         ProjectGraph: ProjectGraphAccessor
     }
+
+/// Observation capabilities contain no route for posting work.
+[<NoComparison; NoEquality>]
+type CommandReadCtx =
+    { RepoRoot: string
+      Log: string -> unit
+      IsRunning: string -> bool
+      ProjectGraph: ProjectGraphAccessor }
+
+/// Reads receive committed state; requests carry intent without inspecting state.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type PluginCommand<'State, 'Msg> =
+    | Observe of (CommandReadCtx -> 'State -> string array -> Async<string>)
+    | Request of (CommandCtx<'Msg> -> string array -> Async<string>)
+
+module PluginCommand =
+    let readContext (ctx: CommandCtx<'Msg>) : CommandReadCtx =
+        { RepoRoot = ctx.RepoRoot
+          Log = ctx.Log
+          IsRunning = ctx.IsRunning
+          ProjectGraph = ctx.ProjectGraph }
+
+    /// Interpret a command against an explicit state, also used by isolated handler tests.
+    let invoke command ctx state args =
+        match command with
+        | PluginCommand.Observe read -> read (readContext ctx) state args
+        | PluginCommand.Request request -> request ctx args
 
 /// Tags for events a plugin can subscribe to.
 type SubscribedEvent =
@@ -265,6 +330,11 @@ module PluginSubscriptions =
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
+type PreparedCommit = { Finalize: Async<unit> }
+
+/// A handler's proposal is published only after preparation succeeds; its event
+/// remains owned until finalization and any cache write have completed.
+[<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
     {
         /// The display name of this plugin.
@@ -273,17 +343,17 @@ type PluginHandler<'State, 'Msg> =
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
         Update: PluginCtx<'Msg> -> 'State -> PluginEvent<'Msg> -> Async<'State>
-        /// Named commands that can be invoked via IPC. Each command receives a
-        /// deliberately narrow `CommandCtx` (see its doc — commands observe and
-        /// `Post`, they never launch work on the IPC thread), a state snapshot,
-        /// and args. `ctx` is typically `_ctx` for commands that don't need it.
-        Commands: (string * (CommandCtx<'Msg> -> 'State -> string array -> Async<string>)) list
+        PrepareCommit: ('State -> 'State -> Async<PreparedCommit>) option
+        /// Named IPC commands. Observations cannot post work; requests cannot
+        /// inspect plugin state and must post state-dependent intent to its owner.
+        Commands: (string * PluginCommand<'State, 'Msg>) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
+        /// Cache decisions consume the same committed state as Update; no mirrored state is required.
         /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
         /// `None` → skip cache and run Update — overloaded across "uncacheable event",
         /// "cold-start bypass", and "outputs missing"; plugins document which at the call site.
-        CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
+        CacheKey: ('State -> PluginEvent<'Msg> -> ContentHash option) option
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
     }
@@ -300,6 +370,17 @@ type PluginDispatchEvent =
     | DispatchTestRunCompleted of TestRunCompleted
     | DispatchCommandCompleted of CommandCompletedResult
 
+/// Identity-bearing completion witness for one dispatched event. Waiting is always
+/// bounded and never inferred from an unrelated event's progress counter.
+[<NoComparison; NoEquality>]
+type DispatchReceipt =
+    private
+    | DispatchReceipt of System.Threading.Tasks.Task<unit>
+
+    member this.Wait(timeout: TimeSpan) =
+        let (DispatchReceipt completion) = this
+        completion.WaitAsync(timeout)
+
 /// Type-erased plugin registration stored by PluginHost.
 [<NoComparison; NoEquality>]
 type RegisteredPlugin =
@@ -308,17 +389,21 @@ type RegisteredPlugin =
         Name: PluginName
         /// Dispatch an event to this plugin. Filtering by subscription is built in.
         Dispatch: PluginDispatchEvent -> unit
+        /// None means the event was not subscribed. Success acknowledges this
+        /// event's state publication; executor failure faults accepted receipts.
+        /// Admission to an already-faulted executor raises its recorded failure.
+        DispatchTracked: PluginDispatchEvent -> DispatchReceipt option
         /// Optional teardown function for releasing resources.
         Teardown: (unit -> unit) option
-        /// True iff this plugin has at least one event still pending in its
-        /// mailbox or actively being processed by its handler. Used by
+        /// True iff this plugin owns a pending/active event or exclusive worker,
+        /// including that worker's completion processing and cleanup. Used by
         /// `WaitForComplete` to avoid the race where a plugin's status is
         /// observably Idle but an event has been posted to its mailbox and
         /// will trigger work as soon as the handler runs.
         IsBusy: unit -> bool
         /// How many dispatched events this plugin has FINISHED handling, ever.
-        /// Monotonic, incremented in the same `finally` that releases the
-        /// in-flight count.
+        /// Monotonic, published with the domain state when the event obligation
+        /// is retired by the owner.
         ///
         /// The difference between "busy" and "making progress". A plugin draining
         /// a long `FileChecked` backlog is busy continuously, with nothing
@@ -329,13 +414,12 @@ type RegisteredPlugin =
         /// What the handler subscribed to — so the host can tell which plugins a
         /// re-fired `FileChanged` would reach (`PluginHost.RerunPlugin`).
         Subscriptions: PluginSubscriptions
-        /// The fault that killed this plugin's message loop, if one did.
+        /// The latest owned event, persistence, or executor failure, if one exists.
         ///
-        /// A dead agent is otherwise INDISTINGUISHABLE from a busy one: the
-        /// in-flight count is incremented when an event is posted and only
-        /// decremented by the loop, so once the loop stops the count can only
-        /// rise and `WaitForComplete` waits forever. One integer cannot say "0 and
-        /// alive" apart from "n and dead", so the fault is published separately.
+        /// Published in the same owner snapshot as work obligations. A fault
+        /// fails accepted event receipts but preserves live exclusive workers
+        /// until cleanup. It remains observable after those workers finish;
+        /// empty work is not evidence that the executor is healthy.
         Fault: unit -> exn option
     }
 
@@ -382,7 +466,7 @@ type PluginHostServices =
         StartAsync: Async<unit> -> unit
         /// Enter the FIFO for a host-wide resource. True means start now; false
         /// means `start` is retained and invoked on direct ownership handoff.
-        ClaimOrQueueSharedRun: string -> (SharedResourceState -> bool) -> SharedResourceState option
+        ClaimOrQueueSharedRun: string -> (SharedResourceState -> SharedRunStart) -> SharedResourceState option
         /// Release ownership and wake exactly the oldest waiter, if present.
         ReleaseSharedRun: string -> SharedResourceState -> unit
     }
@@ -402,23 +486,27 @@ let internal ledgerSummary (diagnosticsByFile: Map<string, ErrorEntry list>) : s
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
-let registerHandler (services: PluginHostServices) (handler: PluginHandler<'State, 'Msg>) : RegisteredPlugin =
+let internal registerHandlerForOwner
+    (workOwner: PluginWorkOwner.Owner<'State>)
+    (services: PluginHostServices)
+    (handler: PluginHandler<'State, 'Msg>)
+    : RegisteredPlugin =
 
-    // Per-handler run-slot state for ctx.RunExclusive. Keyed by the user-supplied
-    // string. `true` means a call is in flight; absent or `false` means idle.
-    // While running, additional calls under the same key are dropped. Mutated
-    // only inside `runSlotsLock`.
-    let runSlots = System.Collections.Generic.Dictionary<string, bool>()
+    // Dispatch may arrive from a short-lived scan/batch scope. An exclusive
+    // worker belongs to this registered plugin and can outlive that trigger.
+    let ownerContext = System.Threading.ExecutionContext.Capture()
 
-    let runSlotsLock = obj ()
+    let startOwned operation =
+        if isNull ownerContext then
+            services.StartAsync operation
+        else
+            System.Threading.ExecutionContext.Run(
+                ownerContext.CreateCopy(),
+                System.Threading.ContextCallback(fun _ -> services.StartAsync operation),
+                null
+            )
 
-    /// True when this plugin holds ANY exclusive run slot — i.e. real work
-    /// (a test run, a build) is executing in the background right now, even
-    /// though the mailbox is idle and the handler that launched it has already
-    /// returned. Keyless because the framework does not know a plugin's slot
-    /// names — any busy slot means "not at rest".
-    let anyRunSlotBusy () =
-        lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
+    let anyRunSlotBusy () = workOwner.Snapshot.HasExclusiveRun
 
     /// Serialises "decide whether a live run owns the status" + "publish it"
     /// against "claim a run slot" + "publish the `Running` that claim earns", so the
@@ -429,14 +517,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     /// a record of closures, so a plugin may legally claim a slot from a `work`
     /// async or a spawned task and reach this concurrently.
     ///
-    /// Lock ordering: `statusLock` is ALWAYS acquired before `runSlotsLock` and
-    /// NEVER from inside it; `runSlotsLock` is otherwise only ever taken alone
-    /// (`isRunning`, `anyRunSlotBusy`, `runOne`'s release), so no cycle exists.
-    /// Nothing reachable from `services.ReportStatus` re-enters this framework —
-    /// `PluginHost.setStatus` is a dictionary write plus a NON-BLOCKING
-    /// `MailboxProcessor.Post` — and `runSlotsLock` is released before the report at
-    /// both call sites below, so a host callback reading `IsRunning` cannot
-    /// self-deadlock.
+    /// This remaining UI-report lock orders reports against claims. Work and
+    /// domain state are owned separately by the single immutable owner snapshot;
+    /// the final host evidence migration removes UI status as gate authority.
     let statusLock = obj ()
 
     /// Publish `s` unless a live exclusive run owns this plugin's status; returns
@@ -482,164 +565,106 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     let reportBypassingGuard (s: PluginStatus) =
         lock statusLock (fun () -> services.ReportStatus handler.Name s)
 
-    // Forward reference to the agent so `post` and `runOne` can route completion
-    // messages back without an inbox closure. Set immediately after Start returns;
-    // any access before then is impossible by construction (no caller can invoke
-    // ctx until registerHandler returns the RegisteredPlugin).
-    let mutable agentRef: MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>> option =
-        None
-
-    // Per-plugin inflight counter — the SINGLE source of "this plugin has work
-    // in flight". Incremented (a) every time a Choice1Of2 event is posted to
-    // the agent's mailbox, decremented after the agent has finished handling
-    // that event; and (b) for the whole lifetime of an exclusive run: from the
-    // moment `runExclusive` claims the slot until AFTER the run's completion
-    // message has been posted back (see `runOne`'s finally). `WaitForComplete`
-    // consults this via `RegisteredPlugin.IsBusy`.
-    //
-    // ONE counter on purpose (AUTOMATION-99): a composite of two atomics
-    // (`inflightCount > 0 || anyRunSlotBusy()`) is read at two instants, and the
-    // hand-off between them has a gap where a reader sees "slot free" AND "mailbox
-    // empty" while the run's verdict is still in flight. Holding the work token
-    // until after the completion post means the counter never dips to zero between
-    // "run claimed" and "completion handled".
-    let inflightCount = ref 0
-
-    // Monotonic count of dispatched events this plugin has finished handling.
-    // Read by the wait's stall detector to tell "draining a backlog" from
-    // "stopped": see `RegisteredPlugin.CompletedDispatches`.
-    let completedDispatches = ref 0L
-
-    // Set once if the message loop dies. See `RegisteredPlugin.Fault`.
-    let mutable agentFault: exn option = None
+    // Tie delivery to the mailbox before exposing command or dispatch closures.
+    // No worker can start before one of those closures admits it, so uninitialized
+    // delivery is a construction error, not an optional executor state.
+    let mutable deliverEvent: PluginEvent<'Msg> * PluginWorkOwner.WorkId -> unit =
+        fun _ -> invalidOp "Plugin executor delivery has not been initialized"
 
     let post (msg: 'Msg) =
-        match agentRef with
-        | Some a ->
-            System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
-            a.Post(Choice1Of2(Custom msg))
-        | None -> ()
+        let identity = workOwner.AdmitEvent()
+        deliverEvent (Custom msg, identity)
+
+    let enqueueExclusiveIntent key coalescingKey message =
+        workOwner.EnqueueIntent(key, coalescingKey, fun identity -> deliverEvent (Custom message, identity))
+
+    let reportRunFailure key startedAt stage (ex: exn) =
+        let summary = $"RunExclusive '%s{key}' %s{stage}: %s{ex.ToString()}"
+        error (PluginName.value handler.Name) summary
+
+        reportBypassingGuard (
+            PluginStatus.Failed(
+                summary,
+                DateTime.UtcNow,
+                RunVerdict.create $"RunExclusive '%s{key}' %s{stage}: %s{ex.Message}" (DateTime.UtcNow - startedAt)
+            )
+        )
 
     let runOne
         (key: string)
+        (identity: PluginWorkOwner.WorkId)
         (sharedRun: (string * ('Msg -> SharedResourceState)) option)
         (startedAt: DateTime)
         (w: Async<'Msg>)
         =
-        async {
-            let mutable completion: 'Msg voption = ValueNone
+        let finish outcome settleChildren =
+            let mutable completion = outcome
 
-            // The work async is plugin-supplied — a third-party-extension
-            // boundary that may raise anything. The broad catch keeps the
-            // `completion` value assignable: without it the `finally` still runs
-            // (releasing the runSlots entry) but `completion` stays unset and the
-            // agent waits forever for a result. Logged as ex.ToString() so the
-            // type and stack trace survive for diagnosing the offending plugin.
             try
-                try
-                    let! msg = w
-                    completion <- ValueSome msg
-                with ex ->
-                    error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
+                settleChildren ()
+            with failure ->
+                completion <- Result.Error failure
 
-                    // A faulted exclusive run must never STRAND the plugin in a
-                    // non-terminal status. No completion message is posted on this
-                    // path (`completion` stays ValueNone below) and `runExclusive`
-                    // reported Running at the claim, so without a forced terminal
-                    // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
-                    // report false — `WaitForComplete` then blocks on a plugin that
-                    // will never complete, and idle-exit fires mid-wait. The
-                    // framework knows when this run started (it claimed the slot),
-                    // so the verdict carries a measured elapsed.
-                    reportBypassingGuard (
-                        PluginStatus.Failed(
-                            $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
-                            DateTime.UtcNow,
-                            RunVerdict.create
-                                $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
-                                (DateTime.UtcNow - startedAt)
-                        )
-                    )
-            finally
-                // Release order matters:
-                //   1. free the slot — the completion handler may itself launch
-                //      the next run (`PendingRerun`), so the slot must be free
-                //      by the time the completion message is PROCESSED;
-                //   2. post the completion message — increments the mailbox leg
-                //      of `inflightCount`;
-                //   3. only then drop the work token taken by `runExclusive`.
-                // The counter stays positive across the whole hand-off, so no
-                // observer can catch the plugin "at rest" between the run
-                // finishing and its verdict being handled. On the faulted path
-                // (no completion) the forced `Failed` above was reported while
-                // the token was still held, so the status is terminal before the
-                // plugin ever reads as not-busy.
-                lock runSlotsLock (fun () -> runSlots.[key] <- false)
-
-                sharedRun
-                |> Option.iter (fun (sharedKey, classify) ->
-                    let resourceState =
-                        match completion with
-                        | ValueSome message ->
-                            try
-                                classify message
-                            with ex ->
-                                error
-                                    (PluginName.value handler.Name)
-                                    $"RunExclusiveShared '%s{key}' classifier failed: %s{ex.ToString()}"
-
-                                Invalid $"%s{PluginName.value handler.Name} shared result classifier faulted"
-                        | ValueNone -> Invalid $"%s{PluginName.value handler.Name} shared work faulted"
-
-                    services.ReleaseSharedRun sharedKey resourceState)
-
-                try
+            sharedRun
+            |> Option.iter (fun (sharedKey, classify) ->
+                let resourceState =
                     match completion with
-                    | ValueSome m -> post m
-                    | ValueNone -> ()
-                finally
-                    System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
-        }
+                    | Ok message ->
+                        try
+                            classify message
+                        with failure ->
+                            completion <- Result.Error failure
+                            Invalid $"{PluginName.value handler.Name} shared result classifier faulted"
+                    | Result.Error _ -> Invalid $"{PluginName.value handler.Name} shared work faulted"
 
-    let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
-        // The claim and the `Running` it publishes are ONE critical section under
-        // `statusLock`, so no terminal can slip between "no run is live" and "a run
-        // is live" and land on top of the run. `runSlotsLock` is released before the
-        // report; `Async.Start` happens after the lock so no plugin work ever runs
-        // under it.
+                try
+                    services.ReleaseSharedRun sharedKey resourceState
+                with failure ->
+                    completion <- Result.Error failure)
+
+            match completion with
+            | Ok message ->
+                match workOwner.CompleteRun identity with
+                | None -> ()
+                | Some eventIdentity -> deliverEvent (Custom message, eventIdentity)
+            | Result.Error failure ->
+                try
+                    reportRunFailure key startedAt "work or cleanup failed" failure
+                finally
+                    workOwner.FailRun(identity, failure)
+
+        SupervisedWork.execute
+            (PluginName.value handler.Name + "/" + key)
+            (SupervisedWork.ambientDeadline ())
+            SupervisedWork.defaultScheduler
+            (fun failure -> workOwner.MarkRunFailure(identity, failure))
+            System.Threading.CancellationToken.None
+            (fun _ -> w)
+            finish
+
+    let runExclusive (after: PluginWorkOwner.WorkId option) (key: string) (work: Async<'Msg>) : RunClaim =
+        // The owner admits the exclusive obligation before its UI report.
         let claimedAt =
             lock statusLock (fun () ->
-                let shouldStart =
-                    lock runSlotsLock (fun () ->
-                        match runSlots.TryGetValue(key) with
-                        | true, true -> false
-                        | _ ->
-                            runSlots.[key] <- true
-                            true)
+                let claim = workOwner.TryClaim(key, ?after = after)
 
-                if shouldStart then
-                    // The framework — not the plugin — reports Running at the claim
-                    // instant, so a launched run is never invisible. A plugin that
-                    // reports it itself can miss: CoveragePlugin did, which rendered
-                    // ✓ while it ran and starved `bumpGenerationIfStarting`, so the
-                    // host's generation-based terminal wait could never be satisfied
-                    // while coverage was registered.
-                    let startedAt = DateTime.UtcNow
-                    services.ReportStatus handler.Name (Running(since = startedAt))
+                claim
+                |> Option.iter (fun (_, startedAt) -> services.ReportStatus handler.Name (Running startedAt))
 
-                    // Work token: counts this exclusive run in `inflightCount` from
-                    // claim until after its completion message is posted (released in
-                    // `runOne`'s finally). See the counter's doc comment.
-                    System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
-                    ValueSome startedAt
-                else
-                    ValueNone)
+                claim)
 
         match claimedAt with
-        | ValueSome startedAt ->
-            Async.Start(runOne key None startedAt work)
+        | Some(identity, startedAt) ->
+            try
+                startOwned (runOne key identity None startedAt work)
+            with ex ->
+                try
+                    reportRunFailure key startedAt "failed to start" ex
+                finally
+                    workOwner.FailRun(identity, ex)
+
             Claimed
-        | ValueNone ->
+        | None ->
             // Exclusion-slot contention: the run is NOT started and the caller must
             // decide (skip or queue). The debug line keeps "why didn't my edit
             // re-run this plugin?" answerable from the log.
@@ -650,6 +675,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             SlotBusy
 
     let runExclusiveShared
+        (after: PluginWorkOwner.WorkId option)
         (key: string)
         (sharedKey: string)
         (workFor: SharedResourceState -> Async<'Msg>)
@@ -658,25 +684,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         : SharedRunClaim =
         let claimedAt =
             lock statusLock (fun () ->
-                let localClaimed =
-                    lock runSlotsLock (fun () ->
-                        match runSlots.TryGetValue(key) with
-                        | true, true -> false
-                        | _ ->
-                            runSlots.[key] <- true
-                            true)
+                let claim = workOwner.TryClaim(key, ?after = after)
 
-                if localClaimed then
-                    let startedAt = DateTime.UtcNow
-                    services.ReportStatus handler.Name (Running(since = startedAt))
-                    System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
-                    ValueSome startedAt
-                else
-                    ValueNone)
+                claim
+                |> Option.iter (fun (_, startedAt) -> services.ReportStatus handler.Name (Running startedAt))
+
+                claim)
 
         match claimedAt with
-        | ValueNone -> LocalSlotBusy
-        | ValueSome startedAt ->
+        | None -> LocalSlotBusy
+        | Some(identity, startedAt) ->
             let start resourceState =
                 // Defer the plugin factory invocation into runOne's guarded async
                 // boundary. A synchronous exception while constructing the work
@@ -690,45 +707,45 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 return failureMessage ex
                         }
 
-                    services.StartAsync(runOne key (Some(sharedKey, classify)) startedAt guardedWork)
-                    true
+                    startOwned (runOne key identity (Some(sharedKey, classify)) startedAt guardedWork)
+                    SharedStarted
                 with ex ->
-                    lock runSlotsLock (fun () -> runSlots.[key] <- false)
-                    System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
+                    SharedStartFailed(fun released ->
+                        // The scheduler owns handoff before this acknowledgement.
+                        // Failure mapping cannot retire the run ahead of cleanup.
+                        try
+                            match released with
+                            | Result.Error cleanupFailure -> raise cleanupFailure
+                            | Ok() -> ()
 
-                    error
-                        (PluginName.value handler.Name)
-                        $"RunExclusiveShared '%s{key}' failed to start: %s{ex.ToString()}"
+                            reportRunFailure key startedAt "failed to start" ex
+                            let message = failureMessage ex
 
-                    reportBypassingGuard (
-                        PluginStatus.Failed(
-                            $"RunExclusiveShared '%s{key}' failed to start: %s{ex.ToString()}",
-                            DateTime.UtcNow,
-                            RunVerdict.create
-                                $"RunExclusiveShared '%s{key}' failed to start: %s{ex.Message}"
-                                (DateTime.UtcNow - startedAt)
-                        )
-                    )
-
-                    post (failureMessage ex)
-
-                    false
+                            match workOwner.CompleteRun identity with
+                            | None -> ()
+                            | Some eventIdentity -> deliverEvent (Custom message, eventIdentity)
+                        with failure ->
+                            try
+                                reportRunFailure key startedAt "startup completion failed" failure
+                            finally
+                                workOwner.FailRun(identity, failure))
 
             match services.ClaimOrQueueSharedRun sharedKey start with
             | Some resourceState ->
-                if not (start resourceState) then
-                    services.ReleaseSharedRun
-                        sharedKey
-                        (Invalid $"%s{PluginName.value handler.Name} shared work failed to start")
+                match start resourceState with
+                | SharedStarted -> ()
+                | SharedStartFailed afterRelease ->
+                    finishSharedStartFailure
+                        (fun () ->
+                            services.ReleaseSharedRun
+                                sharedKey
+                                (Invalid $"%s{PluginName.value handler.Name} shared work failed to start"))
+                        afterRelease
 
                 SharedClaimed
             | None -> SharedQueued
 
-    let isRunning (key: string) =
-        lock runSlotsLock (fun () ->
-            match runSlots.TryGetValue(key) with
-            | true, running -> running
-            | _ -> false)
+    let isRunning (key: string) = workOwner.Snapshot.IsRunning key
 
     /// The plugin-facing status reporter: drops a terminal stamped while a live
     /// run owns the status (see `reportUnlessRunOwns`), forwards everything else.
@@ -756,13 +773,14 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
           Checker = services.Checker
           RepoRoot = services.RepoRoot
           Post = post
+          EnqueueExclusiveIntent = enqueueExclusiveIntent
           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
           UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
           EndSubtask = fun key -> services.EndSubtask handler.Name key
           Log = fun msg -> services.Log handler.Name msg
           CompleteWithTimeout = fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-          RunExclusive = runExclusive
-          RunExclusiveShared = runExclusiveShared
+          RunExclusive = runExclusive None
+          RunExclusiveShared = runExclusiveShared None
           IsRunning = isRunning
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }
@@ -772,11 +790,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         { RepoRoot = services.RepoRoot
           Log = fun msg -> services.Log handler.Name msg
           Post = post
+          EnqueueExclusiveIntent = enqueueExclusiveIntent
           IsRunning = isRunning
           ProjectGraph = services.ProjectGraph }
 
     let agent =
-        MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>>
+        MailboxProcessor<PluginEvent<'Msg> * PluginWorkOwner.WorkId>
             .Start(
                 (fun inbox ->
 
@@ -1029,20 +1048,28 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                     let safeUpdate pluginCtx state event =
                         async {
-                            let handlerStarted = DateTime.UtcNow
-
                             try
-                                return! handler.Update pluginCtx state event
+                                let! candidate = handler.Update pluginCtx state event
+                                return Result.Ok candidate
                             with ex ->
-                                reportForcedFailure "Plugin handler" handlerStarted ex
-                                return state
+                                return Result.Error ex
                         }
 
                     /// Run Update with a capturing context that records side effects, then store in cache if terminal.
                     /// `cacheKeyOpt` is the same key the preceding `tryReplayCache`
                     /// lookup used (computed once per event in the dispatch loop)
                     /// — never recompute it here.
-                    let runAndCache (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
+                    let runAndCache
+                        identity
+                        (event: PluginEvent<'Msg>)
+                        (state: 'State)
+                        (cacheKeyOpt: ContentHash option)
+                        =
+                        let eventCtx =
+                            { ctx with
+                                RunExclusive = runExclusive (Some identity)
+                                RunExclusiveShared = runExclusiveShared (Some identity) }
+
                         async {
                             match services.TaskCache, cacheKeyOpt with
                             | Some cache, Some cacheKey ->
@@ -1111,6 +1138,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                       Checker = services.Checker
                                       RepoRoot = services.RepoRoot
                                       Post = post
+                                      EnqueueExclusiveIntent = enqueueExclusiveIntent
                                       StartSubtask = fun key label -> services.StartSubtask handler.Name key label
                                       UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                                       EndSubtask = fun key -> services.EndSubtask handler.Name key
@@ -1119,14 +1147,22 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                         fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
                                       RunExclusive =
                                         fun key work ->
-                                            match runExclusive key work with
+                                            match runExclusive (Some identity) key work with
                                             | Claimed ->
                                                 launchedRunInWindow <- true
                                                 Claimed
                                             | SlotBusy -> SlotBusy
                                       RunExclusiveShared =
                                         fun key sharedKey workFor classify failureMessage ->
-                                            match runExclusiveShared key sharedKey workFor classify failureMessage with
+                                            match
+                                                runExclusiveShared
+                                                    (Some identity)
+                                                    key
+                                                    sharedKey
+                                                    workFor
+                                                    classify
+                                                    failureMessage
+                                            with
                                             | SharedClaimed ->
                                                 launchedRunInWindow <- true
                                                 SharedClaimed
@@ -1138,7 +1174,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
 
-                                let! nextState = safeUpdate capturingCtx state event
+                                let! attempted = safeUpdate capturingCtx state event
 
                                 // Only cache when the status reached a terminal state AND
                                 // the handler did not launch a new run in the same window
@@ -1161,140 +1197,127 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | Some(Failed(err, _, v)), None -> Some(TaskCache.CachedRunFailed(err, v))
                                     | (Some(Idle | Running _) | None), _ -> None
 
-                                match cachedStatus with
-                                | Some status when not launchedRunInWindow ->
-                                    let result: TaskCache.TaskCacheResult =
-                                        { CacheKey = cacheKey
-                                          Errors = capturedErrors |> Seq.toList
-                                          Status = status
-                                          EmittedEvents = capturedEvents |> Seq.toList }
+                                let cacheWrite =
+                                    match attempted, cachedStatus with
+                                    | Result.Ok _, Some status when not launchedRunInWindow ->
+                                        let result: TaskCache.TaskCacheResult =
+                                            { CacheKey = cacheKey
+                                              Errors = capturedErrors |> Seq.toList
+                                              Status = status
+                                              EmittedEvents = capturedEvents |> Seq.toList }
 
-                                    cache.Set compKey cacheKey result
-                                | _ -> ()
+                                        Some(fun () -> cache.Set compKey cacheKey result)
+                                    | _ -> None
 
-                                return nextState
-                            | _ -> return! safeUpdate ctx state event
+                                return attempted |> Result.map (fun candidate -> candidate, cacheWrite)
+                            | _ ->
+                                let! attempted = safeUpdate eventCtx state event
+                                return attempted |> Result.map (fun candidate -> candidate, None)
                         }
 
                     let rec loop state =
                         async {
-                            let! msg = inbox.Receive()
+                            let! (event, identity) = inbox.Receive()
+                            let dispatchStarted = DateTime.UtcNow
 
-                            match msg with
-                            | Choice2Of2 ch ->
-                                ch.Reply(state)
-                                return! loop state
-                            | Choice1Of2 event ->
-                                // EVERYTHING this event does must run inside the
-                                // decrement's `finally` and under a `with`.
-                                //
-                                // A throw outside the `finally` leaks the increment
-                                // `post` already took. A throw that escapes `loop`
-                                // STOPS the MailboxProcessor — silently, so every
-                                // later post increments into a mailbox nobody is
-                                // reading. `IsBusy` is `inflightCount > 0`, so
-                                // either leaves a dead agent indistinguishable from
-                                // a busy one, permanently: both satisfaction paths
-                                // in `waitForAllTerminalCore` require
-                                // `not (AnyPluginBusy())`, so `check`/`confirm`
-                                // can never resolve. The throwing arms are ordinary
-                                // code — TestPrune's `dependsOnHash` hashes every
-                                // file matched by the `dependsOn` globs, and the
-                                // per-file arm calls `fcsCheckSignature` over raw
-                                // FCS results: I/O and third-party data shapes, on
-                                // the dispatch thread.
-                                //
-                                // So a fault here is ACCOUNTED FOR (the finally
-                                // still decrements), VISIBLE (forced Failed, same
-                                // ownership rule as `safeUpdate`), and SURVIVABLE
-                                // (the loop continues, so the plugin keeps serving
-                                // later events).
-                                let dispatchStarted = DateTime.UtcNow
+                            let! attempted =
+                                async {
+                                    try
+                                        let cacheKeyOpt = handler.CacheKey |> Option.bind (fun key -> key state event)
+                                        // Custom messages deliver actual work and cannot replay an older fold.
+                                        let replayKeyOpt =
+                                            match event with
+                                            | Custom _ -> None
+                                            | _ -> cacheKeyOpt
 
-                                let! nextState =
-                                    async {
-                                        try
+                                        if tryReplayCache event replayKeyOpt then
+                                            return Result.Ok(state, None, false)
+                                        else
+                                            let! result = runAndCache identity event state cacheKeyOpt
+
+                                            return
+                                                result |> Result.map (fun (candidate, write) -> candidate, write, true)
+                                    with ex ->
+                                        return Result.Error ex
+                                }
+
+                            let! committed =
+                                async {
+                                    match attempted with
+                                    | Result.Error failure ->
+                                        return Result.Error(state, PluginWorkOwner.UpdateFailure failure)
+                                    | Result.Ok(candidate, cacheWrite, updated) ->
+                                        match handler.PrepareCommit with
+                                        | Some prepare when updated ->
                                             try
-                                                // Computed ONCE per dispatched event — see `tryReplayCache`.
-                                                let cacheKeyOpt =
-                                                    match handler.CacheKey with
-                                                    | Some cacheKeyFn -> cacheKeyFn event
-                                                    | None -> None
+                                                // External preparation never runs inside the Store writer.
+                                                let! prepared = prepare state candidate
+                                                workOwner.PublishEventState(identity, candidate)
 
-                                                // A `Custom` message is a cache WRITER, never a cache READER.
-                                                //
-                                                // Every other event is an OBSERVATION whose payload is what the
-                                                // key is computed FROM, so same key ⇒ same input ⇒ the cached
-                                                // result IS the result. A `Custom` message is the plugin's own
-                                                // post — the delivery of work already done — and its payload is
-                                                // NOT in the key: TestPrune's `cacheKeyFor` reads the
-                                                // `TestRunCompleted` it carries only far enough to decide whether
-                                                // the result is CACHEABLE, never far enough to IDENTIFY it, so two
-                                                // different runs collide on one key. A hit here is a collision,
-                                                // and serving it skips the handler — the only thing that folds the
-                                                // finished run into the plugin's state.
-                                                //
-                                                // The WRITE below keeps the real key: a Custom window is how the
-                                                // entry the next `BuildCompleted` hits gets minted at all.
-                                                let replayKeyOpt =
-                                                    match event with
-                                                    | Custom _ -> None
-                                                    | _ -> cacheKeyOpt
-
-                                                if tryReplayCache event replayKeyOpt then
-                                                    return state
-                                                else
-                                                    return! runAndCache event state cacheKeyOpt
+                                                try
+                                                    do! prepared.Finalize
+                                                    cacheWrite |> Option.iter (fun write -> write ())
+                                                    workOwner.SettleEvent(identity, preparedCommit = true)
+                                                    return Result.Ok candidate
+                                                with ex ->
+                                                    return Result.Error(candidate, PluginWorkOwner.CommitFailure ex)
                                             with ex ->
-                                                // Not `safeUpdate`'s net: that one wraps
-                                                // `handler.Update` alone, while this catches the
-                                                // dispatch machinery AROUND it — the cache-key
-                                                // thunks and the replay lookup.
-                                                reportForcedFailure
-                                                    "Dispatch (cache key or cache replay)"
-                                                    dispatchStarted
-                                                    ex
+                                                return Result.Error(state, PluginWorkOwner.CommitFailure ex)
+                                        | _ ->
+                                            try
+                                                workOwner.PublishEventState(identity, candidate)
 
-                                                return state
-                                        finally
-                                            // Decrement only after the handler
-                                            // (or cache replay) finishes — until
-                                            // then `IsBusy` must report true so
-                                            // WaitForComplete doesn't return
-                                            // before this event has actually been
-                                            // processed.
-                                            System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
+                                                try
+                                                    cacheWrite |> Option.iter (fun write -> write ())
+                                                    workOwner.SettleEvent(identity)
+                                                    return Result.Ok candidate
+                                                with ex ->
+                                                    return Result.Error(candidate, PluginWorkOwner.UpdateFailure ex)
+                                            with ex ->
+                                                return Result.Error(state, PluginWorkOwner.UpdateFailure ex)
+                                }
 
-                                            // Paired with the decrement on purpose: one
-                                            // event finished is exactly one unit of
-                                            // progress, so a plugin that is still
-                                            // draining can never look stalled.
-                                            System.Threading.Interlocked.Increment(&completedDispatches.contents)
-                                            |> ignore
-                                    }
+                            // Settle failure once, outside the effect catches. Diagnostic failure
+                            // cannot retry retirement of an identity whose receipt already failed.
+                            let nextState =
+                                match committed with
+                                | Result.Ok candidate -> candidate
+                                | Result.Error(_, failure) when workOwner.Snapshot.ExecutorFault.IsSome ->
+                                    // Successor delivery can fail after this event retired.
+                                    // Its receipt has already settled; stop the executor
+                                    // without attempting to retire that identity again.
+                                    raise failure.Exception
+                                | Result.Error(retained, failure) ->
+                                    try
+                                        try
+                                            reportForcedFailure "Plugin event" dispatchStarted failure.Exception
+                                        with reportingFailure ->
+                                            error
+                                                (PluginName.value handler.Name)
+                                                $"Failure reporting also failed: %s{reportingFailure.ToString()}"
+                                    finally
+                                        // Reporting is part of the original event. Publish
+                                        // its failure only after that attempt, exactly once.
+                                        workOwner.FailEvent(identity, failure)
 
-                                return! loop nextState
+                                    retained
+
+                            return! loop nextState
                         }
 
-                    loop handler.Init)
+                    loop workOwner.Snapshot.State)
             )
 
-    // Last resort, matching `ErrorLedger` and the scan-signal agent. The loop
-    // body handles its own faults and keeps going, so this should never fire;
-    // if it ever does the agent has STOPPED and `inflightCount` can only rise
-    // from then on.
-    //
-    // RECORDING the exception is the point, not just logging it: a waiter cannot
-    // otherwise tell a dead agent from a busy one, and can only infer it from a
-    // plugin that never speaks again.
+    // Fail accepted event receipts, but preserve exclusive workers until their
+    // actual cleanup completes. The same snapshot publishes fault and ownership.
     agent.Error.Add(fun ex ->
-        agentFault <- Some ex
+        workOwner.FaultExecutor ex
 
         error
             (PluginName.value handler.Name)
             $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
-    agentRef <- Some agent
+    deliverEvent <- agent.Post
 
     // Register commands
     for (cmdName, cmdHandler) in handler.Commands do
@@ -1302,15 +1325,24 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             cmdName,
             fun args ->
                 async {
-                    let! state = agent.PostAndAsyncReply(Choice2Of2)
-                    return! cmdHandler commandCtx state args
+                    match cmdHandler with
+                    | PluginCommand.Request request -> return! request commandCtx args
+                    | PluginCommand.Observe read ->
+                        let snapshot = workOwner.Snapshot
+
+                        let readContext =
+                            { PluginCommand.readContext commandCtx with
+                                IsRunning = snapshot.IsRunning }
+
+                        return! read readContext snapshot.State args
                 }
         )
 
     // Build type-erased registration with subscription-filtered dispatch
     let post event =
-        System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
-        agent.Post(Choice1Of2 event)
+        let identity, completion = workOwner.AdmitTrackedEvent()
+        agent.Post(event, identity)
+        Some(DispatchReceipt completion)
 
     let has e = handler.Subscriptions.Contains(e)
 
@@ -1324,24 +1356,32 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         | DispatchTestProgress r when has SubscribeTestProgress -> post (TestProgress r)
         | DispatchTestRunCompleted r when has SubscribeTestRunCompleted -> post (TestRunCompleted r)
         | DispatchCommandCompleted r when has SubscribeCommandCompleted -> post (CommandCompleted r)
-        | _ -> ()
+        | _ -> None
 
     { Name = handler.Name
-      Dispatch = dispatch
+      Dispatch = fun event -> dispatch event |> ignore
+      DispatchTracked = dispatch
       Teardown = handler.Teardown
-      // "Busy" means "this plugin has work in flight": events queued or being
-      // handled, AND any exclusive run from its claim until its completion
-      // message has been handled — all counted in the ONE `inflightCount` (see
-      // its comment for why a single counter, not counter-plus-slots). Without
-      // the run leg the host could conclude a plugin was at rest while its test
-      // run was still executing, and `WaitForComplete` would hand `check` a
-      // verdict the run had not yet produced. Run tokens are released in a
-      // `finally`, and the verdict deadline (Ipc.resolveVerdictDeadline) still
-      // bounds a genuinely wedged run.
-      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0
-      CompletedDispatches = fun () -> System.Threading.Volatile.Read(&completedDispatches.contents)
+      // Events and exclusive runs share one identity-bearing work ledger.
+      IsBusy = fun () -> workOwner.Snapshot.IsBusy
+      CompletedDispatches = fun () -> workOwner.Snapshot.CompletedEvents
       Subscriptions = handler.Subscriptions
-      Fault = fun () -> agentFault }
+      Fault = fun () -> workOwner.Snapshot.Fault }
+
+/// Register one plugin owner in the host publication before wiring its executor.
+let internal registerHandlerWithOwner
+    (store: PluginWorkOwner.Store)
+    (services: PluginHostServices)
+    (handler: PluginHandler<'State, 'Msg>)
+    : RegisteredPlugin =
+    let workOwner =
+        PluginWorkOwner.Owner(handler.Init, store, PluginName.value handler.Name)
+
+    registerHandlerForOwner workOwner services handler
+
+/// Standalone registration with a private owner publication.
+let registerHandler (services: PluginHostServices) (handler: PluginHandler<'State, 'Msg>) : RegisteredPlugin =
+    registerHandlerWithOwner (PluginWorkOwner.Store()) services handler
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
 module PluginCtxHelpers =

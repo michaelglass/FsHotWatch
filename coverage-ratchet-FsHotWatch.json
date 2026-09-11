@@ -1,5 +1,61 @@
 {
   "overrides": {
+    "DebouncedWork.fs": [
+      {
+        "line": 98,
+        "branch": 94,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "SupervisedWork.fs": [
+      {
+        "line": 90,
+        "branch": 68,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "PluginWorkOwner.fs": [
+      {
+        "line": 98,
+        "branch": 90,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "ProjectModelWire.fs": [
+      {
+        "line": 100,
+        "branch": 91,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "DetachedLaunch.fs": [
+      {
+        "line": 97,
+        "branch": 75,
+        "reason": "A106 initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/automation-106-process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
+    "ProcessContainment.fs": [
+      {
+        "line": 85,
+        "branch": 75,
+        "reason": "A106 initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/automation-106-process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
+    "OwnedChild.fs": [
+      {
+        "line": 95,
+        "branch": 71,
+        "reason": "A106 initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/automation-106-process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
     "AnalyzersPlugin.fs": [
       {
         "line": 81,
@@ -258,6 +314,12 @@
       }
     ],
     "Events.fs": [
+      {
+        "line": 100,
+        "branch": 92,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      },
       {
         "line": 96,
         "branch": 87,
@@ -819,6 +881,20 @@
         "platform": "linux"
       }
     ],
+    "WindowsProcessJob.fs": [
+      {
+        "line": 0,
+        "branch": 0,
+        "reason": "Native Windows job API boundary remains compiled and packaged in the core assembly. These APIs cannot execute on macOS; Windows runtime behavior is unverified by this host's coverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 0,
+        "branch": 0,
+        "reason": "Native Windows job API boundary remains compiled and packaged in the core assembly. These APIs cannot execute on Linux; Windows runtime behavior is unverified by this host's coverage.",
+        "platform": "linux"
+      }
+    ],
     "Watcher.fs": [
       {
         "line": 95,
@@ -1300,8 +1376,8 @@
     "Ipc.fs": [
       {
         "coveredLines": 288,
-        "coveredBranches": 41,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 38,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only three removed covered compiler-generated match branches after AUTOMATION-339 (1819f4266165), branch denominator 52 to 48. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {
@@ -1454,8 +1530,8 @@
     "PluginActivity.fs": [
       {
         "coveredLines": 182,
-        "coveredBranches": 40,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 36,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only four removed covered compiler-generated match branches after AUTOMATION-339 (1819f4266165), branch denominator 56 to 52. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {
@@ -1482,8 +1558,8 @@
     "PluginHost.fs": [
       {
         "coveredLines": 335,
-        "coveredBranches": 58,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 47,
+        "reason": "AUTOMATION-104 removes 11 covered branches: generation bump 6/6, dispatch loop 2/2, CompletedDispatches sum 3/4; base58/70 becomes47/58, all surviving branch sites unchanged. See docs/adr/automation-104-pluginhost-deleted-branch-floor.md. Original baseline: min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
         "platform": "macos"
       },
       {
@@ -1733,9 +1809,9 @@
     ],
     "Verdict.fs": [
       {
-        "coveredLines": 1445,
-        "coveredBranches": 449,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredLines": 1444,
+        "coveredBranches": 443,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only the removed generated sequence point from prose change 26901395e1b3 and six removed covered match branches from AUTOMATION-339 (1819f4266165), branch denominator 540 to 534. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {

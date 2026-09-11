@@ -215,6 +215,8 @@ let create
                   let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
                   return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
               } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
-      CacheKey = Some cacheKey
+      CacheKey = Some(fun _state -> cacheKey)
+      PrepareCommit = None
       Teardown = None }

@@ -534,7 +534,7 @@ let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it can
             ]}"""
 
     match DaemonEvidence.parse json with
-    | DaemonEvidence.Served phases ->
+    | DaemonEvidence.Served(phases, _, _) ->
         test <@ phases |> List.map (fun p -> p.Scope) = [ "daemon.scan"; "plugin.test-prune" ] @>
         test <@ phases.Head.StartedAt = DateTime(2026, 9, 5, 20, 35, 27, 851, DateTimeKind.Utc) @>
         test <@ phases.Head.StartedAt.Kind = DateTimeKind.Utc @>
@@ -622,3 +622,21 @@ let ``AUTOMATION-110 a zero-selection reply names the symbols covered only by un
     match older.Scope with
     | NoTestsRun(NoTestsReason.ChangesUncovered(_, _, unrunnable)) -> test <@ unrunnable = UnrunnableCoverage.none @>
     | other -> failwithf "expected changes-uncovered, got %A" other
+
+[<Fact>]
+let ``model receipts accept explicit analysis identity and reject malformed run identity`` () =
+    let parse identity =
+        DaemonEvidence.parse (
+            """{"daemonPhases":[],"modelReceipts":[{"runId":"""
+            + identity
+            + ""","modelGeneration":7,"refusals":[]}]}"""
+        )
+        |> DaemonEvidence.receipts
+
+    test <@ (parse "null" |> List.exactlyOne).RunId.IsNone @>
+    let runId = Guid.NewGuid()
+    let encodedRunId = "\"" + runId.ToString("N") + "\""
+    Assert.Equal<Guid option>(Some runId, (parse encodedRunId |> List.exactlyOne).RunId)
+    test <@ (parse "\"00000000000000000000000000000000\"").IsEmpty @>
+    test <@ (parse "\"not-a-guid\"").IsEmpty @>
+    test <@ (parse "17").IsEmpty @>

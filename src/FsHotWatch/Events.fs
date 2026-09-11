@@ -39,7 +39,7 @@ type CacheKey =
 
 /// Describes what kind of file change was detected by the watcher.
 type FileChangeKind =
-    /// F# source files (.fs, .fsx) changed.
+    /// F# source files (.fs, .fsi, .fsx) changed.
     | SourceChanged of files: string list
     /// Project files (.fsproj, .props, project.assets.json) changed.
     | ProjectChanged of files: string list
@@ -73,6 +73,8 @@ type FileCheckResult =
         ProjectOptions: FSharpProjectOptions
         /// Monotonic version counter — higher means newer.
         Version: int64
+        /// Discovery epoch which supplied these compiler options; absent outside a daemon model.
+        ModelGeneration: int64 option
     }
 
 /// Result of checking all files in a project.
@@ -641,6 +643,199 @@ type TestRunCompleted =
         Verification: RunVerification
     }
 
+/// Evidence is committed domain data, not a reportable UI status. Only the final
+/// result fold supplies the launch, model, outcome and remaining-debt witnesses.
+type EarnedEvidence =
+    private
+        { Completion: TestRunCompleted
+          ModelGeneration: int64
+          ExpectedProjects: Set<string>
+          WholeProjectCoverage: Set<string>
+          ReceiptRunIds: Set<System.Guid>
+          Refusals: string list }
+
+    member this.RunId = this.Completion.RunId
+    member this.Generation = this.ModelGeneration
+    member this.AuthorizedRunIds = this.ReceiptRunIds
+    member this.FailureReasons = this.Refusals
+
+module internal EarnedEvidence =
+    let coversProjects expectedProjects (evidence: EarnedEvidence) =
+        Set.isSubset expectedProjects evidence.WholeProjectCoverage
+
+    /// A stale launch or unavailable model cannot publish evidence. Pending
+    /// obligations and incomplete execution remain explicit refusal
+    /// evidence, allowing the caller to fail promptly rather than invent green.
+    let fromCompletion
+        (launchRunId: System.Guid)
+        (launchModelGeneration: int64 option)
+        (currentModelGeneration: int64 option)
+        (expectedProjects: Set<string>)
+        (pendingObligationCount: int)
+        (baseline: EarnedEvidence option)
+        (completed: TestRunCompleted)
+        : EarnedEvidence option =
+        match launchModelGeneration, currentModelGeneration with
+        | Some launched, Some current when
+            launched = current
+            && launchRunId <> System.Guid.Empty
+            && launchRunId = completed.RunId
+            ->
+            let baselineProjects =
+                baseline
+                |> Option.filter (fun evidence -> evidence.Generation = current)
+                |> Option.map (fun evidence -> evidence.WholeProjectCoverage)
+                |> Option.defaultValue Set.empty
+
+            let wholeProjectCoverage =
+                completed.Results
+                |> Map.toSeq
+                |> Seq.choose (fun (project, result) ->
+                    match completed.Outcome, result with
+                    | Normal, TestsPassed(_, false, _)
+                    | Normal, TestsFailed(_, false, _) -> Some project
+                    | _ -> None)
+                |> Set.ofSeq
+                |> Set.union baselineProjects
+
+            let refusals =
+                [ match completed.Outcome with
+                  | Normal -> ()
+                  | Aborted reason -> yield $"run aborted: {reason}"
+
+                  if pendingObligationCount <> 0 then
+                      yield $"{pendingObligationCount} verification obligation(s) remain pending"
+
+                  if expectedProjects.IsEmpty then
+                      yield "no project obligations were selected"
+
+                  for project in expectedProjects do
+                      match Map.tryFind project completed.Results with
+                      | None when Set.contains project baselineProjects -> ()
+                      | None -> yield $"{project}: no result or baseline for an admitted obligation"
+                      | Some result ->
+                          match TestResult.verdict result with
+                          | Verified when Set.contains project wholeProjectCoverage -> ()
+                          | Verified -> yield $"{project}: filtered execution without a whole-project baseline"
+                          | Refuted -> yield $"{project}: tests failed or timed out"
+                          | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects ->
+                              ()
+                          | NothingVerified -> yield $"{project}: no tests verified"
+
+                  // Additional results cannot hide an errored sibling merely
+                  // because another selected project produced a passing report.
+                  for KeyValue(project, result) in completed.Results do
+                      match result with
+                      | TestsDeferred reason
+                      | TestsErrored reason -> yield $"{project}: {reason}"
+                      | TestsFailed _
+                      | TestsTimedOut _ when not (Set.contains project expectedProjects) ->
+                          yield $"{project}: tests failed or timed out"
+                      | _ -> ()
+
+                  if not (TestResult.executedAnything completed.Results) then
+                      yield "the completion executed no tests" ]
+
+            Some
+                { Completion = completed
+                  ModelGeneration = current
+                  ExpectedProjects = expectedProjects
+                  WholeProjectCoverage = wholeProjectCoverage
+                  ReceiptRunIds = Set.singleton completed.RunId
+                  Refusals = List.distinct refusals }
+        | _ -> None
+
+    /// A narrower completion may retain the full-suite receipt for identical
+    /// input bytes. Authorization preserves the NEW completion's refusal reasons;
+    /// an earlier green can never overwrite a newer failure.
+    let authorizeSameInputReceipt
+        (receiptRunId: System.Guid)
+        (retainedInputTree: string option)
+        (currentInputTree: string option)
+        (previous: EarnedEvidence option)
+        (candidate: EarnedEvidence)
+        : EarnedEvidence =
+        match retainedInputTree, currentInputTree, previous with
+        | Some retained, Some current, Some prior when
+            not (System.String.IsNullOrWhiteSpace current)
+            && retained = current
+            && prior.Generation = candidate.Generation
+            && Set.contains receiptRunId prior.ReceiptRunIds
+            ->
+            { candidate with
+                ReceiptRunIds = Set.add receiptRunId candidate.ReceiptRunIds }
+        | _ -> candidate
+
+/// Implemented by an immutable plugin domain which owns an earned receipt.
+/// The framework projects this value in the SAME publication as its work ledger.
+type internal IEarnedEvidenceState =
+    abstract EarnedEvidence: EarnedEvidence option
+
+/// A completed file analysis, retained without compiler trees or UI status.
+type AnalysisFileEvidence =
+    private
+        { File: AbsFilePath
+          ModelGeneration: int64 option
+          Refusals: string list }
+
+module internal AnalysisFileEvidence =
+    let fromResult (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+        let refusals =
+            [ match result.CheckResults with
+              | ParseOnly -> yield "type checking did not complete"
+              | FullCheck checkedResult ->
+                  for diagnostic in checkedResult.Diagnostics do
+                      if diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error then
+                          yield diagnostic.Message
+
+              match symbolAnalysis with
+              | Ok() -> ()
+              | Error reason -> yield reason ]
+
+        { File = result.File
+          ModelGeneration = result.ModelGeneration
+          Refusals = List.distinct refusals }
+
+/// Analysis-only completion explicitly carries no test run or suite coverage.
+type AnalysisEvidence =
+    private
+        { ModelGeneration: int64
+          Files: Set<AbsFilePath>
+          Refusals: string list }
+
+    member this.Generation = this.ModelGeneration
+    member this.CheckedFiles = this.Files
+    member this.FailureReasons = this.Refusals
+
+module internal AnalysisEvidence =
+    /// The expected files come from the completed model, never the observed subset.
+    /// Missing/stale outcomes are refusal evidence, not an empty successful analysis.
+    let fromCompleted
+        (modelGeneration: int64 option)
+        (expectedFiles: Set<AbsFilePath>)
+        (configuredTestProjects: Set<string>)
+        (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
+        : AnalysisEvidence option =
+        match modelGeneration with
+        | Some generation when generation >= 0L && configuredTestProjects.IsEmpty ->
+            let refusals =
+                [ for file in expectedFiles do
+                      match Map.tryFind file outcomes with
+                      | Some outcome when outcome.File = file && outcome.ModelGeneration = Some generation ->
+                          for reason in outcome.Refusals do
+                              yield $"{AbsFilePath.value file}: {reason}"
+                      | _ -> yield $"{AbsFilePath.value file}: no completed analysis for the current model" ]
+
+            Some
+                { ModelGeneration = generation
+                  Files = expectedFiles
+                  Refusals = refusals }
+        | _ -> None
+
+/// Published atomically with the same owner retirement as the file-analysis fold.
+type internal IAnalysisEvidenceState =
+    abstract AnalysisEvidence: AnalysisEvidence option
+
 /// Current state of the daemon's scan operation.
 type ScanState =
     /// No scan in progress or completed.
@@ -692,6 +887,8 @@ type BatchChecked =
         /// `BootScan`-triggered events; bumped per `InSessionBatch` as well so
         /// subscribers can identify "the latest cohort."
         Generation: int64
+        /// Discovery epoch of the cohort, independent of its scan/batch sequence number.
+        ModelGeneration: int64 option
         /// Wall-clock start of the cohort (first `CheckFile` dispatched).
         StartedAt: System.DateTime
         /// Wall-clock end (last `FileChecked` emitted before this `BatchChecked`).

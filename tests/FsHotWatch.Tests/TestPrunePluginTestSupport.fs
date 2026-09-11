@@ -33,6 +33,8 @@ open FsHotWatch.Tests.TestHelpers
 /// `fullSuiteLaunch` / `filteredLaunch` below.
 let emptyLaunch: TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
+      SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
@@ -45,6 +47,8 @@ let emptyLaunch: TestRunLaunch =
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
 let fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
+      SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
@@ -57,6 +61,8 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
 /// selection. Projects NOT named were skipped entirely.
 let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
+      SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
@@ -96,28 +102,21 @@ let emitBatchAndQuiesce (host: PluginHost) (files: string list) =
 /// FileChecked events arriving after a BuildCompleted has been observed in the session,
 /// mirroring fshw's cold scan where BuildPlugin's terminal status gates the FCS tiers.
 let emitBuildAndWaitTerminal (host: PluginHost) =
-    let generationBefore =
-        host.WorkCycleGenerations()
-        |> Map.tryFind "test-prune"
-        |> Option.defaultValue 0L
-
+    let completedBefore = host.CompletedDispatches()
     host.EmitBuildCompleted(BuildSucceeded)
 
     let completedNewCycle =
         waitUntilTrue
             (fun () ->
-                let generationAfter =
-                    host.WorkCycleGenerations()
-                    |> Map.tryFind "test-prune"
-                    |> Option.defaultValue 0L
-
                 let terminal =
                     match host.GetStatus("test-prune") with
                     | Some(Completed _)
                     | Some(Failed _) -> true
                     | _ -> false
 
-                generationAfter > generationBefore && terminal && not (host.AnyPluginBusy()))
+                host.CompletedDispatches() > completedBefore
+                && terminal
+                && not (host.AnyPluginBusy()))
             20000
 
     test <@ completedNewCycle @>

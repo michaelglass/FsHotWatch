@@ -4,6 +4,7 @@ open System
 open System.Collections.Concurrent
 open System.Diagnostics
 open System.Threading
+open System.Threading.Tasks
 
 /// Exception classes treated as benign when observing or killing a tracked
 /// Process. HasExited and Kill both throw InvalidOperationException (no process
@@ -43,31 +44,107 @@ type LeakedTree =
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
-type Registry() =
-    let live = ConcurrentDictionary<int, Process>()
+type Registry(?parent: Registry) =
+    let live = ConcurrentDictionary<int, Process * (unit -> unit) option>()
     // Track pids alongside Process so Untrack can clean up even if the Process
     // handle has been disposed and `proc.Id` would throw.
     let pidByProc = ConcurrentDictionary<Process, int>(HashIdentity.Reference)
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
 
-    member _.Track(p: Process) =
-        pidByProc.TryAdd(p, p.Id) |> ignore
-        live.TryAdd(p.Id, p) |> ignore
+    // Admission and the shutdown snapshot are one transition. OS operations
+    // stay outside this lock so a slow kill cannot obstruct another owner.
+    let admission = obj ()
+    let mutable closed = false
+    let teardownBudget = TimeSpan.FromSeconds 5.0
+
+    // Identity is captured at admission, while the caller owns a live handle.
+    // Keep it for diagnostics if that handle is later disposed; never re-resolve
+    // it during teardown, when the OS could have reused the number.
+    let terminate (pid: int) (p: Process) (ownedTermination: (unit -> unit) option) =
+        let recordFailure reason =
+            let leak =
+                { Pid = pid
+                  Description = $"registered child pid {pid}"
+                  Reason = reason
+                  At = DateTime.UtcNow }
+
+            leaks.Enqueue leak
+            parent |> Option.iter (fun owner -> owner.ReportLeak leak)
+            Logging.error "process-registry" $"could not establish child termination: {leak.Description}: {reason}"
+
+        let terminating =
+            Task.Run(fun () ->
+                try
+                    match ownedTermination with
+                    | Some terminateOwned -> terminateOwned ()
+                    | None ->
+                        if not p.HasExited then
+                            p.Kill(entireProcessTree = true)
+
+                            if not (p.WaitForExit(int teardownBudget.TotalMilliseconds)) then
+                                raise (TimeoutException("Child did not exit after shutdown kill"))
+
+                    Ok()
+                with failure ->
+                    // Kill can race an actual exit. Only a positive exit witness
+                    // makes that benign; a disposed/unobservable handle is not
+                    // proof that its OS child died.
+                    try
+                        if ownedTermination.IsNone && p.HasExited then
+                            Ok()
+                        else
+                            Result.Error failure
+                    with _ ->
+                        Result.Error failure)
+
+        try
+            match terminating.WaitAsync(teardownBudget).GetAwaiter().GetResult() with
+            | Ok() -> ()
+            | Result.Error failure -> recordFailure (failure.ToString())
+        with :? TimeoutException ->
+            // The task owns the outstanding kill call; no late fault is dropped
+            // because it returns a Result. Uncertain termination remains data.
+            recordFailure $"Shutdown termination exceeded {teardownBudget}"
+
+    member _.Track(p: Process, ?terminateOwned: unit -> unit) =
+        let pid = p.Id
+        // The daemon retains shutdown ownership even when an operation has a
+        // narrower cancellation scope. Parent admission happens first: if it
+        // already closed, it reaps this exact handle before admitting anything.
+        parent
+        |> Option.iter (fun owner -> owner.Track(p, ?terminateOwned = terminateOwned))
+
+        let accepted =
+            lock admission (fun () ->
+                if closed then
+                    false
+                else
+                    pidByProc.TryAdd(p, pid) |> ignore
+                    live.TryAdd(pid, (p, terminateOwned)) |> ignore
+                    true)
+
+        if not accepted then
+            try
+                terminate pid p terminateOwned
+            finally
+                parent |> Option.iter (fun owner -> owner.Untrack p)
 
     member _.Untrack(p: Process) =
         match pidByProc.TryRemove(p) with
         | true, pid -> live.TryRemove(pid) |> ignore
         | false, _ -> ()
 
+        parent |> Option.iter (fun owner -> owner.Untrack p)
+
     member _.Snapshot() : Process list =
         [ for kv in live do
-              let p = kv.Value
+              let p, ownedTermination = kv.Value
 
               // A tolerated exception means "can't observe; treat as not alive".
               let alive =
                   try
-                      not p.HasExited
+                      ownedTermination.IsSome || not p.HasExited
                   with ex when isExpectedProcessException ex ->
                       false
 
@@ -77,28 +154,30 @@ type Registry() =
     /// Record a process tree whose termination we could NOT establish. Append-only,
     /// and never cleared by `KillAll` — the point of the record is to outlive the
     /// live set and be readable at shutdown.
-    member _.ReportLeak(leak: LeakedTree) = leaks.Enqueue leak
+    member _.ReportLeak(leak: LeakedTree) =
+        leaks.Enqueue leak
+        parent |> Option.iter (fun owner -> owner.ReportLeak leak)
 
     /// Every tree we failed to account for, oldest first.
     member _.Leaks: LeakedTree list = List.ofSeq leaks
 
-    /// KillAll is a shutdown-only operation. Tracks added concurrently with
-    /// iteration may be missed and silently dropped from `live` by the final
-    /// Clear — accept that for daemon shutdown; do not call from steady-state.
+    /// Close process admission before capturing children. A concurrent Track
+    /// either belongs to this snapshot or observes closure and reaps its child.
     member _.KillAll() : unit =
-        // Tolerating the expected classes (see `isExpectedProcessException`) lets
-        // shutdown proceed across the whole live set.
-        for kv in live do
+        let children =
+            lock admission (fun () ->
+                closed <- true
+                let children = live.ToArray()
+                live.Clear()
+                pidByProc.Clear()
+                children)
+
+        for child in children do
             try
-                let p = kv.Value
-
-                if not p.HasExited then
-                    p.Kill(entireProcessTree = true)
-            with ex when isExpectedProcessException ex ->
-                ()
-
-        live.Clear()
-        pidByProc.Clear()
+                let childProcess, ownedTermination = child.Value
+                terminate child.Key childProcess ownedTermination
+            finally
+                parent |> Option.iter (fun owner -> owner.Untrack(fst child.Value))
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
@@ -138,6 +217,12 @@ let track (p: Process) =
         Logging.warn
             "process-registry"
             $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
+
+/// Register a spawn-time containment capability, including after its leader exits.
+let internal trackOwned (p: Process) (terminate: unit -> unit) =
+    match currentOpt () with
+    | Some r -> r.Track(p, terminateOwned = terminate)
+    | None -> ()
 
 let untrack (p: Process) =
     match currentOpt () with
@@ -180,3 +265,42 @@ let snapshot () : Process list =
     match currentOpt () with
     | Some r -> r.Snapshot()
     | None -> []
+
+/// Run one operation with narrower child ownership while retaining daemon-wide
+/// shutdown coverage. Disposing the cancellation registration waits for an
+/// already-running teardown callback before the operation may retire.
+type private ChildScope(ct: CancellationToken) =
+    let registry = Registry(?parent = currentOpt ())
+    let scope = install registry
+    let cancellation = ct.Register(fun () -> registry.KillAll())
+
+    member _.Settle() =
+        registry.KillAll()
+        // A concurrent cancellation may own the shutdown snapshot. Wait for
+        // its callback before consulting leaks or publishing retirement.
+        cancellation.Dispose()
+
+        if not registry.Leaks.IsEmpty then
+            invalidOp "Operation child teardown could not establish termination"
+
+    interface IDisposable with
+        member _.Dispose() =
+            try
+                registry.KillAll()
+            finally
+                try
+                    cancellation.Dispose()
+                finally
+                    scope.Dispose()
+
+let internal withChildScope (ct: CancellationToken) (work: (unit -> unit) -> 'T) : 'T =
+    use scope = new ChildScope(ct)
+    work scope.Settle
+
+/// Preserve the operation registry across asynchronous continuations. Callers
+/// settle children before transferring or retiring the original work identity.
+let internal withChildScopeAsync (ct: CancellationToken) (work: (unit -> unit) -> Async<'T>) : Async<'T> =
+    async {
+        use scope = new ChildScope(ct)
+        return! work scope.Settle
+    }

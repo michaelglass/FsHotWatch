@@ -190,6 +190,37 @@ let ``walk REPORTS an unreadable directory instead of dropping it`` () =
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
 
+[<Fact(Timeout = 15000)>]
+let ``walk reports a directory removed after enumeration began`` () =
+    withTempDir "sw-removed-during-walk" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, "root.fs"), "")
+        let child = Path.Combine(tmpDir, "removed")
+        Directory.CreateDirectory child |> ignore
+
+        use entries = (SafeWalk.enumerateEntries Set.empty "*" tmpDir).GetEnumerator()
+        test <@ entries.MoveNext() @>
+
+        match entries.Current with
+        | SafeWalk.Found file -> test <@ file.Name = "root.fs" @>
+        | other -> failwithf "expected the root file first, got %A" other
+
+        // The parent has listed this child, but lazy traversal has not entered it.
+        // Remove it at that boundary to force DirectoryNotFoundException without
+        // a racing thread or timing assumption.
+        Directory.Delete child
+        test <@ entries.MoveNext() @>
+
+        match entries.Current with
+        | SafeWalk.Skipped skipped ->
+            test <@ skipped.Path = child @>
+
+            match skipped.Reason with
+            | SafeWalk.Unreadable message -> test <@ not (String.IsNullOrWhiteSpace message) @>
+            | other -> failwithf "expected Unreadable, got %A" other
+        | other -> failwithf "expected the vanished directory to be reported, got %A" other
+
+        test <@ not (entries.MoveNext()) @>)
+
 // "A MaxDepth truncation is reported, not merely logged": a warning in a log is
 // not something a caller can branch on, and the caller is the one deciding
 // whether its claim still holds.

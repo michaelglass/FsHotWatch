@@ -440,10 +440,15 @@ let private invalidateLegacyRatchetOutput (db: Database) (coverageOutput: string
 
         pending
 
-let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: string) =
+let private mapProjectRatchetCoverage
+    (conn: Microsoft.Data.Sqlite.SqliteConnection)
+    (transaction: Microsoft.Data.Sqlite.SqliteTransaction)
+    (repoRoot: string)
+    (xml: string)
+    =
     let rows = parseCobertura xml
-    use conn = db.OpenConnection()
     use lookup = conn.CreateCommand()
+    lookup.Transaction <- transaction
 
     let normalizeSourceFile (filename: string) =
         (if Path.IsPathRooted filename then
@@ -488,8 +493,20 @@ let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: st
       Ingested = ingested
       Skipped = skipped }
 
-let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
-    let mapped = mapProjectRatchetCoverage db repoRoot xml
+let internal persistProjectRatchetCoverageWithMapped
+    (afterMapped: unit -> unit)
+    (db: Database)
+    (repoRoot: string)
+    (input: CoverageInput)
+    (xml: string)
+    =
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+    // Own the symbol rows from lookup through persistence. A separate lookup
+    // connection lets a concurrent graph rebuild delete these foreign keys.
+    use transaction = conn.BeginTransaction(deferred = false)
+    let mapped = mapProjectRatchetCoverage conn transaction repoRoot xml
+    afterMapped ()
 
     let replaceFull =
         input.Scope = CoverageRunScope.Full
@@ -497,10 +514,6 @@ let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (inp
         && not (symbolGraphLooksIncomplete mapped.Ingested mapped.Skipped)
 
     if replaceFull || input.Scope = CoverageRunScope.Partial then
-        use conn = db.OpenConnection()
-        ensureProjectRatchetCoverageTable conn
-        use transaction = conn.BeginTransaction()
-
         if replaceFull then
             use delete = conn.CreateCommand()
             delete.Transaction <- transaction
@@ -525,9 +538,10 @@ let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (inp
             upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
             upsert.ExecuteNonQuery() |> ignore
 
-        transaction.Commit()
+    transaction.Commit()
 
-    mapped
+let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
+    persistProjectRatchetCoverageWithMapped ignore db repoRoot input xml
 
 let private removeProjectRatchetCoverage (db: Database) (project: string) =
     use conn = db.OpenConnection()
@@ -1368,8 +1382,26 @@ type TestEvidenceReceipt =
       Seeds: string list
       ZeroSelection: ZeroSelection }
 
+/// Pending verification evidence belongs to the same immutable publication as
+/// run results. Migration consumers must read this value, never closure mirrors.
+type VerificationDebt =
+    { PendingQueue: PendingVerification.Queue
+      SymbolRevisions: Map<string, int64>
+      Revision: int64
+      RecoveryOutstanding: bool
+      Baseline: FullSuiteBaseline.Baseline option
+      RuntimeObligations: RuntimeCoverageObligations }
+
 type TestPruneState =
     {
+        Debt: VerificationDebt
+        Freshness: FileFreshness.Store
+        /// Last admitted CSharp bytes; deduplicates scan announcements, never discharges debt.
+        CSharpInputs: Map<string, string>
+        PendingAges: Map<string, int>
+        FullSuiteRequested: bool
+        ScopeReply: (bool * Tasks.TaskCompletionSource<string>) option
+        RunReply: (Tasks.TaskCompletionSource<string> * string) option
         PendingAnalysis: Map<string, AnalysisResult list>
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
@@ -1383,6 +1415,10 @@ type TestPruneState =
         /// `test-scope` so the verdict can DECLARE which reports are this run's,
         /// instead of inferring membership from mtimes. `None` until a run completes.
         LastRunId: Guid option
+        /// Completion projections belong to this immutable owner publication.
+        /// Retained readers must not observe a later run through closure-local refs.
+        CompletedRuns: Guid list
+        CheckReach: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option
         /// The seed symbols that SELECTED the last completed run — i.e. the change
         /// that caused those tests to run. Empty for an unfiltered run (nothing
         /// selected it; everything ran) and until a run completes.
@@ -1394,18 +1430,12 @@ type TestPruneState =
         /// tell "nothing needed running" from "nothing ran" goes looking for a bug
         /// in the selector.
         LastSeeds: string list
-        /// True if a BuildCompleted arrived while a test run was in flight.
-        /// The synchronous `Custom(TestsFinished)` handler reads this AFTER
-        /// the run completes — at which point `state.ChangedSymbols` reflects
-        /// every FileChecked that landed during the run, including ones that
-        /// arrived between the queueing BuildCompleted and TestsFinished.
-        /// Cleared when the rerun is dispatched.
-        PendingRerun: bool
         /// Symbols established by a BootScan cohort while a requested full-suite run was
         /// already in flight. The run covers the built tree being baselined, but these
         /// symbols are absent from its immutable launch snapshot. They may be committed
-        /// only after that run produces genuinely green full-suite evidence.
-        BootScanDebtDuringFullRun: Set<string>
+        /// only after that run produces genuinely green full-suite evidence for the
+        /// same input tree and the exact revisions captured at the first cohort seal.
+        BootScanDebtDuringFullRun: Map<string, int64>
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -1450,16 +1480,6 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
-        /// `run-tests` force-runs that arrived while another run held the
-        /// "tests" slot. A force-run is OWED work — `test-rerun`
-        /// is the explicit "prove it ran" verb, so a busy slot must QUEUE the
-        /// run, never refuse it (a refusal that exits 0 is a vacuous green).
-        /// Drained FIFO by the `TestsFinished` handler, one per completed run
-        /// (each queued run's own TestsFinished drains the next). Each entry
-        /// carries the reply TCS the IPC command is awaiting — the command
-        /// bounds that wait (`waitSec`), so an entry stranded by daemon
-        /// teardown cannot hang the client.
-        QueuedCommandRuns: (TestConfig list * string option * Tasks.TaskCompletionSource<string>) list
         /// The reds no COVERING run has passed since (AUTOMATION-125). Rewritten on
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
         /// it passes. The shared error ledger is a projection of this list.
@@ -1485,7 +1505,18 @@ type TestPruneState =
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
+        Earned: EarnedEvidence option
+        AnalysisModelGeneration: int64 option
+        AnalysisReceipt: AnalysisEvidence option
+        AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
+        AnalysisCohortFiles: Set<AbsFilePath>
     }
+
+    interface IEarnedEvidenceState with
+        member this.EarnedEvidence = this.Earned
+
+    interface IAnalysisEvidenceState with
+        member this.AnalysisEvidence = this.AnalysisReceipt
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -1502,6 +1533,10 @@ type TestPruneState =
 /// baseline exist" — which the caller computes and passes as `hasCachedResults`.
 type TestRunInputs =
     {
+        ModelGeneration: int64 option
+        HasOwnedBaseline: bool
+        Debt: VerificationDebt
+        FullSuiteRequested: bool
         /// The impact selection: which test classes the changed symbols reach.
         AffectedTests: AffectedTestsState
         /// The in-memory hot view of the pending-verification queue, unioned with the
@@ -1527,8 +1562,16 @@ type TestRunInputs =
 
 module TestRunInputs =
     /// Project the state down to what a run reads, at LAUNCH time.
-    let ofState (state: TestPruneState) : TestRunInputs =
-        { AffectedTests = state.AffectedTests
+    let ofState (modelGeneration: int64 option) expectedProjects (state: TestPruneState) : TestRunInputs =
+        { ModelGeneration = modelGeneration
+          HasOwnedBaseline =
+            state.Earned
+            |> Option.exists (fun evidence ->
+                Some evidence.Generation = modelGeneration
+                && EarnedEvidence.coversProjects expectedProjects evidence)
+          Debt = state.Debt
+          FullSuiteRequested = state.FullSuiteRequested
+          AffectedTests = state.AffectedTests
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles
@@ -1561,6 +1604,8 @@ module TestRunInputs =
 /// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     {
+        ModelGeneration: int64 option
+        SymbolRevisions: Map<string, int64>
         /// Immutable input identity captured before this run executes.
         InputTreeHash: string option
         Symbols: Set<string>
@@ -1710,9 +1755,23 @@ module CheckReach =
         | Ok exactFailures -> classify wouldHaveRun exactFailures, measure wouldHaveRun exactFailures
         | Error reason -> ReachUnknown reason, RecallNotMeasurable reason
 
+/// State-dependent selection is resolved by the owner when it admits the request.
+type RunTestsSelection =
+    { OnlyFailed: bool
+      Projects: Set<string> option }
+
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
+    | ScopeRequested of fullSuite: bool * reply: Tasks.TaskCompletionSource<string>
+    | ImpactRunRequested
+    | RuntimeCoverageFailed of CoverageIngestFailure
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
+    | CommandTestsFinished of
+        started: TestRunStarted *
+        completed: TestRunCompleted *
+        launch: TestRunLaunch *
+        reply: Tasks.TaskCompletionSource<string> *
+        response: string
     | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     | TestHostUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
@@ -1724,7 +1783,10 @@ type TestPruneMsg =
     /// verdict wait and exit 0 while the test process is still alive. `reply` carries
     /// the results JSON back to the awaiting command; every completion path must
     /// resolve it.
-    | RunTestsRequested of configs: TestConfig list * filter: string option * reply: Tasks.TaskCompletionSource<string>
+    | RunTestsRequested of
+        selection: RunTestsSelection *
+        filter: string option *
+        reply: Tasks.TaskCompletionSource<string>
 
 /// Build the degenerate Started→Aborted lifecycle a faulted run posts back so the
 /// synchronous `TestsFinished` handler drives the plugin to a NON-green terminal status.
@@ -2723,52 +2785,15 @@ type ReportEvidence =
     /// No report was requested (an unknown / unsupported runner) — the process
     /// exit code is the only pass/fail signal available.
     | NoReportRequested
-    /// A report WAS requested from a capable runner. `Some` carries the parsed
-    /// summary; `None` means the file was absent / unreadable / unparseable —
-    /// the host aborted before flushing, or wrote a truncated report.
-    | ReportRequested of report: Flakiness.TestReport option
+    /// A requested report must carry coherent summary/row evidence. An error
+    /// preserves why the report cannot authorize a verdict, even on exit zero.
+    | ReportRequested of report: Result<Ctrf.VerdictReport, string>
 
-/// Decide a single project's verdict. The structured test report (when present and
-/// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
-/// when there is no usable report. Exit-code-only produced false REDs: a test host that
-/// exits non-zero during a dirty shutdown (the Microsoft.Testing.Platform exit-7 flake)
-/// after flushing a clean report reported "Tests failed" with zero named tests, while
-/// `test-rerun` came back green.
-///
-/// Precedence (apphost-missing / zero-match-under-filter are handled by the
-/// caller BEFORE this — they are not test outcomes):
-///   1. report has any failed/other result → `TestsFailed` (red). Exit irrelevant.
-///   2. report is all-clear (no failed/other) AND ran ≥1 test → `TestsPassed`
-///      (green) EVEN IF the process exited non-zero — the flake case.
-///   3. no usable report (absent / unparseable / no summary) AND exit ≠ 0:
-///        - report WAS requested from a capable runner → `TestsErrored`: the host
-///          aborted before writing results; nothing was verified. Never green,
-///          never the misleading "tests failed".
-///        - report NOT requested (unknown runner) → exit code is the only signal
-///          we have → `TestsFailed`.
-///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
-///
-///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
-///      A killed host did not finish, so nothing it wrote is a result — including a
-///      CTRF report it managed to flush on the way down, whose rows for tests that
-///      never executed are exactly the mass 0ms "failures" AUTOMATION-294 is about.
-///      This arm is why the report is not consulted there: outcome 1 would read that
-///      partial report and call a machine that ran out of CPU a mass regression.
-///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
-///   run (the filtered case was handled upstream) — a real misconfiguration, so
-///   it falls to the exit-code tie-break rather than going green.
-///
-/// Outcome 2 deliberately does NOT also require a whitelisted shutdown exit code: the
-/// benign codes are runner/version-specific, and a report positively showing zero
-/// failures is stronger evidence than the exit number.
-///
-/// Outcome 0 is the one direction where the exit code OUTRANKS the report, and only
-/// because of what that particular exit code means: `TerminatingSignal` recognises
-/// codes no runner CHOOSES, so it can only ever fire for a host that was killed. A
-/// suite that genuinely goes red exits with a code the runner picked (MTP's are single
-/// digits) and still reaches outcome 1 — the assertion this must survive in BOTH
-/// directions, because a real mass failure dressed as an abort is the same lie with
-/// the sign flipped.
+/// A coherent requested report decides pass/fail; a missing or contradictory
+/// report proves nothing. Unfiltered zero-test reports also prove nothing.
+/// Completed clean reports may outlive a runner's dirty shutdown, but a signal
+/// termination or timeout always refuses any partial report left behind.
+/// Custom runners that requested no report retain their explicit exit contract.
 let internal classifyTestOutcome
     (evidence: ReportEvidence)
     (wasFiltered: bool)
@@ -2795,9 +2820,10 @@ let internal classifyTestOutcome
         // not a verdict, or they will open it and find their "mass regression".
         let reportNote =
             match evidence with
-            | ReportRequested(Some r) ->
+            | ReportRequested(Ok proof) ->
+                let r = Ctrf.VerdictReport.summary proof
                 $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
-            | ReportRequested None -> " It wrote no parseable report."
+            | ReportRequested(Error reason) -> $" Its requested report was not usable: {reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 
         TestsErrored(
@@ -2808,29 +2834,22 @@ let internal classifyTestOutcome
         let succeeded = isSucceeded outcome
 
         match evidence with
-        | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
-            // Outcome 1.
-            TestsFailed(output, wasFiltered, elapsed)
-        | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
-            // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
-            TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested(Some _) ->
-            // Total == 0: an unfiltered zero-test run. Defer to the exit code so an
-            // empty suite stays red.
-            if succeeded then
-                TestsPassed(output, wasFiltered, elapsed)
-            else
+        | ReportRequested(Ok proof) ->
+            let report = Ctrf.VerdictReport.summary proof
+
+            if report.Failed > 0 || report.Other > 0 then
                 TestsFailed(output, wasFiltered, elapsed)
-        | _ when succeeded ->
-            // Outcome 4.
-            TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested None ->
-            // Outcome 3 — the host aborted before writing results, so nothing was
-            // verified. Never green, never the misleading "tests failed".
-            TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
-        | NoReportRequested ->
-            // Unknown runner we never asked for a report: the exit code is all there is.
-            TestsFailed(output, wasFiltered, elapsed)
+            elif report.Total = 0 then
+                if wasFiltered then
+                    TestsNoMatch(output, elapsed)
+                else
+                    TestsErrored "requested report contains zero tests for an unfiltered run — nothing verified"
+            else
+                TestsPassed(output, wasFiltered, elapsed)
+        | ReportRequested(Error reason) ->
+            TestsErrored $"requested test report cannot verify this run: {reason} — nothing verified"
+        | NoReportRequested when succeeded -> TestsPassed(output, wasFiltered, elapsed)
+        | NoReportRequested -> TestsFailed(output, wasFiltered, elapsed)
 
 /// Parse the `ProcessStartInfo.Arguments` string far enough to discover a project
 /// path. Double quotes group; a backslash before a quote follows the same odd/even
@@ -3232,7 +3251,11 @@ let parseFailedTests (output: string) : (string * string * string) list =
 /// `CoveredWholeProject` and clears everything. A rule that let a skip block a class
 /// here would be stricter than the whole-project path it is a refinement of.
 let internal passedTestsOfReport (json: string) : Set<string * string> =
-    match Ctrf.trySummary json with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3261,7 +3284,11 @@ let internal passedTestsOfReport (json: string) : Set<string * string> =
             |> Set.ofList
 
 let internal passedClassesOfReport (json: string) : Set<string> =
-    match Ctrf.trySummary json with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3294,7 +3321,7 @@ let internal passedClassesOfReport (json: string) : Set<string> =
 /// entry, and a project absent from the map claims nothing — the absence of evidence is
 /// never evidence of a pass.
 let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string>> =
-    Ctrf.reportsForRun repoRoot runId
+    Ctrf.verdictReportsForRun repoRoot runId
     |> List.choose (fun report ->
         let json =
             try
@@ -3309,7 +3336,7 @@ let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, S
     |> Map.ofList
 
 let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string * string>> =
-    Ctrf.reportsForRun repoRoot runId
+    Ctrf.verdictReportsForRun repoRoot runId
     |> List.choose (fun report ->
         let json =
             try
@@ -3328,7 +3355,11 @@ let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set
 /// the sample rather than shrinking recall's denominator to the rows that happened to
 /// parse.
 let internal failedTestsOfReport (json: string) : (string * string) list option =
-    match Ctrf.trySummary json with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> None
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3431,7 +3462,7 @@ let internal failedTestsOfRun
     (results: TestResults)
     : Result<OutstandingFailure list, string> =
     let reports =
-        Ctrf.reportsForRun repoRoot runId
+        Ctrf.verdictReportsForRun repoRoot runId
         |> List.map (fun report -> report.Project, report)
         |> Map.ofList
 
@@ -4150,7 +4181,11 @@ let private executeTests
                             let reportEvidence =
                                 match ctrfPath with
                                 | None -> NoReportRequested
-                                | Some _ -> ReportRequested(reportJson |> Option.bind Flakiness.tryParseReport)
+                                | Some path ->
+                                    reportJson
+                                    |> Option.map Ctrf.tryVerdictReport
+                                    |> Option.defaultValue (Error $"requested report is missing or unreadable: {path}")
+                                    |> ReportRequested
 
                             let result =
                                 if apphostMissing then
@@ -4162,7 +4197,12 @@ let private executeTests
                                     // elapsed/wasFiltered, so it never lowers a
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
-                                elif zeroTestsUnderFilter then
+                                elif
+                                    zeroTestsUnderFilter
+                                    && (match reportEvidence with
+                                        | NoReportRequested -> true
+                                        | _ -> false)
+                                then
                                     // Not a failure — per project, a filter selecting
                                     // nothing is not that project's fault, so it is never
                                     // reported as one. Its own case (rather than a passing
@@ -4645,7 +4685,8 @@ let internal cacheKeyFor
         | _, true, _
         | _, _, false -> None
         | None, false, true -> Some(outcomeKey "succeeded")
-    | Custom(TestsFinished(_, completed, _)) ->
+    | Custom(TestsFinished(_, completed, _))
+    | Custom(CommandTestsFinished(_, completed, _, _, _)) ->
         // A FAILED test outcome must never be served from cache as a current verdict.
         // Unlike BuildPlugin — whose result is a pure function of its content-merkle
         // inputs — a test outcome is NOT pinned by the changed-symbols merkle: the same
@@ -4752,8 +4793,9 @@ let internal cacheKeyFor
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
 /// to a different DB than the plugin's.
-let internal createWithLaunchDeadline
+let internal createWithLaunchDeadlineAndScope
     (launchDeadline: TimeSpan)
+    (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -4770,6 +4812,22 @@ let internal createWithLaunchDeadline
     =
     let db = Database.create dbPath
     let configuredTestProjects = testConfigs |> Option.defaultValue []
+
+    // Explicit, reasoned exclusions limit this configured verification claim.
+    // Unknown projects remain obligations; absence from runnableProjects is not
+    // an exclusion. Configured projects always remain required.
+    let coveringProjectsForScope () =
+        let excludedProjects = resolveExcludedProjects ()
+
+        fun symbol ->
+            db.QueryAffectedTests [ symbol ]
+            |> List.map (fun test -> test.TestProject)
+            |> Set.ofList
+            |> Set.filter (fun project ->
+                configuredTestProjects |> List.exists (fun config -> config.Project = project)
+                || match Map.tryFind project excludedProjects with
+                   | Some reason -> String.IsNullOrWhiteSpace reason
+                   | None -> true)
 
     let runTestHostExclusive (ctx: PluginCtx<TestPruneMsg>) (reply: Tasks.TaskCompletionSource<string> option) work =
         let workFor =
@@ -4806,140 +4864,58 @@ let internal createWithLaunchDeadline
 
     let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
 
-    // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
-    // symbols not yet proven test-equivalent to the last green run. Loaded once
-    // at construction so a restart with a non-empty queue re-flags those
-    // symbols; updated write-through (in-memory ChangedSymbols stays the hot
-    // view, this is the durable copy). A symbol leaves ONLY when a covering test
-    // run passed (or it has no covering test). See PendingVerification.fs.
-    //
-    // Held in a closure-local mutable cell + Volatile for the same reason
-    // changedSymbolsRef/freshnessRef are — read/written from multiple threads
-    // (mailbox + cache intercept).
+    // Load immutable owner inputs once. Unreadable debt is distinct from empty.
     let loadedQueue = PendingVerification.load repoRoot
 
-    /// AUTOMATION-150. `Some reason` when the sidecar EXISTS but could not be read
-    /// (a torn write, corrupt JSON, a non-string entry). What was owed is then
-    /// UNKNOWN — which is NOT the same fact as "nothing is owed", and must never
-    /// again be spelled with the same value. A MISSING file is not this: it is a
-    /// provable `Loaded empty` (fresh clone), and stays a fast no-op.
     let ledgerUnreadableReason =
         match loadedQueue with
         | PendingVerification.LoadedQueue.Loaded _ -> None
         | PendingVerification.LoadedQueue.Unreadable reason -> Some reason
 
-    let mutable pendingQueueRef: PendingVerification.Queue =
+    let initialQueue =
         match loadedQueue with
         | PendingVerification.LoadedQueue.Loaded queue -> queue
-        | PendingVerification.LoadedQueue.Unreadable _ ->
-            // We cannot NAME the symbols that were owed, so we cannot seed them. The
-            // debt rides on `ledgerRecoveryOutstandingRef` instead, which widens every
-            // run to the full suite until one proves the whole tree green. Seeding
-            // `empty` here is safe ONLY because that flag exists — on its own it is
-            // exactly the bug.
-            PendingVerification.empty
+        | PendingVerification.LoadedQueue.Unreadable _ -> PendingVerification.empty
 
-    /// AUTOMATION-150. True while an UNREADABLE ledger's unknown debt is still
-    /// outstanding — i.e. no full-suite green has yet re-verified the tree it
-    /// described. While it is set:
-    ///   * every run WIDENS to every configured project, in full (`runTestsWithImpact`);
-    ///   * no skip may conclude "nothing owed" (`nothingOwed`);
-    ///   * the plugin does not participate in the task cache at all (`cacheKeyFor`),
-    ///     or a cached green from a genuinely-clean tree would replay over the debt;
-    ///   * the corrupt file is NOT overwritten (`persistQueue`), so a crash mid-recovery
-    ///     leaves the next session the same honest "unknown", not a clean empty ledger.
-    /// Cleared only by a full-suite run that passed EVERY runnable project.
-    let mutable ledgerRecoveryOutstandingRef = ledgerUnreadableReason.IsSome
-
-    /// AUTOMATION-110. The reds carried in from the previous session — quarantined into
-    /// the first run exactly as in-session reds are. An UNREADABLE file is debt of unknown
-    /// membership and takes the AUTOMATION-150 road: widen to the full suite, which
-    /// re-executes every test and rebuilds the list from evidence.
-    let loadedFailures =
+    let loadedFailures, failuresUnreadable =
         match OutstandingFailure.load repoRoot with
-        | OutstandingFailure.LoadedFailures.Loaded failures -> failures
+        | OutstandingFailure.LoadedFailures.Loaded failures -> failures, false
         | OutstandingFailure.LoadedFailures.Unreadable reason ->
-            ledgerRecoveryOutstandingRef <- true
+            Logging.warn "test-prune" $"Outstanding failures are unreadable: {reason}; full-suite recovery required"
+            [], true
 
-            Logging.warn
-                "test-prune"
-                $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. It records every test still red from earlier runs, so which tests are owed is now UNKNOWN. Every test run is widened to every configured project in full until a full suite has re-executed them all."
-
-            []
-
-    /// AUTOMATION-110. The full-suite watermark this ledger's impact-filtered greens are
-    /// relative to. `None` until a full-suite run has accounted for every configured
-    /// project; an unreadable file is the same recovery, said out loud.
-    let mutable fullSuiteBaselineRef: FullSuiteBaseline.Baseline option =
+    let initialBaseline =
         match FullSuiteBaseline.load repoRoot with
         | FullSuiteBaseline.LoadedBaseline.Loaded baseline -> baseline
         | FullSuiteBaseline.LoadedBaseline.Unreadable reason ->
-            Logging.warn
-                "test-prune"
-                $"the full-suite baseline (%s{FullSuiteBaseline.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. The next test run is widened to the full suite to earn a new one."
-
+            Logging.warn "test-prune" $"Full-suite baseline is unreadable: {reason}; a new baseline is required"
             None
 
-    let loadedRuntimeObligations = loadRuntimeCoverageObligations repoRoot
-
-    let mutable runtimeObligationsRef =
-        match loadedRuntimeObligations with
-        | Ok obligations -> obligations
+    let initialRuntimeObligations, runtimeUnreadable =
+        match loadRuntimeCoverageObligations repoRoot with
+        | Ok obligations -> obligations, false
         | Error reason ->
-            ledgerRecoveryOutstandingRef <- true
-
             Logging.warn
                 "test-prune"
-                $"the runtime coverage obligation ledger could not be read: %s{reason}. Widening to the full suite until a verified full run recovers the unknown debt."
+                $"Runtime coverage obligations are unreadable: {reason}; full-suite recovery required"
 
-            Map.empty
+            Map.empty, true
 
-    let persistRuntimeObligations transition =
-        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
-            match
-                persistRuntimeCoverageTransitionWith
-                    (fun () ->
-                        FsHwPaths.atomicWriteAllText
-                            (runtimeCoverageRecoveryPath repoRoot)
-                            "runtime obligation write in progress")
-                    (saveRuntimeCoverageObligations repoRoot)
-                    (fun () -> File.Delete(runtimeCoverageRecoveryPath repoRoot))
-                    runtimeObligationsRef
-                    transition
-            with
-            | Ok obligations -> runtimeObligationsRef <- obligations
-            | Error(_, ex) ->
-                Volatile.Write(&ledgerRecoveryOutstandingRef, true)
+    // A failed persistence/publication must leave a restart-visible unknown-debt
+    // marker. Only successful owner publication may remove it in Finalize.
+    let debtPublicationPath =
+        Path.Combine(FsHwPaths.root repoRoot, "test-prune", "owner-publication-pending")
 
-                Logging.warn
-                    "test-prune"
-                    $"failed to durably transition runtime coverage obligations: %s{ex.Message}; the transition was not accepted and every run widens to the full suite"
+    let interruptedPublication = File.Exists debtPublicationPath
 
-    let coverageIngestFailed failure =
-        try
-            armRuntimeCoverageUnknownDebt
-                (fun () -> Volatile.Write(&ledgerRecoveryOutstandingRef, true))
-                (runtimeCoverageRecoveryPath repoRoot)
-                failure
-        with ex ->
-            Volatile.Write(&ledgerRecoveryOutstandingRef, true)
+    let armDebtWrite () =
+        FsHwPaths.atomicWriteAllText debtPublicationPath "verification owner publication in progress"
 
-            Logging.error
-                "test-prune"
-                $"failed to durably record unknown runtime coverage debt for %s{failure.Project}: %s{ex.Message}"
-
-    /// AUTOMATION-275 — how many CONSECUTIVE flush cycles each currently-queued symbol
-    /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
-    /// (see `isPoisonSuspect`).
-    ///
-    /// In-memory and per-session on purpose. Persisting it needs either a second sidecar
-    /// or a shape change to `pending-verification.json` — and that file's reader treats
-    /// ANY unparseable content as unknown debt that widens every run to the full suite
-    /// (AUTOMATION-150), so a format change hands every existing checkout one gratuitous
-    /// full-suite recovery. Forgetting on restart costs three cycles of re-arming.
-    ///
-    /// Same closure-local + `Volatile` shape as `pendingQueueRef`, for the same reason.
-    let mutable pendingAgeRef: Map<string, int> = Map.empty
+    let coverageIngestFailed (ctx: PluginCtx<TestPruneMsg>) failure =
+        armRuntimeCoverageUnknownDebt
+            (fun () -> ctx.Post(RuntimeCoverageFailed failure))
+            (runtimeCoverageRecoveryPath repoRoot)
+            failure
 
     // Say it out loud — a silent recovery here reads as a green.
     match ledgerUnreadableReason with
@@ -4952,19 +4928,8 @@ let internal createWithLaunchDeadline
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
-    /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
-    /// analyzed, which is not the same set as the projects fshw is configured to run. A
-    /// symbol covered ONLY by an unconfigured project can never be proven green — its
-    /// covering project never executes, so it never appears in a run's results and never
-    /// commits, sitting in the pending queue forever while the verdict stays red.
-    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
-    /// `check` exited 1, because those symbols were covered by
-    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
-    ///
-    /// So "covered" means "covered by a test we can actually run". A symbol whose only
-    /// covering tests are unrunnable is dropped from the queue by the same rule as one
-    /// with no covering test at all — but it is REPORTED as owed-but-unrunnable, naming
-    /// the projects, never silently (AUTOMATION-110; see `flushAndQueryAffected`).
+    /// The DB may also index explicitly excluded or unexplained test projects.
+    /// Declared exclusions limit this claim; unexplained projects remain owed.
     let runnableProjects: Set<string> =
         match testConfigs with
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
@@ -4978,169 +4943,60 @@ let internal createWithLaunchDeadline
     /// with the queue (the queue names what changed since the baseline), so a baseline
     /// beside a ledger that cannot be read vouches for nothing until a full suite
     /// re-earns both.
-    let baselineInvalidReason () : string option =
+    let baselineInvalidReason (debt: VerificationDebt) : string option =
         if Set.isEmpty runnableProjects then
             None
-        elif Volatile.Read(&ledgerRecoveryOutstandingRef) then
-            Some
-                "the verification ledger could not be read, so the full-suite baseline cannot say what changed since it was earned"
+        elif debt.RecoveryOutstanding then
+            Some "the verification ledger could not be read, so its baseline cannot account for subsequent changes"
         else
-            match Volatile.Read(&fullSuiteBaselineRef) with
+            match debt.Baseline with
             | None -> Some FullSuiteBaseline.absentReason
             | Some baseline -> FullSuiteBaseline.staleness runnableProjects baseline
 
-    /// The one question every skip in this plugin is really asking: is the
-    /// needs-testing queue PROVABLY empty? An unreadable ledger is never `true` here
-    /// — an empty queue we could not read is not an empty queue (AUTOMATION-150).
-    ///
-    /// AUTOMATION-110: an absent or stale full-suite baseline is owed work too — the
-    /// tests a filtered run skips have nothing to be equivalent TO until one exists —
-    /// so it is folded in here rather than checked beside this at each skip site.
-    let nothingOwed () =
-        Set.isEmpty pendingQueueRef
-        && Map.isEmpty runtimeObligationsRef
-        && not (Volatile.Read(&ledgerRecoveryOutstandingRef))
-        && Option.isNone (baselineInvalidReason ())
+    let nothingOwed (debt: VerificationDebt) =
+        Set.isEmpty debt.PendingQueue
+        && Map.isEmpty debt.RuntimeObligations
+        && not debt.RecoveryOutstanding
+        && Option.isNone (baselineInvalidReason debt)
 
-    /// What a drain is FOR, in words. An unreadable ledger owes a debt whose size
-    /// cannot be printed, so it is named rather than counted.
-    let owedDescription () =
-        let queued = Set.count pendingQueueRef
+    let owedDescription (debt: VerificationDebt) =
+        let queued = Set.count debt.PendingQueue
 
-        if Volatile.Read(&ledgerRecoveryOutstandingRef) then
-            $"an UNREADABLE pending-verification ledger (what is owed is UNKNOWN, so only a full suite can prove it) + %d{queued} newly-queued symbol(s)"
+        if debt.RecoveryOutstanding then
+            $"an UNREADABLE verification ledger + {queued} newly-queued symbol(s)"
         else
-            // AUTOMATION-110. A drain owed only to the baseline says so, or a reader sees
-            // "0 symbol(s) awaiting verification — draining now" and goes looking for the
-            // bug in the queue.
-            match baselineInvalidReason () with
-            | Some reason ->
-                $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})"
-            | None -> $"%d{queued} symbol(s) awaiting verification"
+            match baselineInvalidReason debt with
+            | Some reason -> $"{queued} symbol(s) awaiting verification + a full suite to earn the baseline ({reason})"
+            | None -> $"{queued} symbol(s) awaiting verification"
 
-    /// Persist the durable queue — UNLESS an unreadable ledger's debt is still
-    /// outstanding (AUTOMATION-150).
-    ///
-    /// While it is, the corrupt file on disk IS the record, and it says the honest
-    /// thing: "what is owed here is unknown". Overwriting it with our necessarily
-    /// incomplete in-memory queue would launder that uncertainty into a clean, EMPTY
-    /// ledger — and a crash before the recovering full-suite run finished would then
-    /// hand the next session a ledger claiming nothing is owed. That is the very hole
-    /// this ticket closes, re-opened through the write path. So we leave the corrupt
-    /// bytes exactly where they are until a full-suite green has verified the tree,
-    /// and rewrite the ledger only then (see the discharge in `TestsFinished`).
-    let persistQueue (context: string) =
-        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
-            try
-                PendingVerification.save repoRoot pendingQueueRef
-            with ex ->
-                Logging.warn
-                    "test-prune"
-                    $"failed to persist pending-verification queue%s{context}: %s{ex.Message}; in-memory queue still updated"
+    let enqueuePending symbols (state: TestPruneState) =
+        if List.isEmpty symbols then
+            state
+        else
+            let revision = state.Debt.Revision + 1L
 
-    /// AUTOMATION-110. The durable reds — same write guard as `persistQueue`, for the
-    /// same reason: while an unreadable ledger's debt is outstanding the corrupt bytes
-    /// are the honest record, and only the recovering full suite may rewrite them.
-    let persistFailures (failures: OutstandingFailure list) =
-        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
-            try
-                OutstandingFailure.save repoRoot failures
-            with ex ->
-                Logging.warn
-                    "test-prune"
-                    $"failed to persist outstanding failures: %s{ex.Message}; in-memory list still updated"
+            { state with
+                Debt =
+                    { state.Debt with
+                        PendingQueue = Set.union state.Debt.PendingQueue (Set.ofList symbols)
+                        Revision = revision
+                        SymbolRevisions =
+                            (state.Debt.SymbolRevisions, symbols)
+                            ||> List.fold (fun versions symbol -> Map.add symbol revision versions) } }
 
-    /// AUTOMATION-112. When set, every test run this plugin launches is UNFILTERED —
-    /// every configured project, in full. Requested by `fshw confirm` through the
-    /// `set-scope` command BEFORE it triggers the scan, so the run the scan provokes
-    /// is already full-suite and `confirm` never pays for two runs.
-    ///
-    /// Deliberately one-way within a daemon session in the safe direction: `fshw
-    /// check` does not reset it. A `confirm` followed by an inner-loop check is merely
-    /// slower; the reverse — a filtered run silently satisfying a `confirm` — is the whole
-    /// bug. To go back to impact filtering, ask for it explicitly (`set-scope impact`)
-    /// or restart the daemon.
-    ///
-    /// Note this only makes the run unfiltered. It does NOT let the CLI *claim* a
-    /// full-suite verdict: `confirm` reads back what the run actually covered
-    /// (`test-scope` → a projection of `RunCoverage`) and refuses anything less.
-    /// The flag is a request; the scope report is the evidence.
-    let mutable fullSuiteScopeRef = false
+    let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
+        match ctx.ProjectGraph.ObserveModel() with
+        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+        | _ -> None
 
-    /// Add `symbols` to the in-memory queue. Called at the FileChecked
-    /// accumulation point; the durable persist is batched to the flush
-    /// chokepoint (`flushAndQueryAffected` saves BEFORE the analysis flush
-    /// advances the durable snapshot). Crash-safety holds without a per-file
-    /// write: losing un-flushed enqueues also means the analysis snapshot was
-    /// not advanced, so a restart re-DETECTS the same changes and re-enqueues
-    /// them (over-testing is the safe direction).
-    let enqueuePending (symbols: string list) =
-        if not symbols.IsEmpty then
-            let updated = (pendingQueueRef, symbols) ||> List.fold (fun q s -> Set.add s q)
-            Volatile.Write(&pendingQueueRef, updated)
+    let enqueueImpact (ctx: PluginCtx<TestPruneMsg>) =
+        ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
 
-    /// Remove `symbols` from the persisted queue and flush to disk. Called only
-    /// when a covering test run for those symbols completed green (or a symbol
-    /// has no covering test).
-    let commitPending (symbols: Set<string>) =
-        if not symbols.IsEmpty then
-            let updated = Set.difference pendingQueueRef symbols
-            Volatile.Write(&pendingQueueRef, updated)
-            persistQueue " after commit"
+    let markRunLaunched (state: TestPruneState) =
+        let symbols = Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
 
-    /// The reds no covering run has passed since (AUTOMATION-125), mirrored out of the
-    /// mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on another
-    /// thread, and so cannot read the state. Same closure-local + `Volatile` shape as
-    /// `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
-    ///
-    /// Non-empty ⇒ no cache participation at all; see `cacheKeyFor`.
-    let mutable outstandingFailuresRef: OutstandingFailure list = loadedFailures
-
-    /// What the runs in THIS PROCESS have actually covered (AUTOMATION-161), mirrored out
-    /// of the mailbox state for the CACHE-KEY intercept — same closure-local + `Volatile`
-    /// shape as `outstandingFailuresRef`, and for the same reason.
-    ///
-    /// EMPTY ⇒ this process holds NO test evidence, and no cache participation on
-    /// `BuildCompleted`; see `cacheKeyFor`. An ABORTED run leaves it empty (its launch
-    /// selection is empty), which is right: a run that never executed establishes nothing.
-    let mutable sessionCoverageRef: RunCoverage = RunCoverage.none
-
-    /// AUTOMATION-259. The last completed run's check-vs-confirm projection: which run it
-    /// belongs to, the selection `check` WOULD have used, and whether that selection
-    /// reached a failure the run saw.
-    ///
-    /// A ref rather than a `TestPruneState` field on purpose. The completion handler
-    /// returns state through five branches (queued force-run, rerun-drain, flush-failed,
-    /// stale-rerun, idle) and a record copy that one branch forgot would silently serve
-    /// the PREVIOUS run's projection under this run's id — which is the one failure mode
-    /// a sample recorded for comparison must not have. Written ONCE, before the branches.
-    ///
-    /// `None` until a run completes: nothing has been projected, and the CLI must read
-    /// that as "no sample", never as "they agreed".
-    let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option =
-        None
-
-    /// AUTOMATION-533. Every run this daemon session has COMPLETED, newest first — the
-    /// ledger `test-scope` reports so a check can name every batch it ran instead of
-    /// only the last.
-    ///
-    /// One check provokes several runs: the impact-selected batch, the rerun a mid-run
-    /// change queues behind it, `confirm`'s forced full suite, the drain of a queued
-    /// `run-tests`. Each writes its own `.fshw/test-runs/<runId>/`. The CLI cannot
-    /// enumerate them from the filesystem without inferring membership from mtimes —
-    /// which is precisely what the run directory exists to avoid — so the daemon that
-    /// ran them DECLARES them.
-    ///
-    /// A ref rather than a `TestPruneState` field for the same reason `checkReachRef` is
-    /// one: the completion handler returns state through five branches, and a record
-    /// copy one of them forgot would drop a batch — which is the exact failure this
-    /// ledger exists to end, reintroduced one layer down. Written ONCE, before the
-    /// branches.
-    ///
-    /// Bounded at `SessionRunLedger`. A check that runs more batches than that would be
-    /// under-reported by the oldest ones, which is worse than the truth and much better
-    /// than naming one.
-    let mutable completedRunsRef: Guid list = []
+        { state with
+            PendingAges = bumpSeedAges state.PendingAges (Set.toList symbols) }
 
     let expectedRuntimeCoverageProjects =
         match testConfigs, coveragePaths with
@@ -5153,13 +5009,9 @@ let internal createWithLaunchDeadline
                     None)
         | _ -> []
 
-    let allowedRuntimeProjects = Set.ofList expectedRuntimeCoverageProjects
-
-    let prunedRuntimeObligations =
-        pruneRuntimeCoverageObligations allowedRuntimeProjects runtimeObligationsRef
-
-    if prunedRuntimeObligations <> runtimeObligationsRef then
-        persistRuntimeObligations (fun _ -> prunedRuntimeObligations)
+    // Runtime obligations also carry conservative debt for sources outside FCS.
+    // Such projects may have no runtime report mapping, but remain configured debt.
+    let allowedRuntimeProjects = runnableProjects
 
     let runtimeCoverageSelection changedFiles =
         selectByRuntimeCoverage
@@ -5184,6 +5036,7 @@ let internal createWithLaunchDeadline
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
     let flushAndQueryAffected (state: TestPruneState) =
+        let coveringProjects = coveringProjectsForScope ()
         // AUTOMATION-67. Capture OLD literal coupling before `RebuildProjects`
         // replaces a changed producer's outgoing graph. The unchanged test still
         // points at that old literal, but after the rebuild the producer does not;
@@ -5195,10 +5048,16 @@ let internal createWithLaunchDeadline
         // source. This is bounded evidence carried across one destructive boundary,
         // not permanent false-positive coupling.
         let preRebuildSymbols =
-            Set.union pendingQueueRef (Set.ofList state.ChangedSymbols) |> Set.toList
+            Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
+            |> Set.toList
 
         let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
-        enqueuePending priorLiteralSeeds
+
+        let newlyOwedLiterals =
+            priorLiteralSeeds
+            |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
+
+        let state = enqueuePending newlyOwedLiterals state
 
         let state =
             { state with
@@ -5214,7 +5073,7 @@ let internal createWithLaunchDeadline
         // queue entries would no longer be re-detectable after a crash. One
         // write per flush (vs per FileChecked) — same crash-safety, batch-size
         // fewer disk writes.
-        persistQueue ""
+        armDebtWrite ()
 
         let flushedState = flushPendingAnalysis db state
 
@@ -5249,14 +5108,12 @@ let internal createWithLaunchDeadline
         // (e.g. carried across a restart, or left behind by an Aborted/failed
         // run); they must keep selecting tests until a covering run passes.
         let symbols =
-            Set.union pendingQueueRef (Set.ofList flushedState.ChangedSymbols) |> Set.toList
+            Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
+            |> Set.toList
 
         let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
 
         if not (Map.isEmpty runtimeSelection.ProjectsByFile) then
-            persistRuntimeObligations (fun current ->
-                mergeRuntimeCoverageObligations current runtimeSelection.ProjectsByFile)
-
             for KeyValue(file, projects) in runtimeSelection.ProjectsByFile do
                 if not (Set.isEmpty projects) then
                     let projectNames = projects |> Set.toList |> String.concat ", "
@@ -5330,7 +5187,7 @@ let internal createWithLaunchDeadline
                 // them.
                 //
                 // This only READS the ages — they advance once per test RUN, at the
-                // launch point (see `pendingAgeRef`). Do not bump them here: this
+                // launch point (the owner state's `PendingAges`). Do not bump them here: this
                 // function runs 2-3 times per edit-save cycle, so the counter would
                 // measure flushes, and two edits to one function on a green repo would
                 // trip a guard designed to fire late.
@@ -5338,7 +5195,7 @@ let internal createWithLaunchDeadline
                 // Independent of `WideSelectionTests`: a seed pinning 200 tests of a
                 // 400-test suite is the same disease as one pinning 3,000, and gating on
                 // absolute width would miss every smaller repo.
-                let ages = Volatile.Read(&pendingAgeRef)
+                let ages = flushedState.PendingAges
 
                 let ageOf s =
                     ages |> Map.tryFind s |> Option.defaultValue 0
@@ -5422,23 +5279,8 @@ let internal createWithLaunchDeadline
 
                 affected
 
-        // Drop queued symbols that have no RUNNABLE covering test from the durable
-        // queue immediately: there is nothing for them to wait on, and retaining them
-        // would wedge the queue forever (every future run would re-select zero
-        // runnable tests yet the queue would never empty → permanent non-green). A
-        // symbol is "covered" iff it has at least one covering test IN A PROJECT THIS
-        // DAEMON RUNS (see `runnableCoveringTests` — AUTOMATION-99: a symbol covered
-        // only by an unconfigured project is unverifiable here and wedged the verdict).
-        // Only ever REMOVES from the queue, so it cannot under-test.
-        //
-        // AUTOMATION-110 — the two ways of having no runnable covering test are told
-        // apart and the second is REPORTED, never merely dropped: a symbol with no test
-        // anywhere, and a symbol whose only covering tests live in a project
-        // `tests.projects` does not list. The AUTOMATION-99 rule wrote the second off
-        // as the first; that is the "documented, deliberate hole" AUTOMATION-108's
-        // reviewer named as a candidate cause for a red the gate never selected. The
-        // queue still drops it (nothing here can ever discharge it), but the write-off
-        // names the project, in the log AND on the verdict (`UncoveredChanges`).
+        // Empty runnable selection has two meanings: genuinely uncovered symbols
+        // can leave the queue; known tests in unconfigured projects remain owed.
         let uncovered =
             symbols
             |> List.filter (fun s -> (runnableCoveringTests s).IsEmpty)
@@ -5451,28 +5293,27 @@ let internal createWithLaunchDeadline
                 uncovered
                 |> Set.toList
                 |> List.choose (fun s ->
-                    match db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    match coveringProjects s with
                     | projects when Set.isEmpty projects -> None
                     | projects -> Some(s, projects))
                 |> Map.ofList
+
+        // Named covering projects that this daemon cannot run remain debt.
+        // A configured-project full suite cannot discharge somebody else's tests.
+        let uncovered = Set.difference uncovered (unrunnable |> Map.keys |> Set.ofSeq)
 
         if not (Set.isEmpty uncovered) then
             Logging.info
                 "test-prune"
                 $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
 
-            if not (Map.isEmpty unrunnable) then
-                let projects =
-                    UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
+        if not (Map.isEmpty unrunnable) then
+            let projects =
+                UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
 
-                Logging.warn
-                    "test-prune"
-                    $"%d{Map.count unrunnable} of them ARE covered — by tests in %s{projects}, which `tests.projects` does \
-                      not list, so this daemon cannot run them. The obligation is written off here, not discharged: \
-                      list the project, or declare it excluded, if its tests are meant to gate. Symbols: \
-                      %s{describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
-
-            commitPending uncovered
+            Logging.warn
+                "test-prune"
+                $"{Map.count unrunnable} symbol(s) remain owed to unconfigured test projects {projects}: {describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
 
         // Keep the in-memory hot view aligned with the durable queue so the
         // ChangedSymbols carried in state (and the cache-key snapshot) don't
@@ -5528,7 +5369,7 @@ let internal createWithLaunchDeadline
                   Unknown: %s{describeAll unknownToIndex}"
 
         let allChangesUncovered =
-            if noCoveringTest && List.isEmpty unknownToIndex then
+            if noCoveringTest && List.isEmpty unknownToIndex && Map.isEmpty unrunnable then
                 UncoveredChanges.AllUncovered(List.sort symbols, unrunnable)
             else
                 UncoveredChanges.No
@@ -5546,41 +5387,19 @@ let internal createWithLaunchDeadline
                 List.sort symbols
 
         { flushedState with
+            Debt =
+                { flushedState.Debt with
+                    PendingQueue = Set.difference flushedState.Debt.PendingQueue uncovered
+                    RuntimeObligations =
+                        mergeRuntimeCoverageObligations
+                            flushedState.Debt.RuntimeObligations
+                            runtimeSelection.ProjectsByFile }
             ChangedSymbols = remainingSymbols
             AffectedTests = Analyzed affectedTests
             ChangedSymbolsAllUncovered = allChangesUncovered
             LastSeeds = seedsThatSelectedTests }
 
-    // Mutable snapshot of ChangedSymbols for the cache key function.
-    // Updated from the Update handler so the cache intercept (which runs
-    // before Update) sees the symbols accumulated from prior FileChecked events.
-    let mutable changedSymbolsRef: string list = []
-
-    // Per-file FCS freshness sidecar, loaded once at plugin construction from
-    // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
-    // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
-    // files' stored symbols are trustworthy enough to run detectChanges against.
-    //
-    // Closure-local mutable cell + Volatile for the same reason `changedSymbolsRef` is:
-    // the Update handler and the cache intercept read/write it from different threads.
-    let mutable freshnessRef: FileFreshness.Store = FileFreshness.load repoRoot
-
-    /// AUTOMATION-228. The clock `storedRowsExist: bool` did not have. Rows written
-    /// seconds ago by this session's own scan are not a baseline; diffing the current
-    /// extraction against them compares the file to itself, always reports "nothing
-    /// changed", and selects zero test projects — on a diff that ADDS tests. See
-    /// `FileFreshness.PriorRowLedger`, which owns the rule.
     let priorRows = FileFreshness.PriorRowLedger()
-
-    let updateFreshness (newStore: FileFreshness.Store) =
-        Volatile.Write(&freshnessRef, newStore)
-
-        try
-            FileFreshness.save repoRoot newStore
-        with ex ->
-            Logging.warn
-                "test-prune"
-                $"failed to persist file-freshness sidecar: %s{ex.Message}; in-memory state still updated"
 
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
@@ -5590,39 +5409,58 @@ let internal createWithLaunchDeadline
     // the already-advanced analysis snapshot → "nothing changed" → zero tests run → false
     // green.
     let initialState =
-        { PendingAnalysis = Map.empty
+        { Debt =
+            { PendingQueue = initialQueue
+              SymbolRevisions = initialQueue |> Seq.map (fun symbol -> symbol, 0L) |> Map.ofSeq
+              Revision = 0L
+              RecoveryOutstanding =
+                ledgerUnreadableReason.IsSome
+                || failuresUnreadable
+                || runtimeUnreadable
+                || interruptedPublication
+              Baseline = initialBaseline
+              RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects initialRuntimeObligations }
+          Freshness = FileFreshness.load repoRoot
+          CSharpInputs = Map.empty
+          PendingAges = Map.empty
+          FullSuiteRequested = false
+          ScopeReply = None
+          RunReply = None
+          PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
-          ChangedSymbols = pendingQueueRef |> Set.toList
+          ChangedSymbols = initialQueue |> Set.toList
           ChangedFiles = []
           LastResults = None
           LastRunId = None
+          CompletedRuns = []
+          CheckReach = None
           LastSeeds = []
-          PendingRerun = false
-          BootScanDebtDuringFullRun = Set.empty
+          BootScanDebtDuringFullRun = Map.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
-          QueuedCommandRuns = []
           // AUTOMATION-110. The previous session's reds, quarantined into the first run.
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
-          EvidenceReceipt = None }
+          EvidenceReceipt = None
+          Earned = None
+          AnalysisModelGeneration = None
+          AnalysisReceipt = None
+          AnalysisFiles = Map.empty
+          AnalysisCohortFiles = Set.empty }
 
-    // Keep the cache-key snapshot consistent with the seeded queue from the
-    // very first event (the cache intercept runs before any Update handler).
-    Volatile.Write(&changedSymbolsRef, initialState.ChangedSymbols)
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
     /// inside the cache-write capture window. `TestRunStarted` fires before the host starts.
     /// Catches its own exceptions to produce an `Aborted` lifecycle — letting RunExclusive
     /// eat the message would free the slot with no completion posted, stranding
-    /// `LastResults`/`PendingRerun`.
+    /// `LastResults` or the owned successor intent.
     let runTestsWithImpact
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
@@ -5669,16 +5507,22 @@ let internal createWithLaunchDeadline
             //    because the tests a filtered run skips have nothing to be equivalent
             //    to. A cold repository earns its baseline here; a repository whose
             //    `tests.projects` grew re-earns it. Same shape as 150.
-            let scopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
-            let ledgerUnreadable = Volatile.Read(&ledgerRecoveryOutstandingRef)
-            let baselineInvalid = baselineInvalidReason ()
+            let scopeIsFullSuite = inputs.FullSuiteRequested
+            let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
+
+            let baselineInvalid =
+                match baselineInvalidReason inputs.Debt with
+                | Some reason -> Some reason
+                | None when inputs.ModelGeneration.IsSome && not inputs.HasOwnedBaseline ->
+                    Some "no owned whole-suite receipt exists for this completed model"
+                | None -> None
 
             // The coarse fallback only needs to know WHICH files are unanalysable; the
             // map's values exist so the ledger projection can re-report their
             // diagnostics (AUTOMATION-125).
             let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
 
-            let launchedRuntimeObligations = runtimeObligationsRef
+            let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
 
             let runtimeForceProjects =
                 launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
@@ -5721,12 +5565,12 @@ let internal createWithLaunchDeadline
             // state at completion time) because mid-run BatchChecked flushes
             // mutate both; the synchronous TestsFinished handler commits ONLY
             // these symbols and leaves mid-run arrivals queued for the rerun.
-            let launchedSymbols = Set.union pendingQueueRef (Set.ofList inputs.ChangedSymbols)
+            let launchedSymbols =
+                Set.union inputs.Debt.PendingQueue (Set.ofList inputs.ChangedSymbols)
 
             // AUTOMATION-275 — advance the poisoned-seed counters HERE, at the launch of
             // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
             // claim. `flushAndQueryAffected` runs several times per edit-save cycle.
-            Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols))
 
             try
                 // For each launched symbol, the set of test PROJECTS whose tests
@@ -5738,16 +5582,15 @@ let internal createWithLaunchDeadline
                 // throw here must produce the Aborted lifecycle below (an honest,
                 // re-runnable "tests did not run" verdict) rather than escaping to
                 // the framework's `runOne`, which would only log-and-strand the run.
-                // Only RUNNABLE covering projects gate a symbol's commit — the same
-                // rule `flushAndQueryAffected` uses to drop unverifiable symbols, so
-                // the two cannot disagree. Gating on a project this daemon never runs
-                // would block the commit forever (AUTOMATION-99's permanent red).
+                // Apply exactly the same declared-scope policy as admission and
+                // post-run diagnostics. Unknown covering projects remain owed.
+                let coveringProjects = coveringProjectsForScope ()
+
                 let coveringProjectsBySymbol =
                     launchedSymbols
                     |> Set.toList
                     |> List.map (fun s ->
-                        let projs =
-                            runnableCoveringTests s |> List.map (fun t -> t.TestProject) |> Set.ofList
+                        let projs = coveringProjects s
 
                         s, projs)
                     |> Map.ofList
@@ -5828,6 +5671,8 @@ let internal createWithLaunchDeadline
 
                 let launch =
                     { InputTreeHash = ReceiptInputTree.read repoRoot
+                      ModelGeneration = inputs.ModelGeneration
+                      SymbolRevisions = inputs.Debt.SymbolRevisions
                       Symbols = launchedSymbols
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
                       RuntimeProjectsByFile = launchedRuntimeObligations
@@ -5869,7 +5714,7 @@ let internal createWithLaunchDeadline
                 //      an all-uncovered cold run falls through to the full suite and
                 //      hangs, never resolving WaitForComplete. A genuine cold start with
                 //      NO pending symbols leaves the flag false, so the baseline runs.
-                let baselineEquivalent = nothingOwed () && hasCachedResults
+                let baselineEquivalent = nothingOwed inputs.Debt && hasCachedResults
 
                 let nothingToVerify = UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
 
@@ -5941,8 +5786,8 @@ let internal createWithLaunchDeadline
                             zeroAffectedWidening
                                 hasCachedResults
                                 ledgerUnreadable
-                                (Set.count pendingQueueRef)
-                                runtimeObligationsRef
+                                (Set.count inputs.Debt.PendingQueue)
+                                inputs.Debt.RuntimeObligations
                                 (List.length inputs.OutstandingFailures)
                                 baselineInvalid
 
@@ -6011,7 +5856,7 @@ let internal createWithLaunchDeadline
                             launchDeadline
                             beforeRun
                             coveragePaths
-                            coverageIngestFailed
+                            (coverageIngestFailed ctx)
                             afterRun
                             configuredTestProjects
                             configs
@@ -6044,6 +5889,8 @@ let internal createWithLaunchDeadline
                 // aborted run executed nothing, so it clears nothing.
                 let launch =
                     { InputTreeHash = None
+                      ModelGeneration = inputs.ModelGeneration
+                      SymbolRevisions = inputs.Debt.SymbolRevisions
                       Symbols = launchedSymbols
                       CoveringProjectsBySymbol = Map.empty
                       RuntimeProjectsByFile = launchedRuntimeObligations
@@ -6056,12 +5903,9 @@ let internal createWithLaunchDeadline
         }
 
     /// The `run-tests` force-run work async, launched under the "tests" slot.
-    /// Shared by the immediate-claim path (`RunTestsRequested` with a free
-    /// slot) and the queued-drain path (`TestsFinished` popping
-    /// `QueuedCommandRuns`) so FORCE semantics stay in lockstep. Every exit —
-    /// success, fault, cancellation — resolves `reply` (the IPC command is
-    /// awaiting it, bounded) and returns a `TestsFinished` so the synchronous
-    /// handler delivers the earned terminal status.
+    /// Immediate and queued requests use the same FORCE selection. Completion
+    /// carries its reply through the owner fold; only the publication finalizer
+    /// acknowledges the IPC caller. Worker failure follows the same boundary.
     ///
     /// Empty launch set: `run-tests` is a manual FORCE run (optionally
     /// filtered to a subset / only-failed). It is NOT the impact-analysis
@@ -6088,6 +5932,8 @@ let internal createWithLaunchDeadline
         // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
             { InputTreeHash = None
+              ModelGeneration = observeModelGeneration ctx
+              SymbolRevisions = Map.empty
               Symbols = Set.empty
               CoveringProjectsBySymbol = Map.empty
               RuntimeProjectsByFile = Map.empty
@@ -6112,66 +5958,59 @@ let internal createWithLaunchDeadline
                 ctx.EmitTestRunStarted started
 
             try
-                try
-                    let! results, started, completed =
-                        executeTests
-                            db
-                            None
-                            emitStarted
-                            repoRoot
-                            launchDeadline
-                            beforeRun
-                            coveragePaths
-                            coverageIngestFailed
-                            afterRun
-                            configuredTestProjects
-                            configs
-                            Map.empty
-                            filter
+                let! results, started, completed =
+                    executeTests
+                        db
+                        None
+                        emitStarted
+                        repoRoot
+                        launchDeadline
+                        beforeRun
+                        coveragePaths
+                        (coverageIngestFailed ctx)
+                        afterRun
+                        configuredTestProjects
+                        configs
+                        Map.empty
+                        filter
 
-                    // The counts come from the CTRF reports THIS RUN wrote, located by
-                    // the run id the daemon just handed back — declared membership, never
-                    // an mtime scan of a shared pile. An empty list from an existing
-                    // run-dir means the run executed no tests, and that is exactly the
-                    // fact the CLI has to be able to state.
-                    let runReports =
-                        FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
-                        |> List.map (fun r -> r.Project, r.Summary)
-                        |> Map.ofList
+                // The counts come from the CTRF reports THIS RUN wrote, located by
+                // the run id the daemon just handed back — declared membership, never
+                // an mtime scan of a shared pile. An empty list from an existing
+                // run-dir means the run executed no tests, and that is exactly the
+                // fact the CLI has to be able to state.
+                let runReports =
+                    FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
+                    |> List.map (fun r -> r.Project, r.Summary)
+                    |> Map.ofList
 
-                    reply.TrySetResult(formatTestResultsJson filter runReports results) |> ignore
+                let response = formatTestResultsJson filter runReports results
 
-                    // Returned (not Posted) so the framework's completion path
-                    // delivers it: the synchronous TestsFinished handler does
-                    // the error reporting and status updates a bare emit would
-                    // skip.
-                    return TestsFinished(started, completed, commandLaunch)
-                with ex ->
-                    // AUTOMATION-68: a `beforeRun` throw / `executeTests` fault
-                    // means the suite it guards NEVER RAN — that must surface
-                    // as a failure, never a stale prior green. The Aborted
-                    // lifecycle drives the TestsFinished handler to a Failed
-                    // status.
-                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle emittedStart ex.Message
+                // Returned (not Posted) so the framework's completion path
+                // delivers it: the synchronous TestsFinished handler does
+                // the error reporting and status updates a bare emit would
+                // skip.
+                return CommandTestsFinished(started, completed, commandLaunch, reply, response)
+            with ex ->
+                // AUTOMATION-68: a `beforeRun` throw / `executeTests` fault
+                // means the suite it guards NEVER RAN — that must surface
+                // as a failure, never a stale prior green. The Aborted
+                // lifecycle drives the TestsFinished handler to a Failed
+                // status.
+                Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                let started, completed = abortedRunLifecycle emittedStart ex.Message
 
-                    if emittedStart.IsNone then
-                        emitStarted started
+                if emittedStart.IsNone then
+                    emitStarted started
 
-                    reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
+                let response = JsonSerializer.Serialize({| error = ex.Message |})
 
-                    return TestsFinished(started, completed, commandLaunch)
-            finally
-                // Cancellation (daemon teardown) skips `with` but runs
-                // `finally`: never leave the IPC client awaiting a reply that
-                // cannot come. No-op when a result was already set.
-                reply.TrySetResult(JsonSerializer.Serialize({| error = "daemon shut down before the run completed" |}))
-                |> ignore
+                return CommandTestsFinished(started, completed, commandLaunch, reply, response)
         }
 
     let commands =
         [ "affected-tests",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   // Compute on demand from state.ChangedSymbols against current DB
                   // state. ChangedSymbols accumulates across FileChecked events and
@@ -6192,14 +6031,14 @@ let internal createWithLaunchDeadline
                              ``method`` = t.TestMethod |})
 
                   return JsonSerializer.Serialize(testsData)
-              }
+              })
 
           "changed-files",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
-              async { return JsonSerializer.Serialize(state.ChangedFiles) }
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
+              async { return JsonSerializer.Serialize(state.ChangedFiles) })
 
           "test-results",
-          fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   if ctx.IsRunning "tests" then
                       return JsonSerializer.Serialize({| status = "running" |})
@@ -6210,10 +6049,10 @@ let internal createWithLaunchDeadline
                       // correct here; inventing "(none)" would claim it was unfiltered.
                       | Some results -> return formatTestResultsJson None Map.empty results
                       | None -> return JsonSerializer.Serialize({| status = "not run" |})
-              }
+              })
 
           "flaky-tests",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (_args: string array) ->
               async {
                   let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
@@ -6229,7 +6068,7 @@ let internal createWithLaunchDeadline
                              runs = runs |})
 
                   return JsonSerializer.Serialize({| tests = payload |})
-              } ]
+              }) ]
 
     // run-tests / scope commands (only if testConfigs are provided). The scope verbs
     // live behind the same condition on purpose: a repo with no test projects has no suite
@@ -6241,7 +6080,7 @@ let internal createWithLaunchDeadline
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
             @ [ "set-scope",
-                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
+                PluginCommand.Request(fun (ctx: CommandCtx<TestPruneMsg>) (args: string array) ->
                     async {
                         // AUTOMATION-112. `fshw confirm` calls this BEFORE triggering its
                         // scan, so the test run the scan provokes is already unfiltered.
@@ -6258,27 +6097,24 @@ let internal createWithLaunchDeadline
                                 "impact"
 
                         match requested with
-                        | "full" ->
-                            Volatile.Write(&fullSuiteScopeRef, true)
-
-                            Logging.info
-                                "test-prune"
-                                "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
-
-                            return JsonSerializer.Serialize({| scope = "full" |})
+                        | "full"
                         | "impact" ->
-                            Volatile.Write(&fullSuiteScopeRef, false)
-                            Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
-                            return JsonSerializer.Serialize({| scope = "impact" |})
+                            let reply =
+                                Tasks.TaskCompletionSource<string>(
+                                    Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                )
+
+                            ctx.Post(ScopeRequested((requested = "full"), reply))
+                            return! reply.Task.WaitAsync(TimeSpan.FromSeconds 30.0) |> Async.AwaitTask
                         | other ->
                             return
                                 JsonSerializer.Serialize(
                                     {| error = $"unknown scope '%s{other}' (expected 'full' or 'impact')" |}
                                 )
-                    }
+                    })
 
                 "test-scope",
-                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+                PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
                     async {
                         // What the last completed run ACTUALLY covered — the evidence a
                         // merge verdict is computed from. Never a restatement of what was
@@ -6336,9 +6172,7 @@ let internal createWithLaunchDeadline
                         // daemon, and a baseline that came back silent would hand the
                         // check its predecessor's runs.
                         let runIds =
-                            Volatile.Read(&completedRunsRef)
-                            |> List.map (fun id -> id.ToString("N"))
-                            |> List.toArray
+                            state.CompletedRuns |> List.map (fun id -> id.ToString("N")) |> List.toArray
 
                         // AUTOMATION-110. The full-suite baseline this ledger's greens are
                         // relative to, on EVERY branch — a `running` reply still names the
@@ -6346,7 +6180,7 @@ let internal createWithLaunchDeadline
                         // the reference; `baselineAbsent` says why there is none. Both
                         // null only for an analysis-only daemon, which makes no test claim.
                         let baseline, baselineAbsent =
-                            match baselineInvalidReason (), Volatile.Read(&fullSuiteBaselineRef) with
+                            match baselineInvalidReason state.Debt, state.Debt.Baseline with
                             | None, Some b when not (Set.isEmpty runnableProjects) ->
                                 box
                                     {| runId = b.RunId.ToString("N")
@@ -6426,9 +6260,11 @@ let internal createWithLaunchDeadline
                                            // HAVE covering tests this daemon cannot run, and where.
                                            unrunnableSymbolCount = Map.count (ZeroSelection.unrunnable zero)
                                            unrunnableProjects =
-                                            (ZeroSelection.unrunnable zero |> UnrunnableCoverage.projects |> Set.toArray) |}
+                                            (ZeroSelection.unrunnable zero
+                                             |> UnrunnableCoverage.projects
+                                             |> Set.toArray) |}
                                     )
-                    }
+                    })
 
                 // AUTOMATION-259. What `check` WOULD have concluded about the run
                 // `confirm` just widened to full — the sample `confirm` used to destroy.
@@ -6440,9 +6276,9 @@ let internal createWithLaunchDeadline
                 // that has never heard of this command returns the unknown-command
                 // sentinel, which the CLI reads as "no sample" — never as agreement.
                 "check-reach",
-                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
                     async {
-                        match Volatile.Read(&checkReachRef) with
+                        match state.CheckReach with
                         | None ->
                             return
                                 JsonSerializer.Serialize(
@@ -6522,10 +6358,10 @@ let internal createWithLaunchDeadline
                                            acceptable = recallAcceptable
                                            reason = recallReason |} |}
                                 )
-                    }
+                    })
 
                 "run-tests",
-                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
+                PluginCommand.Request(fun (ctx: CommandCtx<TestPruneMsg>) (args: string array) ->
                     async {
                         // FORCE semantics: `test-rerun` is the explicit "prove it
                         // ran" verb. The run NEVER executes here — it is posted to
@@ -6569,101 +6405,46 @@ let internal createWithLaunchDeadline
                                         v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq |> Some
                                     | false, _ -> None
 
-                                // Resolve configs or produce an error
-                                let lastResults = state.LastResults
+                                let reply =
+                                    Tasks.TaskCompletionSource<string>(
+                                        Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                    )
 
-                                // AUTOMATION-125. "Failed" is the OUTSTANDING set, not
-                                // merely the last run's results: after an impact-filtered
-                                // run the failing project is not in `LastResults` at all
-                                // (it wasn't selected), and `--only-failed` would have
-                                // re-run nothing — "no matching test projects" — while a
-                                // red sat there. The outstanding ledger is what still owes
-                                // a re-run, so it is what this verb must re-run.
-                                let outstandingProjects =
-                                    state.OutstandingFailures |> List.map (fun f -> f.Project) |> Set.ofList
+                                let admission =
+                                    ctx.EnqueueExclusiveIntent
+                                        "tests"
+                                        None
+                                        (RunTestsRequested(
+                                            { OnlyFailed = onlyFailed
+                                              Projects = projectFilter },
+                                            filter,
+                                            reply
+                                        ))
 
-                                let configsResult =
-                                    if onlyFailed then
-                                        let lastRunFailed =
-                                            match lastResults with
-                                            | Some prev ->
-                                                prev.Results
-                                                |> Map.toList
-                                                |> List.choose (fun (name, r) ->
-                                                    match r with
-                                                    | TestsFailed _
-                                                    | TestsTimedOut _
-                                                    // A deferred project never ran, and an errored one
-                                                    // aborted without a verdict — both are non-green, so
-                                                    // `--only-failed` (rerun non-green projects) must pick
-                                                    // them up.
-                                                    | TestsDeferred _
-                                                    | TestsErrored _ -> Some name
-                                                    | _ -> None)
-                                                |> Set.ofList
-                                            | None -> Set.empty
+                                // Bounded await (AUTOMATION-98): the reply resolves
+                                // when the run finishes — behind the test-prune
+                                // mailbox and possibly behind a run already in
+                                // flight — so an unbounded wait here could pin the
+                                // IPC caller for as long as the daemon is wedged.
+                                let result =
+                                    async {
+                                        do! admission |> Async.AwaitTask
+                                        return! reply.Task |> Async.AwaitTask
+                                    }
+                                    |> Async.StartAsTask
 
-                                        let failedNames = Set.union lastRunFailed outstandingProjects
+                                let! winner =
+                                    Tasks.Task.WhenAny(result, Tasks.Task.Delay(waitForResultMs)) |> Async.AwaitTask
 
-                                        if lastResults.IsNone && Set.isEmpty failedNames then
-                                            Error "no previous results — cannot determine failed projects"
-                                        else
-                                            Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
-                                    else
-                                        match projectFilter with
-                                        | Some names ->
-                                            Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
-                                        | None -> Ok allConfigs
-
-                                match configsResult with
-                                | Error msg -> return JsonSerializer.Serialize({| error = msg |})
-                                | Ok configs when configs.IsEmpty ->
-                                    // Name what was asked for and what exists. A bare
-                                    // "no matching test projects" is unactionable for the
-                                    // one case that actually produces it — a mistyped or
-                                    // renamed `--project` — and the configured names are
-                                    // right here (AUTOMATION-272).
-                                    let msg =
-                                        match projectFilter with
-                                        | Some names ->
-                                            let asked = names |> Set.toList |> List.sort |> String.concat ", "
-
-                                            let known =
-                                                allConfigs
-                                                |> List.map (fun c -> c.Project)
-                                                |> List.sort
-                                                |> String.concat ", "
-
-                                            $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
-                                        | None -> "no matching test projects"
-
-                                    return JsonSerializer.Serialize({| error = msg |})
-                                | Ok configs ->
-                                    let reply =
-                                        Tasks.TaskCompletionSource<string>(
-                                            Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                if winner = (result :> Tasks.Task) then
+                                    return! result |> Async.AwaitTask
+                                else
+                                    return
+                                        JsonSerializer.Serialize(
+                                            {| status = "busy"
+                                               message =
+                                                $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
                                         )
-
-                                    ctx.Post(RunTestsRequested(configs, filter, reply))
-
-                                    // Bounded await (AUTOMATION-98): the reply resolves
-                                    // when the run finishes — behind the test-prune
-                                    // mailbox and possibly behind a run already in
-                                    // flight — so an unbounded wait here could pin the
-                                    // IPC caller for as long as the daemon is wedged.
-                                    let! winner =
-                                        Tasks.Task.WhenAny(reply.Task, Tasks.Task.Delay(waitForResultMs))
-                                        |> Async.AwaitTask
-
-                                    if winner = (reply.Task :> Tasks.Task) then
-                                        return reply.Task.Result
-                                    else
-                                        return
-                                            JsonSerializer.Serialize(
-                                                {| status = "busy"
-                                                   message =
-                                                    $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
-                                            )
                         with ex ->
                             // Command-local faults only (the run itself executes in
                             // the mailbox-launched work, which owns run faults per
@@ -6672,16 +6453,188 @@ let internal createWithLaunchDeadline
                             // was launched.
                             Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
                             return JsonSerializer.Serialize({| error = ex.Message |})
-                    } ]
+                    }) ]
         | _ -> commands
 
     { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
       Init = initialState
+      PrepareCommit =
+        Some(fun prior candidate ->
+            async {
+                let changed =
+                    prior.Debt <> candidate.Debt
+                    || prior.OutstandingFailures <> candidate.OutstandingFailures
+                    || prior.Freshness <> candidate.Freshness
+                    || File.Exists debtPublicationPath
+
+                if changed then
+                    armDebtWrite ()
+
+                    if not candidate.Debt.RecoveryOutstanding then
+                        PendingVerification.save repoRoot candidate.Debt.PendingQueue
+                        OutstandingFailure.save repoRoot candidate.OutstandingFailures
+                        saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
+
+                        match candidate.Debt.Baseline with
+                        | Some baseline -> FullSuiteBaseline.save repoRoot baseline
+                        | None -> ()
+
+                    FileFreshness.save repoRoot candidate.Freshness
+
+                return
+                    { Finalize =
+                        async {
+                            if not candidate.Debt.RecoveryOutstanding then
+                                if
+                                    prior.Debt.RecoveryOutstanding
+                                    && File.Exists(runtimeCoverageRecoveryPath repoRoot)
+                                then
+                                    File.Delete(runtimeCoverageRecoveryPath repoRoot)
+
+                                if File.Exists debtPublicationPath then
+                                    File.Delete debtPublicationPath
+
+                            match candidate.ScopeReply with
+                            | Some(fullSuite, reply) ->
+                                let scope = if fullSuite then "full" else "impact"
+                                reply.TrySetResult(JsonSerializer.Serialize({| scope = scope |})) |> ignore
+                            | None -> ()
+
+                            match candidate.RunReply with
+                            | Some(reply, response) -> reply.TrySetResult(response) |> ignore
+                            | None -> ()
+                        } }
+            })
       Update =
         fun ctx state event ->
             async {
+                let modelGeneration = observeModelGeneration ctx
+
+                let state =
+                    if
+                        state.AnalysisModelGeneration <> modelGeneration
+                        && (state.AnalysisModelGeneration.IsSome
+                            || not state.PendingAnalysis.IsEmpty
+                            || not state.AnalysisFiles.IsEmpty)
+                    then
+                        // Pending compiler results belong to their captured model. Retire
+                        // them before any build/cohort flush can write a different graph.
+                        // Verification debt survives: rediscovery earns no test coverage.
+                        { state with
+                            AnalysisModelGeneration = modelGeneration
+                            PendingAnalysis = Map.empty
+                            SymbolSnapshot = Map.empty
+                            AnalysisFiles = Map.empty
+                            AnalysisCohortFiles = Set.empty
+                            AnalysisReceipt = None
+                            Earned = None
+                            PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+                    else
+                        state
+
+                let rejectStaleAnalysis () =
+                    if not runnableProjects.IsEmpty then
+                        enqueueImpact ctx
+
+                    { state with
+                        AnalysisReceipt = None
+                        Earned = None
+                        PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+
                 match event with
+                | PluginEvent.FileChecked result when
+                    result.ModelGeneration.IsSome && result.ModelGeneration <> modelGeneration
+                    ->
+                    return rejectStaleAnalysis ()
+                | PluginEvent.BatchChecked batch when
+                    batch.ModelGeneration.IsSome && batch.ModelGeneration <> modelGeneration
+                    ->
+                    return rejectStaleAnalysis ()
+                | Custom(ScopeRequested(fullSuite, reply)) ->
+                    let scope = if fullSuite then "full" else "impact"
+                    Logging.info "test-prune" $"Scope set to {scope} for subsequent runs in this daemon session"
+
+                    return
+                        { state with
+                            FullSuiteRequested = fullSuite
+                            ScopeReply = Some(fullSuite, reply) }
+                | Custom(RuntimeCoverageFailed _) ->
+                    return
+                        { state with
+                            Debt =
+                                { state.Debt with
+                                    RecoveryOutstanding = true } }
+                | PluginEvent.FileChanged change ->
+                    let state =
+                        match change with
+                        | SourceChanged paths when not runnableProjects.IsEmpty ->
+                            (state, paths)
+                            ||> List.fold (fun current path ->
+                                if
+                                    not (
+                                        String.Equals(
+                                            Path.GetExtension path,
+                                            ".cs",
+                                            StringComparison.OrdinalIgnoreCase
+                                        )
+                                    )
+                                then
+                                    current
+                                else
+                                    let absolute =
+                                        if Path.IsPathRooted path then
+                                            path
+                                        else
+                                            Path.Combine(repoRoot, path)
+
+                                    let relative = Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
+                                    let hash = ContentHash.ofFile absolute
+
+                                    if
+                                        ContentHash.isReadable hash
+                                        && Map.tryFind relative current.CSharpInputs = Some hash
+                                    then
+                                        current
+                                    else
+                                        // CSharp has no FCS symbol result. Only an actual unfiltered
+                                        // completion covering this revision may retire these projects.
+                                        { current with
+                                            CSharpInputs = Map.add relative hash current.CSharpInputs
+                                            Earned = None
+                                            Debt =
+                                                { current.Debt with
+                                                    RuntimeObligations =
+                                                        mergeRuntimeCoverageObligations
+                                                            current.Debt.RuntimeObligations
+                                                            (Map.ofList [ relative, runnableProjects ]) } })
+                        | _ -> state
+
+                    let files =
+                        match change with
+                        | SourceChanged paths ->
+                            (state.AnalysisFiles, paths)
+                            ||> List.fold (fun outcomes path ->
+                                let absolute =
+                                    if Path.IsPathRooted path then
+                                        path
+                                    else
+                                        Path.Combine(repoRoot, path)
+
+                                Map.remove (AbsFilePath.create absolute) outcomes)
+                        | ProjectChanged _
+                        | SolutionChanged -> Map.empty
+
+                    return
+                        { state with
+                            AnalysisReceipt = None
+                            AnalysisFiles = files }
                 | PluginEvent.FileChecked result ->
+                    let state =
+                        { state with
+                            AnalysisModelGeneration = result.ModelGeneration
+                            AnalysisReceipt = None
+                            AnalysisCohortFiles = Set.add result.File state.AnalysisCohortFiles }
+
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
@@ -6720,6 +6673,11 @@ let internal createWithLaunchDeadline
                         )
 
                         { state with
+                            AnalysisFiles =
+                                Map.add
+                                    result.File
+                                    (AnalysisFileEvidence.fromResult result (Error detail))
+                                    state.AnalysisFiles
                             UnanalyzableFiles =
                                 Map.add
                                     relPath
@@ -6759,7 +6717,7 @@ let internal createWithLaunchDeadline
                             not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
 
                         let storedFreshness =
-                            let store = Volatile.Read(&freshnessRef)
+                            let store = state.Freshness
                             FileFreshness.classify relPath store
 
                         if not currentClean then
@@ -6854,8 +6812,18 @@ let internal createWithLaunchDeadline
                             // same log level as the one that hides nothing. It replaced a
                             // `(names, bool)` pair whose bool this call site computed and
                             // then `ignore`d.
-                            let changedNames =
+                            let look =
                                 match FileFreshness.planLook currentClean storedTrust with
+                                | FileFreshness.NothingHidden when not runnableProjects.IsEmpty ->
+                                    // Consume cold indexed symbols as real verification debt.
+                                    // A future full run is not yet evidence; recording the debt
+                                    // makes these rows a before for subsequent clean checks
+                                    // without repeatedly widening unchanged files after it runs.
+                                    FileFreshness.Diffable FileFreshness.AgainstNothing
+                                | outcome -> outcome
+
+                            let changedNames =
+                                match look with
                                 | FileFreshness.Diffable baseline ->
                                     // WHAT to diff against is the plan's decision, not
                                     // `storedSymbols`'s. This call site used to pass the
@@ -6918,7 +6886,6 @@ let internal createWithLaunchDeadline
                                     // — over-testing is the safe direction. They leave the queue
                                     // only when a covering test run passes (TestsFinished) or
                                     // they prove to have no covering test (flushAndQueryAffected).
-                                    enqueuePending changedNames
 
                                     (state.ChangedSymbols @ changedNames) |> List.distinct
                                 else
@@ -6945,7 +6912,7 @@ let internal createWithLaunchDeadline
                             // `affected-tests` IPC command computes its own answer on
                             // demand from `ChangedSymbols` against the current DB.
                             let newState =
-                                { state with
+                                { (enqueuePending changedNames state) with
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     ChangedSymbols = newChangedSymbols
@@ -6961,7 +6928,6 @@ let internal createWithLaunchDeadline
                                     UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
 
                             // Keep the mutable snapshot in sync for the cache key function
-                            Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
 
                             // Stamp the freshness sidecar with the result of THIS check.
                             // After analysis, not at the top, so a failed `analyzeSourceFromResults`
@@ -6973,21 +6939,20 @@ let internal createWithLaunchDeadline
                             let now = DateTime.UtcNow
 
                             let updatedFreshness =
-                                let prior = Volatile.Read(&freshnessRef)
+                                let prior = state.Freshness
 
                                 if currentClean && state.BuildCompletedInThisSession then
                                     FileFreshness.markClean now relPath prior
                                 else
                                     FileFreshness.markUnverified relPath prior
 
-                            updateFreshness updatedFreshness
 
                             // A helper analysis is not new evidence about a test red. Keep
                             // the fresh run's terminal provenance until a covering run
                             // clears the outstanding failure.
                             let analysisFinished = DateTime.UtcNow
 
-                            if List.isEmpty (Volatile.Read(&outstandingFailuresRef)) then
+                            if List.isEmpty (state.OutstandingFailures) then
                                 ctx.ReportStatus(
                                     Completed(
                                         analysisFinished,
@@ -6997,7 +6962,14 @@ let internal createWithLaunchDeadline
                                     )
                                 )
 
-                            return newState
+                            return
+                                { newState with
+                                    Freshness = updatedFreshness
+                                    AnalysisFiles =
+                                        Map.add
+                                            result.File
+                                            (AnalysisFileEvidence.fromResult result (Ok()))
+                                            newState.AnalysisFiles }
                         | Error msg ->
                             // On analysis failure the file must NOT be dropped: a
                             // dropped file contributes no symbols, a change to it diffs
@@ -7013,7 +6985,12 @@ let internal createWithLaunchDeadline
                         // the same treatment.
                         return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
 
-                | PluginEvent.BatchChecked batch ->
+                | Custom ImpactRunRequested
+                | PluginEvent.BatchChecked _ ->
+                    let bootScan =
+                        match event with
+                        | PluginEvent.BatchChecked batch -> batch.Trigger = BootScan
+                        | _ -> false
                     // Cohort-complete flush. The mailbox is FIFO and the daemon emits
                     // BatchChecked strictly after the last FileChecked, so every
                     // FileChecked from this cohort is already folded into
@@ -7038,7 +7015,43 @@ let internal createWithLaunchDeadline
                         tryRepairSchemaDrift ex
                         return state
                     | Ok flushedState ->
-                        Volatile.Write(&changedSymbolsRef, flushedState.ChangedSymbols)
+                        let flushedState =
+                            match event, ctx.ProjectGraph.ObserveCheckableFiles() with
+                            | PluginEvent.BatchChecked batch, Some(modelGeneration, modelFiles) ->
+                                // An attempted file with no completion cannot reuse an earlier
+                                // outcome from the same model generation.
+                                let outcomes =
+                                    (flushedState.AnalysisFiles, batch.Files)
+                                    ||> List.fold (fun files file ->
+                                        if Set.contains file flushedState.AnalysisCohortFiles then
+                                            files
+                                        else
+                                            Map.remove file files)
+
+                                let currentGeneration = observeModelGeneration ctx
+
+                                let receipt =
+                                    if
+                                        batch.ModelGeneration = currentGeneration
+                                        && currentGeneration = Some modelGeneration
+                                    then
+                                        AnalysisEvidence.fromCompleted
+                                            currentGeneration
+                                            modelFiles
+                                            runnableProjects
+                                            outcomes
+                                    else
+                                        None
+
+                                { flushedState with
+                                    AnalysisReceipt = receipt
+                                    AnalysisFiles = outcomes
+                                    AnalysisCohortFiles = Set.empty }
+                            | PluginEvent.BatchChecked _, None ->
+                                { flushedState with
+                                    AnalysisReceipt = None
+                                    AnalysisCohortFiles = Set.empty }
+                            | _ -> flushedState
 
                         // ── AUTOMATION-95/99: DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are
@@ -7053,7 +7066,10 @@ let internal createWithLaunchDeadline
                         // ledger leaves the in-memory queue empty because we cannot name
                         // what it held, and reading that as "nothing to drain" lets a
                         // corrupt sidecar run ZERO tests and still go green.
-                        if nothingOwed () then
+                        if
+                            nothingOwed flushedState.Debt
+                            && Set.isEmpty flushedState.PendingForceRunProjects
+                        then
                             return flushedState
                         else
                             match testConfigs with
@@ -7090,15 +7106,20 @@ let internal createWithLaunchDeadline
                                         (runTestsWithImpact
                                             ctx
                                             configs
-                                            (TestRunInputs.ofState drainedState)
+                                            (TestRunInputs.ofState
+                                                (observeModelGeneration ctx)
+                                                runnableProjects
+                                                drainedState)
                                             hasCachedResults
                                             forceRunProjects)
                                 with
                                 | Claimed ->
-                                    Logging.info "test-prune" $"BatchChecked: %s{owedDescription ()} — draining now"
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
 
-                                    return drainedState
-                                | SlotBusy when batch.Trigger = BootScan && Volatile.Read(&fullSuiteScopeRef) ->
+                                    return markRunLaunched drainedState
+                                | SlotBusy when bootScan && flushedState.FullSuiteRequested ->
                                     // The requested full-suite run already covers the built
                                     // tree that this cold cohort is baselining. Remember the
                                     // late-discovered symbols, but do not schedule a duplicate
@@ -7107,12 +7128,21 @@ let internal createWithLaunchDeadline
                                     // the durable queue outstanding.
                                     Logging.info
                                         "test-prune"
-                                        $"BatchChecked: %s{owedDescription ()} discovered by BootScan during a full-suite run — attaching debt to that run"
+                                        $"BatchChecked: %s{owedDescription flushedState.Debt} discovered by BootScan during a full-suite run — attaching debt to that run"
 
                                     return
                                         { flushedState with
                                             BootScanDebtDuringFullRun =
-                                                Set.union flushedState.BootScanDebtDuringFullRun pendingQueueRef }
+                                                (flushedState.BootScanDebtDuringFullRun,
+                                                 flushedState.Debt.SymbolRevisions)
+                                                ||> Map.fold (fun captured symbol revision ->
+                                                    if
+                                                        Set.contains symbol flushedState.Debt.PendingQueue
+                                                        && not (Map.containsKey symbol captured)
+                                                    then
+                                                        Map.add symbol revision captured
+                                                    else
+                                                        captured) }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -7120,11 +7150,10 @@ let internal createWithLaunchDeadline
                                     // fanout is retained (the work was NOT consumed).
                                     Logging.info
                                         "test-prune"
-                                        $"BatchChecked: %s{owedDescription ()} still outstanding while a run is in flight — queueing re-run"
+                                        $"BatchChecked: %s{owedDescription flushedState.Debt} still outstanding while a run is in flight — queueing re-run"
 
-                                    return
-                                        { flushedState with
-                                            PendingRerun = true }
+                                    enqueueImpact ctx
+                                    return flushedState
                             | _ ->
                                 // Analysis-only (no test configs): nothing can verify
                                 // these symbols, so there is nothing to drain.
@@ -7212,9 +7241,10 @@ let internal createWithLaunchDeadline
 
                             // Stash the fanout so the rerun runs it (don't lose a
                             // mid-run dependency change).
+                            enqueueImpact ctx
+
                             return
                                 { state with
-                                    PendingRerun = true
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
                         else
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
@@ -7261,11 +7291,14 @@ let internal createWithLaunchDeadline
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                (TestRunInputs.ofState launchState)
+                                                (TestRunInputs.ofState
+                                                    (observeModelGeneration ctx)
+                                                    runnableProjects
+                                                    launchState)
                                                 hasCachedResults
                                                 forceRunProjects)
                                     with
-                                    | Claimed -> return launchState
+                                    | Claimed -> return markRunLaunched launchState
                                     | SlotBusy ->
                                         // Raced by another launch between the IsRunning
                                         // fast-path above and this claim. Same treatment:
@@ -7274,33 +7307,24 @@ let internal createWithLaunchDeadline
                                             "test-prune"
                                             "BuildSucceeded: tests slot already held — queueing re-run"
 
+                                        enqueueImpact ctx
+
                                         return
                                             { stateWithAffected with
-                                                PendingRerun = true
                                                 PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected
                     | BuildFailed _ -> return state
 
-                | Custom(TestsFinished(started, completed, launch)) ->
+                | Custom(TestsFinished(started, completed, launch))
+                | Custom(CommandTestsFinished(started, completed, launch, _, _)) ->
+                    let coveringProjects = coveringProjectsForScope ()
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
                     // and re-fire on cache replay — subscribers that key off
                     // TestRunCompleted (FileCommandPlugin) must see it on a hit.
                     ctx.EmitTestRunCompleted completed
-
-                    // AUTOMATION-533. This run joins the session ledger HERE, before the
-                    // branch explosion below, so no return path can drop it. A run that
-                    // completed is a run whose directory a reader may need, whatever the
-                    // handler goes on to decide about its results.
-                    Volatile.Write(
-                        &completedRunsRef,
-                        completed.RunId
-                        :: (Volatile.Read(&completedRunsRef)
-                            |> List.filter (fun id -> id <> completed.RunId)
-                            |> List.truncate (SessionRunLedger - 1))
-                    )
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
@@ -7338,15 +7362,6 @@ let internal createWithLaunchDeadline
                         failedTestsOfRun repoRoot completed.RunId testResults
                         |> CheckReach.classifyEvidence launch.WouldHaveRun
 
-                    // AUTOMATION-259. Classified HERE, against THIS run's failures and the
-                    // selection retained at its launch, and written before the branch
-                    // explosion below so no return path can drop it. Nothing extra runs
-                    // and nothing is re-read: both inputs are already in hand.
-                    Volatile.Write(
-                        &checkReachRef,
-                        Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
-                    )
-
                     let carriedFailures =
                         OutstandingFailure.carriedOver runnableProjects coverage passedTests state.OutstandingFailures
 
@@ -7373,14 +7388,6 @@ let internal createWithLaunchDeadline
                     // outstanding set. There is no wholesale clear a filtered run can
                     // reach for.
                     reportOutstanding ctx unanalyzable outstandingFailures
-                    Volatile.Write(&outstandingFailuresRef, outstandingFailures)
-                    persistFailures outstandingFailures
-
-                    // AUTOMATION-161. THIS is the moment the process acquires test
-                    // evidence — a run completed and we know what it covered. Until it
-                    // happens, the cache key intercept refuses to let a cached
-                    // BuildCompleted assert a result this process never ran.
-                    Volatile.Write(&sessionCoverageRef, coverage)
 
                     // Carried into EVERY return branch below (rerun-drain, queued
                     // force-run, idle) by rebinding here — a branch that forgot would
@@ -7430,13 +7437,20 @@ let internal createWithLaunchDeadline
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
+                            CompletedRuns =
+                                completed.RunId
+                                :: (state.CompletedRuns
+                                    |> List.filter (fun id -> id <> completed.RunId)
+                                    |> List.truncate (SessionRunLedger - 1))
+                            CheckReach =
+                                Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
                             EvidenceReceipt = Some evidenceReceipt
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
-                            BootScanDebtDuringFullRun = Set.empty
+                            BootScanDebtDuringFullRun = Map.empty
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
@@ -7455,7 +7469,7 @@ let internal createWithLaunchDeadline
                     // it green). A symbol with NO covering project was already dropped at
                     // flush time, but if one slipped through it commits here (nothing to
                     // wait on). Genuine in-session mid-run arrivals are NOT in
-                    // launch.Symbols, so they stay queued and the PendingRerun flow
+                    // launch.Symbols, so they stay queued and the owned successor intent
                     // re-runs them. BootScan debt may join the candidate set only when
                     // this completion proves the run was actually full-suite.
                     //
@@ -7465,10 +7479,13 @@ let internal createWithLaunchDeadline
                     // DISCHARGED by a project that executed nothing, and left
                     // pending-verification.json unverified. `verifiedGreen` is `Verified`
                     // only, so a project that ran nothing can no longer retire anything.
+                    let modelMatches = launch.ModelGeneration = observeModelGeneration ctx
+
                     let aborted =
-                        match completed.Outcome with
-                        | Aborted _ -> true
-                        | Normal -> false
+                        not modelMatches
+                        || match completed.Outcome with
+                           | Aborted _ -> true
+                           | Normal -> false
 
                     let projectPassed (proj: string) =
                         match Map.tryFind proj completed.Results with
@@ -7481,26 +7498,32 @@ let internal createWithLaunchDeadline
                         else
                             let bootScanCandidates =
                                 match completed.Verification with
-                                | Ran FullSuite -> bootScanDebtDuringFullRun
+                                | Ran FullSuite when ReceiptInputTree.matches launch.InputTreeHash currentInputTree ->
+                                    bootScanDebtDuringFullRun |> Map.keys |> Set.ofSeq
                                 | _ -> Set.empty
 
                             Set.union launch.Symbols bootScanCandidates
                             |> Set.filter (fun s ->
-                                match Map.tryFind s launch.CoveringProjectsBySymbol with
-                                | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
-                                | Some _ -> true
-                                | None ->
-                                    runnableCoveringTests s
-                                    |> List.map (fun t -> t.TestProject)
-                                    |> Set.ofList
-                                    |> Set.forall projectPassed)
+                                let sameRevision =
+                                    let current = state.Debt.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
+                                    let launched = launch.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
+
+                                    current = launched
+                                    || (Set.contains s bootScanCandidates
+                                        && not (Set.contains s launch.Symbols)
+                                        && Map.tryFind s bootScanDebtDuringFullRun = Some current)
+
+                                sameRevision
+                                && match Map.tryFind s launch.CoveringProjectsBySymbol with
+                                   | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
+                                   | Some _ -> true
+                                   | None -> coveringProjects s |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info
                             "test-prune"
                             $"Committing %d{Set.count committedSymbols} verified symbol(s) — removing from pending-verification queue"
 
-                        commitPending committedSymbols
 
                     if not aborted && not (Map.isEmpty launch.RuntimeProjectsByFile) then
                         for KeyValue(file, launchedProjects) in launch.RuntimeProjectsByFile do
@@ -7511,8 +7534,6 @@ let internal createWithLaunchDeadline
 
                                 Logging.info "test-prune" $"runtime coverage verified %s{file} by %s{projectNames}"
 
-                        persistRuntimeObligations (fun current ->
-                            retireRuntimeCoverageObligations current launch.RuntimeProjectsByFile projectPassed)
 
                     // AUTOMATION-150 — discharge an UNREADABLE ledger's debt.
                     //
@@ -7543,19 +7564,28 @@ let internal createWithLaunchDeadline
                         && not (Set.isEmpty runnableProjects)
                         && completed.Verification = Ran FullSuite
 
-                    if
-                        Volatile.Read(&ledgerRecoveryOutstandingRef)
+                    let recovered =
+                        state.Debt.RecoveryOutstanding
                         && executedFullSuite
-                        && runnableProjects |> Set.forall projectPassed
-                    then
-                        Volatile.Write(&ledgerRecoveryOutstandingRef, false)
-                        persistQueue " after recovering an unreadable ledger"
-                        persistFailures outstandingFailures
-                        persistRuntimeObligations (fun _ -> Map.empty)
+                        && (runnableProjects |> Set.forall projectPassed)
 
-                        Logging.info
-                            "test-prune"
-                            "A full suite passed every configured project — the unreadable pending-verification ledger has been rewritten and its unknown debt discharged. Impact filtering resumes."
+                    let state =
+                        { state with
+                            Debt =
+                                { state.Debt with
+                                    PendingQueue = Set.difference state.Debt.PendingQueue committedSymbols
+                                    SymbolRevisions =
+                                        state.Debt.SymbolRevisions
+                                        |> Map.filter (fun symbol _ -> not (Set.contains symbol committedSymbols))
+                                    RecoveryOutstanding = state.Debt.RecoveryOutstanding && not recovered
+                                    RuntimeObligations =
+                                        if aborted then
+                                            state.Debt.RuntimeObligations
+                                        else
+                                            retireRuntimeCoverageObligations
+                                                state.Debt.RuntimeObligations
+                                                launch.RuntimeProjectsByFile
+                                                projectPassed } }
 
                     // AUTOMATION-110 — the full-suite WATERMARK. Written when a full-suite
                     // run has ACCOUNTED for every configured project: passed, or red with
@@ -7574,26 +7604,19 @@ let internal createWithLaunchDeadline
                         projectPassed proj
                         || outstandingFailures |> List.exists (fun f -> f.Project = proj)
 
-                    if executedFullSuite && runnableProjects |> Set.forall accountedFor then
-                        let baseline: FullSuiteBaseline.Baseline =
-                            { RunId = completed.RunId
-                              EarnedAt = DateTime.UtcNow
-                              Projects = runnableProjects }
+                    let state =
+                        if executedFullSuite && runnableProjects |> Set.forall accountedFor then
+                            let baseline: FullSuiteBaseline.Baseline =
+                                { RunId = completed.RunId
+                                  EarnedAt = DateTime.UtcNow
+                                  Projects = runnableProjects }
 
-                        Volatile.Write(&fullSuiteBaselineRef, Some baseline)
-
-                        try
-                            FullSuiteBaseline.save repoRoot baseline
-                        with ex ->
-                            Logging.warn
-                                "test-prune"
-                                $"failed to persist the full-suite baseline: %s{ex.Message}; the next session will re-earn it"
-
-                        let runId = completed.RunId.ToString("N")
-
-                        Logging.info
-                            "test-prune"
-                            $"Full-suite baseline recorded: run %s{runId} accounted for every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
+                            { state with
+                                Debt =
+                                    { state.Debt with
+                                        Baseline = Some baseline } }
+                        else
+                            state
 
                     // The in-memory hot view must shed ONLY the committed symbols,
                     // never the whole list — symbols left in the queue (mid-run
@@ -7601,8 +7624,64 @@ let internal createWithLaunchDeadline
                     // tests until a covering run passes. `queueAfterCommit` is the
                     // post-commit durable queue; it drives the cleared ChangedSymbols
                     // and the cache-key snapshot in every return branch below.
-                    let queueAfterCommit = pendingQueueRef
+                    let pendingObligations =
+                        Set.count state.Debt.PendingQueue
+                        + (state.Debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count)
+                        + state.UnanalyzableFiles.Count
+                        + state.OutstandingFailures.Length
+                        + (if state.Debt.RecoveryOutstanding then 1 else 0)
+
+                    let earned =
+                        if not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) then
+                            None
+                        else
+                            let candidate =
+                                match completed.Verification with
+                                | NoProjectsSelected when
+                                    pendingObligations = 0
+                                    && completed.Outcome = Normal
+                                    && launch.ZeroSelection <> ZeroSelection.NotAZero
+                                    && launch.ModelGeneration = observeModelGeneration ctx
+                                    ->
+                                    state.Earned
+                                    |> Option.filter (fun evidence ->
+                                        Some evidence.Generation = observeModelGeneration ctx)
+                                | _ ->
+                                    EarnedEvidence.fromCompletion
+                                        started.RunId
+                                        launch.ModelGeneration
+                                        (observeModelGeneration ctx)
+                                        runnableProjects
+                                        pendingObligations
+                                        state.Earned
+                                        completed
+
+                            candidate
+                            |> Option.map (
+                                EarnedEvidence.authorizeSameInputReceipt
+                                    evidenceReceipt.RunId
+                                    evidenceReceipt.InputTreeHash
+                                    currentInputTree
+                                    state.Earned
+                            )
+
+                    let state = { state with Earned = earned }
+
+                    let queueAfterCommit = state.Debt.PendingQueue
                     let remainingChangedSymbols = queueAfterCommit |> Set.toList
+
+                    let unrunnableProjects =
+                        remainingChangedSymbols
+                        |> List.map coveringProjects
+                        |> Set.unionMany
+                        |> fun covering -> Set.difference covering runnableProjects
+
+                    let pendingDescription =
+                        if Set.isEmpty unrunnableProjects then
+                            $"{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
+                        else
+                            let projects = unrunnableProjects |> Set.toList |> String.concat ", "
+                            $"{Set.count queueAfterCommit} symbol(s) still owed to unconfigured test projects: {projects}"
 
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both rerun and final-idle branches must call this.
@@ -7648,7 +7727,7 @@ let internal createWithLaunchDeadline
                             // deferred (never-ran) project.
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
-                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                    $"{pendingDescription}{carriedNote}"
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
                                     results.Elapsed
                             )
@@ -7849,7 +7928,7 @@ let internal createWithLaunchDeadline
                                     // the next BuildCompleted re-selects and runs them.
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                            $"{pendingDescription}{carriedNote}"
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
@@ -7952,212 +8031,141 @@ let internal createWithLaunchDeadline
                                             results.Elapsed
                                     )
 
-                    // Drain order after a completed run:
-                    //   1. a queued `run-tests` force-run — an IPC caller is WAITING
-                    //      on its reply (bounded, but waiting), so it goes first;
-                    //      FIFO, one per completed run (each queued run's own
-                    //      TestsFinished drains the next);
-                    //   2. the impact rerun (`PendingRerun`) — no waiter; it survives
-                    //      across queued command runs and drains when the queue is
-                    //      empty;
-                    //   3. idle.
-                    match state.QueuedCommandRuns with
-                    | (queuedConfigs, queuedFilter, queuedReply) :: laterRuns ->
-                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
-                        recordRunOutcome testResults
+                    // Queued intent capabilities stay owned through this result
+                    // publication. The framework delivers them afterward; each selects
+                    // against this newly committed state, not a launch-time mirror.
+                    recordRunOutcome testResults
 
-                        let dequeuedState =
-                            { state with
-                                LastResults = Some testResults
-                                LastRunId = Some completed.RunId
-                                ChangedFiles = []
-                                ChangedSymbols = remainingChangedSymbols
-                                AffectedTests = Analyzed []
-                                EvidenceReceipt = None
-                                QueuedCommandRuns = laterRuns }
-
-                        match
-                            runTestHostExclusive
-                                ctx
-                                (Some queuedReply)
-                                (commandForceRun ctx queuedConfigs queuedFilter queuedReply)
-                        with
-                        | Claimed ->
-                            Logging.info "test-prune" "Launching queued run-tests force-run"
-                            return dequeuedState
-                        | SlotBusy ->
-                            // Unreachable in practice — every "tests" claim happens on
-                            // this mailbox thread, and the slot was freed before this
-                            // TestsFinished was posted — but typed anyway: keep the
-                            // run QUEUED rather than dropping owed work.
-                            return
-                                { dequeuedState with
-                                    QueuedCommandRuns = state.QueuedCommandRuns }
-                    | [] when state.PendingRerun ->
-                        Logging.info "test-prune" "Re-running tests (queued during previous run)"
-
-                        // Flush any new pending analysis against CURRENT state — picking up any
-                        // FileChecked symbols that landed between the queueing BuildCompleted
-                        // and now. ChangedSymbols is reset to the POST-COMMIT queue
-                        // (committed symbols removed, still-pending + mid-run arrivals
-                        // retained) so the rerun re-selects exactly what hasn't been
-                        // proven green. flushAndQueryAffected unions this with the durable
-                        // queue, so the rerun keeps testing the unverified symbols. If the
-                        // DB errors out here the rerun never happens, so we must bail back
-                        // to idle (capturing testResults) instead of leaving PendingRerun
-                        // stuck and the slot already freed.
-                        match
-                            (try
-                                Ok(
-                                    flushAndQueryAffected
-                                        { state with
-                                            PendingRerun = false
-                                            ChangedSymbols = remainingChangedSymbols }
-                                )
-                             with ex ->
-                                 Error ex)
-                        with
-                        | Error ex ->
-                            Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
-                            tryRepairSchemaDrift ex
-
-                            ctx.ReportStatus(
-                                PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero
-                            )
-
-                            return
-                                { state with
-                                    LastResults = Some testResults
-                                    LastRunId = Some completed.RunId
-                                    PendingRerun = false
-                                    ChangedFiles = []
-                                    ChangedSymbols = remainingChangedSymbols
-                                    AffectedTests = Analyzed [] }
-                        | Ok rerunState ->
-                            recordRunOutcome testResults
-                            Volatile.Write(&changedSymbolsRef, rerunState.ChangedSymbols)
-
-                            // Consume the deferred dependency-fanout: a build that
-                            // landed mid-run stashed its changed test projects here
-                            // (it couldn't run them then). The rerun runs them now,
-                            // alongside the queued symbols. Clear so a later rerun
-                            // doesn't re-run them.
-                            let deferredFanout = rerunState.PendingForceRunProjects
-
-                            let rerunState =
-                                { rerunState with
-                                    LastResults = Some testResults
-                                    LastRunId = Some completed.RunId
-                                    PendingRerun = false
-                                    PendingForceRunProjects = Set.empty }
-
-                            // AUTOMATION-228. PendingRerun is a hint captured while the
-                            // previous run was still in flight, not proof that work remains
-                            // after it completes. BatchChecked can re-observe exactly the
-                            // debt that active run is about to clear and set the hint; once
-                            // the run passes, launching it blindly produces a second,
-                            // zero-project lifecycle whose NoProjectsSelected result erases
-                            // the passing evidence. Flush above first so genuine mid-run
-                            // arrivals are visible, then ask the durable queue and deferred
-                            // fanout whether anything is still owed.
-                            if nothingOwed () && Set.isEmpty deferredFanout then
-                                Logging.info
-                                    "test-prune"
-                                    "Queued impact rerun is stale — the completed run cleared all verification debt and no dependency fanout remains"
-
-                                return
-                                    { rerunState with
-                                        ChangedFiles = []
-                                        ChangedSymbols = remainingChangedSymbols
-                                        AffectedTests = Analyzed [] }
-                            else
-                                match testConfigs with
-                                | Some configs when not configs.IsEmpty ->
-                                    // A run just completed (LastResults set above), so the
-                                    // baseline exists — hasCachedResults = true. The
-                                    // deferred fanout force-runs any test project whose
-                                    // dependency fingerprint changed during the prior run.
-                                    match
-                                        runTestHostExclusive
-                                            ctx
-                                            None
-                                            (runTestsWithImpact
-                                                ctx
-                                                configs
-                                                (TestRunInputs.ofState rerunState)
-                                                true
-                                                deferredFanout)
-                                    with
-                                    | Claimed -> return rerunState
-                                    | SlotBusy ->
-                                        // Another launch site won the slot; ITS
-                                        // TestsFinished will drain this rerun — keep it
-                                        // queued and the fanout un-consumed.
-                                        return
-                                            { rerunState with
-                                                PendingRerun = true
-                                                PendingForceRunProjects = deferredFanout }
-                                | _ -> return rerunState
-                    | [] ->
-                        // Clear ONLY the committed symbols from the hot view; the
-                        // durable queue (post-commit) is the source of truth and is
-                        // mirrored into the cache-key snapshot so a non-empty queue
-                        // keeps a cached green from replaying (see CacheKey below).
-                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
-                        recordRunOutcome testResults
-
-                        return
-                            { state with
-                                LastResults = Some testResults
-                                LastRunId = Some completed.RunId
-                                ChangedFiles = []
-                                ChangedSymbols = remainingChangedSymbols
-                                AffectedTests = Analyzed [] }
+                    return
+                        { state with
+                            RunReply =
+                                match event with
+                                | Custom(CommandTestsFinished(_, _, _, reply, response)) -> Some(reply, response)
+                                | _ -> None
+                            LastResults = Some testResults
+                            LastRunId = Some completed.RunId
+                            ChangedFiles = []
+                            ChangedSymbols = remainingChangedSymbols
+                            AffectedTests = Analyzed [] }
 
                 | Custom(ArtifactsUnavailable(reason, reply)) ->
                     let message =
                         $"Tests did not run because the preceding build left invalid artifacts: %s{reason}"
 
-                    reply
-                    |> Option.iter (fun target ->
-                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
-
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
                         { state with
-                            PendingRerun = true
-                            EvidenceReceipt = None }
+                            EvidenceReceipt = None
+                            Earned = None
+                            RunReply =
+                                reply
+                                |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
                 | Custom(TestHostUnavailable(reason, reply)) ->
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
 
-                    reply
-                    |> Option.iter (fun target ->
-                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
-
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
                         { state with
-                            PendingRerun = true
-                            EvidenceReceipt = None }
+                            EvidenceReceipt = None
+                            Earned = None
+                            RunReply =
+                                reply
+                                |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
-                | Custom(RunTestsRequested(configs, filter, reply)) ->
-                    // Launched from the mailbox so it is serialised with every other
-                    // launch site and holds the `RunExclusive "tests"` slot for its whole
-                    // duration — see the `RunTestsRequested` case for why that matters.
-                    match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
-                    | Claimed -> return { state with EvidenceReceipt = None }
-                    | SlotBusy ->
-                        // A busy slot QUEUES the run, never refuses it: a refusal that
-                        // reads as success is a vacuous green. TestsFinished drains FIFO,
-                        // and the IPC command bounds its own wait on `reply`.
-                        ctx.Log "  ↳ queued run-tests force-run (tests already running)"
+                | Custom(RunTestsRequested(selection, filter, reply)) when ctx.IsRunning "tests" ->
+                    ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply))
+                    |> ignore
+
+                    return state
+                | Custom(RunTestsRequested(selection, filter, reply)) ->
+                    let allConfigs = testConfigs |> Option.defaultValue []
+                    let onlyFailed = selection.OnlyFailed
+                    let projectFilter = selection.Projects
+                    let lastResults = state.LastResults
+
+                    // AUTOMATION-125. "Failed" is the OUTSTANDING set, not
+                    // merely the last run's results: after an impact-filtered
+                    // run the failing project is not in `LastResults` at all
+                    // (it wasn't selected), and `--only-failed` would have
+                    // re-run nothing — "no matching test projects" — while a
+                    // red sat there. The outstanding ledger is what still owes
+                    // a re-run, so it is what this verb must re-run.
+                    let outstandingProjects =
+                        state.OutstandingFailures |> List.map (fun f -> f.Project) |> Set.ofList
+
+                    let configsResult =
+                        if onlyFailed then
+                            let lastRunFailed =
+                                match lastResults with
+                                | Some prev ->
+                                    prev.Results
+                                    |> Map.toList
+                                    |> List.choose (fun (name, r) ->
+                                        match r with
+                                        | TestsFailed _
+                                        | TestsTimedOut _
+                                        // A deferred project never ran, and an errored one
+                                        // aborted without a verdict — both are non-green, so
+                                        // `--only-failed` (rerun non-green projects) must pick
+                                        // them up.
+                                        | TestsDeferred _
+                                        | TestsErrored _ -> Some name
+                                        | _ -> None)
+                                    |> Set.ofList
+                                | None -> Set.empty
+
+                            let failedNames = Set.union lastRunFailed outstandingProjects
+
+                            if lastResults.IsNone && Set.isEmpty failedNames then
+                                Error "no previous results — cannot determine failed projects"
+                            else
+                                Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
+                        else
+                            match projectFilter with
+                            | Some names -> Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
+                            | None -> Ok allConfigs
+
+                    match configsResult with
+                    | Error msg ->
+                        return
+                            { state with
+                                RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
+                    | Ok configs when configs.IsEmpty ->
+                        // Name what was asked for and what exists. A bare
+                        // "no matching test projects" is unactionable for the
+                        // one case that actually produces it — a mistyped or
+                        // renamed `--project` — and the configured names are
+                        // right here (AUTOMATION-272).
+                        let msg =
+                            match projectFilter with
+                            | Some names ->
+                                let asked = names |> Set.toList |> List.sort |> String.concat ", "
+
+                                let known =
+                                    allConfigs |> List.map (fun c -> c.Project) |> List.sort |> String.concat ", "
+
+                                $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
+                            | None -> "no matching test projects"
 
                         return
                             { state with
-                                QueuedCommandRuns = state.QueuedCommandRuns @ [ (configs, filter, reply) ] }
+                                RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
+                    | Ok configs ->
+                        // Launched from the mailbox so it is serialised with every other
+                        // launch site and holds the `RunExclusive "tests"` slot for its whole
+                        // duration — see the `RunTestsRequested` case for why that matters.
+                        match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
+                        | Claimed -> return { state with EvidenceReceipt = None }
+                        | SlotBusy ->
+                            // Selection will be resolved again after the predecessor
+                            // commits; only the request is queued, never these configs.
+                            ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply))
+                            |> ignore
+
+                            return state
 
                 | _ -> return state
             }
@@ -8167,7 +8175,7 @@ let internal createWithLaunchDeadline
             // BatchChecked is the cohort-complete flush signal: it fires after the last
             // FileChecked of a batch and before any subsequent BuildCompleted racing the
             // same change, so by the time the agent processes it every FileChecked update
-            // has been folded in and `changedSymbolsRef` agrees with `state.ChangedSymbols`.
+            // has been folded into the state the cache key and Update both receive.
             //
             // BuildCompleted is subscribed UNCONDITIONALLY so the freshness-stamp gate
             // works even when the plugin is analysis-only: with no testConfigs the handler
@@ -8180,9 +8188,9 @@ let internal createWithLaunchDeadline
         // dependencies are structural rather than a convention. The thunks are this
         // closure's live state; `cacheKeyFor` decides which arm forces which — and
         // `FileChecked`, the per-file probe, forces none.
-        let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
+        let cacheKey (state: TestPruneState) (event: PluginEvent<TestPruneMsg>) : ContentHash option =
             let changedSymbolsHash () =
-                Volatile.Read(&changedSymbolsRef)
+                state.ChangedSymbols
                 |> List.distinct
                 |> List.sort
                 |> String.concat "|"
@@ -8193,7 +8201,7 @@ let internal createWithLaunchDeadline
             // on BuildCompleted, is what makes the event cacheable at all: a green that
             // left symbols queued must re-run, never replay.
             let pendingQueueHash () =
-                if Volatile.Read(&ledgerRecoveryOutstandingRef) then
+                if state.Debt.RecoveryOutstanding then
                     // AUTOMATION-150. An unreadable ledger is outstanding debt whose
                     // membership is unknown. `None` would assert "provably nothing owed"
                     // and make BuildCompleted cacheable, so a cached green written over
@@ -8201,10 +8209,10 @@ let internal createWithLaunchDeadline
                     // `Some` refuses cache participation outright, as a non-empty queue
                     // does. A constant rather than a hash — there is nothing to hash.
                     Some "unreadable-ledger"
-                elif Set.isEmpty pendingQueueRef then
+                elif Set.isEmpty state.Debt.PendingQueue then
                     None
                 else
-                    Some(PendingVerification.hash pendingQueueRef)
+                    Some(PendingVerification.hash state.Debt.PendingQueue)
 
             // External-dependency salt: a content hash of the files matched by the
             // configured `dependsOn` globs. Editing a matched file (a DB migration
@@ -8223,7 +8231,7 @@ let internal createWithLaunchDeadline
             let fullSuiteScopeHash () =
                 // AUTOMATION-110: a run widened by a missing baseline is a full-suite
                 // run too, and must not replay a filtered run's cached verdict.
-                if Volatile.Read(&fullSuiteScopeRef) || Option.isSome (baselineInvalidReason ()) then
+                if state.FullSuiteRequested || Option.isSome (baselineInvalidReason state.Debt) then
                     Some "full"
                 else
                     None
@@ -8231,7 +8239,7 @@ let internal createWithLaunchDeadline
             // AUTOMATION-125: no cache participation while a red no covering run has
             // passed is outstanding.
             let hasOutstandingFailures () =
-                not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
+                not (List.isEmpty (state.OutstandingFailures))
 
             // AUTOMATION-161: no cache participation on BuildCompleted until a run in
             // THIS process has covered something.
@@ -8242,7 +8250,7 @@ let internal createWithLaunchDeadline
             // cache to guard an assertion it never makes.
             let sessionHasTestEvidence () =
                 Set.isEmpty runnableProjects
-                || not (Set.isEmpty (RunCoverage.coveredProjects (Volatile.Read(&sessionCoverageRef))))
+                || not (Set.isEmpty (RunCoverage.coveredProjects (state.LastCoverage)))
 
             // AUTOMATION-303. A full-repo walk of the project files, so it is a thunk
             // like the rest: `FileChecked` fires once per file on every scan and must
@@ -8261,6 +8269,31 @@ let internal createWithLaunchDeadline
 
         Some cacheKey
       Teardown = None }
+
+/// Default callers have no declared exclusions: every known covering project
+/// remains required, including projects absent from the runnable configuration.
+let internal createWithLaunchDeadline
+    launchDeadline
+    dbPath
+    repoRoot
+    testConfigs
+    buildExtensions
+    beforeRun
+    afterRun
+    coveragePaths
+    dependsOn
+    =
+    createWithLaunchDeadlineAndScope
+        launchDeadline
+        (fun () -> Map.empty)
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
 
 /// Create a TestPrune handler with the launch policy captured at construction.
 /// Environment configuration is process-global, so reading it lazily at run time can
@@ -8285,6 +8318,36 @@ let create
 
     createWithLaunchDeadline
         launchDeadline
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
+
+/// Construct an owner with the explicitly declared exclusions validated by the
+/// caller's solution scope. Blank reasons do not exclude a project.
+let createWithScope
+    resolveExcludedProjects
+    dbPath
+    repoRoot
+    testConfigs
+    buildExtensions
+    beforeRun
+    afterRun
+    coveragePaths
+    dependsOn
+    =
+    let launchDeadline =
+        Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
+        |> Option.ofObj
+        |> resolveLaunchDeadline
+
+    createWithLaunchDeadlineAndScope
+        launchDeadline
+        resolveExcludedProjects
         dbPath
         repoRoot
         testConfigs

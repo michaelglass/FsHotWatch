@@ -44,7 +44,7 @@ let isUnknownCommandReply (reply: string) : bool =
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
 /// full-suite check (build + every test project) finishes well inside an hour,
 /// so this only ever trips on a genuinely-wedged plugin.
-let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
+let DefaultVerdictDeadline = SupervisedWork.defaultDeadline
 
 /// Resolve the verdict-wait deadline from an optional override string (the
 /// `FSHW_VERDICT_DEADLINE_SEC` env value). A positive integer count of seconds
@@ -53,12 +53,7 @@ let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
 /// Pure so the precedence is unit-testable without touching process env.
 /// Mirrors `ProcessHelper.resolveLaunchDeadline`.
 let resolveVerdictDeadline (overrideSec: string option) : TimeSpan =
-    match overrideSec with
-    | Some s ->
-        match Int32.TryParse(s: string) with
-        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
-        | _ -> DefaultVerdictDeadline
-    | None -> DefaultVerdictDeadline
+    SupervisedWork.resolveDeadline overrideSec
 
 /// The ambient RPC deadline: `FSHW_VERDICT_DEADLINE_SEC`, else 60 min.
 let internal ambientRpcDeadline () =
@@ -223,11 +218,14 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
         task {
             try
-                let work = f ()
                 let d = seamDeadline ()
 
                 use timeoutCts = new CancellationTokenSource()
                 let expiry = Task.Delay(d, timeoutCts.Token)
+                // The callback can block before returning its Task. Schedule that
+                // prefix too, after the deadline starts, so it cannot pin the RPC
+                // caller outside the bound. Task.Run unwraps the returned task.
+                let work = Task.Run<'a>(Func<Task<'a>>(f))
                 let! winner = Task.WhenAny(work :> Task, expiry)
 
                 if obj.ReferenceEquals(winner, expiry) then
@@ -241,7 +239,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                 else
                     // Cancel the timer so its registration doesn't outlive the call.
                     timeoutCts.Cancel()
-                    return! work
+
+                    try
+                        return! work
+                    with :? ProjectModel.UnavailableException as unavailable ->
+                        return
+                            raise (
+                                LocalRpcException(
+                                    unavailable.Message,
+                                    ErrorCode = ProjectModelWire.ErrorCode,
+                                    ErrorData = ProjectModelWire.payload unavailable.Observation
+                                )
+                            )
             finally
                 match watchdog, token with
                 | Some w, Some t -> w.End t
@@ -397,11 +406,29 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         // currently lack a valid full-check result. The CLI parses it into a `Coverage`
         // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
         // not a parsed string, so the verdict cannot be misread.
+        let modelSnapshot = config.Host.WorkSnapshot
+
         let result =
             {| count = count
                files = allErrors
                statuses = statuses
                daemonPhases = daemonPhases
+               projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
+               modelReceipts =
+                [ yield!
+                      modelSnapshot.Evidence
+                      |> List.collect (fun proof ->
+                          proof.AuthorizedRunIds
+                          |> Set.toList
+                          |> List.map (fun runId ->
+                              {| runId = runId.ToString("N")
+                                 modelGeneration = proof.Generation
+                                 refusals = proof.FailureReasons |}))
+                  for proof in modelSnapshot.AnalysisEvidence do
+                      yield
+                          {| runId = (null: string)
+                             modelGeneration = proof.Generation
+                             refusals = proof.FailureReasons |} ]
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)

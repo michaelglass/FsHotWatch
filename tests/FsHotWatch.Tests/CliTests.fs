@@ -622,6 +622,7 @@ let ``CLI status query works against running daemon`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     daemon.RegisterHandler(handler)
@@ -668,6 +669,7 @@ let ``CLI plugin status query works against running daemon`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     daemon.RegisterHandler(handler)
@@ -716,13 +718,15 @@ let ``CLI command proxying works against running daemon`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "greet",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let name = if args.Length > 0 then args.[0] else "world"
                       return $"hello {name}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     daemon.RegisterHandler(handler)
@@ -769,6 +773,20 @@ let private fakeConfig: DaemonConfiguration =
 let private completedStatusJson =
     """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
+/// A completed analysis-only daemon proves the current model without inventing a test run.
+let private completedAnalysisDiagnosticsJson () =
+    System.Text.Json.JsonSerializer.Serialize(
+        {| count = 0
+           files = Map.empty<string, string>
+           unchecked = 0
+           daemonPhases = ([||]: string array)
+           projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+           modelReceipts =
+            [ {| runId = (null: string)
+                 modelGeneration = 1L
+                 refusals = ([]: string list) |} ] |}
+    )
+
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ -> async { return "scan started" }
@@ -795,7 +813,17 @@ let private exec (ipc: IpcOps) (command: Command) : int =
     Directory.CreateDirectory("/tmp/.fshw") |> ignore
     FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
     File.WriteAllText("/tmp/.fshw/config.hash", computeConfigHashWith defaultFileOps "/tmp")
-    executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
+
+    executeCommand
+        (configContentHash "")
+        (fun _ -> Unchecked.defaultof<_>)
+        ipc
+        "/tmp"
+        "pipe"
+        command
+        defaultGlobalOptions
+        fakeConfig
+        30.0
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Stop calls shutdown`` () =
@@ -988,7 +1016,16 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
                 IsRunning = fun _ -> false }
 
         let exitCode =
-            executeCommand createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
+            executeCommand
+                (configContentHash "")
+                createDaemon
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                Start
+                defaultGlobalOptions
+                fakeConfig
+                30.0
 
         test <@ exitCode = 2 @>
         test <@ not createDaemonCalled @>
@@ -1010,6 +1047,7 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
 
         let exitCode =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1046,7 +1084,16 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
         let threw =
             try
-                executeCommand createDaemon ipc tmpDir "pipe" Start defaultGlobalOptions fakeConfig 30.0
+                executeCommand
+                    (configContentHash "")
+                    createDaemon
+                    ipc
+                    tmpDir
+                    "pipe"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
                 |> ignore
 
                 false
@@ -1126,6 +1173,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let stderr, exitCode =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (daemonWithNativeStream
                         (fun _ -> Interlocked.Increment(&produced.contents) |> ignore)
                         alwaysRefused)
@@ -1180,6 +1228,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let secondRun =
             try
                 executeCommand
+                    (configContentHash "")
                     secondCreateDaemon
                     ipc
                     tmpDir
@@ -1458,10 +1507,11 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
                 IsRunning = fun _ -> true
                 WaitForScan = fun _ _ -> async { return "idle" }
                 GetStatus = fun _ -> async { return getStatus () }
-                GetDiagnostics = fun _ _ -> async { return """{"count": 0, "unchecked": 0}""" } }
+                GetDiagnostics = fun _ _ -> async { return completedAnalysisDiagnosticsJson () } }
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1683,7 +1733,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                 fun _ _ ->
                     async {
                         getErrorsCalled <- true
-                        return """{"count": 0, "unchecked": 0}"""
+                        return completedAnalysisDiagnosticsJson ()
                     } }
 
     let result = exec ipc (Check [])
@@ -1753,7 +1803,16 @@ let private withStartupFailure command =
             { fakeIpc () with
                 IsRunning = fun _ -> false }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" command defaultGlobalOptions fakeConfig 0.0)
+        executeCommand
+            (configContentHash "")
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            tmpDir
+            "pipe"
+            command
+            defaultGlobalOptions
+            fakeConfig
+            0.0)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns 2 when daemon startup fails`` () =
@@ -1873,7 +1932,7 @@ let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
             fun _ _ ->
                 async {
                     d.Served.Add d.Generation
-                    return """{"count": 0, "files": {}, "unchecked": 0}"""
+                    return completedAnalysisDiagnosticsJson ()
                 } }
 
 /// A daemon already running from generation 1. Its identity is whatever the caller staged
@@ -1907,6 +1966,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1949,6 +2009,7 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -1977,6 +2038,7 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2004,6 +2066,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2040,12 +2103,13 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                                 raiseFrameReaderOverflow ()
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                            return completedAnalysisDiagnosticsJson ()
                         } }
 
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2086,12 +2150,13 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                                 raise (OutOfMemoryException("client heap exhausted"))
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                            return completedAnalysisDiagnosticsJson ()
                         } }
 
         let stderr, failedResult =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2109,6 +2174,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
 
         let nextResult =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2134,6 +2200,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
         let d = runningDaemon ()
 
         executeCommand
+            (configContentHash "")
             (fun _ -> Unchecked.defaultof<_>)
             (fakeDaemonIpc tmpDir d)
             tmpDir
@@ -2185,6 +2252,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     (fakeDaemonIpc tmpDir d)
                     tmpDir
@@ -2678,6 +2746,37 @@ let ``a passing run does NOT print the search evidence`` () =
     test <@ not (stderr.Contains("Searched:")) @>
     test <@ not (stderr.Contains("Filter:")) @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("errored", 1)>]
+[<InlineData("deferred", 3)>]
+[<InlineData("future-unknown-status", 3)>]
+[<Trait("A106Completeness", "MixedOutcome")>]
+let ``a passing project cannot hide another selected project's missing result`` (status: string, expectedExit: int) =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Integration","status":"OUTCOME","output":"runner did not produce a report","counts":null}]}"""
+            .Replace("OUTCOME", status)
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    Assert.Equal(expectedExit, exitCode)
+    Assert.DoesNotContain("Tests passed", stderr)
+    Assert.Contains("Integration", stderr)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A106Completeness", "MixedOutcome")>]
+let ``filtered zero-match siblings do not invalidate an actual passing selection`` () =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Unrelated","status":"no-tests-matched","output":"","counts":{"total":0,"succeeded":0,"failed":0,"skipped":0,"other":0}}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    Assert.Equal(0, exitCode)
+    Assert.Contains("Tests passed", stderr)
+
 // --- AUTOMATION-272 criterion 3: the CLI states per-project test counts ---
 //
 // "The missing summary line is the tell that separates a real pass from a vacuous one,
@@ -2885,3 +2984,206 @@ module ``beforeRun failure reporting`` =
                 test <@ contents.Contains "three" @>
         finally
             cleanup repo
+
+
+[<Fact(Timeout = 15000)>]
+let ``check reach transport preserves the recorded failing suite and run identity`` () =
+    let mutable requests = []
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun pipe name args ->
+                    async {
+                        requests <- (pipe, name, args) :: requests
+
+                        return
+                            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full","ranProjects":3,"totalProjects":3,"reach":"reached-a-failure","failingSuites":["Lib.Tests"],"reason":null}"""
+                    } }
+
+    match readCheckReach ipc "projection-pipe" with
+    | IpcParsing.ReachRecorded reading ->
+        test <@ reading.RunId = Some(Guid.Parse "5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e") @>
+        test <@ reading.Scope = IpcParsing.FullSuite 3 @>
+        test <@ reading.Reach = IpcParsing.ReachedAFailure [ "Lib.Tests" ] @>
+    | other -> failwithf "expected recorded reach, got %A" other
+
+    test <@ requests = [ ("projection-pipe", IpcParsing.CheckReachCommand, "") ] @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``check reach transport keeps missing command and transport fault unavailable`` fault =
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ name _ ->
+                    async {
+                        if fault then
+                            return failwith "projection connection lost"
+                        else
+                            return FsHotWatch.Ipc.unknownCommandReply name
+                    } }
+
+    match readCheckReach ipc "projection-pipe" with
+    | IpcParsing.ReachUnavailable reason ->
+        test <@ reason.Contains IpcParsing.CheckReachCommand @>
+
+        if fault then
+            test <@ reason.Contains "projection connection lost" @>
+        else
+            test <@ reason.Contains "no" @>
+    | other -> failwithf "missing projection must not become agreement: %A" other
+
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("System.OutOfMemoryException")>]
+[<InlineData("System.OverflowException")>]
+[<InlineData("System.TimeoutException")>]
+[<InlineData("System.AggregateException")>]
+let ``remote fault without frame evidence preserves the original failure and never restarts`` typeName =
+    let fault = remoteIpcFault typeName "remote operation failed" null
+    let mutable restarts = 0
+    let mutable attempts = 0
+    let mutable reported = None
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restarts <- restarts + 1
+                true)
+            (fun error ->
+                reported <- Some error
+                71)
+            (fun () ->
+                attempts <- attempts + 1
+                raise fault)
+
+    test <@ result = 71 @>
+    test <@ attempts = 1 @>
+    test <@ restarts = 0 @>
+    test <@ reported |> Option.exists (fun error -> Object.ReferenceEquals(error, fault)) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``launcher cannot overwrite or manufacture daemon loaded config identity`` publishes =
+    withTempDir "daemon-config-owner" (fun root ->
+        let state = Path.Combine(root, ".fshw")
+        let identity = Path.Combine(state, "config.hash")
+
+        let ipc =
+            { fakeIpc () with
+                LaunchDaemon =
+                    fun _ _ _ ->
+                        if publishes then
+                            Directory.CreateDirectory state |> ignore
+                            File.WriteAllText(identity, "daemon-loaded-snapshot")
+                IsRunning = fun _ -> publishes }
+
+        let running =
+            startFreshDaemonWith defaultFileOps ipc root "fixture-pipe" "" "logs" 0.
+
+        Assert.Equal(publishes, running)
+
+        if publishes then
+            Assert.Equal("daemon-loaded-snapshot", File.ReadAllText identity)
+        else
+            Assert.False(File.Exists identity, "a launch attempt cannot attest to a loaded configuration"))
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``loaded configuration identity retains the parsed snapshot across later file changes`` exists =
+    withTempDir "daemon-config-snapshot" (fun root ->
+        let path = Path.Combine(root, ".fshw.json")
+        let original = if exists then "{\"lint\":false}" else ""
+
+        if exists then
+            File.WriteAllText(path, original)
+
+        let loaded, source = loadConfigWithSource root
+        Assert.Equal(original, source)
+
+        if exists then
+            Assert.False(loaded.Lint)
+
+        let identity = configContentHash source
+        File.WriteAllText(path, "{\"lint\":true}")
+        Assert.Equal(configContentHash original, identity)
+        Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity))
+
+[<Fact(Timeout = 30000)>]
+let ``direct Start publishes its loaded identity and stops on a later config edit`` () =
+    withTempDir "cli-start-config-lifecycle" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+        File.WriteAllText(Path.Combine(root, "src", "Stub.fsproj"), "<Project />")
+        let configPath = Path.Combine(root, ".fshw.json")
+        let source = """{"build":false,"format":false,"lint":false}"""
+        File.WriteAllText(configPath, source)
+        let config, loadedSource = loadConfigWithSource root
+        let identity = configContentHash loadedSource
+        let pipe = computePipeName root
+        let stateDir = Path.Combine(root, ".fshw")
+        let receipt = Path.Combine(stateDir, "config.hash")
+        let pidFile = Path.Combine(stateDir, "daemon.pid")
+        let notifications = Event<Ionide.ProjInfo.Types.WorkspaceProjectState>()
+
+        // This control owns startup and the config watcher, not SDK project loading.
+        // OneShot suppresses the unrelated source watcher; RunWithIpc still stays live.
+        let loader =
+            { new Ionide.ProjInfo.IWorkspaceLoader with
+                member _.LoadProjects(_paths) = Seq.empty
+                member _.LoadProjects(_paths, _properties, _binaryLog) = Seq.empty
+                member _.LoadSln(_path) = Seq.empty
+                member _.LoadSln(_path, _properties, _binaryLog) = Seq.empty
+
+                [<CLIEvent>]
+                member _.Notifications = notifications.Publish }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                (Unchecked.defaultof<_>)
+                root
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ -> [])
+
+        let run =
+            System.Threading.Tasks.Task.Run(fun () ->
+                executeCommand identity (fun _ -> daemon) defaultIpcOps root pipe Start defaultGlobalOptions config 5.)
+
+        try
+            waitUntil
+                (fun () ->
+                    try
+                        Async.RunSynchronously(IpcClient.getStatus pipe, 1000) |> ignore
+                        true
+                    with _ ->
+                        false)
+                5000
+
+            Assert.False(run.IsCompleted)
+            Assert.Equal(identity, File.ReadAllText(receipt))
+            Assert.Equal(string Environment.ProcessId, File.ReadAllText(pidFile))
+
+            // IPC starts after subscription: this edit must reach the real config watcher.
+            File.WriteAllText(configPath, """{"build":false,"format":false,"lint":false,"timeoutSec":42}""")
+            Assert.True(run.Wait(TimeSpan.FromSeconds(10.)), "Config edit did not stop the owned daemon")
+            Assert.Equal(0, run.Result)
+            Assert.False(IpcClient.isRunning pipe)
+            Assert.False(File.Exists pidFile)
+            Assert.True(daemonLockIsFree root)
+            Assert.Equal(identity, File.ReadAllText(receipt))
+            Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity)
+        finally
+            try
+                if not run.IsCompleted then
+                    waitUntil (fun () -> run.IsCompleted || IpcClient.isRunning pipe) 5000
+
+                    if IpcClient.isRunning pipe then
+                        Async.RunSynchronously(IpcClient.shutdown pipe, 3000) |> ignore
+            finally
+                Assert.True(run.Wait(TimeSpan.FromSeconds(5.)), "Owned startup task did not settle during cleanup")
+                Assert.False(IpcClient.isRunning pipe))

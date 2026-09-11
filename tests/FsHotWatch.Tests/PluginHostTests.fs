@@ -37,6 +37,7 @@ let ``plugin receives file change events`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -52,9 +53,12 @@ let ``plugin registers command`` () =
         { Name = PluginName.create "cmd-test"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello" } ]
+          Commands =
+            [ "greet", fun _ctx _state _args -> async { return "hello" } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -86,6 +90,7 @@ let ``plugin reports status`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -113,6 +118,7 @@ let ``GetAllStatuses returns all plugin statuses`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeHandler "a")
@@ -142,6 +148,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -169,6 +176,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -182,6 +190,52 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | Some(BuildFailed _) -> true
             | _ -> false
         @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "HostPreprocessor")>]
+let ``host owns preprocessor work until its outcome is published`` (refuse: bool) =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    host.RegisterPreprocessor(
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "owned-preprocessor"
+
+            member _.Process files _ =
+                entered.Set()
+                Assert.True(release.Wait(10000), "fixture must release the preprocessor")
+
+                if refuse then
+                    Result.Error "controlled refusal"
+                else
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "controlled pass" }
+
+            member _.Dispose() = () }
+    )
+
+    let work =
+        System.Threading.Tasks.Task.Run(fun () -> host.RunPreprocessors([ "src/Lib.fs" ]))
+
+    try
+        Assert.True(entered.Wait(5000), "preprocessor must reach the controlled work")
+        Assert.True(host.AnyPluginBusy(), "preprocessor work must prevent host rest")
+        Assert.Contains("owned-preprocessor", host.BusyPluginNames())
+    finally
+        release.Set()
+        let result = work.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+        if refuse then
+            Assert.Equal<(string * string) list>([ "owned-preprocessor", "controlled refusal" ], result.Refused)
+        else
+            Assert.Equal<string list>([ "controlled pass" ], result.Evidence)
+
+    Assert.False(host.AnyPluginBusy(), "published preprocessor outcome retires its obligation")
 
 [<Fact(Timeout = 15000)>]
 let ``preprocessor runs before events are dispatched`` () =
@@ -318,6 +372,7 @@ let ``multiple plugins receive the same event`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" (fun () -> received1 <- true))
@@ -357,6 +412,7 @@ let ``plugin can report and query errors via host`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -403,6 +459,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -470,6 +527,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" ref1)
@@ -481,7 +539,8 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+          Version = 0L
+          ModelGeneration = None }
 
     host.EmitFileChecked(dummyResult)
 
@@ -502,7 +561,8 @@ let private fullCheckResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = FullCheck(Unchecked.defaultof<_>)
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 let private parseOnlyResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
@@ -510,7 +570,8 @@ let private parseOnlyResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 [<Fact(Timeout = 15000)>]
 let ``EmitFileChecked with FullCheck marks the file checked`` () =
@@ -718,6 +779,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -748,42 +810,33 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
         @>
 
 [<Fact(Timeout = 20000)>]
-let ``work-cycle generation bumps once across consecutive Running reports`` () =
-    // `bumpGenerationIfStarting` bumps only on a non-Running ▸ Running EDGE, so a plugin
-    // that reports Running again with no terminal status in between must NOT bump twice.
+let ``repeated Running reports do not create owned work`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
         { Name = PluginName.create "running-twice"
           Init = ()
           Update =
-            fun ctx state event ->
+            fun ctx state _ ->
                 async {
-                    match event with
-                    // ONLY Running, so the next FileChanged finds prev = Some(Running _).
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    | _ -> ()
-
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
                     return state
                 }
           Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
-    host.RegisterHandler(handler)
-
-    // First edge: Idle ▸ Running → generation 1.
+    host.RegisterHandler handler
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    waitUntil (fun () -> host.WorkCycleGenerations().TryFind "running-twice" = Some 1L) 12000
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
-
-    // Second report while already Running → NO second bump (stays at 1).
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-    waitForQuiescent host 12000
-    // Give the status agent a beat to apply any (non-)mutation before asserting.
-    Thread.Sleep(150)
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
+    waitUntil (fun () -> host.CompletedDispatches() = 2L) 12000
+    test <@ host.CompletedDispatches() = 2L @>
+    test <@ not (host.AnyPluginBusy()) @>
+
+    waitForAllTerminal host (TimeSpan.FromSeconds 1.0) System.Threading.CancellationToken.None
+    |> fun task -> task.GetAwaiter().GetResult()
 
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //
@@ -807,6 +860,7 @@ let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing v
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -861,6 +915,7 @@ let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not de
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -895,6 +950,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -946,6 +1002,7 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1004,6 +1061,7 @@ let ``a throwing OnStatusChanged subscriber is logged and does not kill status n
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         host.RegisterHandler(handler)
@@ -1044,6 +1102,7 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1085,6 +1144,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let bHandler =
@@ -1110,6 +1170,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(aHandler)
@@ -1172,6 +1233,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let bHandler =
@@ -1202,6 +1264,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(aHandler)
@@ -1250,6 +1313,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let bHandler =
@@ -1279,6 +1343,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let mutable cCompleted = false
@@ -1303,6 +1368,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(aHandler)
@@ -1341,6 +1407,7 @@ let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1375,6 +1442,7 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1398,8 +1466,23 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
     // and the foreground process reports success.
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // Goes Running and never reaches terminal, so the quiescence window cannot fire and the
-    // wait stays blocked until cancellation.
+    let entered =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let release =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
+
+    // Hold a real accepted event through cancellation, then drain it during cleanup.
     let handler =
         { Name = PluginName.create "blocked"
           Init = ()
@@ -1409,7 +1492,8 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
                     match event with
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(DateTime.UtcNow))
-                        do! Async.Sleep 60_000
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1417,18 +1501,19 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
 
     use cts = new System.Threading.CancellationTokenSource()
 
-    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
-
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy() @>
 
-    // Give the wait a moment to enter its loop, then trip the shutdown token.
-    Threading.Thread.Sleep(200)
+    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
+    test <@ not waitTask.IsCompleted @>
     cts.Cancel()
 
     // Async.StartAsTask wraps OperationCanceledException as AggregateException
@@ -1554,6 +1639,7 @@ let private fileChangedRecorder (name: string) =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     handler, (fun () -> lock batches (fun () -> List.ofSeq batches))
@@ -1637,6 +1723,7 @@ let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
           Commands = []
           Subscriptions = Set.empty
           CacheKey = None
+          PrepareCommit = None
           Teardown = Some(fun () -> raise (System.InvalidOperationException("teardown boom"))) }
 
     host.RegisterHandler(handler)
@@ -1822,18 +1909,31 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
         let outside =
             System.IO.Path.Combine(System.IO.Path.GetDirectoryName(root), "outside.fs")
 
+        let parentDirectory = System.IO.Path.GetDirectoryName(root)
+        let malformed = "invalid" + string (char 0) + "path"
         let pseudo = "<build>"
+        let opaque = [ outside; parentDirectory; malformed; pseudo ]
 
-        for key in [ insideAbsolute; insideRelative; outside; pseudo ] do
+        for key in [ insideAbsolute; insideRelative ] @ opaque do
             host.ReportErrors("test-prune", key, ghostEntry key)
 
-        host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
+        let inspected = System.Collections.Generic.List<string>()
+
+        host.PruneVanishedErrors(fun path ->
+            inspected.Add path
+            false)
+        |> ignore
 
         let remaining = host.GetErrors()
         test <@ not (remaining |> Map.containsKey insideAbsolute) @>
         test <@ not (remaining |> Map.containsKey insideRelative) @>
-        test <@ remaining |> Map.containsKey outside @>
-        test <@ remaining |> Map.containsKey pseudo @>)
+
+        for key in opaque do
+            test <@ remaining |> Map.containsKey key @>
+
+        // Malformed and external identities must not escape into filesystem
+        // probing or be silently discarded as missing repository files.
+        test <@ Set.ofSeq inspected = Set.ofList [ insideAbsolute; System.IO.Path.Combine(root, insideRelative) ] @>)
 
 // --- AUTOMATION-555 (rework): every plugin run lands on the phase ledger ---
 
@@ -1863,6 +1963,7 @@ let ``a plugin's Running to Completed interval is recorded on the host's phase l
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)

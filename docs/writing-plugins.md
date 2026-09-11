@@ -69,8 +69,10 @@ let myPlugin: PluginHandler<MyState, unit> =
                 | _ -> return state
             }
       Commands = [ "my-status", fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 ```
 <!-- sync:plugin-example:end -->
@@ -90,8 +92,21 @@ daemon.RegisterHandler(myPlugin)
 | `Update` | `ctx -> state -> event -> Async<state>`. Pattern-match the event, do your work, return the next state. |
 | `Commands` | IPC commands, `(name, fun ctx state args -> Async<string>)`. Invoked by tools over the pipe; the string you return is the reply. |
 | `Subscriptions` | A `Set` of the events you want delivered. Use `PluginSubscriptions.none` (empty) if you only handle custom messages. |
-| `CacheKey` | `Some (fun event -> hash)` to replay a cached result on an unchanged input, or `None` to always run. |
+| `CacheKey` | `Some (fun state event -> hash)` to replay a cached result for the supplied committed state and event, or `None` to always run. |
+| `PrepareCommit` | Optional `priorState -> candidateState -> Async<PreparedCommit>` hook. Use `None` when no external commit preparation is required. |
 | `Teardown` | `Some (fun () -> ...)` to clean up when the host shuts down, or `None`. |
+
+A successful `Update` produces a candidate state. When `PrepareCommit` is supplied,
+the framework first awaits preparation, publishes that candidate while retaining
+the event, then awaits the returned `Finalize` action and writes any cache entry.
+Only then does the tracked event receipt succeed. Preparation and finalization run
+outside the host state writer; cache replay does not invoke this hook.
+
+If preparation fails, the prior state is retained. If finalization fails, the
+published candidate is retained with a commit failure. Both failures fault the
+tracked receipt. A failed `Update` neither prepares nor populates the cache.
+The hook itself supplies no deadline; common supervision of these effects remains
+part of the unfinished A104/A106 work.
 
 ## Events
 
@@ -231,6 +246,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
       Commands = []
       Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 ```
 <!-- sync:test-verdict-example:end -->

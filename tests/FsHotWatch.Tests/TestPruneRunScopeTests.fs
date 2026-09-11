@@ -66,6 +66,7 @@ let private makeTestPruneRecordingCtx () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = ""
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
@@ -89,6 +90,51 @@ let private a125Config (project: string) : TestConfig =
       ClassJoin = "|"
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect }
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("full")>]
+[<InlineData("impact")>]
+[<Trait("A104Command", "Scope")>]
+let ``set-scope replies only after the owner applies its intent`` (scope: string) =
+    task {
+        let handler =
+            create ":memory:" "/tmp" (Some [ a125Config "Acme.Tests" ]) None None None None []
+
+        let posted = ResizeArray<TestPruneMsg>()
+
+        let commandCtx: CommandCtx<TestPruneMsg> =
+            { RepoRoot = "/tmp"
+              Log = ignore
+              Post = posted.Add
+              EnqueueExclusiveIntent =
+                fun _ _ message ->
+                    posted.Add message
+                    System.Threading.Tasks.Task.FromResult(())
+              IsRunning = fun _ -> false
+              ProjectGraph = ProjectGraphAccessor.none }
+
+        let command =
+            handler.Commands |> List.find (fun (name, _) -> name = "set-scope") |> snd
+
+        let args = [| JsonSerializer.Serialize({| scope = scope |}) |]
+
+        let reply =
+            PluginCommand.invoke command commandCtx handler.Init args
+            |> Async.StartImmediateAsTask
+
+        Assert.Equal(1, posted.Count)
+        Assert.False(reply.IsCompleted, "set-scope acknowledged before its owner applied the intent")
+
+        let pluginCtx, _, _ = makeTestPruneRecordingCtx ()
+        let! candidate = handler.Update pluginCtx handler.Init (Custom posted.[0]) |> Async.StartAsTask
+        Assert.False(reply.IsCompleted, "set-scope acknowledged an unpublished candidate")
+        let! prepared = handler.PrepareCommit.Value handler.Init candidate |> Async.StartAsTask
+        Assert.False(reply.IsCompleted, "set-scope acknowledged before publication")
+        do! prepared.Finalize |> Async.StartAsTask
+        let! response = reply.WaitAsync(TimeSpan.FromSeconds 2.0)
+        use json = JsonDocument.Parse response
+        Assert.Equal(scope, json.RootElement.GetProperty("scope").GetString())
+    }
 
 /// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
 /// launched against.
@@ -899,10 +945,13 @@ let ``AUTOMATION-67 completion publishes real CTRF recall through check-reach IP
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = pluginCtx.ProjectGraph }
 
-        let json = command commandCtx state [||] |> Async.RunSynchronously
+        let json =
+            FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx state [||]
+            |> Async.RunSynchronously
 
         match FsHotWatch.Cli.IpcParsing.parseCheckReach json with
         | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
@@ -1546,11 +1595,12 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
         let report =
-            scopeCommand commandCtx final [||]
+            FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
             |> Async.RunSynchronously
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -1602,11 +1652,12 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
         let report =
-            scopeCommand commandCtx final [||]
+            FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
             |> Async.RunSynchronously
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -1616,6 +1667,76 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
         // ...and the narrow drain, whose directory holds the only reports that batch wrote,
         // is no longer invisible. Newest first.
         test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``only-failed resolves current owner failures instead of the command snapshot`` (snapshotHasFailure: bool) =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let snapshot =
+        { handler.Init with
+            OutstandingFailures = if snapshotHasFailure then [ redIn "ProjA" None ] else [] }
+
+    // An intervening committed transition changed the outstanding failure set.
+    // The request must carry selection intent into this owner state.
+    let ownerState =
+        { handler.Init with
+            OutstandingFailures = [ redIn "ProjB" None ] }
+
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    let mutable selectedProjects = []
+    let mutable completion = None
+
+    let ownerCtx =
+        { recordingCtx with
+            RunExclusiveShared =
+                fun _ _ workFor _ _ ->
+                    let outcome = workFor Ready |> Async.RunSynchronously
+
+                    match outcome with
+                    | CommandTestsFinished(_, completed, _, _, _) ->
+                        selectedProjects <- completed.Results |> Map.keys |> Seq.toList
+                        completion <- Some outcome
+                    | other -> Assert.Fail($"expected a completed owned run, got {other}")
+
+                    SharedClaimed }
+
+    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
+          Post = ignore
+          EnqueueExclusiveIntent =
+            fun _ _ message ->
+                let admitted =
+                    handler.Update ownerCtx ownerState (Custom message) |> Async.RunSynchronously
+
+                let admission =
+                    handler.PrepareCommit.Value ownerState admitted |> Async.RunSynchronously
+
+                admission.Finalize |> Async.RunSynchronously
+
+                let candidate =
+                    handler.Update ownerCtx admitted (Custom completion.Value)
+                    |> Async.RunSynchronously
+
+                let publication =
+                    handler.PrepareCommit.Value admitted candidate |> Async.RunSynchronously
+
+                publication.Finalize |> Async.RunSynchronously
+                System.Threading.Tasks.Task.FromResult(()) }
+
+    let command = handler.Commands |> List.find (fst >> (=) "run-tests") |> snd
+
+    FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx snapshot [| "{\"only-failed\":true}" |]
+    |> Async.RunSynchronously
+    |> ignore
+
+    Assert.Equal<string list>([ "ProjB" ], selectedProjects)
 
 [<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
@@ -1630,11 +1751,16 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
             [ "ProjA", impactSkipped; "ProjB", passed true ]
             (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
 
+    let queued = ResizeArray<TestPruneMsg>()
     let mutable claims = [ LocalSlotBusy; SharedClaimed ]
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let ctx =
         { recordingCtx with
+            EnqueueExclusiveIntent =
+                fun _ _ message ->
+                    queued.Add message
+                    System.Threading.Tasks.Task.FromResult(())
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     match claims with
@@ -1652,19 +1778,28 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
         handler.Update
             ctx
             fullState
-            (Custom(RunTestsRequested([ a125Config "ProjB" ], Some "FullyQualifiedName~ProjBTests", queuedReply)))
+            (Custom(
+                RunTestsRequested(
+                    { OnlyFailed = false
+                      Projects = Some(Set.singleton "ProjB") },
+                    Some "FullyQualifiedName~ProjBTests",
+                    queuedReply
+                )
+            ))
         |> Async.RunSynchronously
 
     test <@ queuedState.EvidenceReceipt.IsSome @>
-    test <@ queuedState.QueuedCommandRuns.Length = 1 @>
+    Assert.Single queued |> ignore
 
     // `narrowRun` completes the pre-existing in-flight run. Its terminal handler must
     // dequeue and LAUNCH the explicit manual filter as a new top-level receipt boundary.
-    let drainedState =
+    let completedState =
         handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
 
+    let drainedState =
+        handler.Update ctx completedState (Custom queued[0]) |> Async.RunSynchronously
+
     test <@ drainedState.EvidenceReceipt.IsNone @>
-    test <@ drainedState.QueuedCommandRuns.IsEmpty @>
     test <@ claims.IsEmpty @>
 
 [<Fact(Timeout = 15000)>]
@@ -1685,7 +1820,17 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
                     SharedClaimed }
 
     let claimedState =
-        handler.Update ctx handler.Init (Custom(RunTestsRequested([ a125Config "ProjA" ], None, reply)))
+        handler.Update
+            ctx
+            handler.Init
+            (Custom(
+                RunTestsRequested(
+                    { OnlyFailed = false
+                      Projects = Some(Set.singleton "ProjA") },
+                    None,
+                    reply
+                )
+            ))
         |> Async.RunSynchronously
 
     test <@ posted.IsSome @>
@@ -1693,10 +1838,16 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     let finalState =
         handler.Update ctx claimedState (Custom posted.Value) |> Async.RunSynchronously
 
-    test <@ reply.Task.Wait 5000 @>
+    Assert.False(reply.Task.IsCompleted)
+
+    let publication =
+        handler.PrepareCommit.Value claimedState finalState |> Async.RunSynchronously
+
+    publication.Finalize |> Async.RunSynchronously
+    test <@ reply.Task.IsCompleted @>
     test <@ reply.Task.Result.Contains("test host could not start") @>
     test <@ reply.Task.Result.Contains("host start fault") @>
-    test <@ finalState.PendingRerun @>
+    test <@ finalState.Earned.IsNone @>
 
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
@@ -2000,7 +2151,7 @@ let ``AUTOMATION-303: adding a compile item moves the BuildCompleted cache key``
             create (Path.Combine(tmpDir, "tp.db")) tmpDir None None None None None []
 
         let keyOf () =
-            handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+            handler.CacheKey.Value handler.Init (BuildCompleted BuildSucceeded)
 
         let before = keyOf ()
         test <@ before.IsSome @>
@@ -2775,6 +2926,322 @@ let ``failuresOf still carries the whole output when NO test could be named`` ()
     let entry = (failuresOf Map.empty results |> List.exactlyOne).Entry
     test <@ entry.Detail = Some output @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("test-scope")>]
+[<InlineData("check-reach")>]
+[<Trait("A104Evidence", "CompletionSnapshot")>]
+let ``completion observations remain bound to their supplied owner snapshot`` (commandName: string) =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let command = handler.Commands |> List.find (fst >> (=) commandName) |> snd
+
+    let commandCtx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = root
+          Log = ignore
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+          IsRunning = fun _ -> false
+          ProjectGraph = ctx.ProjectGraph }
+
+    let read state =
+        let json =
+            PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
+
+        use document = JsonDocument.Parse(json)
+        let field = if commandName = "test-scope" then "runIds" else "runId"
+        document.RootElement.GetProperty(field).GetRawText()
+
+    let complete state =
+        handler.Update ctx state (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    let first = complete handler.Init
+    let firstReading = read first
+    let second = complete first
+    let secondReading = read second
+    Assert.NotEqual<string>(firstReading, secondReading)
+    Assert.Equal(firstReading, read first)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "UncommittedCacheEvidence")>]
+let ``a failed completion fold cannot clear the committed cache refusal`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+    let red =
+        handler.Update
+            ctx
+            handler.Init
+            (testsFinishedEvent
+                [ "ProjA", TestsFailed("failed ProjA.Tests.case (1ms)", false, TimeSpan.Zero) ]
+                (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    Assert.NotEmpty(red.OutstandingFailures)
+    Assert.True((handler.CacheKey.Value red (BuildCompleted BuildSucceeded)).IsNone)
+    let refusal = InvalidOperationException("fixture refuses completion publication")
+
+    let refusingCtx =
+        { ctx with
+            ReportStatus = fun _ -> raise refusal }
+
+    let observed =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            handler.Update refusingCtx red (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+            |> Async.RunSynchronously
+            |> ignore)
+
+    Assert.Same(refusal, observed)
+    Assert.NotEmpty(red.OutstandingFailures)
+
+    Assert.True(
+        (handler.CacheKey.Value red (BuildCompleted BuildSucceeded)).IsNone,
+        "an uncommitted passing fold must not make the still-red owner cacheable"
+    )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "ChangedSymbolsCacheSnapshot")>]
+let ``test cache hashes the changed symbols of its supplied owner snapshot`` () =
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
+    let key = handler.CacheKey.Value
+    let event = BuildCompleted BuildSucceeded
+    let initial = key handler.Init event
+    Assert.True(initial.IsSome, "positive control: analysis-only cache key exists")
+
+    let changed =
+        { handler.Init with
+            ChangedSymbols = [ "Library.changed" ] }
+
+    let changedKey = key changed event
+    Assert.True(changedKey.IsSome)
+    Assert.NotEqual<ContentHash option>(initial, changedKey)
+    Assert.Equal<ContentHash option>(initial, key handler.Init event)
+
+let private pendingDebtOwnerFixture () =
+    let root = isolatedRoot ()
+    let symbol = "Library.changed"
+    PendingVerification.save root (Set.singleton symbol)
+
+    let handler =
+        create (Path.Combine(root, "pending-owner.db")) root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    // Earn actual session coverage without claiming this symbol was launched.
+    let prior =
+        handler.Update ctx handler.Init (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    Assert.NotEmpty(RunCoverage.coveredProjects prior.LastCoverage)
+    Assert.True((handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone)
+
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Contains(symbol, queue)
+    | other -> Assert.Fail($"positive control: readable symbol debt, got {other}")
+
+    let launch =
+        { fullSuiteLaunch [ "ProjA" ] with
+            Symbols = Set.singleton symbol
+            CoveringProjectsBySymbol = Map.ofList [ symbol, Set.singleton "ProjA" ] }
+
+    root, symbol, handler, ctx, prior, launch
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("cache")>]
+[<InlineData("disk")>]
+[<Trait("A104Evidence", "UncommittedPendingDebt")>]
+let ``a failed completion fold cannot discharge committed pending debt`` (observer: string) =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let refusal = InvalidOperationException("fixture refuses pending debt publication")
+
+    let refusingCtx =
+        { ctx with
+            ReportStatus = fun _ -> raise refusal }
+
+    let observed =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            handler.Update refusingCtx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+            |> Async.RunSynchronously
+            |> ignore)
+
+    Assert.Same(refusal, observed)
+
+    if observer = "cache" then
+        Assert.True(
+            (handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone,
+            "the retained owner still owes the symbol after a failed completion fold"
+        )
+    else
+        let restartStillOwes =
+            match PendingVerification.load root with
+            | PendingVerification.LoadedQueue.Unreadable _ -> true
+            | PendingVerification.LoadedQueue.Loaded queue ->
+                Set.contains symbol queue || File.Exists(runtimeCoverageRecoveryPath root)
+
+        Assert.True(
+            restartStillOwes,
+            "restart must retain symbol debt or durable unknown debt after failed publication"
+        )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtSnapshot")>]
+let ``a successful completion discharges only its returned pending debt snapshot`` () =
+    let _, _, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
+    let completed =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    Assert.True(
+        (handler.CacheKey.Value completed (BuildCompleted BuildSucceeded)).IsSome,
+        "positive control: the completed owner has paid the launched debt"
+    )
+
+    Assert.True(
+        (handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone,
+        "retained snapshots must not learn a later queue discharge"
+    )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "BaselineSnapshot")>]
+let ``a retained owner cannot learn a full suite baseline earned by a later completion`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let command = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let commandCtx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = root
+          Log = ignore
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+          IsRunning = fun _ -> false
+          ProjectGraph = ctx.ProjectGraph }
+
+    let read state =
+        use document =
+            JsonDocument.Parse(PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
+
+        document.RootElement.GetProperty("baseline").GetRawText(),
+        document.RootElement.GetProperty("baselineAbsent").GetRawText()
+
+    let initial = read handler.Init
+    Assert.Equal("null", fst initial)
+    Assert.NotEqual<string>("null", snd initial)
+
+    let completed =
+        handler.Update ctx handler.Init (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    let current = read completed
+    Assert.NotEqual<string>("null", fst current)
+    Assert.Equal("null", snd current)
+    Assert.Equal(initial, read handler.Init)
+
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtPublication")>]
+let ``pending debt persistence follows the successful proposal and precedes acknowledgement`` () =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Contains(symbol, queue)
+    | other -> Assert.Fail($"proposal must not discharge durable debt: {other}")
+
+    let prepared = handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously
+
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Empty queue
+    | other -> Assert.Fail($"successful preparation writes the candidate: {other}")
+
+    let interrupted =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    Assert.True(interrupted.Init.Debt.RecoveryOutstanding, "before publication, restart must see unknown debt")
+    prepared.Finalize |> Async.RunSynchronously
+
+    let published =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    Assert.False(published.Init.Debt.RecoveryOutstanding)
+    Assert.Empty published.Init.Debt.PendingQueue
+    Assert.Contains(symbol, prior.Debt.PendingQueue)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtPublication")>]
+let ``failed durable preparation retains restart debt after a partial sidecar write`` () =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    // Queue persistence precedes the baseline. Refuse the later write to model a
+    // partially prepared owner transaction, not a failure before anything happened.
+    let baselinePath = FullSuiteBaseline.sidecarPath root
+
+    if File.Exists baselinePath then
+        File.Delete baselinePath
+
+    Directory.CreateDirectory baselinePath |> ignore
+
+    Assert.ThrowsAny<IOException>(fun () ->
+        handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously |> ignore)
+    |> ignore
+
+    Assert.Contains(symbol, prior.Debt.PendingQueue)
+
+    let restarted =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    Assert.True(restarted.Init.Debt.RecoveryOutstanding)
+    Assert.True((restarted.CacheKey.Value restarted.Init (BuildCompleted BuildSucceeded)).IsNone)
+
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtRevision")>]
+let ``a completed launch cannot discharge a newer revision of the same symbol`` () =
+    let _, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
+    let changedAgain =
+        { prior with
+            Debt =
+                { prior.Debt with
+                    Revision = 1L
+                    SymbolRevisions = Map.ofList [ symbol, 1L ] } }
+
+    let completed =
+        handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    Assert.Contains(symbol, completed.Debt.PendingQueue)
+    Assert.Equal(1L, completed.Debt.SymbolRevisions[symbol])
+    Assert.True((handler.CacheKey.Value completed (BuildCompleted BuildSucceeded)).IsNone)
+
+    let currentLaunch =
+        { launch with
+            SymbolRevisions = changedAgain.Debt.SymbolRevisions }
+
+    let verified =
+        handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] currentLaunch)
+        |> Async.RunSynchronously
+
+    Assert.DoesNotContain(symbol, verified.Debt.PendingQueue)
+
 [<Fact>]
 [<Trait("Issue", "AUTOMATION-394")>]
 let ``receipt identity follows actual source bytes and refuses an unavailable tree`` () =
@@ -2798,10 +3265,11 @@ let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPr
         { RepoRoot = repoRoot
           Log = ignore
           Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           IsRunning = fun _ -> false
           ProjectGraph = ProjectGraphAccessor.none }
 
-    command ctx state [||]
+    PluginCommand.invoke command ctx state [||]
     |> Async.RunSynchronously
     |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -2908,3 +3376,142 @@ let ``an aborted same-input run cannot reuse an earlier passing receipt`` () =
         match (receiptScope repoRoot handler final).Scope with
         | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
         | other -> Assert.Fail($"aborted run retained positive scope: {other}"))
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a failed command receipt acknowledges only its published owner outcome`` (invalidArtifacts: bool) =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let reply = System.Threading.Tasks.TaskCompletionSource<string>()
+
+    let message =
+        if invalidArtifacts then
+            ArtifactsUnavailable("fixture refusal", Some reply)
+        else
+            TestHostUnavailable("fixture refusal", Some reply)
+
+    let candidate =
+        handler.Update ctx handler.Init (Custom message) |> Async.RunSynchronously
+
+    Assert.False(reply.Task.IsCompleted, "command acknowledged an unpublished failed proposal")
+
+    let prepared =
+        handler.PrepareCommit.Value handler.Init candidate |> Async.RunSynchronously
+
+    Assert.False(reply.Task.IsCompleted, "command acknowledged before publication")
+    prepared.Finalize |> Async.RunSynchronously
+    Assert.Contains("fixture refusal", reply.Task.GetAwaiter().GetResult())
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``full-suite recovery preserves newer runtime obligations and rejects stale model completion``
+    (modelChanged: bool)
+    =
+    let _, _, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let obligations = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 2L ] ]
+
+    let prior =
+        { prior with
+            Debt =
+                { prior.Debt with
+                    RecoveryOutstanding = true
+                    RuntimeObligations = obligations } }
+
+    let launch =
+        { launch with
+            ModelGeneration = Some 1L
+            RuntimeProjectsByFile = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 1L ] ] }
+
+    let model =
+        FsHotWatch.ProjectModel.ofCompleted
+            (if modelChanged then 2L else 1L)
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 1
+              Registered = 1 }
+
+    let ctx =
+        { ctx with
+            ProjectGraph =
+                { ctx.ProjectGraph with
+                    ObserveModel = fun () -> model } }
+
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    Assert.Equal<Map<string, Map<string, int64>>>(obligations, candidate.Debt.RuntimeObligations)
+    Assert.Equal(modelChanged, candidate.Debt.RecoveryOutstanding)
+
+    if modelChanged then
+        Assert.True(prior.Debt.Baseline = candidate.Debt.Baseline)
+        Assert.True(candidate.Earned.IsNone)
+
+[<Fact(Timeout = 15000)>]
+let ``non-FSharp source changes retain durable test debt without repeating unchanged scan debt`` () =
+    let root = isolatedRoot ()
+    let source = Path.Combine(root, "Helper.cs")
+    File.WriteAllText(source, "class Helper { public const int Value = 1; }")
+
+    let makeHandler () =
+        create (Path.Combine(root, "mixed-owner.db")) root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let handler = makeHandler ()
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+    let admit state path =
+        handler.Update ctx state (PluginEvent.FileChanged(SourceChanged [ path ]))
+        |> Async.RunSynchronously
+
+    let first = admit handler.Init source
+    let expected = Map.ofList [ "Helper.cs", Map.ofList [ "ProjA", 1L ] ]
+    Assert.Equal<RuntimeCoverageObligations>(expected, first.Debt.RuntimeObligations)
+    let repeated = admit first "Helper.cs"
+    Assert.Equal<RuntimeCoverageObligations>(expected, repeated.Debt.RuntimeObligations)
+    File.WriteAllText(source, "class Helper { public const int Value = 2; }")
+    let changed = admit repeated source
+    let newer = Map.ofList [ "Helper.cs", Map.ofList [ "ProjA", 2L ] ]
+    Assert.Equal<RuntimeCoverageObligations>(newer, changed.Debt.RuntimeObligations)
+
+    let prepared =
+        handler.PrepareCommit.Value handler.Init changed |> Async.RunSynchronously
+
+    prepared.Finalize |> Async.RunSynchronously
+    // This config deliberately has no runtime coverage output: debt cannot disappear
+    // just because the changed language has no FCS/runtime mapping available.
+    let restarted = makeHandler ()
+    Assert.Equal<RuntimeCoverageObligations>(newer, restarted.Init.Debt.RuntimeObligations)
+
+    let afterOldRun =
+        retireRuntimeCoverageObligations changed.Debt.RuntimeObligations first.Debt.RuntimeObligations (fun _ -> true)
+
+    Assert.Equal<RuntimeCoverageObligations>(newer, afterOldRun)
+
+    let afterCurrentRun =
+        retireRuntimeCoverageObligations afterOldRun changed.Debt.RuntimeObligations (fun _ -> true)
+
+    Assert.Empty(afterCurrentRun)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("Library.fs", true)>]
+[<InlineData("README.md", true)>]
+[<InlineData("Helper.cs", false)>]
+let ``non-FSharp input admission never invents unnamed or analysis-only test obligations``
+    (file: string, configured: bool)
+    =
+    let root = isolatedRoot ()
+    let source = Path.Combine(root, file)
+    File.WriteAllText(source, "fixture")
+    let configs = if configured then Some [ a125Config "ProjA" ] else None
+    let handler = create ":memory:" root configs None None None None []
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+    let candidate =
+        handler.Update ctx handler.Init (PluginEvent.FileChanged(SourceChanged [ source ]))
+        |> Async.RunSynchronously
+
+    Assert.Empty(candidate.Debt.RuntimeObligations)

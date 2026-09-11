@@ -1,0 +1,84 @@
+{
+  "red": {
+    "runId": "ad241f3c125a4a6394420e1e6599f7f4",
+    "reportSha256": "b6b7c41e00ab1b99d371cf7b987d0e1067500c0f6a49a3afa130a9134672f60f",
+    "summary": {
+      "tests": 3164,
+      "passed": 3162,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788915907319,
+      "stop": 1788915999296
+    },
+    "control": [
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot clear the committed cache refusal",
+        "status": "failed",
+        "message": "an uncommitted passing fold must not make the still-red owner cacheable"
+      }
+    ],
+    "failures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+      "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot clear the committed cache refusal"
+    ]
+  },
+  "corrected": {
+    "runId": "d0f84037352c49049b9396c2db48bd79",
+    "reportSha256": "885da46cac9ea54d4c4bb2a8a871be02f14f21f2c8dcc1c10a7f100196fbf46a",
+    "summary": {
+      "tests": 3164,
+      "passed": 3161,
+      "failed": 3,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788916183821,
+      "stop": 1788916281917
+    },
+    "control": [
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot clear the committed cache refusal",
+        "status": "passed",
+        "message": null
+      }
+    ],
+    "failures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+      "FsHotWatch.Tests.BuildPluginTests.file changes observed during a test host defer the build until that run completes",
+      "FsHotWatch.Tests.PluginFrameworkTests.shared start failure posts the typed failure and releases its accounting"
+    ]
+  },
+  "status": "failed-fold cache regression and fixture corrections pass; private earned-verdict regression remains",
+  "sourceHashes": {
+    "src/FsHotWatch/PluginFramework.fs": "facecb2e504dae82b3e63e0b5c00b44320100f3b9696021b4a6bc7fbce1b9ce5",
+    "src/FsHotWatch.TestPrune/TestPrunePlugin.fs": "51aa1007a7e1b846ee1998dadb25055d04e2cf85d0ff3918ff5d33025f3a1a56",
+    "tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs": "c90a4ef70ca06b22bf46599455796a03595f35d3f4ec004627f92f71be169f18"
+  },
+  "limits": [
+    "Private earned-verdict constructor still absent",
+    "Remaining mutable queue/model/baseline/cache state has not been migrated",
+    "No full CI or consumer qualification"
+  ],
+  "latestFullRun": {
+    "runId": "1dc83a079b7247e5bd4c310926a4f15f",
+    "reportSha256": "90eaeb0928c490341a504d720bc66a2b06ddde6b1464e426bc6504d96b89e943",
+    "summary": {
+      "tests": 3164,
+      "passed": 3163,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788916318093,
+      "stop": 1788916403702
+    },
+    "failures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains"
+    ]
+  }
+}

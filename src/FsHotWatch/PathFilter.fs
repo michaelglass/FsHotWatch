@@ -6,6 +6,15 @@ open Ignore
 
 let private normalize (path: string) = path.Replace('\\', '/')
 
+/// Languages accepted by FCS. This is a checking boundary, not a build-input
+/// filter: other MSBuild sources remain in the dependency graph and tree hash.
+let isFSharpSource (path: string) =
+    match Path.GetExtension(path).ToLowerInvariant() with
+    | ".fs"
+    | ".fsi"
+    | ".fsx" -> true
+    | _ -> false
+
 /// True if the path is inside an obj/ or bin/ directory.
 let isGeneratedPath (path: string) =
     let n = normalize path
