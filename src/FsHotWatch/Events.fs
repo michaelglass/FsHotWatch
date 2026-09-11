@@ -812,7 +812,7 @@ module internal AnalysisEvidence =
         (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
         : AnalysisEvidence option =
         match modelGeneration with
-        | Some generation when expectedFiles.Count > 0 && configuredTestProjects.IsEmpty ->
+        | Some generation when generation >= 0L && configuredTestProjects.IsEmpty ->
             let refusals =
                 [ for file in expectedFiles do
                       match Map.tryFind file outcomes with
