@@ -920,7 +920,7 @@ let ``invalid queue deadline admits no owner or worker`` kind =
         SupervisedWork.Queue(store, "invalid", 0, deadline, (fun state (_: int) -> state), (fun state _ -> state), ignore,
             (fun state _ _ _ -> async.Return state)) |> ignore) |> ignore
     Assert.False store.Snapshot.IsBusy
-    Assert.Empty store.Snapshot.Rows
+    Assert.Empty store.Snapshot.BusyNames
 
 [<Fact(Timeout = 15000)>]
 let ``supervisor constructed without flowing context still settles its actual worker`` () =
