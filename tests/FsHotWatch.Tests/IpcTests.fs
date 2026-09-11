@@ -1633,7 +1633,7 @@ let ``scan waiters retain their request when recovery is queued before failure s
 [<InlineData(2)>]
 [<InlineData(3)>]
 let ``cache clear RPC preserves entries outside its requested filter`` (selection: int) =
-    let pipeName = $"fshw-cache-filter-{Guid.NewGuid():N}"
+    let pipeName = $"fc-{Guid.NewGuid():N}"
     let repoRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-cache-filter-{Guid.NewGuid():N}")
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
