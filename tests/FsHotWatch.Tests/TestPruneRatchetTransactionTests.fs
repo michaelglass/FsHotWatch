@@ -17,6 +17,7 @@ open TestPrune.Database
 let ``ratchet mapping retains symbol ownership until its coverage write commits`` (partial: bool) =
     withTempDir "ratchet-map-transaction" (fun directory ->
         let db = Database.create (Path.Combine(directory, "impact.db"))
+
         let symbol: SymbolInfo =
             { FullName = "Fixture.covered"
               Kind = SymbolKind.Value
@@ -27,11 +28,16 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
               IsExtern = false }
 
         db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
+
         let input: CoverageInput =
             { Project = "Fixture.Tests"
               RawPath = Path.Combine(directory, "coverage.xml")
               IncludeInRatchet = true
-              Scope = if partial then CoverageRunScope.Partial else CoverageRunScope.Full }
+              Scope =
+                if partial then
+                    CoverageRunScope.Partial
+                else
+                    CoverageRunScope.Full }
 
         let xml =
             """<coverage><packages><package name="Fixture"><classes><class name="Fixture" filename="src/Fixture.fs"><lines><line number="10" hits="7" /></lines></class></classes></package></packages></coverage>"""
@@ -75,11 +81,13 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
         Assert.True(removalBlocked, "the coverage transaction must exclude symbol deletion until its write commits")
         use inspection = db.OpenConnection()
         use coverage = inspection.CreateCommand()
+
         coverage.CommandText <-
             """SELECT COUNT(*) FROM fshw_project_ratchet_coverage c
                JOIN symbols s ON s.id = c.symbol_id
                WHERE c.project = 'Fixture.Tests' AND s.full_name = 'Fixture.covered'
                  AND c.line_offset = 0 AND c.hits = 7;"""
+
         Assert.Equal(1L, Convert.ToInt64(coverage.ExecuteScalar()))
 
         // Exclusion lasts only for the transaction. The waiting graph mutation

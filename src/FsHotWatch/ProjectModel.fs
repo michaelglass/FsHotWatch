@@ -66,10 +66,13 @@ let reasonCode =
 
 let describeUnavailable (snapshot: Snapshot) (reason: UnavailableReason) =
     let counts = snapshot.Counts
+
     let loaderPrefix =
         if reason = UnavailableReason.LoadingFailed then
             "PROJECT LOADING FAILED: read the per-project LoadProject FAILED reasons in logs/daemon.log. "
-        else ""
+        else
+            ""
+
     $"{loaderPrefix}PROJECT MODEL UNAVAILABLE: {reasonCode reason} at discovery generation {snapshot.Generation} ({counts.Discovered} discovered, {counts.Loaded} loaded, {counts.OptionsMapped} mapped, {counts.Registered} registered). No available project model was observed; this is not an empty test selection."
 
 let failure =
@@ -83,9 +86,10 @@ let failure =
 /// A refusal carries the observation itself across process boundaries, never a
 /// reason reconstructed by parsing localized diagnostic prose.
 type UnavailableException(observation: Observation) =
-    inherit System.InvalidOperationException(
-        failure observation
-        |> Option.defaultValue "PROJECT MODEL UNAVAILABLE: the requested model could not be observed."
-    )
+    inherit
+        System.InvalidOperationException(
+            failure observation
+            |> Option.defaultValue "PROJECT MODEL UNAVAILABLE: the requested model could not be observed."
+        )
 
     member _.Observation = observation

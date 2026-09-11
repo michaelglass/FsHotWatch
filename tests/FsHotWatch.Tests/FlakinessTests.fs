@@ -344,13 +344,15 @@ let ``appendRecords expires a test that has not run inside the retention window`
         test <@ not (history |> Map.containsKey "Ancient.Test") @>)
 
 let private parseVerdictSummary json =
-    FsHotWatch.Ctrf.tryVerdictReport json |> Result.map FsHotWatch.Ctrf.VerdictReport.summary
+    FsHotWatch.Ctrf.tryVerdictReport json
+    |> Result.map FsHotWatch.Ctrf.VerdictReport.summary
 
 [<Fact>]
 [<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence rejects a partial clean report`` () =
     let json =
         """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+
     Assert.True(Result.isError (parseVerdictSummary json))
 
 [<Fact>]
@@ -358,11 +360,13 @@ let ``verdict evidence rejects a partial clean report`` () =
 let ``verdict evidence requires all counters to be nonnegative integers`` () =
     let valid =
         """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
+
     for key in [ "tests"; "passed"; "failed"; "pending"; "skipped"; "other" ] do
         for invalid in [ "null"; "-1"; "1.5"; "2147483648"; "1e100"; "true"; "\"one\"" ] do
             let root = System.Text.Json.Nodes.JsonNode.Parse valid
             root.["results"].["summary"].[key] <- System.Text.Json.Nodes.JsonNode.Parse invalid
             Assert.True(Result.isError (parseVerdictSummary (root.ToJsonString())), $"accepted {key}={invalid}")
+
         let root = System.Text.Json.Nodes.JsonNode.Parse valid
         root.["results"].["summary"].AsObject().Remove key |> ignore
         Assert.True(Result.isError (parseVerdictSummary (root.ToJsonString())), $"accepted absent {key}")
@@ -375,6 +379,7 @@ let ``verdict evidence requires all counters to be nonnegative integers`` () =
 let ``verdict evidence rejects rows contradicting a clean summary`` (status: string) =
     let json =
         $"""{{"results":{{"summary":{{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0}},"tests":[{{"name":"One","status":"{status}"}}]}}}}"""
+
     Assert.True(Result.isError (parseVerdictSummary json))
 
 [<Theory>]
@@ -387,6 +392,7 @@ let ``verdict evidence rejects rows contradicting a clean summary`` (status: str
 let ``verdict evidence rejects incomplete clean rows`` (row: string) =
     let json =
         $"""{{"results":{{"summary":{{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0}},"tests":[{row}]}}}}"""
+
     Assert.True(Result.isError (parseVerdictSummary json))
 
 [<Theory>]
@@ -395,8 +401,10 @@ let ``verdict evidence rejects incomplete clean rows`` (row: string) =
 [<InlineData("skipped")>]
 [<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence reconciles each clean counter with actual rows`` (key: string) =
-    let root = System.Text.Json.Nodes.JsonNode.Parse
-                    """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
+    let root =
+        System.Text.Json.Nodes.JsonNode.Parse
+            """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
+
     root.["results"].["summary"].[key] <- System.Text.Json.Nodes.JsonValue.Create(99)
     Assert.True(Result.isError (parseVerdictSummary (root.ToJsonString())))
 
@@ -427,7 +435,13 @@ let ``verdict evidence preserves captured raw exception red summary`` () =
 let ``verdict evidence preserves coherent nested and flattened clean reports`` (nested: bool) =
     let contents =
         """"summary":{"tests":3,"passed":1,"failed":0,"pending":1,"skipped":1,"other":0},"tests":[{"name":"Pass","status":"passed"},{"name":"Pending","status":"pending"},{"name":"Skip","status":"skipped"}]"""
-    let json = if nested then "{\"results\":{" + contents + "}}" else "{" + contents + "}"
+
+    let json =
+        if nested then
+            "{\"results\":{" + contents + "}}"
+        else
+            "{" + contents + "}"
+
     match parseVerdictSummary json with
     | Ok summary ->
         Assert.Equal(3, summary.Total)

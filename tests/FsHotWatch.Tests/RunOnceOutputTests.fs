@@ -65,17 +65,21 @@ open FsHotWatch.Tests.TestHelpers
 [<NoEquality; NoComparison>]
 type private CompletedRunFixture =
     { Proof: EarnedEvidence option }
+
     interface IEarnedEvidenceState with
         member this.EarnedEvidence = this.Proof
 
 let private completedRunFixture runId project =
-    let results = Map.ofList [ project, TestsPassed("fixture passed", false, TimeSpan.Zero) ]
+    let results =
+        Map.ofList [ project, TestsPassed("fixture passed", false, TimeSpan.Zero) ]
+
     let completed =
         { RunId = runId
           TotalElapsed = TimeSpan.Zero
           Outcome = Normal
           Results = results
           Verification = RunVerification.ofResults results }
+
     { Proof = EarnedEvidence.fromCompletion runId (Some 1L) (Some 1L) (Set.singleton project) 0 None completed }
 
 let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions =
@@ -755,17 +759,27 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                     let checker = sharedChecker.Value
                     let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
                     let source = System.IO.File.ReadAllText file
+
                     let options =
                         checker.GetProjectOptionsFromScript(
-                            file, FSharp.Compiler.Text.SourceText.ofString source, assumeDotNetFramework = false)
+                            file,
+                            FSharp.Compiler.Text.SourceText.ofString source,
+                            assumeDotNetFramework = false
+                        )
                         |> Async.RunSynchronously
                         |> fst
+
                     pipeline.RegisterProject(file, options)
+
                     let result =
                         pipeline.CheckFile(AbsFilePath.create file)
                         |> Async.RunSynchronously
                         |> Option.defaultWith (fun () -> failwith "fixture FCS check returned no result")
-                    daemon.Host.EmitFileChecked({ result with ModelGeneration = Some 1L })
+
+                    daemon.Host.EmitFileChecked(
+                        { result with
+                            ModelGeneration = Some 1L }
+                    )
 
             daemon.Host.GetAllStatuses()
 
@@ -853,23 +867,30 @@ let ``run-once overwrites a current green before surfacing total discovery failu
 [<InlineData(false, "mapping-failed")>]
 [<InlineData(true, "registration-failed")>]
 let ``run-once publishes a versioned unavailable model after successful loading``
-    (mappingProducedOptions: bool, expectedReason: string) =
+    (mappingProducedOptions: bool, expectedReason: string)
+    =
     withProjectOnlyRepo "runonce-unavailable-model" (fun repoRoot ->
         let projectPath = FsHotWatch.Discovery.findFsprojFiles repoRoot |> List.exactlyOne
         let loader = ControlledWorkspaceLoader([ [ minimalWorkspaceProject projectPath ] ])
         loader.Resume(0)
+
         let createDaemon root =
             Daemon.createWithWorkspaceLoader
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                { Daemon.DaemonOptions.defaults with RunMode = Daemon.RunMode.OneShot }
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun _ ->
-                    if mappingProducedOptions then [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
-                    else [])
+                    if mappingProducedOptions then
+                        [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
+                    else
+                        [])
+
         let runScan (daemon: Daemon) =
             daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
             daemon.Host.GetAllStatuses()
+
         let ex =
             Assert.Throws<ConfigError>(fun () ->
                 FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
@@ -882,8 +903,12 @@ let ``run-once publishes a versioned unavailable model after successful loading`
                     (noTestProjectsConfig ())
                     None
                 |> ignore)
+
         test <@ ex.Message.Contains("PROJECT MODEL UNAVAILABLE") @>
-        use document = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(FsHotWatch.Cli.Verdict.path repoRoot))
+
+        use document =
+            System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(FsHotWatch.Cli.Verdict.path repoRoot))
+
         let model = document.RootElement.GetProperty("projectModel")
         Assert.Equal("fshw-project-model-v1", model.GetProperty("schema").GetString())
         Assert.Equal("unavailable", model.GetProperty("status").GetString())
@@ -1108,6 +1133,7 @@ let ``check --run-once accepts completed analysis without a test suite`` () =
     withProjectOnlyRepo "check-runonce-tolerates" (fun repoRoot ->
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
         test <@ exitCode = 0 @>
+
         match FsHotWatch.Cli.Verdict.read repoRoot with
         | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
             test <@ verdict.RunId = None @>

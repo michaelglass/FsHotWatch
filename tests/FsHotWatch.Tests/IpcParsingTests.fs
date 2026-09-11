@@ -627,8 +627,10 @@ let ``AUTOMATION-110 a zero-selection reply names the symbols covered only by un
 let ``model receipts accept explicit analysis identity and reject malformed run identity`` () =
     let parse identity =
         DaemonEvidence.parse (
-            """{"daemonPhases":[],"modelReceipts":[{"runId":""" + identity
-            + ""","modelGeneration":7,"refusals":[]}]}""")
+            """{"daemonPhases":[],"modelReceipts":[{"runId":"""
+            + identity
+            + ""","modelGeneration":7,"refusals":[]}]}"""
+        )
         |> DaemonEvidence.receipts
 
     test <@ (parse "null" |> List.exactlyOne).RunId.IsNone @>

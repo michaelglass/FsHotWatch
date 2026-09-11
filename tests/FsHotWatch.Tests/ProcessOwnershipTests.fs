@@ -472,4 +472,62 @@ let ``child scope refuses retirement when retained ownership reports uncertainty
 
     Assert.Contains("could not establish termination", error.Message)
     Assert.Contains("owned descendants unconfirmed", (Assert.Single parent.Leaks).Reason)
-    Assert.Same(parent, ProcessRegistry.currentOpt().Value)
+    ProcessRegistry.reportLeak 0 "restored parent" "post-scope marker"
+    Assert.Contains(parent.Leaks, fun leak -> leak.Description = "restored parent")
+
+[<Theory>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``uncertain cleanup preserves failures and keeps ownership retained`` operationFailed =
+    let primary = IOException("original operation failed")
+    let cleanup = TimeoutException("native containment unconfirmed")
+    let mutable reported = None
+    let mutable released = false
+
+    let error =
+        Record.Exception(fun () ->
+            ProcessHelper.settleOwnedProcess
+                (if operationFailed then Some primary else None)
+                (fun () -> raise cleanup)
+                (fun failure -> reported <- Some failure)
+                (fun () -> released <- true))
+
+    Assert.False(released, "uncertain containment must retain its stable ownership capability")
+    Assert.Same(cleanup, reported.Value)
+
+    if operationFailed then
+        let combined = Assert.IsType<AggregateException> error
+        Assert.Equal(2, combined.InnerExceptions.Count)
+        Assert.Same(primary, combined.InnerExceptions[0])
+        Assert.Same(cleanup, combined.InnerExceptions[1])
+    else
+        Assert.Same(cleanup, error)
+
+[<Fact>]
+let ``verified cleanup releases ownership in order without reporting a leak`` () =
+    let events = ResizeArray<string>()
+
+    ProcessHelper.settleOwnedProcess None (fun () -> events.Add "terminated") (fun _ -> events.Add "leak") (fun () ->
+        events.Add "released")
+
+    Assert.Equal<string list>([ "terminated"; "released" ], List.ofSeq events)
+
+[<Fact>]
+let ``successful cleanup leaves the original operation exception intact`` () =
+    let primary = IOException("original operation failed")
+    let mutable released = false
+    let mutable pending = None
+
+    let error =
+        Record.Exception(fun () ->
+            try
+                try
+                    (raise primary: unit)
+                with failure ->
+                    pending <- Some failure
+                    reraise ()
+            finally
+                ProcessHelper.settleOwnedProcess pending ignore ignore (fun () -> released <- true))
+
+    Assert.Same(primary, error)
+    Assert.True(released)

@@ -74,16 +74,41 @@ let ``versioned wire preserves completed and transient observations without clai
     let observations =
         [ Observation.Unobserved
           Observation.Rediscovering 23L
-          ofCompleted 19L { Discovered = 2; Loaded = 2; OptionsMapped = 2; Registered = 2 }
-          ofCompleted 7L { Discovered = 1; Loaded = 0; OptionsMapped = 0; Registered = 0 }
-          ofCompleted 8L { Discovered = 1; Loaded = 1; OptionsMapped = 0; Registered = 0 }
-          ofCompleted 9L { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 0 } ]
+          ofCompleted
+              19L
+              { Discovered = 2
+                Loaded = 2
+                OptionsMapped = 2
+                Registered = 2 }
+          ofCompleted
+              7L
+              { Discovered = 1
+                Loaded = 0
+                OptionsMapped = 0
+                Registered = 0 }
+          ofCompleted
+              8L
+              { Discovered = 1
+                Loaded = 1
+                OptionsMapped = 0
+                Registered = 0 }
+          ofCompleted
+              9L
+              { Discovered = 1
+                Loaded = 1
+                OptionsMapped = 1
+                Registered = 0 } ]
+
     for observation in observations do
-        let json = FsHotWatch.ProjectModelWire.payload observation |> System.Text.Json.JsonSerializer.Serialize
+        let json =
+            FsHotWatch.ProjectModelWire.payload observation
+            |> System.Text.Json.JsonSerializer.Serialize
+
         use document = System.Text.Json.JsonDocument.Parse json
         Assert.Equal(Some observation, FsHotWatch.ProjectModelWire.tryRead document.RootElement)
         let refusal = UnavailableException observation
         Assert.Equal(observation, refusal.Observation)
+
         match failure observation with
         | Some reason -> Assert.Equal(reason, refusal.Message)
         | None -> Assert.Contains("requested model could not be observed", refusal.Message)
@@ -111,15 +136,32 @@ let ``unknown or malformed model envelope fails closed`` (json: string) =
 [<InlineData("{\"discovered\":1,\"loaded\":1,\"optionsMapped\":1,\"registered\":2147483648}")>]
 [<InlineData("{\"discovered\":1,\"loaded\":1,\"optionsMapped\":1,\"registered\":0}")>]
 let ``available wire requires complete integral positive stage evidence`` (counts: string) =
-    let json = "{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\",\"generation\":1,\"counts\":" + counts + "}"
+    let json =
+        "{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\",\"generation\":1,\"counts\":"
+        + counts
+        + "}"
+
     use document = System.Text.Json.JsonDocument.Parse json
     Assert.Equal(None, FsHotWatch.ProjectModelWire.tryRead document.RootElement)
 
 [<Fact>]
 let ``unavailable wire cannot mislabel a loader failure as registration failure`` () =
-    let observation = ofCompleted 7L { Discovered = 1; Loaded = 0; OptionsMapped = 0; Registered = 0 }
-    let json = FsHotWatch.ProjectModelWire.payload observation |> System.Text.Json.JsonSerializer.Serialize
+    let observation =
+        ofCompleted
+            7L
+            { Discovered = 1
+              Loaded = 0
+              OptionsMapped = 0
+              Registered = 0 }
+
+    let json =
+        FsHotWatch.ProjectModelWire.payload observation
+        |> System.Text.Json.JsonSerializer.Serialize
+
     use valid = System.Text.Json.JsonDocument.Parse json
     Assert.Equal(Some observation, FsHotWatch.ProjectModelWire.tryRead valid.RootElement)
-    use mislabeled = System.Text.Json.JsonDocument.Parse(json.Replace("loading-failed", "registration-failed"))
+
+    use mislabeled =
+        System.Text.Json.JsonDocument.Parse(json.Replace("loading-failed", "registration-failed"))
+
     Assert.Equal(None, FsHotWatch.ProjectModelWire.tryRead mislabeled.RootElement)

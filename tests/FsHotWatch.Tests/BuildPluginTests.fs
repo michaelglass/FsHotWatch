@@ -1114,7 +1114,9 @@ let ``dependency success preserves queued input while the build slot is held`` (
           FcsSuppressedCodes = Set.empty
           ProjectGraph = ProjectGraphAccessor.none }
 
-    let update state event = handler.Update ctx state event |> Async.RunSynchronously
+    let update state event =
+        handler.Update ctx state event |> Async.RunSynchronously
+
     let change = SourceChanged [ "/tmp/queued.fs" ]
     let buffered = update handler.Init (FileChanged change)
     Assert.Equal<FileChangeKind list>([ change ], buffered.PendingFiles)
@@ -1133,7 +1135,10 @@ let ``dependency success preserves queued input while the build slot is held`` (
     // The owner releases its local slot before folding its completion. The
     // dependency notification above must leave the later input owed until here.
     running <- false
-    let drained = update satisfied (Custom(BuildDone(BuildPassed "original", [], TimeSpan.Zero)))
+
+    let drained =
+        update satisfied (Custom(BuildDone(BuildPassed "original", [], TimeSpan.Zero)))
+
     Assert.Empty drained.PendingFiles
     Assert.Equal<(string * string) list>([ "build", "build-artifacts" ], Seq.toList claims)
     Assert.Equal<BuildResult list>([ BuildSucceeded ], Seq.toList completed)

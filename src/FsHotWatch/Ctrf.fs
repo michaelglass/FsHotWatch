@@ -128,7 +128,8 @@ let private requiredCounter (summary: JsonNode) (name: string) : Result<int, str
         | :? OverflowException -> Error $"CTRF summary '{name}' counter must be a nonnegative integer"
 
 let private verdictCounters (summary: JsonNode) =
-    let counter name next = requiredCounter summary name |> Result.bind next
+    let counter name next =
+        requiredCounter summary name |> Result.bind next
 
     counter "tests" (fun total ->
         counter "passed" (fun passed ->
@@ -141,7 +142,8 @@ let private verdictCounters (summary: JsonNode) =
                               Passed = passed
                               Failed = failed
                               Skipped = skipped
-                              Other = other }, pending))))))
+                              Other = other },
+                            pending))))))
 
 let private cleanStatus (row: JsonNode) =
     match row with
@@ -167,9 +169,14 @@ let private reconcileRows (summary: Summary) pending (tests: JsonArray) =
         if statuses |> List.exists Option.isNone then
             Error "CTRF clean summary has a test row without a clean status"
         else
-            let count status = statuses |> List.filter ((=) (Some status)) |> List.length
+            let count status =
+                statuses |> List.filter ((=) (Some status)) |> List.length
 
-            if count "passed" <> summary.Passed || count "pending" <> pending || count "skipped" <> summary.Skipped then
+            if
+                count "passed" <> summary.Passed
+                || count "pending" <> pending
+                || count "skipped" <> summary.Skipped
+            then
                 Error "CTRF clean summary counters do not match results.tests"
             else
                 Ok(VerdictReport summary)
@@ -248,10 +255,12 @@ let private reportsForRunWith readReport (repoRoot: string) (runId: Guid) : Repo
         | :? UnauthorizedAccessException -> []
 
 /// Retained reports for diagnostics, including summaries that are not verdict proof.
-let reportsForRun repoRoot runId = reportsForRunWith tryReadReport repoRoot runId
+let reportsForRun repoRoot runId =
+    reportsForRunWith tryReadReport repoRoot runId
 
 /// Only coherent reports may contribute counts to a durable suite verdict.
-let verdictReportsForRun repoRoot runId = reportsForRunWith tryReadVerdictReport repoRoot runId
+let verdictReportsForRun repoRoot runId =
+    reportsForRunWith tryReadVerdictReport repoRoot runId
 
 /// Every retained run directory, newest first (by write time of the directory).
 let private runDirs (repoRoot: string) : DirectoryInfo list =

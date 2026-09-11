@@ -92,20 +92,17 @@ let ``only actual current completion with discharged obligations earns evidence`
     Assert.True((earn None (Some 3L) 0 None result).IsNone)
     Assert.True((earn (Some 2L) (Some 3L) 0 None result).IsNone)
     Assert.NotEmpty((earn (Some 3L) (Some 3L) 1 None result |> Option.get).FailureReasons)
+
     Assert.True(
-        (EarnedEvidence.fromCompletion
-            (Guid.NewGuid())
-            (Some 3L)
-            (Some 3L)
-            (Set.singleton "Tests.fsproj")
-            0
-            None
-            result).IsNone
+        (EarnedEvidence.fromCompletion (Guid.NewGuid()) (Some 3L) (Some 3L) (Set.singleton "Tests.fsproj") 0 None result)
+            .IsNone
     )
 
 [<Fact>]
 let ``filtered completion requires the same model whole-project baseline`` () =
-    let baseline = fullRun (Guid.NewGuid()) |> earn (Some 3L) (Some 3L) 0 None |> Option.get
+    let baseline =
+        fullRun (Guid.NewGuid()) |> earn (Some 3L) (Some 3L) 0 None |> Option.get
+
     let filtered =
         completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsPassed("one passed", true, TimeSpan.Zero) ])
 
@@ -113,7 +110,10 @@ let ``filtered completion requires the same model whole-project baseline`` () =
     Assert.NotEmpty withoutBaseline.FailureReasons
     let withBaseline = earn (Some 3L) (Some 3L) 0 (Some baseline) filtered |> Option.get
     Assert.Empty withBaseline.FailureReasons
-    let staleBaseline = earn (Some 4L) (Some 4L) 0 (Some baseline) filtered |> Option.get
+
+    let staleBaseline =
+        earn (Some 4L) (Some 4L) 0 (Some baseline) filtered |> Option.get
+
     Assert.NotEmpty staleBaseline.FailureReasons
 
 [<Fact>]
@@ -124,6 +124,7 @@ let ``missing and errored outcomes remain refusal evidence`` () =
             (Map.ofList
                 [ "Tests.fsproj", TestsPassed("passed", false, TimeSpan.Zero)
                   "Integration.fsproj", TestsErrored "host exited without a report" ])
+
     let proof = earn (Some 1L) (Some 1L) 0 None mixed |> Option.get
     Assert.Contains(proof.FailureReasons, fun reason -> reason.Contains "Integration.fsproj")
     let missing = completed (Guid.NewGuid()) Map.empty
@@ -132,6 +133,7 @@ let ``missing and errored outcomes remain refusal evidence`` () =
 [<NoEquality; NoComparison>]
 type private EvidenceDomain =
     { Proof: EarnedEvidence option }
+
     interface IEarnedEvidenceState with
         member this.EarnedEvidence = this.Proof
 
@@ -169,25 +171,37 @@ let ``client observation inhibits idle exit without keeping observed work busy``
 let ``accountable red full suite can support filtered recovery without laundering remaining debt`` () =
     let red =
         completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("one failed", false, TimeSpan.Zero) ])
-        |> earn (Some 1L) (Some 1L) 1 None |> Option.get
+        |> earn (Some 1L) (Some 1L) 1 None
+        |> Option.get
+
     let rerun =
-        completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsPassed("fixed test passed", true, TimeSpan.Zero) ])
+        completed
+            (Guid.NewGuid())
+            (Map.ofList [ "Tests.fsproj", TestsPassed("fixed test passed", true, TimeSpan.Zero) ])
+
     Assert.NotEmpty red.FailureReasons
     Assert.Empty((earn (Some 1L) (Some 1L) 0 (Some red) rerun |> Option.get).FailureReasons)
     Assert.NotEmpty((earn (Some 1L) (Some 1L) 1 (Some red) rerun |> Option.get).FailureReasons)
 
 [<Fact>]
 let ``retained receipt requires equal input and keeps the new refusal`` () =
-    let previous = fullRun (Guid.NewGuid()) |> earn (Some 1L) (Some 1L) 0 None |> Option.get
+    let previous =
+        fullRun (Guid.NewGuid()) |> earn (Some 1L) (Some 1L) 0 None |> Option.get
+
     let failed =
         completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("new failure", true, TimeSpan.Zero) ])
-        |> earn (Some 1L) (Some 1L) 1 (Some previous) |> Option.get
+        |> earn (Some 1L) (Some 1L) 1 (Some previous)
+        |> Option.get
+
     let retained =
         EarnedEvidence.authorizeSameInputReceipt previous.RunId (Some "tree-a") (Some "tree-a") (Some previous) failed
+
     Assert.Contains(previous.RunId, retained.AuthorizedRunIds)
     Assert.NotEmpty retained.FailureReasons
+
     let changed =
         EarnedEvidence.authorizeSameInputReceipt previous.RunId (Some "tree-a") (Some "tree-b") (Some previous) failed
+
     Assert.DoesNotContain(previous.RunId, changed.AuthorizedRunIds)
 
 [<Theory>]
@@ -203,26 +217,51 @@ let ``actual completion preserves every independent refusal reason`` kind (expec
         | "unexpected-timeout" -> TestsTimedOut("timed out", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero)
         | "no-match" -> TestsNoMatch("no match", TimeSpan.Zero)
         | _ -> TestsPassed("passed", false, TimeSpan.Zero)
-    let project = if kind.StartsWith("unexpected-") then "Unexpected.fsproj" else "Tests.fsproj"
+
+    let project =
+        if kind.StartsWith("unexpected-") then
+            "Unexpected.fsproj"
+        else
+            "Tests.fsproj"
+
     let completion = completed (Guid.NewGuid()) (Map.ofList [ project, result ])
-    let completion = if kind = "aborted" then { completion with Outcome = Aborted "shutdown" } else completion
-    let expectedProjects = if kind = "no-obligations" then Set.empty else Set.singleton "Tests.fsproj"
+
+    let completion =
+        if kind = "aborted" then
+            { completion with
+                Outcome = Aborted "shutdown" }
+        else
+            completion
+
+    let expectedProjects =
+        if kind = "no-obligations" then
+            Set.empty
+        else
+            Set.singleton "Tests.fsproj"
+
     let proof =
         EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expectedProjects 0 None completion
         |> Option.get
+
     Assert.Contains(proof.FailureReasons, fun reason -> reason.Contains expected)
 
 [<Fact>]
 let ``same-model baseline accounts untouched and no-match siblings without hiding current failures`` () =
     let expected = Set.ofList [ "Tests.fsproj"; "Sibling.fsproj" ]
+
     let baselineCompletion =
-        completed (Guid.NewGuid())
-            (Map.ofList [ "Tests.fsproj", TestsPassed("passed", false, TimeSpan.Zero)
-                          "Sibling.fsproj", TestsPassed("passed", false, TimeSpan.Zero) ])
+        completed
+            (Guid.NewGuid())
+            (Map.ofList
+                [ "Tests.fsproj", TestsPassed("passed", false, TimeSpan.Zero)
+                  "Sibling.fsproj", TestsPassed("passed", false, TimeSpan.Zero) ])
+
     let mint baseline completion =
         EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expected 0 baseline completion
         |> Option.get
+
     let baseline = mint None baselineCompletion
+
     for sibling in [ None; Some(TestsNoMatch("filter found no matching tests", TimeSpan.Zero)) ] do
         let current =
             Map.ofList [ "Tests.fsproj", TestsPassed("passed", true, TimeSpan.Zero) ]
@@ -231,24 +270,36 @@ let ``same-model baseline accounts untouched and no-match siblings without hidin
                 | None -> results
                 | Some result -> Map.add "Sibling.fsproj" result results
             |> completed (Guid.NewGuid())
+
         Assert.Empty((mint (Some baseline) current).FailureReasons)
         Assert.NotEmpty((mint None current).FailureReasons)
+
     let refused =
-        completed (Guid.NewGuid())
-            (Map.ofList [ "Tests.fsproj", TestsPassed("passed", true, TimeSpan.Zero)
-                          "Sibling.fsproj", TestsDeferred "input changed" ])
+        completed
+            (Guid.NewGuid())
+            (Map.ofList
+                [ "Tests.fsproj", TestsPassed("passed", true, TimeSpan.Zero)
+                  "Sibling.fsproj", TestsDeferred "input changed" ])
         |> mint (Some baseline)
+
     Assert.Contains(refused.FailureReasons, fun reason -> reason.Contains "input changed")
 
 [<Theory(Timeout = 15000)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``a committed failure waits for other owned cleanup and retains its identity at the deadline`` reachDeadline =
-    let host = PluginHost.create Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker> "/tmp/fshw-owned-failure-wait"
-    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let host =
+        PluginHost.create Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker> "/tmp/fshw-owned-failure-wait"
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
     let failure = InvalidOperationException("failed-owner original failure")
-    let handler name update: PluginHandler<unit, unit> =
+
+    let handler name update : PluginHandler<unit, unit> =
         { Name = PluginName.create name
           Init = ()
           Update = update
@@ -257,37 +308,66 @@ let ``a committed failure waits for other owned cleanup and retains its identity
           CacheKey = None
           PrepareCommit = None
           Teardown = None }
+
     host.RegisterHandler(
-        handler "held-owner" (fun _ state event -> async {
-            match event with
-            | FileChanged(SourceChanged [ "hold.fs" ]) ->
-                entered.TrySetResult(()) |> ignore
-                do! release.Task |> Async.AwaitTask
-            | _ -> ()
-            return state }))
+        handler "held-owner" (fun _ state event ->
+            async {
+                match event with
+                | FileChanged(SourceChanged [ "hold.fs" ]) ->
+                    entered.TrySetResult(()) |> ignore
+                    do! release.Task |> Async.AwaitTask
+                | _ -> ()
+
+                return state
+            })
+    )
+
     host.RegisterHandler(
-        handler "failed-owner" (fun _ state event -> async {
-            match event with
-            | FileChanged(SourceChanged [ "fail.fs" ]) -> return raise failure
-            | _ -> return state }))
+        handler "failed-owner" (fun _ state event ->
+            async {
+                match event with
+                | FileChanged(SourceChanged [ "fail.fs" ]) -> return raise failure
+                | _ -> return state
+            })
+    )
+
     host.EmitFileChanged(SourceChanged [ "hold.fs" ])
     entered.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
     host.EmitFileChanged(SourceChanged [ "fail.fs" ])
     Assert.True(SpinWait.SpinUntil((fun () -> not host.WorkSnapshot.Faults.IsEmpty), TimeSpan.FromSeconds 5.0))
-    let timeout = if reachDeadline then TimeSpan.FromMilliseconds 150.0 else TimeSpan.FromSeconds 5.0
+
+    let timeout =
+        if reachDeadline then
+            TimeSpan.FromMilliseconds 150.0
+        else
+            TimeSpan.FromSeconds 5.0
+
     let waiting = waitForAllTerminal host timeout CancellationToken.None
+
     try
         if reachDeadline then
-            let timedOut = Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+            let timedOut =
+                Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+
             Assert.Contains("failed-owner", timedOut.Message)
             Assert.True(host.AnyPluginBusy())
         else
-            Assert.False(waiting.Wait(TimeSpan.FromMilliseconds 150.0), "a failed sibling cannot retire still-owned cleanup")
+            Assert.False(
+                waiting.Wait(TimeSpan.FromMilliseconds 150.0),
+                "a failed sibling cannot retire still-owned cleanup"
+            )
+
         release.TrySetResult(()) |> ignore
+
         let settled =
-            if reachDeadline then waitForAllTerminal host (TimeSpan.FromSeconds 5.0) CancellationToken.None
-            else waiting
-        let actual = Assert.Throws<FsHotWatch.PluginWorkOwner.WorkFailedException>(fun () -> settled.GetAwaiter().GetResult())
+            if reachDeadline then
+                waitForAllTerminal host (TimeSpan.FromSeconds 5.0) CancellationToken.None
+            else
+                waiting
+
+        let actual =
+            Assert.Throws<FsHotWatch.PluginWorkOwner.WorkFailedException>(fun () -> settled.GetAwaiter().GetResult())
+
         Assert.Equal("failed-owner", actual.Name)
         Assert.Same(failure, actual.Failure)
         Assert.False(host.AnyPluginBusy())
