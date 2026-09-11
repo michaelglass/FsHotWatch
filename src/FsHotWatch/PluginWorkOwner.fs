@@ -130,7 +130,8 @@ type Row =
       Busy: bool
       Completed: int64
       Failure: OwnerFailure option
-      Evidence: EarnedEvidence option }
+      Evidence: EarnedEvidence option
+      AnalysisEvidence: AnalysisEvidence option }
 
     member this.Fault = this.Failure |> Option.map (fun failure -> failure.Exception)
 
@@ -146,12 +147,17 @@ type HostSnapshot =
           Operations: Map<WorkId, string>
           HostFailures: Map<WorkId, string * exn>
           Observers: Set<WorkId>
-          Model: ProjectModel.Observation }
+          Model: ProjectModel.Observation
+          ModelFiles: (int64 * Set<AbsFilePath>) option }
 
     member this.ProjectModel = this.Model
+    member this.ProjectModelFiles = this.ModelFiles
     member this.ObserverCount = this.Observers.Count
     member this.Evidence =
         this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Evidence)
+
+    member this.AnalysisEvidence =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.AnalysisEvidence)
 
     member this.IsBusy =
         not this.Operations.IsEmpty || (this.Rows |> Map.exists (fun _ row -> row.Busy))
@@ -198,7 +204,8 @@ type Store() =
           Operations = Map.empty
           HostFailures = Map.empty
           Observers = Set.empty
-          Model = ProjectModel.Observation.Unobserved }
+          Model = ProjectModel.Observation.Unobserved
+          ModelFiles = None }
 
     let agent =
         MailboxProcessor<Mutation>.Start(fun inbox ->
@@ -239,7 +246,15 @@ type Store() =
     member _.Snapshot = Volatile.Read(&published)
 
     member _.PublishProjectModel(observation: ProjectModel.Observation) =
-        mutate (fun snapshot -> { snapshot with Model = observation }, ())
+        mutate (fun snapshot -> { snapshot with Model = observation; ModelFiles = None }, ())
+
+    member _.PublishProjectModelWithFiles(observation: ProjectModel.Observation, files: Set<AbsFilePath>) =
+        let modelFiles =
+            match observation with
+            | ProjectModel.Observation.Available model -> Some(model.Generation, files)
+            | _ -> None
+
+        mutate (fun snapshot -> { snapshot with Model = observation; ModelFiles = modelFiles }, ())
 
     /// Client observation is owned but does not keep the work it observes busy.
     /// Idle-exit reads the same aggregate instead of a separate mutable counter.
@@ -326,6 +341,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
           Evidence =
             match box snapshot.State with
             | :? IEarnedEvidenceState as domain -> domain.EarnedEvidence
+            | _ -> None
+          AnalysisEvidence =
+            match box snapshot.State with
+            | :? IAnalysisEvidenceState as domain -> domain.AnalysisEvidence
             | _ -> None }
 
     let id =
