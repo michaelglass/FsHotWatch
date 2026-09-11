@@ -1490,6 +1490,137 @@ let private ordersTestFile =
 
 module ``AnalyzeEdges function-scoped routes`` =
 
+    let private declarationChecker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+
+    [<Theory>]
+    [<InlineData("type internal UsersTests() =", "UsersTests", true)>]
+    [<InlineData("type public UsersTests() =", "UsersTests", true)>]
+    [<InlineData("type private UsersTests() =", "UsersTests", true)>]
+    [<InlineData("type internal ``Users contract``() =", "Users contract", true)>]
+    [<InlineData("module Company.Product.UsersTests", "UsersTests", false)>]
+    [<InlineData("module internal ``Users contract`` =", "Users contract", false)>]
+    let ``declaration spellings preserve selection and handler edges`` (declaration: string) name isClass =
+        let body =
+            if isClass then
+                "    [<Fact>]\n    member _.Exercises() = ignore \"/api/users/123\"\n"
+            else
+                "    [<Fact>]\n    let Exercises () = ignore \"/api/users/123\"\n"
+
+        let source =
+            if not isClass && not (declaration.Contains '=') then
+                declaration + "\n\nopen Xunit\n\n" + body.Replace("    ", "")
+            else
+                "module App.Tests\n\nopen Xunit\n\n" + declaration + "\n" + body
+
+        let testFiles =
+            [ "UsersTests.fs", source
+              "OrdersTests.fs", ordersTestFile
+              "Helper.fs", "module Helper =\n    let url = \"/api/users/123\"\n" ]
+
+        let route =
+            { UrlPattern = "/api/users/{id}"
+              HttpMethod = "GET"
+              HandlerSourceFile = "src/Handlers/Users.fs"
+              HandlerFunction = Some "App.Handlers.Users.getUser" }
+
+        let fileName =
+            Path.Combine(Path.GetTempPath(), $"FalcoDeclaration-{Guid.NewGuid():N}.fsx")
+
+        let scriptOptions =
+            getScriptOptions declarationChecker fileName source |> Async.RunSynchronously
+
+        let options =
+            { scriptOptions with
+                OtherOptions =
+                    Array.append scriptOptions.OtherOptions [| "-r:" + typeof<FactAttribute>.Assembly.Location |] }
+
+        let analysis =
+            match
+                analyzeSource declarationChecker fileName source options "IntTests"
+                |> Async.RunSynchronously
+            with
+            | Ok result -> result
+            | Error message -> failwith message
+
+        let sourceSymbol =
+            analysis.TestMethods
+            |> List.find (fun testMethod -> testMethod.TestMethod = "Exercises")
+            |> _.SymbolFullName
+
+        let symbols =
+            (analysis.Symbols |> List.filter (fun symbol -> symbol.FullName = sourceSymbol))
+            @ [ fn "App.Tests.OrdersTests.GetOrder" "tests/IntTests/OrdersTests.fs"
+                fn "App.Handlers.Users.getUser" route.HandlerSourceFile ]
+
+        withTestSetup [ route ] testFiles "IntTests" "tests/IntTests" [ route.HandlerSourceFile ] (fun selected ->
+            test
+                <@
+                    selected = [ { TestProject = "IntTests"
+                                   TestClass = name } ]
+                @>)
+
+        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+            test <@ edges.Length = 1 @>
+            test <@ edges.Head.FromSymbol = sourceSymbol @>
+            test <@ edges.Head.ToSymbol = "App.Handlers.Users.getUser" @>
+            test <@ edges.Head.Kind = SharedState && edges.Head.Source = "falco" @>)
+
+    [<Fact>]
+    let ``file module container retains shared header route attribution`` () =
+        let content =
+            "module Company.Product.Tests\n\nlet sharedUrl = \"/api/users/123\"\n\ntype UsersTests() =\n    [<Fact>]\n    member _.Exercises() = ignore sharedUrl\n\ntype OtherTests() =\n    [<Fact>]\n    member _.Exercises() = ignore sharedUrl\n"
+
+        let route =
+            { UrlPattern = "/api/users/{id}"
+              HttpMethod = "GET"
+              HandlerSourceFile = "src/Handlers/Users.fs"
+              HandlerFunction = Some "App.Handlers.Users.getUser" }
+
+        let testFiles = [ "Tests.fs", content ]
+
+        withTestSetup [ route ] testFiles "IntTests" "tests/IntTests" [ route.HandlerSourceFile ] (fun selected ->
+            test <@ selected |> List.map _.TestClass |> Set.ofList = set [ "UsersTests"; "OtherTests" ] @>)
+
+        let symbols =
+            [ fn "App.Tests.UsersTests.Exercises" "tests/IntTests/Tests.fs"
+              fn "App.Tests.OtherTests.Exercises" "tests/IntTests/Tests.fs"
+              fn "App.Handlers.Users.getUser" route.HandlerSourceFile ]
+
+        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+            let sources = edges |> List.map _.FromSymbol |> Set.ofList
+            test <@ sources = set [ "App.Tests.UsersTests.Exercises"; "App.Tests.OtherTests.Exercises" ] @>
+            test <@ edges |> List.forall (fun edge -> edge.ToSymbol = "App.Handlers.Users.getUser") @>)
+
+    [<Fact>]
+    let ``file module facts remain attributable before child declarations`` () =
+        let content =
+            "module Company.Product.Tests\n\n[<Fact>]\nlet Exercises () = ignore \"/api/users/123\"\n\ntype OtherTests() =\n    [<Fact>]\n    member _.Exercises() = ignore \"/api/orders/456\"\n"
+
+        let route =
+            { UrlPattern = "/api/users/{id}"
+              HttpMethod = "GET"
+              HandlerSourceFile = "src/Handlers/Users.fs"
+              HandlerFunction = Some "App.Handlers.Users.getUser" }
+
+        let testFiles = [ "Tests.fs", content ]
+
+        withTestSetup [ route ] testFiles "IntTests" "tests/IntTests" [ route.HandlerSourceFile ] (fun selected ->
+            test <@ selected |> List.map _.TestClass = [ "Tests" ] @>)
+
+        let symbols =
+            [ fn "Company.Product.Tests.Exercises" "tests/IntTests/Tests.fs"
+              fn "Company.Product.Tests.OtherTests.Exercises" "tests/IntTests/Tests.fs"
+              fn "App.Handlers.Users.getUser" route.HandlerSourceFile ]
+
+        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+            test
+                <@
+                    edges
+                    |> List.exists (fun edge -> edge.FromSymbol = "Company.Product.Tests.Exercises")
+                @>
+
+            test <@ edges |> List.forall (fun edge -> edge.ToSymbol = "App.Handlers.Users.getUser") @>)
+
     /// A change to a multi-route handler file, with each route mapped to its own
     /// handler function, links each route's tests ONLY to that route's function —
     /// not the file-level cross-product (UsersTests -> getOrder and back).

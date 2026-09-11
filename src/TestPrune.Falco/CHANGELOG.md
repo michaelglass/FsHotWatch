@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recognize accessible and escaped test declarations and file modules when
+  attributing route changes to tests and dependency edges.
+
 ## 3.1.3 - 2026-08-19
 
 - a >] inside an attribute string must not truncate the block

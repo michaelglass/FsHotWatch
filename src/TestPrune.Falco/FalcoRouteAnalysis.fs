@@ -140,10 +140,19 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         // `1` is none of those.
         Regex($"(?:%s{openingBoundary})%s{pattern}/?(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
 
-    let classPattern = Regex(@"^type\s+(\w+)\s*\(", RegexOptions.Multiline)
+    let classPattern =
+        Regex(
+            @"^type[ \t]+(?:(?:private|internal|public)[ \t]+)?(?<name>``[^`]+``|[\w']+)\s*\(",
+            RegexOptions.Multiline
+        )
 
     let modulePattern =
-        Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
+        Regex(
+            @"^module[ \t]+(?:(?:private|internal|public)[ \t]+)?(?:[\w']+\.)*(?<name>``[^`]+``|[\w']+)[ \t]*(?:(?<body>=)|\r?$)",
+            RegexOptions.Multiline
+        )
+
+    let declarationName (matched: Match) = matched.Groups.["name"].Value.Trim('`')
 
     // Attribute blocks, scanned with STRING AWARENESS.
     //
@@ -313,9 +322,20 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     [], []
                 else
                     let declarations =
-                        [ for m in classPattern.Matches(content) -> m.Index, m.Groups.[1].Value, true
-                          for m in modulePattern.Matches(content) -> m.Index, m.Groups.[1].Value, false ]
-                        |> List.sortBy (fun (start, _, _) -> start)
+                        let candidates =
+                            [ for matched in classPattern.Matches(content) ->
+                                  matched.Index, declarationName matched, true, true
+                              for matched in modulePattern.Matches(content) ->
+                                  matched.Index, declarationName matched, false, matched.Groups.["body"].Success ]
+                            |> List.sortBy (fun (start, _, _, _) -> start)
+
+                        match candidates with
+                        | (start, _, false, false) :: (nextStart, _, _, _) :: _ when
+                            content.Substring(start, nextStart - start) |> hasTestAttribute |> not
+                            ->
+                            List.tail candidates
+                        | _ -> candidates
+                        |> List.map (fun (start, name, isClass, _) -> start, name, isClass)
 
                     let spans =
                         declarations
