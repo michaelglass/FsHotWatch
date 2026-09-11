@@ -1616,3 +1616,91 @@ let ``POSITIVE CONTROL: killing a real child really does surface as 128 + signum
                 $"a child killed with SIGKILL exited %d{code}, and `terminatingSignalOf` did not recognise it — \
                   the discriminator the whole abort-vs-failure fix rests on is dead on this platform"
     | other -> Assert.Fail $"expected a Failed outcome from a SIGKILLed child, got %A{other}"
+
+/// A caller-owned context whose continuations cannot run while its synchronous
+/// call is active. Unlike pool saturation this affects only the dedicated caller.
+type private HeldProcessCallerContext() =
+    inherit Threading.SynchronizationContext()
+    let gate = obj ()
+    let pending = Collections.Generic.Queue<Threading.SendOrPostCallback * obj>()
+    let mutable released = false
+
+    override _.Post(callback, state) =
+        let runNow =
+            lock gate (fun () ->
+                if released then true
+                else
+                    pending.Enqueue(callback, state)
+                    false)
+        if runNow then callback.Invoke(state)
+
+    member _.Release() =
+        let callbacks =
+            lock gate (fun () ->
+                released <- true
+                let callbacks = pending.ToArray()
+                pending.Clear()
+                callbacks)
+        for callback, state in callbacks do
+            callback.Invoke(state)
+
+[<Fact(Timeout = 40000)>]
+let ``runProcess preserves target exit and output without pumping the caller context`` () =
+    // Hypothesis: the target receipt captures the synchronous caller's context.
+    // This proves that scheduling dependency, not the cause of a private daemon timeout.
+    // F# task continuations use SynchronizationContext.Current when present:
+    // https://learn.microsoft.com/en-us/dotnet/fsharp/language-reference/task-expressions#background-tasks
+    withTempDir "process-caller-context" (fun root ->
+        let context = HeldProcessCallerContext()
+        let registry = FsHotWatch.ProcessRegistry.Registry()
+        let result =
+            Threading.Tasks.TaskCompletionSource<Result<ProcessResult, exn>>(
+                Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+        let output = Text.StringBuilder()
+        let marker = IO.Path.Combine(root, "release-target")
+        let sink chunk =
+            output.Append(chunk) |> ignore
+            if output.ToString().Contains("target-ready") then
+                IO.File.WriteAllText(marker, "release")
+
+        let caller =
+            Threading.Thread(Threading.ThreadStart(fun () ->
+                Threading.SynchronizationContext.SetSynchronizationContext(context)
+                use scope = FsHotWatch.ProcessRegistry.install registry
+                try
+                    try
+                        // The receipt read starts before target admission. The explicit
+                        // stdout handshake keeps completion distinct from target startup.
+                        let outcome =
+                            runProcessTo
+                                (Some sink)
+                                "/bin/sh"
+                                "-c \"echo target-ready; i=0; while [ ! -f release-target ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -f release-target ] || exit 91; echo target-finished; exit 7\""
+                                root
+                                []
+                                (ProcessBounds.silent (TimeSpan.FromSeconds 10.))
+                        result.TrySetResult(Ok outcome) |> ignore
+                    with error ->
+                        result.TrySetResult(Result.Error error) |> ignore
+                finally
+                    Threading.SynchronizationContext.SetSynchronizationContext(null)))
+        caller.IsBackground <- true
+        caller.Start()
+
+        try
+            Assert.True(result.Task.Wait(TimeSpan.FromSeconds 20.), "Owned process caller did not settle")
+            Assert.True(caller.Join(TimeSpan.FromSeconds 2.), "Owned caller thread did not exit")
+            Assert.Empty(registry.Snapshot())
+            Assert.Empty(registry.Leaks)
+            match result.Task.Result with
+            | Ok(Failed(7, Drained text)) ->
+                Assert.Contains("target-ready", text)
+                Assert.Contains("target-finished", text)
+            | Ok other -> Assert.Fail $"Expected target exit 7 and complete output, got {other}"
+            | Result.Error error -> raise error
+        finally
+            // Release queued receipt continuations even on the expected red path.
+            // KillAll uses only this fixture's captured ownership capabilities.
+            context.Release()
+            registry.KillAll()
+            Assert.True(caller.Join(TimeSpan.FromSeconds 5.), "Caller remained live after owned cleanup"))
