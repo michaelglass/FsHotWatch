@@ -602,3 +602,37 @@ let ``disabled output sink is never retried across multiple read buffers`` () =
     match outcome with
     | ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained output) -> Assert.Equal(String('x', 10000), output)
     | other -> failwithf "Expected complete successful capture despite disabled sink, got %A" other
+
+[<Fact>]
+let ``failed boundary cleanup preserves original and teardown causes in order`` () =
+    let original = IOException("original admission failed")
+    let teardown = TimeoutException("cleanup unconfirmed")
+    let mutable invoked = false
+
+    let error =
+        Assert.Throws<AggregateException>(fun () ->
+            ChildProtocol.cleanupAfterFailure "admission context" original (fun () ->
+                invoked <- true
+                raise teardown))
+
+    Assert.True(invoked)
+    Assert.StartsWith("admission context", error.Message)
+    Assert.Equal(2, error.InnerExceptions.Count)
+    Assert.Same(original, error.InnerExceptions[0])
+    Assert.Same(teardown, error.InnerExceptions[1])
+
+[<Fact>]
+let ``successful boundary cleanup leaves original error propagation with caller`` () =
+    let original = IOException("original startup failed")
+    let mutable cleaned = false
+
+    let error =
+        Record.Exception(fun () ->
+            try
+                (raise original: unit)
+            with failure ->
+                ChildProtocol.cleanupAfterFailure "unused failure context" failure (fun () -> cleaned <- true)
+                reraise ())
+
+    Assert.True(cleaned)
+    Assert.Same(original, error)

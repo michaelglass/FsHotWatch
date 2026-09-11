@@ -22,6 +22,14 @@ module internal ChildProtocol =
         finally
             Monitor.Exit sync
 
+    // Cleanup failure must retain the original boundary error as the first cause.
+    // Successful cleanup returns to the caller, which rethrows that original error.
+    let cleanupAfterFailure message (primary: exn) (cleanup: unit -> unit) =
+        try
+            cleanup ()
+        with cleanupError ->
+            raise (AggregateException(message, primary, cleanupError))
+
     let parse (line: string) =
         if isNull line then
             raise (IOException("Process host closed its control pipe without the required receipt."))
@@ -271,38 +279,27 @@ type internal OwnedChild
         with startupError ->
             match owned with
             | Some child ->
-                try
-                    child.Terminate()
-                with cleanupError ->
-                    raise (
-                        AggregateException(
-                            "Process admission and containment cleanup failed.",
-                            startupError,
-                            cleanupError
-                        )
-                    )
+                ChildProtocol.cleanupAfterFailure
+                    "Process admission and containment cleanup failed."
+                    startupError
+                    child.Terminate
             | None ->
                 pipe.Dispose()
 
                 try
-                    try
-                        if started then
-                            containment |> Option.iter (fun boundary -> boundary.TerminateWindowsJob())
+                    ChildProtocol.cleanupAfterFailure
+                        "Process startup and containment cleanup failed."
+                        startupError
+                        (fun () ->
+                            if started then
+                                containment |> Option.iter (fun boundary -> boundary.TerminateWindowsJob())
 
-                            if not (proc.WaitForExit 5000) then
-                                raise (IOException("Process host startup failed and its shutdown is unconfirmed."))
+                                if not (proc.WaitForExit 5000) then
+                                    raise (IOException("Process host startup failed and its shutdown is unconfirmed."))
 
-                            containment
-                            |> Option.iter (fun boundary ->
-                                ChildProtocol.waitForContainment boundary (Stopwatch.StartNew()))
-                    with cleanupError ->
-                        raise (
-                            AggregateException(
-                                "Process startup and containment cleanup failed.",
-                                startupError,
-                                cleanupError
-                            )
-                        )
+                                containment
+                                |> Option.iter (fun boundary ->
+                                    ChildProtocol.waitForContainment boundary (Stopwatch.StartNew())))
                 finally
                     containment |> Option.iter (fun boundary -> (boundary :> IDisposable).Dispose())
                     reader |> Option.iter (fun control -> control.Dispose())
