@@ -1126,6 +1126,13 @@ let private publishVerdictWithReason
         let preservedPrior =
             priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
                 Verdict.priorConfirmation repoRoot excludePatterns)
+            |> Option.filter (fun prior ->
+                match projectModel with
+                | FsHotWatch.ProjectModel.Observation.Available model ->
+                    IpcParsing.DaemonEvidence.receipts daemonEvidence
+                    |> List.exists (fun receipt ->
+                        Some receipt.RunId = prior.RunId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                | _ -> false)
 
         match preservedPrior with
         | Some _ -> ()

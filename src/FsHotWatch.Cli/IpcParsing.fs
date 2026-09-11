@@ -997,8 +997,9 @@ module DaemonEvidence =
     /// The ledger of an in-process host (`--run-once`), read now.
     let ofHost (host: FsHotWatch.PluginHost.PluginHost) : DaemonEvidence =
         let snapshot = host.WorkSnapshot
-        let receipts = snapshot.Evidence |> List.map (fun proof ->
-            { RunId = proof.RunId; Generation = proof.Generation; Refusals = proof.FailureReasons })
+        let receipts = snapshot.Evidence |> List.collect (fun proof ->
+            proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
+                { RunId = runId; Generation = proof.Generation; Refusals = proof.FailureReasons }))
         DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow), snapshot.ProjectModel, receipts)
 
     /// The `daemonPhases` array of a diagnostics response. Entries that do not carry a
