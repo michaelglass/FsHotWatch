@@ -1691,3 +1691,66 @@ let ``cache clear RPC preserves entries outside its requested filter`` (selectio
             ()
 
         host.Teardown()
+
+[<Fact(Timeout = 15000)>]
+let ``daemon probe follows a listening server through shutdown`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+
+    test <@ not (IpcClient.isRunning pipeName) @>
+
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        // A successful RPC witnesses readiness before the lightweight probe.
+        waitForServer pipeName
+        test <@ IpcClient.isRunning pipeName @>
+    finally
+        cts.Cancel()
+
+        try
+            server.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        with :? OperationCanceledException ->
+            ()
+
+        host.Teardown()
+
+    // The acceptors observe cancellation independently of the server loop.
+    waitUntil (fun () -> not (IpcClient.isRunning pipeName)) 5000
+    test <@ not (IpcClient.isRunning pipeName) @>
+
+[<Fact>]
+let ``status preserves timing phases with and without detail`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let startedAt = DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc)
+
+    try
+        host.Phases.Record(FsHotWatch.DaemonPhases.Phase.Check, startedAt, TimeSpan.FromMilliseconds 125.0, None)
+
+        host.Phases.Record(
+            FsHotWatch.DaemonPhases.Phase.Discover,
+            startedAt,
+            TimeSpan.FromMilliseconds 250.0,
+            Some "two projects"
+        )
+
+        let target = DaemonRpcTarget(defaultRpcConfig host)
+        use status = System.Text.Json.JsonDocument.Parse(target.GetStatus())
+
+        let phases =
+            status.RootElement.GetProperty("daemonPhases").EnumerateArray()
+            |> Seq.map (fun phase -> phase.GetProperty("scope").GetString(), phase)
+            |> Map.ofSeq
+
+        test <@ phases.Count = 2 @>
+        let check = phases.["daemon.check"]
+        let discover = phases.["daemon.discover"]
+        test <@ check.GetProperty("detail").ValueKind = System.Text.Json.JsonValueKind.Null @>
+        test <@ discover.GetProperty("detail").GetString() = "two projects" @>
+        test <@ check.GetProperty("elapsedMs").GetInt64() = 125L @>
+        test <@ discover.GetProperty("elapsedMs").GetInt64() = 250L @>
+        test <@ check.GetProperty("startedAt").GetString() = startedAt.ToString("O") @>
+        test <@ discover.GetProperty("startedAt").GetString() = startedAt.ToString("O") @>
+    finally
+        host.Teardown()
