@@ -483,13 +483,15 @@ let ``queued intents follow the exact run through prepared completion before FIF
     Assert.False first.IsCompleted
     let before = store.Snapshot
     owner.SettleEvent(completion, preparedCommit = true)
-    Assert.Equal<string list>([ "command-1"; "new-flush"; "command-2" ], received |> Seq.map fst |> Seq.toList)
+    Assert.Equal<string list>([ "command-1" ], received |> Seq.map fst |> Seq.toList)
     Assert.True store.Snapshot.IsBusy
     Assert.True before.IsBusy
     Assert.Equal(1, owner.Snapshot.State)
     Assert.False first.IsCompleted
-    for _, identity in received do
+    for index in 0 .. 2 do
+        let _, identity = received[index]
         owner.CommitEvent(identity, owner.Snapshot.State + 1)
+    Assert.Equal<string list>([ "command-1"; "new-flush"; "command-2" ], received |> Seq.map fst |> Seq.toList)
     Assert.False store.Snapshot.IsBusy
     Assert.True first.IsCompletedSuccessfully
     Assert.True automatic.IsCompletedSuccessfully
@@ -505,4 +507,27 @@ let ``executor fault fails queued receipts but retains the live exclusive worker
     Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult()) |> ignore
     Assert.True store.Snapshot.IsBusy
     owner.FailRun(active, InvalidOperationException("worker drained"))
+    Assert.False store.Snapshot.IsBusy
+
+[<Fact>]
+let ``commands queued before a result fold stay ahead of later successor intents`` () =
+    let store = PluginWorkOwner.Store()
+    let owner = PluginWorkOwner.Owner((), store, "fifo")
+    let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
+    let firstRun, _ = owner.TryClaim "tests" |> Option.get
+    let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
+    let fold = owner.CompleteRun firstRun |> Option.get
+    let nextRun, _ = owner.TryClaim "tests" |> Option.get
+    let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later", id))
+    owner.CommitEvent(fold, ())
+    Assert.Empty delivered
+    let nextFold = owner.CompleteRun nextRun |> Option.get
+    owner.CommitEvent(nextFold, ())
+    Assert.Equal("earlier", fst delivered[0])
+    Assert.Equal(1, delivered.Count)
+    owner.CommitEvent(snd delivered[0], ())
+    Assert.Equal("later", fst delivered[1])
+    owner.CommitEvent(snd delivered[1], ())
+    Assert.True earlier.IsCompletedSuccessfully
+    Assert.True later.IsCompletedSuccessfully
     Assert.False store.Snapshot.IsBusy
