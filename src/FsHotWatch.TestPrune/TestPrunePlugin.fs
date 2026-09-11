@@ -6470,10 +6470,20 @@ let internal createWithLaunchDeadline
                     return { state with FullSuiteRequested = fullSuite; ScopeReply = Some(fullSuite, reply) }
                 | Custom(RuntimeCoverageFailed _) ->
                     return { state with Debt = { state.Debt with RecoveryOutstanding = true } }
+                | PluginEvent.FileChanged change ->
+                    let files =
+                        match change with
+                        | SourceChanged paths ->
+                            (state.AnalysisFiles, paths)
+                            ||> List.fold (fun outcomes path ->
+                                let absolute = if Path.IsPathRooted path then path else Path.Combine(repoRoot, path)
+                                Map.remove (AbsFilePath.create absolute) outcomes)
+                        | ProjectChanged _
+                        | SolutionChanged -> Map.empty
+                    return { state with AnalysisReceipt = None; AnalysisFiles = files }
                 | PluginEvent.FileChecked result ->
                     let state =
                         { state with
-                            Earned = None
                             AnalysisReceipt = None
                             AnalysisCohortFiles = Set.add result.File state.AnalysisCohortFiles }
                     let analysisStarted = DateTime.UtcNow

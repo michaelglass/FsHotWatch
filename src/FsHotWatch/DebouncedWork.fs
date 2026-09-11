@@ -37,7 +37,8 @@ type Queue<'State, 'Request>
           Busy = input.Pending.IsSome || not input.Moving.IsEmpty
           Completed = 0L
           Failure = input.Failure |> Option.map PluginWorkOwner.OperationFailure
-          Evidence = None }
+          Evidence = None
+          AnalysisEvidence = None }
 
     let id =
         store.Register(
