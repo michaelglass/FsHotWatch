@@ -1628,11 +1628,14 @@ type private HeldProcessCallerContext() =
     override _.Post(callback, state) =
         let runNow =
             lock gate (fun () ->
-                if released then true
+                if released then
+                    true
                 else
                     pending.Enqueue(callback, state)
                     false)
-        if runNow then callback.Invoke(state)
+
+        if runNow then
+            callback.Invoke(state)
 
     member _.Release() =
         let callbacks =
@@ -1641,6 +1644,7 @@ type private HeldProcessCallerContext() =
                 let callbacks = pending.ToArray()
                 pending.Clear()
                 callbacks)
+
         for callback, state in callbacks do
             callback.Invoke(state)
 
@@ -1653,38 +1657,48 @@ let ``runProcess preserves target exit and output without pumping the caller con
     withTempDir "process-caller-context" (fun root ->
         let context = HeldProcessCallerContext()
         let registry = FsHotWatch.ProcessRegistry.Registry()
+
         let result =
             Threading.Tasks.TaskCompletionSource<Result<ProcessOutcome, exn>>(
-                Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+                Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
         let output = Text.StringBuilder()
         let marker = IO.Path.Combine(root, "release-target")
+
         let sink (chunk: string) =
             lock output (fun () ->
                 output.Append(chunk) |> ignore
+
                 if output.ToString().Contains("target-ready") then
                     IO.File.WriteAllText(marker, "release"))
 
         let caller =
-            Threading.Thread(Threading.ThreadStart(fun () ->
-                Threading.SynchronizationContext.SetSynchronizationContext(context)
-                use scope = FsHotWatch.ProcessRegistry.install registry
-                try
+            Threading.Thread(
+                Threading.ThreadStart(fun () ->
+                    Threading.SynchronizationContext.SetSynchronizationContext(context)
+                    use scope = FsHotWatch.ProcessRegistry.install registry
+
                     try
-                        // The receipt read starts before target admission. The explicit
-                        // stdout handshake keeps completion distinct from target startup.
-                        let outcome =
-                            runProcessTo
-                                (Some sink)
-                                "sh"
-                                "-c \"echo target-ready; i=0; while [ ! -f release-target ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -f release-target ] || exit 91; echo target-finished; exit 7\""
-                                root
-                                []
-                                (ProcessBounds.silent (TimeSpan.FromSeconds 10.))
-                        result.TrySetResult(Ok outcome) |> ignore
-                    with error ->
-                        result.TrySetResult(Result.Error error) |> ignore
-                finally
-                    Threading.SynchronizationContext.SetSynchronizationContext(null)))
+                        try
+                            // The receipt read starts before target admission. The explicit
+                            // stdout handshake keeps completion distinct from target startup.
+                            let outcome =
+                                runProcessTo
+                                    (Some sink)
+                                    "sh"
+                                    "-c \"echo target-ready; i=0; while [ ! -f release-target ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -f release-target ] || exit 91; echo target-finished; exit 7\""
+                                    root
+                                    []
+                                    (ProcessBounds.silent (TimeSpan.FromSeconds 10.))
+
+                            result.TrySetResult(Ok outcome) |> ignore
+                        with error ->
+                            result.TrySetResult(Result.Error error) |> ignore
+                    finally
+                        Threading.SynchronizationContext.SetSynchronizationContext(null))
+            )
+
         caller.IsBackground <- true
         caller.Start()
 
@@ -1693,6 +1707,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
             Assert.True(caller.Join(TimeSpan.FromSeconds 2.), "Owned caller thread did not exit")
             Assert.Empty(registry.Snapshot())
             Assert.Empty(registry.Leaks)
+
             match result.Task.Result with
             | Ok(Failed(7, ProcessOutput.Drained text)) ->
                 Assert.Contains("target-ready", text)
