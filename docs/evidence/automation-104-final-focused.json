@@ -1,0 +1,235 @@
+{
+  "artifactDirectory": "/Users/michaelglass/Developer/work/thellma/intelligence/results/handoffs/resume-2026-09-11/a104-integrated-focused",
+  "records": [
+    {
+      "file": "a104-AnalysisEvidenceTests-green.log",
+      "sha256": "735340eabb178bd98e5e67a8e35fa858af55c3d1b8acb4e16de26ccc8a255d26",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 3,
+          "failed": 0,
+          "passed": 3,
+          "skipped": 0,
+          "duration": "11s 202ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-IpcOutputTests-green.log",
+      "sha256": "0a4d707fc719e77bc98aee17d271ae5c0b9365213c45c668887085a6ea3cd7c4",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 109,
+          "failed": 0,
+          "passed": 109,
+          "skipped": 0,
+          "duration": "8s 278ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-IpcParsingTests-green.log",
+      "sha256": "24bab71aa1946fd3a68ad38c36d3609c130763d3299772a26bbdc2b86ab094cb",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 51,
+          "failed": 0,
+          "passed": 51,
+          "skipped": 0,
+          "duration": "3s 287ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-analysis-output-red.log",
+      "sha256": "4d393654a5fa9faf1bc811dfe7cc58be51874bb4597be376f60535666e95947e",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 107,
+          "failed": 7,
+          "passed": 100,
+          "skipped": 0,
+          "duration": "6s 897ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-analysis-parser-red.log",
+      "sha256": "f7b021ae691d835bc61c1852fcf365ebf24d7023f51a8785834d675ff306a35d",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 51,
+          "failed": 1,
+          "passed": 50,
+          "skipped": 0,
+          "duration": "765ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-command-publication-green.log",
+      "sha256": "2fb627e5c27d31f22a20a05695e7b7fe9eb96cc2e73c539bf8bd11e422f839bb",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 112,
+          "failed": 0,
+          "passed": 112,
+          "skipped": 0,
+          "duration": "6s 861ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-command-publication-red.log",
+      "sha256": "a01bba9fff25608daf5bbc600e9c32a46ee927536d01cf81cfce82216644c74e",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 110,
+          "failed": 2,
+          "passed": 108,
+          "skipped": 0,
+          "duration": "2s 753ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-final-model-compile.log",
+      "sha256": "11bf3b0ed0bf189ad5e259abd6790fbb17cec81fbc68eba70af0e68870d3a142",
+      "testSummaries": []
+    },
+    {
+      "file": "a104-model-owner-final-green.log",
+      "sha256": "bb6e8408eb30b23696c52e1d0ff469cc4ea567d4f43c6411e1dc8a158a9f2eb6",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 5,
+          "failed": 0,
+          "passed": 5,
+          "skipped": 0,
+          "duration": "9s 376ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-pending-green.log",
+      "sha256": "58c4bdd30de1eac7aa15cc89f2aca3038d2d95ae4a95ccce2323d01baebbc299",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 66,
+          "failed": 0,
+          "passed": 66,
+          "skipped": 0,
+          "duration": "24s 043ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-pending-model-control-red.log",
+      "sha256": "0d1dc09c331321e2f024b7c22930a25864628316bd0093ec0c64b762c4f9ec1f",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 5,
+          "failed": 1,
+          "passed": 4,
+          "skipped": 0,
+          "duration": "2s 812ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-ratchet-green.log",
+      "sha256": "841c5b5329f51692e11780d3988ae116aca42f81078e9d6730064c2762f588de",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 2,
+          "failed": 0,
+          "passed": 2,
+          "skipped": 0,
+          "duration": "3s 057ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-ratchet-red.log",
+      "sha256": "5d90a5b144a403903a772341b6a7e1d3c951c6468813f8cefc4f79cc31191fe3",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 2,
+          "failed": 2,
+          "passed": 0,
+          "skipped": 0,
+          "duration": "1s 019ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-report-authority-green.log",
+      "sha256": "8acb9a99035ae458234074bfea042a64972f223477cb035b2557b251a869d129",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 67,
+          "failed": 0,
+          "passed": 67,
+          "skipped": 0,
+          "duration": "29s 077ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-report-authority-red.log",
+      "sha256": "f942f4850fdd2ffaa0c1bc18793a4b5e9df3dbb9d4ccef5923dd47a42321b3c8",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 67,
+          "failed": 2,
+          "passed": 65,
+          "skipped": 0,
+          "duration": "26s 237ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-stale-owner-green.log",
+      "sha256": "8ae2eafabe8cd048b40398b29f1d1754ef2ca09eb8c049a0e3bdc2a3fe32d153",
+      "testSummaries": [
+        {
+          "status": "Passed!",
+          "total": 4,
+          "failed": 0,
+          "passed": 4,
+          "skipped": 0,
+          "duration": "2s 316ms"
+        }
+      ]
+    },
+    {
+      "file": "a104-stale-owner-red.log",
+      "sha256": "a8c3ac7b8e83a411b4cb0d97afba49806cd84f0736f7bbc311ec49cda41c6498",
+      "testSummaries": [
+        {
+          "status": "Failed!",
+          "total": 4,
+          "failed": 1,
+          "passed": 3,
+          "skipped": 0,
+          "duration": "5s 256ms"
+        }
+      ]
+    }
+  ],
+  "scope": "Focused regression evidence; combined ci and integration gates still required."
+}

@@ -46,8 +46,14 @@ let private ctrfJson (tests: int) (passed: int) (failed: int) (stop: DateTime) =
                start = ms - 1000L
                stop = ms |}
 
+    let entries =
+        [| for index in 1..tests ->
+               {| name = $"Fixture.case{index}"
+                  status = if index <= failed then "failed" else "passed" |} |]
+        |> JsonSerializer.Serialize
+
     let results =
-        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[]}}"""
+        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":%s{entries}}}"""
 
     $"""{{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"%s{Guid.NewGuid().ToString()}","results":%s{results}}}"""
 
@@ -5796,3 +5802,17 @@ let ``a v2 green without its completed project model is refused on read`` () =
         match Verdict.read root with
         | Verdict.Reading.Unreadable reason -> test <@ reason.Contains("PROJECT MODEL UNAVAILABLE") @>
         | other -> failwithf "Expected refused model-free green, got %A" other)
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-104")>]
+let ``durable suite verdicts refuse a partial clean report`` () =
+    withTempDir "a617-durable-report" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = Ctrf.runDir root runId
+        Directory.CreateDirectory dir |> ignore
+        File.WriteAllText(
+            Path.Combine(dir, "Lib.Tests" + Ctrf.ReportSuffix),
+            """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+        )
+        Assert.Empty(Verdict.suiteVerdicts root (Some runId)))
