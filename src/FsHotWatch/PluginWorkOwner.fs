@@ -398,11 +398,19 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
             let work = entries snapshot.Phase |> Map.add id (Event(None, None))
             { snapshot with Phase = phase work }, id)
 
-    member _.TryClaim(key: string) : (WorkId * DateTime) option =
+    member _.TryClaim(key: string, ?after: WorkId) : (WorkId * DateTime) option =
         mutate (fun snapshot ->
             snapshot.ExecutorFault |> Option.iter raise
 
-            if snapshot.IsRunning key then
+            let occupied =
+                entries snapshot.Phase |> Map.exists (fun identity kind ->
+                    match kind with
+                    | Exclusive(candidate, _) -> candidate = key
+                    | Event(_, Some(candidate, _))
+                    | Committing(_, Some(candidate, _)) -> candidate = key && Some identity <> after
+                    | _ -> false)
+
+            if occupied then
                 snapshot, None
             else
                 let id = WorkId(Guid.NewGuid())

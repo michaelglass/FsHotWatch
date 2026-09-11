@@ -517,7 +517,7 @@ let ``commands queued before a result fold stay ahead of later successor intents
     let firstRun, _ = owner.TryClaim "tests" |> Option.get
     let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
     let fold = owner.CompleteRun firstRun |> Option.get
-    let nextRun, _ = owner.TryClaim "tests" |> Option.get
+    let nextRun, _ = owner.TryClaim("tests", after = fold) |> Option.get
     let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later", id))
     owner.CommitEvent(fold, ())
     Assert.Empty delivered
@@ -531,3 +531,18 @@ let ``commands queued before a result fold stay ahead of later successor intents
     Assert.True earlier.IsCompletedSuccessfully
     Assert.True later.IsCompletedSuccessfully
     Assert.False store.Snapshot.IsBusy
+
+[<Fact>]
+let ``only the exact result fold may claim its successor before commit`` () =
+    let owner = PluginWorkOwner.Owner(())
+    let active, _ = owner.TryClaim "tests" |> Option.get
+    let earlierEvent = owner.AdmitEvent()
+    let fold = owner.CompleteRun active |> Option.get
+    Assert.True((owner.TryClaim("tests", after = earlierEvent)).IsNone)
+    Assert.True((owner.TryClaim "tests").IsNone)
+    let next, _ = owner.TryClaim("tests", after = fold) |> Option.get
+    owner.CommitEvent(earlierEvent, ())
+    owner.CommitEvent(fold, ())
+    let nextFold = owner.CompleteRun next |> Option.get
+    owner.CommitEvent(nextFold, ())
+    Assert.False owner.Snapshot.IsBusy
