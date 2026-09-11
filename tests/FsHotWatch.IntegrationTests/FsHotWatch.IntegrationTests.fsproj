@@ -26,6 +26,8 @@
     <Compile Include="PluginTimeoutTests.fs" />
     <Compile Include="TestPruneStormTests.fs" />
     <Compile Include="NuGetToolBarrierOracleTests.fs" />
+    <Compile Include="ColdCheckFixture.fs" />
+    <Compile Include="ColdCheckCommandTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 
