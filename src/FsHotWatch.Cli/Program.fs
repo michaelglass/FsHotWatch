@@ -880,6 +880,12 @@ let private ensureAndQueryErrors
 /// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:
 /// binary staleness is the DaemonIdentity handshake's job (assembly version +
 /// content hash, recorded by the daemon, compared by the CLI), not an mtime here.
+let internal configContentHash (configContent: string) =
+    let hash =
+        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
+
+    Convert.ToHexStringLower(hash).Substring(0, 16)
+
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
@@ -889,10 +895,7 @@ let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
         else
             ""
 
-    let hash =
-        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
-
-    Convert.ToHexStringLower(hash).Substring(0, 16)
+    configContentHash configContent
 
 /// Compute a hash of the config file for staleness detection.
 let private computeConfigHash (repoRoot: string) =
@@ -971,12 +974,11 @@ let startFreshDaemonWith
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
+    (_currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let stateDir = Path.Combine(repoRoot, ".fshw")
 
     let logDir =
         if Path.IsPathRooted(logDirName) then
@@ -988,8 +990,8 @@ let startFreshDaemonWith
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
     ipc.LaunchDaemon repoRoot extraArgs logFile
-    fileOps.CreateDirectory stateDir
-    fileOps.WriteAllText (Path.Combine(stateDir, "config.hash")) currentHash
+    // Only the daemon can publish the identity of the configuration it loaded.
+    // A launcher write here can arrive after startup and overwrite newer evidence.
     let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
     let mutable isUp = ipc.IsRunning pipeName
 
@@ -1643,7 +1645,8 @@ let withRunHooksFor
     withRunHooksForInvocation verb repoRoot config (fun _ -> action ())
 
 /// Execute a parsed command with injectable dependencies.
-let executeCommand
+let internal executeCommandWithConfigIdentity
+    (loadedConfigHash: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
     (repoRoot: string)
@@ -1885,6 +1888,9 @@ let executeCommand
                     // therefore never finds a pidfile naming a process that never ran.
                     try
                         try
+                            // Publish the exact loaded snapshot while holding the singleton
+                            // lock, before any client can observe our IPC endpoint.
+                            File.WriteAllText(Path.Combine(stateDir, "config.hash"), loadedConfigHash)
                             let daemon = createDaemon repoRoot
                             registerPlugins daemon repoRoot config
                             let cts = new CancellationTokenSource()
@@ -2241,6 +2247,19 @@ let executeCommand
             eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
             0
 
+/// Execute a command for callers that already loaded the current on-disk config.
+let executeCommand createDaemon ipc repoRoot pipeName command opts config startupTimeoutSeconds =
+    executeCommandWithConfigIdentity
+        (computeConfigHash repoRoot)
+        createDaemon
+        ipc
+        repoRoot
+        pipeName
+        command
+        opts
+        config
+        startupTimeoutSeconds
+
 /// Outcome of forwarding a root-level unknown command to the daemon.
 ///   `Handled exitCode` — the daemon recognized and ran the command (a real plugin
 ///     command); `exitCode` is its rendered result.
@@ -2422,9 +2441,9 @@ let private runMain args =
             | RunCommand(globals, command) ->
                 let opts = applyGlobalFlags globals
 
-                let config =
+                let config, loadedConfigSource =
                     try
-                        loadConfig repoRoot
+                        loadConfigWithSource repoRoot
                     with ConfigError msg ->
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
@@ -2463,7 +2482,16 @@ let private runMain args =
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
-                executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+                executeCommandWithConfigIdentity
+                    (configContentHash loadedConfigSource)
+                    createDaemon
+                    defaultIpcOps
+                    repoRoot
+                    pipeName
+                    command
+                    opts
+                    config
+                    30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.
