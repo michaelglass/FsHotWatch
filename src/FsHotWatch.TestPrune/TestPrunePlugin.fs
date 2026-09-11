@@ -1433,8 +1433,9 @@ type TestPruneState =
         /// Symbols established by a BootScan cohort while a requested full-suite run was
         /// already in flight. The run covers the built tree being baselined, but these
         /// symbols are absent from its immutable launch snapshot. They may be committed
-        /// only after that run produces genuinely green full-suite evidence.
-        BootScanDebtDuringFullRun: Set<string>
+        /// only after that run produces genuinely green full-suite evidence for the
+        /// same input tree and the exact revisions captured at the first cohort seal.
+        BootScanDebtDuringFullRun: Map<string, int64>
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -5435,7 +5436,7 @@ let internal createWithLaunchDeadlineAndScope
           CompletedRuns = []
           CheckReach = None
           LastSeeds = []
-          BootScanDebtDuringFullRun = Set.empty
+          BootScanDebtDuringFullRun = Map.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
@@ -7131,9 +7132,13 @@ let internal createWithLaunchDeadlineAndScope
                                     return
                                         { flushedState with
                                             BootScanDebtDuringFullRun =
-                                                Set.union
-                                                    flushedState.BootScanDebtDuringFullRun
-                                                    flushedState.Debt.PendingQueue }
+                                                (flushedState.BootScanDebtDuringFullRun, flushedState.Debt.SymbolRevisions)
+                                                ||> Map.fold (fun captured symbol revision ->
+                                                    if Set.contains symbol flushedState.Debt.PendingQueue
+                                                       && not (Map.containsKey symbol captured) then
+                                                        Map.add symbol revision captured
+                                                    else
+                                                        captured) }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -7441,7 +7446,7 @@ let internal createWithLaunchDeadlineAndScope
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
-                            BootScanDebtDuringFullRun = Set.empty
+                            BootScanDebtDuringFullRun = Map.empty
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
@@ -7489,7 +7494,8 @@ let internal createWithLaunchDeadlineAndScope
                         else
                             let bootScanCandidates =
                                 match completed.Verification with
-                                | Ran FullSuite -> bootScanDebtDuringFullRun
+                                | Ran FullSuite when ReceiptInputTree.matches launch.InputTreeHash currentInputTree ->
+                                    bootScanDebtDuringFullRun |> Map.keys |> Set.ofSeq
                                 | _ -> Set.empty
 
                             Set.union launch.Symbols bootScanCandidates
@@ -7499,7 +7505,9 @@ let internal createWithLaunchDeadlineAndScope
                                     let launched = launch.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
 
                                     current = launched
-                                    || (Set.contains s bootScanCandidates && not (Set.contains s launch.Symbols))
+                                    || (Set.contains s bootScanCandidates
+                                        && not (Set.contains s launch.Symbols)
+                                        && Map.tryFind s bootScanDebtDuringFullRun = Some current)
 
                                 sameRevision
                                 && match Map.tryFind s launch.CoveringProjectsBySymbol with
