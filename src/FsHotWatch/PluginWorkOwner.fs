@@ -28,8 +28,15 @@ type private WorkKind =
     | Committing of TaskCompletionSource<unit> option * (string * ExclusiveSlot) option
     | Exclusive of string * ExclusiveSlot
 
-let private queued = function Running -> [] | RunningQueued(first, rest) -> first :: rest
-let private slot = function [] -> Running | first :: rest -> RunningQueued(first, rest)
+let private queued =
+    function
+    | Running -> []
+    | RunningQueued(first, rest) -> first :: rest
+
+let private slot =
+    function
+    | [] -> Running
+    | first :: rest -> RunningQueued(first, rest)
 
 /// Working cannot contain zero obligations. Construction stays inside this module.
 [<NoComparison; NoEquality>]
@@ -150,6 +157,7 @@ type HostSnapshot =
 
     member this.ProjectModel = this.Model
     member this.ObserverCount = this.Observers.Count
+
     member this.Evidence =
         this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Evidence)
 
@@ -168,10 +176,10 @@ type HostSnapshot =
         this.Rows |> Map.toSeq |> Seq.sumBy (fun (_, row) -> row.Completed)
 
     member this.Faults =
-        (this.HostFailures |> Map.toList |> List.map snd) @
-        (this.Rows
-        |> Map.toList
-        |> List.choose (fun (_, row) -> row.Fault |> Option.map (fun ex -> row.Name, ex)))
+        (this.HostFailures |> Map.toList |> List.map snd)
+        @ (this.Rows
+           |> Map.toList
+           |> List.choose (fun (_, row) -> row.Fault |> Option.map (fun ex -> row.Name, ex)))
 
     member this.ExecutorFaults =
         this.Rows
@@ -179,13 +187,13 @@ type HostSnapshot =
         |> List.choose (fun (_, row) -> row.ExecutorFault |> Option.map (fun ex -> row.Name, ex))
 
     member this.OperationFaults =
-        (this.HostFailures |> Map.toList |> List.map snd) @
-        (this.Rows
-        |> Map.toList
-        |> List.choose (fun (_, row) ->
-            match row.Failure with
-            | Some(OperationFailure failure) -> Some(row.Name, failure)
-            | _ -> None))
+        (this.HostFailures |> Map.toList |> List.map snd)
+        @ (this.Rows
+           |> Map.toList
+           |> List.choose (fun (_, row) ->
+               match row.Failure with
+               | Some(OperationFailure failure) -> Some(row.Name, failure)
+               | _ -> None))
 
 [<NoComparison; NoEquality>]
 type private Mutation = Mutate of (HostSnapshot -> HostSnapshot * obj) * TaskCompletionSource<obj>
@@ -247,12 +255,17 @@ type Store() =
         let id =
             mutate (fun snapshot ->
                 let id = WorkId(Guid.NewGuid())
-                { snapshot with Observers = Set.add id snapshot.Observers }, id)
+
+                { snapshot with
+                    Observers = Set.add id snapshot.Observers },
+                id)
 
         { new IDisposable with
             member _.Dispose() =
                 mutate (fun snapshot ->
-                    { snapshot with Observers = Set.remove id snapshot.Observers }, ()) }
+                    { snapshot with
+                        Observers = Set.remove id snapshot.Observers },
+                    ()) }
 
     member _.Register(row: Row) =
         mutate (fun snapshot ->
@@ -288,14 +301,19 @@ type Store() =
 
             { snapshot with
                 Operations = Map.add id name snapshot.Operations
-                HostFailures = snapshot.HostFailures |> Map.filter (fun failedId (failedName, _) -> failedName <> name || Map.containsKey failedId snapshot.Operations) },
+                HostFailures =
+                    snapshot.HostFailures
+                    |> Map.filter (fun failedId (failedName, _) ->
+                        failedName <> name || Map.containsKey failedId snapshot.Operations) },
             id)
 
     member _.FailOperation(id: WorkId, failure: exn) =
         mutate (fun snapshot ->
             match Map.tryFind id snapshot.Operations with
             | Some name ->
-                { snapshot with HostFailures = Map.add id (name, failure) snapshot.HostFailures }, ()
+                { snapshot with
+                    HostFailures = Map.add id (name, failure) snapshot.HostFailures },
+                ()
             | None -> snapshot, ())
 
     member _.EndOperation(id: WorkId) =
@@ -350,10 +368,13 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
         | [] -> work, []
         | first :: rest ->
             let active =
-                work |> Map.toList |> List.tryPick (fun (identity, kind) ->
+                work
+                |> Map.toList
+                |> List.tryPick (fun (identity, kind) ->
                     match kind with
                     | Exclusive(candidate, alreadyQueued) when candidate = key -> Some(identity, alreadyQueued)
                     | _ -> None)
+
             match active with
             | Some(identity, alreadyQueued) ->
                 // A result fold may already have launched its automatic successor.
@@ -370,11 +391,14 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
             | Event(receipt, continuation)
             | Committing(receipt, continuation) -> receipt, continuation
             | _ -> invalidOp "Expected event obligation"
+
         let remaining = entries snapshot.Phase |> Map.remove id
+
         let work, delivered =
             match continuation with
             | None -> remaining, []
             | Some(key, pending) -> admitSuccessor key (queued pending) remaining
+
         work, receipt, delivered
 
     let deliverIntents pending =
@@ -410,7 +434,8 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
             snapshot.ExecutorFault |> Option.iter raise
 
             let occupied =
-                entries snapshot.Phase |> Map.exists (fun identity kind ->
+                entries snapshot.Phase
+                |> Map.exists (fun identity kind ->
                     match kind with
                     | Exclusive(candidate, _) -> candidate = key
                     | Event(_, Some(candidate, _))
@@ -431,22 +456,31 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
             mutate (fun snapshot ->
                 snapshot.ExecutorFault |> Option.iter raise
                 let work = entries snapshot.Phase
+
                 let candidate =
-                    work |> Map.toList |> List.tryPick (fun (id, kind) ->
+                    work
+                    |> Map.toList
+                    |> List.tryPick (fun (id, kind) ->
                         match kind with
                         | Exclusive(candidate, pending) when candidate = key -> Some(id, kind, pending)
                         | _ -> None)
                     |> Option.orElseWith (fun () ->
-                        work |> Map.toList |> List.tryPick (fun (id, kind) ->
+                        work
+                        |> Map.toList
+                        |> List.tryPick (fun (id, kind) ->
                             match kind with
                             | Event(_, Some(candidate, pending))
                             | Committing(_, Some(candidate, pending)) when candidate = key -> Some(id, kind, pending)
                             | _ -> None))
 
                 let existing =
-                    candidate |> Option.bind (fun (_, _, pending) ->
-                        coalescingKey |> Option.bind (fun requested ->
-                            queued pending |> List.tryFind (fun intent -> intent.CoalescingKey = Some requested)))
+                    candidate
+                    |> Option.bind (fun (_, _, pending) ->
+                        coalescingKey
+                        |> Option.bind (fun requested ->
+                            queued pending
+                            |> List.tryFind (fun intent -> intent.CoalescingKey = Some requested)))
+
                 let intent =
                     match existing with
                     | Some prior -> { prior with Deliver = deliver }
@@ -458,20 +492,27 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
 
                 match candidate with
                 | None ->
-                    { snapshot with Phase = Map.add intent.Id (Event(Some intent.Receipt, None)) work |> phase },
+                    { snapshot with
+                        Phase = Map.add intent.Id (Event(Some intent.Receipt, None)) work |> phase },
                     (Some intent, intent.Receipt.Task)
                 | Some(id, kind, pending) ->
                     let next =
                         (match existing with
                          | None -> queued pending @ [ intent ]
-                         | Some prior -> queued pending |> List.map (fun item -> if item.Id = prior.Id then intent else item))
+                         | Some prior ->
+                             queued pending
+                             |> List.map (fun item -> if item.Id = prior.Id then intent else item))
                         |> slot
+
                     let kind =
                         match kind with
                         | Exclusive(key, _) -> Exclusive(key, next)
                         | Event(receipt, _) -> Event(receipt, Some(key, next))
                         | Committing(receipt, _) -> Committing(receipt, Some(key, next))
-                    { snapshot with Phase = Map.add id kind work |> phase }, (None, intent.Receipt.Task))
+
+                    { snapshot with
+                        Phase = Map.add id kind work |> phase },
+                    (None, intent.Receipt.Task))
 
         immediate |> Option.iter (fun intent -> deliverIntents [ intent ])
         receipt
@@ -479,8 +520,15 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     member _.CommitEvent(id: WorkId, state: 'State) =
         let receipt, pending =
             mutate (fun snapshot ->
-                requireKind id (function Event _ -> true | _ -> false) snapshot
+                requireKind
+                    id
+                    (function
+                    | Event _ -> true
+                    | _ -> false)
+                    snapshot
+
                 let work, receipt, pending = retireEvent id snapshot
+
                 { snapshot with
                     Domain = state
                     Phase = phase work
@@ -490,6 +538,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                         | Some(UpdateFailure _) -> None
                         | other -> other },
                 (receipt, pending))
+
         deliverIntents pending
         receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
 
@@ -510,7 +559,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
 
             { snapshot with
                 Domain = state
-                Phase = entries snapshot.Phase |> Map.add id (Committing(receipt, continuation)) |> phase },
+                Phase =
+                    entries snapshot.Phase
+                    |> Map.add id (Committing(receipt, continuation))
+                    |> phase },
             ())
 
     /// Only the exact prepared event can acknowledge successful finalization.
@@ -597,10 +649,12 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                 None
             | None ->
                 let completion = WorkId(Guid.NewGuid())
+
                 let continuation =
                     match Map.find id (entries snapshot.Phase) with
                     | Exclusive(key, pending) -> Some(key, pending)
                     | _ -> invalidOp "Expected exclusive operation"
+
                 let work = remaining |> Map.add completion (Event(None, continuation))
                 { snapshot with Phase = phase work }, Some completion)
 
@@ -624,7 +678,11 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                                     Map.add id (Exclusive(key, Running)) remaining, queuedReceipts @ receipts
                                 | Event(receipt, pending)
                                 | Committing(receipt, pending) ->
-                                    let queuedReceipts = pending |> Option.map (snd >> queued >> List.map (fun intent -> intent.Receipt)) |> Option.defaultValue []
+                                    let queuedReceipts =
+                                        pending
+                                        |> Option.map (snd >> queued >> List.map (fun intent -> intent.Receipt))
+                                        |> Option.defaultValue []
+
                                     remaining, (Option.toList receipt) @ queuedReceipts @ receipts)
                             (Map.empty, [])
 
@@ -645,23 +703,35 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                     Failure =
                         match snapshot.Failure with
                         | Some prior -> Some prior
-                        | None -> Some(RunFailure failure) }, ()
+                        | None -> Some(RunFailure failure) },
+                ()
             | _ -> snapshot, ())
 
     member _.FailRun(id: WorkId, failure: exn) =
         let pending =
             mutate (fun snapshot ->
-                requireKind id (function Exclusive _ -> true | _ -> false) snapshot
+                requireKind
+                    id
+                    (function
+                    | Exclusive _ -> true
+                    | _ -> false)
+                    snapshot
+
                 let key, pending =
                     match Map.find id (entries snapshot.Phase) with
                     | Exclusive(key, pending) -> key, queued pending
                     | _ -> invalidOp "Expected exclusive operation"
-                let work, delivered = admitSuccessor key pending (entries snapshot.Phase |> Map.remove id)
+
+                let work, delivered =
+                    admitSuccessor key pending (entries snapshot.Phase |> Map.remove id)
+
                 { snapshot with
                     Phase = phase work
                     Failure =
                         match snapshot.Failure with
                         | Some(ExecutorFailure _ as prior)
                         | Some(CommitFailure _ as prior) -> Some prior
-                        | _ -> Some(RunFailure failure) }, delivered)
+                        | _ -> Some(RunFailure failure) },
+                delivered)
+
         deliverIntents pending

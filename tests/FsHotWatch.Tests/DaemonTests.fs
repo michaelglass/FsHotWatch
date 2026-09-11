@@ -1286,6 +1286,7 @@ let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
 let ``discovery publishes model unavailability before loader entry and completed generation before receipt`` () =
     let store = FsHotWatch.PluginWorkOwner.Store()
     let coordinator = DiscoveryCoordinator(publish = store.PublishProjectModel)
+
     let counts: DiscoverySnapshot =
         { Discovered = 1
           Loaded = 1
@@ -1311,6 +1312,7 @@ let ``discovery publishes model unavailability before loader entry and completed
 
     Assert.Throws<InvalidOperationException>(fun () -> coordinator.Run(fun () -> failed) |> Async.RunSynchronously)
     |> ignore
+
     test <@ store.Snapshot.ProjectModel = FsHotWatch.ProjectModel.Observation.Unobserved @>
 
 [<Fact(Timeout = 15000)>]
@@ -1699,9 +1701,16 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             let completedWhileCleared = obj.ReferenceEquals(first, runningScan)
             loader.Resume(1)
             rediscovery.Value.GetAwaiter().GetResult()
+
             if rediscoverAfterCapture then
-                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult()) |> ignore
-                test <@ daemon.Host.WorkSnapshot.OperationFaults |> List.exists (fun (name, _) -> name = "scan") @>
+                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult())
+                |> ignore
+
+                test
+                    <@
+                        daemon.Host.WorkSnapshot.OperationFaults
+                        |> List.exists (fun (name, _) -> name = "scan")
+                    @>
             else
                 runningScan.GetAwaiter().GetResult()
 
@@ -1725,9 +1734,13 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             preprocessorResume.Set()
             loader.Resume(1)
             rediscovery |> Option.iter (fun running -> running.GetAwaiter().GetResult())
-            scan |> Option.iter (fun running ->
-                try running.GetAwaiter().GetResult()
-                with :? InvalidOperationException when rediscoverAfterCapture -> ()))
+
+            scan
+            |> Option.iter (fun running ->
+                try
+                    running.GetAwaiter().GetResult()
+                with :? InvalidOperationException when rediscoverAfterCapture ->
+                    ()))
 
 [<Fact(Timeout = 15000)>]
 let ``a loaded project that maps or registers as zero is not a loader failure`` () =

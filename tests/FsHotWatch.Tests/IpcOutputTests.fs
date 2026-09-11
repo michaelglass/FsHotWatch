@@ -1627,7 +1627,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               Diagnostics = DiagnosticCounts.empty }
 
         let initialExitCode =
-            publishVerdict BaselineFixtures.model
+            publishVerdict
+                BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.Confirmation
@@ -1684,7 +1685,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
 
         let zeroTestExitCode =
-            publishVerdict BaselineFixtures.model
+            publishVerdict
+                BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1736,7 +1738,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         let tracked = System.IO.Path.Combine(src, "Tracked.fs")
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 42\n")
 
-        publishVerdict BaselineFixtures.model
+        publishVerdict
+            BaselineFixtures.model
             repoRoot
             []
             CheckVerdict.Confirmation
@@ -1752,7 +1755,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 43\n")
 
         let exitCode =
-            publishVerdict BaselineFixtures.model
+            publishVerdict
+                BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1775,7 +1779,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
 
 let private publishA643Prior (repoRoot: string) (kind: string) =
     let publish scope outcome statuses =
-        publishVerdict BaselineFixtures.model
+        publishVerdict
+            BaselineFixtures.model
             repoRoot
             []
             CheckVerdict.InnerLoop
@@ -1841,7 +1846,8 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
         let noTests = NoTestsRun NoTestsReason.AlreadyVerified
 
         let exitCode =
-            publishVerdict BaselineFixtures.model
+            publishVerdict
+                BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1885,7 +1891,8 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             else
                 CheckVerdict.InnerLoop
 
-        publishVerdict BaselineFixtures.model
+        publishVerdict
+            BaselineFixtures.model
             repoRoot
             []
             mode
@@ -1911,9 +1918,17 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun _ -> [])
                 false
                 (fun () -> "complete: 0 files checked")
-                (fun () -> raise (FsHotWatch.ProjectModel.UnavailableException(
-                    FsHotWatch.ProjectModel.ofCompleted 1L
-                        { Discovered = 1; Loaded = 0; OptionsMapped = 0; Registered = 0 })))
+                (fun () ->
+                    raise (
+                        FsHotWatch.ProjectModel.UnavailableException(
+                            FsHotWatch.ProjectModel.ofCompleted
+                                1L
+                                { Discovered = 1
+                                  Loaded = 0
+                                  OptionsMapped = 0
+                                  Registered = 0 }
+                        )
+                    ))
                 (fun () -> "{}")
                 (fun () ->
                     diagnosticsReads <- diagnosticsReads + 1

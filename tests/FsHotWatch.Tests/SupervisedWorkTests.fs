@@ -416,30 +416,38 @@ let ``shared execution deadline retains an exclusive capability until real compl
     let identity, _ = owner.TryClaim "run" |> Option.get
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
-    let deadlineCallback = TaskCompletionSource<unit -> unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let deadlineCallback =
+        TaskCompletionSource<unit -> unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
     let execution =
         SupervisedWork.execute
             "exclusive"
             (TimeSpan.FromMinutes 1.0)
             (fun _ callback ->
                 deadlineCallback.SetResult callback
-                { new IDisposable with member _.Dispose() = () })
+
+                { new IDisposable with
+                    member _.Dispose() = () })
             (fun failure -> owner.MarkRunFailure(identity, failure))
             CancellationToken.None
-            (fun _ -> async {
-                entered.Set()
-                Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
-                return () })
+            (fun _ ->
+                async {
+                    entered.Set()
+                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    return ()
+                })
             (fun outcome settleChildren ->
                 settleChildren ()
+
                 match outcome with
-                | Ok () -> owner.CompleteRun identity |> ignore
+                | Ok() -> owner.CompleteRun identity |> ignore
                 | Result.Error failure -> owner.FailRun(identity, failure))
         |> fun work -> Async.StartAsTask(work, cancellationToken = CancellationToken.None)
 
     try
         Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
-        deadlineCallback.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() ()
+        deadlineCallback.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult () ()
         Assert.True(store.Snapshot.IsBusy)
         Assert.NotEmpty store.Snapshot.Faults
         Assert.False execution.IsCompleted
@@ -489,9 +497,11 @@ let ``queued intents follow the exact run through prepared completion before FIF
     Assert.True before.IsBusy
     Assert.Equal(1, owner.Snapshot.State)
     Assert.False first.IsCompleted
-    for index in 0 .. 2 do
+
+    for index in 0..2 do
         let _, identity = received[index]
         owner.CommitEvent(identity, owner.Snapshot.State + 1)
+
     Assert.Equal<string list>([ "command-1"; "new-flush"; "command-2" ], received |> Seq.map fst |> Seq.toList)
     Assert.False store.Snapshot.IsBusy
     Assert.True first.IsCompletedSuccessfully
@@ -503,9 +513,15 @@ let ``executor fault fails queued receipts but retains the live exclusive worker
     let store = PluginWorkOwner.Store()
     let owner = PluginWorkOwner.Owner((), store, "faulted")
     let active, _ = owner.TryClaim "tests" |> Option.get
-    let queued = owner.EnqueueIntent("tests", None, fun _ -> failwith "must not deliver after executor fault")
+
+    let queued =
+        owner.EnqueueIntent("tests", None, fun _ -> failwith "must not deliver after executor fault")
+
     owner.FaultExecutor(InvalidOperationException("executor stopped"))
-    Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult()) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult())
+    |> ignore
+
     Assert.True store.Snapshot.IsBusy
     owner.FailRun(active, InvalidOperationException("worker drained"))
     Assert.False store.Snapshot.IsBusy
@@ -516,7 +532,10 @@ let ``commands queued before a result fold stay ahead of later successor intents
     let owner = PluginWorkOwner.Owner((), store, "fifo")
     let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
     let firstRun, _ = owner.TryClaim "tests" |> Option.get
-    let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
+
+    let earlier =
+        owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
+
     let fold = owner.CompleteRun firstRun |> Option.get
     let nextRun, _ = owner.TryClaim("tests", after = fold) |> Option.get
     let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later", id))

@@ -830,23 +830,30 @@ let ``run-once overwrites a current green before surfacing total discovery failu
 [<InlineData(false, "mapping-failed")>]
 [<InlineData(true, "registration-failed")>]
 let ``run-once publishes a versioned unavailable model after successful loading``
-    (mappingProducedOptions: bool, expectedReason: string) =
+    (mappingProducedOptions: bool, expectedReason: string)
+    =
     withProjectOnlyRepo "runonce-unavailable-model" (fun repoRoot ->
         let projectPath = FsHotWatch.Discovery.findFsprojFiles repoRoot |> List.exactlyOne
         let loader = ControlledWorkspaceLoader([ [ minimalWorkspaceProject projectPath ] ])
         loader.Resume(0)
+
         let createDaemon root =
             Daemon.createWithWorkspaceLoader
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                { Daemon.DaemonOptions.defaults with RunMode = Daemon.RunMode.OneShot }
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun _ ->
-                    if mappingProducedOptions then [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
-                    else [])
+                    if mappingProducedOptions then
+                        [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
+                    else
+                        [])
+
         let runScan (daemon: Daemon) =
             daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
             daemon.Host.GetAllStatuses()
+
         let ex =
             Assert.Throws<ConfigError>(fun () ->
                 FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
@@ -859,8 +866,12 @@ let ``run-once publishes a versioned unavailable model after successful loading`
                     (noTestProjectsConfig ())
                     None
                 |> ignore)
+
         test <@ ex.Message.Contains("PROJECT MODEL UNAVAILABLE") @>
-        use document = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(FsHotWatch.Cli.Verdict.path repoRoot))
+
+        use document =
+            System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(FsHotWatch.Cli.Verdict.path repoRoot))
+
         let model = document.RootElement.GetProperty("projectModel")
         Assert.Equal("fshw-project-model-v1", model.GetProperty("schema").GetString())
         Assert.Equal("unavailable", model.GetProperty("status").GetString())

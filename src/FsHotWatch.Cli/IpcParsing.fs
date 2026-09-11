@@ -986,20 +986,30 @@ type DaemonEvidence =
     | Served of FsHotWatch.DaemonPhases.PhaseRecord list * FsHotWatch.ProjectModel.Observation * ModelReceipt list
 
 module DaemonEvidence =
-    let model = function
+    let model =
+        function
         | DaemonEvidence.Served(_, observation, _) -> observation
         | DaemonEvidence.NotServed -> FsHotWatch.ProjectModel.Observation.Unobserved
 
-    let receipts = function
+    let receipts =
+        function
         | DaemonEvidence.Served(_, _, receipts) -> receipts
         | DaemonEvidence.NotServed -> []
 
     /// The ledger of an in-process host (`--run-once`), read now.
     let ofHost (host: FsHotWatch.PluginHost.PluginHost) : DaemonEvidence =
         let snapshot = host.WorkSnapshot
-        let receipts = snapshot.Evidence |> List.collect (fun proof ->
-            proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
-                { RunId = runId; Generation = proof.Generation; Refusals = proof.FailureReasons }))
+
+        let receipts =
+            snapshot.Evidence
+            |> List.collect (fun proof ->
+                proof.AuthorizedRunIds
+                |> Set.toList
+                |> List.map (fun runId ->
+                    { RunId = runId
+                      Generation = proof.Generation
+                      Refusals = proof.FailureReasons }))
+
         DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow), snapshot.ProjectModel, receipts)
 
     /// The `daemonPhases` array of a diagnostics response. Entries that do not carry a
@@ -1053,23 +1063,46 @@ module DaemonEvidence =
                         match root.TryGetProperty("projectModel") with
                         | true, value -> FsHotWatch.ProjectModelWire.tryRead value
                         | _ -> None
+
                     let receipts =
                         match root.TryGetProperty("modelReceipts") with
                         | true, values when values.ValueKind = JsonValueKind.Array ->
                             [ for value in values.EnumerateArray() do
-                                if value.ValueKind = JsonValueKind.Object then
-                                    match value.TryGetProperty("runId"), value.TryGetProperty("modelGeneration"), value.TryGetProperty("refusals") with
-                                    | (true, run), (true, generation), (true, refusals)
-                                        when run.ValueKind = JsonValueKind.String && generation.ValueKind = JsonValueKind.Number && refusals.ValueKind = JsonValueKind.Array ->
-                                        match Guid.TryParse(run.GetString()), generation.TryGetInt64() with
-                                        | (true, runId), (true, modelGeneration) ->
-                                            let reasons = refusals.EnumerateArray() |> Seq.map (fun reason ->
-                                                if reason.ValueKind = JsonValueKind.String then reason.GetString() else "invalid refusal") |> Seq.toList
-                                            yield { RunId = runId; Generation = modelGeneration; Refusals = reasons }
-                                        | _ -> ()
-                                    | _ -> () ]
+                                  if value.ValueKind = JsonValueKind.Object then
+                                      match
+                                          value.TryGetProperty("runId"),
+                                          value.TryGetProperty("modelGeneration"),
+                                          value.TryGetProperty("refusals")
+                                      with
+                                      | (true, run), (true, generation), (true, refusals) when
+                                          run.ValueKind = JsonValueKind.String
+                                          && generation.ValueKind = JsonValueKind.Number
+                                          && refusals.ValueKind = JsonValueKind.Array
+                                          ->
+                                          match Guid.TryParse(run.GetString()), generation.TryGetInt64() with
+                                          | (true, runId), (true, modelGeneration) ->
+                                              let reasons =
+                                                  refusals.EnumerateArray()
+                                                  |> Seq.map (fun reason ->
+                                                      if reason.ValueKind = JsonValueKind.String then
+                                                          reason.GetString()
+                                                      else
+                                                          "invalid refusal")
+                                                  |> Seq.toList
+
+                                              yield
+                                                  { RunId = runId
+                                                    Generation = modelGeneration
+                                                    Refusals = reasons }
+                                          | _ -> ()
+                                      | _ -> () ]
                         | _ -> []
-                    DaemonEvidence.Served(phases, model |> Option.defaultValue FsHotWatch.ProjectModel.Observation.Unobserved, receipts)
+
+                    DaemonEvidence.Served(
+                        phases,
+                        model |> Option.defaultValue FsHotWatch.ProjectModel.Observation.Unobserved,
+                        receipts
+                    )
             | _ -> DaemonEvidence.NotServed
         with :? JsonException ->
             DaemonEvidence.NotServed

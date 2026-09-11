@@ -106,7 +106,10 @@ let ``set-scope replies only after the owner applies its intent`` (scope: string
             { RepoRoot = "/tmp"
               Log = ignore
               Post = posted.Add
-              EnqueueExclusiveIntent = fun _ _ message -> posted.Add message; System.Threading.Tasks.Task.FromResult(())
+              EnqueueExclusiveIntent =
+                fun _ _ message ->
+                    posted.Add message
+                    System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = ProjectGraphAccessor.none }
 
@@ -1685,14 +1688,18 @@ let ``only-failed resolves current owner failures instead of the command snapsho
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let mutable selectedProjects = []
+
     let ownerCtx =
         { recordingCtx with
-            RunExclusiveShared = fun _ _ workFor _ _ ->
-                let outcome = workFor Ready |> Async.RunSynchronously
-                match outcome with
-                | TestsFinished(_, completed, _) -> selectedProjects <- completed.Results |> Map.keys |> Seq.toList
-                | other -> Assert.Fail($"expected a completed owned run, got {other}")
-                SharedClaimed }
+            RunExclusiveShared =
+                fun _ _ workFor _ _ ->
+                    let outcome = workFor Ready |> Async.RunSynchronously
+
+                    match outcome with
+                    | TestsFinished(_, completed, _) -> selectedProjects <- completed.Results |> Map.keys |> Seq.toList
+                    | other -> Assert.Fail($"expected a completed owned run, got {other}")
+
+                    SharedClaimed }
 
     let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
         { RepoRoot = "/tmp"
@@ -1700,13 +1707,20 @@ let ``only-failed resolves current owner failures instead of the command snapsho
           IsRunning = fun _ -> false
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
           Post = ignore
-          EnqueueExclusiveIntent = fun _ _ message ->
-              handler.Update ownerCtx ownerState (Custom message) |> Async.RunSynchronously |> ignore
-              System.Threading.Tasks.Task.FromResult(()) }
+          EnqueueExclusiveIntent =
+            fun _ _ message ->
+                handler.Update ownerCtx ownerState (Custom message)
+                |> Async.RunSynchronously
+                |> ignore
+
+                System.Threading.Tasks.Task.FromResult(()) }
+
     let command = handler.Commands |> List.find (fst >> (=) "run-tests") |> snd
+
     FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx snapshot [| "{\"only-failed\":true}" |]
     |> Async.RunSynchronously
     |> ignore
+
     Assert.Equal<string list>([ "ProjB" ], selectedProjects)
 
 [<Fact(Timeout = 20000)>]
@@ -1728,7 +1742,10 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
 
     let ctx =
         { recordingCtx with
-            EnqueueExclusiveIntent = fun _ _ message -> queued.Add message; System.Threading.Tasks.Task.FromResult(())
+            EnqueueExclusiveIntent =
+                fun _ _ message ->
+                    queued.Add message
+                    System.Threading.Tasks.Task.FromResult(())
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     match claims with
@@ -1761,8 +1778,12 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
 
     // `narrowRun` completes the pre-existing in-flight run. Its terminal handler must
     // dequeue and LAUNCH the explicit manual filter as a new top-level receipt boundary.
-    let completedState = handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
-    let drainedState = handler.Update ctx completedState (Custom queued[0]) |> Async.RunSynchronously
+    let completedState =
+        handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
+
+    let drainedState =
+        handler.Update ctx completedState (Custom queued[0]) |> Async.RunSynchronously
+
     test <@ drainedState.EvidenceReceipt.IsNone @>
     test <@ claims.IsEmpty @>
 
@@ -3111,6 +3132,7 @@ let ``a retained owner cannot learn a full suite baseline earned by a later comp
 [<Trait("A104Evidence", "PendingDebtPublication")>]
 let ``pending debt persistence follows the successful proposal and precedes acknowledgement`` () =
     let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
     let candidate =
         handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
         |> Async.RunSynchronously
@@ -3120,14 +3142,20 @@ let ``pending debt persistence follows the successful proposal and precedes ackn
     | other -> Assert.Fail($"proposal must not discharge durable debt: {other}")
 
     let prepared = handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously
+
     match PendingVerification.load root with
     | PendingVerification.LoadedQueue.Loaded queue -> Assert.Empty queue
     | other -> Assert.Fail($"successful preparation writes the candidate: {other}")
 
-    let interrupted = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+    let interrupted =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
     Assert.True(interrupted.Init.Debt.RecoveryOutstanding, "before publication, restart must see unknown debt")
     prepared.Finalize |> Async.RunSynchronously
-    let published = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let published =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
     Assert.False(published.Init.Debt.RecoveryOutstanding)
     Assert.Empty published.Init.Debt.PendingQueue
     Assert.Contains(symbol, prior.Debt.PendingQueue)
@@ -3136,6 +3164,7 @@ let ``pending debt persistence follows the successful proposal and precedes ackn
 [<Trait("A104Evidence", "PendingDebtPublication")>]
 let ``failed durable preparation retains restart debt after a partial sidecar write`` () =
     let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
     let candidate =
         handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
         |> Async.RunSynchronously
@@ -3143,14 +3172,21 @@ let ``failed durable preparation retains restart debt after a partial sidecar wr
     // Queue persistence precedes the baseline. Refuse the later write to model a
     // partially prepared owner transaction, not a failure before anything happened.
     let baselinePath = FullSuiteBaseline.sidecarPath root
-    if File.Exists baselinePath then File.Delete baselinePath
+
+    if File.Exists baselinePath then
+        File.Delete baselinePath
+
     Directory.CreateDirectory baselinePath |> ignore
+
     Assert.ThrowsAny<IOException>(fun () ->
         handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously |> ignore)
     |> ignore
 
     Assert.Contains(symbol, prior.Debt.PendingQueue)
-    let restarted = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
+    let restarted =
+        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+
     Assert.True(restarted.Init.Debt.RecoveryOutstanding)
     Assert.True((restarted.CacheKey.Value restarted.Init (BuildCompleted BuildSucceeded)).IsNone)
 
@@ -3159,23 +3195,30 @@ let ``failed durable preparation retains restart debt after a partial sidecar wr
 [<Trait("A104Evidence", "PendingDebtRevision")>]
 let ``a completed launch cannot discharge a newer revision of the same symbol`` () =
     let _, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
     let changedAgain =
         { prior with
             Debt =
                 { prior.Debt with
                     Revision = 1L
                     SymbolRevisions = Map.ofList [ symbol, 1L ] } }
+
     let completed =
         handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] launch)
         |> Async.RunSynchronously
+
     Assert.Contains(symbol, completed.Debt.PendingQueue)
     Assert.Equal(1L, completed.Debt.SymbolRevisions[symbol])
     Assert.True((handler.CacheKey.Value completed (BuildCompleted BuildSucceeded)).IsNone)
 
-    let currentLaunch = { launch with SymbolRevisions = changedAgain.Debt.SymbolRevisions }
+    let currentLaunch =
+        { launch with
+            SymbolRevisions = changedAgain.Debt.SymbolRevisions }
+
     let verified =
         handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] currentLaunch)
         |> Async.RunSynchronously
+
     Assert.DoesNotContain(symbol, verified.Debt.PendingQueue)
 
 [<Fact>]

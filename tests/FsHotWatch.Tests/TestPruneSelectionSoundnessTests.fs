@@ -351,6 +351,7 @@ let ``AUTOMATION-110: a symbol covered only by an unlisted test project is REPOR
         let host = session tmpDir dbPath configs
         let outcome = buildAndSettle host
         Assert.Contains("Lib.orphan", PendingQueueHelpers.loadQueue tmpDir)
+
         match outcome with
         | Failed(message, _, _) -> Assert.Contains("Unlisted", message)
         | other -> Assert.Fail($"known unrunnable obligations must remain non-green: {other}"))
