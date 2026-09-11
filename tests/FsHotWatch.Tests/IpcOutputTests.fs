@@ -218,7 +218,7 @@ let ``daemon command retains executed evidence across a same-tree quiet converge
             elif failSecondRead then
                 """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0}"""
             else
-                (completedDiagnosticsJson ())
+                (completedDiagnosticsJsonForRun runId)
 
         // AUTOMATION-533. The FIRST read is the driver's baseline, taken before the scan
         // so it can tell this check's runs from the ones that preceded it; the executed
@@ -1168,7 +1168,7 @@ let private driveConfirmForVerdict
             (fun () -> "idle")
             (fun () -> "idle")
             (fun () -> "{}")
-            (fun () -> (completedDiagnosticsJson ()))
+            (fun () -> (completedDiagnosticsJsonForRun driveRunId))
             getTestRun
             getCheckReach
             (fun () -> forceCalls <- forceCalls + 1)
@@ -2067,7 +2067,7 @@ let ``green publication requires the graded run's current model receipt`` kind e
         let receipts =
             if kind = "missing" then []
             else
-                [ { RunId = if kind = "different-run" then System.Guid.NewGuid() else BaselineFixtures.runId
+                [ { RunId = Some(if kind = "different-run" then System.Guid.NewGuid() else BaselineFixtures.runId)
                     Generation = if kind = "different-model" then 2L else 1L
                     Refusals = if kind = "refused" then [ "unknown debt" ] else [] } ]
         let evidence = DaemonEvidence.Served([], BaselineFixtures.model, receipts)

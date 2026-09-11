@@ -732,7 +732,7 @@ module BaselineFixtures =
 /// receipt from the public test report it is supposed to validate.
 let modelEvidence runIds =
     let receipts: FsHotWatch.Cli.IpcParsing.ModelReceipt list =
-        runIds |> List.map (fun runId -> { RunId = runId; Generation = 1L; Refusals = [] })
+        runIds |> List.map (fun runId -> { RunId = Some runId; Generation = 1L; Refusals = [] })
     FsHotWatch.Cli.IpcParsing.DaemonEvidence.Served([], BaselineFixtures.model, receipts)
 
 let internal publishVerdict evidence repoRoot excludePatterns checkMode noWarnFail runReport checkScoped statuses redCauses settledTree outcome =
@@ -741,9 +741,11 @@ let internal publishVerdict evidence repoRoot excludePatterns checkMode noWarnFa
         repoRoot excludePatterns checkMode noWarnFail runReport checkScoped statuses
         evidence redCauses settledTree outcome
 
-let completedDiagnosticsJson () =
+let completedDiagnosticsJsonForRun (runId: Guid) =
     System.Text.Json.JsonSerializer.Serialize(
         {| count = 0; files = Map.empty<string, string>; statuses = Map.empty<string, string>; unchecked = 0
            daemonPhases = ([||] : string array)
            projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
-           modelReceipts = [ {| runId = BaselineFixtures.runId.ToString("N"); modelGeneration = 1L; refusals = ([] : string list) |} ] |})
+           modelReceipts = [ {| runId = runId.ToString("N"); modelGeneration = 1L; refusals = ([] : string list) |} ] |})
+
+let completedDiagnosticsJson () = completedDiagnosticsJsonForRun BaselineFixtures.runId
