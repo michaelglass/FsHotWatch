@@ -813,7 +813,17 @@ let private exec (ipc: IpcOps) (command: Command) : int =
     Directory.CreateDirectory("/tmp/.fshw") |> ignore
     FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
     File.WriteAllText("/tmp/.fshw/config.hash", computeConfigHashWith defaultFileOps "/tmp")
-    executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
+
+    executeCommand
+        (configContentHash "")
+        (fun _ -> Unchecked.defaultof<_>)
+        ipc
+        "/tmp"
+        "pipe"
+        command
+        defaultGlobalOptions
+        fakeConfig
+        30.0
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Stop calls shutdown`` () =
@@ -1006,7 +1016,16 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
                 IsRunning = fun _ -> false }
 
         let exitCode =
-            executeCommand createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
+            executeCommand
+                (configContentHash "")
+                createDaemon
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                Start
+                defaultGlobalOptions
+                fakeConfig
+                30.0
 
         test <@ exitCode = 2 @>
         test <@ not createDaemonCalled @>
@@ -1028,6 +1047,7 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
 
         let exitCode =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1064,7 +1084,16 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
         let threw =
             try
-                executeCommand createDaemon ipc tmpDir "pipe" Start defaultGlobalOptions fakeConfig 30.0
+                executeCommand
+                    (configContentHash "")
+                    createDaemon
+                    ipc
+                    tmpDir
+                    "pipe"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
                 |> ignore
 
                 false
@@ -1144,6 +1173,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let stderr, exitCode =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (daemonWithNativeStream
                         (fun _ -> Interlocked.Increment(&produced.contents) |> ignore)
                         alwaysRefused)
@@ -1198,6 +1228,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let secondRun =
             try
                 executeCommand
+                    (configContentHash "")
                     secondCreateDaemon
                     ipc
                     tmpDir
@@ -1480,6 +1511,7 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1771,7 +1803,16 @@ let private withStartupFailure command =
             { fakeIpc () with
                 IsRunning = fun _ -> false }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" command defaultGlobalOptions fakeConfig 0.0)
+        executeCommand
+            (configContentHash "")
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            tmpDir
+            "pipe"
+            command
+            defaultGlobalOptions
+            fakeConfig
+            0.0)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns 2 when daemon startup fails`` () =
@@ -1925,6 +1966,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1967,6 +2009,7 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -1995,6 +2038,7 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
 
         let result =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2022,6 +2066,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2064,6 +2109,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2110,6 +2156,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
         let stderr, failedResult =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2127,6 +2174,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
 
         let nextResult =
             executeCommand
+                (configContentHash "")
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2152,6 +2200,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
         let d = runningDaemon ()
 
         executeCommand
+            (configContentHash "")
             (fun _ -> Unchecked.defaultof<_>)
             (fakeDaemonIpc tmpDir d)
             tmpDir
@@ -2203,6 +2252,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> Unchecked.defaultof<_>)
                     (fakeDaemonIpc tmpDir d)
                     tmpDir
@@ -3032,7 +3082,7 @@ let ``launcher cannot overwrite or manufacture daemon loaded config identity`` p
                 IsRunning = fun _ -> publishes }
 
         let running =
-            startFreshDaemonWith defaultFileOps ipc root "fixture-pipe" "stale-client-snapshot" "" "logs" 0.
+            startFreshDaemonWith defaultFileOps ipc root "fixture-pipe" "" "logs" 0.
 
         Assert.Equal(publishes, running)
 
@@ -3061,4 +3111,4 @@ let ``loaded configuration identity retains the parsed snapshot across later fil
         let identity = configContentHash source
         File.WriteAllText(path, "{\"lint\":true}")
         Assert.Equal(configContentHash original, identity)
-        Assert.NotEqual(computeConfigHashWith defaultFileOps root, identity))
+        Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity))
