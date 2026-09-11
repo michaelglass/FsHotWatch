@@ -1571,7 +1571,7 @@ let ``verdict admission restarts when discovery begins after the host wait start
             if secondAttemptLoads then
                 verdictWait.GetAwaiter().GetResult()
             else
-                Assert.Throws<System.InvalidOperationException>(fun () -> verdictWait.GetAwaiter().GetResult())
+                Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () -> verdictWait.GetAwaiter().GetResult())
                 |> ignore
         finally
             hostWaitCompletion.TrySetResult(()) |> ignore
@@ -1796,8 +1796,9 @@ let ``verdict admission refuses a discovered model that registered no projects``
             test <@ reason = expected @>
         | observation -> failwithf "Expected unavailable model, got %A" observation
 
-        let admission = daemon.WaitForDiscoveryAdmission().GetAwaiter().GetResult()
-        test <@ admission.Failure.IsSome @>)
+        let failure = Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () ->
+            daemon.WaitForDiscoveryAdmission().GetAwaiter().GetResult() |> ignore)
+        test <@ failure.Observation = daemon.ProjectModelObservation() @>)
 
 [<Fact(Timeout = 15000)>]
 let ``verdict wait fails immediately when total discovery failed`` () =

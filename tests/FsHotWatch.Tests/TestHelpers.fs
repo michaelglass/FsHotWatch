@@ -727,3 +727,23 @@ module BaselineFixtures =
         | FsHotWatch.Cli.Verdict.Green _ -> true
         | FsHotWatch.Cli.Verdict.Red
         | FsHotWatch.Cli.Verdict.Incomplete _ -> false
+
+/// Explicit transport fixtures belong in tests; production never derives a model
+/// receipt from the public test report it is supposed to validate.
+let modelEvidence runIds =
+    let receipts: FsHotWatch.Cli.IpcParsing.ModelReceipt list =
+        runIds |> List.map (fun runId -> { RunId = runId; Generation = 1L; Refusals = [] })
+    FsHotWatch.Cli.IpcParsing.DaemonEvidence.Served([], BaselineFixtures.model, receipts)
+
+let publishVerdict evidence repoRoot excludePatterns checkMode noWarnFail runReport checkScoped statuses redCauses settledTree outcome =
+    FsHotWatch.Cli.IpcOutput.publishVerdictForInvocation
+        (FsHotWatch.Cli.Verdict.Invocation.start ())
+        repoRoot excludePatterns checkMode noWarnFail runReport checkScoped statuses
+        evidence redCauses settledTree outcome
+
+let completedDiagnosticsJson () =
+    System.Text.Json.JsonSerializer.Serialize(
+        {| count = 0; files = Map.empty<string, string>; statuses = Map.empty<string, string>; unchecked = 0
+           daemonPhases = [||] : string array
+           projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+           modelReceipts = [ {| runId = BaselineFixtures.runId.ToString("N"); modelGeneration = 1L; refusals = [] : string list |} ] |})
