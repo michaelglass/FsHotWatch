@@ -1293,9 +1293,9 @@ let internal waitForAllTerminalCore
                     match purpose with
                     | WaitPurpose.Settle -> true
                     | WaitPurpose.Evidence ->
-                        let refusals = evidence |> List.collect (fun proof -> proof.FailureReasons)
-                        if not refusals.IsEmpty then
-                            raise (InvalidOperationException("WaitForComplete: verification refused — " + String.concat "; " refusals))
+                        // A completed failing/refused outcome is still an answer.
+                        // Its typed receipt crosses with the model; CLI publication
+                        // cannot turn its refusal reasons into a green verdict.
                         not evidence.IsEmpty
 
             if satisfied then
