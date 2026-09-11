@@ -622,3 +622,15 @@ let ``a zero-selection reply names the symbols covered only by unlisted projects
     match older.Scope with
     | NoTestsRun(NoTestsReason.ChangesUncovered(_, _, unrunnable)) -> test <@ unrunnable = UnrunnableCoverage.none @>
     | other -> failwithf "expected changes-uncovered, got %A" other
+
+[<Fact>]
+let ``model receipts accept explicit analysis identity and reject malformed run identity`` () =
+    let parse identity =
+        DaemonEvidence.parse (
+            """{"daemonPhases":[],"modelReceipts":[{"runId":""" + identity
+            + ""","modelGeneration":7,"refusals":[]}]}""")
+        |> DaemonEvidence.receipts
+
+    test <@ (parse "null").Length = 1 @>
+    test <@ (parse "\"not-a-guid\"").IsEmpty @>
+    test <@ (parse "17").IsEmpty @>
