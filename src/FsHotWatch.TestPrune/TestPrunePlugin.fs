@@ -1396,6 +1396,8 @@ type TestPruneState =
     {
         Debt: VerificationDebt
         Freshness: FileFreshness.Store
+        /// Last admitted CSharp bytes; deduplicates scan announcements, never discharges debt.
+        CSharpInputs: Map<string, string>
         PendingAges: Map<string, int>
         FullSuiteRequested: bool
         ScopeReply: (bool * Tasks.TaskCompletionSource<string>) option
@@ -5000,7 +5002,9 @@ let internal createWithLaunchDeadline
                     None)
         | _ -> []
 
-    let allowedRuntimeProjects = Set.ofList expectedRuntimeCoverageProjects
+    // Runtime obligations also carry conservative debt for sources outside FCS.
+    // Such projects may have no runtime report mapping, but remain configured debt.
+    let allowedRuntimeProjects = runnableProjects
 
     let runtimeCoverageSelection changedFiles =
         selectByRuntimeCoverage
@@ -5409,6 +5413,7 @@ let internal createWithLaunchDeadline
               Baseline = initialBaseline
               RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects initialRuntimeObligations }
           Freshness = FileFreshness.load repoRoot
+          CSharpInputs = Map.empty
           PendingAges = Map.empty
           FullSuiteRequested = false
           ScopeReply = None
@@ -6553,6 +6558,32 @@ let internal createWithLaunchDeadline
                                 { state.Debt with
                                     RecoveryOutstanding = true } }
                 | PluginEvent.FileChanged change ->
+                    let state =
+                        match change with
+                        | SourceChanged paths when not runnableProjects.IsEmpty ->
+                            (state, paths)
+                            ||> List.fold (fun current path ->
+                                if not (String.Equals(Path.GetExtension path, ".cs", StringComparison.OrdinalIgnoreCase)) then
+                                    current
+                                else
+                                    let absolute =
+                                        if Path.IsPathRooted path then path else Path.Combine(repoRoot, path)
+                                    let relative = Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
+                                    let hash = ContentHash.ofFile absolute
+                                    if ContentHash.isReadable hash && Map.tryFind relative current.CSharpInputs = Some hash then
+                                        current
+                                    else
+                                        // CSharp has no FCS symbol result. Only an actual unfiltered
+                                        // completion covering this revision may retire these projects.
+                                        { current with
+                                            CSharpInputs = Map.add relative hash current.CSharpInputs
+                                            Earned = None
+                                            Debt =
+                                                { current.Debt with
+                                                    RuntimeObligations =
+                                                        mergeRuntimeCoverageObligations current.Debt.RuntimeObligations
+                                                            (Map.ofList [ relative, runnableProjects ]) } })
+                        | _ -> state
                     let files =
                         match change with
                         | SourceChanged paths ->
