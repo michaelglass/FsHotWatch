@@ -1645,12 +1645,19 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
 
         let options =
             { Daemon.DaemonOptions.defaults with
-                FsEventsLatencySeconds = 60.0 }
+                RunMode = Daemon.RunMode.OneShot }
 
         use daemon =
-            Daemon.createWithWorkspaceLoader checker tmpDir options loader (fun projects ->
-                projects |> List.map (fun _ -> fcsOptions))
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                options
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "controlled discovery race must not construct an ambient watcher")
 
+        // This test owns every discovery admission. Native filesystem history
+        // must not add a third writer before the controlled concurrency begins.
         // Establish both a healthy registry and the scan's unchanged fingerprint.
         daemon.ScanAll() |> Async.RunSynchronously
         test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
