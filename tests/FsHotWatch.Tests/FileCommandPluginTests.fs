@@ -1330,6 +1330,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           EmitCommandCompleted = fun _ -> ()
           Checker = Unchecked.defaultof<_>
           RepoRoot = "/tmp"
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           Post = fun _ -> ()
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()

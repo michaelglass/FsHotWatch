@@ -166,6 +166,10 @@ type PluginCtx<'Msg> =
         RepoRoot: string
         /// Post a custom message back to this plugin's agent.
         Post: 'Msg -> unit
+        /// Queue owner-resolved intent through the current exclusive result fold.
+        /// Some key coalesces pending automatic intents; None preserves command FIFO.
+        /// The returned task acknowledges this exact event's committed transition.
+        EnqueueExclusiveIntent: string -> string option -> 'Msg -> System.Threading.Tasks.Task<unit>
         /// Start a named concurrent subtask. Duplicate keys are no-ops.
         StartSubtask: string -> string -> unit
         /// Update an existing subtask's label in-place. No-op if not started.
@@ -262,6 +266,10 @@ type CommandCtx<'Msg> =
         /// Post a message to the plugin's agent — the only way a command may
         /// cause work to happen.
         Post: 'Msg -> unit
+        /// Queue owner-resolved intent through the current exclusive result fold.
+        /// Some key coalesces pending automatic intents; None preserves command FIFO.
+        /// The returned task acknowledges this exact event's committed transition.
+        EnqueueExclusiveIntent: string -> string option -> 'Msg -> System.Threading.Tasks.Task<unit>
         /// Whether `key` is currently running under `RunExclusive`.
         IsRunning: string -> bool
         /// Read-only project-graph accessor.
@@ -568,6 +576,12 @@ let internal registerHandlerWithOwner
             a.Post(Custom msg, identity)
         | None -> ()
 
+    let enqueueExclusiveIntent key coalescingKey message =
+        workOwner.EnqueueIntent(key, coalescingKey, fun identity ->
+            match agentRef with
+            | Some agent -> agent.Post(Custom message, identity)
+            | None -> invalidOp "Plugin executor is unavailable after intent admission")
+
     let reportRunFailure key startedAt stage (ex: exn) =
         let summary = $"RunExclusive '%s{key}' %s{stage}: %s{ex.ToString()}"
         error (PluginName.value handler.Name) summary
@@ -762,6 +776,7 @@ let internal registerHandlerWithOwner
           Checker = services.Checker
           RepoRoot = services.RepoRoot
           Post = post
+          EnqueueExclusiveIntent = enqueueExclusiveIntent
           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
           UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
           EndSubtask = fun key -> services.EndSubtask handler.Name key
@@ -778,6 +793,7 @@ let internal registerHandlerWithOwner
         { RepoRoot = services.RepoRoot
           Log = fun msg -> services.Log handler.Name msg
           Post = post
+          EnqueueExclusiveIntent = enqueueExclusiveIntent
           IsRunning = isRunning
           ProjectGraph = services.ProjectGraph }
 
@@ -1115,6 +1131,7 @@ let internal registerHandlerWithOwner
                                       Checker = services.Checker
                                       RepoRoot = services.RepoRoot
                                       Post = post
+                                      EnqueueExclusiveIntent = enqueueExclusiveIntent
                                       StartSubtask = fun key label -> services.StartSubtask handler.Name key label
                                       UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                                       EndSubtask = fun key -> services.EndSubtask handler.Name key
