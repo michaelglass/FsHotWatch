@@ -31,8 +31,7 @@ type private WorkKind =
     | Exclusive of string * ExclusiveSlot
 
 let private isWorkerResult = function
-    | Event(_, Some(_, _, WorkerResult))
-    | Committing(_, Some(_, _, WorkerResult)) -> true
+    | Some(_, _, WorkerResult) -> true
     | _ -> false
 
 let private queued = function Running -> [] | RunningQueued(first, rest) -> first :: rest
@@ -122,10 +121,14 @@ let private phase work =
     | None -> Resting
     | Some first -> Working(first, Map.remove (fst first) work)
 
-let private requireKind id expected snapshot =
+/// Validate once and return the payload authorized by this capability. Callers
+/// consume that payload directly instead of repeating an impossible kind check.
+let private requireKind id project snapshot =
     match Map.tryFind id (entries snapshot.Phase) with
-    | Some kind when expected kind -> ()
-    | Some _ -> invalidOp "Work identity belongs to a different operation kind"
+    | Some kind ->
+        match project kind with
+        | Some payload -> payload
+        | None -> invalidOp "Work identity belongs to a different operation kind"
     | None -> invalidOp "Work identity is foreign or already completed"
 
 /// Each row contains the typed immutable domain snapshot and its ownership projection.
@@ -390,12 +393,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                 // the remaining FIFO stays owned through that exact fold too.
                 Map.add first.Id (Event(Some first.Receipt, Some(key, slot rest, IntentFold))) work, [ first ]
 
-    let retireEvent id snapshot =
-        let receipt, continuation =
-            match Map.find id (entries snapshot.Phase) with
-            | Event(receipt, continuation)
-            | Committing(receipt, continuation) -> receipt, continuation
-            | _ -> invalidOp "Expected event obligation"
+    let retireEvent id snapshot (receipt, continuation) =
         let remaining = entries snapshot.Phase |> Map.remove id
         let work, delivered =
             match continuation with
@@ -515,9 +513,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     member _.CommitEvent(id: WorkId, state: 'State) =
         let receipt, pending =
             mutate (fun snapshot ->
-                requireKind id (function Event _ -> true | _ -> false) snapshot
-                let workerResult = Map.find id (entries snapshot.Phase) |> isWorkerResult
-                let work, receipt, pending = retireEvent id snapshot
+                let payload =
+                    requireKind id (function Event(receipt, continuation) -> Some(receipt, continuation) | _ -> None) snapshot
+                let workerResult = snd payload |> isWorkerResult
+                let work, receipt, pending = retireEvent id snapshot payload
                 { snapshot with
                     Domain = state
                     Phase = phase work
@@ -538,17 +537,8 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     /// Publish a prepared candidate without settling its original event obligation.
     member _.PublishEventState(id: WorkId, state: 'State) =
         mutate (fun snapshot ->
-            requireKind
-                id
-                (function
-                | Event _ -> true
-                | _ -> false)
-                snapshot
-
             let receipt, continuation =
-                match Map.find id (entries snapshot.Phase) with
-                | Event(receipt, continuation) -> receipt, continuation
-                | _ -> invalidOp "Expected event obligation"
+                requireKind id (function Event(receipt, continuation) -> Some(receipt, continuation) | _ -> None) snapshot
 
             { snapshot with
                 Domain = state
@@ -561,15 +551,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
 
         let receipt, pending =
             mutate (fun snapshot ->
-                requireKind
-                    id
-                    (function
-                    | Committing _ -> true
-                    | _ -> false)
-                    snapshot
-
-                let workerResult = Map.find id (entries snapshot.Phase) |> isWorkerResult
-                let work, receipt, pending = retireEvent id snapshot
+                let payload =
+                    requireKind id (function Committing(receipt, continuation) -> Some(receipt, continuation) | _ -> None) snapshot
+                let workerResult = snd payload |> isWorkerResult
+                let work, receipt, pending = retireEvent id snapshot payload
 
                 { snapshot with
                     Phase = phase work
@@ -597,15 +582,12 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
 
         let receipt, pending =
             mutate (fun snapshot ->
-                requireKind
-                    id
-                    (function
-                    | Event _
-                    | Committing _ -> true
-                    | _ -> false)
-                    snapshot
-
-                let work, receipt, pending = retireEvent id snapshot
+                let payload =
+                    requireKind id (function
+                        | Event(receipt, continuation)
+                        | Committing(receipt, continuation) -> Some(receipt, continuation)
+                        | _ -> None) snapshot
+                let work, receipt, pending = retireEvent id snapshot payload
 
                 let retainedFailure =
                     match snapshot.Failure, failure with
@@ -628,13 +610,8 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     /// executor cannot consume a result; the worker still retires only after cleanup.
     member _.CompleteRun(id: WorkId) : WorkId option =
         mutate (fun snapshot ->
-            requireKind
-                id
-                (function
-                | Exclusive _ -> true
-                | Event _
-                | Committing _ -> false)
-                snapshot
+            let key, pending =
+                requireKind id (function Exclusive(key, pending) -> Some(key, pending) | _ -> None) snapshot
 
             let remaining = entries snapshot.Phase |> Map.remove id
 
@@ -645,10 +622,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                 None
             | None ->
                 let completion = WorkId(Guid.NewGuid())
-                let continuation =
-                    match Map.find id (entries snapshot.Phase) with
-                    | Exclusive(key, pending) -> Some(key, pending, WorkerResult)
-                    | _ -> invalidOp "Expected exclusive operation"
+                let continuation = Some(key, pending, WorkerResult)
                 let work = remaining |> Map.add completion (Event(None, continuation))
                 { snapshot with Phase = phase work }, Some completion)
 
@@ -699,12 +673,9 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     member _.FailRun(id: WorkId, failure: exn) =
         let pending =
             mutate (fun snapshot ->
-                requireKind id (function Exclusive _ -> true | _ -> false) snapshot
                 let key, pending =
-                    match Map.find id (entries snapshot.Phase) with
-                    | Exclusive(key, pending) -> key, queued pending
-                    | _ -> invalidOp "Expected exclusive operation"
-                let work, delivered = admitSuccessor key pending (entries snapshot.Phase |> Map.remove id)
+                    requireKind id (function Exclusive(key, pending) -> Some(key, pending) | _ -> None) snapshot
+                let work, delivered = admitSuccessor key (queued pending) (entries snapshot.Phase |> Map.remove id)
                 { snapshot with
                     Phase = phase work
                     Failure =
