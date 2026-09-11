@@ -580,13 +580,12 @@ let internal resolveExcludedProjectNames
     let same left right =
         String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
 
-    let uniquePaths paths =
-        paths |> List.distinctBy (fun path -> (pathKey path).ToUpperInvariant())
+    let uniquePaths paths = paths |> List.distinctBy pathKey
 
     let solution = uniquePaths solutionProjectPaths
     let discovered = uniquePaths discoveredProjectPaths
 
-    let resolve exclusion =
+    let resolve (exclusion: Exclusion) =
         let requested = pathKey exclusion.Project
 
         let matches path =
@@ -603,7 +602,8 @@ let internal resolveExcludedProjectNames
                 |> List.filter (fun path -> same stem (Path.GetFileNameWithoutExtension(pathKey path)))
 
             match owners with
-            | [ owner ] when same (pathKey owner) (pathKey project) -> Ok(stem, exclusion.Reason)
+            | [ owner ] when same (pathKey owner) (pathKey project) ->
+                Ok(Path.GetFileNameWithoutExtension(pathKey owner), exclusion.Reason)
             | [] ->
                 Error
                     $"Excluded project {project} is absent from the discovered project inventory; its indexed identity cannot be established."

@@ -599,5 +599,34 @@ let ``exclusion authority refuses a newly discovered name collision`` () =
         test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
         test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
         inventory <- inventory @ [ Path.Combine(root, "other/RealRulesTests.fsproj") ]
-        let error = Assert.Throws<InvalidOperationException>(fun () -> resolve () |> ignore)
+        let error = Assert.Throws<System.InvalidOperationException>(fun () -> resolve () |> ignore)
         Assert.Contains("ambiguous indexed identity", error.Message))
+
+[<Fact>]
+let ``case-distinct inventory paths remain distinct ownership candidates`` () =
+    let first = "tests/A/Fixture.fsproj"
+    let second = "tests/a/Fixture.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ first ]
+            [ first; second ]
+            [ { Project = first
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "Case-sensitive filesystems can contain both actual projects."
+
+[<Fact>]
+let ``case-insensitive solution alias returns the actual discovered filename spelling`` () =
+    let declared = "tests/fixture/realrulestests.fsproj"
+    let discovered = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ declared ]
+            [ discovered ]
+            [ { Project = declared
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
