@@ -2088,12 +2088,12 @@ let ``analysis-only green requires its own completed model receipt`` kind expect
         let receipts =
             if kind = "missing" then []
             else
-                [ {| runId = null : string
+                [ {| runId = (null : string)
                      modelGeneration = if kind = "different-model" then 2L else 1L
                      refusals = if kind = "refused" then [ "unchecked file" ] else [] |} ]
         let evidence =
             System.Text.Json.JsonSerializer.Serialize(
-                {| daemonPhases = [||] : string array
+                {| daemonPhases = ([||] : string array)
                    projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
                    modelReceipts = receipts |})
             |> DaemonEvidence.parse

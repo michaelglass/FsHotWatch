@@ -744,6 +744,6 @@ let publishVerdict evidence repoRoot excludePatterns checkMode noWarnFail runRep
 let completedDiagnosticsJson () =
     System.Text.Json.JsonSerializer.Serialize(
         {| count = 0; files = Map.empty<string, string>; statuses = Map.empty<string, string>; unchecked = 0
-           daemonPhases = [||] : string array
+           daemonPhases = ([||] : string array)
            projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
-           modelReceipts = [ {| runId = BaselineFixtures.runId.ToString("N"); modelGeneration = 1L; refusals = [] : string list |} ] |})
+           modelReceipts = [ {| runId = BaselineFixtures.runId.ToString("N"); modelGeneration = 1L; refusals = ([] : string list) |} ] |})
