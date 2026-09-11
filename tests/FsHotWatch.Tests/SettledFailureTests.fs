@@ -177,3 +177,51 @@ let ``public verdict wait reports current failed build without inventing test ev
             |> ignore
         Assert.Empty host.WorkSnapshot.Evidence
         Assert.False(System.IO.File.Exists testStarted)))
+
+[<Fact(Timeout = 15000)>]
+let ``a real successful successor retires failure proof and remains cacheable without earning test evidence`` () =
+    withTempDir "failed-build-successor" (fun root ->
+        let source = System.IO.Path.Combine(root, "Source.fs")
+        let project = System.IO.Path.Combine(root, "Manual.fsproj")
+        let script = System.IO.Path.Combine(root, "build.sh")
+        let recover = System.IO.Path.Combine(root, "recover")
+        let calls = System.IO.Path.Combine(root, "calls")
+        let output = System.IO.Path.Combine(root, "bin", "Debug", "net10.0", "Manual.dll")
+        System.IO.File.WriteAllText(source, "module Source\nlet value = 1\n")
+        writeMinimalFsproj project "net10.0" [ "Source.fs" ]
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName output) |> ignore
+        System.IO.File.WriteAllText(script, $"echo run >> '{calls}'\nif test -f '{recover}'; then echo assembly > '{output}'; exit 0; fi\necho '{source}(1,1): error FS0001: actual failure'\nexit 1\n")
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(project) |> ignore
+        graph.RegisterProjectOutput(AbsProjectPath.create project, output)
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
+        let model = FsHotWatch.ProjectModel.ofCompleted 1L { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 }
+        host.WorkStore.PublishProjectModelWithFiles(model, Set.singleton (AbsFilePath.create source))
+        host.SetProjectGraph { ProjectGraphAccessor.none with ObserveModel = fun () -> host.WorkSnapshot.ProjectModel }
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] (Some 5))
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitUntil (fun () -> not host.WorkSnapshot.IsBusy && not host.WorkSnapshot.CompletedFailures.IsEmpty) 5000
+        FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 1.) System.Threading.CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+        System.IO.File.WriteAllText(recover, "enabled")
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitUntil
+            (fun () -> not host.WorkSnapshot.IsBusy &&
+                (match host.GetStatus "build" with | Some(Completed _) -> true | _ -> false))
+            5000
+        Assert.Equal(2, System.IO.File.ReadAllLines(calls).Length)
+        Assert.Empty host.WorkSnapshot.CompletedFailures
+        Assert.Empty host.WorkSnapshot.Evidence
+        Assert.Throws<TimeoutException>(fun () ->
+            FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromMilliseconds 100.) System.Threading.CancellationToken.None
+            |> fun task -> task.GetAwaiter().GetResult()) |> ignore
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitUntil
+            (fun () -> not host.WorkSnapshot.IsBusy &&
+                (match host.GetStatus "build" with
+                 | Some(Completed(_, verdict)) -> verdict.Summary.Contains "(cached)"
+                 | _ -> false))
+            5000
+        Assert.Equal(2, System.IO.File.ReadAllLines(calls).Length)
+        Assert.Empty host.WorkSnapshot.CompletedFailures)

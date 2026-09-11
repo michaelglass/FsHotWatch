@@ -218,9 +218,10 @@ type PluginHost
 
     let dispatchToAll event = dispatchTrackedToAll event |> ignore
 
-    /// Install the read-only project-graph accessor exposed to every plugin via
-    /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over its
-    /// live `ProjectGraph`, before registering plugins.
+    member internal _.RepoRoot = normalizedRepoRoot
+
+    /// Only an idle, unchanged owner snapshot and matching readable launch inputs
+    /// can authorize a completed failure for the current model.
     member internal _.CurrentCompletedFailures(snapshot: PluginWorkOwner.HostSnapshot) =
         if snapshot.IsBusy then []
         else
@@ -244,6 +245,7 @@ type PluginHost
 
 
 
+    /// Install the live graph before plugins are registered.
     member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
 
     /// Register a declarative framework-managed plugin handler.

@@ -421,6 +421,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                        owner = "build"
                        modelGeneration = proof.Generation
                        inputTreeHash = proof.InputTreeHash
+                       inputFiles =
+                        proof.InputFiles
+                        |> List.map (fun (path, hash) ->
+                            {| path = System.IO.Path.GetRelativePath(config.Host.RepoRoot, path)
+                               contentHash = hash |})
                        reason = proof.Reason |})
                modelReceipts =
                 [ yield!
