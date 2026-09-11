@@ -883,7 +883,7 @@ let ``run-once publishes a versioned unavailable model after successful loading`
                 loader
                 (fun _ ->
                     if mappingProducedOptions then
-                        [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
+                        [ makeProjectOptions projectPath [ "\u0000invalid.fs" ] [] ]
                     else
                         [])
 
