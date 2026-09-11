@@ -44,7 +44,7 @@ let isUnknownCommandReply (reply: string) : bool =
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
 /// full-suite check (build + every test project) finishes well inside an hour,
 /// so this only ever trips on a genuinely-wedged plugin.
-let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
+let DefaultVerdictDeadline = SupervisedWork.defaultDeadline
 
 /// Resolve the verdict-wait deadline from an optional override string (the
 /// `FSHW_VERDICT_DEADLINE_SEC` env value). A positive integer count of seconds
@@ -53,12 +53,7 @@ let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
 /// Pure so the precedence is unit-testable without touching process env.
 /// Mirrors `ProcessHelper.resolveLaunchDeadline`.
 let resolveVerdictDeadline (overrideSec: string option) : TimeSpan =
-    match overrideSec with
-    | Some s ->
-        match Int32.TryParse(s: string) with
-        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
-        | _ -> DefaultVerdictDeadline
-    | None -> DefaultVerdictDeadline
+    SupervisedWork.resolveDeadline overrideSec
 
 /// The ambient RPC deadline: `FSHW_VERDICT_DEADLINE_SEC`, else 60 min.
 let internal ambientRpcDeadline () =
@@ -413,10 +408,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                daemonPhases = daemonPhases
                projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
                modelReceipts =
-                   modelSnapshot.Evidence |> List.map (fun proof ->
-                       {| runId = proof.RunId.ToString("N")
-                          modelGeneration = proof.Generation
-                          refusals = proof.FailureReasons |})
+                   modelSnapshot.Evidence |> List.collect (fun proof ->
+                       proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
+                           {| runId = runId.ToString("N")
+                              modelGeneration = proof.Generation
+                              refusals = proof.FailureReasons |}))
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)
