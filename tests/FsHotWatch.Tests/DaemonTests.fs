@@ -1286,6 +1286,7 @@ let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
 let ``discovery publishes model unavailability before loader entry and completed generation before receipt`` () =
     let store = FsHotWatch.PluginWorkOwner.Store()
     let coordinator = DiscoveryCoordinator(publish = store.PublishProjectModel)
+
     let counts: DiscoverySnapshot =
         { Discovered = 1
           Loaded = 1
@@ -1311,6 +1312,7 @@ let ``discovery publishes model unavailability before loader entry and completed
 
     Assert.Throws<InvalidOperationException>(fun () -> coordinator.Run(fun () -> failed) |> Async.RunSynchronously)
     |> ignore
+
     test <@ store.Snapshot.ProjectModel = FsHotWatch.ProjectModel.Observation.Unobserved @>
 
 [<Fact(Timeout = 15000)>]
@@ -1699,9 +1701,16 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             let completedWhileCleared = obj.ReferenceEquals(first, runningScan)
             loader.Resume(1)
             rediscovery.Value.GetAwaiter().GetResult()
+
             if rediscoverAfterCapture then
-                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult()) |> ignore
-                test <@ daemon.Host.WorkSnapshot.OperationFaults |> List.exists (fun (name, _) -> name = "scan") @>
+                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult())
+                |> ignore
+
+                test
+                    <@
+                        daemon.Host.WorkSnapshot.OperationFaults
+                        |> List.exists (fun (name, _) -> name = "scan")
+                    @>
             else
                 runningScan.GetAwaiter().GetResult()
 
@@ -1725,9 +1734,13 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             preprocessorResume.Set()
             loader.Resume(1)
             rediscovery |> Option.iter (fun running -> running.GetAwaiter().GetResult())
-            scan |> Option.iter (fun running ->
-                try running.GetAwaiter().GetResult()
-                with :? InvalidOperationException when rediscoverAfterCapture -> ()))
+
+            scan
+            |> Option.iter (fun running ->
+                try
+                    running.GetAwaiter().GetResult()
+                with :? InvalidOperationException when rediscoverAfterCapture ->
+                    ()))
 
 [<Fact(Timeout = 15000)>]
 let ``a loaded project that maps or registers as zero is not a loader failure`` () =
@@ -2506,3 +2519,72 @@ let ``source dependency fanout checks authored files without scheduling generate
                 ),
                 "the original watcher batch must drain before disposal"
             ))
+
+
+[<Fact(Timeout = 30000)>]
+let ``failed scan receipt reaches IPC and a later scan recovers`` () =
+    withTempDir "scan-failed-receipt" (fun tmpDir ->
+        let sourceDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(sourceDir) |> ignore
+        let projectPath = Path.Combine(sourceDir, "Probe.fsproj")
+        File.WriteAllText(projectPath, "<Project />")
+        let loaded = minimalLoadedProject projectPath
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+
+        let options =
+            { Daemon.DaemonOptions.defaults with
+                RunMode = Daemon.RunMode.OneShot }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir options loader (fun projects ->
+                projects
+                |> List.map (fun project -> makeProjectOptions project.ProjectFileName [] []))
+
+        use serverLifetime = new CancellationTokenSource()
+        use requestLifetime = new CancellationTokenSource()
+        let pipeName = $"scanf-{Guid.NewGuid():N}"
+        let server = Async.StartAsTask(daemon.RunWithIpc(pipeName, serverLifetime))
+
+        try
+            waitUntil (fun () -> daemon.GetScanGeneration() > 0L) 5000
+            let before = daemon.GetScanGeneration()
+            File.AppendAllText(projectPath, "<!-- force rediscovery -->")
+
+            let scan =
+                Async.StartAsTask(daemon.ScanAll(), cancellationToken = requestLifetime.Token)
+
+            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds 5.0) @>
+            requestLifetime.Cancel()
+            loader.Resume(1)
+
+            let failedScan =
+                Assert.ThrowsAny<Exception>(fun () -> scan.GetAwaiter().GetResult())
+
+            test <@ failedScan.GetBaseException() :? OperationCanceledException @>
+            // Register after failure: a receipt must survive this ordinary RPC race.
+            let waiter = Async.StartAsTask(FsHotWatch.Ipc.IpcClient.waitForScan pipeName before)
+
+            let observed =
+                Assert.ThrowsAny<Exception>(fun () ->
+                    waiter.WaitAsync(TimeSpan.FromSeconds 3.0).GetAwaiter().GetResult() |> ignore)
+
+            test <@ not (observed :? TimeoutException) @>
+            test <@ daemon.GetScanGeneration() = before @>
+            daemon.ScanAll() |> Async.RunSynchronously
+
+            let recovered =
+                FsHotWatch.Ipc.IpcClient.waitForScan pipeName before
+                |> Async.StartAsTask
+                |> fun pending -> pending.WaitAsync(TimeSpan.FromSeconds 3.0).GetAwaiter().GetResult()
+
+            test <@ recovered.Contains("complete") @>
+            test <@ daemon.GetScanGeneration() > before @>
+        finally
+            loader.Resume(1)
+            serverLifetime.Cancel()
+
+            try
+                server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+            with _ ->
+                ())
