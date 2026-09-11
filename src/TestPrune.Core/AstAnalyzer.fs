@@ -60,6 +60,11 @@ let SyntheticCollectionPrefix = "TestPrune.__Collection__."
 [<Literal>]
 let internal SyntheticLiteralPrefix = "TestPrune.__Literal__."
 
+/// Signature declarations are separate source occurrences of public symbols.
+/// Keep their hashes independently from implementation bodies in the symbol graph.
+[<Literal>]
+let internal SyntheticSignaturePrefix = "TestPrune.__Signature__."
+
 [<Literal>]
 let private MinSharedLiteralLength = 24
 
@@ -1013,6 +1018,24 @@ let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
 
     results |> Seq.toList
 
+/// Signature syntax has declarations rather than implementation bindings. Its full
+/// ranges include multiline types and constraints, which FCS identifier ranges omit.
+let private collectSignatureRanges (tree: ParsedInput) =
+    match tree with
+    | ParsedInput.ImplFile _ -> [], []
+    | ParsedInput.SigFile _ ->
+        ParsedInput.fold
+            (fun (bindings, types) _ node ->
+                match node with
+                | SyntaxNode.SynValSig(SynValSig(ident = SynIdent(id, _); range = declarationRange)) ->
+                    (id.idText, declarationRange) :: bindings, types
+                | SyntaxNode.SynTypeDefnSig(SynTypeDefnSig(
+                    typeInfo = SynComponentInfo(longId = ids); range = declarationRange)) ->
+                    bindings, (ids |> List.map _.idText |> String.concat ".", declarationRange) :: types
+                | _ -> bindings, types)
+            ([], [])
+            tree
+
 /// Split off the last dot-delimited segment of a fully-qualified name — but WITHOUT
 /// splitting inside a parenthesised operator/active-pattern name or a backticked
 /// identifier, either of which may contain dots of its own.
@@ -1559,9 +1582,16 @@ let private extractResults
 
                 diagnosticResources sourceFileName stage
 
-            let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
+            let signatureBindingRanges, signatureTypeRanges =
+                collectSignatureRanges parseResults.ParseTree
+
+            let moduleBindingRanges =
+                collectModuleBindingRanges parseResults.ParseTree @ signatureBindingRanges
+
             let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
-            let typeDefnRanges = collectTypeDefnRanges parseResults.ParseTree
+
+            let typeDefnRanges =
+                collectTypeDefnRanges parseResults.ParseTree @ signatureTypeRanges
 
             // Type definition ranges are deliberately NOT merged in here: they would shadow
             // binding names (e.g. `type Config` vs `let config`) in the maps built below.
@@ -2212,6 +2242,76 @@ let private extractResults
 
             let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
 
+            // A signature declaration and its implementation share an FCS identity,
+            // but have different source hashes. Give the declaration its own graph node
+            // and retain canonical names for consumer references. Either side emits the
+            // bridge, so re-indexing an implementation replaces its outgoing edges without
+            // severing the unchanged signature's consumer path.
+            let isSignature =
+                match parseResults.ParseTree with
+                | ParsedInput.SigFile _ -> true
+                | ParsedInput.ImplFile _ -> false
+
+            let signatureName name = SyntheticSignaturePrefix + name
+
+            let declaredKinds =
+                symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
+
+            let declaredNames = declaredKinds |> Map.keys |> Set.ofSeq
+
+            let signatureDeclarations =
+                if isSignature then
+                    declaredNames
+                else
+                    definitions
+                    |> List.choose (fun (symbolInfo, symbolUse) ->
+                        if declaredNames.Contains symbolInfo.FullName then
+                            match symbolUse.Symbol.SignatureLocation with
+                            | Some location when location.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) ->
+                                Some symbolInfo.FullName
+                            | _ -> None
+                        else
+                            None)
+                    |> Set.ofList
+
+            let remap name =
+                if isSignature && declaredNames.Contains name then
+                    signatureName name
+                else
+                    name
+
+            let symbols =
+                symbols
+                |> List.map (fun symbol ->
+                    { symbol with
+                        FullName = remap symbol.FullName })
+
+            let dependencies =
+                (dependencies
+                 |> List.map (fun edge ->
+                     { edge with
+                         FromSymbol = remap edge.FromSymbol
+                         ToSymbol = remap edge.ToSymbol }))
+                @ (signatureDeclarations
+                   |> Set.toList
+                   |> List.map (fun name ->
+                       { FromSymbol = name
+                         ToSymbol = signatureName name
+                         Kind = UsesType
+                         Source = "core" }))
+
+            let parentLinks =
+                parentLinks
+                |> List.map (fun link ->
+                    { Child = remap link.Child
+                      Parent = remap link.Parent })
+
+            let attributes =
+                attributes
+                |> List.map (fun attribute ->
+                    { attribute with
+                        SymbolFullName = remap attribute.SymbolFullName })
+
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need
             // to exist in the symbols table for dependency edges to resolve.
@@ -2220,9 +2320,8 @@ let private extractResults
             let externSymbols =
                 let seen = System.Collections.Generic.HashSet<string>()
 
-                dependencies
-                |> List.choose (fun d ->
-                    let name = d.ToSymbol
+                (dependencies |> List.map _.ToSymbol) @ (signatureDeclarations |> Set.toList)
+                |> List.choose (fun name ->
 
                     if seen.Add(name) && not (Set.contains name localSymbolNames) then
                         // `symbols` carries `CHECK (kind = 'Module' OR full_name LIKE '%.%')`
@@ -2247,6 +2346,7 @@ let private extractResults
                                 ExternRef
                             else
                                 match classifiedTargetKinds.TryGetValue name with
+                                | _ when declaredKinds |> Map.tryFind name = Some Module -> Module
                                 | true, Module -> Module
                                 | _ -> ExternRef
 

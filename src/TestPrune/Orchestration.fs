@@ -34,7 +34,7 @@ let findRepoRoot (startDir: string) : string option =
 
     walk startDir
 
-/// Parse a single .fs file with FCS, returning analysis result or error message.
+/// Parse a single F# source or signature file with FCS, returning analysis or an error.
 let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResult, string> =
     try
         let source = File.ReadAllText(filePath)
@@ -557,7 +557,7 @@ let analyzeChanges
                         changedFiles
                         |> List.filter (fun f ->
                             f.EndsWith(".fs", StringComparison.OrdinalIgnoreCase)
-                            && not (DiffParser.isFsproj f))
+                            || f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
                         |> List.choose (fun relPath ->
                             let fullPath = Path.Combine(repoRoot, relPath)
 

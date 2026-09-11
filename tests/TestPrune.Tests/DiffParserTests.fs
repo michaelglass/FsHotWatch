@@ -317,3 +317,16 @@ let ``changed files keeps its code-only new-side contract for quoted rename path
         + "similarity index 100%\n"
 
     test <@ parseChangedFiles diff = [ "src/café new.fs" ] @>
+
+
+[<Fact>]
+let ``signature only changes remain in the code diff`` () =
+    let diff =
+        """diff --git a/src/Library.fsi b/src/Library.fsi
+--- a/src/Library.fsi
++++ b/src/Library.fsi
+@@ -2 +2 @@
+-val calculate: int -> int
++val calculate: int64 -> int64"""
+
+    test <@ parseChangedFiles diff = [ "src/Library.fsi" ] @>

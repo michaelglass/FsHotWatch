@@ -70,7 +70,8 @@ let findDeadCode
             && s.Kind <> DuCase
             && (includeTests
                 || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal)))
-            && not s.IsExtern)
+            && not s.IsExtern
+            && not (s.FullName.StartsWith(SyntheticSignaturePrefix, StringComparison.Ordinal)))
 
     // A name without a dot is a local binding or parameter: not independently
     // actionable, and neither is a symbol nested inside another symbol's line range.

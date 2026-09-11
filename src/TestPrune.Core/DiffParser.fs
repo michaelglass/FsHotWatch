@@ -4,7 +4,7 @@ open System
 open System.Collections.Generic
 open System.Text
 
-let private codeExtensions = set [ ".fs"; ".fsx"; ".fsproj" ]
+let private codeExtensions = set [ ".fs"; ".fsi"; ".fsx"; ".fsproj" ]
 
 let private isCodeFile (path: string) =
     codeExtensions
