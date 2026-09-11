@@ -819,6 +819,20 @@
         "platform": "linux"
       }
     ],
+    "WindowsProcessJob.fs": [
+      {
+        "line": 0,
+        "branch": 0,
+        "reason": "Native Windows job API boundary remains compiled and packaged in the core assembly. These APIs cannot execute on macOS; Windows runtime behavior is unverified by this host's coverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 0,
+        "branch": 0,
+        "reason": "Native Windows job API boundary remains compiled and packaged in the core assembly. These APIs cannot execute on Linux; Windows runtime behavior is unverified by this host's coverage.",
+        "platform": "linux"
+      }
+    ],
     "Watcher.fs": [
       {
         "line": 95,
