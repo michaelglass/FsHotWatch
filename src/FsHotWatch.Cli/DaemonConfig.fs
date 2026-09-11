@@ -200,6 +200,7 @@ type DaemonConfiguration =
                AfterTests: FsHotWatch.FileCommand.FileCommandPlugin.TestFilter option
                Command: string
                Args: string
+               NotEvaluatedExitCode: int option
                TimeoutSec: int option |} list
         Coverage:
             {| ConfigPath: string
@@ -704,11 +705,21 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
                     | _ -> None
 
+                let notEvaluatedExitCode =
+                    match fc.TryGetProperty("notEvaluatedExitCode") with
+                    | false, _ -> None
+                    | true, value when value.ValueKind = JsonValueKind.Number ->
+                        match value.TryGetInt32() with
+                        | true, code when code > 0 && code <= 255 -> Some code
+                        | _ -> raise (ConfigError "fileCommands notEvaluatedExitCode must be an integer from 1 to 255")
+                    | _ -> raise (ConfigError "fileCommands notEvaluatedExitCode must be an integer from 1 to 255")
+
                 {| PluginName = pluginName
                    Pattern = pattern
                    AfterTests = afterTests
                    Command = command
                    Args = args
+                   NotEvaluatedExitCode = notEvaluatedExitCode
                    TimeoutSec = timeoutSec |})
             |> Seq.toList
         | _ -> []
@@ -1734,6 +1745,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 fc.Args
                 repoRoot
                 fcTimeout
+                fc.NotEvaluatedExitCode
         )
 
         // Expose the parsed pattern to the host so the rerun IPC endpoint

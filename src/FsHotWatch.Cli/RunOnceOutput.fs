@@ -87,6 +87,12 @@ module ParsedPluginStatus =
         | Some { Outcome = VerifiedNothing _ } -> true
         | _ -> false
 
+    /// A command explicitly declined its measurement; this is not a passing run.
+    let notEvaluated (parsed: ParsedPluginStatus) =
+        match parsed.LastRun with
+        | Some { Outcome = NotEvaluated _ } -> true
+        | _ -> false
+
 /// Describes a FileCommand-style plugin run for staleness detection: when did
 /// it last start, and what input files (relative to repoRoot) does it depend on?
 type PluginRunInfo =

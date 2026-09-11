@@ -1109,6 +1109,19 @@ let createWith
                         )
 
                         return state
+                    | FsHotWatch.Events.CommandNotEvaluated reason ->
+                        ctx.ReportStatus(
+                            Completed(
+                                DateTime.UtcNow,
+                                RunVerdict.notEvaluated
+                                    $"dependency {result.Name} was not evaluated: {reason}"
+                                    TimeSpan.Zero
+                            )
+                        )
+
+                        return
+                            { state with
+                                SatisfiedDeps = Set.remove result.Name state.SatisfiedDeps }
                     | FsHotWatch.Events.CommandSucceeded _ ->
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
@@ -1385,7 +1398,8 @@ let createWith
                     | stale ->
                         info "build" (replayBypassDiagnostic stale)
                         None
-                | CommandFailed _ -> None
+                | CommandFailed _
+                | CommandNotEvaluated _ -> None
 
             // Test lifecycle events exist only to maintain ActiveTestRuns. They must
             // reach Update; replaying a cached BuildCompleted here launches another

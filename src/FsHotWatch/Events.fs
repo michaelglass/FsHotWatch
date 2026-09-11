@@ -102,9 +102,30 @@ module RunSummary =
     /// instead — e.g. "0 test project(s) ran, no test executed".
     let nothingVerified (detail: string) : string = NothingVerifiedPrefix + detail
 
+/// Whether this run executed here, replayed a cached result, or arrived without
+/// readable provenance. Unknown is never inferred from a summary string.
+[<RequireQualifiedAccess>]
+type RunProvenance =
+    | Observed
+    | Replayed
+    | Unknown
+
+module RunProvenance =
+    let replayed =
+        function
+        | RunProvenance.Observed -> Some false
+        | RunProvenance.Replayed -> Some true
+        | RunProvenance.Unknown -> None
+
+[<RequireQualifiedAccess>]
+type RunEvaluation =
+    | Evaluated
+    | VerifiedNothing of detail: string
+    | NotEvaluated of reason: string
+
 /// The evidence every terminal status carries: what the run did and how long it
 /// took. The representation is private and the `RunVerdict` module holds the only
-/// constructors; both reject an empty summary, so no call site can build a
+/// constructors reject an empty summary, so no call site can build a
 /// content-free `✓`.
 ///
 /// A run can finish without failing and still prove nothing — no test project was
@@ -121,7 +142,8 @@ type RunVerdict =
     private
         { summary: string
           elapsed: System.TimeSpan
-          nothingVerified: string option }
+          evaluation: RunEvaluation
+          provenance: RunProvenance }
 
     /// Human-readable statement of what the run did — e.g.
     /// "6 passed, 0 failed in 6 projects". Rendered by `fshw status`/`check`
@@ -136,7 +158,20 @@ type RunVerdict =
 
     /// `Some detail` when the run EXECUTED NOTHING — the detail says what it did
     /// instead. `None` is a run whose summary is evidence of what it verified.
-    member this.NothingVerified = this.nothingVerified
+    member this.NothingVerified =
+        match this.evaluation with
+        | RunEvaluation.VerifiedNothing detail -> Some detail
+        | RunEvaluation.Evaluated
+        | RunEvaluation.NotEvaluated _ -> None
+
+    member this.Evaluation = this.evaluation
+    member this.Provenance = this.provenance
+
+    member this.NotEvaluatedReason =
+        match this.evaluation with
+        | RunEvaluation.NotEvaluated reason -> Some reason
+        | RunEvaluation.Evaluated
+        | RunEvaluation.VerifiedNothing _ -> None
 
 module RunVerdict =
     let private requireSummary (summary: string) =
@@ -152,7 +187,8 @@ module RunVerdict =
 
         { summary = summary
           elapsed = elapsed
-          nothingVerified = None }
+          evaluation = RunEvaluation.Evaluated
+          provenance = RunProvenance.Observed }
 
     /// The verdict of a run that VERIFIED NOTHING: no file compared, no test run, no
     /// project selected. `detail` states what it did instead and must be non-empty;
@@ -166,7 +202,33 @@ module RunVerdict =
 
         { summary = RunSummary.nothingVerified detail
           elapsed = elapsed
-          nothingVerified = Some detail }
+          evaluation = RunEvaluation.VerifiedNothing detail
+          provenance = RunProvenance.Observed }
+
+    /// The command ran but declined to evaluate its inputs. This is distinct from
+    /// a test runner selecting no tests, and cannot establish a passing gate.
+    let notEvaluated (reason: string) (elapsed: System.TimeSpan) : RunVerdict =
+        requireSummary reason
+
+        { summary = reason
+          elapsed = elapsed
+          evaluation = RunEvaluation.NotEvaluated reason
+          provenance = RunProvenance.Observed }
+
+    /// Preserve all evaluation metadata when replaying a result, including a
+    /// verified-nothing outcome. The suffix remains only a human-readable hint.
+    let asReplayed (verdict: RunVerdict) : RunVerdict =
+        let suffix = " (cached)"
+
+        let summary =
+            if verdict.Summary.EndsWith(suffix, System.StringComparison.Ordinal) then
+                verdict.Summary
+            else
+                verdict.Summary + suffix
+
+        { verdict with
+            summary = summary
+            provenance = RunProvenance.Replayed }
 
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
@@ -232,21 +294,24 @@ type RunOutcome =
     /// no surface may render it as a pass (AUTOMATION-198, made a case by
     /// AUTOMATION-339).
     | VerifiedNothing of detail: string
+    | NotEvaluated of reason: string
 
 module RunOutcome =
     /// The outcome the host records for a `Completed` status: the verdict decides
     /// whether the run verified what it says or nothing at all. THE one mapping from
     /// verdict to run record, so the two cannot disagree.
     let ofCompletedVerdict (verdict: RunVerdict) : RunOutcome =
-        match verdict.NothingVerified with
-        | Some detail -> VerifiedNothing detail
-        | None -> CompletedRun
+        match verdict.Evaluation with
+        | RunEvaluation.VerifiedNothing detail -> VerifiedNothing detail
+        | RunEvaluation.NotEvaluated reason -> NotEvaluated reason
+        | RunEvaluation.Evaluated -> CompletedRun
 
 /// Record of a single completed or failed plugin run.
 type RunRecord =
     { StartedAt: System.DateTime
       Elapsed: System.TimeSpan
       Outcome: RunOutcome
+      Provenance: RunProvenance
       Summary: string option
       ActivityTail: string list }
 
@@ -853,6 +918,7 @@ type ScanState =
 type CommandOutcome =
     | CommandSucceeded of output: string
     | CommandFailed of output: string
+    | CommandNotEvaluated of output: string
 
 /// Result of a command execution (e.g., file command plugin completing a shell command).
 type CommandCompletedResult =

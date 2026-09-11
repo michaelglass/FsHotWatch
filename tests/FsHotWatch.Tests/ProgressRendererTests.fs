@@ -28,6 +28,7 @@ let private completedRun (ago: TimeSpan) (elapsed: TimeSpan) (summary: string op
     { StartedAt = now - ago
       Elapsed = elapsed
       Outcome = CompletedRun
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Summary = summary
       ActivityTail = [] }
 
@@ -35,6 +36,7 @@ let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunR
     { StartedAt = now - ago
       Elapsed = elapsed
       Outcome = FailedRun error
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Summary = None
       ActivityTail = [] }
 
@@ -42,6 +44,7 @@ let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : R
     { StartedAt = now - ago
       Elapsed = elapsed
       Outcome = TimedOut reason
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Summary = None
       ActivityTail = [] }
 
@@ -323,6 +326,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
                 { StartedAt = startedAt
                   Elapsed = TimeSpan.FromSeconds 6.4
                   Outcome = FailedRun err
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Summary = None
                   ActivityTail = [ "loading rules"; "linting FileA.fs" ] }
           Diagnostics = DiagnosticCounts.empty }
@@ -350,6 +354,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
                 { StartedAt = startedAt
                   Elapsed = TimeSpan.FromSeconds 3.2
                   Outcome = CompletedRun
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Summary = Some "built 4 projects"
                   ActivityTail = [ "dotnet build sln" ] }
           Diagnostics = DiagnosticCounts.empty }
@@ -374,6 +379,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
                 { StartedAt = startedAt
                   Elapsed = TimeSpan.FromSeconds 1.0
                   Outcome = CompletedRun
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Summary = Some "ok"
                   ActivityTail = [] }
           Diagnostics = DiagnosticCounts.empty }

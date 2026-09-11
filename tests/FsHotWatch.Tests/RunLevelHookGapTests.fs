@@ -96,6 +96,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
         0
         [ { Name = "test-prune"
             Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+            Provenance = FsHotWatch.Events.RunProvenance.Observed
             ElapsedMs = Some 5L
             Summary = Some "tests passed" } ]
         []
@@ -871,6 +872,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                 0
                 ([ { Name = "test-prune"
                      Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+                     Provenance = FsHotWatch.Events.RunProvenance.Observed
                      ElapsedMs = Some 1000L
                      Summary = Some "ok" } ]
                 : FsHotWatch.Cli.Verdict.PluginVerdict list)
