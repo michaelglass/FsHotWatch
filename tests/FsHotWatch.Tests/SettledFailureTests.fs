@@ -207,8 +207,11 @@ let ``a real successful successor retires failure proof and remains cacheable wi
         System.IO.File.WriteAllText(recover, "enabled")
         host.EmitFileChanged(SourceChanged [ source ])
         waitUntil
-            (fun () -> not host.WorkSnapshot.IsBusy &&
-                (match host.GetStatus "build" with | Some(Completed _) -> true | _ -> false))
+            (fun () ->
+                not host.WorkSnapshot.IsBusy
+                && (match host.GetStatus "build" with
+                    | Some(Completed _) -> true
+                    | _ -> false))
             5000
         Assert.Equal(2, System.IO.File.ReadAllLines(calls).Length)
         Assert.Empty host.WorkSnapshot.CompletedFailures
@@ -218,10 +221,11 @@ let ``a real successful successor retires failure proof and remains cacheable wi
             |> fun task -> task.GetAwaiter().GetResult()) |> ignore
         host.EmitFileChanged(SourceChanged [ source ])
         waitUntil
-            (fun () -> not host.WorkSnapshot.IsBusy &&
-                (match host.GetStatus "build" with
-                 | Some(Completed(_, verdict)) -> verdict.Summary.Contains "(cached)"
-                 | _ -> false))
+            (fun () ->
+                not host.WorkSnapshot.IsBusy
+                && (match host.GetStatus "build" with
+                    | Some(Completed(_, verdict)) -> verdict.Summary.Contains "(cached)"
+                    | _ -> false))
             5000
         Assert.Equal(2, System.IO.File.ReadAllLines(calls).Length)
         Assert.Empty host.WorkSnapshot.CompletedFailures)
