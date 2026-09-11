@@ -1388,9 +1388,7 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``a symbol covered only by an unconfigured project stays owed``
-    ()
-    =
+let ``a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
     // set of projects fshw is configured to run. A symbol covered only by an unconfigured
     // project can never be proven green: its covering project never executes, so it never
@@ -1432,6 +1430,7 @@ let ``a symbol covered only by an unconfigured project stays owed``
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
         Assert.Contains("Lib.orphan", queue)
+
         match host.GetStatus("test-prune") with
         | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
         | other -> Assert.Fail($"unrunnable debt must deny green and name its project: {other}"))

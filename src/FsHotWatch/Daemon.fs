@@ -276,7 +276,8 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                             Choice1Of2(
                                 match completed with
                                 | Some(epoch, snapshot) -> epoch, Some snapshot
-                                | None -> generation, None)
+                                | None -> generation, None
+                            )
                         else
                             Choice2Of2(quiescence.Value.Task))
 
@@ -1260,7 +1261,9 @@ let internal waitForAllTerminalCore
 
             match snapshot.Faults with
             | (name, failure) :: _ ->
-                let isExecutor = snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+                let isExecutor =
+                    snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+
                 raise (PluginWorkOwner.WorkFailedException(name, failure, isExecutor))
             | [] -> ()
 
@@ -1274,16 +1277,25 @@ let internal waitForAllTerminalCore
             if snapshot.IsBusy && started.Elapsed - lastProgressAt >= stallThreshold then
                 let hasRunningReport =
                     host.GetAllStatuses()
-                    |> Map.exists (fun _ status -> match status with Running _ -> true | _ -> false)
+                    |> Map.exists (fun _ status ->
+                        match status with
+                        | Running _ -> true
+                        | _ -> false)
 
                 if not hasRunningReport then
                     let names = String.concat ", " snapshot.BusyNames
-                    raise (TimeoutException($"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"))
+
+                    raise (
+                        TimeoutException(
+                            $"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"
+                        )
+                    )
 
             let evidence =
                 match snapshot.ProjectModel with
                 | ProjectModel.Observation.Available model ->
-                    snapshot.Evidence |> List.filter (fun proof -> proof.Generation = model.Generation)
+                    snapshot.Evidence
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
                 | _ -> []
 
             let satisfied =
@@ -1533,6 +1545,7 @@ type Daemon
     member internal _.WaitForProjectModel() : Task<ProjectModel.Observation> =
         task {
             let! generation, completed = discovery.WaitForStableAdmission()
+
             return
                 completed
                 |> Option.map (ProjectModel.ofCompleted generation)
@@ -1542,9 +1555,12 @@ type Daemon
     member internal this.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
         task {
             let! observation = this.WaitForProjectModel()
+
             match observation with
             | ProjectModel.Observation.Available snapshot ->
-                return { Generation = snapshot.Generation; Failure = None }
+                return
+                    { Generation = snapshot.Generation
+                      Failure = None }
             | _ -> return raise (ProjectModel.UnavailableException observation)
         }
 

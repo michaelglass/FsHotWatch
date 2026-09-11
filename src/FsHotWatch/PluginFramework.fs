@@ -580,10 +580,14 @@ let internal registerHandlerWithOwner
         | None -> ()
 
     let enqueueExclusiveIntent key coalescingKey message =
-        workOwner.EnqueueIntent(key, coalescingKey, fun identity ->
-            match agentRef with
-            | Some agent -> agent.Post(Custom message, identity)
-            | None -> invalidOp "Plugin executor is unavailable after intent admission")
+        workOwner.EnqueueIntent(
+            key,
+            coalescingKey,
+            fun identity ->
+                match agentRef with
+                | Some agent -> agent.Post(Custom message, identity)
+                | None -> invalidOp "Plugin executor is unavailable after intent admission"
+        )
 
     let reportRunFailure key startedAt stage (ex: exn) =
         let summary = $"RunExclusive '%s{key}' %s{stage}: %s{ex.ToString()}"
@@ -606,6 +610,7 @@ let internal registerHandlerWithOwner
         =
         let finish outcome settleChildren =
             let mutable completion = outcome
+
             try
                 settleChildren ()
             with failure ->
@@ -616,14 +621,17 @@ let internal registerHandlerWithOwner
                 let resourceState =
                     match completion with
                     | Ok message ->
-                        try classify message
+                        try
+                            classify message
                         with failure ->
                             completion <- Result.Error failure
                             Invalid $"{PluginName.value handler.Name} shared result classifier faulted"
                     | Result.Error _ -> Invalid $"{PluginName.value handler.Name} shared work faulted"
 
-                try services.ReleaseSharedRun sharedKey resourceState
-                with failure -> completion <- Result.Error failure)
+                try
+                    services.ReleaseSharedRun sharedKey resourceState
+                with failure ->
+                    completion <- Result.Error failure)
 
             match completion with
             | Ok message ->
@@ -634,8 +642,10 @@ let internal registerHandlerWithOwner
                     | Some agent -> agent.Post(Custom message, eventIdentity)
                     | None -> invalidOp "Plugin executor is unavailable after work admission"
             | Result.Error failure ->
-                try reportRunFailure key startedAt "work or cleanup failed" failure
-                finally workOwner.FailRun(identity, failure)
+                try
+                    reportRunFailure key startedAt "work or cleanup failed" failure
+                finally
+                    workOwner.FailRun(identity, failure)
 
         SupervisedWork.execute
             (PluginName.value handler.Name + "/" + key)
@@ -1066,11 +1076,17 @@ let internal registerHandlerWithOwner
                     /// `cacheKeyOpt` is the same key the preceding `tryReplayCache`
                     /// lookup used (computed once per event in the dispatch loop)
                     /// — never recompute it here.
-                    let runAndCache identity (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
+                    let runAndCache
+                        identity
+                        (event: PluginEvent<'Msg>)
+                        (state: 'State)
+                        (cacheKeyOpt: ContentHash option)
+                        =
                         let eventCtx =
                             { ctx with
                                 RunExclusive = runExclusive (Some identity)
                                 RunExclusiveShared = runExclusiveShared (Some identity) }
+
                         async {
                             match services.TaskCache, cacheKeyOpt with
                             | Some cache, Some cacheKey ->
@@ -1155,7 +1171,15 @@ let internal registerHandlerWithOwner
                                             | SlotBusy -> SlotBusy
                                       RunExclusiveShared =
                                         fun key sharedKey workFor classify failureMessage ->
-                                            match runExclusiveShared (Some identity) key sharedKey workFor classify failureMessage with
+                                            match
+                                                runExclusiveShared
+                                                    (Some identity)
+                                                    key
+                                                    sharedKey
+                                                    workFor
+                                                    classify
+                                                    failureMessage
+                                            with
                                             | SharedClaimed ->
                                                 launchedRunInWindow <- true
                                                 SharedClaimed

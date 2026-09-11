@@ -239,12 +239,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                 else
                     // Cancel the timer so its registration doesn't outlive the call.
                     timeoutCts.Cancel()
+
                     try
                         return! work
                     with :? ProjectModel.UnavailableException as unavailable ->
-                        return raise (LocalRpcException(unavailable.Message,
-                            ErrorCode = ProjectModelWire.ErrorCode,
-                            ErrorData = ProjectModelWire.payload unavailable.Observation))
+                        return
+                            raise (
+                                LocalRpcException(
+                                    unavailable.Message,
+                                    ErrorCode = ProjectModelWire.ErrorCode,
+                                    ErrorData = ProjectModelWire.payload unavailable.Observation
+                                )
+                            )
             finally
                 match watchdog, token with
                 | Some w, Some t -> w.End t
@@ -401,6 +407,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
         // not a parsed string, so the verdict cannot be misread.
         let modelSnapshot = config.Host.WorkSnapshot
+
         let result =
             {| count = count
                files = allErrors
@@ -408,11 +415,14 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                daemonPhases = daemonPhases
                projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
                modelReceipts =
-                   modelSnapshot.Evidence |> List.collect (fun proof ->
-                       proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
-                           {| runId = runId.ToString("N")
-                              modelGeneration = proof.Generation
-                              refusals = proof.FailureReasons |}))
+                modelSnapshot.Evidence
+                |> List.collect (fun proof ->
+                    proof.AuthorizedRunIds
+                    |> Set.toList
+                    |> List.map (fun runId ->
+                        {| runId = runId.ToString("N")
+                           modelGeneration = proof.Generation
+                           refusals = proof.FailureReasons |}))
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)

@@ -691,8 +691,12 @@ let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string
 /// it mocks reports — a green and its baseline are one value, not two settings.
 module BaselineFixtures =
     let model =
-        FsHotWatch.ProjectModel.ofCompleted 1L
-            { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 }
+        FsHotWatch.ProjectModel.ofCompleted
+            1L
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 1
+              Registered = 1 }
 
     let runId = System.Guid.Parse("b0000000-1100-4000-8000-000000000110")
 

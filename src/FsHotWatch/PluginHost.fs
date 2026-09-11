@@ -326,10 +326,15 @@ type PluginHost
                                 (fun _ -> async { return preprocessor.Process files repoRoot })
                                 (fun outcome settleChildren ->
                                     settleChildren ()
+
                                     match outcome with
                                     | Ok result -> result
                                     | Result.Error failure -> raise failure)
-                            |> fun work -> Async.RunSynchronously(work, cancellationToken = System.Threading.CancellationToken.None)
+                            |> fun work ->
+                                Async.RunSynchronously(
+                                    work,
+                                    cancellationToken = System.Threading.CancellationToken.None
+                                )
 
                         match processed with
                         | Result.Ok result ->
