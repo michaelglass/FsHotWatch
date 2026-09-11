@@ -790,9 +790,23 @@ let runProcessTo
     let launchDeadline = bounds.LaunchDeadline
     let psi = makeChildProcessStartInfo command args workDir env
 
-    use proc = Process.Start(psi)
-    // Register so a daemon shutdown can tear down in-flight children.
-    ProcessRegistry.track proc
+    let assemblyDirectory = IO.Path.GetDirectoryName(typeof<ProcessBounds>.Assembly.Location)
+    let localHost = IO.Path.Combine(assemblyDirectory, "fshw-process-host", "FsHotWatch.ProcessHost.dll")
+    let packageHost =
+        IO.Path.GetFullPath(
+            IO.Path.Combine(assemblyDirectory, "..", "..", "tools", "net10.0", "FsHotWatch.ProcessHost.dll")
+        )
+
+    let hostPath = if IO.File.Exists localHost then localHost else packageHost
+
+    use owned =
+        FsHotWatch.ProcessOwnership.OwnedChild.Start(
+            psi,
+            hostPath,
+            fun child -> ProcessRegistry.trackOwned child.Process child.Terminate
+        )
+
+    let proc = owned.Process
 
     // Read ONCE, while the handle is certainly live: this is what an operator needs
     // to hunt down a tree we failed to kill, and it must still be reportable on the
@@ -914,16 +928,18 @@ let runProcessTo
         // blocked kill from wedging the whole run — lives in `killTreeWith`.
         let killTree () : KillOutcome =
             killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
-                proc.Kill(entireProcessTree = true))
+                owned.Terminate())
 
         match outcome with
         | LaunchOutcome.Exited ->
             let out = drainPumps ()
 
-            if proc.ExitCode = 0 then
+            let exitCode = owned.TargetExitCode
+
+            if exitCode = 0 then
                 Succeeded out
             else
-                Failed(proc.ExitCode, out)
+                Failed(exitCode, out)
         | LaunchOutcome.TimedOut ->
             let killed = killTree ()
             TimedOut(timeout, drainPumps (), killed)
@@ -944,6 +960,12 @@ let runProcessTo
                 )
             )
     finally
+        try
+            owned.Terminate()
+        with failure ->
+            ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (failure.ToString())
+            reraise ()
+
         ProcessRegistry.untrack proc
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
