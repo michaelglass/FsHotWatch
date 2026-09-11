@@ -10,7 +10,7 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 
-module private ChildProtocol =
+module internal ChildProtocol =
     // A previous bounded termination attempt may still own this monitor. Retrying
     // must report uncertainty, rather than turn the outer timeout into an infinite wait.
     let withLock (sync: obj) action =

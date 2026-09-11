@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run one unit test class pattern with an isolated coverage report"
+#MISE depends=["compile"]
+set -euo pipefail
+if [[ $# -ne 2 || -z "$1" || "$2" != /* ]]; then
+    echo "usage: mise run test-focused-coverage <class-pattern> <absolute-report-path>" >&2
+    exit 2
+fi
+dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
+    --filter-class "$1" --coverage --coverage-output-format cobertura \
+    --coverage-output "$2" --coverage-settings "$PWD/coverage.settings"
