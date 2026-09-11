@@ -1627,7 +1627,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               Diagnostics = DiagnosticCounts.empty }
 
         let initialExitCode =
-            publishVerdict
+            publishVerdict BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.Confirmation
@@ -1684,7 +1684,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
 
         let zeroTestExitCode =
-            publishVerdict
+            publishVerdict BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1736,7 +1736,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         let tracked = System.IO.Path.Combine(src, "Tracked.fs")
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 42\n")
 
-        publishVerdict
+        publishVerdict BaselineFixtures.model
             repoRoot
             []
             CheckVerdict.Confirmation
@@ -1752,7 +1752,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 43\n")
 
         let exitCode =
-            publishVerdict
+            publishVerdict BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1775,7 +1775,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
 
 let private publishPrior (repoRoot: string) (kind: string) =
     let publish scope outcome statuses =
-        publishVerdict
+        publishVerdict BaselineFixtures.model
             repoRoot
             []
             CheckVerdict.InnerLoop
@@ -1841,7 +1841,7 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
         let noTests = NoTestsRun NoTestsReason.AlreadyVerified
 
         let exitCode =
-            publishVerdict
+            publishVerdict BaselineFixtures.model
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1879,16 +1879,13 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
     (confirmation: bool)
     =
     TestHelpers.withTempDir "ipcoutput-290-discovery" (fun repoRoot ->
-        let reason =
-            "PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of 18 discovered project(s). Read LoadProject FAILED."
-
         let mode =
             if confirmation then
                 CheckVerdict.Confirmation
             else
                 CheckVerdict.InnerLoop
 
-        publishVerdict
+        publishVerdict BaselineFixtures.model
             repoRoot
             []
             mode
@@ -1914,7 +1911,9 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun _ -> [])
                 false
                 (fun () -> "complete: 0 files checked")
-                (fun () -> raise (System.InvalidOperationException reason))
+                (fun () -> raise (FsHotWatch.ProjectModel.UnavailableException(
+                    FsHotWatch.ProjectModel.ofCompleted 1L
+                        { Discovered = 1; Loaded = 0; OptionsMapped = 0; Registered = 0 })))
                 (fun () -> "{}")
                 (fun () ->
                     diagnosticsReads <- diagnosticsReads + 1
@@ -1936,7 +1935,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             test <@ v.ExitCode = 2 @>
 
             match v.Outcome with
-            | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT LOADING FAILED") @>
+            | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT MODEL UNAVAILABLE") @>
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected a published discovery verdict, got %A" other)
 

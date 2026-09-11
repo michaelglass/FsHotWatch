@@ -256,7 +256,7 @@ type internal DiscoverySnapshot = ProjectModel.Counts
 /// outcome: a check arriving while a repair discovery is running must wait for
 /// that attempt, not fail from either transient empty stores or stale failure.
 type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
-    do ignore publish
+    let publish = defaultArg publish ignore
     let admission = new SemaphoreSlim(1, 1)
     let stateGate = obj ()
     let mutable generation = 0L
@@ -273,8 +273,10 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                 let observed =
                     lock stateGate (fun () ->
                         if pendingAttempts = 0 then
-                            let snapshot = completed |> Option.map snd
-                            Choice1Of2(generation, snapshot)
+                            Choice1Of2(
+                                match completed with
+                                | Some(epoch, snapshot) -> epoch, Some snapshot
+                                | None -> generation, None)
                         else
                             Choice2Of2(quiescence.Value.Task))
 
@@ -349,6 +351,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                         quiescence <-
                             Some(TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously))
 
+                    publish (ProjectModel.Observation.Rediscovering generation)
                     generation)
 
             do! admission.WaitAsync() |> Async.AwaitTask
@@ -363,6 +366,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                             pendingAttempts <- pendingAttempts - 1
 
                             if pendingAttempts = 0 then
+                                publish (ProjectModel.ofCompleted attempt snapshot)
                                 let completion = quiescence
                                 quiescence <- None
                                 completion
@@ -378,6 +382,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
                             if pendingAttempts = 0 then
                                 completed <- None
+                                publish ProjectModel.Observation.Unobserved
                                 let completion = quiescence
                                 quiescence <- None
                                 completion
@@ -1254,8 +1259,8 @@ let internal waitForAllTerminalCore
 
             match snapshot.Faults with
             | (name, failure) :: _ ->
-                let kind = if snapshot.ExecutorFaults.IsEmpty then "failed" else "DEAD"
-                raise (TimeoutException($"WaitForComplete: owned work '{name}' {kind}: {failure.Message}", failure))
+                let isExecutor = snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+                raise (PluginWorkOwner.WorkFailedException(name, failure, isExecutor))
             | [] -> ()
 
             if snapshot.CompletedEvents <> lastProgress then
@@ -1524,21 +1529,22 @@ type Daemon
                 |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded)
         }
 
-    member internal _.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
+    member internal _.WaitForProjectModel() : Task<ProjectModel.Observation> =
         task {
             let! generation, completed = discovery.WaitForStableAdmission()
-
             return
-                { Generation = generation
-                  Failure =
-                    match completed with
-                    | None -> ProjectModel.failure ProjectModel.Observation.Unobserved
-                    | Some snapshot ->
-                        // Keep the established loader-failure diagnosis; all later
-                        // zero-model stages have their own typed observation.
-                        match totalDiscoveryFailure snapshot.Discovered snapshot.Loaded with
-                        | Some reason -> Some reason
-                        | None -> ProjectModel.ofCompleted generation snapshot |> ProjectModel.failure }
+                completed
+                |> Option.map (ProjectModel.ofCompleted generation)
+                |> Option.defaultValue ProjectModel.Observation.Unobserved
+        }
+
+    member internal this.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
+        task {
+            let! observation = this.WaitForProjectModel()
+            match observation with
+            | ProjectModel.Observation.Available snapshot ->
+                return { Generation = snapshot.Generation; Failure = None }
+            | _ -> return raise (ProjectModel.UnavailableException observation)
         }
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
@@ -2516,7 +2522,7 @@ module Daemon =
                     let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
                     WorkspaceLoader.Create(toolsPath, [])
 
-            let discovery = DiscoveryCoordinator()
+            let discovery = DiscoveryCoordinator(publish = host.WorkStore.PublishProjectModel)
 
             let daemonCtRef = ref CancellationToken.None
 

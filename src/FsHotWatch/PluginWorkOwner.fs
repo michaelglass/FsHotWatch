@@ -37,6 +37,13 @@ type OwnerFailure =
         | OperationFailure failure
         | ExecutorFailure failure -> failure
 
+/// A committed work failure is distinct from an operation which has not finished.
+type WorkFailedException(name: string, failure: exn, isExecutor: bool) =
+    inherit Exception($"WaitForComplete: owned work '{name}' failed: {failure.Message}", failure)
+    member _.Name = name
+    member _.Failure = failure
+    member _.IsExecutor = isExecutor
+
 [<NoComparison; NoEquality>]
 type Snapshot<'State> =
     private
