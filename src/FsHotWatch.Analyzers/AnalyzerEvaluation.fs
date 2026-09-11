@@ -28,7 +28,7 @@ let private section key (node: XElement) =
 let private storeRoot () =
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fshw", "analyzer-contexts")
 
-let private verifyPrivate path directory =
+let private verifyPrivate (path: string) directory =
     if File.GetAttributes(path).HasFlag FileAttributes.ReparsePoint then
         refuse "Analyzer evaluation context cannot use a link"
 
@@ -124,7 +124,6 @@ let validateOutcome sdkVersion membership outcome =
     | Succeeded(ProcessOutput.DrainTimedOut _) -> refuse "Analyzer producer SDK output did not finish draining"
     | Failed(code, _) -> refuse $"Analyzer producer SDK evaluation failed with exit {code}"
     | TimedOut _ -> refuse "Analyzer producer SDK evaluation exceeded its time bound"
-    | _ -> refuse "Analyzer producer SDK evaluation could not complete"
 
 let private evaluate (context: XElement) =
     let producer = required "project" context |> Path.GetFullPath

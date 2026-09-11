@@ -31,7 +31,7 @@ module private AnalyzerProvenanceBuildFixture =
             "src/FsHotWatch.Analyzers/build/FsHotWatch.AnalyzerProvenance.targets"
         )
 
-    let prepare directory stem source includePattern sourceLink reference =
+    let prepare directory stem (source: string) includePattern sourceLink reference =
         Directory.CreateDirectory directory |> ignore
         File.WriteAllText(Path.Combine(directory, "Rules.fs"), source)
 
@@ -396,7 +396,7 @@ type AnalyzerProvenanceBuildTests() =
                 context.Element(XName.Get "Globals").Elements(XName.Get "Property")
                 |> Seq.find (fun property -> property.Attribute(XName.Get "name").Value = "RuleFlavor")
                 |> fun property -> property.Attribute(XName.Get "value").Value
-            Assert.True(actual = expected, "Producer test invocation must preserve the intended synthetic value")
+            Assert.True((actual = expected), "Producer test invocation must preserve the intended synthetic value")
             Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome))
 
     [<Theory(Timeout = 300000)>]
