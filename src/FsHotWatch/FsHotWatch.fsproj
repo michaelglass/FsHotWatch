@@ -49,12 +49,16 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FsHotWatch.Cli</_Parameter1>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.TestPrune</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="Logging.fs" />
     <Compile Include="OperationWatchdog.fs" />
 <Compile Include="Lifecycle.fs" />
+    <Compile Include="ProjectModel.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="CachePathIdentity.fs" />
     <Compile Include="PathFilter.fs" />
