@@ -1498,6 +1498,7 @@ type TestPruneState =
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
         Earned: EarnedEvidence option
+        AnalysisModelGeneration: int64 option
         AnalysisReceipt: AnalysisEvidence option
         AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
         AnalysisCohortFiles: Set<AbsFilePath>
@@ -5418,6 +5419,7 @@ let internal createWithLaunchDeadline
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None
           Earned = None
+          AnalysisModelGeneration = None
           AnalysisReceipt = None
           AnalysisFiles = Map.empty
           AnalysisCohortFiles = Set.empty }
@@ -5428,7 +5430,7 @@ let internal createWithLaunchDeadline
     /// inside the cache-write capture window. `TestRunStarted` fires before the host starts.
     /// Catches its own exceptions to produce an `Aborted` lifecycle — letting RunExclusive
     /// eat the message would free the slot with no completion posted, stranding
-    /// `LastResults`/`PendingRerun`.
+    /// `LastResults` or the owned successor intent.
     let runTestsWithImpact
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
@@ -5869,12 +5871,9 @@ let internal createWithLaunchDeadline
         }
 
     /// The `run-tests` force-run work async, launched under the "tests" slot.
-    /// Shared by the immediate-claim path (`RunTestsRequested` with a free
-    /// slot) and the queued-drain path (`TestsFinished` popping
-    /// `QueuedCommandRuns`) so FORCE semantics stay in lockstep. Every exit —
-    /// success, fault, cancellation — resolves `reply` (the IPC command is
-    /// awaiting it, bounded) and returns a `TestsFinished` so the synchronous
-    /// handler delivers the earned terminal status.
+    /// Immediate and queued requests use the same FORCE selection. Completion
+    /// carries its reply through the owner fold; only the publication finalizer
+    /// acknowledges the IPC caller. Worker failure follows the same boundary.
     ///
     /// Empty launch set: `run-tests` is a manual FORCE run (optionally
     /// filtered to a subset / only-failed). It is NOT the impact-analysis
@@ -6461,7 +6460,36 @@ let internal createWithLaunchDeadline
       Update =
         fun ctx state event ->
             async {
+                let modelGeneration = observeModelGeneration ctx
+                let state =
+                    if state.AnalysisModelGeneration <> modelGeneration
+                       && (state.AnalysisModelGeneration.IsSome || not state.PendingAnalysis.IsEmpty || not state.AnalysisFiles.IsEmpty) then
+                        // Pending compiler results belong to their captured model. Retire
+                        // them before any build/cohort flush can write a different graph.
+                        // Verification debt survives: rediscovery earns no test coverage.
+                        { state with
+                            AnalysisModelGeneration = modelGeneration
+                            PendingAnalysis = Map.empty
+                            SymbolSnapshot = Map.empty
+                            AnalysisFiles = Map.empty
+                            AnalysisCohortFiles = Set.empty
+                            AnalysisReceipt = None
+                            Earned = None
+                            PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+                    else state
+
+                let rejectStaleAnalysis () =
+                    if not runnableProjects.IsEmpty then enqueueImpact ctx
+                    { state with
+                        AnalysisReceipt = None
+                        Earned = None
+                        PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+
                 match event with
+                | PluginEvent.FileChecked result when result.ModelGeneration.IsSome && result.ModelGeneration <> modelGeneration ->
+                    return rejectStaleAnalysis ()
+                | PluginEvent.BatchChecked batch when batch.ModelGeneration.IsSome && batch.ModelGeneration <> modelGeneration ->
+                    return rejectStaleAnalysis ()
                 | Custom(ScopeRequested(fullSuite, reply)) ->
                     let scope = if fullSuite then "full" else "impact"
                     Logging.info "test-prune" $"Scope set to {scope} for subsequent runs in this daemon session"
@@ -6482,6 +6510,7 @@ let internal createWithLaunchDeadline
                 | PluginEvent.FileChecked result ->
                     let state =
                         { state with
+                            AnalysisModelGeneration = result.ModelGeneration
                             AnalysisReceipt = None
                             AnalysisCohortFiles = Set.add result.File state.AnalysisCohortFiles }
                     let analysisStarted = DateTime.UtcNow
@@ -7261,7 +7290,7 @@ let internal createWithLaunchDeadline
                     // it green). A symbol with NO covering project was already dropped at
                     // flush time, but if one slipped through it commits here (nothing to
                     // wait on). Genuine in-session mid-run arrivals are NOT in
-                    // launch.Symbols, so they stay queued and the PendingRerun flow
+                    // launch.Symbols, so they stay queued and the owned successor intent
                     // re-runs them. BootScan debt may join the candidate set only when
                     // this completion proves the run was actually full-suite.
                     //

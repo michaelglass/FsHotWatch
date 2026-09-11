@@ -114,3 +114,54 @@ let ``model replacement atomically retires previous checkable membership`` () =
     store.PublishProjectModelWithFiles(available 2L, newFiles)
     Assert.Equal(Some(2L, newFiles), store.Snapshot.ProjectModelFiles)
     Assert.Equal(Some(1L, oldFiles), before.ProjectModelFiles)
+
+
+[<Fact(Timeout = 30000)>]
+let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
+    withCheckedSource (fun root result ->
+        let update generation name =
+            let graph =
+                { ProjectGraphAccessor.none with
+                    ObserveModel = fun () -> available generation
+                    ObserveCheckableFiles = fun () -> Some(generation, Set.singleton result.File) }
+            let ctx: PluginCtx<FsHotWatch.TestPrune.TestPrunePlugin.TestPruneMsg> =
+                { ReportStatus = ignore
+                  ReportErrors = fun _ _ -> ()
+                  ClearErrors = ignore
+                  ClearAllErrors = ignore
+                  EmitBuildCompleted = ignore
+                  EmitTestRunStarted = ignore
+                  EmitTestProgress = ignore
+                  EmitTestRunCompleted = ignore
+                  EmitCommandCompleted = ignore
+                  Checker = sharedChecker.Value
+                  RepoRoot = root
+                  Post = ignore
+                  EnqueueExclusiveIntent = fun _ _ _ -> Tasks.Task.FromResult(())
+                  StartSubtask = fun _ _ -> ()
+                  UpdateSubtask = fun _ _ -> ()
+                  EndSubtask = ignore
+                  Log = ignore
+                  CompleteWithTimeout = ignore
+                  RunExclusive = fun _ _ -> Claimed
+                  RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
+                  IsRunning = fun _ -> false
+                  FcsSuppressedCodes = Set.empty
+                  ProjectGraph = graph }
+            let handler =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    (Path.Combine(root, name + ".db")) root None None None None None []
+            handler.Update ctx handler.Init (FileChecked result)
+            |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+
+        // The detector processes actual FCS evidence when its captured model is current.
+        let current = update 1L "current"
+        Assert.False(current.PendingAnalysis.IsEmpty)
+        Assert.True(current.AnalysisFiles.ContainsKey result.File)
+
+        // A dispatch admitted in generation 1 may sit in the mailbox until generation 2.
+        // It must be rejected when folded, even though dispatch was valid at admission.
+        let stale = update 2L "stale"
+        Assert.True(stale.PendingAnalysis.IsEmpty)
+        Assert.True(stale.AnalysisFiles.IsEmpty)
+        Assert.True(stale.AnalysisReceipt.IsNone))
