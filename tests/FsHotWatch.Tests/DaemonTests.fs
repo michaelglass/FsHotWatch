@@ -1475,7 +1475,7 @@ let ``verdict admission waits while the real loader seam is between clear and co
             loader.Resume()
             discovery.Value.GetAwaiter().GetResult()
 
-            Assert.Throws<System.InvalidOperationException>(fun () -> runningVerdictWait.GetAwaiter().GetResult())
+            Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () -> runningVerdictWait.GetAwaiter().GetResult())
             |> ignore
 
             test <@ not ordinaryWaitCalled @>
@@ -1703,8 +1703,13 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             rediscovery.Value.GetAwaiter().GetResult()
 
             if rediscoverAfterCapture then
-                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult())
-                |> ignore
+                let failure = Assert.ThrowsAny<Exception>(fun () -> runningScan.GetAwaiter().GetResult())
+                let cause =
+                    match failure with
+                    | :? AggregateException as aggregate -> aggregate.Flatten().InnerExceptions |> Seq.exactlyOne
+                    | other -> other
+                let refused = Assert.IsType<InvalidOperationException>(cause)
+                test <@ refused.Message.Contains("invalidated before scan publication") @>
 
                 test
                     <@
@@ -1739,7 +1744,11 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             |> Option.iter (fun running ->
                 try
                     running.GetAwaiter().GetResult()
-                with :? InvalidOperationException when rediscoverAfterCapture ->
+                with
+                | :? InvalidOperationException when rediscoverAfterCapture -> ()
+                | :? AggregateException as failure when
+                    rediscoverAfterCapture
+                    && (failure.Flatten().InnerExceptions |> Seq.forall (fun cause -> cause :? InvalidOperationException)) ->
                     ()))
 
 [<Fact(Timeout = 15000)>]
