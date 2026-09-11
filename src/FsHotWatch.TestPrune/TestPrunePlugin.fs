@@ -7133,10 +7133,13 @@ let internal createWithLaunchDeadlineAndScope
                                     return
                                         { flushedState with
                                             BootScanDebtDuringFullRun =
-                                                (flushedState.BootScanDebtDuringFullRun, flushedState.Debt.SymbolRevisions)
+                                                (flushedState.BootScanDebtDuringFullRun,
+                                                 flushedState.Debt.SymbolRevisions)
                                                 ||> Map.fold (fun captured symbol revision ->
-                                                    if Set.contains symbol flushedState.Debt.PendingQueue
-                                                       && not (Map.containsKey symbol captured) then
+                                                    if
+                                                        Set.contains symbol flushedState.Debt.PendingQueue
+                                                        && not (Map.containsKey symbol captured)
+                                                    then
                                                         Map.add symbol revision captured
                                                     else
                                                         captured) }

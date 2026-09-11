@@ -700,6 +700,7 @@ let ``zero-project run-once failure remains inside the run hook bracket`` () =
 
             let code =
                 executeCommand
+                    (configContentHash "")
                     (fun _ -> failwith "zero-project run must not create a daemon")
                     (dummyIpc (fun _ -> false))
                     root
@@ -910,6 +911,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
             try
                 let code =
                     executeCommand
+                        (configContentHash "")
                         (fun _ -> Unchecked.defaultof<_>)
                         ipc
                         root
