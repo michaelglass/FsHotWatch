@@ -162,6 +162,21 @@ let ``observes the selected source value`` () =
     File.WriteAllText(Path.Combine(receipts, "{name}.txt"), "observed 2")
 """
 
+let private preserveFailure (root: string) (daemonText: string) =
+    let destination = Path.Combine(Path.GetTempPath(), "fshw-cold-check-failures", Path.GetFileName root)
+    Directory.CreateDirectory destination |> ignore
+    File.WriteAllText(Path.Combine(destination, "daemon-output.log"), daemonText)
+    File.WriteAllText(Path.Combine(destination, "original-root.txt"), root)
+    for file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories) do
+        let relative = Path.GetRelativePath(root, file).Replace('\\', '/')
+        if not (relative.StartsWith(".git/", StringComparison.Ordinal))
+           && not (relative.Contains("/bin/", StringComparison.Ordinal))
+           && not (relative.Contains("/obj/", StringComparison.Ordinal)) then
+            let target = Path.Combine(destination, relative)
+            Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+            File.Copy(file, target, true)
+    eprintfn "Cold-check failure artifacts: %s" destination
+
 let withDaemon clock root body =
     Assert.False(Directory.Exists(Path.Combine(root, ".fshw")))
     let cli = cliAssembly ()
@@ -173,6 +188,7 @@ let withDaemon clock root body =
     // Program.Start synchronously runs RunWithIpc. Own that foreground daemon,
     // never the detached launcher used by ensureDaemon.
     let daemon = start root "dotnet" [ cli; "start" ]
+    let mutable failed = false
 
     try
         let listening =
@@ -184,7 +200,11 @@ let withDaemon clock root body =
             Assert.Fail(output clock daemon)
 
         Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
-        body cli
+        try
+            body cli
+        with _ ->
+            failed <- true
+            reraise ()
     finally
         try
             if not daemon.Process.HasExited && IpcClient.isRunning pipe then
@@ -194,6 +214,7 @@ let withDaemon clock root body =
             daemon.Process.WaitForExit(10000) |> ignore
         finally
             disposeChild daemon
+            if failed then preserveFailure root (output clock daemon)
 
 let check clock root cli =
     let code, text = run clock root "dotnet" [ cli; "check"; "--agent" ]
@@ -203,11 +224,12 @@ let check clock root cli =
     let verdict = document.RootElement.Clone()
     Assert.Equal("check", verdict.GetProperty("command").GetString())
     // A compile failure cannot satisfy a negative test-evidence control.
-    Assert.Contains(
-        verdict.GetProperty("plugins").EnumerateArray(),
-        fun (plugin: JsonElement) ->
+    Assert.True(
+        verdict.GetProperty("plugins").EnumerateArray()
+        |> Seq.exists (fun (plugin: JsonElement) ->
             plugin.GetProperty("name").GetString() = "build"
-            && plugin.GetProperty("outcome").GetString() = "ok"
+            && plugin.GetProperty("outcome").GetString() = "ok"),
+        $"check must contain actual successful build evidence:\n{text}\n{verdict.GetRawText()}"
     )
 
     code, text, verdict

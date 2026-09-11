@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run one integration test class after compiling without a daemon gate"
+#MISE depends=["compile"]
+set -euo pipefail
+if [[ $# -ne 1 || -z "$1" ]]; then
+  echo "usage: mise run test-integration-focused <fully-qualified-test-class>" >&2
+  exit 2
+fi
+dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --filter-class "$1"
