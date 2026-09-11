@@ -1474,6 +1474,7 @@ type Daemon
     do
         host.SetProjectGraph
             { ObserveModel = fun () -> host.WorkStore.Snapshot.ProjectModel
+              ObserveCheckableFiles = fun () -> host.WorkStore.Snapshot.ProjectModelFiles
               GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
@@ -2524,7 +2525,12 @@ module Daemon =
                     let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
                     WorkspaceLoader.Create(toolsPath, [])
 
-            let discovery = DiscoveryCoordinator(publish = host.WorkStore.PublishProjectModel)
+            let discovery =
+                DiscoveryCoordinator(publish = fun observation ->
+                    host.WorkStore.PublishProjectModelWithFiles(
+                        observation,
+                        pipeline.GetAllRegisteredFiles() |> Set.ofList
+                    ))
 
             let daemonCtRef = ref CancellationToken.None
 
