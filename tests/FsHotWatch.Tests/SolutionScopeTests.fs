@@ -500,3 +500,104 @@ let ``solutionNameFor names the authority, or says there is none to name`` () =
 [<Fact(Timeout = 15000)>]
 let ``solutionCandidates on a directory that is not there is empty, not a throw`` () =
     test <@ List.isEmpty (solutionCandidates (Path.Combine(Path.GetTempPath(), "fshw-no-such-dir-158"))) @>
+
+[<Theory>]
+[<InlineData("tests/Fixture/RealRulesTests.fsproj")>]
+[<InlineData("tests/Fixture")>]
+[<InlineData("fixture")>]
+[<InlineData("REALRULESTESTS")>]
+let ``exclusion aliases resolve to actual indexed filename without forgiving directory-name impostor`` alias =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+    let inventory = [ project; "other/Fixture.fsproj" ]
+
+    let result =
+        resolveExcludedProjectNames
+            [ project ]
+            inventory
+            [ { Project = alias
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Theory>]
+[<InlineData("other/RealRulesTests.fsproj")>]
+[<InlineData("other/realrulestests.fsproj")>]
+let ``an unknown project colliding with excluded indexed stem refuses exclusion`` other =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ project ]
+            [ project; other ]
+            [ { Project = project
+                Reason = "owned harness" } ]
+
+    match result with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "A name-only database cannot safely forgive one of two owners."
+
+[<Fact>]
+let ``directory aliases spanning different actual projects are ambiguous`` () =
+    let projects = [ "one/Fixture/First.fsproj"; "two/Fixture/Second.fsproj" ]
+
+    match
+        resolveExcludedProjectNames
+            projects
+            projects
+            [ { Project = "Fixture"
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("alias Fixture is ambiguous", reason)
+    | Ok _ -> Assert.Fail "A colliding alias cannot choose an arbitrary solution entry."
+
+[<Theory>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``empty or unrelated graph inventory cannot authorize a solution exclusion`` unrelated =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+    let inventory = if unrelated then [ "other/Unrelated.fsproj" ] else []
+
+    match
+        resolveExcludedProjectNames
+            [ project ]
+            inventory
+            [ { Project = project
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("absent from the discovered project inventory", reason)
+    | Ok _ -> Assert.Fail "An unobserved project identity cannot authorize debt retirement."
+
+[<Fact>]
+let ``an indexed namesake without the actual excluded project is not identity evidence`` () =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ project ]
+            [ "other/RealRulesTests.fsproj" ]
+            [ { Project = project
+                Reason = "owned harness" } ]
+    with
+    | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
+    | Ok _ -> Assert.Fail "The graph must contain the declared project itself."
+
+[<Fact(Timeout = 15000)>]
+let ``exclusion authority refuses a newly discovered name collision`` () =
+    withTempDir "scope-identity-inventory" (fun root ->
+        let project = "tests/Fixture/RealRulesTests.fsproj"
+        File.WriteAllText(Path.Combine(root, "Repo.slnx"), $"<Solution><Project Path=\"{project}\" /></Solution>")
+        let mutable inventory = [ Path.Combine(root, project) ]
+
+        let resolve =
+            createExclusionResolver
+                root
+                None
+                [ { Project = project
+                    Reason = "owned harness" } ]
+                (fun () -> inventory)
+
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
+        inventory <- inventory @ [ Path.Combine(root, "other/RealRulesTests.fsproj") ]
+        let error = Assert.Throws<InvalidOperationException>(fun () -> resolve () |> ignore)
+        Assert.Contains("ambiguous indexed identity", error.Message))

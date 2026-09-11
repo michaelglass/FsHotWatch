@@ -2076,3 +2076,30 @@ let ``A104 declared exclusions retire only governed covering debt`` (mixed: bool
             // requirement despite the prior successful configured-suite receipt.
             PendingVerification.save tmpDir (Set.singleton "Lib.shared")
             Assert.Contains("Lib.shared", run Map.empty))
+
+[<Fact(Timeout = 20000)>]
+let ``A104 scope resolution failure at completion settles owned work and retains debt`` () =
+    withTempDir "tp-scope-failure" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+        PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+        let completedFlag = Path.Combine(tmpDir, "runner-completed")
+        let config =
+            { PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) with
+                Args = $"-c \"touch {completedFlag}; exit 0\"" }
+        let failure = InvalidOperationException("ambiguous exclusion project after runner completion")
+        let resolve () =
+            if File.Exists completedFlag then raise failure
+            Map.empty
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(createWithScope resolve dbPath tmpDir (Some [ config ]) None None None None [])
+        try
+            host.EmitBuildCompleted(BuildSucceeded)
+            Assert.True(waitUntilTrue (fun () -> not (List.isEmpty (host.FailedWork()))) 15000)
+            waitForQuiescent host 15000
+            Assert.False(host.AnyPluginBusy())
+            Assert.Contains(host.FailedWork(), fun (_, error) -> obj.ReferenceEquals(error, failure))
+            Assert.Contains("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+        finally
+            host.Teardown())
