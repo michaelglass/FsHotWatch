@@ -338,17 +338,37 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                 row next, result
         )
 
+    let admitSuccessor key pending work =
+        match pending with
+        | [] -> work, []
+        | first :: rest ->
+            let active =
+                work |> Map.toList |> List.tryPick (fun (identity, kind) ->
+                    match kind with
+                    | Exclusive(candidate, alreadyQueued) when candidate = key -> Some(identity, alreadyQueued)
+                    | _ -> None)
+            match active with
+            | Some(identity, alreadyQueued) ->
+                // A result fold may already have launched its automatic successor.
+                // Older queued commands precede intents admitted during that fold.
+                Map.add identity (Exclusive(key, slot (pending @ queued alreadyQueued))) work, []
+            | None ->
+                // Release one intent. Its committed transition may launch work;
+                // the remaining FIFO stays owned through that exact fold too.
+                Map.add first.Id (Event(Some first.Receipt, Some(key, slot rest))) work, [ first ]
+
     let retireEvent id snapshot =
         let receipt, continuation =
             match Map.find id (entries snapshot.Phase) with
             | Event(receipt, continuation)
             | Committing(receipt, continuation) -> receipt, continuation
             | _ -> invalidOp "Expected event obligation"
-        let pending = continuation |> Option.map (snd >> queued) |> Option.defaultValue []
-        let work =
-            pending |> List.fold (fun work intent -> Map.add intent.Id (Event(Some intent.Receipt, None)) work)
-                (entries snapshot.Phase |> Map.remove id)
-        work, receipt, pending
+        let remaining = entries snapshot.Phase |> Map.remove id
+        let work, delivered =
+            match continuation with
+            | None -> remaining, []
+            | Some(key, pending) -> admitSuccessor key (queued pending) remaining
+        work, receipt, delivered
 
     let deliverIntents pending =
         try
@@ -617,18 +637,16 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
         let pending =
             mutate (fun snapshot ->
                 requireKind id (function Exclusive _ -> true | _ -> false) snapshot
-                let pending =
+                let key, pending =
                     match Map.find id (entries snapshot.Phase) with
-                    | Exclusive(_, pending) -> queued pending
+                    | Exclusive(key, pending) -> key, queued pending
                     | _ -> invalidOp "Expected exclusive operation"
-                let work =
-                    pending |> List.fold (fun work intent -> Map.add intent.Id (Event(Some intent.Receipt, None)) work)
-                        (entries snapshot.Phase |> Map.remove id)
+                let work, delivered = admitSuccessor key pending (entries snapshot.Phase |> Map.remove id)
                 { snapshot with
                     Phase = phase work
                     Failure =
                         match snapshot.Failure with
                         | Some(ExecutorFailure _ as prior)
                         | Some(CommitFailure _ as prior) -> Some prior
-                        | _ -> Some(RunFailure failure) }, pending)
+                        | _ -> Some(RunFailure failure) }, delivered)
         deliverIntents pending
