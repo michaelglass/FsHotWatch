@@ -47,7 +47,7 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
         | None ->
             Logging.warn
                 "cli-confirm"
-                $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a merge \
+                $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a full-suite \
                    verdict cannot be earned here. `fshw confirm --run-once` will report NO VERDICT."
 
             TestRunReport.noTestSuite

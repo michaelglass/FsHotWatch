@@ -675,14 +675,49 @@ let ``the serialized outcome is UNIFORMLY tagged — a consumer never type-switc
 
 [<Fact>]
 let ``an UnearnedScope confirm is INCOMPLETE in the file, never green`` () =
-    // An impact-filtered run is not the claim a merge needs: nothing is reported broken,
-    // and nothing is reported sound either. That must survive the trip to disk.
+    // An impact-filtered run cannot establish the requested full-suite claim.
+    // That evidence limit must survive the trip to disk.
     let outcome =
         Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
 
     match outcome with
     | Verdict.Incomplete reason -> test <@ reason.Contains "not the full suite" @>
     | other -> failwith $"an unearned scope must never be green, got %A{other}"
+
+[<Fact>]
+let ``an unearned full-suite verdict reports missing evidence without prescribing merge policy`` () =
+    let outcome =
+        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+
+    match outcome with
+    | Verdict.Incomplete reason ->
+        // Keep the refusal and its evidence limit: removing the explanation or
+        // turning a partial run green must not satisfy the wording regression.
+        test <@ reason.Contains "not the full suite" @>
+        test <@ not (reason.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+    | other -> failwith $"an unearned full-suite verdict must remain incomplete, got %A{other}"
+
+[<Fact>]
+let ``console scope refusal describes evidence without prescribing merge policy`` () =
+    let text =
+        Verdict.CheckProse.explainOutcome None (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        |> Option.get
+
+    test <@ text.Contains "NO VERDICT" @>
+    test <@ text.Contains "not the full suite" @>
+    test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+
+[<Fact>]
+let ``console zero-test refusal does not misidentify check as confirm`` () =
+    let text =
+        Verdict.CheckProse.explainOutcome
+            None
+            (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
+        |> Option.get
+
+    test <@ text.Contains "NO VERDICT" @>
+    test <@ not (text.Contains("Confirm:", StringComparison.OrdinalIgnoreCase)) @>
+    test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
 
 [<Fact>]
 let ``every check outcome maps to a file outcome — and only Clean is green`` () =

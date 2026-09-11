@@ -79,7 +79,7 @@ let internal relevantExtensions =
 /// `watchedSourceGlobs`, so a solution change that lands inside a coalesced window
 /// is seen only by the native path. The globs it replaced omitted `*.sln` too, so
 /// this is unchanged behaviour, but it is a real hole and wants its own ticket
-/// rather than a silent fix riding along.
+/// rather than a silent fix riding along with signature-file detection.
 let internal solutionExtensions = set [ ".sln"; ".slnx" ]
 
 /// The globs both event paths watch: the coalesced-rescan walk and the

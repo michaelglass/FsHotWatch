@@ -2496,6 +2496,40 @@ let ``an unknown-command reply is ScopeUnknown — `confirm` never goes green on
 
     test <@ (readTestRun ipc "pipe").Scope = IpcParsing.ScopeUnknown @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``missing test-scope warnings refuse evidence without prescribing merge policy`` inProcess =
+    withTempDir "missing-scope" (fun repoRoot ->
+        let invoke () =
+            if inProcess then
+                let host =
+                    FsHotWatch.PluginHost.PluginHost.create
+                        (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                        repoRoot
+
+                RunOnceCheck.readTestRun host
+            else
+                let ipc =
+                    { fakeIpc () with
+                        RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
+
+                readTestRun ipc "pipe"
+
+        let originalLevel = FsHotWatch.Logging.logLevel
+
+        try
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+            let stderr, report = captureStderr invoke
+            // Both transports must still refuse unknown scope, and the warning
+            // must explain that refusal rather than disappear to pass this test.
+            test <@ report.Scope = IpcParsing.ScopeUnknown @>
+            test <@ stderr.Contains "test-scope" @>
+            test <@ stderr.Contains "NO VERDICT" @>
+            test <@ not (stderr.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+        finally
+            FsHotWatch.Logging.setLogLevel originalLevel)
+
 [<Fact(Timeout = 15000)>]
 let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} payload`` () =
     // Doubly broken before: the command name was wrong AND the args were `set-scope

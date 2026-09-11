@@ -1328,8 +1328,42 @@ type AffectedTestsState =
     | NotYetAnalyzed
     | Analyzed of TestMethodInfo list
 
+module internal ReceiptInputTree =
+    /// A receipt identity, not a new verdict hash scheme. Use the core input walk,
+    /// conservatively including config-excluded source files too. Refuse holes and
+    /// unreadable bytes rather than letting an unhashable sentinel authorize reuse.
+    let read repoRoot =
+        try
+            let walked = TreeHash.files repoRoot []
+
+            let entries =
+                walked.Files |> List.map (fun (rel, path) -> rel, ContentHash.ofFile path)
+
+            if
+                not (Directory.Exists repoRoot)
+                || not walked.Skipped.IsEmpty
+                || (entries |> List.exists (snd >> ContentHash.isReadable >> not))
+            then
+                None
+            else
+                let absent =
+                    walked.AbsentDeclarations
+                    |> List.map (fun rel -> VerdictInputs.SentinelPrefix + rel, VerdictInputs.AbsentDeclaration)
+
+                Some(TreeHash.hashEntries (List.sortBy fst (entries @ absent)))
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? JsonException -> None
+
+    let matches expected current =
+        match expected, current with
+        | Some before, Some after -> String.Equals(before, after, StringComparison.Ordinal)
+        | _ -> false
+
 type TestEvidenceReceipt =
-    { RunId: Guid
+    { InputTreeHash: string option
+      RunId: Guid
       Coverage: RunCoverage
       Seeds: string list
       ZeroSelection: ZeroSelection }
@@ -1527,6 +1561,8 @@ module TestRunInputs =
 /// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     {
+        /// Immutable input identity captured before this run executes.
+        InputTreeHash: string option
         Symbols: Set<string>
         CoveringProjectsBySymbol: Map<string, Set<string>>
         /// Durable file-granular runtime obligations launched independently of
@@ -5791,7 +5827,8 @@ let internal createWithLaunchDeadline
                         |> Some
 
                 let launch =
-                    { Symbols = launchedSymbols
+                    { InputTreeHash = ReceiptInputTree.read repoRoot
+                      Symbols = launchedSymbols
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
@@ -6005,7 +6042,8 @@ let internal createWithLaunchDeadline
                 // The empty SELECTION says the same thing about the ledger: an
                 // aborted run executed nothing, so it clears nothing.
                 let launch =
-                    { Symbols = launchedSymbols
+                    { InputTreeHash = None
+                      Symbols = launchedSymbols
                       CoveringProjectsBySymbol = Map.empty
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
@@ -6048,7 +6086,8 @@ let internal createWithLaunchDeadline
         // (`--only-failed`, `--projects`) are absent from the selection and so are
         // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
-            { Symbols = Set.empty
+            { InputTreeHash = None
+              Symbols = Set.empty
               CoveringProjectsBySymbol = Map.empty
               RuntimeProjectsByFile = Map.empty
               Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
@@ -6061,6 +6100,10 @@ let internal createWithLaunchDeadline
               ZeroSelection = ZeroSelection.NotAZero }
 
         async {
+            let commandLaunch =
+                { commandLaunch with
+                    InputTreeHash = ReceiptInputTree.read repoRoot }
+
             let mutable emittedStart: TestRunStarted option = None
 
             let emitStarted started =
@@ -6246,8 +6289,21 @@ let internal createWithLaunchDeadline
                         // which CTRF reports belong to this run
                         // (`.fshw/test-runs/<runId>/`) instead of inferring membership
                         // from mtimes.
+                        // Check again at the read boundary: inputs may have changed
+                        // after completion, even before the next watcher event arrives.
+                        let receipt =
+                            match ctx.IsRunning "tests", state.EvidenceReceipt with
+                            | false, Some evidence ->
+                                let current = ReceiptInputTree.read repoRoot
+
+                                if ReceiptInputTree.matches evidence.InputTreeHash current then
+                                    Some evidence
+                                else
+                                    None
+                            | _ -> None
+
                         let runId =
-                            match state.EvidenceReceipt with
+                            match receipt with
                             | Some receipt -> box (receipt.RunId.ToString("N"))
                             | None -> null
 
@@ -6268,9 +6324,7 @@ let internal createWithLaunchDeadline
                         // reply that grows without bound to serve a diagnostic line
                         // is a new failure mode in the path that earns verdicts.
                         let evidenceSeeds =
-                            state.EvidenceReceipt
-                            |> Option.map (fun receipt -> receipt.Seeds)
-                            |> Option.defaultValue []
+                            receipt |> Option.map (fun receipt -> receipt.Seeds) |> Option.defaultValue []
 
                         let seeds = evidenceSeeds |> List.truncate 8 |> List.toArray
                         let seedCount = List.length evidenceSeeds
@@ -6312,7 +6366,7 @@ let internal createWithLaunchDeadline
                                 )
                         else
                             let evidenceCoverage =
-                                state.EvidenceReceipt
+                                receipt
                                 |> Option.map (fun receipt -> receipt.Coverage)
                                 |> Option.defaultValue RunCoverage.none
 
@@ -6345,7 +6399,7 @@ let internal createWithLaunchDeadline
                                     )
                             | ScopeNone total ->
                                 let zero =
-                                    state.EvidenceReceipt
+                                    receipt
                                     |> Option.map (fun receipt -> receipt.ZeroSelection)
                                     |> Option.defaultValue ZeroSelection.NotAZero
 
@@ -7197,8 +7251,7 @@ let internal createWithLaunchDeadline
 
                                     let launchState =
                                         { stateWithAffected with
-                                            PendingForceRunProjects = Set.empty
-                                            EvidenceReceipt = None }
+                                            PendingForceRunProjects = Set.empty }
 
                                     match
                                         runTestHostExclusive
@@ -7335,8 +7388,15 @@ let internal createWithLaunchDeadline
                     // handler.
                     let bootScanDebtDuringFullRun = state.BootScanDebtDuringFullRun
 
+                    let currentInputTree = ReceiptInputTree.read repoRoot
+
                     let candidateReceipt =
-                        { RunId = completed.RunId
+                        { InputTreeHash =
+                            if ReceiptInputTree.matches launch.InputTreeHash currentInputTree then
+                                currentInputTree
+                            else
+                                None
+                          RunId = completed.RunId
                           Coverage = coverage
                           Seeds = launch.Seeds
                           ZeroSelection = launch.ZeroSelection }
@@ -7344,8 +7404,24 @@ let internal createWithLaunchDeadline
                     let evidenceReceipt =
                         match state.EvidenceReceipt with
                         | Some previous when
-                            RunCoverage.coversWholeSuite (Set.toList runnableProjects) previous.Coverage
-                            && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) coverage)
+                            ReceiptInputTree.matches previous.InputTreeHash currentInputTree
+                            && ReceiptInputTree.matches candidateReceipt.InputTreeHash currentInputTree
+                            && completed.Outcome = Normal
+                            && ((launch.ZeroSelection = ZeroSelection.AlreadyVerified
+                                 && Map.isEmpty coverage
+                                 && Map.isEmpty completed.Results
+                                 && outstandingFailures.IsEmpty)
+                                || (RunCoverage.coversWholeSuite (Set.toList runnableProjects) previous.Coverage
+                                    && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) coverage)
+                                    && (completed.Results
+                                        |> Map.exists (fun _ result -> TestResult.executedTests result))
+                                    && (completed.Results
+                                        |> Map.forall (fun _ result ->
+                                            match result with
+                                            | TestsPassed _
+                                            | TestsFailed _
+                                            | TestsNoMatch _ -> true
+                                            | _ -> false))))
                             ->
                             previous
                         | _ -> candidateReceipt
