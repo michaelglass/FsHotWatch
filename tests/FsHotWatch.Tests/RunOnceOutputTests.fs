@@ -740,7 +740,8 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                           ParseResults = Unchecked.defaultof<_>
                           CheckResults = FullCheck(Unchecked.defaultof<_>)
                           ProjectOptions = Unchecked.defaultof<_>
-                          Version = 0L }
+                          Version = 0L
+                          ModelGeneration = None }
                     )
 
             daemon.Host.GetAllStatuses()

@@ -26,7 +26,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ParseResults = dummyParseResults ()
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
@@ -36,6 +37,7 @@ let fakeBatchChecked (files: string list) : BatchChecked =
     { Trigger = BootScan
       Files = files |> List.map AbsFilePath.create
       Generation = 1L
+      ModelGeneration = None
       StartedAt = now
       CompletedAt = now }
 
