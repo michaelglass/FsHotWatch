@@ -11,6 +11,17 @@ open System.Threading
 open System.Threading.Tasks
 
 module private ChildProtocol =
+    // A previous bounded termination attempt may still own this monitor. Retrying
+    // must report uncertainty, rather than turn the outer timeout into an infinite wait.
+    let withLock (sync: obj) action =
+        if not (Monitor.TryEnter(sync, TimeSpan.FromSeconds 5.)) then
+            raise (TimeoutException("Process ownership is still busy; containment cleanup remains unconfirmed."))
+
+        try
+            action ()
+        finally
+            Monitor.Exit sync
+
     let parse (line: string) =
         if isNull line then
             raise (IOException("Process host closed its control pipe without the required receipt."))
@@ -20,7 +31,7 @@ module private ChildProtocol =
     let failure (message: JsonElement) =
         match message.TryGetProperty("message") with
         | true, error -> IOException("Process host failed: " + error.GetString())
-        | _ -> IOException("Unexpected proc host protocol message.")
+        | _ -> IOException("Unexpected process host protocol message.")
 
     let send (writer: StreamWriter) (line: string) =
         use timeout = new CancellationTokenSource(TimeSpan.FromSeconds 1.)
@@ -142,7 +153,7 @@ type internal OwnedChild
             raise (TimeoutException("Process host did not finish owned cleanup within five seconds."))
 
     member this.TargetExitCode =
-        lock sync (fun () ->
+        ChildProtocol.withLock sync (fun () ->
             ObjectDisposedException.ThrowIf(disposed, this)
             let elapsed = Stopwatch.StartNew()
             this.WaitForHost elapsed
@@ -151,14 +162,14 @@ type internal OwnedChild
                 receipt.WaitAsync(ChildProtocol.remaining elapsed).GetAwaiter().GetResult()
 
             if proc.ExitCode <> 137 then
-                raise (IOException($"Unexpected proc host exit {proc.ExitCode}; target result is unconfirmed."))
+                raise (IOException($"Unexpected process host exit {proc.ExitCode}; target result is unconfirmed."))
 
             ChildProtocol.waitForContainment containment elapsed
             cleanupVerified <- true
             code)
 
     member this.Terminate() =
-        lock sync (fun () ->
+        ChildProtocol.withLock sync (fun () ->
             ObjectDisposedException.ThrowIf(disposed, this)
             terminationRequested <- true
 
@@ -179,7 +190,7 @@ type internal OwnedChild
 
     /// Dispose releases verified handles only; it never retries termination or masks a primary error.
     member _.Dispose() =
-        lock sync (fun () ->
+        ChildProtocol.withLock sync (fun () ->
             if not disposed then
                 if not cleanupVerified then
                     invalidOp "Process ownership cannot be disposed before cleanup is verified."
@@ -258,7 +269,7 @@ type internal OwnedChild
             owned <- Some child
             register |> Option.iter (fun admission -> admission.Invoke child)
 
-            lock child.Sync (fun () ->
+            ChildProtocol.withLock child.Sync (fun () ->
                 if child.Stopped then
                     raise (OperationCanceledException("The proc owner was stopped before target admission."))
 
