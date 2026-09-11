@@ -463,3 +463,46 @@ let ``failed host operation stays visible after cleanup until a new attempt`` ()
     Assert.Empty store.Snapshot.OperationFaults
     Assert.True store.Snapshot.IsBusy
     store.EndOperation retry
+
+[<Fact>]
+let ``queued intents follow the exact run through prepared completion before FIFO delivery`` () =
+    let store = PluginWorkOwner.Store()
+    let owner = PluginWorkOwner.Owner(0, store, "queued")
+    let received = ResizeArray<string * PluginWorkOwner.WorkId>()
+    let post name identity = received.Add(name, identity)
+    let active, _ = owner.TryClaim "tests" |> Option.get
+    let first = owner.EnqueueIntent("tests", None, post "command-1")
+    let automatic = owner.EnqueueIntent("tests", Some "flush", post "old-flush")
+    let replacement = owner.EnqueueIntent("tests", Some "flush", post "new-flush")
+    Assert.Same(automatic, replacement)
+    Assert.Empty received
+    let completion = owner.CompleteRun active |> Option.get
+    owner.PublishEventState(completion, 1)
+    let last = owner.EnqueueIntent("tests", None, post "command-2")
+    Assert.Empty received
+    Assert.False first.IsCompleted
+    let before = store.Snapshot
+    owner.SettleEvent(completion, preparedCommit = true)
+    Assert.Equal<string list>([ "command-1"; "new-flush"; "command-2" ], received |> Seq.map fst |> Seq.toList)
+    Assert.True store.Snapshot.IsBusy
+    Assert.True before.IsBusy
+    Assert.Equal(1, owner.Snapshot.State)
+    Assert.False first.IsCompleted
+    for _, identity in received do
+        owner.CommitEvent(identity, owner.Snapshot.State + 1)
+    Assert.False store.Snapshot.IsBusy
+    Assert.True first.IsCompletedSuccessfully
+    Assert.True automatic.IsCompletedSuccessfully
+    Assert.True last.IsCompletedSuccessfully
+
+[<Fact>]
+let ``executor fault fails queued receipts but retains the live exclusive worker`` () =
+    let store = PluginWorkOwner.Store()
+    let owner = PluginWorkOwner.Owner((), store, "faulted")
+    let active, _ = owner.TryClaim "tests" |> Option.get
+    let queued = owner.EnqueueIntent("tests", None, fun _ -> failwith "must not deliver after executor fault")
+    owner.FaultExecutor(InvalidOperationException("executor stopped"))
+    Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult()) |> ignore
+    Assert.True store.Snapshot.IsBusy
+    owner.FailRun(active, InvalidOperationException("worker drained"))
+    Assert.False store.Snapshot.IsBusy
