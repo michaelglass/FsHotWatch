@@ -10,7 +10,8 @@ type private BarrierResult =
     { ExitCode: int
       Stdout: string
       Stderr: string
-      Elapsed: TimeSpan }
+      RestoreElapsed: TimeSpan option
+      DescendantExited: bool option }
 
 let private repoRoot () =
     let rec up (directory: DirectoryInfo) =
@@ -64,7 +65,12 @@ case "${FAKE_MODE:-success}" in
   success) exit 0 ;;
   failure) printf 'synthetic restore failure' >&2; exit 42 ;;
   retry) if [ "$count" -lt "${FAKE_SUCCEED_AT:-2}" ]; then exit 42; else exit 0; fi ;;
-  timeout) sleep 30 ;;
+  timeout)
+    sleep 30 &
+    descendant=$!
+    printf '%s' "$descendant" > "$FAKE_COUNT_FILE.ready.tmp"
+    mv "$FAKE_COUNT_FILE.ready.tmp" "$FAKE_COUNT_FILE.ready"
+    wait "$descendant" ;;
 esac
 """
     )
@@ -92,17 +98,36 @@ let private runBarrier root fakeDotnet probeParent project packageId settings =
     start.Environment["TESTPRUNE_NUGET_PROBE_PROCESS_TIMEOUT_MS"] <- "1000"
     settings |> List.iter (fun (key, value) -> start.Environment[key] <- value)
 
-    let clock = Stopwatch.StartNew()
     use child = Process.Start start
+
     let stdout = child.StandardOutput.ReadToEndAsync()
+
+    let observation =
+        task {
+            let readyFile = start.Environment["FAKE_COUNT_FILE"] + ".ready"
+
+            while not child.HasExited && not (File.Exists readyFile) do
+                do! Threading.Tasks.Task.Delay 10
+
+            if File.Exists readyFile && not child.HasExited then
+                use descendant = Process.GetProcessById(Int32.Parse(File.ReadAllText readyFile))
+                Assert.False(descendant.HasExited, "The wedged restore descendant must be alive when observed")
+                let clock = Stopwatch.StartNew()
+                do! child.WaitForExitAsync()
+                return Some clock.Elapsed, Some descendant.HasExited
+            else
+                return None, None
+        }
+
     let stderr = child.StandardError.ReadToEndAsync()
     child.WaitForExit()
-    clock.Stop()
+    let restoreElapsed, descendantExited = observation.GetAwaiter().GetResult()
 
     { ExitCode = child.ExitCode
       Stdout = stdout.GetAwaiter().GetResult()
       Stderr = stderr.GetAwaiter().GetResult()
-      Elapsed = clock.Elapsed }
+      RestoreElapsed = restoreElapsed
+      DescendantExited = descendantExited }
 
 let private scratch body =
     let temp =
@@ -285,8 +310,18 @@ let ``a wedged restore is killed within its bound and cleaned up`` () =
                 "Example.Package"
                 [ "FAKE_MODE", "timeout"
                   "FAKE_COUNT_FILE", countFile
-                  "TESTPRUNE_NUGET_PROBE_PROCESS_TIMEOUT_MS", "100" ]
+                  "TESTPRUNE_NUGET_PROBE_PROCESS_TIMEOUT_MS", "1000" ]
 
-        test <@ result.ExitCode = 1 && result.Elapsed < TimeSpan.FromSeconds 8. @>
+        // FSI compilation precedes the restore deadline; measure from the running
+        // fake restore and verify its owned descendant really exited.
+        test <@ result.ExitCode = 1 @>
+
+        test
+            <@
+                result.RestoreElapsed
+                |> Option.exists (fun elapsed -> elapsed < TimeSpan.FromSeconds 8.)
+            @>
+
+        test <@ result.DescendantExited = Some true @>
         test <@ result.Stderr.Contains("restore timed out") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
