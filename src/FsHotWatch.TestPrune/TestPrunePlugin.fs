@@ -6811,8 +6811,18 @@ let internal createWithLaunchDeadlineAndScope
                             // same log level as the one that hides nothing. It replaced a
                             // `(names, bool)` pair whose bool this call site computed and
                             // then `ignore`d.
-                            let changedNames =
+                            let look =
                                 match FileFreshness.planLook currentClean storedTrust with
+                                | FileFreshness.NothingHidden when not runnableProjects.IsEmpty ->
+                                    // Consume cold indexed symbols as real verification debt.
+                                    // A future full run is not yet evidence; recording the debt
+                                    // makes these rows a before for subsequent clean checks
+                                    // without repeatedly widening unchanged files after it runs.
+                                    FileFreshness.Diffable FileFreshness.AgainstNothing
+                                | outcome -> outcome
+
+                            let changedNames =
+                                match look with
                                 | FileFreshness.Diffable baseline ->
                                     // WHAT to diff against is the plan's decision, not
                                     // `storedSymbols`'s. This call site used to pass the

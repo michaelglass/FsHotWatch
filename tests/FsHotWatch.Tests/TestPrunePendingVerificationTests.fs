@@ -581,7 +581,7 @@ type private A163ScenarioOutcome =
       Queue: Set<string>
       Status: PluginStatus option }
 
-let private runA163CohortScenario name trigger testExitCode =
+let private runA163CohortScenario name trigger testExitCode editAfterSeal =
     withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
@@ -665,6 +665,14 @@ let fooTest () = assert (foo 1 = 2)
         |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         // Each recipient has committed this exact cohort while the full run is held.
+        if editAfterSeal then
+            File.WriteAllText(libFile, "module Lib\nlet foo (x: int) = x + 3\n")
+            match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+            | Some result ->
+                host.EmitFileCheckedTracked(result)
+                |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+            | None -> failwith "post-seal changed-file check failed"
+
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
@@ -679,7 +687,7 @@ let ``AUTOMATION-163: boot-scan symbols discovered during a green full run are c
     // when its cohort seal arrives during the full run that a cold confirm launched.
     // The scan is a baseline over the same built tree, so that full run covers its
     // symbols; queueing another run silently doubles CI.
-    let outcome = runA163CohortScenario "tp-a163-boot-scan" BootScan 0
+    let outcome = runA163CohortScenario "tp-a163-boot-scan" BootScan 0 false
     Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -692,7 +700,7 @@ let ``AUTOMATION-163: an in-session cohort discovered during a full run still qu
     // Mutation caught: matching every BatchChecked as BootScan would disable the real
     // edit queue. The only difference from the regression above is cohort provenance.
     let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
-    let outcome = runA163CohortScenario "tp-a163-in-session" trigger 0
+    let outcome = runA163CohortScenario "tp-a163-in-session" trigger 0 false
     Assert.Equal(2, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -704,13 +712,21 @@ let ``AUTOMATION-163: an in-session cohort discovered during a full run still qu
 let ``AUTOMATION-163: a failing full run cannot discharge boot-scan debt`` () =
     // Mutation caught: absorbing boot debt on the requested scope rather than the
     // completed run's actual green evidence would erase work that no passing test proved.
-    let outcome = runA163CohortScenario "tp-a163-failed-full" BootScan 1
+    let outcome = runA163CohortScenario "tp-a163-failed-full" BootScan 1 false
     Assert.Equal(1, outcome.RunCount)
     test <@ outcome.Queue.Contains "Lib.foo" @>
 
     match outcome.Status with
     | Some(Failed _) -> ()
     | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
+
+[<Fact(Timeout = 30000)>]
+let ``a source edit after a boot cohort seal cannot borrow the held full run`` () =
+    let outcome = runA163CohortScenario "tp-boot-seal-edited" BootScan 0 true
+    // No successor cohort was sealed yet. The old run must leave this new
+    // revision owed until that cohort can select and execute its covering tests.
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Queue.Contains "Lib.foo" @>
 
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
