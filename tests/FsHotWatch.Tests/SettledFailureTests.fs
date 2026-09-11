@@ -18,12 +18,15 @@ open FsHotWatch.Tests.TestHelpers
 [<InlineData("unreadable-source")>]
 [<InlineData("ignored-event")>]
 [<InlineData("cached-failure")>]
+[<InlineData("external-wire-inputs")>]
 let ``public verdict wait reports current failed build without inventing test evidence`` (transition: string) =
-    withTempDir "failed-build-verdict-wait" (fun root ->
-        let source = System.IO.Path.Combine(root, "Source.fs")
+    withTempDir "failed-build-external-source" (fun externalRoot ->
+      withTempDir "failed-build-verdict-wait" (fun root ->
+        let sourceRoot = if transition = "external-wire-inputs" then externalRoot else root
+        let source = System.IO.Path.Combine(sourceRoot, "Source.fs")
         let project = System.IO.Path.Combine(root, "ManualTests.fsproj")
         let graph = ProjectGraph()
-        System.IO.File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include=\"Source.fs\" /></ItemGroup></Project>")
+        writeMinimalFsproj project "net10.0" [ System.IO.Path.GetRelativePath(root, source) ]
         graph.RegisterFromFsproj(project) |> ignore
         graph.RegisterProjectOutput(AbsProjectPath.create project, System.IO.Path.Combine(root, "bin", "Debug", "net10.0", "ManualTests.dll"))
         let buildScript = System.IO.Path.Combine(root, "build.sh")
@@ -118,7 +121,7 @@ let ``public verdict wait reports current failed build without inventing test ev
               InvalidateCache = fun () -> System.Threading.Tasks.Task.FromResult(())
               GetUncheckedCount = fun () -> 0 }
         let target = FsHotWatch.Ipc.DaemonRpcTarget rpcConfig
-        if List.contains transition [ "current"; "ignored-event"; "cached-failure" ] then
+        if List.contains transition [ "current"; "ignored-event"; "cached-failure"; "external-wire-inputs" ] then
             let wire = target.WaitForComplete(1000).GetAwaiter().GetResult()
             Assert.Contains("current-build-refusal", wire)
             Assert.Contains("failed", wire)
@@ -159,7 +162,7 @@ let ``public verdict wait reports current failed build without inventing test ev
                     Assert.True(verdict.RunId.IsNone)
                     Assert.False(FsHotWatch.Cli.IpcParsing.TestScope.isFullSuite verdict.Scope)
                 | reading -> failwithf "expected a published explicit failed verdict, got %A" reading
-            if transition = "current" then
+            if transition = "current" || transition = "external-wire-inputs" then
                 // Serialization is not the consumer boundary. An edit after this
                 // real diagnostics response must revoke its failure authority too.
                 let original = System.IO.File.ReadAllText source
@@ -173,4 +176,4 @@ let ``public verdict wait reports current failed build without inventing test ev
             Assert.Throws<TimeoutException>(fun () -> target.WaitForComplete(1000).GetAwaiter().GetResult() |> ignore)
             |> ignore
         Assert.Empty host.WorkSnapshot.Evidence
-        Assert.False(System.IO.File.Exists testStarted))
+        Assert.False(System.IO.File.Exists testStarted)))
