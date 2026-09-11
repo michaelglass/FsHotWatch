@@ -185,7 +185,8 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+          Version = 0L
+          ModelGeneration = None }
 
     host.EmitFileChecked(fakeResult)
 
@@ -608,7 +609,8 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let events =
         [ for i in 1..10 ->
               { fakeResult $"/tmp/concurrent/File%d{i}.fs" with
-                  Version = int64 i } ]
+                  Version = int64 i
+                  ModelGeneration = None } ]
 
     for e in events do
         host.EmitFileChecked(e)

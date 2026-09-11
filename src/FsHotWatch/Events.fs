@@ -73,6 +73,8 @@ type FileCheckResult =
         ProjectOptions: FSharpProjectOptions
         /// Monotonic version counter — higher means newer.
         Version: int64
+        /// Discovery epoch which supplied these compiler options; absent outside a daemon model.
+        ModelGeneration: int64 option
     }
 
 /// Result of checking all files in a project.
@@ -788,6 +790,8 @@ type BatchChecked =
         /// `BootScan`-triggered events; bumped per `InSessionBatch` as well so
         /// subscribers can identify "the latest cohort."
         Generation: int64
+        /// Discovery epoch of the cohort, independent of its scan/batch sequence number.
+        ModelGeneration: int64 option
         /// Wall-clock start of the cohort (first `CheckFile` dispatched).
         StartedAt: System.DateTime
         /// Wall-clock end (last `FileChecked` emitted before this `BatchChecked`).
