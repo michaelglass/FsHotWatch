@@ -20,11 +20,19 @@
       "branch": 83,
       "reason": "Cobertura parse/ingest/emit for TestPrune-native coverage. The only uncovered branch is the defensive isNull-root guard after XDocument.Parse, which always yields a root (or throws) for the well-formed reports MS emits, so it cannot be reproducibly exercised. (Batch-ingest refactor moved the Some/None attribution branches into Database.RecordCoverageBatch, lowering this file's total branch count.) Pinned at the honest achieved floor rather than excluded."
     },
-    "CoverageImpact.fs": {
-      "line": 92,
-      "branch": 73,
-      "reason": "phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
-    },
+    "CoverageImpact.fs": [
+      {
+        "line": 92,
+        "branch": 73,
+        "reason": "phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
+      },
+      {
+        "line": 92,
+        "branch": 69,
+        "platform": "macos",
+        "reason": "SDK 10.0.400 compiler instrumentation rebaseline (2026-09-11): identical source, tests, all resolved package identities (including FSharp.Core 10.1.401, FCS 43.12.401 and collector 18.10.0), coverage settings and 905-test corpus reproduce SDK 10.0.301 at 38/52 branches (73.0769%) versus SDK 10.0.400 at 73/105 (69.5238%). All 203 source-line hit counts are identical, 187 covered. The existing untested ProjectSelectionReason.describe now contributes 11 reported branches; it is not generated impossible code. Scoped coverageratchet 0.15.0-alpha.12 loosen derives integer branch floor 69 and retains line 92. No extra margin; other-platform and platform-less fallback floors are unchanged."
+      }
+    ],
     "Database.fs": {
       "line": 98,
       "branch": 70,
