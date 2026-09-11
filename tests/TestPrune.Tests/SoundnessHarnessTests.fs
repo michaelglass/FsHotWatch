@@ -827,3 +827,129 @@ module ``Extraction-inclusive soundness`` =
 //   it is the step that would have caught those extraction defects outright; it is
 //   listed here rather than claimed, because a harness that overstates its reach
 //   is the exact failure this file exists to avoid.
+
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Signature edit soundness`` =
+
+    [<Theory>]
+    [<InlineData("changed")>]
+    [<InlineData("removed")>]
+    [<InlineData("unchanged")>]
+    let ``signature edits preserve consumer selection and both file baselines`` (edit: string) =
+        let directory =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"signature-impact-{Guid.NewGuid():N}")
+
+        System.IO.Directory.CreateDirectory directory |> ignore
+        let signature = System.IO.Path.Combine(directory, "Library.fsi")
+        let implementation = System.IO.Path.Combine(directory, "Library.fs")
+        let consumer = System.IO.Path.Combine(directory, "Consumer.fs")
+        let before = "module Library\nval calculate:\n    int -> int\n"
+
+        let after =
+            match edit with
+            | "changed" -> "module Library\nval calculate:\n    value: int -> int\n"
+            | "removed" -> "module Library\n"
+            | _ -> before
+
+        let sources =
+            [ signature, before
+              implementation, "module Library\nlet calculate value = value + 1\n"
+              consumer,
+              "module Consumer\ntype FactAttribute() = inherit System.Attribute()\n[<Fact>]\nlet exercisesLibrary () = Library.calculate 1 |> ignore\n" ]
+
+        try
+            for path, source in sources do
+                System.IO.File.WriteAllText(path, source)
+
+            let checker = FSharpChecker.Create()
+
+            let scriptOptions =
+                getScriptOptions checker consumer (snd sources[2]) |> Async.RunSynchronously
+
+            let options =
+                { scriptOptions with
+                    SourceFiles = sources |> List.map fst |> List.toArray }
+
+            let analyze path source =
+                match
+                    analyzeSource checker path source options "Consumer.Tests"
+                    |> Async.RunSynchronously
+                with
+                | Ok result -> result
+                | Error message -> failwith message
+
+            let baseline = sources |> List.map (fun (path, source) -> analyze path source)
+            let changed = analyze signature after
+
+            TestPrune.Tests.TestHelpers.withDb (fun db ->
+                db.RebuildProjects baseline
+
+                for reindex in [ []; [ baseline[1] ]; [ baseline[0] ]; baseline |> List.rev ] do
+                    db.RebuildProjects reindex
+
+                    let selection, _ =
+                        selectTests (toSymbolStore db) [ signature ] (Map.ofList [ signature, changed.Symbols ])
+
+                    match selection with
+                    | RunSubset selected ->
+                        test
+                            <@
+                                (selected
+                                 |> List.exists (fun item -> item.SymbolFullName = "Consumer.exercisesLibrary")) = (edit
+                                                                                                                    <> "unchanged")
+                            @>
+                    | RunAll reason -> failwith $"indexed signature lost its baseline: {reason}"
+
+                    test <@ not (db.GetSymbolsInFile signature).IsEmpty @>
+                    test <@ not (db.GetSymbolsInFile implementation).IsEmpty @>
+
+                let deadCode, _ = TestPrune.Tests.TestHelpers.runDeadCode db [] false
+
+                test
+                    <@
+                        deadCode.UnreachableSymbols
+                        |> List.exists (fun symbol -> symbol.FullName = "Library.calculate")
+                    @>
+
+                test
+                    <@
+                        deadCode.UnreachableSymbols
+                        |> List.forall (fun symbol -> symbol.SourceFile <> signature)
+                    @>
+
+                // Exercise the standalone runner's changed-file parsing too. A diff can
+                // describe an earlier edit that has already been indexed: current source
+                // identical to the baseline must not be interpreted as deleted symbols.
+                let normalized =
+                    baseline
+                    |> List.map (fun result ->
+                        { result with
+                            Symbols = normalizeSymbolPaths directory result.Symbols })
+
+                db.RebuildProjects normalized
+                let indexToken = db.MarkIndexIncomplete()
+                test <@ db.CompleteIndex indexToken @>
+                System.IO.File.WriteAllText(signature, after)
+
+                let diff =
+                    "diff --git a/Library.fsi b/Library.fsi\n--- a/Library.fsi\n+++ b/Library.fsi\n@@ -3 +3 @@\n-    int -> int\n+    value: int -> int"
+
+                match
+                    TestPrune.Orchestration.analyzeChanges
+                        (fun () -> Ok diff)
+                        directory
+                        (toSymbolStore db)
+                        checker
+                        (TestPrune.AuditSink.createNoopSink ())
+                with
+                | Ok(RunSubset selected, _) ->
+                    test
+                        <@
+                            (selected
+                             |> List.exists (fun item -> item.SymbolFullName = "Consumer.exercisesLibrary")) = (edit
+                                                                                                                <> "unchanged")
+                        @>
+                | result -> failwith $"unexpected standalone selection: %A{result}")
+        finally
+            System.IO.Directory.Delete(directory, true)
