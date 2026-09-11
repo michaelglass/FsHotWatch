@@ -115,7 +115,7 @@ let private tryPackageRoot (output: string) =
 
     walk (DirectoryInfo(Path.GetDirectoryName output))
 
-let rec private readOutput (seen: Set<string>) (output: string) =
+let rec private readOutput evaluations (seen: Set<string>) (output: string) =
     let output = Path.GetFullPath output
 
     if seen.Contains output then
@@ -145,6 +145,11 @@ let rec private readOutput (seen: Set<string>) (output: string) =
         let files = (section "Inputs" root).Elements(name "File") |> Seq.toList
         let keys = files |> List.map (required "key")
         distinct "input keys" keys
+        let inputPaths prefix =
+            files
+            |> List.filter (fun file -> (required "key" file).StartsWith(prefix, StringComparison.Ordinal))
+            |> List.map (required "path")
+        AnalyzerEvaluation.validate evaluations (inputPaths "project:") (inputPaths "source:") (section "Evaluation" root)
 
         if
             not (
@@ -217,7 +222,7 @@ let rec private readOutput (seen: Set<string>) (output: string) =
             (section "Dependencies" root).Elements(name "Project")
             |> Seq.map (fun dependency ->
                 let dependencyOutput = required "output" dependency
-                let identity, _ = readOutput seen dependencyOutput
+                let identity, _ = readOutput evaluations seen dependencyOutput
 
                 if identity <> required "identity" dependency then
                     failwith $"Analyzer dependency provenance changed: {dependencyOutput}"
@@ -282,10 +287,12 @@ let trySnapshot (isExcluded: string -> bool) (paths: string list) : Result<Snaps
 
                 files |> Array.toList)
 
+        let evaluations = System.Collections.Generic.Dictionary<string, Result<unit, string>>()
+
         let identities =
             outputs
             |> List.map (fun output ->
-                let identity, local = readOutput Set.empty output
+                let identity, local = readOutput evaluations Set.empty output
                 encode [ Path.GetFileName output; identity ], encode [ output; local ])
 
         Ok

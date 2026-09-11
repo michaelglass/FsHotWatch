@@ -307,3 +307,122 @@ type AnalyzerProvenanceBuildTests() =
             let added = if shape = "excluded-and-removed" then "RemovedButRestoredNew.fs" else "Added.fs"
             File.Delete(source added)
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    member _.``current environment membership is observed without replaying environment values``(propertyFunction: bool) =
+        withTempDir "a564-current-environment" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let shared = Path.Combine(root, "Shared")
+            Directory.CreateDirectory shared |> ignore
+            File.WriteAllText(Path.Combine(shared, "Selected.fs"), "module Selected\nlet value = 1")
+            let variable = "FSHW_A564_MEMBERSHIP_" + Guid.NewGuid().ToString("N")
+            let previous = Environment.GetEnvironmentVariable variable
+            try
+                Environment.SetEnvironmentVariable(variable, null)
+                AnalyzerProvenanceBuildFixture.prepare
+                    producer "Mini" "module MiniRules\nlet answer = 1" None false None
+                let projectPath = Path.Combine(producer, "Mini.fsproj")
+                let project = XElement.Load projectPath
+                let n = AnalyzerProvenanceBuildFixture.node
+                let a = AnalyzerProvenanceBuildFixture.attr
+                let value =
+                    if propertyFunction then $"$([System.Environment]::GetEnvironmentVariable('{variable}'))"
+                    else "$(" + variable + ")"
+                project.Add(n "ItemGroup" [|
+                    a "Condition" ("'" + value + "' == 'enabled'")
+                    n "Compile" [| a "Include" "../Shared/*.fs" |]
+                |])
+                project.Save projectPath
+                AnalyzerProvenanceBuildFixture.build producer "Mini" ""
+                |> AnalyzerProvenanceBuildFixture.succeeds
+                let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+                Assert.True(original.IsSome)
+                Environment.SetEnvironmentVariable(variable, "still-disabled")
+                Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
+                Environment.SetEnvironmentVariable(variable, "enabled")
+                Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone)
+            finally
+                Environment.SetEnvironmentVariable(variable, previous))
+
+    [<Fact(Timeout = 300000)>]
+    member _.``producer invocation values stay in private local context``() =
+        withTempDir "a564-private-invocation" (fun root ->
+            AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
+            let probe = "synthetic-private-global-" + Guid.NewGuid().ToString("N")
+            AnalyzerProvenanceBuildFixture.build root "Mini" ("-p:RuleFlavor=" + probe)
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            let receiptPath = AnalyzerProvenanceBuildFixture.output root "Mini" + ".fshw-analyzer.xml"
+            let publicText = File.ReadAllText receiptPath
+            Assert.False(publicText.Contains(probe, StringComparison.Ordinal))
+            let receipt = XElement.Parse publicText
+            let reference = receipt.Element(XName.Get "Evaluation")
+            Assert.NotNull reference
+            let id = reference.Attribute(XName.Get "id").Value
+            let directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                         "fshw", "analyzer-contexts")
+            let contextPath = Path.Combine(directory, id + ".xml")
+            let context = XElement.Load contextPath
+            Assert.True(context.ToString().Contains(probe, StringComparison.Ordinal))
+            Assert.Null(context.Element(XName.Get "Environment"))
+            if not (OperatingSystem.IsWindows()) then
+                Assert.Equal(UnixFileMode.UserRead ||| UnixFileMode.UserWrite, File.GetUnixFileMode contextPath)
+                Assert.Equal(UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute,
+                             File.GetUnixFileMode directory)
+            Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("percent%value", "percent%25value")>]
+    [<InlineData("semi;colon", "semi%3Bcolon")>]
+    [<InlineData("com,ma", "com%2Cma")>]
+    [<InlineData("a\"quote", "a%22quote")>]
+    [<InlineData("line\nfeed", "line%0Afeed")>]
+    [<InlineData("two words", "two words")>]
+    [<InlineData("trailing\\", "trailing\\")>]
+    member _.``invocation globals survive private response file replay``(expected: string, encoded: string) =
+        withTempDir "a564-global-escaping" (fun root ->
+            AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
+            let argument =
+                if encoded.EndsWith("\\", StringComparison.Ordinal) then "-p:RuleFlavor=" + encoded
+                else "\"-p:RuleFlavor=" + encoded + "\""
+            AnalyzerProvenanceBuildFixture.build root "Mini" argument
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            let receipt = XElement.Load(AnalyzerProvenanceBuildFixture.output root "Mini" + ".fshw-analyzer.xml")
+            let id = receipt.Element(XName.Get "Evaluation").Attribute(XName.Get "id").Value
+            let context = XElement.Load(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                                    "fshw", "analyzer-contexts", id + ".xml"))
+            let actual =
+                context.Element(XName.Get "Globals").Elements(XName.Get "Property")
+                |> Seq.find (fun property -> property.Attribute(XName.Get "name").Value = "RuleFlavor")
+                |> fun property -> property.Attribute(XName.Get "value").Value
+            Assert.True(actual = expected, "Producer test invocation must preserve the intended synthetic value")
+            Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("missing")>]
+    [<InlineData("digest")>]
+    [<InlineData("another-producer")>]
+    member _.``missing or mismatched private invocation context refuses reuse``(damage: string) =
+        withTempDir "a564-context-refusal" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            AnalyzerProvenanceBuildFixture.prepare producer "Mini" "module MiniRules\nlet answer = 1" None false None
+            AnalyzerProvenanceBuildFixture.build producer "Mini" ""
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsSome)
+            let path = AnalyzerProvenanceBuildFixture.output producer "Mini" + ".fshw-analyzer.xml"
+            let receipt = XElement.Load path
+            let reference = receipt.Element(XName.Get "Evaluation")
+            if damage = "missing" then
+                reference.SetAttributeValue(XName.Get "id", Guid.NewGuid().ToString("N"))
+            elif damage = "digest" then
+                reference.SetAttributeValue(XName.Get "hash", String.replicate 64 "0")
+            else
+                let other = Path.Combine(root, "OtherProducer")
+                AnalyzerProvenanceBuildFixture.prepare other "Mini" "module MiniRules\nlet answer = 1" None false None
+                AnalyzerProvenanceBuildFixture.build other "Mini" ""
+                |> AnalyzerProvenanceBuildFixture.succeeds
+                let otherReceipt = XElement.Load(AnalyzerProvenanceBuildFixture.output other "Mini" + ".fshw-analyzer.xml")
+                reference.ReplaceWith(XElement(otherReceipt.Element(XName.Get "Evaluation")))
+            receipt.Save path
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))

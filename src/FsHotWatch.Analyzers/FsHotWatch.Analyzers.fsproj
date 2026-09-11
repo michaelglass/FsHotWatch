@@ -26,6 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="AnalyzerEvaluation.fs" />
     <Compile Include="AnalyzerProvenance.fs" />
     <Compile Include="AnalyzersPlugin.fs" />
   </ItemGroup>

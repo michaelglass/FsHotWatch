@@ -139,3 +139,35 @@ compiler fork and makes the proof inspectable. Arbitrary dynamic MSBuild inputs
 outside the captured project/import/reference closure are not assumed safe.
 Five-fresh-workspace timing and exact candidate consumer qualification are still
 required; parser controls alone do not complete AUTOMATION-564.
+
+
+### Evaluated source membership and private invocation context
+
+A recorded list alone cannot detect a new external glob match. The producer now
+captures MSBuild's ordered evaluation-time Compile items in a private SDK-hosted
+ProjectCollection. The reader invokes that exact SDK out of process, with no
+build targets, and compares current resolved items. This preserves imported
+relative paths, item indirection, include/exclude/remove and absent external
+roots without a handwritten glob matcher or runtime Microsoft.Build dependency.
+Evaluation-time Compile and actual pre-Fsc Sources remain distinct evidence.
+
+Producer invocation globals are retained in a private local per-user context;
+public receipts carry only its opaque identifier and digest. Unix storage uses
+0700 directories and 0600 files; Windows storage restricts ownership/access to
+the current user. Values are passed in a private response file and never printed
+in diagnostics. Missing context refuses proof. Context project/source binding
+prevents substituting another producer's evaluation evidence.
+
+Evaluation inherits the current environment. The predicate concerns current
+ordered membership: environment changes producing different items refuse reuse;
+changes producing the same items preserve it. Original environment replay and
+read tracing are unnecessary and are not implemented. Actual Fsc option/input
+and loaded-output binding remain separate checks, not a claim that evaluation
+can predict arbitrary future target behavior.
+
+One evaluation is reused per producer within a snapshot, including dependencies;
+new snapshots reevaluate without a TTL. SDK startup is a material warm-path cost.
+This source implementation remains uncompiled and unverified pending admission,
+real producer controls, cross-workspace identity checks and the existing five-
+workspace benchmark at no more than twice the warm baseline. Compiler/PathMap
+workarounds remain rejected.
