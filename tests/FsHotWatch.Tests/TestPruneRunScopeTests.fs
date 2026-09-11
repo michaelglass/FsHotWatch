@@ -3312,3 +3312,20 @@ let ``an aborted same-input run cannot reuse an earlier passing receipt`` () =
         match (receiptScope repoRoot handler final).Scope with
         | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
         | other -> Assert.Fail($"aborted run retained positive scope: {other}"))
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a failed command receipt acknowledges only its published owner outcome`` (invalidArtifacts: bool) =
+    let handler = create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let reply = System.Threading.Tasks.TaskCompletionSource<string>()
+    let message =
+        if invalidArtifacts then ArtifactsUnavailable("fixture refusal", Some reply)
+        else TestHostUnavailable("fixture refusal", Some reply)
+    let candidate = handler.Update ctx handler.Init (Custom message) |> Async.RunSynchronously
+    Assert.False(reply.Task.IsCompleted, "command acknowledged an unpublished failed proposal")
+    let prepared = handler.PrepareCommit.Value handler.Init candidate |> Async.RunSynchronously
+    Assert.False(reply.Task.IsCompleted, "command acknowledged before publication")
+    prepared.Finalize |> Async.RunSynchronously
+    Assert.Contains("fixture refusal", reply.Task.GetAwaiter().GetResult())
