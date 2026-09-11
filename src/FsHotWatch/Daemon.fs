@@ -309,6 +309,16 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                 | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
                 | None -> ProjectModel.Observation.Unobserved)
 
+    /// Publish only while the captured model is still current. The check and the
+    /// short publication share discovery admission's lock, so a writer cannot
+    /// invalidate the model between validation and dispatch.
+    member _.WithCurrent<'T>((epoch, snapshot): int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
+        lock stateGate (fun () ->
+            let expected = snapshot |> Option.map (fun counts -> epoch, counts)
+            if pendingAttempts <> 0 || completed <> expected then
+                raise (InvalidOperationException($"The captured project model generation {epoch} was invalidated before scan publication."))
+            write ())
+
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
@@ -1689,7 +1699,7 @@ type Daemon
                         let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
 
                         if not files.IsEmpty then
-                            host.EmitFileChanged(SourceChanged files)
+                            publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
                     }
 
                 let formatAll () =
@@ -2095,7 +2105,7 @@ let private performScan
             // A fingerprint hit skips OUR discovery, not a concurrent writer's.
             // Capture membership, dependency tiers and options together before that
             // writer can clear any of them; never revisit the live graph mid-scan.
-            let! _, registeredProjects, registeredFiles, scanTiers =
+            let! capturedModel, registeredProjects, registeredFiles, scanTiers =
                 ctx.Discovery.Capture(fun epoch ->
                     let projects = pipeline.GetRegisteredProjects()
                     let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
@@ -2110,6 +2120,9 @@ let private performScan
                         )
 
                     epoch, projects, files, tiers)
+
+            let modelGeneration = snd capturedModel |> Option.map (fun _ -> fst capturedModel)
+            let publishCurrent write = ctx.Discovery.WithCurrent(capturedModel, write)
 
 
             // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
@@ -2167,7 +2180,7 @@ let private performScan
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-                host.EmitFileChanged(SourceChanged files)
+                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
                 // read the obj/ refs it rewrites. See
@@ -2223,13 +2236,15 @@ let private performScan
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
                     let emitChecked (checkResult: FileCheckResult) =
-                        checkedCount <- checkedCount + 1
-                        dispatchedFiles.Add(checkResult.File)
-                        host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                        completed <- completed + 1
-                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
-                        publish { state with ScanState = scanState }
+                        publishCurrent (fun () ->
+                            let checkResult = { checkResult with ModelGeneration = modelGeneration }
+                            checkedCount <- checkedCount + 1
+                            dispatchedFiles.Add(checkResult.File)
+                            host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                            completed <- completed + 1
+                            scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                            publish { state with ScanState = scanState })
 
                     let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
@@ -2259,6 +2274,7 @@ let private performScan
 
                 checkedTotal <- checkedCount
 
+            publishCurrent ignore
             sw.Stop()
             let finalScanState = ScanComplete(sw.Elapsed)
 
@@ -2274,13 +2290,14 @@ let private performScan
             // by the time `fshw scan --wait` returns. Empty cohorts (no registered
             // files) skip — there's nothing to "flush and decide" against.
             if dispatchedFiles.Count > 0 then
-                host.EmitBatchChecked
-                    { Trigger = BootScan
-                      Files = dispatchedFiles |> List.ofSeq
-                      Generation = newGeneration
-                      ModelGeneration = None
-                      StartedAt = scanStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+                publishCurrent (fun () ->
+                    host.EmitBatchChecked
+                        { Trigger = BootScan
+                          Files = dispatchedFiles |> List.ofSeq
+                          Generation = newGeneration
+                          ModelGeneration = modelGeneration
+                          StartedAt = scanStartedAt
+                          CompletedAt = System.DateTime.UtcNow })
 
 
             // AUTOMATION-610 — one measurement record per completed scan generation,
