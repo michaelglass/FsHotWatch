@@ -211,12 +211,12 @@ let ``pipeline activity sink updates its own subtask without changing another re
         test <@ subtask.StartedAt = started @>
         test <@ current.ActivityTail = [ "parsed input" ] @>
         test <@ (host.GetSubtasks("test-prune") |> List.exactlyOne).Label = "reading test symbols" @>
-        test <@ host.GetActivityTail("test-prune") = [] @>
+        test <@ host.GetActivityTail("test-prune") |> List.isEmpty @>
 
         pipeline.EndSubtask("parse")
-        test <@ host.GetSubtasks("fcs") = [] @>
+        test <@ host.GetSubtasks("fcs") |> List.isEmpty @>
         test <@ host.GetSubtasks("test-prune") |> List.length = 1 @>
         other.EndSubtask("parse")
-        test <@ host.GetSubtasks("test-prune") = [] @>
+        test <@ host.GetSubtasks("test-prune") |> List.isEmpty @>
     finally
         host.Teardown()

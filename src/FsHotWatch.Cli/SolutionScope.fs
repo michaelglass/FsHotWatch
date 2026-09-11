@@ -22,8 +22,9 @@ module FsHotWatch.Cli.SolutionScope
 //
 // THE SOLUTION IS THE AUTHORITY, not a directory scan: the solution is what
 // `dotnet build` compiles and what a solution-wide `dotnet test` runs, so it is
-// the set against which "full" has to mean something. A project on disk but in
-// no solution is built by nothing and is correctly out of scope.
+// the set against which "full" has to mean something. Referenced fixture projects
+// may still build and execute through another project; discovery does not by itself
+// establish whether their test obligations are required or explicitly excluded.
 //
 // WHERE THIS BINDS. `DaemonConfig.loadConfig` runs it, and every fshw verb
 // loads the config in the CLI process on every invocation. So the reconciliation
