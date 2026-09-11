@@ -2989,7 +2989,7 @@ let private pendingDebtOwnerFixture () =
     PendingVerification.save root (Set.singleton symbol)
 
     let handler =
-        create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+        create (Path.Combine(root, "pending-owner.db")) root (Some [ a125Config "ProjA" ]) None None None None []
 
     let ctx, _, _ = makeTestPruneRecordingCtx ()
     // Earn actual session coverage without claiming this symbol was launched.
