@@ -5214,23 +5214,8 @@ let internal createWithLaunchDeadline
 
                 affected
 
-        // Drop queued symbols that have no RUNNABLE covering test from the durable
-        // queue immediately: there is nothing for them to wait on, and retaining them
-        // would wedge the queue forever (every future run would re-select zero
-        // runnable tests yet the queue would never empty → permanent non-green). A
-        // symbol is "covered" iff it has at least one covering test IN A PROJECT THIS
-        // DAEMON RUNS (see `runnableCoveringTests` — AUTOMATION-99: a symbol covered
-        // only by an unconfigured project is unverifiable here and wedged the verdict).
-        // Only ever REMOVES from the queue, so it cannot under-test.
-        //
-        // AUTOMATION-110 — the two ways of having no runnable covering test are told
-        // apart and the second is REPORTED, never merely dropped: a symbol with no test
-        // anywhere, and a symbol whose only covering tests live in a project
-        // `tests.projects` does not list. The AUTOMATION-99 rule wrote the second off
-        // as the first; that is the "documented, deliberate hole" AUTOMATION-108's
-        // reviewer named as a candidate cause for a red the gate never selected. The
-        // queue still drops it (nothing here can ever discharge it), but the write-off
-        // names the project, in the log AND on the verdict (`UncoveredChanges`).
+        // Empty runnable selection has two meanings: genuinely uncovered symbols
+        // can leave the queue; known tests in unconfigured projects remain owed.
         let uncovered =
             symbols
             |> List.filter (fun s -> (runnableCoveringTests s).IsEmpty)
@@ -5257,17 +5242,10 @@ let internal createWithLaunchDeadline
                 "test-prune"
                 $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
 
-            if not (Map.isEmpty unrunnable) then
-                let projects =
-                    UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
-
-                Logging.warn
-                    "test-prune"
-                    $"%d{Map.count unrunnable} of them ARE covered — by tests in %s{projects}, which `tests.projects` does \
-                      not list, so this daemon cannot run them. The obligation is written off here, not discharged: \
-                      list the project, or declare it excluded, if its tests are meant to gate. Symbols: \
-                      %s{describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
-
+        if not (Map.isEmpty unrunnable) then
+            let projects = UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
+            Logging.warn "test-prune"
+                $"{Map.count unrunnable} symbol(s) remain owed to unconfigured test projects {projects}: {describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
 
         // Keep the in-memory hot view aligned with the durable queue so the
         // ChangedSymbols carried in state (and the cache-key snapshot) don't
@@ -6400,9 +6378,9 @@ let internal createWithLaunchDeadline
             return
                 { Finalize = async {
                     if not candidate.Debt.RecoveryOutstanding then
-                        if prior.Debt.RecoveryOutstanding then
+                        if prior.Debt.RecoveryOutstanding && File.Exists(runtimeCoverageRecoveryPath repoRoot) then
                             File.Delete(runtimeCoverageRecoveryPath repoRoot)
-                        File.Delete debtPublicationPath
+                        if File.Exists debtPublicationPath then File.Delete debtPublicationPath
                     match candidate.ScopeReply with
                     | Some(fullSuite, reply) ->
                         let scope = if fullSuite then "full" else "impact"
@@ -7316,6 +7294,18 @@ let internal createWithLaunchDeadline
 
                     let queueAfterCommit = state.Debt.PendingQueue
                     let remainingChangedSymbols = queueAfterCommit |> Set.toList
+                    let unrunnableProjects =
+                        remainingChangedSymbols
+                        |> List.collect (fun symbol -> db.QueryAffectedTests [ symbol ])
+                        |> List.map (fun test -> test.TestProject)
+                        |> Set.ofList
+                        |> fun covering -> Set.difference covering runnableProjects
+                    let pendingDescription =
+                        if Set.isEmpty unrunnableProjects then
+                            $"{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
+                        else
+                            let projects = unrunnableProjects |> Set.toList |> String.concat ", "
+                            $"{Set.count queueAfterCommit} symbol(s) still owed to unconfigured test projects: {projects}"
 
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both rerun and final-idle branches must call this.
@@ -7361,7 +7351,7 @@ let internal createWithLaunchDeadline
                             // deferred (never-ran) project.
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
-                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                    $"{pendingDescription}{carriedNote}"
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
                                     results.Elapsed
                             )
@@ -7562,7 +7552,7 @@ let internal createWithLaunchDeadline
                                     // the next BuildCompleted re-selects and runs them.
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                            $"{pendingDescription}{carriedNote}"
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
