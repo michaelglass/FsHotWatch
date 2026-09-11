@@ -1508,6 +1508,7 @@ type TestPruneState =
 type TestRunInputs =
     {
         ModelGeneration: int64 option
+        HasOwnedBaseline: bool
         Debt: VerificationDebt
         FullSuiteRequested: bool
         /// The impact selection: which test classes the changed symbols reach.
@@ -1535,8 +1536,11 @@ type TestRunInputs =
 
 module TestRunInputs =
     /// Project the state down to what a run reads, at LAUNCH time.
-    let ofState (modelGeneration: int64 option) (state: TestPruneState) : TestRunInputs =
+    let ofState (modelGeneration: int64 option) expectedProjects (state: TestPruneState) : TestRunInputs =
         { ModelGeneration = modelGeneration
+          HasOwnedBaseline =
+              state.Earned
+              |> Option.exists (fun evidence -> Some evidence.Generation = modelGeneration && EarnedEvidence.coversProjects expectedProjects evidence)
           Debt = state.Debt
           FullSuiteRequested = state.FullSuiteRequested
           AffectedTests = state.AffectedTests
@@ -5452,7 +5456,12 @@ let internal createWithLaunchDeadline
             //    `tests.projects` grew re-earns it. Same shape as 150.
             let scopeIsFullSuite = inputs.FullSuiteRequested
             let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
-            let baselineInvalid = baselineInvalidReason inputs.Debt
+            let baselineInvalid =
+                match baselineInvalidReason inputs.Debt with
+                | Some reason -> Some reason
+                | None when inputs.ModelGeneration.IsSome && not inputs.HasOwnedBaseline ->
+                    Some "no owned whole-suite receipt exists for this completed model"
+                | None -> None
 
             // The coarse fallback only needs to know WHICH files are unanalysable; the
             // map's values exist so the ledger projection can re-report their
@@ -6851,7 +6860,7 @@ let internal createWithLaunchDeadline
                                         (runTestsWithImpact
                                             ctx
                                             configs
-                                            (TestRunInputs.ofState (observeModelGeneration ctx) drainedState)
+                                            (TestRunInputs.ofState (observeModelGeneration ctx) runnableProjects drainedState)
                                             hasCachedResults
                                             forceRunProjects)
                                 with
@@ -7021,7 +7030,7 @@ let internal createWithLaunchDeadline
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                (TestRunInputs.ofState (observeModelGeneration ctx) launchState)
+                                                (TestRunInputs.ofState (observeModelGeneration ctx) runnableProjects launchState)
                                                 hasCachedResults
                                                 forceRunProjects)
                                     with
@@ -7341,23 +7350,32 @@ let internal createWithLaunchDeadline
                         + (if state.Debt.RecoveryOutstanding then 1 else 0)
 
                     let earned =
-                        match completed.Verification with
-                        | NoProjectsSelected when
-                            pendingObligations = 0
-                            && completed.Outcome = Normal
-                            && launch.ZeroSelection <> ZeroSelection.NotAZero
-                            && launch.ModelGeneration = observeModelGeneration ctx ->
-                            state.Earned
-                            |> Option.filter (fun evidence -> Some evidence.Generation = observeModelGeneration ctx)
-                        | _ ->
-                            EarnedEvidence.fromCompletion
-                                started.RunId
-                                launch.ModelGeneration
-                                (observeModelGeneration ctx)
-                                runnableProjects
-                                pendingObligations
-                                state.Earned
-                                completed
+                        if not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) then None
+                        else
+                            let candidate =
+                                match completed.Verification with
+                                | NoProjectsSelected when
+                                    pendingObligations = 0
+                                    && completed.Outcome = Normal
+                                    && launch.ZeroSelection <> ZeroSelection.NotAZero
+                                    && launch.ModelGeneration = observeModelGeneration ctx ->
+                                    state.Earned
+                                    |> Option.filter (fun evidence -> Some evidence.Generation = observeModelGeneration ctx)
+                                | _ ->
+                                    EarnedEvidence.fromCompletion
+                                        started.RunId
+                                        launch.ModelGeneration
+                                        (observeModelGeneration ctx)
+                                        runnableProjects
+                                        pendingObligations
+                                        state.Earned
+                                        completed
+                            candidate |> Option.map (
+                                EarnedEvidence.authorizeSameInputReceipt
+                                    evidenceReceipt.RunId
+                                    evidenceReceipt.InputTreeHash
+                                    currentInputTree
+                                    state.Earned)
 
                     let state = { state with Earned = earned }
 

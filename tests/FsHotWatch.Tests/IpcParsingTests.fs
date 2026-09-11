@@ -534,7 +534,7 @@ let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it can
             ]}"""
 
     match DaemonEvidence.parse json with
-    | DaemonEvidence.Served phases ->
+    | DaemonEvidence.Served(phases, _, _) ->
         test <@ phases |> List.map (fun p -> p.Scope) = [ "daemon.scan"; "plugin.test-prune" ] @>
         test <@ phases.Head.StartedAt = DateTime(2026, 9, 5, 20, 35, 27, 851, DateTimeKind.Utc) @>
         test <@ phases.Head.StartedAt.Kind = DateTimeKind.Utc @>
