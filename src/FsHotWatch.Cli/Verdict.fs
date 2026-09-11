@@ -776,12 +776,11 @@ module CheckProse =
            needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
            may never mean. Nothing is reported broken, and nothing is reported sound either."
 
-    /// A scope that was read and is too narrow to support a merge claim.
+    /// A scope that was read but cannot support the requested evidence claim.
     let scopeTooNarrow (scope: TestScope) =
-        $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
-           not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
-           look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
-           reported sound either."
+        $"NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
+           not the full suite.\nThis run did not establish the requested test evidence. \
+           Nothing is reported broken, but nothing is reported sound either."
 
     /// THE explanation for a decided `CheckOutcome` — which words apply, not just what
     /// the words are. The last hand-synced copy this module's charter had left open.
@@ -899,7 +898,7 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
                an absence of evidence."
     | CheckVerdict.CheckOutcome.UnearnedScope scope ->
         Incomplete
-            $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
+            $"the tests that ran were %s{TestScope.describe scope}, not the full suite — the requested full-suite evidence was not earned"
     // AUTOMATION-303. `incomplete`, never `red`: the structured outcome is what a deploy
     // preflight reads, and "the daemon is stale" must route to retry-after-stop, not to
     // "tests failed". The prose is `CheckProse`'s single copy — the same words the two

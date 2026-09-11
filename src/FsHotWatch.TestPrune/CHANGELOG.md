@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- AUTOMATION-394: retain an executed filtered receipt across a same-input
+  `already-verified` drain. Receipt reuse requires readable, matching input bytes
+  at launch, completion, and scope read; changed inputs and aborted runs cannot
+  borrow earlier passing evidence. Current test failures remain authoritative.
+
 ## 0.13.0-alpha.33 - 2026-09-07
 
 - AUTOMATION-339: the zero-project and host-aborted terminals report

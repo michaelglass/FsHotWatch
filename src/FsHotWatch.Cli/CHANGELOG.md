@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-394: console scope refusals describe missing test evidence without
+  prescribing a merge policy or calling a refused `check` a `confirm`.
+
 ## 0.14.0-alpha.45 - 2026-09-07
 
 - AUTOMATION-339: `IpcParsing.parseTaggedOutcome` reads the daemon's `verifiedNothing`
