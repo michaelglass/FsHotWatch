@@ -62,15 +62,8 @@ type PluginHost
     // agent threads.
     let mutable projectGraphAccessor = PluginFramework.ProjectGraphAccessor.none
 
-    // Quiescence tracking for `WaitForComplete`. `lastActivityAtTicks` is the
-    // UTC ticks of the most recent host-level activity (event dispatch, plugin
-    // status change, preprocessor run). `pluginGenerations` is a per-plugin
-    // counter that increments on every Idle->Running transition; this lets a
-    // waiter detect the "transitioned through Idle between cycles" race in
-    // which a plugin happens to be Idle at the snapshot moment but is about to
-    // start a new cycle. See `waitForAllTerminal` in Daemon.fs.
+    // Last activity is diagnostic/idle-exit data, never a completion proof.
     let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
-    let pluginGenerations = ConcurrentDictionary<string, int64>()
 
     // Live "checked files" coverage set: the files that currently hold a valid FULL
     // type-check result. A request-time completeness signal, NOT the stale
@@ -87,18 +80,6 @@ type PluginHost
 
     let touchActivity () =
         System.Threading.Volatile.Write(&lastActivityAtTicks, System.DateTime.UtcNow.Ticks)
-
-    let bumpGenerationIfStarting (name: string) (prev: PluginStatus option) (next: PluginStatus) =
-        match next with
-        | Running _ ->
-            let wasNotRunning =
-                match prev with
-                | Some(Running _) -> false
-                | _ -> true
-
-            if wasNotRunning then
-                pluginGenerations.AddOrUpdate(name, 1L, (fun _ g -> g + 1L)) |> ignore
-        | _ -> ()
 
     // statusChanged.Trigger dispatch is owned by its own agent: the status
     // agent posts the (name, status) pair here AFTER applying the mutation, and
@@ -140,7 +121,6 @@ type PluginHost
                     match msg with
                     | SetStatus(name, status) ->
                         let prev = Map.tryFind name statuses
-                        bumpGenerationIfStarting name prev status
 
                         touchActivity ()
 
@@ -288,7 +268,8 @@ type PluginHost
               // Each closure re-reads the mutable holder per call, so a plugin
               // registered before the daemon installed the live graph still sees it.
               ProjectGraph =
-                { GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
+                { ObserveModel = fun () -> projectGraphAccessor.ObserveModel()
+                  GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
                   GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p }
@@ -565,21 +546,14 @@ type PluginHost
     member _.GetAllStatuses() : Map<string, PluginStatus> =
         statusAgent.PostAndReply(fun ch -> GetAllStatuses ch)
 
-    /// UTC timestamp of the most recent host activity: an event dispatch or a
-    /// plugin status transition. Used by `WaitForComplete` to enforce a
-    /// quiescence window so a plugin that's about to start a new cycle isn't
-    /// missed when its predecessor's event has been emitted but not yet
-    /// processed from the plugin's mailbox.
+    /// Last observed activity, retained for idle-exit and diagnostic timing only.
     member _.LastActivityAt() : System.DateTime =
         System.DateTime(System.Threading.Volatile.Read(&lastActivityAtTicks), System.DateTimeKind.Utc)
 
-    /// Per-plugin work-cycle generation counter. Incremented every time a
-    /// plugin transitions from a non-Running status (Idle / Completed / Failed)
-    /// into Running. A waiter can snapshot the generations at call time and
-    /// detect "the plugin started a new cycle since I started waiting".
-    /// Plugins that have never run report generation 0.
-    member _.WorkCycleGenerations() : Map<string, int64> =
-        pluginGenerations |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    /// The one immutable publication for both evidence and owned work.
+    member internal _.WorkSnapshot = workStore.Snapshot
+
+    member internal _.ObserveWork() = workStore.Observe()
 
     /// True if any registered plugin has work in flight: events queued in its
     /// mailbox, an event being processed, or an exclusive background run

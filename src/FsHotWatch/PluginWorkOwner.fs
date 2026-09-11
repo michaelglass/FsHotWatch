@@ -4,6 +4,7 @@ module internal FsHotWatch.PluginWorkOwner
 open System
 open System.Threading
 open System.Threading.Tasks
+open FsHotWatch.Events
 
 [<Struct>]
 type WorkId = private WorkId of Guid
@@ -105,7 +106,8 @@ type Row =
       Value: obj
       Busy: bool
       Completed: int64
-      Failure: OwnerFailure option }
+      Failure: OwnerFailure option
+      Evidence: EarnedEvidence option }
 
     member this.Fault = this.Failure |> Option.map (fun failure -> failure.Exception)
 
@@ -118,7 +120,14 @@ type Row =
 type HostSnapshot =
     private
         { Rows: Map<Guid, Row>
-          Operations: Map<WorkId, string> }
+          Operations: Map<WorkId, string>
+          Observers: Set<WorkId>
+          Model: ProjectModel.Observation }
+
+    member this.ProjectModel = this.Model
+    member this.ObserverCount = this.Observers.Count
+    member this.Evidence =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Evidence)
 
     member this.IsBusy =
         not this.Operations.IsEmpty || (this.Rows |> Map.exists (fun _ row -> row.Busy))
@@ -160,7 +169,9 @@ type private Mutation = Mutate of (HostSnapshot -> HostSnapshot * obj) * TaskCom
 type Store() =
     let mutable published =
         { Rows = Map.empty
-          Operations = Map.empty }
+          Operations = Map.empty
+          Observers = Set.empty
+          Model = ProjectModel.Observation.Unobserved }
 
     let agent =
         MailboxProcessor<Mutation>.Start(fun inbox ->
@@ -199,6 +210,22 @@ type Store() =
         (mutateAsync change).WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
 
     member _.Snapshot = Volatile.Read(&published)
+
+    member _.PublishProjectModel(observation: ProjectModel.Observation) =
+        mutate (fun snapshot -> { snapshot with Model = observation }, ())
+
+    /// Client observation is owned but does not keep the work it observes busy.
+    /// Idle-exit reads the same aggregate instead of a separate mutable counter.
+    member _.Observe() : IDisposable =
+        let id =
+            mutate (fun snapshot ->
+                let id = WorkId(Guid.NewGuid())
+                { snapshot with Observers = Set.add id snapshot.Observers }, id)
+
+        { new IDisposable with
+            member _.Dispose() =
+                mutate (fun snapshot ->
+                    { snapshot with Observers = Set.remove id snapshot.Observers }, ()) }
 
     member _.Register(row: Row) =
         mutate (fun snapshot ->
@@ -260,7 +287,11 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
           Value = box snapshot
           Busy = snapshot.IsBusy
           Completed = snapshot.CompletedEvents
-          Failure = snapshot.Failure }
+          Failure = snapshot.Failure
+          Evidence =
+            match box snapshot.State with
+            | :? IEarnedEvidenceState as domain -> domain.EarnedEvidence
+            | _ -> None }
 
     let id =
         store.Register(
