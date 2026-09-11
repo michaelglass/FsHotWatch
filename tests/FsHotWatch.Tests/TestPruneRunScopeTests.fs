@@ -3443,3 +3443,49 @@ let ``full-suite recovery preserves newer runtime obligations and rejects stale 
     if modelChanged then
         Assert.True(prior.Debt.Baseline = candidate.Debt.Baseline)
         Assert.True(candidate.Earned.IsNone)
+
+[<Fact(Timeout = 15000)>]
+let ``non-FSharp source changes retain durable test debt without repeating unchanged scan debt`` () =
+    let root = isolatedRoot ()
+    let source = Path.Combine(root, "Helper.cs")
+    File.WriteAllText(source, "class Helper { public const int Value = 1; }")
+    let makeHandler () =
+        create (Path.Combine(root, "mixed-owner.db")) root (Some [ projConfig "ProjA" ]) None None None None []
+    let handler = makeHandler ()
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let admit state path =
+        handler.Update ctx state (PluginEvent.FileChanged(SourceChanged [ path ]))
+        |> Async.RunSynchronously
+    let first = admit handler.Init source
+    let expected = Map.ofList [ "Helper.cs", Map.ofList [ "ProjA", 1L ] ]
+    Assert.Equal<RuntimeCoverageObligations>(expected, first.Debt.RuntimeObligations)
+    let repeated = admit first "Helper.cs"
+    Assert.Equal<RuntimeCoverageObligations>(expected, repeated.Debt.RuntimeObligations)
+    File.WriteAllText(source, "class Helper { public const int Value = 2; }")
+    let changed = admit repeated source
+    let newer = Map.ofList [ "Helper.cs", Map.ofList [ "ProjA", 2L ] ]
+    Assert.Equal<RuntimeCoverageObligations>(newer, changed.Debt.RuntimeObligations)
+    let prepared = handler.PrepareCommit.Value handler.Init changed |> Async.RunSynchronously
+    prepared.Finalize |> Async.RunSynchronously
+    // This config deliberately has no runtime coverage output: debt cannot disappear
+    // just because the changed language has no FCS/runtime mapping available.
+    let restarted = makeHandler ()
+    Assert.Equal<RuntimeCoverageObligations>(newer, restarted.Init.Debt.RuntimeObligations)
+    let afterOldRun = retireRuntimeCoverageObligations changed.Debt.RuntimeObligations first.Debt.RuntimeObligations (fun _ -> true)
+    Assert.Equal<RuntimeCoverageObligations>(newer, afterOldRun)
+    let afterCurrentRun = retireRuntimeCoverageObligations afterOldRun changed.Debt.RuntimeObligations (fun _ -> true)
+    Assert.Empty(afterCurrentRun)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("Library.fs", true)>]
+[<InlineData("README.md", true)>]
+[<InlineData("Helper.cs", false)>]
+let ``non-FSharp input admission never invents unnamed or analysis-only test obligations`` (file: string, configured: bool) =
+    let root = isolatedRoot ()
+    let source = Path.Combine(root, file)
+    File.WriteAllText(source, "fixture")
+    let configs = if configured then Some [ projConfig "ProjA" ] else None
+    let handler = create ":memory:" root configs None None None None []
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let candidate = handler.Update ctx handler.Init (PluginEvent.FileChanged(SourceChanged [ source ])) |> Async.RunSynchronously
+    Assert.Empty(candidate.Debt.RuntimeObligations)
