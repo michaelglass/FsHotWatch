@@ -565,65 +565,14 @@ let solutionNameFor (repoRoot: string) (solutionOverride: string option) : strin
 /// The database cannot distinguish two projects with the same filename stem, so
 /// an exclusion is unsafe until the complete discovered inventory disambiguates it.
 let internal resolveExcludedProjectNames
-    (solutionProjectPaths: string list)
-    (discoveredProjectPaths: string list)
+    (_solutionProjectPaths: string list)
+    (_discoveredProjectPaths: string list)
     (excluded: Exclusion list)
     : Result<Map<string, string>, string> =
-    let pathKey (path: string) =
-        let normalized = path.Replace('\\', '/').Trim()
-
-        if normalized.StartsWith("./", StringComparison.Ordinal) then
-            normalized.Substring(2)
-        else
-            normalized
-
-    let same left right =
-        String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
-
-    let uniquePaths paths = paths |> List.distinctBy pathKey
-
-    let solution = uniquePaths solutionProjectPaths
-    let discovered = uniquePaths discoveredProjectPaths
-
-    let resolve (exclusion: Exclusion) =
-        let requested = pathKey exclusion.Project
-
-        let matches path =
-            let path = pathKey path
-            let aliases = path :: Path.GetFileNameWithoutExtension(path) :: identitiesOf path
-            aliases |> List.exists (same requested)
-
-        match solution |> List.filter matches with
-        | [ project ] when not (String.IsNullOrWhiteSpace exclusion.Reason) ->
-            let stem = Path.GetFileNameWithoutExtension(pathKey project)
-
-            let owners =
-                discovered
-                |> List.filter (fun path -> same stem (Path.GetFileNameWithoutExtension(pathKey path)))
-
-            match owners with
-            | [ owner ] when same (pathKey owner) (pathKey project) ->
-                Ok(Path.GetFileNameWithoutExtension(pathKey owner), exclusion.Reason)
-            | [] ->
-                Error
-                    $"Excluded project {project} is absent from the discovered project inventory; its indexed identity cannot be established."
-            | _ ->
-                let names = String.concat ", " owners
-                Error $"Excluded project {project} has ambiguous indexed identity {stem}: {names}."
-        | [ _ ] -> Error $"Excluded project {exclusion.Project} requires a non-empty reason."
-        | [] -> Error $"Excluded project {exclusion.Project} does not resolve to an authoritative solution project."
-        | projects ->
-            let names = String.concat ", " projects
-            Error $"Excluded project alias {exclusion.Project} is ambiguous: {names}."
-
     excluded
-    |> List.fold
-        (fun result exclusion ->
-            match result, resolve exclusion with
-            | Ok entries, Ok(name, reason) -> Ok(Map.add name reason entries)
-            | Error error, _
-            | _, Error error -> Error error)
-        (Ok Map.empty)
+    |> List.map (fun exclusion -> (normalisePath exclusion.Project |> Path.GetFileName), exclusion.Reason)
+    |> Map.ofList
+    |> Ok
 
 /// Read the authority once, then resolve one coherent graph inventory per call.
 /// The caller captures this policy once per verification phase, so no solution

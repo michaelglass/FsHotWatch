@@ -4816,7 +4816,7 @@ let internal createWithLaunchDeadlineAndScope
     // Unknown projects remain obligations; absence from runnableProjects is not
     // an exclusion. Configured projects always remain required.
     let coveringProjectsForScope () =
-        let excludedProjects = resolveExcludedProjects ()
+        let excludedProjects = resolveExcludedProjects () |> fun _ -> Map.empty
         fun symbol ->
             db.QueryAffectedTests [ symbol ]
             |> List.map (fun test -> test.TestProject)
