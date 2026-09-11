@@ -265,7 +265,7 @@ type Store() =
 
             { snapshot with
                 Operations = Map.add id name snapshot.Operations
-                HostFailures = snapshot.HostFailures |> Map.filter (fun _ (failedName, _) -> failedName <> name) },
+                HostFailures = snapshot.HostFailures |> Map.filter (fun failedId (failedName, _) -> failedName <> name || Map.containsKey failedId snapshot.Operations) },
             id)
 
     member _.FailOperation(id: WorkId, failure: exn) =
