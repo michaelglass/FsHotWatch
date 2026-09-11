@@ -488,8 +488,15 @@ let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: st
       Ingested = ingested
       Skipped = skipped }
 
-let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
+let internal persistProjectRatchetCoverageWithMapped
+    (afterMapped: unit -> unit)
+    (db: Database)
+    (repoRoot: string)
+    (input: CoverageInput)
+    (xml: string)
+    =
     let mapped = mapProjectRatchetCoverage db repoRoot xml
+    afterMapped ()
 
     let replaceFull =
         input.Scope = CoverageRunScope.Full
@@ -527,7 +534,10 @@ let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (inp
 
         transaction.Commit()
 
-    mapped
+    ()
+
+let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
+    persistProjectRatchetCoverageWithMapped ignore db repoRoot input xml
 
 let private removeProjectRatchetCoverage (db: Database) (project: string) =
     use conn = db.OpenConnection()
