@@ -19,4 +19,5 @@
   <Project Path="analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj" />
   <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
   <Project Path="src/FsHotWatch.ProcessHost/FsHotWatch.ProcessHost.csproj" />
+  <Project Path="tests/Fixtures/Xunit4RunnerFixture/Xunit4RunnerFixture.fsproj" />
 </Solution>

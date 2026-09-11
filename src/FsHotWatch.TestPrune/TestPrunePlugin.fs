@@ -4792,8 +4792,9 @@ let internal cacheKeyFor
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
 /// to a different DB than the plugin's.
-let internal createWithLaunchDeadline
+let internal createWithLaunchDeadlineAndScope
     (launchDeadline: TimeSpan)
+    (excludedProjects: Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -4810,6 +4811,19 @@ let internal createWithLaunchDeadline
     =
     let db = Database.create dbPath
     let configuredTestProjects = testConfigs |> Option.defaultValue []
+
+    // Explicit, reasoned exclusions limit this configured verification claim.
+    // Unknown projects remain obligations; absence from runnableProjects is not
+    // an exclusion. Configured projects always remain required.
+    let coveringProjects symbol =
+        db.QueryAffectedTests [ symbol ]
+        |> List.map (fun test -> test.TestProject)
+        |> Set.ofList
+        |> Set.filter (fun project ->
+            configuredTestProjects |> List.exists (fun config -> config.Project = project)
+            || match Map.tryFind project excludedProjects with
+               | Some reason -> String.IsNullOrWhiteSpace reason
+               | None -> true)
 
     let runTestHostExclusive (ctx: PluginCtx<TestPruneMsg>) (reply: Tasks.TaskCompletionSource<string> option) work =
         let workFor =
@@ -5285,7 +5299,7 @@ let internal createWithLaunchDeadline
                 uncovered
                 |> Set.toList
                 |> List.choose (fun s ->
-                    match db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    match coveringProjects s with
                     | projects when Set.isEmpty projects -> None
                     | projects -> Some(s, projects))
                 |> Map.ofList
@@ -5583,7 +5597,7 @@ let internal createWithLaunchDeadline
                     |> Set.toList
                     |> List.map (fun s ->
                         let projs =
-                            db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+                            coveringProjects s
 
                         s, projs)
                     |> Map.ofList
@@ -7489,9 +7503,7 @@ let internal createWithLaunchDeadline
                                    | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
                                    | Some _ -> true
                                    | None ->
-                                       db.QueryAffectedTests [ s ]
-                                       |> List.map (fun t -> t.TestProject)
-                                       |> Set.ofList
+                                       coveringProjects s
                                        |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
@@ -8246,6 +8258,11 @@ let internal createWithLaunchDeadline
         Some cacheKey
       Teardown = None }
 
+/// Default callers have no declared exclusions: every known covering project
+/// remains required, including projects absent from the runnable configuration.
+let internal createWithLaunchDeadline launchDeadline dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
+    createWithLaunchDeadlineAndScope launchDeadline Map.empty dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
+
 /// Create a TestPrune handler with the launch policy captured at construction.
 /// Environment configuration is process-global, so reading it lazily at run time can
 /// retroactively change already-created handlers (and made a short-deadline regression
@@ -8277,3 +8294,13 @@ let create
         afterRun
         coveragePaths
         dependsOn
+
+/// Construct an owner with the explicitly declared exclusions validated by the
+/// caller's solution scope. Blank reasons do not exclude a project.
+let createWithScope excludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
+    let launchDeadline =
+        Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
+        |> Option.ofObj
+        |> resolveLaunchDeadline
+
+    createWithLaunchDeadlineAndScope launchDeadline excludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
