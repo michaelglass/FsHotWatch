@@ -18,13 +18,45 @@ let private digest path =
 let private attribute name (value: string) = XAttribute(XName.Get name, value)
 let private element name (children: obj array) = XElement(XName.Get name, children)
 
+// Filesystem identity fixtures reuse the SDK invocation metadata emitted by
+// this checkout's real house-rule build. The real producer integration tests
+// independently exercise successful compilation/publication and refusal.
+let private evaluationContext project source =
+    let rec checkout (directory: DirectoryInfo) =
+        if isNull directory then failwith "Cannot find the built analyzer producer"
+        elif File.Exists(Path.Combine(directory.FullName, ".fshw.json")) then directory.FullName
+        else checkout directory.Parent
+    let repo = checkout (DirectoryInfo(AppContext.BaseDirectory))
+    let producerReceipt =
+        XElement.Load(Path.Combine(repo, "analyzers", "FsHotWatch.Rules", "bin", "Debug", "net10.0",
+                                  "FsHotWatch.ConventionAnalyzers.dll.fshw-analyzer.xml"))
+    let templateId = producerReceipt.Element(XName.Get "Evaluation").Attribute(XName.Get "id").Value
+    let store = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                             "fshw", "analyzer-contexts")
+    let context = XElement.Load(Path.Combine(store, templateId + ".xml"))
+    context.SetAttributeValue(XName.Get "project", project)
+    context.Element(XName.Get "CompilerSources").ReplaceNodes(
+        element "Item" [| attribute "path" source |])
+    context.Element(XName.Get "Membership").Element(XName.Get "Compile").ReplaceNodes(
+        element "Item" [| attribute "path" source |])
+    let id = Guid.NewGuid().ToString("N")
+    let path = Path.Combine(store, id + ".xml")
+    let bytes = Text.Encoding.UTF8.GetBytes(context.ToString(SaveOptions.DisableFormatting))
+    let options = FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
+    if not (OperatingSystem.IsWindows()) then
+        options.UnixCreateMode <- Nullable(UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+    do
+        use stream = new FileStream(path, options)
+        stream.Write(bytes, 0, bytes.Length)
+    element "Evaluation" [| attribute "id" id; attribute "hash" (digest path) |]
+
 let private materialize root (bytes: byte array) =
     let outputDir = Path.Combine(root, "bin")
     Directory.CreateDirectory outputDir |> ignore
     let source = Path.Combine(root, "Rules.fs")
     let project = Path.Combine(root, "Rules.fsproj")
     File.WriteAllText(source, "module Rules\nlet rule = 1")
-    File.WriteAllText(project, "<Project />")
+    File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include=\"Rules.fs\" /></ItemGroup></Project>")
     let output = Path.Combine(outputDir, "Rules.dll")
     File.WriteAllBytes(output, bytes)
 
@@ -53,7 +85,8 @@ let private materialize root (bytes: byte array) =
                element
                    "Packages"
                    [| element "Package" [| attribute "id" "FSharp.Analyzers.SDK"; attribute "version" "0.37.2" |] |]
-               element "Dependencies" [||] |]
+               element "Dependencies" [||]
+               evaluationContext project source |]
 
     receipt.Save(output + ".fshw-analyzer.xml")
     outputDir, source, project, output

@@ -71,8 +71,10 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
         values.Sort(StringComparer.Ordinal);
         return Digest(Encode(new[] { "first-party-v1" }.Concat(values)));
     }
-    static void Validate(XElement root, HashSet<string> seen)
+    static void Validate(XElement root, HashSet<string> seen, Dictionary<string, bool> evaluations = null)
     {
+        if (evaluations == null) evaluations = new Dictionary<string, bool>();
+        ValidateEvaluation(root.Element("Evaluation"), evaluations);
         string output = A(root, "output");
         if (!seen.Add(output)) throw new InvalidDataException("Cyclic analyzer project reference " + output);
         Verify(output, A(root, "outputHash"));
@@ -82,9 +84,68 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
         foreach (var dependency in root.Element("Dependencies").Elements("Project"))
         {
             var child = XElement.Load(A(dependency, "output") + ".fshw-analyzer.xml");
-            Validate(child, new HashSet<string>(seen));
+            Validate(child, new HashSet<string>(seen), evaluations);
             if (Identity(child) != A(dependency, "identity")) throw new InvalidDataException("Stale analyzer project dependency");
         }
+    }
+    static XElement EvaluateMembership(string projectPath, IDictionary<string, string> globals)
+    {
+        var assembly = System.Reflection.Assembly.Load("Microsoft.Build");
+        var collectionType = assembly.GetType("Microsoft.Build.Evaluation.ProjectCollection", true);
+        var projectType = assembly.GetType("Microsoft.Build.Evaluation.Project", true);
+        using (var collection = (IDisposable)Activator.CreateInstance(collectionType))
+        {
+            var constructor = projectType.GetConstructor(new[] { typeof(string), typeof(IDictionary<string, string>), typeof(string), collectionType });
+            object project = constructor.Invoke(new object[] { projectPath, globals, null, collection });
+            var items = (System.Collections.IEnumerable)projectType.GetMethod("GetItems", new[] { typeof(string) }).Invoke(project, new object[] { "Compile" });
+            var sources = new XElement("Compile");
+            foreach (object item in items)
+            {
+                string path = (string)item.GetType().GetMethod("GetMetadataValue", new[] { typeof(string) }).Invoke(item, new object[] { "FullPath" });
+                sources.Add(new XElement("Item", new XAttribute("path", Path.GetFullPath(path))));
+            }
+            var effective = new XElement("Effective");
+            foreach (string name in new[] { "MSBuildVersion", "NETCoreSdkVersion", "Configuration", "TargetFramework", "Platform" })
+            {
+                string value = (string)projectType.GetMethod("GetPropertyValue", new[] { typeof(string) }).Invoke(project, new object[] { name });
+                effective.Add(new XElement("Property", new XAttribute("name", name), new XAttribute("value", value)));
+            }
+            return new XElement("Membership", sources, effective);
+        }
+    }
+    XElement CaptureEvaluation()
+    {
+        try
+        {
+            // Only this producer invocation's explicit globals are replayed.
+            // No process environment values are captured, logged, or persisted.
+            var globals = ((IBuildEngine6)BuildEngine).GetGlobalProperties().ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+            string host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+            if (string.IsNullOrWhiteSpace(host)) host = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+            var context = new XElement("AnalyzerEvaluationContext", new XAttribute("version", "1"),
+                new XAttribute("project", Path.GetFullPath(Project)), new XAttribute("host", Path.GetFullPath(host)),
+                new XAttribute("sdkRoot", Path.GetFullPath(SdkRoot)), new XAttribute("sdkVersion", SdkVersion),
+                new XElement("Globals", globals.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => new XElement("Property", new XAttribute("name", p.Key), new XAttribute("value", p.Value)))),
+                new XElement("CompilerSources", Sources.Select(source => new XElement("Item", new XAttribute("path", Resolve(source.ItemSpec))))),
+                EvaluateMembership(Path.GetFullPath(Project), globals));
+            XElement previous = File.Exists(CaptureFile) ? XElement.Load(CaptureFile).Element("Evaluation") : null;
+            return AnalyzerReplayStore.Save(context, previous);
+        }
+        catch { throw new InvalidDataException("Could not capture the analyzer producer invocation context"); }
+    }
+    static void ValidateEvaluation(XElement reference, Dictionary<string, bool> evaluations)
+    {
+        try
+        {
+            string key = A(reference, "id") + ":" + A(reference, "hash");
+            if (evaluations.ContainsKey(key)) return;
+            var context = AnalyzerReplayStore.Read(reference);
+            var globals = context.Element("Globals").Elements("Property").ToDictionary(p => A(p, "name"), p => (string)p.Attribute("value"), StringComparer.OrdinalIgnoreCase);
+            if (!XNode.DeepEquals(context.Element("Membership"), EvaluateMembership(A(context, "project"), globals)))
+                throw new InvalidDataException();
+            evaluations.Add(key, true);
+        }
+        catch { throw new InvalidDataException("Analyzer producer evaluated source membership changed or could not be verified"); }
     }
     XElement Capture()
     {
@@ -118,6 +179,7 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
             }
         var discovery = new XElement("Discovery", new XElement("Directory", new XAttribute("path", Root), new XAttribute("hash", DiscoveryHash(Root))));
         var dependencies = new XElement("Dependencies");
+        var dependencyEvaluations = new Dictionary<string, bool>();
         foreach (var reference in References)
         {
             string path = Resolve(reference.ItemSpec);
@@ -128,13 +190,13 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
             {
                 input("binding:" + Path.GetFileName(path), path);
                 var child = XElement.Load(path + ".fshw-analyzer.xml");
-                Validate(child, new HashSet<string>());
+                Validate(child, new HashSet<string>(), dependencyEvaluations);
                 dependencies.Add(new XElement("Project", new XAttribute("key", Label(reference.GetMetadata("MSBuildSourceProjectFile"))), new XAttribute("output", path), new XAttribute("identity", Identity(child))));
             }
             else throw new InvalidDataException("Reference has no package/project provenance: " + path);
         }
         var options = new XElement("Options", Options.Select(o => new XElement("Option", new XAttribute("name", o.ItemSpec), new XAttribute("value", o.GetMetadata("Value").Replace(Root, "$PROJECT")))));
-        return new XElement("AnalyzerProvenance", new XAttribute("version", "1"), inputs, discovery, options, packages, dependencies);
+        return new XElement("AnalyzerProvenance", new XAttribute("version", "1"), inputs, discovery, options, packages, dependencies, CaptureEvaluation());
     }
     public override bool Execute()
     {
@@ -176,5 +238,138 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
             return true;
         }
         catch (Exception exception) { Log.LogErrorFromException(exception, true); return false; }
+    }
+}
+
+
+// Local-only replay state. Reflection bridges the inline task's netstandard
+// reference surface to the current SDK runtime's atomic permission APIs.
+internal static class AnalyzerReplayStore
+{
+    static readonly string StoreRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fshw", "analyzer-contexts");
+    static Type RuntimeType(string name) { return Type.GetType(name, true); }
+    static bool Windows { get { return System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows); } }
+    static void NoLink(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Analyzer replay store cannot use a link");
+    }
+    static string CurrentSid()
+    {
+        var type = RuntimeType("System.Security.Principal.WindowsIdentity, System.Security.Principal.Windows");
+        using (var identity = (IDisposable)type.GetMethod("GetCurrent", Type.EmptyTypes).Invoke(null, null))
+        {
+            object user = type.GetProperty("User").GetValue(identity);
+            return (string)user.GetType().GetProperty("Value").GetValue(user);
+        }
+    }
+    static void VerifyWindows(string path, bool directory)
+    {
+        Type extension = RuntimeType("System.IO.FileSystemAclExtensions, System.IO.FileSystem.AccessControl");
+        Type infoType = directory ? typeof(DirectoryInfo) : typeof(FileInfo);
+        object info = directory ? (object)new DirectoryInfo(path) : new FileInfo(path);
+        object security = extension.GetMethod("GetAccessControl", new[] { infoType }).Invoke(null, new[] { info });
+        Type sidType = RuntimeType("System.Security.Principal.SecurityIdentifier, System.Security.Principal.Windows");
+        string sid = CurrentSid();
+        object owner = security.GetType().GetMethod("GetOwner").Invoke(security, new object[] { sidType });
+        if ((string)owner.GetType().GetProperty("Value").GetValue(owner) != sid) throw new InvalidDataException("Analyzer replay store has another owner");
+        if (directory && !(bool)security.GetType().GetProperty("AreAccessRulesProtected").GetValue(security)) throw new InvalidDataException("Analyzer replay store inherits access permissions");
+        var rules = (System.Collections.IEnumerable)security.GetType().GetMethod("GetAccessRules").Invoke(security, new object[] { true, true, sidType });
+        bool ownerAllowed = false;
+        foreach (object rule in rules)
+        {
+            if (rule.GetType().GetProperty("AccessControlType").GetValue(rule).ToString() != "Allow") continue;
+            object identity = rule.GetType().GetProperty("IdentityReference").GetValue(rule);
+            if ((string)identity.GetType().GetProperty("Value").GetValue(identity) != sid) throw new InvalidDataException("Analyzer replay store is accessible by another identity");
+            ownerAllowed = true;
+        }
+        if (!ownerAllowed) throw new InvalidDataException("Analyzer replay store does not grant its owner access");
+    }
+    static void Verify(string path, bool directory)
+    {
+        NoLink(path);
+        if (Windows) { VerifyWindows(path, directory); return; }
+        object mode = typeof(File).GetMethod("GetUnixFileMode", new[] { typeof(string) }).Invoke(null, new object[] { path });
+        int expected = directory ? 448 : 384; // 0700 / 0600
+        if (Convert.ToInt32(mode) != expected) throw new InvalidDataException("Analyzer replay store permissions must be owner-only");
+    }
+    static void EnsureRoot()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(StoreRoot));
+        if (!Directory.Exists(StoreRoot))
+        {
+            if (Windows)
+            {
+                Type securityType = RuntimeType("System.Security.AccessControl.DirectorySecurity, System.IO.FileSystem.AccessControl");
+                object security = Activator.CreateInstance(securityType);
+                string sid = CurrentSid();
+                securityType.GetMethod("SetSecurityDescriptorSddlForm", new[] { typeof(string) }).Invoke(security, new object[] { "O:" + sid + "D:P(A;OICI;FA;;;" + sid + ")" });
+                RuntimeType("System.IO.FileSystemAclExtensions, System.IO.FileSystem.AccessControl").GetMethod("CreateDirectory", new[] { securityType, typeof(string) }).Invoke(null, new[] { security, StoreRoot });
+            }
+            else
+            {
+                Type modeType = RuntimeType("System.IO.UnixFileMode, System.Private.CoreLib");
+                typeof(Directory).GetMethod("CreateDirectory", new[] { typeof(string), modeType }).Invoke(null, new[] { (object)StoreRoot, Enum.ToObject(modeType, 448) });
+            }
+        }
+        Verify(StoreRoot, true);
+    }
+    static string PathFor(string id)
+    {
+        Guid parsed;
+        if (!Guid.TryParseExact(id, "N", out parsed)) throw new InvalidDataException("Invalid analyzer replay context identifier");
+        return Path.Combine(StoreRoot, id + ".xml");
+    }
+    static string Hash(byte[] bytes) { using (var h = SHA256.Create()) return BitConverter.ToString(h.ComputeHash(bytes)).Replace("-", ""); }
+    public static XElement Read(XElement reference)
+    {
+        try
+        {
+            EnsureRoot();
+            string path = PathFor((string)reference.Attribute("id"));
+            Verify(path, false);
+            byte[] bytes = File.ReadAllBytes(path);
+            if (Hash(bytes) != (string)reference.Attribute("hash")) throw new InvalidDataException();
+            return XElement.Parse(Encoding.UTF8.GetString(bytes));
+        }
+        catch { throw new InvalidDataException("Analyzer replay context is missing, changed, or not private; rebuild its producer"); }
+    }
+    public static XElement Save(XElement context, XElement previous)
+    {
+        try
+        {
+            EnsureRoot();
+            byte[] bytes = Encoding.UTF8.GetBytes(context.ToString(SaveOptions.DisableFormatting));
+            string hash = Hash(bytes);
+            if (previous != null && (string)previous.Attribute("hash") == hash)
+            {
+                try { if (XNode.DeepEquals(Read(previous), context)) return new XElement(previous); }
+                catch (InvalidDataException) { /* Rebuilding repairs missing private context. */ }
+            }
+            string id = Guid.NewGuid().ToString("N");
+            string path = PathFor(id);
+            // The parent is already private. Tighten the new empty file before
+            // writing context bytes; no sensitive bytes have public permissions.
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                if (!Windows)
+                {
+                    Type modeType = RuntimeType("System.IO.UnixFileMode, System.Private.CoreLib");
+                    typeof(File).GetMethod("SetUnixFileMode", new[] { typeof(string), modeType }).Invoke(null, new[] { (object)path, Enum.ToObject(modeType, 384) });
+                }
+                else
+                {
+                    Type securityType = RuntimeType("System.Security.AccessControl.FileSecurity, System.IO.FileSystem.AccessControl");
+                    object security = Activator.CreateInstance(securityType);
+                    string sid = CurrentSid();
+                    securityType.GetMethod("SetSecurityDescriptorSddlForm", new[] { typeof(string) }).Invoke(security, new object[] { "O:" + sid + "D:P(A;;FA;;;" + sid + ")" });
+                    RuntimeType("System.IO.FileSystemAclExtensions, System.IO.FileSystem.AccessControl").GetMethod("SetAccessControl", new[] { typeof(FileInfo), securityType }).Invoke(null, new object[] { new FileInfo(path), security });
+                }
+                Verify(path, false);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+            }
+            return new XElement("Evaluation", new XAttribute("id", id), new XAttribute("hash", hash));
+        }
+        catch { throw new InvalidDataException("Could not preserve private analyzer replay context"); }
     }
 }
