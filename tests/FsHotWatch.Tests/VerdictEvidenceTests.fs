@@ -189,3 +189,25 @@ let ``retained receipt requires equal input and keeps the new refusal`` () =
     let changed =
         EarnedEvidence.authorizeSameInputReceipt previous.RunId (Some "tree-a") (Some "tree-b") (Some previous) failed
     Assert.DoesNotContain(previous.RunId, changed.AuthorizedRunIds)
+
+[<Theory>]
+[<InlineData("aborted", "run aborted")>]
+[<InlineData("no-obligations", "no project obligations")>]
+[<InlineData("unexpected-failure", "Unexpected.fsproj")>]
+[<InlineData("unexpected-timeout", "Unexpected.fsproj")>]
+[<InlineData("no-match", "no tests verified")>]
+let ``actual completion preserves every independent refusal reason`` kind expected =
+    let result =
+        match kind with
+        | "unexpected-failure" -> TestsFailed("failure", false, TimeSpan.Zero)
+        | "unexpected-timeout" -> TestsTimedOut("timed out", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero)
+        | "no-match" -> TestsNoMatch("no match", TimeSpan.Zero)
+        | _ -> TestsPassed("passed", false, TimeSpan.Zero)
+    let project = if kind.StartsWith("unexpected-") then "Unexpected.fsproj" else "Tests.fsproj"
+    let completion = completed (Guid.NewGuid()) (Map.ofList [ project, result ])
+    let completion = if kind = "aborted" then { completion with Outcome = Aborted "shutdown" } else completion
+    let expectedProjects = if kind = "no-obligations" then Set.empty else Set.singleton "Tests.fsproj"
+    let proof =
+        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expectedProjects 0 None completion
+        |> Option.get
+    Assert.Contains(proof.FailureReasons, fun reason -> reason.Contains expected)

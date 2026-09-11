@@ -335,3 +335,21 @@ let ``obsolete scheduler failure cannot reject its coalesced successor`` () =
         finally
             Console.SetError(previousError)
             Logging.setLogLevel previousLevel
+
+[<Theory>]
+[<InlineData(-1.0)>]
+[<InlineData(1.7976931348623157E+308)>]
+let ``invalid debounce duration admits no cohort`` milliseconds =
+    let store = PluginWorkOwner.Store()
+    let worker =
+        SupervisedWork.Queue(store, "invalid-delay", 0, TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state), (fun state _ -> state), ignore,
+            (fun state _ _ _ -> async { return state + 1 }))
+    let input = DebouncedWork.Queue(store, "invalid-delay", worker, (@))
+    let delay = if milliseconds < 0.0 then TimeSpan.FromMilliseconds milliseconds else TimeSpan.MaxValue
+    try
+        Assert.Throws<ArgumentException>(fun () -> input.Post([ 1 ], delay) |> ignore) |> ignore
+        Assert.False store.Snapshot.IsBusy
+        Assert.Equal(0, worker.State)
+    finally
+        input.Close()
