@@ -165,6 +165,7 @@ public sealed class OwnedChild : IDisposable
             try { Send(writer, "stop"); }
             catch (IOException) { pipe.Dispose(); }
             catch (OperationCanceledException) { pipe.Dispose(); }
+            catch (ObjectDisposedException) { /* A retry must still inspect native containment. */ }
             // A retained Windows handle remains authoritative even if the helper already died.
             containment.TerminateWindowsJob();
             WaitForHost(elapsed);
