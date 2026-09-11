@@ -18,8 +18,9 @@ let ``public verdict wait reports current failed build without inventing test ev
         let source = System.IO.Path.Combine(root, "Source.fs")
         let project = System.IO.Path.Combine(root, "ManualTests.fsproj")
         let graph = ProjectGraph()
-        graph.RegisterProject(AbsProjectPath.create project, [ AbsFilePath.create source ], [])
-        System.IO.File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        System.IO.File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include=\"Source.fs\" /></ItemGroup></Project>")
+        graph.RegisterFromFsproj(project) |> ignore
+        graph.RegisterProjectOutput(AbsProjectPath.create project, System.IO.Path.Combine(root, "bin", "Debug", "net10.0", "ManualTests.dll"))
         let buildScript = System.IO.Path.Combine(root, "build.sh")
         let testScript = System.IO.Path.Combine(root, "test.sh")
         let testStarted = System.IO.Path.Combine(root, "test-started")
