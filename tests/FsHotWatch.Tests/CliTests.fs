@@ -2960,3 +2960,24 @@ let ``check reach transport keeps missing command and transport fault unavailabl
         if fault then test <@ reason.Contains "projection connection lost" @>
         else test <@ reason.Contains "no" @>
     | other -> failwithf "missing projection must not become agreement: %A" other
+
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("System.OutOfMemoryException")>]
+[<InlineData("System.OverflowException")>]
+[<InlineData("System.TimeoutException")>]
+[<InlineData("System.AggregateException")>]
+let ``remote fault without frame evidence preserves the original failure and never restarts`` typeName =
+    let fault = remoteIpcFault typeName "remote operation failed" null
+    let mutable restarts = 0
+    let mutable attempts = 0
+    let mutable reported = None
+    let result =
+        runIpcWithSelfHeal
+            (fun () -> restarts <- restarts + 1; true)
+            (fun error -> reported <- Some error; 71)
+            (fun () -> attempts <- attempts + 1; raise fault)
+    test <@ result = 71 @>
+    test <@ attempts = 1 @>
+    test <@ restarts = 0 @>
+    test <@ reported |> Option.exists (fun error -> Object.ReferenceEquals(error, fault)) @>
