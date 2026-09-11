@@ -74,8 +74,27 @@ let private escapeProperty (value: string) =
     value.Replace("%", "%25").Replace(";", "%3B").Replace(",", "%2C")
         .Replace("\"", "%22").Replace("\r", "%0D").Replace("\n", "%0A")
 
-let validateMembership (membership: XElement) (json: string) =
-    let effective = section "Effective" membership
+let private effectiveNames =
+    [ "MSBuildVersion"; "NETCoreSdkVersion"; "Configuration"; "TargetFramework"; "Platform" ]
+
+let private effectiveProperties sdkVersion (membership: XElement) =
+    let fields = (section "Effective" membership).Elements() |> Seq.toList
+    let names = fields |> List.map (required "name")
+    if fields |> List.exists (fun field -> field.Name <> name "Property") then
+        refuse "Invalid analyzer evaluation property element"
+    if List.sort names <> List.sort effectiveNames then
+        refuse "Analyzer evaluation requires exactly the supported unique effective properties"
+    let values = fields |> List.map (fun field -> required "name" field, required "value" field) |> Map.ofList
+    if String.IsNullOrWhiteSpace sdkVersion
+       || String.IsNullOrWhiteSpace values["MSBuildVersion"]
+       || String.IsNullOrWhiteSpace values["NETCoreSdkVersion"] then
+        refuse "Analyzer evaluation SDK identities must be nonempty"
+    if values["NETCoreSdkVersion"] <> sdkVersion then
+        refuse "Analyzer evaluation SDK identity differs from its recorded context"
+    values
+
+let validateMembership sdkVersion (membership: XElement) (json: string) =
+    let effective = effectiveProperties sdkVersion membership
     use document = JsonDocument.Parse(json)
     let root = document.RootElement
     let compile = root.GetProperty("Items").GetProperty("Compile")
@@ -89,11 +108,23 @@ let validateMembership (membership: XElement) (json: string) =
         |> Seq.map (required "path" >> Path.GetFullPath)
         |> Seq.toList
     if actual <> expected then refuse "Analyzer producer evaluated Compile membership changed"
-    for property in effective.Elements(name "Property") do
-        let key = required "name" property
-        let actualValue = root.GetProperty("Properties").GetProperty(key).GetString()
-        if actualValue <> required "value" property then
-            refuse $"Analyzer producer evaluation context changed: {key}"
+    let properties = root.GetProperty("Properties")
+    if properties.ValueKind <> JsonValueKind.Object then refuse "Missing evaluated properties object"
+    let fields = properties.EnumerateObject() |> Seq.toList
+    if (fields |> List.map (fun field -> field.Name) |> List.sort) <> List.sort effectiveNames then
+        refuse "SDK output requires exactly the supported unique effective properties"
+    for field in fields do
+        if field.Value.ValueKind <> JsonValueKind.String then refuse "Evaluated properties must be strings"
+        if field.Value.GetString() <> effective[field.Name] then
+            refuse $"Analyzer producer evaluation context changed: {field.Name}"
+
+let validateOutcome sdkVersion membership outcome =
+    match outcome with
+    | Succeeded(ProcessOutput.Drained json) -> validateMembership sdkVersion membership json
+    | Succeeded(ProcessOutput.DrainTimedOut _) -> refuse "Analyzer producer SDK output did not finish draining"
+    | Failed(code, _) -> refuse $"Analyzer producer SDK evaluation failed with exit {code}"
+    | TimedOut _ -> refuse "Analyzer producer SDK evaluation exceeded its time bound"
+    | _ -> refuse "Analyzer producer SDK evaluation could not complete"
 
 let private evaluate (context: XElement) =
     let producer = required "project" context |> Path.GetFullPath
@@ -105,8 +136,9 @@ let private evaluate (context: XElement) =
 
     let globals = section "Globals" context
     let membership = section "Membership" context
-    let effective = section "Effective" membership
-    let propertyNames = effective.Elements(name "Property") |> Seq.map (required "name") |> Seq.toList
+    let sdkVersion = required "sdkVersion" context
+    effectiveProperties sdkVersion membership |> ignore
+    let propertyNames = effectiveNames
     let responsePath = Path.Combine(storeRoot (), Guid.NewGuid().ToString("N") + ".rsp")
     try
         let properties =
@@ -136,12 +168,7 @@ let private evaluate (context: XElement) =
         verifyPrivate responsePath false
         let args = "exec " + quote (Path.Combine(sdk, "MSBuild.dll")) + " " + quote ("@" + responsePath)
         let outcome = runProcess host args (Path.GetDirectoryName producer) [] (ProcessBounds.silent (TimeSpan.FromSeconds 30.0))
-        match outcome with
-        | Succeeded output ->
-            validateMembership membership (ProcessOutput.text output)
-        | Failed(code, _) -> refuse $"Analyzer producer SDK evaluation failed with exit {code}"
-        | TimedOut _ -> refuse "Analyzer producer SDK evaluation exceeded its time bound"
-        | _ -> refuse "Analyzer producer SDK evaluation could not complete"
+        validateOutcome sdkVersion membership outcome
     finally
         if File.Exists responsePath then File.Delete responsePath
 
