@@ -1272,6 +1272,11 @@ let internal registerHandlerWithOwner
                             let nextState =
                                 match committed with
                                 | Result.Ok candidate -> candidate
+                                | Result.Error(_, failure) when workOwner.Snapshot.ExecutorFault.IsSome ->
+                                    // Successor delivery can fail after this event retired.
+                                    // Its receipt has already settled; stop the executor
+                                    // without attempting to retire that identity again.
+                                    raise failure.Exception
                                 | Result.Error(retained, failure) ->
                                     try
                                         try
