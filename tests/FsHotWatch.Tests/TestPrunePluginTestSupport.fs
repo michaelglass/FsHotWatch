@@ -93,28 +93,19 @@ let emitBatchAndQuiesce (host: PluginHost) (files: string list) =
 /// FileChecked events arriving after a BuildCompleted has been observed in the session,
 /// mirroring fshw's cold scan where BuildPlugin's terminal status gates the FCS tiers.
 let emitBuildAndWaitTerminal (host: PluginHost) =
-    let generationBefore =
-        host.WorkCycleGenerations()
-        |> Map.tryFind "test-prune"
-        |> Option.defaultValue 0L
-
+    let completedBefore = host.CompletedDispatches()
     host.EmitBuildCompleted(BuildSucceeded)
 
     let completedNewCycle =
         waitUntilTrue
             (fun () ->
-                let generationAfter =
-                    host.WorkCycleGenerations()
-                    |> Map.tryFind "test-prune"
-                    |> Option.defaultValue 0L
-
                 let terminal =
                     match host.GetStatus("test-prune") with
                     | Some(Completed _)
                     | Some(Failed _) -> true
                     | _ -> false
 
-                generationAfter > generationBefore && terminal && not (host.AnyPluginBusy()))
+                host.CompletedDispatches() > completedBefore && terminal && not (host.AnyPluginBusy()))
             20000
 
     test <@ completedNewCycle @>

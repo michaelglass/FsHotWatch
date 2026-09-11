@@ -418,7 +418,7 @@ let ``an aborted run is ignored even when it executed and covered the whole suit
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 20000)>]
-let ``coverage advances its work-cycle generation — the fast terminal wait is not starved`` () =
+let ``coverage records the completed run in its activity history`` () =
     withTempDir "coverage-gen" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -429,7 +429,7 @@ let ``coverage advances its work-cycle generation — the fast terminal wait is 
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         // Never run ⇒ generation 0 (absent from the map).
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = None @>
+        test <@ host.GetHistory("coverage").IsEmpty @>
 
         emitRunCompleted host
 
@@ -442,8 +442,7 @@ let ``coverage advances its work-cycle generation — the fast terminal wait is 
 
         // The check ran, so the plugin passed THROUGH Running — which is the
         // only thing that advances the generation counter.
-        let gen = host.WorkCycleGenerations() |> Map.tryFind "coverage"
-        test <@ gen = Some 1L @>)
+        test <@ host.GetHistory("coverage").Length = 1 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``a coverage failure carries a verdict with an honest elapsed and a UTC timestamp`` () =
@@ -520,7 +519,7 @@ let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
         | Some(Completed(_, v)) -> test <@ v.Summary.Contains "thresholds updated" @>
         | other -> failwithf "expected Completed carrying the ratchet verdict, got %A" other
 
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>)
+        test <@ host.GetHistory("coverage").Length = 1 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``coverage-ratchet with an explicit config path argument targets that file`` () =
@@ -619,7 +618,7 @@ let ``a second TestRunCompleted while a check is in flight is skipped, not stack
             20000
 
         // Exactly ONE check cycle ran (one Running→terminal transition).
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>
+        test <@ host.GetHistory("coverage").Length = 1 @>
         waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
 
 // ---------------------------------------------------------------------------

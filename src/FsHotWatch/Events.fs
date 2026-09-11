@@ -639,6 +639,104 @@ type TestRunCompleted =
         Verification: RunVerification
     }
 
+/// Evidence is committed domain data, not a reportable UI status. Only the final
+/// result fold supplies the launch, model, outcome and remaining-debt witnesses.
+type internal EarnedEvidence =
+    private
+        { Completion: TestRunCompleted
+          ModelGeneration: int64
+          ExpectedProjects: Set<string>
+          WholeProjectCoverage: Set<string>
+          Refusals: string list }
+
+    member this.RunId = this.Completion.RunId
+    member this.Generation = this.ModelGeneration
+    member this.FailureReasons = this.Refusals
+
+module internal EarnedEvidence =
+    /// A stale launch, unavailable model or undischarged successor obligation
+    /// cannot publish evidence. Incomplete execution remains explicit refusal
+    /// evidence, allowing the caller to fail promptly rather than invent green.
+    let fromCompletion
+        (launchRunId: System.Guid)
+        (launchModelGeneration: int64 option)
+        (currentModelGeneration: int64 option)
+        (expectedProjects: Set<string>)
+        (pendingObligationCount: int)
+        (baseline: EarnedEvidence option)
+        (completed: TestRunCompleted)
+        : EarnedEvidence option =
+        match launchModelGeneration, currentModelGeneration with
+        | Some launched, Some current when
+            launched = current
+            && launchRunId <> System.Guid.Empty
+            && launchRunId = completed.RunId
+            && pendingObligationCount = 0
+            ->
+            let baselineProjects =
+                baseline
+                |> Option.filter (fun evidence -> evidence.Generation = current && evidence.Refusals.IsEmpty)
+                |> Option.map (fun evidence -> evidence.WholeProjectCoverage)
+                |> Option.defaultValue Set.empty
+
+            let wholeProjectCoverage =
+                completed.Results
+                |> Map.toSeq
+                |> Seq.choose (fun (project, result) ->
+                    if TestResult.verifiedGreen result && not (TestResult.wasFiltered result) then
+                        Some project
+                    else
+                        None)
+                |> Set.ofSeq
+                |> Set.union baselineProjects
+
+            let refusals =
+                [ match completed.Outcome with
+                  | Normal -> ()
+                  | Aborted reason -> yield $"run aborted: {reason}"
+
+                  if expectedProjects.IsEmpty then
+                      yield "no project obligations were selected"
+
+                  for project in expectedProjects do
+                      match Map.tryFind project completed.Results with
+                      | None when Set.contains project baselineProjects -> ()
+                      | None -> yield $"{project}: no result or baseline for an admitted obligation"
+                      | Some result ->
+                          match TestResult.verdict result with
+                          | Verified when Set.contains project wholeProjectCoverage -> ()
+                          | Verified -> yield $"{project}: filtered execution without a whole-project baseline"
+                          | Refuted -> yield $"{project}: tests failed or timed out"
+                          | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects -> ()
+                          | NothingVerified -> yield $"{project}: no tests verified"
+
+                  // Additional results cannot hide an errored sibling merely
+                  // because another selected project produced a passing report.
+                  for KeyValue(project, result) in completed.Results do
+                      match result with
+                      | TestsDeferred reason
+                      | TestsErrored reason -> yield $"{project}: {reason}"
+                      | TestsFailed _
+                      | TestsTimedOut _ when not (Set.contains project expectedProjects) ->
+                          yield $"{project}: tests failed or timed out"
+                      | _ -> ()
+
+                  if not (TestResult.executedAnything completed.Results) then
+                      yield "the completion executed no tests" ]
+
+            Some
+                { Completion = completed
+                  ModelGeneration = current
+                  ExpectedProjects = expectedProjects
+                  WholeProjectCoverage = wholeProjectCoverage
+                  Refusals = List.distinct refusals }
+        | _ -> None
+
+/// Implemented by an immutable plugin domain which owns an earned receipt.
+/// The framework projects this value in the SAME publication as its work ledger.
+type internal IEarnedEvidenceState =
+    abstract EarnedEvidence: EarnedEvidence option
+
 /// Current state of the daemon's scan operation.
 type ScanState =
     /// No scan in progress or completed.
