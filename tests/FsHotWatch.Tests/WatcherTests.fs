@@ -39,6 +39,44 @@ let ``isRelevantFile accepts .props files`` () =
     test <@ isRelevantFile "/repo/Directory.Build.props" @>
 
 [<Fact(Timeout = 15000)>]
+let ``isRelevantFile accepts .fsi signature files`` () =
+    test <@ isRelevantFile "/repo/src/Lib.fsi" @>
+
+// AUTOMATION-485. A change is seen only if BOTH the predicate accepts the file and
+// one of the watch globs matches it. Those used to be three independent literals
+// that all omitted `.fsi`, so a signature-only edit raised no event at all and
+// impact selection read an empty change set — then reported "test-equivalent to
+// the last green run", a claim it had never established. The globs are derived
+// from the extension set now; these two tests pin the derivation in BOTH
+// directions, since either half alone still leaves a change invisible.
+[<Fact(Timeout = 15000)>]
+let ``every watched glob names an extension the predicate accepts`` () =
+    let rejected =
+        watchedSourceGlobs
+        |> Array.filter (fun glob -> glob.StartsWith("*", StringComparison.Ordinal))
+        |> Array.filter (fun glob -> not (isRelevantFile ("/repo/src/Sample" + glob.Substring 1)))
+        |> String.concat ", "
+
+    test <@ rejected = "" @>
+
+[<Fact(Timeout = 15000)>]
+let ``every relevant extension is watched by a glob or the solution watcher`` () =
+    let globbed =
+        watchedSourceGlobs
+        |> Array.choose (fun glob ->
+            if glob.StartsWith("*", StringComparison.Ordinal) then
+                Some(glob.Substring 1)
+            else
+                None)
+        |> Set.ofArray
+
+    let unwatched =
+        Set.difference relevantExtensions (Set.union globbed solutionExtensions)
+        |> String.concat ", "
+
+    test <@ unwatched = "" @>
+
+[<Fact(Timeout = 15000)>]
 let ``isRelevantFile rejects files in obj directory`` () =
     test <@ not (isRelevantFile "/repo/src/obj/Debug/Generated.fs") @>
 
