@@ -664,27 +664,44 @@ let ``model failure crosses RPC as versioned data without relying on diagnostic 
     let pipeName = $"fshw-model-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     use cancellation = new CancellationTokenSource()
+
     let observation =
-        FsHotWatch.ProjectModel.ofCompleted 7L
-            { Discovered = 1; Loaded = 1; OptionsMapped = 0; Registered = 0 }
+        FsHotWatch.ProjectModel.ofCompleted
+            7L
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 0
+              Registered = 0 }
+
     let config =
         { defaultRpcConfig host with
-            WaitForAllTerminal = fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+            WaitForAllTerminal =
+                fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+
     let server = Async.StartAsTask(IpcServer.start pipeName config cancellation)
     waitForServer pipeName
+
     try
         let fault =
             Assert.Throws<StreamJsonRpc.RemoteInvocationException>(fun () ->
-                (IpcClient.waitForComplete pipeName 1000 |> Async.StartAsTask).GetAwaiter().GetResult() |> ignore)
+                (IpcClient.waitForComplete pipeName 1000 |> Async.StartAsTask).GetAwaiter().GetResult()
+                |> ignore)
+
         Assert.Equal(523, fault.ErrorCode)
+
         match FsHotWatch.Cli.IpcOutput.modelUnavailable fault with
-        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot, FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
+        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot,
+                                                               FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
             Assert.Equal(7L, snapshot.Generation)
             Assert.Equal(0, snapshot.Counts.Registered)
         | other -> failwithf "Expected structured mapping refusal, got %A" other
     finally
         cancellation.Cancel()
-        try server.GetAwaiter().GetResult() with :? OperationCanceledException -> ()
+
+        try
+            server.GetAwaiter().GetResult()
+        with :? OperationCanceledException ->
+            ()
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
@@ -1035,8 +1052,12 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
 [<Fact(Timeout = 20000)>]
 let ``WaitForComplete times out while plugin owns unfinished work`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     use cleanup =
         { new IDisposable with
@@ -1094,8 +1115,12 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     // teardown into a clean exit.
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     use cleanup =
         { new IDisposable with
@@ -1131,7 +1156,9 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     test <@ host.AnyPluginBusy() @>
 
     use cts = new CancellationTokenSource()
-    let waitEntered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let waitEntered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let config =
         { defaultRpcConfig host with
