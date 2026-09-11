@@ -2897,3 +2897,97 @@ let ``CSharp options cannot mask an incomplete required FSharp model``
             Assert.Empty(daemon.Pipeline.GetRegisteredProjects())
             Assert.Empty(daemon.Pipeline.GetAllRegisteredFiles())
         | other -> failwithf "expected a completed model observation, got %A" other)
+
+[<Fact(Timeout = 45000)>]
+let ``superseded owned change retries its admitted source against the current model`` () =
+    withTempDir "daemon-change-model-successor" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Probe.fsproj")
+        let source = Path.Combine(directory, "Probe.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(source, "module Probe\nlet value = 1\n")
+        let assets = FsHotWatch.DepsFreshness.assetsPath project
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+        let checker = sharedChecker.Value
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                source,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source)
+            )
+            |> Async.RunSynchronously
+        let options = { options with ProjectFileName = project; SourceFiles = [| source |] }
+        let loaded = { minimalLoadedProject project with SourceFiles = [ source ] }
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+        loader.Resume(1)
+        let callback = ref None
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents; Disposables = [] }
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker root Daemon.DaemonOptions.defaults loader (fun _ -> [ options ]) watcher
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        use admitted = new Threading.ManualResetEventSlim(false)
+        use release = new Threading.ManualResetEventSlim(false)
+        let mutable preprocessingAttempts = 0
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "admitted-change-barrier"
+                member _.Process files _ =
+                    if Threading.Interlocked.Increment(&preprocessingAttempts) = 1 then
+                        admitted.Set()
+                        release.Wait()
+                    Ok { Modified = []; Considered = files.Length; Evidence = "admitted source released" }
+                member _.Dispose() = () }
+        )
+        let results = System.Collections.Concurrent.ConcurrentQueue<FileCheckResult>()
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+        daemon.RegisterHandler
+            { Name = PluginName.create "successor-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked result -> results.Enqueue result
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+        try
+            // The barrier is after both model capture and ContentTracker admission.
+            // Deliver no second event: a retry that rechecks the dedup tracker loses this input.
+            (callback.Value |> Option.get) (SourceChanged [ source ])
+            Assert.True(admitted.Wait(TimeSpan.FromSeconds 10.0), "the original change must be admitted")
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            release.Set()
+            Assert.True(
+                SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0),
+                "the original owned change and its current-model successor must settle"
+            )
+            Assert.True(daemon.Host.WorkSnapshot.Faults.IsEmpty, "model supersession must not leave an owned failure")
+            let completed = Assert.Single(seals.ToArray())
+            Assert.Equal(Some 2L, completed.ModelGeneration)
+            Assert.Contains(AbsFilePath.create source, completed.Files)
+            let checkedSource = Assert.Single(results.ToArray())
+            Assert.Equal(AbsFilePath.create source, checkedSource.File)
+            Assert.Equal(Some 2L, checkedSource.ModelGeneration)
+            match checkedSource.CheckResults with
+            | FullCheck _ -> ()
+            | ParseOnly -> failwith "the successor must publish actual completed FCS analysis"
+            Assert.True(preprocessingAttempts >= 2, "the admitted source must reach the successor attempt")
+        finally
+            release.Set()
+            Assert.True(
+                SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0),
+                "all change ownership must retire before fixture disposal"
+            ))
