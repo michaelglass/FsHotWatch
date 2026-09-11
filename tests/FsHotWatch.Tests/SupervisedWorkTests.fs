@@ -649,3 +649,65 @@ let ``only a committed actual worker result recovers a previous worker failure``
     Assert.True owner.Snapshot.Fault.IsNone
     Assert.False owner.Snapshot.IsBusy
     Assert.Equal(2, owner.Snapshot.State)
+
+[<Theory>]
+[<InlineData("zero")>]
+[<InlineData("negative")>]
+[<InlineData("unbounded")>]
+let ``external execution refuses an unbounded ownership lifetime`` kind =
+    let deadline =
+        match kind with
+        | "zero" -> TimeSpan.Zero
+        | "negative" -> TimeSpan.FromSeconds -1.0
+        | _ -> TimeSpan.MaxValue
+    let mutable started = false
+    let execution =
+        SupervisedWork.execute "invalid" deadline SupervisedWork.defaultScheduler ignore
+            CancellationToken.None (fun _ -> async { started <- true })
+            (fun outcome cleanup -> cleanup (); outcome)
+    Assert.Throws<ArgumentException>(fun () -> Async.RunSynchronously execution |> ignore) |> ignore
+    Assert.False started
+
+[<Fact>]
+let ``scheduler failure settles the operation without invoking external work`` () =
+    let failure = InvalidOperationException("scheduler unavailable")
+    let mutable started = false
+    let result =
+        SupervisedWork.execute "schedule" (TimeSpan.FromSeconds 1.0)
+            (fun _ _ -> raise failure) ignore CancellationToken.None
+            (fun _ -> async { started <- true; return 1 })
+            (fun outcome cleanup -> cleanup (); outcome)
+        |> Async.RunSynchronously
+    match result with
+    | Error actual -> Assert.Same(failure, actual)
+    | Ok _ -> failwith "scheduler failure cannot return a successful operation"
+    Assert.False started
+
+[<Theory>]
+[<InlineData("notification")>]
+[<InlineData("timer-disposal")>]
+let ``settlement failure remains owned until its failed receipt is published`` stage =
+    let store = PluginWorkOwner.Store()
+    let failure = InvalidOperationException(stage)
+    let mutable disposed = 0
+    let queue =
+        SupervisedWork.Queue(
+            store, "settlement", 0, TimeSpan.FromMinutes 1.0,
+            (fun state (_: unit) -> state), (fun _ _ -> -1),
+            (fun _ -> if stage = "notification" then raise failure),
+            (fun _ _ _ publish -> async { publish 1; return 2 }),
+            scheduleDeadline = (fun _ _ ->
+                { new IDisposable with
+                    member _.Dispose() =
+                        Assert.True(store.Snapshot.IsBusy, "timer teardown must precede ownership retirement")
+                        disposed <- disposed + 1
+                        if stage = "timer-disposal" then raise failure }))
+    try
+        let receipt = queue.Submit((), CancellationToken.None)
+        Assert.Same(failure, Assert.Throws<InvalidOperationException>(fun () -> awaitResult receipt))
+        Assert.Equal(1, disposed)
+        Assert.Equal(-1, queue.State)
+        Assert.False store.Snapshot.IsBusy
+        Assert.Same(failure, snd store.Snapshot.OperationFaults.Head)
+    finally
+        queue.Close()
