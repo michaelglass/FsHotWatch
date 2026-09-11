@@ -220,6 +220,14 @@ let internal isTotalDiscoveryFailureMessage (message: string) : bool =
     not (isNull message)
     && message.Contains("PROJECT LOADING FAILED:", StringComparison.Ordinal)
 
+/// A captured cohort cannot publish after discovery admits a newer model.
+/// Incremental work may retry its already-admitted inputs; explicit scans still refuse.
+type internal ModelSupersededException(generation: int64) =
+    inherit
+        InvalidOperationException(
+            $"The captured project model generation {generation} was invalidated before scan publication."
+        )
+
 /// The verdict-wait admission decision. Kept separate from the RPC closure so
 /// both branches are deterministic unit-testable: a known total loader failure
 /// must never enter the potentially hour-long host wait.
@@ -327,11 +335,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
             let expected = snapshot |> Option.map (fun counts -> epoch, counts)
 
             if pendingAttempts <> 0 || completed <> expected then
-                raise (
-                    InvalidOperationException(
-                        $"The captured project model generation {epoch} was invalidated before scan publication."
-                    )
-                )
+                raise (ModelSupersededException epoch)
 
             write ())
 
@@ -996,7 +1000,12 @@ type private ChangeRequest =
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
-let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
+let private processBatchAttempt
+    (ctx: BatchContext)
+    (changes: FileChangeKind list)
+    (suppressed: Set<string>)
+    (hasContentChanged: string -> bool)
+    =
     async {
         // AUTOMATION-555 (rework). An incremental batch — the FCS re-check a file
         // change provokes while a check is already waiting — is daemon wall time no
@@ -1080,7 +1089,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
-                let changed = ctx.ContentTracker.HasContentChanged f
+                let changed = hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -1091,7 +1100,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             projFiles
             |> List.distinct
             |> List.filter (fun f ->
-                let changed = ctx.ContentTracker.HasContentChanged f
+                let changed = hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -1349,6 +1358,37 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             return newSuppressed
         else
             return remainingSuppressed
+    }
+
+/// Retain the original content-admission decisions until this owned request settles.
+/// A superseded attempt may have published partial evidence, but cannot seal it.
+/// Rechecking the dedup tracker would silently discard inputs consumed by that attempt.
+let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
+    async {
+        let admitted =
+            System.Collections.Generic.Dictionary<string, bool>(StringComparer.Ordinal)
+
+        let hasContentChanged path =
+            match admitted.TryGetValue path with
+            | true, accepted -> accepted
+            | false, _ ->
+                let accepted = ctx.ContentTracker.HasContentChanged path
+                admitted.Add(path, accepted)
+                accepted
+
+        let rec completeCurrent () =
+            async {
+                ctx.DaemonCt.Value.ThrowIfCancellationRequested()
+
+                try
+                    return! processBatchAttempt ctx changes suppressed hasContentChanged
+                with :? ModelSupersededException ->
+                    ctx.DaemonCt.Value.ThrowIfCancellationRequested()
+                    Logging.debug "changes" "model superseded; retaining admitted inputs for the current model"
+                    return! completeCurrent ()
+            }
+
+        return! completeCurrent ()
     }
 
 /// Format elapsed as human-readable "5m 3s" / "45s" / "1h 12m". Public so
