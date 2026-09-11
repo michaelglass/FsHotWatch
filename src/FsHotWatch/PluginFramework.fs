@@ -226,6 +226,8 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
     {
         /// Completed discovery identity. Unavailable or changing models cannot earn test proof.
         ObserveModel: unit -> ProjectModel.Observation
+        /// Exact checkable files published atomically with their completed model generation.
+        ObserveCheckableFiles: unit -> (int64 * Set<AbsFilePath>) option
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -243,6 +245,7 @@ module ProjectGraphAccessor =
     /// returns empty/None, so dependency-fanout consumers fall back cleanly.
     let none: ProjectGraphAccessor =
         { ObserveModel = fun () -> ProjectModel.Observation.Unobserved
+          ObserveCheckableFiles = fun () -> None
           GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
