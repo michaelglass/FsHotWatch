@@ -773,6 +773,19 @@ let private fakeConfig: DaemonConfiguration =
 let private completedStatusJson =
     """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
+/// A completed analysis-only daemon proves the current model without inventing a test run.
+let private completedAnalysisDiagnosticsJson () =
+    System.Text.Json.JsonSerializer.Serialize(
+        {| count = 0
+           files = Map.empty<string, string>
+           unchecked = 0
+           daemonPhases = ([||] : string array)
+           projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+           modelReceipts =
+               [ {| runId = (null : string)
+                    modelGeneration = 1L
+                    refusals = ([] : string list) |} ] |})
+
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ -> async { return "scan started" }
@@ -1462,7 +1475,7 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
                 IsRunning = fun _ -> true
                 WaitForScan = fun _ _ -> async { return "idle" }
                 GetStatus = fun _ -> async { return getStatus () }
-                GetDiagnostics = fun _ _ -> async { return """{"count": 0, "unchecked": 0}""" } }
+                GetDiagnostics = fun _ _ -> async { return completedAnalysisDiagnosticsJson () } }
 
         let result =
             executeCommand
@@ -1687,7 +1700,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                 fun _ _ ->
                     async {
                         getErrorsCalled <- true
-                        return """{"count": 0, "unchecked": 0}"""
+                        return completedAnalysisDiagnosticsJson ()
                     } }
 
     let result = exec ipc (Check [])
@@ -1877,7 +1890,7 @@ let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
             fun _ _ ->
                 async {
                     d.Served.Add d.Generation
-                    return """{"count": 0, "files": {}, "unchecked": 0}"""
+                    return completedAnalysisDiagnosticsJson ()
                 } }
 
 /// A daemon already running from generation 1. Its identity is whatever the caller staged
@@ -2044,7 +2057,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                                 raiseFrameReaderOverflow ()
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                            return completedAnalysisDiagnosticsJson ()
                         } }
 
         let stderr, result =
@@ -2090,7 +2103,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                                 raise (OutOfMemoryException("client heap exhausted"))
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                            return completedAnalysisDiagnosticsJson ()
                         } }
 
         let stderr, failedResult =
