@@ -164,3 +164,28 @@ let ``client observation inhibits idle exit without keeping observed work busy``
     lease.Dispose()
     Assert.Equal(0, store.Snapshot.ObserverCount)
     Assert.Equal(1, observed.ObserverCount)
+
+[<Fact>]
+let ``accountable red full suite can support filtered recovery without laundering remaining debt`` () =
+    let red =
+        completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("one failed", false, TimeSpan.Zero) ])
+        |> earn (Some 1L) (Some 1L) 1 None |> Option.get
+    let rerun =
+        completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsPassed("fixed test passed", true, TimeSpan.Zero) ])
+    Assert.NotEmpty red.FailureReasons
+    Assert.Empty((earn (Some 1L) (Some 1L) 0 (Some red) rerun |> Option.get).FailureReasons)
+    Assert.NotEmpty((earn (Some 1L) (Some 1L) 1 (Some red) rerun |> Option.get).FailureReasons)
+
+[<Fact>]
+let ``retained receipt requires equal input and keeps the new refusal`` () =
+    let previous = fullRun (Guid.NewGuid()) |> earn (Some 1L) (Some 1L) 0 None |> Option.get
+    let failed =
+        completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("new failure", true, TimeSpan.Zero) ])
+        |> earn (Some 1L) (Some 1L) 1 (Some previous) |> Option.get
+    let retained =
+        EarnedEvidence.authorizeSameInputReceipt previous.RunId (Some "tree-a") (Some "tree-a") (Some previous) failed
+    Assert.Contains(previous.RunId, retained.AuthorizedRunIds)
+    Assert.NotEmpty retained.FailureReasons
+    let changed =
+        EarnedEvidence.authorizeSameInputReceipt previous.RunId (Some "tree-a") (Some "tree-b") (Some previous) failed
+    Assert.DoesNotContain(previous.RunId, changed.AuthorizedRunIds)

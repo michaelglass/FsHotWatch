@@ -688,6 +688,10 @@ let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string
 /// One fixture, so a test that grades a green names the SAME baseline the daemon reply
 /// it mocks reports — a green and its baseline are one value, not two settings.
 module BaselineFixtures =
+    let model =
+        FsHotWatch.ProjectModel.ofCompleted 1L
+            { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 }
+
     let runId = System.Guid.Parse("b0000000-1100-4000-8000-000000000110")
 
     let earnedAt = System.DateTime(2026, 9, 6, 12, 0, 0, System.DateTimeKind.Utc)
@@ -709,6 +713,11 @@ module BaselineFixtures =
     /// the scope, the comparison or the rendering, not the baseline.
     let reportOf (scope: FsHotWatch.Cli.IpcParsing.TestScope) : FsHotWatch.Cli.IpcParsing.TestRunReport =
         { FsHotWatch.Cli.IpcParsing.TestRunReport.ofScopeOnly scope with
+            RunId =
+                match scope with
+                | FsHotWatch.Cli.IpcParsing.FullSuite _
+                | FsHotWatch.Cli.IpcParsing.ImpactFiltered _ -> Some runId
+                | _ -> None
             Baseline = reading }
 
     let isGreen (o: FsHotWatch.Cli.Verdict.Outcome) =
