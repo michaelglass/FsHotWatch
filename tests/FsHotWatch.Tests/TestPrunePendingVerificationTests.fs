@@ -2038,3 +2038,34 @@ let ``classify: clean unfiltered zero-test report verifies nothing`` () =
 
     Assert.True(TestResult.isErrored result)
     Assert.False(TestResult.verifiedGreen result)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(true, "separate integration gate", false)>]
+[<InlineData(false, "separate integration gate", false)>]
+[<InlineData(true, null, true)>]
+[<InlineData(true, "", true)>]
+[<InlineData(true, "   ", true)>]
+let ``A104 declared exclusions retire only governed covering debt`` (mixed: bool) (reason: string) (remainsOwed: bool) =
+    withTempDir "tp-declared-scope" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P2" "P2Tests" "sharedTest"
+        if mixed then
+            PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+        let coverers = db.QueryAffectedTests [ "Lib.shared" ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+        Assert.Contains("P2", coverers)
+        if mixed then Assert.Contains("P1", coverers)
+        PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+        let configs = [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let exclusions = if isNull reason then Map.empty else Map.ofList [ "P2", reason ]
+        let handler = createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+        try
+            let terminal = beginAwaitNextTerminal host "test-prune"
+            host.EmitBuildCompleted(BuildSucceeded)
+            Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0))
+            waitForQuiescent host 20000
+            Assert.Equal(remainsOwed, PendingQueueHelpers.loadQueue tmpDir |> Set.contains "Lib.shared")
+        finally
+            host.Teardown())

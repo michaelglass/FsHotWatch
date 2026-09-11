@@ -4794,7 +4794,7 @@ let internal cacheKeyFor
 /// to a different DB than the plugin's.
 let internal createWithLaunchDeadlineAndScope
     (launchDeadline: TimeSpan)
-    (excludedProjects: Map<string, string>)
+    (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -4816,6 +4816,7 @@ let internal createWithLaunchDeadlineAndScope
     // Unknown projects remain obligations; absence from runnableProjects is not
     // an exclusion. Configured projects always remain required.
     let coveringProjects symbol =
+        let excludedProjects = resolveExcludedProjects ()
         db.QueryAffectedTests [ symbol ]
         |> List.map (fun test -> test.TestProject)
         |> Set.ofList
@@ -4924,19 +4925,8 @@ let internal createWithLaunchDeadlineAndScope
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
-    /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
-    /// analyzed, which is not the same set as the projects fshw is configured to run. A
-    /// symbol covered ONLY by an unconfigured project can never be proven green — its
-    /// covering project never executes, so it never appears in a run's results and never
-    /// commits, sitting in the pending queue forever while the verdict stays red.
-    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
-    /// `check` exited 1, because those symbols were covered by
-    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
-    ///
-    /// So "covered" means "covered by a test we can actually run". A symbol whose only
-    /// covering tests are unrunnable is dropped from the queue by the same rule as one
-    /// with no covering test at all — but it is REPORTED as owed-but-unrunnable, naming
-    /// the projects, never silently (AUTOMATION-110; see `flushAndQueryAffected`).
+    /// The DB may also index explicitly excluded or unexplained test projects.
+    /// Declared exclusions limit this claim; unexplained projects remain owed.
     let runnableProjects: Set<string> =
         match testConfigs with
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
@@ -5588,10 +5578,8 @@ let internal createWithLaunchDeadlineAndScope
                 // throw here must produce the Aborted lifecycle below (an honest,
                 // re-runnable "tests did not run" verdict) rather than escaping to
                 // the framework's `runOne`, which would only log-and-strand the run.
-                // Only RUNNABLE covering projects gate a symbol's commit — the same
-                // rule `flushAndQueryAffected` uses to drop unverifiable symbols, so
-                // the two cannot disagree. Gating on a project this daemon never runs
-                // would block the commit forever (AUTOMATION-99's permanent red).
+                // Apply exactly the same declared-scope policy as admission and
+                // post-run diagnostics. Unknown covering projects remain owed.
                 let coveringProjectsBySymbol =
                     launchedSymbols
                     |> Set.toList
@@ -7660,9 +7648,8 @@ let internal createWithLaunchDeadlineAndScope
 
                     let unrunnableProjects =
                         remainingChangedSymbols
-                        |> List.collect (fun symbol -> db.QueryAffectedTests [ symbol ])
-                        |> List.map (fun test -> test.TestProject)
-                        |> Set.ofList
+                        |> List.map coveringProjects
+                        |> Set.unionMany
                         |> fun covering -> Set.difference covering runnableProjects
 
                     let pendingDescription =
@@ -8262,7 +8249,7 @@ let internal createWithLaunchDeadlineAndScope
 /// Default callers have no declared exclusions: every known covering project
 /// remains required, including projects absent from the runnable configuration.
 let internal createWithLaunchDeadline launchDeadline dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
-    createWithLaunchDeadlineAndScope launchDeadline Map.empty dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
+    createWithLaunchDeadlineAndScope launchDeadline (fun () -> Map.empty) dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
 
 /// Create a TestPrune handler with the launch policy captured at construction.
 /// Environment configuration is process-global, so reading it lazily at run time can
@@ -8298,10 +8285,10 @@ let create
 
 /// Construct an owner with the explicitly declared exclusions validated by the
 /// caller's solution scope. Blank reasons do not exclude a project.
-let createWithScope excludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
+let createWithScope resolveExcludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
     let launchDeadline =
         Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
         |> Option.ofObj
         |> resolveLaunchDeadline
 
-    createWithLaunchDeadlineAndScope launchDeadline excludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
+    createWithLaunchDeadlineAndScope launchDeadline resolveExcludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
