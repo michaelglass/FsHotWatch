@@ -174,7 +174,10 @@ let private preserveFailure (root: string) (daemonText: string) =
            && not (relative.Contains("/obj/", StringComparison.Ordinal)) then
             let target = Path.Combine(destination, relative)
             Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
-            File.Copy(file, target, true)
+            try
+                File.Copy(file, target, true)
+            with :? IOException as error ->
+                File.AppendAllText(Path.Combine(destination, "capture-errors.log"), $"{relative}: {error.Message}\n")
     eprintfn "Cold-check failure artifacts: %s" destination
 
 let withDaemon clock root body =
