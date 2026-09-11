@@ -134,13 +134,14 @@ type CheckPipeline
         | None -> ()
 
     /// Register project options for a project. Maps each source file to this project's options.
-    /// Filters out generated files in obj/ and bin/ directories that should not be checked.
+    /// Keeps only F# inputs, excluding generated obj/bin files. The project graph
+    /// separately retains other languages for build and test obligations.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         let filteredOptions =
             { options with
                 SourceFiles =
                     options.SourceFiles
-                    |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
+                    |> Array.filter (fun f -> PathFilter.isFSharpSource f && not (PathFilter.isGeneratedPath f)) }
 
         projectOptionsByProject[projectPath] <- filteredOptions
         projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot filteredOptions
@@ -330,7 +331,12 @@ type CheckPipeline
 
             try
                 fileToken.ThrowIfCancellationRequested()
-                return! this.CheckFileCached(absPath, options, fileToken)
+                if PathFilter.isFSharpSource absPath then
+                    let checkableOptions =
+                        { options with SourceFiles = options.SourceFiles |> Array.filter PathFilter.isFSharpSource }
+                    return! this.CheckFileCached(absPath, checkableOptions, fileToken)
+                else
+                    return None
             with :? OperationCanceledException ->
                 Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
                 return None
