@@ -631,6 +631,9 @@ let ``model receipts accept explicit analysis identity and reject malformed run 
             + ""","modelGeneration":7,"refusals":[]}]}""")
         |> DaemonEvidence.receipts
 
-    test <@ (parse "null").Length = 1 @>
+    test <@ (parse "null" |> List.exactlyOne).RunId.IsNone @>
+    let runId = Guid.NewGuid()
+    test <@ (parse ("\"" + runId.ToString("N") + "\"") |> List.exactlyOne).RunId = Some runId @>
+    test <@ (parse "\"00000000000000000000000000000000\"").IsEmpty @>
     test <@ (parse "\"not-a-guid\"").IsEmpty @>
     test <@ (parse "17").IsEmpty @>

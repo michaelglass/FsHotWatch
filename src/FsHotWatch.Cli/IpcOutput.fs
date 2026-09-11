@@ -942,7 +942,18 @@ let private publishVerdictWithReason
         let terminalIncompleteReason =
             match outcome, terminalIncompleteReason with
             | CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite, None ->
-                FsHotWatch.ProjectModel.failure projectModel
+                match FsHotWatch.ProjectModel.failure projectModel with
+                | Some reason -> Some reason
+                | None ->
+                    let witnessed =
+                        match projectModel with
+                        | FsHotWatch.ProjectModel.Observation.Available model ->
+                            IpcParsing.DaemonEvidence.receipts daemonEvidence
+                            |> List.exists (fun receipt ->
+                                receipt.RunId.IsNone && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                        | _ -> false
+                    if witnessed then None
+                    else Some "the analysis-only check has no earned receipt for the observed project model"
             | CheckVerdict.CheckOutcome.Clean _, None ->
                 match FsHotWatch.ProjectModel.failure projectModel with
                 | Some reason -> Some reason
@@ -952,7 +963,7 @@ let private publishVerdictWithReason
                         | FsHotWatch.ProjectModel.Observation.Available model, Some runId ->
                             IpcParsing.DaemonEvidence.receipts daemonEvidence
                             |> List.exists (fun receipt ->
-                                receipt.RunId = runId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                                receipt.RunId = Some runId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
                         | _ -> false
                     if witnessed then None
                     else Some "the graded test run has no earned receipt for the observed project model"
@@ -1132,7 +1143,7 @@ let private publishVerdictWithReason
                 | FsHotWatch.ProjectModel.Observation.Available model ->
                     IpcParsing.DaemonEvidence.receipts daemonEvidence
                     |> List.exists (fun receipt ->
-                        Some receipt.RunId = prior.RunId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                        receipt.RunId = prior.RunId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
                 | _ -> false)
 
         match preservedPrior with
