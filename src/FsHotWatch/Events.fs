@@ -39,7 +39,7 @@ type CacheKey =
 
 /// Describes what kind of file change was detected by the watcher.
 type FileChangeKind =
-    /// F# source files (.fs, .fsx) changed.
+    /// F# source files (.fs, .fsi, .fsx) changed.
     | SourceChanged of files: string list
     /// Project files (.fsproj, .props, project.assets.json) changed.
     | ProjectChanged of files: string list
