@@ -26,6 +26,7 @@
     <Compile Include="NuGetToolBarrierOracleTests.fs" />
     <Compile Include="ColdCheckFixture.fs" />
     <Compile Include="ColdCheckCommandTests.fs" />
+    <Compile Include="AnalyzerProvenanceBuildTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 
