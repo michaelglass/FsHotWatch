@@ -1124,3 +1124,25 @@ let ``published update recovery restores rest while exclusive presence tracks on
     owner.CommitEvent(fold, 2)
     Assert.False owner.Snapshot.HasExclusiveRun
     Assert.False owner.Snapshot.IsBusy
+
+[<Theory>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``failure delivery cannot retire a capability of a different kind`` failEvent =
+    let owner = PluginWorkOwner.Owner(0)
+    let event = owner.AdmitEvent()
+    let run, _ = owner.TryClaim "tests" |> Option.get
+    let failure = InvalidOperationException("wrong failure capability")
+    Assert.Throws<InvalidOperationException>(fun () ->
+        if failEvent then
+            owner.FailEvent(run, PluginWorkOwner.UpdateFailure failure)
+        else
+            owner.FailRun(event, failure)) |> ignore
+    Assert.True owner.Snapshot.IsBusy
+    Assert.True(owner.Snapshot.IsRunning "tests")
+    Assert.True owner.Snapshot.Fault.IsNone
+    owner.CommitEvent(event, 1)
+    let fold = owner.CompleteRun run |> Option.get
+    owner.CommitEvent(fold, 2)
+    Assert.False owner.Snapshot.IsBusy
+    Assert.Equal(2, owner.Snapshot.State)

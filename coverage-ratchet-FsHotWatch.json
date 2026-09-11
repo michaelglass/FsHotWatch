@@ -1,5 +1,37 @@
 {
   "overrides": {
+    "DebouncedWork.fs": [
+      {
+        "line": 98,
+        "branch": 94,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "SupervisedWork.fs": [
+      {
+        "line": 90,
+        "branch": 68,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "PluginWorkOwner.fs": [
+      {
+        "line": 98,
+        "branch": 90,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
+    "ProjectModelWire.fs": [
+      {
+        "line": 100,
+        "branch": 91,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      }
+    ],
     "DetachedLaunch.fs": [
       {
         "line": 97,
@@ -282,6 +314,12 @@
       }
     ],
     "Events.fs": [
+      {
+        "line": 100,
+        "branch": 92,
+        "reason": "A104 initial macOS ownership/evidence surface baseline after 3436/3436 full unit controls. Residual generated decision/enumerator branches, private corruption checks and defensive writer/cancellation errors are distinguished in docs/adr/automation-104-owned-boundary-coverage.md. No claim all residual paths are unreachable, and no Linux execution claim.",
+        "platform": "macos"
+      },
       {
         "line": 96,
         "branch": 87,
