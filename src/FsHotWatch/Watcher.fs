@@ -63,7 +63,7 @@ let internal isProjectAssetsJson (path: string) =
 /// The extensions a change can arrive on. A SET rather than a chain of `||`,
 /// because the watch globs below are DERIVED from it: an extension added here
 /// reaches every path that detects a change, and cannot be added to the predicate
-/// while being forgotten by the watchers (AUTOMATION-485 — `.fsi` was missing from
+/// while being forgotten by the watchers (`.fsi` was missing from
 /// the predicate and from both glob lists, so a signature-only edit raised no
 /// event at all and selection saw an empty change set).
 let internal relevantExtensions =
@@ -79,7 +79,7 @@ let internal relevantExtensions =
 /// `watchedSourceGlobs`, so a solution change that lands inside a coalesced window
 /// is seen only by the native path. The globs it replaced omitted `*.sln` too, so
 /// this is unchanged behaviour, but it is a real hole and wants its own ticket
-/// rather than a silent fix riding along with AUTOMATION-485.
+/// rather than a silent fix riding along with signature-file detection.
 let internal solutionExtensions = set [ ".sln"; ".slnx" ]
 
 /// The globs both event paths watch: the coalesced-rescan walk and the
