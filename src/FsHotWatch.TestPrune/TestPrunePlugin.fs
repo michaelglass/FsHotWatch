@@ -1667,7 +1667,8 @@ module CheckReach =
         match wouldHaveRun with
         | None ->
             ReachUnknown
-                "this run carries no retained impact selection (a forced re-run, an aborted run, or a skip), so there                  is nothing to project the result through"
+                "this run carries no retained impact selection (a forced re-run, an aborted run, or a skip), so \
+                 there is nothing to project the result through"
         | Some _ when List.isEmpty failures -> NoFailuresToReach
         | Some selection ->
             let decided = failures |> List.map (fun f -> f, reaches selection f)
@@ -1675,7 +1676,9 @@ module CheckReach =
             match decided |> List.tryFind (fun (_, r) -> r = Undecidable) with
             | Some(undecidable, _) ->
                 ReachUnknown
-                    $"the %s{undecidable.Project} red names no test class (a timeout, an errored host, or unparseable                        failure output) and the retained selection runs that project under a CLASS filter, so whether                        `check` would have executed it cannot be decided"
+                    $"the %s{undecidable.Project} red names no test class (a timeout, an errored host, or \
+                       unparseable failure output) and the retained selection runs that project under a CLASS \
+                       filter, so whether `check` would have executed it cannot be decided"
             | None ->
                 let reached =
                     decided
