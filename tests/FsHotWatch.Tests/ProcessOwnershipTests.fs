@@ -636,3 +636,50 @@ let ``successful boundary cleanup leaves original error propagation with caller`
 
     Assert.True(cleaned)
     Assert.Same(original, error)
+
+[<Fact>]
+let ``ownership failure diagnostics omit message and payload while retaining original stack`` () =
+    let original = InvalidOperationException("secret-argument secret-environment secret-payload")
+    original.Data["command"] <- "secret-command"
+    let mutable diagnostic = ""
+    let observed =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            try
+                raise original
+            with error ->
+                ChildProtocol.reportFailureWith
+                    (fun text -> diagnostic <- text)
+                    "exit-receipt"
+                    5000L
+                    123
+                    "WaitingForActivation"
+                    "not-applicable"
+                    error
+                reraise ())
+    Assert.Same(original, observed)
+    Assert.Contains("phase=exit-receipt", diagnostic)
+    Assert.Contains("elapsedMs=5000", diagnostic)
+    Assert.Contains("helperPid=123", diagnostic)
+    Assert.Contains("receipt=WaitingForActivation", diagnostic)
+    Assert.Contains("exceptionType=System.InvalidOperationException", diagnostic)
+    Assert.Contains(original.StackTrace, diagnostic)
+    Assert.DoesNotContain("secret-", diagnostic)
+
+[<Fact>]
+let ``ownership diagnostic writer failure cannot replace the original cancellation`` () =
+    let original = OperationCanceledException("sensitive cancellation context")
+    let observed =
+        Assert.Throws<OperationCanceledException>(fun () ->
+            try
+                raise original
+            with error ->
+                ChildProtocol.reportFailureWith
+                    (fun _ -> raise (IOException("diagnostic sink failed")))
+                    "connect"
+                    5000L
+                    123
+                    "not-observed"
+                    "True"
+                    error
+                reraise ())
+    Assert.Same(original, observed)
