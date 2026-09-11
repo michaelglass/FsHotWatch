@@ -1,5 +1,33 @@
 # A104/A106 ownership design — current-source constraints
 
+## Current integration checkpoint — 2026-09-11
+
+The historical checkpoints below retain their original source-only/red/green status.
+The integrated implementation now owns immutable verification debt, baseline,
+recovery state, freshness, and command replies in the TestPrune state published by
+PrepareCommit. Reply finalization follows publication. Queued automatic and manual
+requests are typed owner capabilities; the prior rerun flag/list and closure debt
+mirrors are removed.
+
+Private earned test evidence joins actual completion, current model, pending debt,
+coherent requested CTRF reports, and exact-tree retained receipt identity. Analysis-only
+completion has its own private file/cohort evidence and nullable wire identity, never
+a fabricated test run. Captured model lineage is checked at producer dispatch and
+owner fold; model transitions retire ephemeral pending compiler results before a
+build can flush them while preserving durable verification obligations.
+
+Coverage symbol lookup and persistence share one writer transaction. The full/partial
+foreign-key race was reproduced and then passed. Process containment uses the shared
+supervisor and the verified standalone child host; no separate parent transport
+assembly remains. Scan completion follows its exact settled receipt, including failure.
+
+[Focused regression evidence](evidence/automation-104-final-focused.json) records actual
+controls, including command publication, stale arrivals and pending-model mutation,
+analysis/test identity substitution, missing/empty requested reports, and partial debt
+retention. These focused passes do not complete either ticket: the combined CI and
+integration gates must still pass on the final integrated source before QA/merge.
+
+
 This document records the shared design obligations before the next production change. The RPC synchronous-prefix correction has targeted green evidence; neither full ticket is complete. The source specification is the current A104/A106 Plane descriptions, with the leading correction withdrawing the net-negative-LOC criterion.
 
 ## Required final ownership

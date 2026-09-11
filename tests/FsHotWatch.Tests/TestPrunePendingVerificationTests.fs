@@ -869,12 +869,15 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
 
 open FsHotWatch.ProcessHelper
 
-let private rep total passed failed skipped other : Flakiness.TestReport =
-    { Total = total
-      Passed = passed
-      Failed = failed
-      Skipped = skipped
-      Other = other }
+let private rep total passed failed skipped other =
+    let rows =
+        [ for index in 1 .. passed do yield {| name = $"Fixture.passed{index}"; status = "passed" |}
+          for index in 1 .. skipped do yield {| name = $"Fixture.skipped{index}"; status = "skipped" |} ]
+    System.Text.Json.JsonSerializer.Serialize(
+        {| results =
+            {| summary = {| tests = total; passed = passed; failed = failed; skipped = skipped; pending = 0; other = other |}
+               tests = rows |} |})
+    |> FsHotWatch.Ctrf.tryVerdictReport
 
 let private isFailed result =
     match result with
@@ -884,7 +887,7 @@ let private isFailed result =
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
     // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
-    let report = Some(rep 12 12 0 0 0)
+    let report = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -897,7 +900,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
-    let report = Some(rep 3 2 1 0 0)
+    let report = rep 3 2 1 0 0
 
     let result =
         classifyTestOutcome
@@ -910,7 +913,7 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with an other (raw-throw) result is RED`` () =
-    let report = Some(rep 3 2 0 0 1)
+    let report = rep 3 2 0 0 1
 
     let result =
         classifyTestOutcome
@@ -925,7 +928,7 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
 let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "aborted"))
@@ -950,7 +953,7 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
 let ``classify: clean exit with a missing requested report verifies nothing`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
@@ -959,8 +962,8 @@ let ``classify: clean exit with a missing requested report verifies nothing`` ()
     test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
-    let report = Some(rep 0 0 0 0 0)
+let ``classify: unfiltered zero-test report with non-zero exit verifies nothing`` () =
+    let report = rep 0 0 0 0 0
 
     let result =
         classifyTestOutcome
@@ -969,11 +972,11 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
             TimeSpan.Zero
             (ProcessOutcome.Failed(8, ProcessOutput.Drained "Zero tests ran"))
 
-    test <@ isFailed result @>
+    test <@ TestResult.isErrored result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
-    let report = Some(rep 5 5 0 0 0)
+    let report = rep 5 5 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1002,7 +1005,7 @@ let ``AUTOMATION-294: a SIGKILLed host is an ABORT even though it flushed a repo
     // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
     // Reading that report as the verdict is what minted the phantom mass regression.
-    let phantomMassRegression = Some(rep 2171 2032 139 0 0)
+    let phantomMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1033,7 +1036,7 @@ let ``AUTOMATION-294: THE OTHER DIRECTION — a real mass failure is still RED, 
     // instead of being killed. This must stay a red, or the fix has merely inverted the
     // lie: a gate that reported every genuine regression as "the machine was busy" would
     // be worse than the bug it replaced.
-    let realMassRegression = Some(rep 2171 2032 139 0 0)
+    let realMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1053,7 +1056,7 @@ let ``AUTOMATION-294: a SIGABRTed host is an abort even when it wrote a CLEAN re
     // that never reached its own exit describes the part of the suite it got through, and
     // outcome 2 ("a report showing zero failures beats the exit code") would have called
     // that a pass.
-    let partialButClean = Some(rep 812 812 0 0 0)
+    let partialButClean = rep 812 812 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1071,7 +1074,7 @@ let ``AUTOMATION-294: the dirty-shutdown flake (exit 7) is STILL green — no re
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
     // swallowed it, every dirty shutdown would stop being a pass.
-    let clean = Some(rep 12 12 0 0 0)
+    let clean = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1157,7 +1160,7 @@ let ``AUTOMATION-294: an aborted project is a HostAborted ledger entry, and a fa
 let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested(Error "requested report missing"))
             false
             (TimeSpan.FromSeconds 300.0)
             (ProcessOutcome.TimedOut(
@@ -2015,7 +2018,7 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
 let ``classify: clean unfiltered zero-test report verifies nothing`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested(Some(rep 0 0 0 0 0)))
+            (ReportRequested(rep 0 0 0 0 0))
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "no tests"))
