@@ -196,7 +196,7 @@ let ``retained receipt requires equal input and keeps the new refusal`` () =
 [<InlineData("unexpected-failure", "Unexpected.fsproj")>]
 [<InlineData("unexpected-timeout", "Unexpected.fsproj")>]
 [<InlineData("no-match", "no tests verified")>]
-let ``actual completion preserves every independent refusal reason`` kind expected =
+let ``actual completion preserves every independent refusal reason`` kind (expected: string) =
     let result =
         match kind with
         | "unexpected-failure" -> TestsFailed("failure", false, TimeSpan.Zero)
@@ -239,3 +239,58 @@ let ``same-model baseline accounts untouched and no-match siblings without hidin
                           "Sibling.fsproj", TestsDeferred "input changed" ])
         |> mint (Some baseline)
     Assert.Contains(refused.FailureReasons, fun reason -> reason.Contains "input changed")
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a committed failure waits for other owned cleanup and retains its identity at the deadline`` reachDeadline =
+    let host = PluginHost.create Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker> "/tmp/fshw-owned-failure-wait"
+    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let failure = InvalidOperationException("failed-owner original failure")
+    let handler name update: PluginHandler<unit, unit> =
+        { Name = PluginName.create name
+          Init = ()
+          Update = update
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+    host.RegisterHandler(
+        handler "held-owner" (fun _ state event -> async {
+            match event with
+            | FileChanged(SourceChanged [ "hold.fs" ]) ->
+                entered.TrySetResult(()) |> ignore
+                do! release.Task |> Async.AwaitTask
+            | _ -> ()
+            return state }))
+    host.RegisterHandler(
+        handler "failed-owner" (fun _ state event -> async {
+            match event with
+            | FileChanged(SourceChanged [ "fail.fs" ]) -> return raise failure
+            | _ -> return state }))
+    host.EmitFileChanged(SourceChanged [ "hold.fs" ])
+    entered.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+    host.EmitFileChanged(SourceChanged [ "fail.fs" ])
+    Assert.True(SpinWait.SpinUntil((fun () -> not host.WorkSnapshot.Faults.IsEmpty), TimeSpan.FromSeconds 5.0))
+    let timeout = if reachDeadline then TimeSpan.FromMilliseconds 150.0 else TimeSpan.FromSeconds 5.0
+    let waiting = waitForAllTerminal host timeout CancellationToken.None
+    try
+        if reachDeadline then
+            let timedOut = Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+            Assert.Contains("failed-owner", timedOut.Message)
+            Assert.True(host.AnyPluginBusy())
+        else
+            Assert.False(waiting.Wait(TimeSpan.FromMilliseconds 150.0), "a failed sibling cannot retire still-owned cleanup")
+        release.TrySetResult(()) |> ignore
+        let settled =
+            if reachDeadline then waitForAllTerminal host (TimeSpan.FromSeconds 5.0) CancellationToken.None
+            else waiting
+        let actual = Assert.Throws<FsHotWatch.PluginWorkOwner.WorkFailedException>(fun () -> settled.GetAwaiter().GetResult())
+        Assert.Equal("failed-owner", actual.Name)
+        Assert.Same(failure, actual.Failure)
+        Assert.False(host.AnyPluginBusy())
+    finally
+        release.TrySetResult(()) |> ignore
+        Assert.True(SpinWait.SpinUntil((fun () -> not (host.AnyPluginBusy())), TimeSpan.FromSeconds 5.0))

@@ -1,7 +1,6 @@
 module FsHotWatch.Tests.OperationWatchdogTests
 
 open System
-open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.OperationWatchdog
@@ -175,7 +174,7 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
     use w =
         new Watchdog(
             TimeSpan.FromSeconds(1.0),
-            heartbeatEvery = TimeSpan.FromHours(1.0), // suppress heartbeat noise here
+            heartbeatEvery = TimeSpan.Zero, // every completed tick publishes a receipt
             now = (fun () -> clock.Value),
             log = logged.Add,
             tick = TimeSpan.FromMilliseconds(20.0)
@@ -188,11 +187,15 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
     let overrunsSoFar () =
         logged |> Seq.filter (fun l -> l.StartsWith("operation exceeded")) |> Seq.toList
 
-    // Poll rather than sleep a fixed time: the 20ms tick can be delayed under
-    // parallel-suite CPU pressure. Once seen, let a few more ticks pass and assert
-    // it stays at exactly one — once per episode, not once per tick.
-    waitUntil (fun () -> not (overrunsSoFar ()).IsEmpty) 5000
-    Thread.Sleep(200)
+    // A heartbeat is emitted after the tick evaluates the in-flight op. Two
+    // receipts at the advanced clock prove that a later tick actually exercised
+    // duplicate suppression; elapsed wall time alone cannot witness that tick.
+    let observedWedgedTicks () =
+        logged
+        |> Seq.filter (fun line -> line = "heartbeat: in-flight wedged-rpc running 100s")
+        |> Seq.length
+
+    waitUntil (fun () -> observedWedgedTicks () >= 2 && not (overrunsSoFar ()).IsEmpty) 5000
 
     let overruns = overrunsSoFar ()
     test <@ overruns.Length = 1 @>
@@ -240,16 +243,18 @@ let ``Watchdog does not emit overrun for an op that ends before threshold`` () =
     use w =
         new Watchdog(
             TimeSpan.FromSeconds(60.0),
-            heartbeatEvery = TimeSpan.FromHours(1.0),
+            heartbeatEvery = TimeSpan.Zero,
             now = (fun () -> clock.Value),
             log = logged.Add,
             tick = TimeSpan.FromMilliseconds(20.0)
         )
 
     let token = w.Begin "fast-op"
-    Thread.Sleep(150) // clock never advances → never wedged
+    // Observe a tick while the op is still in flight and below the threshold.
+    // An empty log after a sleep could also mean the timer never ran.
+    waitUntil (fun () -> logged |> Seq.contains "heartbeat: in-flight fast-op running 0s") 5000
     w.End token
-    Thread.Sleep(100)
+    test <@ List.isEmpty w.State.InFlight @>
 
     test <@ logged |> Seq.forall (fun l -> not (l.StartsWith("operation exceeded"))) @>
 
