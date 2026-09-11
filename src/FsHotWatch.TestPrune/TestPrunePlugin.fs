@@ -440,7 +440,12 @@ let private invalidateLegacyRatchetOutput (db: Database) (coverageOutput: string
 
         pending
 
-let private mapProjectRatchetCoverage (conn: Microsoft.Data.Sqlite.SqliteConnection) (transaction: Microsoft.Data.Sqlite.SqliteTransaction) (repoRoot: string) (xml: string) =
+let private mapProjectRatchetCoverage
+    (conn: Microsoft.Data.Sqlite.SqliteConnection)
+    (transaction: Microsoft.Data.Sqlite.SqliteTransaction)
+    (repoRoot: string)
+    (xml: string)
+    =
     let rows = parseCobertura xml
     use lookup = conn.CreateCommand()
     lookup.Transaction <- transaction
@@ -1503,8 +1508,10 @@ type TestPruneState =
         AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
         AnalysisCohortFiles: Set<AbsFilePath>
     }
+
     interface IEarnedEvidenceState with
         member this.EarnedEvidence = this.Earned
+
     interface IAnalysisEvidenceState with
         member this.AnalysisEvidence = this.AnalysisReceipt
 
@@ -1555,8 +1562,10 @@ module TestRunInputs =
     let ofState (modelGeneration: int64 option) expectedProjects (state: TestPruneState) : TestRunInputs =
         { ModelGeneration = modelGeneration
           HasOwnedBaseline =
-              state.Earned
-              |> Option.exists (fun evidence -> Some evidence.Generation = modelGeneration && EarnedEvidence.coversProjects expectedProjects evidence)
+            state.Earned
+            |> Option.exists (fun evidence ->
+                Some evidence.Generation = modelGeneration
+                && EarnedEvidence.coversProjects expectedProjects evidence)
           Debt = state.Debt
           FullSuiteRequested = state.FullSuiteRequested
           AffectedTests = state.AffectedTests
@@ -1754,7 +1763,12 @@ type TestPruneMsg =
     | ImpactRunRequested
     | RuntimeCoverageFailed of CoverageIngestFailure
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
-    | CommandTestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch * reply: Tasks.TaskCompletionSource<string> * response: string
+    | CommandTestsFinished of
+        started: TestRunStarted *
+        completed: TestRunCompleted *
+        launch: TestRunLaunch *
+        reply: Tasks.TaskCompletionSource<string> *
+        response: string
     | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     | TestHostUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
@@ -2819,11 +2833,14 @@ let internal classifyTestOutcome
         match evidence with
         | ReportRequested(Ok proof) ->
             let report = Ctrf.VerdictReport.summary proof
+
             if report.Failed > 0 || report.Other > 0 then
                 TestsFailed(output, wasFiltered, elapsed)
             elif report.Total = 0 then
-                if wasFiltered then TestsNoMatch(output, elapsed)
-                else TestsErrored "requested report contains zero tests for an unfiltered run — nothing verified"
+                if wasFiltered then
+                    TestsNoMatch(output, elapsed)
+                else
+                    TestsErrored "requested report contains zero tests for an unfiltered run — nothing verified"
             else
                 TestsPassed(output, wasFiltered, elapsed)
         | ReportRequested(Error reason) ->
@@ -3231,7 +3248,11 @@ let parseFailedTests (output: string) : (string * string * string) list =
 /// `CoveredWholeProject` and clears everything. A rule that let a skip block a class
 /// here would be stricter than the whole-project path it is a refinement of.
 let internal passedTestsOfReport (json: string) : Set<string * string> =
-    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3260,7 +3281,11 @@ let internal passedTestsOfReport (json: string) : Set<string * string> =
             |> Set.ofList
 
 let internal passedClassesOfReport (json: string) : Set<string> =
-    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3327,7 +3352,11 @@ let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set
 /// the sample rather than shrinking recall's denominator to the rows that happened to
 /// parse.
 let internal failedTestsOfReport (json: string) : (string * string) list option =
-    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
+    match
+        Ctrf.tryVerdictReport json
+        |> Result.map Ctrf.VerdictReport.summary
+        |> Result.toOption
+    with
     | None -> None
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -4165,7 +4194,12 @@ let private executeTests
                                     // elapsed/wasFiltered, so it never lowers a
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
-                                elif zeroTestsUnderFilter && (match reportEvidence with NoReportRequested -> true | _ -> false) then
+                                elif
+                                    zeroTestsUnderFilter
+                                    && (match reportEvidence with
+                                        | NoReportRequested -> true
+                                        | _ -> false)
+                                then
                                     // Not a failure — per project, a filter selecting
                                     // nothing is not that project's fault, so it is never
                                     // reported as one. Its own case (rather than a passing
@@ -4812,6 +4846,7 @@ let internal createWithLaunchDeadline
 
     // Load immutable owner inputs once. Unreadable debt is distinct from empty.
     let loadedQueue = PendingVerification.load repoRoot
+
     let ledgerUnreadableReason =
         match loadedQueue with
         | PendingVerification.LoadedQueue.Loaded _ -> None
@@ -4840,17 +4875,21 @@ let internal createWithLaunchDeadline
         match loadRuntimeCoverageObligations repoRoot with
         | Ok obligations -> obligations, false
         | Error reason ->
-            Logging.warn "test-prune" $"Runtime coverage obligations are unreadable: {reason}; full-suite recovery required"
+            Logging.warn
+                "test-prune"
+                $"Runtime coverage obligations are unreadable: {reason}; full-suite recovery required"
+
             Map.empty, true
 
     // A failed persistence/publication must leave a restart-visible unknown-debt
     // marker. Only successful owner publication may remove it in Finalize.
-    let debtPublicationPath = Path.Combine(FsHwPaths.root repoRoot, "test-prune", "owner-publication-pending")
+    let debtPublicationPath =
+        Path.Combine(FsHwPaths.root repoRoot, "test-prune", "owner-publication-pending")
+
     let interruptedPublication = File.Exists debtPublicationPath
+
     let armDebtWrite () =
-        FsHwPaths.atomicWriteAllText
-            debtPublicationPath
-            "verification owner publication in progress"
+        FsHwPaths.atomicWriteAllText debtPublicationPath "verification owner publication in progress"
 
     let coverageIngestFailed (ctx: PluginCtx<TestPruneMsg>) failure =
         armRuntimeCoverageUnknownDebt
@@ -4913,6 +4952,7 @@ let internal createWithLaunchDeadline
 
     let owedDescription (debt: VerificationDebt) =
         let queued = Set.count debt.PendingQueue
+
         if debt.RecoveryOutstanding then
             $"an UNREADABLE verification ledger + {queued} newly-queued symbol(s)"
         else
@@ -4921,9 +4961,11 @@ let internal createWithLaunchDeadline
             | None -> $"{queued} symbol(s) awaiting verification"
 
     let enqueuePending symbols (state: TestPruneState) =
-        if List.isEmpty symbols then state
+        if List.isEmpty symbols then
+            state
         else
             let revision = state.Debt.Revision + 1L
+
             { state with
                 Debt =
                     { state.Debt with
@@ -4934,7 +4976,7 @@ let internal createWithLaunchDeadline
                             ||> List.fold (fun versions symbol -> Map.add symbol revision versions) } }
 
     let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
-        match ctx.ProjectGraph.ObserveModel () with
+        match ctx.ProjectGraph.ObserveModel() with
         | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
         | _ -> None
 
@@ -4943,7 +4985,9 @@ let internal createWithLaunchDeadline
 
     let markRunLaunched (state: TestPruneState) =
         let symbols = Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
-        { state with PendingAges = bumpSeedAges state.PendingAges (Set.toList symbols) }
+
+        { state with
+            PendingAges = bumpSeedAges state.PendingAges (Set.toList symbols) }
 
     let expectedRuntimeCoverageProjects =
         match testConfigs, coveragePaths with
@@ -4992,10 +5036,15 @@ let internal createWithLaunchDeadline
         // source. This is bounded evidence carried across one destructive boundary,
         // not permanent false-positive coupling.
         let preRebuildSymbols =
-            Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols) |> Set.toList
+            Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
+            |> Set.toList
 
         let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
-        let newlyOwedLiterals = priorLiteralSeeds |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
+
+        let newlyOwedLiterals =
+            priorLiteralSeeds
+            |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
+
         let state = enqueuePending newlyOwedLiterals state
 
         let state =
@@ -5047,7 +5096,8 @@ let internal createWithLaunchDeadline
         // (e.g. carried across a restart, or left behind by an Aborted/failed
         // run); they must keep selecting tests until a covering run passes.
         let symbols =
-            Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols) |> Set.toList
+            Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
+            |> Set.toList
 
         let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
 
@@ -5246,8 +5296,11 @@ let internal createWithLaunchDeadline
                 $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
 
         if not (Map.isEmpty unrunnable) then
-            let projects = UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
-            Logging.warn "test-prune"
+            let projects =
+                UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
+
+            Logging.warn
+                "test-prune"
                 $"{Map.count unrunnable} symbol(s) remain owed to unconfigured test projects {projects}: {describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
 
         // Keep the in-memory hot view aligned with the durable queue so the
@@ -5326,7 +5379,9 @@ let internal createWithLaunchDeadline
                 { flushedState.Debt with
                     PendingQueue = Set.difference flushedState.Debt.PendingQueue uncovered
                     RuntimeObligations =
-                        mergeRuntimeCoverageObligations flushedState.Debt.RuntimeObligations runtimeSelection.ProjectsByFile }
+                        mergeRuntimeCoverageObligations
+                            flushedState.Debt.RuntimeObligations
+                            runtimeSelection.ProjectsByFile }
             ChangedSymbols = remainingSymbols
             AffectedTests = Analyzed affectedTests
             ChangedSymbolsAllUncovered = allChangesUncovered
@@ -5346,7 +5401,11 @@ let internal createWithLaunchDeadline
             { PendingQueue = initialQueue
               SymbolRevisions = initialQueue |> Seq.map (fun symbol -> symbol, 0L) |> Map.ofSeq
               Revision = 0L
-              RecoveryOutstanding = ledgerUnreadableReason.IsSome || failuresUnreadable || runtimeUnreadable || interruptedPublication
+              RecoveryOutstanding =
+                ledgerUnreadableReason.IsSome
+                || failuresUnreadable
+                || runtimeUnreadable
+                || interruptedPublication
               Baseline = initialBaseline
               RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects initialRuntimeObligations }
           Freshness = FileFreshness.load repoRoot
@@ -5437,6 +5496,7 @@ let internal createWithLaunchDeadline
             //    `tests.projects` grew re-earns it. Same shape as 150.
             let scopeIsFullSuite = inputs.FullSuiteRequested
             let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
+
             let baselineInvalid =
                 match baselineInvalidReason inputs.Debt with
                 | Some reason -> Some reason
@@ -5492,7 +5552,8 @@ let internal createWithLaunchDeadline
             // state at completion time) because mid-run BatchChecked flushes
             // mutate both; the synchronous TestsFinished handler commits ONLY
             // these symbols and leaves mid-run arrivals queued for the rerun.
-            let launchedSymbols = Set.union inputs.Debt.PendingQueue (Set.ofList inputs.ChangedSymbols)
+            let launchedSymbols =
+                Set.union inputs.Debt.PendingQueue (Set.ofList inputs.ChangedSymbols)
 
             // advance the poisoned-seed counters HERE, at the launch of
             // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
@@ -6336,14 +6397,16 @@ let internal createWithLaunchDeadline
                                         Tasks.TaskCreationOptions.RunContinuationsAsynchronously
                                     )
 
-                                let admission = ctx.EnqueueExclusiveIntent "tests" None (
-                                    RunTestsRequested(
-                                        { OnlyFailed = onlyFailed
-                                          Projects = projectFilter },
-                                        filter,
-                                        reply
-                                    )
-                                )
+                                let admission =
+                                    ctx.EnqueueExclusiveIntent
+                                        "tests"
+                                        None
+                                        (RunTestsRequested(
+                                            { OnlyFailed = onlyFailed
+                                              Projects = projectFilter },
+                                            filter,
+                                            reply
+                                        ))
 
                                 // Bounded await: the reply resolves
                                 // when the run finishes — behind the test-prune
@@ -6356,9 +6419,9 @@ let internal createWithLaunchDeadline
                                         return! reply.Task |> Async.AwaitTask
                                     }
                                     |> Async.StartAsTask
+
                                 let! winner =
-                                    Tasks.Task.WhenAny(result, Tasks.Task.Delay(waitForResultMs))
-                                    |> Async.AwaitTask
+                                    Tasks.Task.WhenAny(result, Tasks.Task.Delay(waitForResultMs)) |> Async.AwaitTask
 
                                 if winner = (result :> Tasks.Task) then
                                     return! result |> Async.AwaitTask
@@ -6383,45 +6446,64 @@ let internal createWithLaunchDeadline
     { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
       Init = initialState
       PrepareCommit =
-        Some(fun prior candidate -> async {
-            let changed =
-                prior.Debt <> candidate.Debt
-                || prior.OutstandingFailures <> candidate.OutstandingFailures
-                || prior.Freshness <> candidate.Freshness
-                || File.Exists debtPublicationPath
-            if changed then
-                armDebtWrite ()
-                if not candidate.Debt.RecoveryOutstanding then
-                    PendingVerification.save repoRoot candidate.Debt.PendingQueue
-                    OutstandingFailure.save repoRoot candidate.OutstandingFailures
-                    saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
-                    match candidate.Debt.Baseline with
-                    | Some baseline -> FullSuiteBaseline.save repoRoot baseline
-                    | None -> ()
-                FileFreshness.save repoRoot candidate.Freshness
-            return
-                { Finalize = async {
+        Some(fun prior candidate ->
+            async {
+                let changed =
+                    prior.Debt <> candidate.Debt
+                    || prior.OutstandingFailures <> candidate.OutstandingFailures
+                    || prior.Freshness <> candidate.Freshness
+                    || File.Exists debtPublicationPath
+
+                if changed then
+                    armDebtWrite ()
+
                     if not candidate.Debt.RecoveryOutstanding then
-                        if prior.Debt.RecoveryOutstanding && File.Exists(runtimeCoverageRecoveryPath repoRoot) then
-                            File.Delete(runtimeCoverageRecoveryPath repoRoot)
-                        if File.Exists debtPublicationPath then File.Delete debtPublicationPath
-                    match candidate.ScopeReply with
-                    | Some(fullSuite, reply) ->
-                        let scope = if fullSuite then "full" else "impact"
-                        reply.TrySetResult(JsonSerializer.Serialize({| scope = scope |})) |> ignore
-                    | None -> ()
-                    match candidate.RunReply with
-                    | Some(reply, response) -> reply.TrySetResult(response) |> ignore
-                    | None -> ()
-                  } }
-        })
+                        PendingVerification.save repoRoot candidate.Debt.PendingQueue
+                        OutstandingFailure.save repoRoot candidate.OutstandingFailures
+                        saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
+
+                        match candidate.Debt.Baseline with
+                        | Some baseline -> FullSuiteBaseline.save repoRoot baseline
+                        | None -> ()
+
+                    FileFreshness.save repoRoot candidate.Freshness
+
+                return
+                    { Finalize =
+                        async {
+                            if not candidate.Debt.RecoveryOutstanding then
+                                if
+                                    prior.Debt.RecoveryOutstanding
+                                    && File.Exists(runtimeCoverageRecoveryPath repoRoot)
+                                then
+                                    File.Delete(runtimeCoverageRecoveryPath repoRoot)
+
+                                if File.Exists debtPublicationPath then
+                                    File.Delete debtPublicationPath
+
+                            match candidate.ScopeReply with
+                            | Some(fullSuite, reply) ->
+                                let scope = if fullSuite then "full" else "impact"
+                                reply.TrySetResult(JsonSerializer.Serialize({| scope = scope |})) |> ignore
+                            | None -> ()
+
+                            match candidate.RunReply with
+                            | Some(reply, response) -> reply.TrySetResult(response) |> ignore
+                            | None -> ()
+                        } }
+            })
       Update =
         fun ctx state event ->
             async {
                 let modelGeneration = observeModelGeneration ctx
+
                 let state =
-                    if state.AnalysisModelGeneration <> modelGeneration
-                       && (state.AnalysisModelGeneration.IsSome || not state.PendingAnalysis.IsEmpty || not state.AnalysisFiles.IsEmpty) then
+                    if
+                        state.AnalysisModelGeneration <> modelGeneration
+                        && (state.AnalysisModelGeneration.IsSome
+                            || not state.PendingAnalysis.IsEmpty
+                            || not state.AnalysisFiles.IsEmpty)
+                    then
                         // Pending compiler results belong to their captured model. Retire
                         // them before any build/cohort flush can write a different graph.
                         // Verification debt survives: rediscovery earns no test coverage.
@@ -6434,43 +6516,68 @@ let internal createWithLaunchDeadline
                             AnalysisReceipt = None
                             Earned = None
                             PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
-                    else state
+                    else
+                        state
 
                 let rejectStaleAnalysis () =
-                    if not runnableProjects.IsEmpty then enqueueImpact ctx
+                    if not runnableProjects.IsEmpty then
+                        enqueueImpact ctx
+
                     { state with
                         AnalysisReceipt = None
                         Earned = None
                         PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
 
                 match event with
-                | PluginEvent.FileChecked result when result.ModelGeneration.IsSome && result.ModelGeneration <> modelGeneration ->
+                | PluginEvent.FileChecked result when
+                    result.ModelGeneration.IsSome && result.ModelGeneration <> modelGeneration
+                    ->
                     return rejectStaleAnalysis ()
-                | PluginEvent.BatchChecked batch when batch.ModelGeneration.IsSome && batch.ModelGeneration <> modelGeneration ->
+                | PluginEvent.BatchChecked batch when
+                    batch.ModelGeneration.IsSome && batch.ModelGeneration <> modelGeneration
+                    ->
                     return rejectStaleAnalysis ()
                 | Custom(ScopeRequested(fullSuite, reply)) ->
                     let scope = if fullSuite then "full" else "impact"
                     Logging.info "test-prune" $"Scope set to {scope} for subsequent runs in this daemon session"
-                    return { state with FullSuiteRequested = fullSuite; ScopeReply = Some(fullSuite, reply) }
+
+                    return
+                        { state with
+                            FullSuiteRequested = fullSuite
+                            ScopeReply = Some(fullSuite, reply) }
                 | Custom(RuntimeCoverageFailed _) ->
-                    return { state with Debt = { state.Debt with RecoveryOutstanding = true } }
+                    return
+                        { state with
+                            Debt =
+                                { state.Debt with
+                                    RecoveryOutstanding = true } }
                 | PluginEvent.FileChanged change ->
                     let files =
                         match change with
                         | SourceChanged paths ->
                             (state.AnalysisFiles, paths)
                             ||> List.fold (fun outcomes path ->
-                                let absolute = if Path.IsPathRooted path then path else Path.Combine(repoRoot, path)
+                                let absolute =
+                                    if Path.IsPathRooted path then
+                                        path
+                                    else
+                                        Path.Combine(repoRoot, path)
+
                                 Map.remove (AbsFilePath.create absolute) outcomes)
                         | ProjectChanged _
                         | SolutionChanged -> Map.empty
-                    return { state with AnalysisReceipt = None; AnalysisFiles = files }
+
+                    return
+                        { state with
+                            AnalysisReceipt = None
+                            AnalysisFiles = files }
                 | PluginEvent.FileChecked result ->
                     let state =
                         { state with
                             AnalysisModelGeneration = result.ModelGeneration
                             AnalysisReceipt = None
                             AnalysisCohortFiles = Set.add result.File state.AnalysisCohortFiles }
+
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
@@ -6509,7 +6616,11 @@ let internal createWithLaunchDeadline
                         )
 
                         { state with
-                            AnalysisFiles = Map.add result.File (AnalysisFileEvidence.fromResult result (Error detail)) state.AnalysisFiles
+                            AnalysisFiles =
+                                Map.add
+                                    result.File
+                                    (AnalysisFileEvidence.fromResult result (Error detail))
+                                    state.AnalysisFiles
                             UnanalyzableFiles =
                                 Map.add
                                     relPath
@@ -6787,7 +6898,11 @@ let internal createWithLaunchDeadline
                             return
                                 { newState with
                                     Freshness = updatedFreshness
-                                    AnalysisFiles = Map.add result.File (AnalysisFileEvidence.fromResult result (Ok ())) newState.AnalysisFiles }
+                                    AnalysisFiles =
+                                        Map.add
+                                            result.File
+                                            (AnalysisFileEvidence.fromResult result (Ok()))
+                                            newState.AnalysisFiles }
                         | Error msg ->
                             // On analysis failure the file must NOT be dropped: a
                             // dropped file contributes no symbols, a change to it diffs
@@ -6834,26 +6949,41 @@ let internal createWithLaunchDeadline
                         return state
                     | Ok flushedState ->
                         let flushedState =
-                            match event, ctx.ProjectGraph.ObserveCheckableFiles () with
-                            | PluginEvent.BatchChecked batch, Some (modelGeneration, modelFiles) ->
+                            match event, ctx.ProjectGraph.ObserveCheckableFiles() with
+                            | PluginEvent.BatchChecked batch, Some(modelGeneration, modelFiles) ->
                                 // An attempted file with no completion cannot reuse an earlier
                                 // outcome from the same model generation.
                                 let outcomes =
                                     (flushedState.AnalysisFiles, batch.Files)
                                     ||> List.fold (fun files file ->
-                                        if Set.contains file flushedState.AnalysisCohortFiles then files
-                                        else Map.remove file files)
+                                        if Set.contains file flushedState.AnalysisCohortFiles then
+                                            files
+                                        else
+                                            Map.remove file files)
+
                                 let currentGeneration = observeModelGeneration ctx
+
                                 let receipt =
-                                    if batch.ModelGeneration = currentGeneration && currentGeneration = Some modelGeneration then
-                                        AnalysisEvidence.fromCompleted currentGeneration modelFiles runnableProjects outcomes
-                                    else None
+                                    if
+                                        batch.ModelGeneration = currentGeneration
+                                        && currentGeneration = Some modelGeneration
+                                    then
+                                        AnalysisEvidence.fromCompleted
+                                            currentGeneration
+                                            modelFiles
+                                            runnableProjects
+                                            outcomes
+                                    else
+                                        None
+
                                 { flushedState with
                                     AnalysisReceipt = receipt
                                     AnalysisFiles = outcomes
                                     AnalysisCohortFiles = Set.empty }
                             | PluginEvent.BatchChecked _, None ->
-                                { flushedState with AnalysisReceipt = None; AnalysisCohortFiles = Set.empty }
+                                { flushedState with
+                                    AnalysisReceipt = None
+                                    AnalysisCohortFiles = Set.empty }
                             | _ -> flushedState
 
                         // ── DRAIN THE PENDING QUEUE ────────────────
@@ -6869,7 +6999,10 @@ let internal createWithLaunchDeadline
                         // ledger leaves the in-memory queue empty because we cannot name
                         // what it held, and reading that as "nothing to drain" lets a
                         // corrupt sidecar run ZERO tests and still go green.
-                        if nothingOwed flushedState.Debt && Set.isEmpty flushedState.PendingForceRunProjects then
+                        if
+                            nothingOwed flushedState.Debt
+                            && Set.isEmpty flushedState.PendingForceRunProjects
+                        then
                             return flushedState
                         else
                             match testConfigs with
@@ -6906,12 +7039,17 @@ let internal createWithLaunchDeadline
                                         (runTestsWithImpact
                                             ctx
                                             configs
-                                            (TestRunInputs.ofState (observeModelGeneration ctx) runnableProjects drainedState)
+                                            (TestRunInputs.ofState
+                                                (observeModelGeneration ctx)
+                                                runnableProjects
+                                                drainedState)
                                             hasCachedResults
                                             forceRunProjects)
                                 with
                                 | Claimed ->
-                                    Logging.info "test-prune" $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
 
                                     return markRunLaunched drainedState
                                 | SlotBusy when bootScan && flushedState.FullSuiteRequested ->
@@ -6928,7 +7066,9 @@ let internal createWithLaunchDeadline
                                     return
                                         { flushedState with
                                             BootScanDebtDuringFullRun =
-                                                Set.union flushedState.BootScanDebtDuringFullRun flushedState.Debt.PendingQueue }
+                                                Set.union
+                                                    flushedState.BootScanDebtDuringFullRun
+                                                    flushedState.Debt.PendingQueue }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -7028,6 +7168,7 @@ let internal createWithLaunchDeadline
                             // Stash the fanout so the rerun runs it (don't lose a
                             // mid-run dependency change).
                             enqueueImpact ctx
+
                             return
                                 { state with
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
@@ -7076,7 +7217,10 @@ let internal createWithLaunchDeadline
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                (TestRunInputs.ofState (observeModelGeneration ctx) runnableProjects launchState)
+                                                (TestRunInputs.ofState
+                                                    (observeModelGeneration ctx)
+                                                    runnableProjects
+                                                    launchState)
                                                 hasCachedResults
                                                 forceRunProjects)
                                     with
@@ -7090,8 +7234,10 @@ let internal createWithLaunchDeadline
                                             "BuildSucceeded: tests slot already held — queueing re-run"
 
                                         enqueueImpact ctx
+
                                         return
-                                            { stateWithAffected with PendingForceRunProjects = forceRunProjects }
+                                            { stateWithAffected with
+                                                PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected
@@ -7259,11 +7405,12 @@ let internal createWithLaunchDeadline
                     // pending-verification.json unverified. `verifiedGreen` is `Verified`
                     // only, so a project that ran nothing can no longer retire anything.
                     let modelMatches = launch.ModelGeneration = observeModelGeneration ctx
+
                     let aborted =
-                        not modelMatches ||
-                        match completed.Outcome with
-                        | Aborted _ -> true
-                        | Normal -> false
+                        not modelMatches
+                        || match completed.Outcome with
+                           | Aborted _ -> true
+                           | Normal -> false
 
                     let projectPassed (proj: string) =
                         match Map.tryFind proj completed.Results with
@@ -7284,17 +7431,19 @@ let internal createWithLaunchDeadline
                                 let sameRevision =
                                     let current = state.Debt.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
                                     let launched = launch.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
+
                                     current = launched
                                     || (Set.contains s bootScanCandidates && not (Set.contains s launch.Symbols))
-                                sameRevision &&
-                                match Map.tryFind s launch.CoveringProjectsBySymbol with
-                                | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
-                                | Some _ -> true
-                                | None ->
-                                    db.QueryAffectedTests [ s ]
-                                    |> List.map (fun t -> t.TestProject)
-                                    |> Set.ofList
-                                    |> Set.forall projectPassed)
+
+                                sameRevision
+                                && match Map.tryFind s launch.CoveringProjectsBySymbol with
+                                   | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
+                                   | Some _ -> true
+                                   | None ->
+                                       db.QueryAffectedTests [ s ]
+                                       |> List.map (fun t -> t.TestProject)
+                                       |> Set.ofList
+                                       |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info
@@ -7351,11 +7500,18 @@ let internal createWithLaunchDeadline
                             Debt =
                                 { state.Debt with
                                     PendingQueue = Set.difference state.Debt.PendingQueue committedSymbols
-                                    SymbolRevisions = state.Debt.SymbolRevisions |> Map.filter (fun symbol _ -> not (Set.contains symbol committedSymbols))
+                                    SymbolRevisions =
+                                        state.Debt.SymbolRevisions
+                                        |> Map.filter (fun symbol _ -> not (Set.contains symbol committedSymbols))
                                     RecoveryOutstanding = state.Debt.RecoveryOutstanding && not recovered
                                     RuntimeObligations =
-                                        if aborted then state.Debt.RuntimeObligations
-                                        else retireRuntimeCoverageObligations state.Debt.RuntimeObligations launch.RuntimeProjectsByFile projectPassed } }
+                                        if aborted then
+                                            state.Debt.RuntimeObligations
+                                        else
+                                            retireRuntimeCoverageObligations
+                                                state.Debt.RuntimeObligations
+                                                launch.RuntimeProjectsByFile
+                                                projectPassed } }
 
                     // the full-suite WATERMARK. Written when a full-suite
                     // run has ACCOUNTED for every configured project: passed, or red with
@@ -7380,8 +7536,13 @@ let internal createWithLaunchDeadline
                                 { RunId = completed.RunId
                                   EarnedAt = DateTime.UtcNow
                                   Projects = runnableProjects }
-                            { state with Debt = { state.Debt with Baseline = Some baseline } }
-                        else state
+
+                            { state with
+                                Debt =
+                                    { state.Debt with
+                                        Baseline = Some baseline } }
+                        else
+                            state
 
                     // The in-memory hot view must shed ONLY the committed symbols,
                     // never the whole list — symbols left in the queue (mid-run
@@ -7397,7 +7558,8 @@ let internal createWithLaunchDeadline
                         + (if state.Debt.RecoveryOutstanding then 1 else 0)
 
                     let earned =
-                        if not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) then None
+                        if not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) then
+                            None
                         else
                             let candidate =
                                 match completed.Verification with
@@ -7405,9 +7567,11 @@ let internal createWithLaunchDeadline
                                     pendingObligations = 0
                                     && completed.Outcome = Normal
                                     && launch.ZeroSelection <> ZeroSelection.NotAZero
-                                    && launch.ModelGeneration = observeModelGeneration ctx ->
+                                    && launch.ModelGeneration = observeModelGeneration ctx
+                                    ->
                                     state.Earned
-                                    |> Option.filter (fun evidence -> Some evidence.Generation = observeModelGeneration ctx)
+                                    |> Option.filter (fun evidence ->
+                                        Some evidence.Generation = observeModelGeneration ctx)
                                 | _ ->
                                     EarnedEvidence.fromCompletion
                                         started.RunId
@@ -7417,23 +7581,28 @@ let internal createWithLaunchDeadline
                                         pendingObligations
                                         state.Earned
                                         completed
-                            candidate |> Option.map (
+
+                            candidate
+                            |> Option.map (
                                 EarnedEvidence.authorizeSameInputReceipt
                                     evidenceReceipt.RunId
                                     evidenceReceipt.InputTreeHash
                                     currentInputTree
-                                    state.Earned)
+                                    state.Earned
+                            )
 
                     let state = { state with Earned = earned }
 
                     let queueAfterCommit = state.Debt.PendingQueue
                     let remainingChangedSymbols = queueAfterCommit |> Set.toList
+
                     let unrunnableProjects =
                         remainingChangedSymbols
                         |> List.collect (fun symbol -> db.QueryAffectedTests [ symbol ])
                         |> List.map (fun test -> test.TestProject)
                         |> Set.ofList
                         |> fun covering -> Set.difference covering runnableProjects
+
                     let pendingDescription =
                         if Set.isEmpty unrunnableProjects then
                             $"{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
@@ -7793,6 +7962,7 @@ let internal createWithLaunchDeadline
                     // publication. The framework delivers them afterward; each selects
                     // against this newly committed state, not a launch-time mirror.
                     recordRunOutcome testResults
+
                     return
                         { state with
                             RunReply =
@@ -7815,7 +7985,9 @@ let internal createWithLaunchDeadline
                         { state with
                             EvidenceReceipt = None
                             Earned = None
-                            RunReply = reply |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
+                            RunReply =
+                                reply
+                                |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
                 | Custom(TestHostUnavailable(reason, reply)) ->
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
@@ -7826,10 +7998,14 @@ let internal createWithLaunchDeadline
                         { state with
                             EvidenceReceipt = None
                             Earned = None
-                            RunReply = reply |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
+                            RunReply =
+                                reply
+                                |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
                 | Custom(RunTestsRequested(selection, filter, reply)) when ctx.IsRunning "tests" ->
-                    ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply)) |> ignore
+                    ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply))
+                    |> ignore
+
                     return state
                 | Custom(RunTestsRequested(selection, filter, reply)) ->
                     let allConfigs = testConfigs |> Option.defaultValue []
@@ -7881,7 +8057,9 @@ let internal createWithLaunchDeadline
 
                     match configsResult with
                     | Error msg ->
-                        return { state with RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
+                        return
+                            { state with
+                                RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
                     | Ok configs when configs.IsEmpty ->
                         // Name what was asked for and what exists. A bare
                         // "no matching test projects" is unactionable for the
@@ -7899,7 +8077,9 @@ let internal createWithLaunchDeadline
                                 $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
                             | None -> "no matching test projects"
 
-                        return { state with RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
+                        return
+                            { state with
+                                RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
                     | Ok configs ->
                         // Launched from the mailbox so it is serialised with every other
                         // launch site and holds the `RunExclusive "tests"` slot for its whole
@@ -7909,7 +8089,9 @@ let internal createWithLaunchDeadline
                         | SlotBusy ->
                             // Selection will be resolved again after the predecessor
                             // commits; only the request is queued, never these configs.
-                            ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply)) |> ignore
+                            ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply))
+                            |> ignore
+
                             return state
 
                 | _ -> return state

@@ -812,6 +812,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
 [<Fact(Timeout = 20000)>]
 let ``repeated Running reports do not create owned work`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
+
     let handler =
         { Name = PluginName.create "running-twice"
           Init = ()
@@ -833,6 +834,7 @@ let ``repeated Running reports do not create owned work`` () =
     waitUntil (fun () -> host.CompletedDispatches() = 2L) 12000
     test <@ host.CompletedDispatches() = 2L @>
     test <@ not (host.AnyPluginBusy()) @>
+
     waitForAllTerminal host (TimeSpan.FromSeconds 1.0) System.Threading.CancellationToken.None
     |> fun task -> task.GetAwaiter().GetResult()
 
@@ -1468,6 +1470,7 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
         System.Threading.Tasks.TaskCompletionSource<unit>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
         )
+
     let release =
         System.Threading.Tasks.TaskCompletionSource<unit>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously

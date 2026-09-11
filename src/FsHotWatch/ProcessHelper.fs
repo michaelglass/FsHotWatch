@@ -752,6 +752,26 @@ module ProcessBounds =
         { Timeout = timeout
           LaunchDeadline = Threading.Timeout.InfiniteTimeSpan }
 
+/// Retire ownership only after positive cleanup; preserve both failures when an
+/// operation and its containment cleanup fail independently.
+let internal settleOwnedProcess
+    (primaryFailure: exn option)
+    (terminate: unit -> unit)
+    (reportLeak: exn -> unit)
+    (release: unit -> unit)
+    =
+    try
+        terminate ()
+    with cleanupError ->
+        reportLeak cleanupError
+
+        match primaryFailure with
+        | Some failure ->
+            raise (AggregateException("Process operation and containment cleanup failed.", failure, cleanupError))
+        | None -> reraise ()
+
+    release ()
+
 /// THE spawn. Polls `HasExited` (never a single blocking `WaitForExit(-1)`, which
 /// a machine sleep turns into a permanent wait) and ALWAYS bounds the post-exit
 /// drain (never an unbounded `Task.WaitAll` on the redirected streams, which a
@@ -990,18 +1010,14 @@ let runProcessTo
             primaryFailure <- Some failure
             reraise ()
     finally
-        try
-            owned.Terminate()
-        with cleanupError ->
-            ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (cleanupError.ToString())
-
-            match primaryFailure with
-            | Some failure ->
-                raise (AggregateException("Process operation and containment cleanup failed.", failure, cleanupError))
-            | None -> reraise ()
-
-        ProcessRegistry.untrack proc
-        owned.Dispose()
+        settleOwnedProcess
+            primaryFailure
+            owned.Terminate
+            (fun cleanupError ->
+                ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (cleanupError.ToString()))
+            (fun () ->
+                ProcessRegistry.untrack proc
+                owned.Dispose())
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
 /// caller that only wants the child's verdict and its capture should use.

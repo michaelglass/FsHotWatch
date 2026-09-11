@@ -86,7 +86,8 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
 let private publishCleanInvocation (invocationId: string) (root: string) =
     let tree = TreeHash.compute root []
 
-    FsHotWatch.Cli.Verdict.create BaselineFixtures.model
+    FsHotWatch.Cli.Verdict.create
+        BaselineFixtures.model
         FsHotWatch.Cli.Verdict.Check
         (BaselineFixtures.reportOf (FullSuite 1))
         tree
@@ -855,7 +856,8 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
         let tree = TreeHash.compute root []
 
         let verdict =
-            FsHotWatch.Cli.Verdict.create BaselineFixtures.model
+            FsHotWatch.Cli.Verdict.create
+                BaselineFixtures.model
                 FsHotWatch.Cli.Verdict.Confirm
                 (BaselineFixtures.reportOf (FullSuite 1))
                 ({ Hash = tree.Hash

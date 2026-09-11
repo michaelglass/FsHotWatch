@@ -111,7 +111,8 @@ type private Spec =
     }
 
 let private build (s: Spec) : Verdict.Verdict =
-    Verdict.create BaselineFixtures.model
+    Verdict.create
+        BaselineFixtures.model
         s.Command
         { Scope = s.Scope
           RunId = s.RunId
@@ -547,7 +548,11 @@ let ``a truncated verdict file is Unreadable, never a green`` () =
     withTempDir "verdict-torn" (fun root ->
         makeRepo root
         Directory.CreateDirectory(FsHwPaths.root root) |> ignore
-        File.WriteAllText(Verdict.path root, """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":1,"counts":{"discovered":1,"loaded":1,"optionsMapped":1,"registered":1},"reasonCode":null},"outcome":{"kind":"gr""")
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":1,"counts":{"discovered":1,"loaded":1,"optionsMapped":1,"registered":1},"reasonCode":null},"outcome":{"kind":"gr"""
+        )
 
         match Verdict.read root with
         | Verdict.Reading.Unreadable _ -> ()
@@ -1892,7 +1897,8 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
                 | _ -> []
 
-            TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+            TestHelpers.publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 root
                 []
                 mode
@@ -1999,7 +2005,8 @@ let private publishConfirm
         | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
         | _ -> []
 
-    TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+    TestHelpers.publishVerdict
+        (modelEvidence [ BaselineFixtures.runId ])
         root
         []
         CheckVerdict.Confirmation
@@ -2089,7 +2096,8 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
     // `IpcOutputTests` (daemon) and `RunOnceOutputTests` (`--run-once`).
     withTempDir "verdict-167-returns-code" (fun root ->
         let publishedFor (outcome: CheckVerdict.CheckOutcome) =
-            TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+            TestHelpers.publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 root
                 []
                 CheckVerdict.InnerLoop
@@ -5720,7 +5728,8 @@ let ``create refuses a no-test-suite green beside a scope that says tests ran`` 
             Outcome = Verdict.Green CheckVerdict.Baseline.NoTestSuite }
 
     let attempt () =
-        Verdict.create BaselineFixtures.model
+        Verdict.create
+            BaselineFixtures.model
             spec.Command
             (BaselineFixtures.reportOf spec.Scope)
             spec.Tree
@@ -5790,8 +5799,12 @@ let ``a v2 green without its completed project model is refused on read`` () =
         let json = serializeSpec (greenVerdict "sha256:model" 1)
         let document = System.Text.Json.Nodes.JsonNode.Parse(json).AsObject()
         document.Remove("projectModel") |> ignore
-        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Verdict.path root)) |> ignore
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Verdict.path root))
+        |> ignore
+
         System.IO.File.WriteAllText(Verdict.path root, document.ToJsonString())
+
         match Verdict.read root with
         | Verdict.Reading.Unreadable reason -> test <@ reason.Contains("PROJECT MODEL UNAVAILABLE") @>
         | other -> failwithf "Expected refused model-free green, got %A" other)
@@ -5803,8 +5816,10 @@ let ``durable suite verdicts refuse a partial clean report`` () =
         let runId = Guid.NewGuid()
         let dir = Ctrf.runDir root runId
         Directory.CreateDirectory dir |> ignore
+
         File.WriteAllText(
             Path.Combine(dir, "Lib.Tests" + Ctrf.ReportSuffix),
             """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
         )
+
         Assert.Empty(Verdict.suiteVerdicts root (Some runId)))

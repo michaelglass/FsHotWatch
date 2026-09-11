@@ -772,12 +772,13 @@ let private completedAnalysisDiagnosticsJson () =
         {| count = 0
            files = Map.empty<string, string>
            unchecked = 0
-           daemonPhases = ([||] : string array)
+           daemonPhases = ([||]: string array)
            projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
            modelReceipts =
-               [ {| runId = (null : string)
-                    modelGeneration = 1L
-                    refusals = ([] : string list) |} ] |})
+            [ {| runId = (null: string)
+                 modelGeneration = 1L
+                 refusals = ([]: string list) |} ] |}
+    )
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }

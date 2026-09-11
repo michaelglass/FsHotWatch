@@ -22,13 +22,15 @@ let payload (observation: Observation) : obj =
     let countPayload =
         counts
         |> Option.map (fun counts ->
-            box {| discovered = counts.Discovered
+            box
+                {| discovered = counts.Discovered
                    loaded = counts.Loaded
                    optionsMapped = counts.OptionsMapped
                    registered = counts.Registered |})
         |> Option.defaultValue null
 
-    box {| schema = Schema
+    box
+        {| schema = Schema
            status = status
            generation = generation |> Option.map box |> Option.defaultValue null
            counts = countPayload
@@ -43,7 +45,11 @@ let tryRead (root: JsonElement) : Observation option =
 
     let text name =
         field name
-        |> Option.bind (fun value -> if value.ValueKind = JsonValueKind.String then Some(value.GetString()) else None)
+        |> Option.bind (fun value ->
+            if value.ValueKind = JsonValueKind.String then
+                Some(value.GetString())
+            else
+                None)
 
     let number name =
         field name
@@ -52,9 +58,11 @@ let tryRead (root: JsonElement) : Observation option =
                 match value.TryGetInt64() with
                 | true, number -> Some number
                 | _ -> None
-            else None)
+            else
+                None)
 
-    if root.ValueKind <> JsonValueKind.Object || text "schema" <> Some Schema then None
+    if root.ValueKind <> JsonValueKind.Object || text "schema" <> Some Schema then
+        None
     else
         match text "status", number "generation" with
         | Some "unobserved", None -> Some Observation.Unobserved
@@ -69,11 +77,17 @@ let tryRead (root: JsonElement) : Observation option =
                         | true, number -> Some number
                         | _ -> None
                     | _ -> None
+
                 match count "discovered", count "loaded", count "optionsMapped", count "registered" with
                 | Some discovered, Some loaded, Some mapped, Some registered ->
                     let observation =
-                        ofCompleted generation
-                            { Discovered = discovered; Loaded = loaded; OptionsMapped = mapped; Registered = registered }
+                        ofCompleted
+                            generation
+                            { Discovered = discovered
+                              Loaded = loaded
+                              OptionsMapped = mapped
+                              Registered = registered }
+
                     match status, observation with
                     | "available", Observation.Available _ -> Some observation
                     | "unavailable", Observation.Unavailable(_, reason) when text "reasonCode" = Some(reasonCode reason) ->

@@ -1473,7 +1473,8 @@ let ``verdict admission waits while the real loader seam is between clear and co
             loader.Resume()
             discovery.Value.GetAwaiter().GetResult()
 
-            Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () -> runningVerdictWait.GetAwaiter().GetResult())
+            Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () ->
+                runningVerdictWait.GetAwaiter().GetResult())
             |> ignore
 
             test <@ not ordinaryWaitCalled @>
@@ -1573,7 +1574,8 @@ let ``verdict admission restarts when discovery begins after the host wait start
             if secondAttemptLoads then
                 verdictWait.GetAwaiter().GetResult()
             else
-                Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () -> verdictWait.GetAwaiter().GetResult())
+                Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () ->
+                    verdictWait.GetAwaiter().GetResult())
                 |> ignore
         finally
             hostWaitCompletion.TrySetResult(()) |> ignore
@@ -1701,11 +1703,14 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             rediscovery.Value.GetAwaiter().GetResult()
 
             if rediscoverAfterCapture then
-                let failure = Assert.ThrowsAny<Exception>(fun () -> runningScan.GetAwaiter().GetResult())
+                let failure =
+                    Assert.ThrowsAny<Exception>(fun () -> runningScan.GetAwaiter().GetResult())
+
                 let cause =
                     match failure with
                     | :? AggregateException as aggregate -> aggregate.Flatten().InnerExceptions |> Seq.exactlyOne
                     | other -> other
+
                 let refused = Assert.IsType<InvalidOperationException>(cause)
                 test <@ refused.Message.Contains("invalidated before scan publication") @>
 
@@ -1746,7 +1751,9 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
                 | :? InvalidOperationException when rediscoverAfterCapture -> ()
                 | :? AggregateException as failure when
                     rediscoverAfterCapture
-                    && (failure.Flatten().InnerExceptions |> Seq.forall (fun cause -> cause :? InvalidOperationException)) ->
+                    && (failure.Flatten().InnerExceptions
+                        |> Seq.forall (fun cause -> cause :? InvalidOperationException))
+                    ->
                     ()))
 
 [<Fact(Timeout = 15000)>]
@@ -1818,8 +1825,10 @@ let ``verdict admission refuses a discovered model that registered no projects``
             test <@ reason = expected @>
         | observation -> failwithf "Expected unavailable model, got %A" observation
 
-        let failure = Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () ->
-            daemon.WaitForDiscoveryAdmission().GetAwaiter().GetResult() |> ignore)
+        let failure =
+            Assert.Throws<FsHotWatch.ProjectModel.UnavailableException>(fun () ->
+                daemon.WaitForDiscoveryAdmission().GetAwaiter().GetResult() |> ignore)
+
         test <@ failure.Observation = daemon.ProjectModelObservation() @>)
 
 [<Fact(Timeout = 15000)>]

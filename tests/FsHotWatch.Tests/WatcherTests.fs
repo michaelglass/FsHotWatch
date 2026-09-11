@@ -641,7 +641,10 @@ let ``coalesced native events discover signatures and exclude generated sources`
         use watcher =
             FileWatcher.createWithFactories tmpDir changes.Add [] 0.05 retry native inertSystem polling
 
-        let notify = coalesced |> Option.defaultWith (fun () -> failwith "native callback was not registered")
+        let notify =
+            coalesced
+            |> Option.defaultWith (fun () -> failwith "native callback was not registered")
+
         notify srcDir
         test <@ changes.Contains(SourceChanged [ implementation ]) @>
         test <@ changes.Contains(SourceChanged [ signature ]) @>

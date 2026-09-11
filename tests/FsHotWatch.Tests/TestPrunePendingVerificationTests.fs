@@ -871,12 +871,26 @@ open FsHotWatch.ProcessHelper
 
 let private rep total passed failed skipped other =
     let rows =
-        [ for index in 1 .. passed do yield {| name = $"Fixture.passed{index}"; status = "passed" |}
-          for index in 1 .. skipped do yield {| name = $"Fixture.skipped{index}"; status = "skipped" |} ]
+        [ for index in 1..passed do
+              yield
+                  {| name = $"Fixture.passed{index}"
+                     status = "passed" |}
+          for index in 1..skipped do
+              yield
+                  {| name = $"Fixture.skipped{index}"
+                     status = "skipped" |} ]
+
     System.Text.Json.JsonSerializer.Serialize(
         {| results =
-            {| summary = {| tests = total; passed = passed; failed = failed; skipped = skipped; pending = 0; other = other |}
-               tests = rows |} |})
+            {| summary =
+                {| tests = total
+                   passed = passed
+                   failed = failed
+                   skipped = skipped
+                   pending = 0
+                   other = other |}
+               tests = rows |} |}
+    )
     |> FsHotWatch.Ctrf.tryVerdictReport
 
 let private isFailed result =
@@ -1392,9 +1406,7 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``a symbol covered only by an unconfigured project stays owed``
-    ()
-    =
+let ``a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
     // set of projects fshw is configured to run. A symbol covered only by an unconfigured
     // project can never be proven green: its covering project never executes, so it never
@@ -1436,6 +1448,7 @@ let ``a symbol covered only by an unconfigured project stays owed``
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
         Assert.Contains("Lib.orphan", queue)
+
         match host.GetStatus("test-prune") with
         | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
         | other -> Assert.Fail($"unrunnable debt must deny green and name its project: {other}"))
@@ -2022,5 +2035,6 @@ let ``classify: clean unfiltered zero-test report verifies nothing`` () =
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "no tests"))
+
     Assert.True(TestResult.isErrored result)
     Assert.False(TestResult.verifiedGreen result)

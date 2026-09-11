@@ -316,8 +316,14 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     member _.WithCurrent<'T>((epoch, snapshot): int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
         lock stateGate (fun () ->
             let expected = snapshot |> Option.map (fun counts -> epoch, counts)
+
             if pendingAttempts <> 0 || completed <> expected then
-                raise (InvalidOperationException($"The captured project model generation {epoch} was invalidated before scan publication."))
+                raise (
+                    InvalidOperationException(
+                        $"The captured project model generation {epoch} was invalidated before scan publication."
+                    )
+                )
+
             write ())
 
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
@@ -938,23 +944,47 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         // change provokes while a check is already waiting — is daemon wall time no
         // plugin owns. One record per batch, on every exit.
         use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
+
         let captureBatchModel () =
             ctx.Discovery.Capture(fun epoch ->
                 let projects = ctx.Graph.GetAllProjects()
+
                 {| Epoch = epoch
                    RegisteredProjects = ctx.Pipeline.GetRegisteredProjects()
-                   SourceFiles = projects |> List.map (fun project -> project, ctx.Graph.GetSourceFiles project) |> Map.ofList
-                   Options = projects |> List.map (fun project -> project, ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project)) |> Map.ofList
-                   Dependents = projects |> List.map (fun project -> project, ctx.Graph.GetTransitiveDependents project) |> Map.ofList
+                   SourceFiles =
+                    projects
+                    |> List.map (fun project -> project, ctx.Graph.GetSourceFiles project)
+                    |> Map.ofList
+                   Options =
+                    projects
+                    |> List.map (fun project -> project, ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project))
+                    |> Map.ofList
+                   Dependents =
+                    projects
+                    |> List.map (fun project -> project, ctx.Graph.GetTransitiveDependents project)
+                    |> Map.ofList
                    Tiers = ctx.Graph.GetParallelTiers() |})
 
         let! initialModel = captureBatchModel ()
         let mutable batchModel = initialModel
-        let projectOptions project = batchModel.Options |> Map.tryFind (AbsProjectPath.create project) |> Option.flatten
-        let sourceFilesFor project = batchModel.SourceFiles |> Map.tryFind project |> Option.defaultValue []
-        let dependentsFor project = batchModel.Dependents |> Map.tryFind project |> Option.defaultValue []
-        let publishCurrent write = ctx.Discovery.WithCurrent(batchModel.Epoch, write)
-        let modelGeneration () = snd batchModel.Epoch |> Option.map (fun _ -> fst batchModel.Epoch)
+
+        let projectOptions project =
+            batchModel.Options
+            |> Map.tryFind (AbsProjectPath.create project)
+            |> Option.flatten
+
+        let sourceFilesFor project =
+            batchModel.SourceFiles |> Map.tryFind project |> Option.defaultValue []
+
+        let dependentsFor project =
+            batchModel.Dependents |> Map.tryFind project |> Option.defaultValue []
+
+        let publishCurrent write =
+            ctx.Discovery.WithCurrent(batchModel.Epoch, write)
+
+        let modelGeneration () =
+            snd batchModel.Epoch |> Option.map (fun _ -> fst batchModel.Epoch)
+
         let mutable sourceFiles = []
         let mutable projFiles = []
         let mutable hasSolution = false
@@ -1095,6 +1125,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     |> List.map AbsProjectPath.create
                     |> List.collect dependentsFor
                     |> List.distinct
+
                 allSourceFiles <- (allSourceFiles @ checkableFilesOf refreshedProjects) |> List.distinct
 
             | _ ->
@@ -1130,7 +1161,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                 allSourceFiles <-
-                    (allSourceFiles @ checkableFilesOf (batchModel.SourceFiles |> Map.keys |> Seq.toList))
+                    (allSourceFiles
+                     @ checkableFilesOf (batchModel.SourceFiles |> Map.keys |> Seq.toList))
                     |> List.distinct
 
         let batchStartedAt = System.DateTime.UtcNow
@@ -1146,14 +1178,17 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             let changedProjects =
                 absSourceFiles
-                |> List.collect (fun f -> (batchModel.SourceFiles |> Map.toList |> List.choose (fun (project, files) -> if List.contains f files then Some project else None)))
+                |> List.collect (fun f ->
+                    (batchModel.SourceFiles
+                     |> Map.toList
+                     |> List.choose (fun (project, files) -> if List.contains f files then Some project else None)))
                 |> List.distinct
 
             let changedProjectSet = Set.ofList changedProjects
 
             let dependentProjectFiles =
                 changedProjects
-                |> List.collect (fun p -> dependentsFor(p))
+                |> List.collect (fun p -> dependentsFor (p))
                 |> List.distinct
                 |> List.filter (fun p -> not (Set.contains p changedProjectSet))
                 |> checkableFilesOf
@@ -1163,7 +1198,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
-            publishCurrent (fun () -> ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
+            publishCurrent (fun () ->
+                ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
@@ -1179,7 +1215,10 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                             $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
                         publishCurrent (fun () ->
-                            let checkResult = { checkResult with ModelGeneration = modelGeneration () }
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration () }
+
                             dispatchedFiles.Add(checkResult.File)
                             ctx.Host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
@@ -1198,8 +1237,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 for proj in tier do
                     let projPath = AbsProjectPath.value proj
 
-                    let projFiles =
-                        sourceFilesFor proj |> List.filter filesToCheckSet.Contains
+                    let projFiles = sourceFilesFor proj |> List.filter filesToCheckSet.Contains
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
@@ -1334,6 +1372,7 @@ let internal waitForAllTerminalCore
                         faults
                         |> List.map (fun (name, failure) -> $"{name}: {failure.Message}")
                         |> String.concat "; "
+
                     "; committed faults awaiting settlement: " + causes
 
             match snapshot.Faults with
@@ -1381,7 +1420,8 @@ let internal waitForAllTerminalCore
             let analysisEvidence =
                 match snapshot.ProjectModel with
                 | ProjectModel.Observation.Available model ->
-                    snapshot.AnalysisEvidence |> List.filter (fun proof -> proof.Generation = model.Generation)
+                    snapshot.AnalysisEvidence
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
                 | _ -> []
 
             let satisfied =
@@ -2215,7 +2255,9 @@ let private performScan
                     epoch, projects, files, tiers)
 
             let modelGeneration = snd capturedModel |> Option.map (fun _ -> fst capturedModel)
-            let publishCurrent write = ctx.Discovery.WithCurrent(capturedModel, write)
+
+            let publishCurrent write =
+                ctx.Discovery.WithCurrent(capturedModel, write)
 
 
             // PRUNE VANISHED PATHS BEFORE SCANNING.
@@ -2330,7 +2372,10 @@ let private performScan
 
                     let emitChecked (checkResult: FileCheckResult) =
                         publishCurrent (fun () ->
-                            let checkResult = { checkResult with ModelGeneration = modelGeneration }
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration }
+
                             checkedCount <- checkedCount + 1
                             dispatchedFiles.Add(checkResult.File)
                             host.EmitFileChecked(checkResult)
@@ -2636,11 +2681,14 @@ module Daemon =
                     WorkspaceLoader.Create(toolsPath, [])
 
             let discovery =
-                DiscoveryCoordinator(publish = fun observation ->
-                    host.WorkStore.PublishProjectModelWithFiles(
-                        observation,
-                        pipeline.GetAllRegisteredFiles() |> Set.ofList
-                    ))
+                DiscoveryCoordinator(
+                    publish =
+                        fun observation ->
+                            host.WorkStore.PublishProjectModelWithFiles(
+                                observation,
+                                pipeline.GetAllRegisteredFiles() |> Set.ofList
+                            )
+                )
 
             let daemonCtRef = ref CancellationToken.None
 
