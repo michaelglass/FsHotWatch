@@ -807,43 +807,31 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
         @>
 
 [<Fact(Timeout = 20000)>]
-let ``work-cycle generation bumps once across consecutive Running reports`` () =
-    // `bumpGenerationIfStarting` bumps only on a non-Running ▸ Running EDGE, so a plugin
-    // that reports Running again with no terminal status in between must NOT bump twice.
+let ``repeated Running reports do not create owned work`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-
     let handler =
         { Name = PluginName.create "running-twice"
           Init = ()
           Update =
-            fun ctx state event ->
+            fun ctx state _ ->
                 async {
-                    match event with
-                    // ONLY Running, so the next FileChanged finds prev = Some(Running _).
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    | _ -> ()
-
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
                     return state
                 }
           Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
           PrepareCommit = None
           Teardown = None }
 
-    host.RegisterHandler(handler)
-
-    // First edge: Idle ▸ Running → generation 1.
+    host.RegisterHandler handler
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    waitUntil (fun () -> host.WorkCycleGenerations().TryFind "running-twice" = Some 1L) 12000
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
-
-    // Second report while already Running → NO second bump (stays at 1).
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-    waitForQuiescent host 12000
-    // Give the status agent a beat to apply any (non-)mutation before asserting.
-    Thread.Sleep(150)
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
+    waitUntil (fun () -> host.CompletedDispatches() = 2L) 12000
+    test <@ host.CompletedDispatches() = 2L @>
+    test <@ not (host.AnyPluginBusy()) @>
+    waitForAllTerminal host (TimeSpan.FromSeconds 1.0) System.Threading.CancellationToken.None
+    |> fun task -> task.GetAwaiter().GetResult()
 
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //
