@@ -360,7 +360,8 @@ let ``admission after caller timeout still launches and settles its work`` () =
               Completed = 0L
               Failure = None
               Evidence = None
-              AnalysisEvidence = None }
+              AnalysisEvidence = None
+              CompletedFailure = None }
         )
 
     use entered = new ManualResetEventSlim(false)
@@ -1178,7 +1179,8 @@ let ``owner transitions retain their result until actual store publication`` ope
               Completed = 0L
               Failure = None
               Evidence = None
-              AnalysisEvidence = None }
+              AnalysisEvidence = None
+              CompletedFailure = None }
         )
 
     use entered = new ManualResetEventSlim(false)

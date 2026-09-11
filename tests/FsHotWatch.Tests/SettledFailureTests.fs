@@ -13,6 +13,11 @@ open FsHotWatch.Tests.TestHelpers
 [<InlineData("current")>]
 [<InlineData("new-model")>]
 [<InlineData("new-inputs")>]
+[<InlineData("new-project")>]
+[<InlineData("deleted-source")>]
+[<InlineData("unreadable-source")>]
+[<InlineData("ignored-event")>]
+[<InlineData("cached-failure")>]
 let ``public verdict wait reports current failed build without inventing test evidence`` (transition: string) =
     withTempDir "failed-build-verdict-wait" (fun root ->
         let source = System.IO.Path.Combine(root, "Source.fs")
@@ -24,14 +29,22 @@ let ``public verdict wait reports current failed build without inventing test ev
         let buildScript = System.IO.Path.Combine(root, "build.sh")
         let testScript = System.IO.Path.Combine(root, "test.sh")
         let testStarted = System.IO.Path.Combine(root, "test-started")
+        let buildStarted = System.IO.Path.Combine(root, "build-started")
         System.IO.File.WriteAllText(source, "module Source\nlet value = 1\n")
-        System.IO.File.WriteAllText(buildScript, $"echo '{source}(1,1): error FS0001: current-build-refusal'\nexit 1\n")
+        System.IO.File.WriteAllText(buildScript, $"touch '{buildStarted}'\necho '{source}(1,1): error FS0001: current-build-refusal'\nexit 1\n")
         System.IO.File.WriteAllText(testScript, $"touch '{testStarted}'\n")
-        let host = PluginHost.create (Unchecked.defaultof<_>) root
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
         let available generation =
             FsHotWatch.ProjectModel.ofCompleted generation
                 { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 }
         host.WorkStore.PublishProjectModelWithFiles(available 1L, Set.singleton (AbsFilePath.create source))
+        host.SetProjectGraph
+            { ProjectGraphAccessor.none with
+                ObserveModel = fun () -> host.WorkSnapshot.ProjectModel
+                ObserveCheckableFiles = fun () -> host.WorkSnapshot.ProjectModelFiles
+                GetAllProjects = fun () -> [ project ]
+                GetCanonicalDllPath = fun path -> graph.GetCanonicalDllPath(AbsProjectPath.create path) }
         let tests =
             FsHotWatch.TestPrune.TestPrunePlugin.create
                 ":memory:" root
@@ -47,7 +60,20 @@ let ``public verdict wait reports current failed build without inventing test ev
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
                 None None None None []
         host.RegisterHandler tests
-        host.RegisterHandler(BuildPlugin.create "sh" buildScript [] graph [] None [] (Some 5))
+        let build = BuildPlugin.create "sh" buildScript [] graph [] None [] (Some 5)
+        if transition = "cached-failure" then
+            // A failed legacy cache entry carries diagnostics, not launch proof.
+            // Fresh outputs make this exercise cache admission, not freshness bypass.
+            let output = graph.GetCanonicalDllPath(AbsProjectPath.create project) |> Option.get
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName output) |> ignore
+            System.IO.File.WriteAllText(output, "fixture assembly")
+            let key = build.CacheKey.Value build.Init (FileChanged(SourceChanged [ source ])) |> Option.get
+            cache.Set { Plugin = "build"; File = None } key
+                { CacheKey = key
+                  Errors = [ "<build>", [ FsHotWatch.ErrorLedger.ErrorEntry.error "cached build failure" ] ]
+                  Status = FsHotWatch.TaskCache.CachedRunFailed("cached build failure", RunVerdict.create "cached build failure" TimeSpan.Zero)
+                  EmittedEvents = [ FsHotWatch.TaskCache.CachedBuildCompleted(BuildFailed [ "cached build failure" ]) ] }
+        host.RegisterHandler build
         host.EmitFileChanged(SourceChanged [ source ])
         waitUntil
             (fun () ->
@@ -55,6 +81,7 @@ let ``public verdict wait reports current failed build without inventing test ev
                 && (host.GetAllStatuses() |> Map.exists (fun name status ->
                     name = "build" && match status with | Failed _ -> true | _ -> false)))
             5000
+        Assert.True(System.IO.File.Exists buildStarted, "a cached failure must execute a current build before owning failure authority")
         // Exercise the shared artifact admission path after a real failing command.
         // Invalid artifacts must prevent a test process from being started.
         let reply = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -66,6 +93,15 @@ let ``public verdict wait reports current failed build without inventing test ev
         | "new-model" ->
             host.WorkStore.PublishProjectModelWithFiles(available 2L, Set.singleton (AbsFilePath.create source))
         | "new-inputs" -> System.IO.File.WriteAllText(source, "module Source\nlet value = 2\n")
+        | "new-project" -> System.IO.File.AppendAllText(project, "<!-- changed build input -->")
+        | "deleted-source" -> System.IO.File.Delete source
+        | "unreadable-source" ->
+            System.IO.File.Delete source
+            System.IO.Directory.CreateDirectory source |> ignore
+        | "ignored-event" ->
+            let previous = host.WorkSnapshot.CompletedEvents
+            host.EmitFileChanged SolutionChanged
+            waitUntil (fun () -> not host.WorkSnapshot.IsBusy && host.WorkSnapshot.CompletedEvents > previous) 5000
         | _ -> ()
         let rpcConfig: FsHotWatch.Ipc.DaemonRpcConfig =
             { Host = host
@@ -82,10 +118,36 @@ let ``public verdict wait reports current failed build without inventing test ev
               InvalidateCache = fun () -> System.Threading.Tasks.Task.FromResult(())
               GetUncheckedCount = fun () -> 0 }
         let target = FsHotWatch.Ipc.DaemonRpcTarget rpcConfig
-        if transition = "current" then
+        if List.contains transition [ "current"; "ignored-event"; "cached-failure" ] then
             let wire = target.WaitForComplete(1000).GetAwaiter().GetResult()
             Assert.Contains("current-build-refusal", wire)
             Assert.Contains("failed", wire)
+            // Drive the public CLI publication path from real RPC diagnostics and
+            // the actual no-run test-scope response. Neither command may start tests.
+            for mode in [ FsHotWatch.Cli.CheckVerdict.InnerLoop; FsHotWatch.Cli.CheckVerdict.Confirmation ] do
+                let readRun () =
+                    host.RunCommand(FsHotWatch.Cli.IpcParsing.TestScopeCommand, [||])
+                    |> Async.RunSynchronously
+                    |> Option.get
+                    |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+                let exitCode =
+                    FsHotWatch.Cli.IpcOutput.pollAndRender
+                        FsHotWatch.Cli.ProgressRenderer.Agent mode root [] (fun _ -> []) false
+                        (fun () -> "idle")
+                        (fun () -> target.WaitForComplete(1000).GetAwaiter().GetResult())
+                        target.GetStatus
+                        (fun () -> target.GetDiagnostics(""))
+                        readRun
+                        (fun () -> FsHotWatch.Cli.IpcParsing.ReachUnavailable "no tests ran")
+                        (fun () -> failwith "a current failed build must not request test execution")
+                        (fun () -> failwith "a current failed build must not rescan")
+                Assert.Equal(1, exitCode)
+                match FsHotWatch.Cli.Verdict.read root with
+                | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+                    Assert.Equal(1, verdict.ExitCode)
+                    Assert.True(verdict.RunId.IsNone)
+                    Assert.False(FsHotWatch.Cli.IpcParsing.TestScope.isFullSuite verdict.Scope)
+                | reading -> failwithf "expected a published explicit failed verdict, got %A" reading
         else
             // An earlier red is not authority to settle a different model/tree.
             Assert.Throws<TimeoutException>(fun () -> target.WaitForComplete(1000).GetAwaiter().GetResult() |> ignore)

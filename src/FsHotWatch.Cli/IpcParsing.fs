@@ -1122,3 +1122,35 @@ module DaemonEvidence =
             | _ -> DaemonEvidence.NotServed
         with :? JsonException ->
             DaemonEvidence.NotServed
+
+/// A settled build failure can stop confirm escalation without pretending tests
+/// ran. Recheck the readable input identity at the consumer boundary as well.
+let internal hasCurrentCompletedFailure repoRoot (json: string) =
+    try
+        use doc = JsonDocument.Parse(json)
+        let root = doc.RootElement
+        match root.TryGetProperty("projectModel"), root.TryGetProperty("completedFailures") with
+        | (true, model), (true, failures) when failures.ValueKind = JsonValueKind.Array ->
+            match FsHotWatch.ProjectModelWire.tryRead model, FsHotWatch.TreeHash.tryReadableIdentity repoRoot with
+            | Some(FsHotWatch.ProjectModel.Observation.Available current), Some identity ->
+                failures.EnumerateArray()
+                |> Seq.exists (fun proof ->
+                    if proof.ValueKind <> JsonValueKind.Object then false
+                    else
+                        let text name = tryGetStringProp proof name
+                        match proof.TryGetProperty("modelGeneration") with
+                        | true, generation when generation.ValueKind = JsonValueKind.Number ->
+                            match generation.TryGetInt64() with
+                            | true, value ->
+                                value = current.Generation
+                                && text "schema" = Some "fshw-completed-failure-v1"
+                                && text "owner" = Some "build"
+                                && text "inputTreeHash" = Some identity
+                                && (text "reason" |> Option.exists (String.IsNullOrWhiteSpace >> not))
+                            | _ -> false
+                        | _ -> false)
+            | _ -> false
+        | _ -> false
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> false

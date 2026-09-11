@@ -414,6 +414,14 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                statuses = statuses
                daemonPhases = daemonPhases
                projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
+               completedFailures =
+                config.Host.CurrentCompletedFailures(modelSnapshot)
+                |> List.map (fun proof ->
+                    {| schema = "fshw-completed-failure-v1"
+                       owner = "build"
+                       modelGeneration = proof.Generation
+                       inputTreeHash = proof.InputTreeHash
+                       reason = proof.Reason |})
                modelReceipts =
                 [ yield!
                       modelSnapshot.Evidence
