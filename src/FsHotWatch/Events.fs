@@ -766,6 +766,71 @@ module internal EarnedEvidence =
 type internal IEarnedEvidenceState =
     abstract EarnedEvidence: EarnedEvidence option
 
+/// A completed file analysis, retained without compiler trees or UI status.
+type AnalysisFileEvidence =
+    private
+        { File: AbsFilePath
+          ModelGeneration: int64 option
+          Refusals: string list }
+
+module internal AnalysisFileEvidence =
+    let fromResult (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+        let refusals =
+            [ match result.CheckResults with
+              | ParseOnly -> yield "type checking did not complete"
+              | FullCheck checked ->
+                  for diagnostic in checked.Diagnostics do
+                      if diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error then
+                          yield diagnostic.Message
+
+              match symbolAnalysis with
+              | Ok () -> ()
+              | Error reason -> yield reason ]
+
+        { File = result.File
+          ModelGeneration = result.ModelGeneration
+          Refusals = List.distinct refusals }
+
+/// Analysis-only completion explicitly carries no test run or suite coverage.
+type AnalysisEvidence =
+    private
+        { ModelGeneration: int64
+          Files: Set<AbsFilePath>
+          Refusals: string list }
+
+    member this.Generation = this.ModelGeneration
+    member this.CheckedFiles = this.Files
+    member this.FailureReasons = this.Refusals
+
+module internal AnalysisEvidence =
+    /// The expected files come from the completed model, never the observed subset.
+    /// Missing/stale outcomes are refusal evidence, not an empty successful analysis.
+    let fromCompleted
+        (modelGeneration: int64 option)
+        (expectedFiles: Set<AbsFilePath>)
+        (configuredTestProjects: Set<string>)
+        (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
+        : AnalysisEvidence option =
+        match modelGeneration with
+        | Some generation when expectedFiles.Count > 0 && configuredTestProjects.IsEmpty ->
+            let refusals =
+                [ for file in expectedFiles do
+                      match Map.tryFind file outcomes with
+                      | Some outcome when outcome.File = file && outcome.ModelGeneration = Some generation ->
+                          for reason in outcome.Refusals do
+                              yield $"{AbsFilePath.value file}: {reason}"
+                      | _ -> yield $"{AbsFilePath.value file}: no completed analysis for the current model" ]
+
+            Some
+                { ModelGeneration = generation
+                  Files = expectedFiles
+                  Refusals = refusals }
+        | _ -> None
+
+/// Published atomically with the same owner retirement as the file-analysis fold.
+type internal IAnalysisEvidenceState =
+    abstract AnalysisEvidence: AnalysisEvidence option
+
 /// Current state of the daemon's scan operation.
 type ScanState =
     /// No scan in progress or completed.

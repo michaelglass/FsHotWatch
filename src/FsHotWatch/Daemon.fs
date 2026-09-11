@@ -1286,6 +1286,12 @@ let internal waitForAllTerminalCore
                     snapshot.Evidence |> List.filter (fun proof -> proof.Generation = model.Generation)
                 | _ -> []
 
+            let analysisEvidence =
+                match snapshot.ProjectModel with
+                | ProjectModel.Observation.Available model ->
+                    snapshot.AnalysisEvidence |> List.filter (fun proof -> proof.Generation = model.Generation)
+                | _ -> []
+
             let satisfied =
                 if snapshot.IsBusy then
                     false
@@ -1296,7 +1302,7 @@ let internal waitForAllTerminalCore
                         // A completed failing/refused outcome is still an answer.
                         // Its typed receipt crosses with the model; CLI publication
                         // cannot turn its refusal reasons into a green verdict.
-                        not evidence.IsEmpty
+                        not evidence.IsEmpty || not analysisEvidence.IsEmpty
 
             if satisfied then
                 return ()

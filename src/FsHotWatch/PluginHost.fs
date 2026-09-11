@@ -269,6 +269,7 @@ type PluginHost
               // registered before the daemon installed the live graph still sees it.
               ProjectGraph =
                 { ObserveModel = fun () -> projectGraphAccessor.ObserveModel()
+                  ObserveCheckableFiles = fun () -> projectGraphAccessor.ObserveCheckableFiles()
                   GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
