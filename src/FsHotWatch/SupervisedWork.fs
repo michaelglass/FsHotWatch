@@ -5,6 +5,82 @@ open System
 open System.Threading
 open System.Threading.Tasks
 
+let defaultDeadline = TimeSpan.FromMinutes 60.0
+
+let resolveDeadline (overrideSeconds: string option) =
+    match overrideSeconds |> Option.bind (fun value -> match Int32.TryParse value with true, n when n > 0 -> Some n | _ -> None) with
+    | Some seconds -> TimeSpan.FromSeconds(float seconds)
+    | None -> defaultDeadline
+
+let ambientDeadline () =
+    Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC" |> Option.ofObj |> resolveDeadline
+
+let defaultScheduler delay expire =
+    new Timer((fun _ -> expire ()), null, delay, Timeout.InfiniteTimeSpan) :> IDisposable
+
+/// One external execution boundary for scans, batches, preprocessors and exclusive
+/// plugin workers. Deadline cancellation never retires the admitted identity;
+/// only finish may transfer it, after actual work and child cleanup have returned.
+let execute
+    (name: string)
+    (deadline: TimeSpan)
+    (schedule: TimeSpan -> (unit -> unit) -> IDisposable)
+    (onDeadline: exn -> unit)
+    (ct: CancellationToken)
+    (work: CancellationToken -> Async<'Result>)
+    (finish: Result<'Result, exn> -> (unit -> unit) -> 'Finished)
+    : Async<'Finished> =
+    async {
+        if deadline <= TimeSpan.Zero || deadline = TimeSpan.MaxValue then
+            invalidArg (nameof deadline) "Supervised work needs a finite positive deadline"
+
+        use cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct)
+        let timer =
+            try
+                Ok(schedule deadline (fun () ->
+                    try
+                        onDeadline (TimeoutException($"{name} exceeded its {deadline} work deadline"))
+                    with failure ->
+                        Logging.error name $"deadline publication failed: {failure}"
+
+                    try
+                        cancellation.CancelAsync().ContinueWith(
+                            (fun (result: Task) -> Logging.error name $"work cancellation callback failed: {result.Exception}"),
+                            TaskContinuationOptions.OnlyOnFaulted) |> ignore
+                    with :? ObjectDisposedException -> ()))
+            with failure -> Result.Error failure
+
+        match timer with
+        | Result.Error failure -> return finish (Result.Error failure) ignore
+        | Ok timer ->
+            let mutable timerDisposed = false
+            let disposeTimer () =
+                if not timerDisposed then
+                    timerDisposed <- true
+                    timer.Dispose()
+
+            try
+                return!
+                    ProcessRegistry.withChildScopeAsync cancellation.Token (fun settleChildren ->
+                        async {
+                            let! outcome =
+                                async {
+                                    try
+                                        cancellation.Token.ThrowIfCancellationRequested()
+                                        let! result = work cancellation.Token
+                                        cancellation.Token.ThrowIfCancellationRequested()
+                                        return Ok result
+                                    with failure -> return Result.Error failure
+                                }
+                            let cleanup () =
+                                try settleChildren ()
+                                finally disposeTimer ()
+                            return finish outcome cleanup
+                        })
+            finally
+                disposeTimer ()
+    }
+
 [<NoComparison; NoEquality>]
 type private Request<'Request> =
     { Id: Guid
@@ -64,9 +140,7 @@ type Queue<'State, 'Request>
             launched
             |> Option.defaultWith (fun () -> invalidOp "Owner context did not launch its worker")
 
-    let scheduleDeadline =
-        defaultArg scheduleDeadline (fun delay expire ->
-            new Timer((fun _ -> expire ()), null, delay, Timeout.InfiniteTimeSpan) :> IDisposable)
+    let scheduleDeadline = defaultArg scheduleDeadline defaultScheduler
 
     let project (core: Core<'State, 'Request>) : PluginWorkOwner.Row =
         { Name = name
@@ -126,8 +200,7 @@ type Queue<'State, 'Request>
             | Running(current, _) when current.Id = id -> { core with State = state }, ()
             | _ -> invalidOp "Work publication is foreign or already completed")
 
-    let markDeadline (request: Request<'Request>) =
-        let failure = TimeoutException($"{name} exceeded its {deadline} work deadline")
+    let markDeadline (request: Request<'Request>) (failure: exn) =
 
         task {
             try
@@ -270,48 +343,15 @@ type Queue<'State, 'Request>
         try
             let running =
                 launch (fun () ->
-                    let outcome =
-                        try
-                            let timer =
-                                scheduleDeadline deadline (fun () ->
-                                    try
-                                        markDeadline request
-                                    with failure ->
-                                        Logging.error name $"deadline publication failed: {failure}"
-                                        cancel request)
-
-                            Ok timer
-                        with failure ->
-                            Result.Error failure
-
-                    match outcome with
-                    | Result.Error failure ->
-                        Logging.error name $"deadline scheduling failed: {failure}"
-                        finish (Result.Error failure) ignore
-                    | Ok timer ->
-                        use timer = timer
-
-                        ProcessRegistry.withChildScope request.Cancellation.Token (fun settleChildren ->
-                            let outcome =
-                                try
-                                    request.Cancellation.Token.ThrowIfCancellationRequested()
-                                    // The runner itself is never canceled early: its lifetime
-                                    // covers the callback, notification and real cleanup.
-                                    let state =
-                                        work state request.Value request.Cancellation.Token (publish request.Id)
-                                        |> fun operation ->
-                                            Async.RunSynchronously(
-                                                operation,
-                                                cancellationToken = CancellationToken.None
-                                            )
-
-                                    request.Cancellation.Token.ThrowIfCancellationRequested()
-                                    Ok state
-                                with failure ->
-                                    Logging.error name $"supervised work failed: {failure}"
-                                    Result.Error failure
-
-                            finish outcome settleChildren))
+                    execute
+                        name
+                        deadline
+                        scheduleDeadline
+                        (markDeadline request)
+                        request.Cancellation.Token
+                        (fun token -> work state request.Value token (publish request.Id))
+                        finish
+                    |> fun operation -> Async.RunSynchronously(operation, cancellationToken = CancellationToken.None))
 
             running.ContinueWith(
                 (fun (task: Task) ->

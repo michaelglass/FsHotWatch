@@ -121,6 +121,7 @@ type HostSnapshot =
     private
         { Rows: Map<Guid, Row>
           Operations: Map<WorkId, string>
+          HostFailures: Map<WorkId, string * exn>
           Observers: Set<WorkId>
           Model: ProjectModel.Observation }
 
@@ -144,9 +145,10 @@ type HostSnapshot =
         this.Rows |> Map.toSeq |> Seq.sumBy (fun (_, row) -> row.Completed)
 
     member this.Faults =
-        this.Rows
+        (this.HostFailures |> Map.toList |> List.map snd) @
+        (this.Rows
         |> Map.toList
-        |> List.choose (fun (_, row) -> row.Fault |> Option.map (fun ex -> row.Name, ex))
+        |> List.choose (fun (_, row) -> row.Fault |> Option.map (fun ex -> row.Name, ex)))
 
     member this.ExecutorFaults =
         this.Rows
@@ -154,12 +156,13 @@ type HostSnapshot =
         |> List.choose (fun (_, row) -> row.ExecutorFault |> Option.map (fun ex -> row.Name, ex))
 
     member this.OperationFaults =
-        this.Rows
+        (this.HostFailures |> Map.toList |> List.map snd) @
+        (this.Rows
         |> Map.toList
         |> List.choose (fun (_, row) ->
             match row.Failure with
             | Some(OperationFailure failure) -> Some(row.Name, failure)
-            | _ -> None)
+            | _ -> None))
 
 [<NoComparison; NoEquality>]
 type private Mutation = Mutate of (HostSnapshot -> HostSnapshot * obj) * TaskCompletionSource<obj>
@@ -170,6 +173,7 @@ type Store() =
     let mutable published =
         { Rows = Map.empty
           Operations = Map.empty
+          HostFailures = Map.empty
           Observers = Set.empty
           Model = ProjectModel.Observation.Unobserved }
 
@@ -260,8 +264,16 @@ type Store() =
             let id = WorkId(Guid.NewGuid())
 
             { snapshot with
-                Operations = Map.add id name snapshot.Operations },
+                Operations = Map.add id name snapshot.Operations
+                HostFailures = snapshot.HostFailures |> Map.filter (fun failedId (failedName, _) -> failedName <> name || Map.containsKey failedId snapshot.Operations) },
             id)
+
+    member _.FailOperation(id: WorkId, failure: exn) =
+        mutate (fun snapshot ->
+            match Map.tryFind id snapshot.Operations with
+            | Some name ->
+                { snapshot with HostFailures = Map.add id (name, failure) snapshot.HostFailures }, ()
+            | None -> snapshot, ())
 
     member _.EndOperation(id: WorkId) =
         mutate (fun snapshot ->
@@ -510,6 +522,18 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
 
         for receipt in receipts do
             receipt.TrySetException(failure) |> ignore
+
+    /// Record a worker deadline without releasing its still-live capability.
+    member _.MarkRunFailure(id: WorkId, failure: exn) =
+        mutate (fun snapshot ->
+            match Map.tryFind id (entries snapshot.Phase) with
+            | Some(Exclusive _) ->
+                { snapshot with
+                    Failure =
+                        match snapshot.Failure with
+                        | Some prior -> Some prior
+                        | None -> Some(RunFailure failure) }, ()
+            | _ -> snapshot, ())
 
     member _.FailRun(id: WorkId, failure: exn) =
         mutate (fun snapshot ->
