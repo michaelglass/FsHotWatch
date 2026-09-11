@@ -222,3 +222,88 @@ type AnalyzerProvenanceBuildTests() =
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsSome)
             File.AppendAllText(Path.Combine(dependency, "Rules.fs"), "\nlet added = 2")
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
+
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("imported")>]
+    [<InlineData("indirect")>]
+    [<InlineData("initially-absent")>]
+    [<InlineData("excluded-and-removed")>]
+    [<InlineData("custom-global")>]
+    member _.``evaluated membership preserves the producer source selection``(shape: string) =
+        withTempDir "a564-evaluated-membership" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let shared = Path.Combine(root, "Shared")
+            let source filename = Path.Combine(shared, filename)
+            let add filename moduleName =
+                Directory.CreateDirectory shared |> ignore
+                File.WriteAllText(source filename, $"module {moduleName}\nlet value = 1")
+
+            if shape <> "initially-absent" then
+                add "Existing.fs" "Existing"
+
+            AnalyzerProvenanceBuildFixture.prepare
+                producer "Mini" "module MiniRules\nlet answer = 1" None false None
+
+            let projectPath = Path.Combine(producer, "Mini.fsproj")
+            let project = XElement.Load projectPath
+            let n = AnalyzerProvenanceBuildFixture.node
+            let a = AnalyzerProvenanceBuildFixture.attr
+            let selection = "../Shared/**/*.fs"
+            let items =
+                match shape with
+                | "indirect" ->
+                    n "ItemGroup" [|
+                        n "LinkedRule" [| a "Include" selection |]
+                        n "Compile" [| a "Include" "@(LinkedRule)" |]
+                    |]
+                | "excluded-and-removed" ->
+                    n "ItemGroup" [|
+                        n "Compile" [| a "Include" selection; a "Exclude" "../Shared/Excluded*.fs" |]
+                        n "Compile" [| a "Remove" "../Shared/Removed*.fs" |]
+                        n "Compile" [| a "Include" "../Shared/RemovedButRestored*.fs" |]
+                    |]
+                | "custom-global" ->
+                    n "ItemGroup" [|
+                        a "Condition" "'$(RuleFlavor)' == 'Enabled'"
+                        n "Compile" [| a "Include" selection |]
+                    |]
+                | _ -> n "ItemGroup" [| n "Compile" [| a "Include" selection |] |]
+
+            if shape = "imported" then
+                let definitions = Path.Combine(producer, "Definitions")
+                Directory.CreateDirectory definitions |> ignore
+                let imported = Path.Combine(definitions, "Linked.props")
+                (n "Project" [| items |]).Save imported
+                project.Add(n "Import" [| a "Project" "Definitions/Linked.props" |])
+            else
+                project.Add items
+
+            project.Save projectPath
+            let arguments = if shape = "custom-global" then "-p:RuleFlavor=Enabled" else ""
+            AnalyzerProvenanceBuildFixture.build producer "Mini" arguments
+            |> AnalyzerProvenanceBuildFixture.succeeds
+
+            let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(original.IsSome, $"Unchanged {shape} membership must remain reusable")
+            Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
+
+            if shape = "excluded-and-removed" then
+                add "ExcludedNew.fs" "ExcludedNew"
+                add "RemovedNew.fs" "RemovedNew"
+                Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
+                add "RemovedButRestoredNew.fs" "Restored"
+            else
+                add "Added.fs" "Added"
+
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone,
+                        $"New selected source in {shape} must invalidate the old receipt")
+            AnalyzerProvenanceBuildFixture.build producer "Mini" arguments
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            let rebuilt = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(rebuilt.IsSome)
+            Assert.NotEqual(original, rebuilt)
+
+            let added = if shape = "excluded-and-removed" then "RemovedButRestoredNew.fs" else "Added.fs"
+            File.Delete(source added)
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
