@@ -230,6 +230,8 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
     {
         /// Completed discovery identity. Unavailable or changing models cannot earn test proof.
         ObserveModel: unit -> ProjectModel.Observation
+        /// Exact checkable files published atomically with their completed model generation.
+        ObserveCheckableFiles: unit -> (int64 * Set<AbsFilePath>) option
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -247,6 +249,7 @@ module ProjectGraphAccessor =
     /// returns empty/None, so dependency-fanout consumers fall back cleanly.
     let none: ProjectGraphAccessor =
         { ObserveModel = fun () -> ProjectModel.Observation.Unobserved
+          ObserveCheckableFiles = fun () -> None
           GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
@@ -1275,6 +1278,11 @@ let internal registerHandlerWithOwner
                             let nextState =
                                 match committed with
                                 | Result.Ok candidate -> candidate
+                                | Result.Error(_, failure) when workOwner.Snapshot.ExecutorFault.IsSome ->
+                                    // Successor delivery can fail after this event retired.
+                                    // Its receipt has already settled; stop the executor
+                                    // without attempting to retire that identity again.
+                                    raise failure.Exception
                                 | Result.Error(retained, failure) ->
                                     try
                                         try
