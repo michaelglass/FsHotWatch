@@ -440,10 +440,10 @@ let private invalidateLegacyRatchetOutput (db: Database) (coverageOutput: string
 
         pending
 
-let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: string) =
+let private mapProjectRatchetCoverage (conn: Microsoft.Data.Sqlite.SqliteConnection) (transaction: Microsoft.Data.Sqlite.SqliteTransaction) (repoRoot: string) (xml: string) =
     let rows = parseCobertura xml
-    use conn = db.OpenConnection()
     use lookup = conn.CreateCommand()
+    lookup.Transaction <- transaction
 
     let normalizeSourceFile (filename: string) =
         (if Path.IsPathRooted filename then
@@ -495,7 +495,12 @@ let internal persistProjectRatchetCoverageWithMapped
     (input: CoverageInput)
     (xml: string)
     =
-    let mapped = mapProjectRatchetCoverage db repoRoot xml
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+    // Own the symbol rows from lookup through persistence. A separate lookup
+    // connection lets a concurrent graph rebuild delete these foreign keys.
+    use transaction = conn.BeginTransaction(deferred = false)
+    let mapped = mapProjectRatchetCoverage conn transaction repoRoot xml
     afterMapped ()
 
     let replaceFull =
@@ -504,10 +509,6 @@ let internal persistProjectRatchetCoverageWithMapped
         && not (symbolGraphLooksIncomplete mapped.Ingested mapped.Skipped)
 
     if replaceFull || input.Scope = CoverageRunScope.Partial then
-        use conn = db.OpenConnection()
-        ensureProjectRatchetCoverageTable conn
-        use transaction = conn.BeginTransaction()
-
         if replaceFull then
             use delete = conn.CreateCommand()
             delete.Transaction <- transaction
@@ -532,9 +533,7 @@ let internal persistProjectRatchetCoverageWithMapped
             upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
             upsert.ExecuteNonQuery() |> ignore
 
-        transaction.Commit()
-
-    ()
+    transaction.Commit()
 
 let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
     persistProjectRatchetCoverageWithMapped ignore db repoRoot input xml
