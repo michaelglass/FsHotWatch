@@ -2668,7 +2668,7 @@ let ``CSharp dependency edit remains a build input and rechecks only its FSharp 
               CacheKey = None; PrepareCommit = None; Teardown = None }
         let before = FsHotWatch.TreeHash.compute root []
         File.WriteAllText(helperSource, "public class Helper { public int Changed => 2; }")
-        Assert.NotEqual(before.Hash, (FsHotWatch.TreeHash.compute root []).Hash)
+        Assert.NotEqual<string>(before.Hash, (FsHotWatch.TreeHash.compute root []).Hash)
         (callback.Value |> Option.get) (SourceChanged [ helperSource ])
         sealedBatch.Task.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult()
         (waitForAllTerminal daemon.Host (TimeSpan.FromSeconds 5.0) CancellationToken.None).GetAwaiter().GetResult()
@@ -2722,4 +2722,4 @@ let ``cold scan with only CSharp dependency sources still notifies build without
         Assert.Equal(Some(1L, Set.empty), daemon.Host.WorkSnapshot.ProjectModelFiles)
         let before = fingerprintFsprojFiles root []
         File.SetLastWriteTimeUtc(helperProject, File.GetLastWriteTimeUtc(helperProject).AddSeconds 2.0)
-        Assert.NotEqual(before, fingerprintFsprojFiles root []))
+        Assert.NotEqual<Set<string * int64>>(before, fingerprintFsprojFiles root []))

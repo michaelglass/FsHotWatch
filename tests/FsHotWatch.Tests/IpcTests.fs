@@ -1626,3 +1626,62 @@ let ``scan waiters retain their request when recovery is queued before failure s
     test <@ not recoveryWaiter.IsCompleted @>
     recovery.SetResult(())
     recoveryWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(0)>]
+[<InlineData(1)>]
+[<InlineData(2)>]
+[<InlineData(3)>]
+let ``cache clear RPC preserves entries outside its requested filter`` (selection: int) =
+    let pipeName = $"fshw-cache-filter-{Guid.NewGuid():N}"
+    let repoRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-cache-filter-{Guid.NewGuid():N}")
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+    use cts = new CancellationTokenSource()
+    let key = ContentHash.create "unchanged-input"
+    let entries = [ "p", "a.fs"; "p", "b.fs"; "q", "a.fs"; "q", "b.fs" ]
+
+    let composite plugin file : FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = plugin
+          File = Some(FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) (System.IO.Path.Combine(repoRoot, file))) }
+
+    for plugin, file in entries do
+        cache.Set
+            (composite plugin file)
+            key
+            { CacheKey = key
+              Errors = []
+              Status = FsHotWatch.TaskCache.CachedRunCompleted(RunVerdict.create file TimeSpan.Zero)
+              EmittedEvents = [] }
+
+        test <@ (cache.TryGet (composite plugin file) key).IsSome @>
+
+    let absoluteA = System.IO.Path.Combine(repoRoot, "a.fs")
+    let filter, survivors =
+        match selection with
+        | 0 -> ClearAll, []
+        | 1 -> ClearPlugin "p", [ "q", "a.fs"; "q", "b.fs" ]
+        | 2 -> ClearFile absoluteA, [ "p", "b.fs"; "q", "b.fs" ]
+        | _ -> ClearPluginFile("p", absoluteA), [ "p", "b.fs"; "q", "a.fs"; "q", "b.fs" ]
+
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        waitForServer pipeName
+        let response = IpcClient.cacheClear pipeName filter |> Async.RunSynchronously
+        test <@ response = "ok" @>
+
+        let remaining =
+            entries
+            |> List.filter (fun (plugin, file) -> (cache.TryGet (composite plugin file) key).IsSome)
+
+        test <@ remaining = survivors @>
+    finally
+        cts.Cancel()
+
+        try
+            server.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        with :? OperationCanceledException ->
+            ()
+
+        host.Teardown()
