@@ -643,11 +643,11 @@ let internal registerHandlerWithOwner
             (fun _ -> w)
             finish
 
-    let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
+    let runExclusive (after: PluginWorkOwner.WorkId option) (key: string) (work: Async<'Msg>) : RunClaim =
         // The owner admits the exclusive obligation before its UI report.
         let claimedAt =
             lock statusLock (fun () ->
-                let claim = workOwner.TryClaim key
+                let claim = workOwner.TryClaim(key, ?after = after)
 
                 claim
                 |> Option.iter (fun (_, startedAt) -> services.ReportStatus handler.Name (Running startedAt))
@@ -676,6 +676,7 @@ let internal registerHandlerWithOwner
             SlotBusy
 
     let runExclusiveShared
+        (after: PluginWorkOwner.WorkId option)
         (key: string)
         (sharedKey: string)
         (workFor: SharedResourceState -> Async<'Msg>)
@@ -684,7 +685,7 @@ let internal registerHandlerWithOwner
         : SharedRunClaim =
         let claimedAt =
             lock statusLock (fun () ->
-                let claim = workOwner.TryClaim key
+                let claim = workOwner.TryClaim(key, ?after = after)
 
                 claim
                 |> Option.iter (fun (_, startedAt) -> services.ReportStatus handler.Name (Running startedAt))
@@ -782,8 +783,8 @@ let internal registerHandlerWithOwner
           EndSubtask = fun key -> services.EndSubtask handler.Name key
           Log = fun msg -> services.Log handler.Name msg
           CompleteWithTimeout = fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-          RunExclusive = runExclusive
-          RunExclusiveShared = runExclusiveShared
+          RunExclusive = runExclusive None
+          RunExclusiveShared = runExclusiveShared None
           IsRunning = isRunning
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }
@@ -1062,7 +1063,11 @@ let internal registerHandlerWithOwner
                     /// `cacheKeyOpt` is the same key the preceding `tryReplayCache`
                     /// lookup used (computed once per event in the dispatch loop)
                     /// — never recompute it here.
-                    let runAndCache (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
+                    let runAndCache identity (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
+                        let eventCtx =
+                            { ctx with
+                                RunExclusive = runExclusive (Some identity)
+                                RunExclusiveShared = runExclusiveShared (Some identity) }
                         async {
                             match services.TaskCache, cacheKeyOpt with
                             | Some cache, Some cacheKey ->
@@ -1140,14 +1145,14 @@ let internal registerHandlerWithOwner
                                         fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
                                       RunExclusive =
                                         fun key work ->
-                                            match runExclusive key work with
+                                            match runExclusive (Some identity) key work with
                                             | Claimed ->
                                                 launchedRunInWindow <- true
                                                 Claimed
                                             | SlotBusy -> SlotBusy
                                       RunExclusiveShared =
                                         fun key sharedKey workFor classify failureMessage ->
-                                            match runExclusiveShared key sharedKey workFor classify failureMessage with
+                                            match runExclusiveShared (Some identity) key sharedKey workFor classify failureMessage with
                                             | SharedClaimed ->
                                                 launchedRunInWindow <- true
                                                 SharedClaimed
@@ -1196,7 +1201,7 @@ let internal registerHandlerWithOwner
 
                                 return attempted |> Result.map (fun candidate -> candidate, cacheWrite)
                             | _ ->
-                                let! attempted = safeUpdate ctx state event
+                                let! attempted = safeUpdate eventCtx state event
                                 return attempted |> Result.map (fun candidate -> candidate, None)
                         }
 
@@ -1218,7 +1223,7 @@ let internal registerHandlerWithOwner
                                         if tryReplayCache event replayKeyOpt then
                                             return Result.Ok(state, None, false)
                                         else
-                                            let! result = runAndCache event state cacheKeyOpt
+                                            let! result = runAndCache identity event state cacheKeyOpt
 
                                             return
                                                 result |> Result.map (fun (candidate, write) -> candidate, write, true)
