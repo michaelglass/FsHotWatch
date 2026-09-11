@@ -77,50 +77,6 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
     prefixes
     |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal))
 
-/// Content-addressed identity of the analyzer assemblies in the configured paths.
-/// The per-file analyzer cache folds this in so that rebuilding a custom-analyzer
-/// DLL (a rule changed, or a new analyzer added) invalidates the cached per-file
-/// verdicts: keying on the analyzer PATH STRINGS alone replays stale verdicts for
-/// unchanged source when the DLL changed but its path did not, masking the
-/// new/changed rule's findings.
-///
-/// Hashes the same DLL set the loader inspects: every `*.dll` in each existing path
-/// whose filename is NOT a known-non-analyzer prefix — excluding those keeps the
-/// identity from churning on unrelated bundled-dep refreshes. Per-file digests are
-/// sorted so directory enumeration order is irrelevant. A missing path or unreadable
-/// DLL contributes a stable sentinel rather than throwing, so identity computation
-/// never crashes plugin construction.
-let internal analyzerAssemblyIdentity (prefixes: string array) (paths: string list) : string =
-    let perFile =
-        paths
-        |> List.sort
-        |> List.collect (fun path ->
-            if not (Directory.Exists(path)) then
-                [ $"%s{path}=>missing" ]
-            else
-                Directory.GetFiles(path, "*.dll")
-                |> Array.filter (fun dll ->
-                    not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
-                |> Array.map (fun dll ->
-                    let name = Path.GetFileName dll
-
-                    let contentHash =
-                        try
-                            File.ReadAllBytes dll
-                            |> System.Security.Cryptography.SHA256.HashData
-                            |> System.Convert.ToHexString
-                        with ex ->
-                            // Unreadable (transient lock, perms): a stable sentinel
-                            // keyed on the message so distinct failures stay distinct,
-                            // never a throw that aborts plugin construction.
-                            $"unreadable:%s{ex.Message}"
-
-                    $"%s{name}:%s{contentHash}")
-                |> Array.toList)
-        |> List.sort
-
-    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" perFile)
-
 /// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
 /// The SDK's constructor shape is reflected at startup (`apoCtor`); kept separate
 /// so the `None` fallback and the `Invoke`-throws recovery path are unit-testable
@@ -291,14 +247,17 @@ let internal createWithSlowHook
     // guard catches that — the cache key only invalidates stale RESULTS for the
     // loaded set, and the fail-loud guard only fires on a 0-analyzer load.
     //
-    // So track the content identity of the loaded assembly set (the same hash the
-    // cache key uses) and re-load the client at the start of a FileChecked event
-    // when the on-disk identity differs. Volatile-guarded per the plugin convention.
-    let mutable loadedAssemblyIdentity =
-        analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+    // The local materialization token decides when to reload. A validated semantic
+    // identity decides cache reuse; emitted bytes never enter that shared key.
+    let readProvenance () =
+        AnalyzerProvenance.trySnapshot (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes) analyzerPaths
+        |> Result.defaultWith (fun reason -> failwith $"Analyzer provenance unavailable: {reason}")
 
-    let reloadIfStale () =
-        let onDisk = analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+    // Empty forces the first execution to load under a validated receipt.
+    let mutable loadedAssemblyIdentity = ""
+
+    let reloadIfStale provenance =
+        let onDisk = AnalyzerProvenance.materialization provenance
 
         if onDisk <> Volatile.Read(&loadedAssemblyIdentity) then
             // Load the current set into a FRESH client and swap it in, so the added
@@ -306,6 +265,17 @@ let internal createWithSlowHook
             let fresh = Client<CliAnalyzerAttribute, CliContext>()
             let reloaded = loadInto fresh
             let reloadedCount = reloaded |> List.sumBy snd
+
+            if reloaded |> List.exists (fun (_, count) -> count = 0) then
+                failwith "Analyzer provenance was valid but a configured path loaded no analyzers"
+
+            let afterLoad = readProvenance ()
+
+            if
+                AnalyzerProvenance.materialization afterLoad <> onDisk
+                || AnalyzerProvenance.semantic afterLoad <> AnalyzerProvenance.semantic provenance
+            then
+                failwith "Analyzer inputs/output changed while loading rules"
 
             Volatile.Write(&client, fresh)
             Volatile.Write(&loadedAssemblyIdentity, onDisk)
@@ -345,8 +315,6 @@ let internal createWithSlowHook
 
                         let mutable runStarted = DateTime.UtcNow
 
-                        reloadIfStale ()
-
                         let checkResultsObj =
                             match result.CheckResults with
                             | FullCheck cr -> box cr
@@ -379,6 +347,9 @@ let internal createWithSlowHook
                                             (async {
                                                 try
                                                     let runAnalyzers (workCt: Threading.CancellationToken) =
+                                                        let provenance = readProvenance ()
+                                                        reloadIfStale provenance
+
                                                         match slowHook with
                                                         | Some h -> h ()
                                                         | None -> ()
@@ -398,10 +369,24 @@ let internal createWithSlowHook
                                                         // orphaned holding the semaphore slot.
                                                         let activeClient = Volatile.Read(&client)
 
-                                                        Async.RunSynchronously(
-                                                            activeClient.RunAnalyzersSafely(context),
-                                                            cancellationToken = workCt
-                                                        )
+                                                        let messages =
+                                                            Async.RunSynchronously(
+                                                                activeClient.RunAnalyzersSafely(context),
+                                                                cancellationToken = workCt
+                                                            )
+
+                                                        let afterAnalysis = readProvenance ()
+
+                                                        if
+                                                            AnalyzerProvenance.semantic afterAnalysis
+                                                            <> AnalyzerProvenance.semantic provenance
+                                                            || AnalyzerProvenance.materialization afterAnalysis
+                                                               <> AnalyzerProvenance.materialization provenance
+                                                        then
+                                                            failwith
+                                                                "Analyzer inputs/output changed while rules were running"
+
+                                                        messages
 
                                                     let outcome, actualCompletion =
                                                         runWithCancellableTimeoutTracked analyzerTimeout runAnalyzers
@@ -575,8 +560,7 @@ let internal createWithSlowHook
         // pure-content cache key (file source + analyzer identity + fcs-signature).
         // REPO-RELATIVE, like every other path in this key: an analyzer directory
         // inside the repository (`analyzers/`, the usual layout) named absolutely made
-        // the key workspace-specific for no analytical reason. The CONTENT of the
-        // assemblies is what decides the verdict, and that is the next slot down.
+        // the key workspace-specific. Validated producer inputs occupy the next slot.
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (
                 String.concat
@@ -586,10 +570,6 @@ let internal createWithSlowHook
                      |> List.sort)
             )
 
-        // CONTENT identity, not just the path strings — see `analyzerAssemblyIdentity`.
-        let analyzerAssemblyHash =
-            analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
-
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
             | FileChecked result ->
@@ -597,17 +577,20 @@ let internal createWithSlowHook
                 // upstream symbol changes invalidate this file's cache.
                 let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
 
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        // v4 orphans every entry written under the path-ABSOLUTE key
-                        // (v3), which could not be read in another checkout anyway.
-                        [ "plugin-version", "analyzers-merkle-v4"
-                          "analyzer-paths", analyzerPathsHash
-                          "analyzer-assemblies", analyzerAssemblyHash
-                          "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
-                          "source", result.Source
-                          "fcs-signature", fcsSignature ]
-                )
+                match
+                    AnalyzerProvenance.trySnapshot (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes) analyzerPaths
+                with
+                | Result.Error _ -> None
+                | Ok provenance ->
+                    Some(
+                        FsHotWatch.TaskCache.merkleCacheKey
+                            [ "plugin-version", "analyzers-merkle-v5"
+                              "analyzer-paths", analyzerPathsHash
+                              "analyzer-inputs", AnalyzerProvenance.semantic provenance
+                              "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
+                              "source", result.Source
+                              "fcs-signature", fcsSignature ]
+                    )
             | _ -> None
 
         Some cacheKey

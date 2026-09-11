@@ -1,0 +1,215 @@
+<Project>
+  <UsingTask TaskName="FsHotWatchAnalyzerProvenance" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)AnalyzerProvenanceTask.cs" />
+    </Task>
+  </UsingTask>
+  <PropertyGroup>
+    <_FshwTaskSource>$(MSBuildThisFileDirectory)AnalyzerProvenanceTask.cs</_FshwTaskSource>
+    <_FshwCapture>$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml</_FshwCapture>
+    <TargetsTriggeredByCompilation Condition="'$(FsHotWatchAnalyzerProvenance)' == 'true'">$(TargetsTriggeredByCompilation);_FshwRecordAnalyzerCompilation</TargetsTriggeredByCompilation>
+  </PropertyGroup>
+  <Target Name="_FshwPrepareAnalyzerProvenance" BeforeTargets="CoreCompile" DependsOnTargets="ResolveReferences;FSharpSourceCodeCompileOrder" Condition="'$(FsHotWatchAnalyzerProvenance)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_FshwOption Include="AssemblyName">
+        <Value>$(AssemblyName)</Value>
+      </_FshwOption>
+      <_FshwOption Include="BaseAddress">
+        <Value>$(BaseAddress)</Value>
+      </_FshwOption>
+      <_FshwOption Include="ChecksumAlgorithm">
+        <Value>$(PdbChecksumAlgorithm)</Value>
+      </_FshwOption>
+      <_FshwOption Include="CodePage">
+        <Value>$(CodePage)</Value>
+      </_FshwOption>
+      <_FshwOption Include="CompilerTools">
+        <Value>@(FscCompilerTools)</Value>
+      </_FshwOption>
+      <_FshwOption Include="CompressMetadata">
+        <Value>$(CompressMetadata)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Configuration">
+        <Value>$(Configuration)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DebugSymbols">
+        <Value>$(DebugSymbols)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DebugType">
+        <Value>$(DebugType)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DefineConstants">
+        <Value>$(DefineConstants)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DelaySign">
+        <Value>$(DelaySign)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Deterministic">
+        <Value>$(Deterministic)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DisabledLanguageFeatures">
+        <Value>@(DisabledLanguageFeatures)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DisabledWarnings">
+        <Value>$(NoWarn)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DocumentationFile">
+        <Value>$(DocumentationFile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="DotnetFscCompilerPath">
+        <Value>$(DotnetFscCompilerPath)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Embed">
+        <Value>@(EmbeddedFiles)</Value>
+      </_FshwOption>
+      <_FshwOption Include="EmbedAllSources">
+        <Value>$(EmbedAllSources)</Value>
+      </_FshwOption>
+      <_FshwOption Include="GenerateInterfaceFile">
+        <Value>$(GenerateInterfaceFile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="HighEntropyVA">
+        <Value>$(HighEntropyVA)</Value>
+      </_FshwOption>
+      <_FshwOption Include="KeyFile">
+        <Value>$(KeyOriginatorFile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="LCID">
+        <Value>$(LCID)</Value>
+      </_FshwOption>
+      <_FshwOption Include="LangVersion">
+        <Value>$(LangVersion)</Value>
+      </_FshwOption>
+      <_FshwOption Include="NETCoreSdkVersion">
+        <Value>$(NETCoreSdkVersion)</Value>
+      </_FshwOption>
+      <_FshwOption Include="NoFramework">
+        <Value>true</Value>
+      </_FshwOption>
+      <_FshwOption Include="NoInterfaceData">
+        <Value>$(NoInterfaceData)</Value>
+      </_FshwOption>
+      <_FshwOption Include="NoOptimizationData">
+        <Value>$(NoOptimizationData)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Nullable">
+        <Value>$(Nullable)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Optimize">
+        <Value>$(Optimize)</Value>
+      </_FshwOption>
+      <_FshwOption Include="SimpleResolution"><Value>$(SimpleResolution)</Value></_FshwOption>
+      <_FshwOption Include="OtherFlags">
+        <Value>$(OtherFlags)</Value>
+      </_FshwOption>
+      <_FshwOption Include="ParallelCompilation">
+        <Value>@(ParallelCompilation)</Value>
+      </_FshwOption>
+      <_FshwOption Include="PathMap">
+        <Value>$(PathMap)</Value>
+      </_FshwOption>
+      <_FshwOption Include="PdbFile">
+        <Value>$(PdbFile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Platform">
+        <Value>$(PlatformTarget)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Prefer32Bit">
+        <Value>$(Actual32Bit)</Value>
+      </_FshwOption>
+      <_FshwOption Include="PreferredUILang">
+        <Value>$(PreferredUILang)</Value>
+      </_FshwOption>
+      <_FshwOption Include="PublicSign">
+        <Value>$(PublicSign)</Value>
+      </_FshwOption>
+      <_FshwOption Include="RealSig">
+        <Value>$(RealSig)</Value>
+      </_FshwOption>
+      <_FshwOption Include="RefOnly">
+        <Value>$(ProduceOnlyReferenceAssembly)</Value>
+      </_FshwOption>
+      <_FshwOption Include="ReflectionFree">
+        <Value>$(ReflectionFree)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Resources">
+        <Value>@(ActualEmbeddedResources)</Value>
+      </_FshwOption>
+      <_FshwOption Include="SourceLink">
+        <Value>$(SourceLink)</Value>
+      </_FshwOption>
+      <_FshwOption Include="SubsystemVersion">
+        <Value>$(SubsystemVersion)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Tailcalls">
+        <Value>$(Tailcalls)</Value>
+      </_FshwOption>
+      <_FshwOption Include="TargetFramework">
+        <Value>$(TargetFramework)</Value>
+      </_FshwOption>
+      <_FshwOption Include="TargetProfile">
+        <Value>$(TargetProfile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="TargetType">
+        <Value>$(OutputType)</Value>
+      </_FshwOption>
+      <_FshwOption Include="ToolExe">
+        <Value>$(FscToolExe)</Value>
+      </_FshwOption>
+      <_FshwOption Include="ToolPath">
+        <Value>$(FscToolPath)</Value>
+      </_FshwOption>
+      <_FshwOption Include="TreatWarningsAsErrors">
+        <Value>$(TreatWarningsAsErrors)</Value>
+      </_FshwOption>
+      <_FshwOption Include="UseStandardResourceNames">
+        <Value>$(UseStandardResourceNames)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Utf8Output">
+        <Value>$(Utf8Output)</Value>
+      </_FshwOption>
+      <_FshwOption Include="VersionFile">
+        <Value>$(VersionFile)</Value>
+      </_FshwOption>
+      <_FshwOption Include="VisualStudioStyleErrors">
+        <Value>$(VisualStudioStyleErrors)</Value>
+      </_FshwOption>
+      <_FshwOption Include="WarnOn">
+        <Value>$(WarnOn)</Value>
+      </_FshwOption>
+      <_FshwOption Include="WarningLevel">
+        <Value>$(WarningLevel)</Value>
+      </_FshwOption>
+      <_FshwOption Include="WarningsAsErrors">
+        <Value>$(WarningsAsErrors)</Value>
+      </_FshwOption>
+      <_FshwOption Include="WarningsNotAsErrors">
+        <Value>$(WarningsNotAsErrors)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Win32IconFile">
+        <Value>$(ApplicationIcon)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Win32ManifestFile">
+        <Value>$(Win32Manifest)</Value>
+      </_FshwOption>
+      <_FshwOption Include="Win32ResourceFile">
+        <Value>$(Win32Resource)</Value>
+      </_FshwOption>
+      <_FshwImport Include="$(MSBuildAllProjects)" />
+      <_FshwExtra Include="$(_FshwTaskSource);@(_CoreCompileResourceInputs);@(ManifestNonResxWithNoCultureOnDisk);$(ApplicationIcon);$(AssemblyOriginatorKeyFile);@(CompiledLicenseFile);@(EmbeddedDocumentation);$(Win32Resource);$(Win32Manifest);$(VersionFile);$(KeyOriginatorFile);$(UseSource);$(LoadSource);$(SourceLink)" />
+    </ItemGroup>
+    <FsHotWatchAnalyzerProvenance SdkRoot="$(MSBuildToolsPath)" SdkVersion="$(NETCoreSdkVersion)" Project="$(MSBuildProjectFullPath)" Output="@(IntermediateAssembly)" CaptureFile="$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml" Sources="@(Compile)" Imports="@(_FshwImport)" ExtraInputs="@(_FshwExtra)" References="@(ReferencePath)" Options="@(_FshwOption)" Mode="capture" />
+    <ItemGroup>
+      <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml" />
+    </ItemGroup>
+  </Target>
+  <Target Name="_FshwRecordAnalyzerCompilation" Condition="'$(FsHotWatchAnalyzerProvenance)' == 'true' and '$(SkipCompilerExecution)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <FsHotWatchAnalyzerProvenance SdkRoot="$(MSBuildToolsPath)" SdkVersion="$(NETCoreSdkVersion)" Project="$(MSBuildProjectFullPath)" Output="@(IntermediateAssembly)" CaptureFile="$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml" Sources="@(Compile)" Imports="@(_FshwImport)" ExtraInputs="@(_FshwExtra)" References="@(ReferencePath)" Options="@(_FshwOption)" Mode="compiled" />
+  </Target>
+  <Target Name="_FshwPublishAnalyzerProvenance" AfterTargets="CopyFilesToOutputDirectory" Condition="'$(FsHotWatchAnalyzerProvenance)' == 'true' and '$(SkipCompilerExecution)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <FsHotWatchAnalyzerProvenance SdkRoot="$(MSBuildToolsPath)" SdkVersion="$(NETCoreSdkVersion)" Project="$(MSBuildProjectFullPath)" Output="$(TargetPath)" CaptureFile="$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml" Sources="@(Compile)" Imports="@(_FshwImport)" ExtraInputs="@(_FshwExtra)" References="@(ReferencePath)" Options="@(_FshwOption)" Mode="publish" Copies="@(ReferenceCopyLocalPaths)" OutputDirectory="$(TargetDir)" />
+  </Target>
+  <Target Name="_FshwPublishPackageProvenance" AfterTargets="CopyFilesToOutputDirectory" Condition="'$(FsHotWatchPackageProvenance)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <FsHotWatchAnalyzerProvenance Mode="packages" Project="$(MSBuildProjectFullPath)" Output="$(TargetPath)" CaptureFile="$(IntermediateOutputPath)$(MSBuildProjectName).fshw-inputs.xml" Copies="@(ReferenceCopyLocalPaths)" OutputDirectory="$(TargetDir)" />
+  </Target>
+</Project>

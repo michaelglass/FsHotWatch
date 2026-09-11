@@ -838,17 +838,31 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
 
                 emit ()
                 waitForTerminalStatus host "analyzers" 15000
-                test <@ List.isEmpty (findings ()) @>
+                test <@ findings () |> List.exists (fun entry -> entry.Message.Contains("provenance")) @>
 
                 // The downstream "add + rebuild": a real analyzer DLL set lands in the
                 // SAME dir the handler already scanned.
                 Directory.GetFiles(exampleBin, "*.dll")
-                |> Array.iter (fun f -> File.Copy(f, Path.Combine(analyzerDir, Path.GetFileName f), true))
+                |> Array.iter (fun file ->
+                    let copied = Path.Combine(analyzerDir, Path.GetFileName file)
+                    File.Copy(file, copied, true)
+                    // The successful producer receipt follows a verified copy. Its
+                    // source paths retain the actual producer; only output relocates.
+                    for suffix in [ ".fshw-analyzer.xml"; ".fshw-package.xml" ] do
+                        if File.Exists(file + suffix) then
+                            let receipt = System.Xml.Linq.XDocument.Load(file + suffix)
+                            receipt.Root.SetAttributeValue(System.Xml.Linq.XName.Get "output", copied)
+                            receipt.Save(copied + suffix))
 
                 // Poll the ledger, not the status: the plugin still reads Completed from
                 // cycle 1, so waiting on a status transition would return immediately.
                 emit ()
-                waitUntil (fun () -> not (List.isEmpty (findings ()))) 15000
+
+                waitUntil
+                    (fun () ->
+                        findings ()
+                        |> List.exists (fun entry -> entry.Severity = DiagnosticSeverity.Warning))
+                    15000
 
                 let after = findings ()
                 test <@ not (List.isEmpty after) @>

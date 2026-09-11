@@ -91,3 +91,51 @@ stale verdict.
 - Future plugin caches that depend on a loaded plugin/assembly set must key on
   that set's content identity, the same way — path strings and versions are not
   enough.
+
+## 2026-09-11: accepted input identity and successful-build provenance
+
+The maintainer's 2026-09-10 decision supersedes this ADR's emitted-DLL cache key.
+Package ID and version identify immutable package dependencies. First-party analyzer
+identity comes from source/project inputs, local imports, effective compiler
+options, and dependency identities. The compiler patch and PathMap workaround are
+rejected. DLL debug padding is not a semantic input.
+
+A current source hash alone cannot establish that those sources produced the DLL
+being loaded. The SDK's `CoreCompileInputs.cache` hashes item specifications and
+selected options before compilation; `CoreCompile` itself uses timestamp-based
+incremental inputs/outputs. Neither is a content receipt for a successful output.
+Portable PDB source checksums omit project/options provenance as well.
+
+An opt-in producer target records evaluated inputs before compilation and includes
+that snapshot in incremental compiler inputs. The F# compiler's
+`TargetsTriggeredByCompilation` hook records successful compilation. A generic
+`AfterTargets=CoreCompile` hook was rejected: it also runs when compilation was
+skipped and could bless an externally replaced output. Publication validates the
+recorded inputs and verifies that the copied output matches the recorded compiler
+output. Incremental builds reuse existing proof; they cannot mint it merely from
+an old DLL's existence or timestamp.
+
+Local output digests bind the materialized and loaded rule set. They never enter
+the shared semantic key. Packages and SDK imports use immutable identity/version,
+not repeated dependency-DLL hashing. Local sources, project/import files and
+first-party dependency receipts remain content checked. The receipt also records
+project input membership and absence of standard ancestor build configuration, so
+an added source or newly appearing Directory.Build.props cannot hide behind the
+previous evaluated file list.
+
+The analyzer reevaluates semantic provenance for each cache lookup. Missing,
+malformed or stale proof refuses reuse; execution validates before loading and
+again before reporting success. This also corrects the previous warm-daemon split:
+the original key captured a DLL hash once, while reload inspected live DLL bytes.
+
+The target is shipped as the package's opt-in build asset. A first-party producer
+sets `FsHotWatchAnalyzerProvenance=true`; a restore-only package-copy project sets
+`FsHotWatchPackageProvenance=true`. Project-reference producers must provide their
+own receipts. Unresolved provenance fails with the offending reference rather
+than quietly treating a project DLL as an immutable package.
+
+This introduces a build-only receipt task and content validation cost; it avoids a
+compiler fork and makes the proof inspectable. Arbitrary dynamic MSBuild inputs
+outside the captured project/import/reference closure are not assumed safe.
+Five-fresh-workspace timing and exact candidate consumer qualification are still
+required; parser controls alone do not complete the tracked issue.
