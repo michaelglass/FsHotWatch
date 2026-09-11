@@ -46,8 +46,14 @@ let private ctrfJson (tests: int) (passed: int) (failed: int) (stop: DateTime) =
                start = ms - 1000L
                stop = ms |}
 
+    let entries =
+        [| for index in 1..tests ->
+               {| name = $"Fixture.case{index}"
+                  status = if index <= failed then "failed" else "passed" |} |]
+        |> JsonSerializer.Serialize
+
     let results =
-        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[]}}"""
+        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":%s{entries}}}"""
 
     $"""{{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"%s{Guid.NewGuid().ToString()}","results":%s{results}}}"""
 
@@ -5798,7 +5804,7 @@ let ``a v2 green without its completed project model is refused on read`` () =
         | other -> failwithf "Expected refused model-free green, got %A" other)
 
 [<Fact>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``durable suite verdicts refuse a partial clean report`` () =
     withTempDir "a617-durable-report" (fun root ->
         makeRepo root

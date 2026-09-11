@@ -3279,7 +3279,7 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
     match runId with
     | None -> []
     | Some id ->
-        Ctrf.reportsForRun repoRoot id
+        Ctrf.verdictReportsForRun repoRoot id
         |> List.map (fun r ->
             { Project = r.Project
               Ctrf = Path.GetRelativePath(repoRoot, r.Path).Replace('\\', '/')
