@@ -1488,9 +1488,14 @@ type TestPruneState =
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
         Earned: EarnedEvidence option
+        AnalysisReceipt: AnalysisEvidence option
+        AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
+        AnalysisCohortFiles: Set<AbsFilePath>
     }
     interface IEarnedEvidenceState with
         member this.EarnedEvidence = this.Earned
+    interface IAnalysisEvidenceState with
+        member this.AnalysisEvidence = this.AnalysisReceipt
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -5399,7 +5404,10 @@ let internal createWithLaunchDeadline
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None
-          Earned = None }
+          Earned = None
+          AnalysisReceipt = None
+          AnalysisFiles = Map.empty
+          AnalysisCohortFiles = Set.empty }
 
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
@@ -6453,6 +6461,11 @@ let internal createWithLaunchDeadline
                 | Custom(RuntimeCoverageFailed _) ->
                     return { state with Debt = { state.Debt with RecoveryOutstanding = true } }
                 | PluginEvent.FileChecked result ->
+                    let state =
+                        { state with
+                            Earned = None
+                            AnalysisReceipt = None
+                            AnalysisCohortFiles = Set.add result.File state.AnalysisCohortFiles }
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
@@ -6491,6 +6504,7 @@ let internal createWithLaunchDeadline
                         )
 
                         { state with
+                            AnalysisFiles = Map.add result.File (AnalysisFileEvidence.fromResult result (Error detail)) state.AnalysisFiles
                             UnanalyzableFiles =
                                 Map.add
                                     relPath
@@ -6765,7 +6779,10 @@ let internal createWithLaunchDeadline
                                     )
                                 )
 
-                            return { newState with Freshness = updatedFreshness }
+                            return
+                                { newState with
+                                    Freshness = updatedFreshness
+                                    AnalysisFiles = Map.add result.File (AnalysisFileEvidence.fromResult result (Ok ())) newState.AnalysisFiles }
                         | Error msg ->
                             // On analysis failure the file must NOT be dropped: a
                             // dropped file contributes no symbols, a change to it diffs
@@ -6811,6 +6828,28 @@ let internal createWithLaunchDeadline
                         tryRepairSchemaDrift ex
                         return state
                     | Ok flushedState ->
+                        let flushedState =
+                            match event, ctx.ProjectGraph.ObserveCheckableFiles () with
+                            | PluginEvent.BatchChecked batch, Some (modelGeneration, modelFiles) ->
+                                // An attempted file with no completion cannot reuse an earlier
+                                // outcome from the same model generation.
+                                let outcomes =
+                                    (flushedState.AnalysisFiles, batch.Files)
+                                    ||> List.fold (fun files file ->
+                                        if Set.contains file flushedState.AnalysisCohortFiles then files
+                                        else Map.remove file files)
+                                let currentGeneration = observeModelGeneration ctx
+                                let receipt =
+                                    if batch.ModelGeneration = currentGeneration && currentGeneration = Some modelGeneration then
+                                        AnalysisEvidence.fromCompleted currentGeneration modelFiles runnableProjects outcomes
+                                    else None
+                                { flushedState with
+                                    AnalysisReceipt = receipt
+                                    AnalysisFiles = outcomes
+                                    AnalysisCohortFiles = Set.empty }
+                            | PluginEvent.BatchChecked _, None ->
+                                { flushedState with AnalysisReceipt = None; AnalysisCohortFiles = Set.empty }
+                            | _ -> flushedState
 
                         // ── AUTOMATION-95/99: DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are

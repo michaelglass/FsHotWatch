@@ -75,3 +75,20 @@ old options is not proof about a newly registered model. The tightened preproces
 barrier race control establishes this ordering without native watcher timing.
 The data fields are prepared; their producer/consumer migration and the new stale
 assertion-red/green pair are still pending at this checkpoint.
+
+## Captured scan publication invariant
+
+The combined unit run in `/tmp/a104-model-queue-unit.log` reproduced the stale
+capture control: the paused old scan returned success instead of the required
+InvalidOperationException after a second discovery began. `WithCurrent` now
+checks the captured generation and dispatches each file/cohort while holding the
+same short state lock used to admit discovery. Results carry that captured
+ModelGeneration; no accessor read can relabel them. The discovery writer lease
+is released before preprocessors/build/FCS work. Invalidated scans retain an
+explicit owner operation failure and cannot publish a stale cohort.
+
+This source still needs combined green verification. Incremental batch capture,
+the asynchronous scan-owner completion signal, and analysis-only wire receipts
+remain coordinated follow-ups. Verdict-v2 Intelligence adapters and consumer
+qualification remain required release dependencies; no supported consumer pin
+has been claimed.

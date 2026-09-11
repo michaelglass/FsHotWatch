@@ -547,3 +547,104 @@ let ``only the exact result fold may claim its successor before commit`` () =
     let nextFold = owner.CompleteRun next |> Option.get
     owner.CommitEvent(nextFold, ())
     Assert.False owner.Snapshot.IsBusy
+
+
+[<Theory>]
+[<InlineData("commit")>]
+[<InlineData("prepared")>]
+[<InlineData("failure")>]
+let ``successor delivery failure cannot strand the retired predecessor receipt`` mode =
+    let owner = PluginWorkOwner.Owner(0)
+    let delivered = ResizeArray<PluginWorkOwner.WorkId>()
+    let active, _ = owner.TryClaim "tests" |> Option.get
+    let predecessor = owner.EnqueueIntent("tests", None, delivered.Add)
+    let deliveryFailure = InvalidOperationException("successor delivery failed")
+    let successor = owner.EnqueueIntent("tests", None, fun _ -> raise deliveryFailure)
+    let fold = owner.CompleteRun active |> Option.get
+    owner.CommitEvent(fold, 1)
+    let identity = Assert.Single delivered
+    let originalFailure = InvalidOperationException("predecessor update failed")
+    let settle () =
+        match mode with
+        | "commit" -> owner.CommitEvent(identity, 2)
+        | "prepared" ->
+            owner.PublishEventState(identity, 2)
+            owner.SettleEvent(identity, preparedCommit = true)
+        | _ -> owner.FailEvent(identity, PluginWorkOwner.UpdateFailure originalFailure)
+    let thrown = Assert.Throws<InvalidOperationException>(settle)
+    Assert.Same(deliveryFailure, thrown)
+    Assert.True(predecessor.IsCompleted, "retired predecessor receipt must settle even when successor delivery throws")
+    if mode = "failure" then
+        let failed = Assert.Throws<InvalidOperationException>(fun () -> predecessor.GetAwaiter().GetResult())
+        Assert.Same(originalFailure, failed)
+    else
+        Assert.True predecessor.IsCompletedSuccessfully
+        Assert.Equal(2, owner.Snapshot.State)
+    let rejected = Assert.Throws<InvalidOperationException>(fun () -> successor.GetAwaiter().GetResult())
+    Assert.Same(deliveryFailure, rejected)
+    Assert.True owner.Snapshot.ExecutorFault.IsSome
+    Assert.False owner.Snapshot.IsBusy
+
+[<Fact>]
+let ``idle intent reserves its key until its exact fold admits work`` () =
+    let owner = PluginWorkOwner.Owner(())
+    let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
+    let first = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("first", id))
+    let second = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("second", id))
+    Assert.Equal<string list>([ "first" ], delivered |> Seq.map fst |> Seq.toList)
+    Assert.True((owner.TryClaim "tests").IsNone)
+    let firstIdentity = snd delivered[0]
+    let active, _ = owner.TryClaim("tests", after = firstIdentity) |> Option.get
+    owner.CommitEvent(firstIdentity, ())
+    Assert.True first.IsCompletedSuccessfully
+    Assert.False second.IsCompleted
+    let fold = owner.CompleteRun active |> Option.get
+    owner.CommitEvent(fold, ())
+    Assert.Equal<string list>([ "first"; "second" ], delivered |> Seq.map fst |> Seq.toList)
+    owner.CommitEvent(snd delivered[1], ())
+    Assert.True second.IsCompletedSuccessfully
+    Assert.False owner.Snapshot.IsBusy
+
+[<Fact>]
+let ``coalescing spans the completing run and its already admitted successor`` () =
+    let owner = PluginWorkOwner.Owner(())
+    let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
+    let firstRun, _ = owner.TryClaim "tests" |> Option.get
+    let original = owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("old-flush", id))
+    let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier-command", id))
+    let fold = owner.CompleteRun firstRun |> Option.get
+    let nextRun, _ = owner.TryClaim("tests", after = fold) |> Option.get
+    let replacement = owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("new-flush", id))
+    let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later-command", id))
+    Assert.Same(original, replacement)
+    owner.CommitEvent(fold, ())
+    let nextFold = owner.CompleteRun nextRun |> Option.get
+    owner.CommitEvent(nextFold, ())
+    for index in 0 .. 2 do
+        Assert.Equal(index + 1, delivered.Count)
+        owner.CommitEvent(snd delivered[index], ())
+    Assert.Equal<string list>([ "new-flush"; "earlier-command"; "later-command" ], delivered |> Seq.map fst |> Seq.toList)
+    Assert.True original.IsCompletedSuccessfully
+    Assert.True replacement.IsCompletedSuccessfully
+    Assert.True earlier.IsCompletedSuccessfully
+    Assert.True later.IsCompletedSuccessfully
+    Assert.False owner.Snapshot.IsBusy
+
+[<Fact>]
+let ``only a committed actual worker result recovers a previous worker failure`` () =
+    let owner = PluginWorkOwner.Owner(0)
+    let failed, _ = owner.TryClaim "tests" |> Option.get
+    owner.FailRun(failed, InvalidOperationException("first worker failed"))
+    let delivered = ResizeArray<PluginWorkOwner.WorkId>()
+    let queued = owner.EnqueueIntent("tests", None, delivered.Add)
+    owner.PublishEventState(delivered[0], 1)
+    owner.SettleEvent(delivered[0], preparedCommit = true)
+    Assert.True queued.IsCompletedSuccessfully
+    Assert.True owner.Snapshot.Fault.IsSome
+    let recovered, _ = owner.TryClaim "tests" |> Option.get
+    let result = owner.CompleteRun recovered |> Option.get
+    owner.PublishEventState(result, 2)
+    owner.SettleEvent(result)
+    Assert.True owner.Snapshot.Fault.IsNone
+    Assert.False owner.Snapshot.IsBusy
+    Assert.Equal(2, owner.Snapshot.State)
