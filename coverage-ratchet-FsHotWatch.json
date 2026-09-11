@@ -1300,8 +1300,8 @@
     "Ipc.fs": [
       {
         "coveredLines": 288,
-        "coveredBranches": 41,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 38,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only three removed covered compiler-generated match branches after AUTOMATION-339 (1819f4266165), branch denominator 52 to 48. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {
@@ -1454,8 +1454,8 @@
     "PluginActivity.fs": [
       {
         "coveredLines": 182,
-        "coveredBranches": 40,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 36,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only four removed covered compiler-generated match branches after AUTOMATION-339 (1819f4266165), branch denominator 56 to 52. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {
@@ -1733,9 +1733,9 @@
     ],
     "Verdict.fs": [
       {
-        "coveredLines": 1445,
-        "coveredBranches": 449,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredLines": 1444,
+        "coveredBranches": 443,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). 2026-09-11: subtract only the removed generated sequence point from prose change 26901395e1b3 and six removed covered match branches from AUTOMATION-339 (1819f4266165), branch denominator 540 to 534. See docs/adr/2026-09-11-removed-code-coverage-floors.md.",
         "platform": "macos"
       },
       {
