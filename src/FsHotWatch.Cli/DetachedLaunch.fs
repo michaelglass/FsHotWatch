@@ -17,10 +17,12 @@ extern int private createSession()
 [<DllImport("libc", EntryPoint = "execv", SetLastError = true)>]
 extern int private replaceProcess([<MarshalAs(UnmanagedType.LPUTF8Str)>] string path, nativeint argv)
 
-let private runHelper (command: string) =
+// Native calls stay in the dedicated child. The orchestration boundary lets
+// controls inspect the actual UTF-8 argv allocation without replacing the test host.
+let internal runHelperWith createSession replaceProcess lastError report (command: string) =
     if createSession () = -1 then
-        let error = Marshal.GetLastPInvokeError()
-        eprintfn $"Detached daemon launch: setsid failed (errno {error})"
+        let error = lastError ()
+        report $"Detached daemon launch: setsid failed (errno {error})"
         1
     else
         // execv replaces this short-lived managed helper. No managed fork and
@@ -36,12 +38,15 @@ let private runHelper (command: string) =
 
             Marshal.WriteIntPtr(argv, values.Length * IntPtr.Size, IntPtr.Zero)
             replaceProcess ("/bin/sh", argv) |> ignore
-            let error = Marshal.GetLastPInvokeError()
-            eprintfn $"Detached daemon launch: execv failed (errno {error})"
+            let error = lastError ()
+            report $"Detached daemon launch: execv failed (errno {error})"
             1
         finally
             Marshal.FreeHGlobal(argv)
             values |> Array.iter Marshal.FreeCoTaskMem
+
+let private runHelper command =
+    runHelperWith createSession replaceProcess Marshal.GetLastPInvokeError (eprintfn "%s") command
 
 /// Checked before ordinary command parsing, in the separate CLI process only.
 let tryRun (args: string array) =
