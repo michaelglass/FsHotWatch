@@ -51,8 +51,14 @@ let ``isRelevantFile rejects files in bin directory`` () =
     test <@ not (isRelevantFile "/repo/src/bin/Debug/App.fs") @>
 
 [<Fact(Timeout = 15000)>]
-let ``isRelevantFile rejects .cs files`` () =
-    test <@ not (isRelevantFile "/repo/src/Program.cs") @>
+let ``CSharp dependency inputs are watched and classified without pretending they are FSharp`` () =
+    test <@ isRelevantFile "/repo/src/Program.cs" @>
+    test <@ isRelevantFile "/repo/src/Helper.csproj" @>
+    test <@ classifyChange "/repo/src/Program.cs" = SourceChanged [ "/repo/src/Program.cs" ] @>
+    test <@ classifyChange "/repo/src/Helper.csproj" = ProjectChanged [ "/repo/src/Helper.csproj" ] @>
+    Assert.Contains("*.cs", watchedSourceGlobs)
+    Assert.Contains("*.csproj", watchedSourceGlobs)
+    test <@ not (isRelevantFile "/repo/src/obj/Generated.cs") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFile rejects .txt files`` () =
@@ -995,7 +1001,7 @@ let ``isRelevantFileOrExtra accepts files matching literal filename pattern`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
-    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.cs") @>
+    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.txt") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
