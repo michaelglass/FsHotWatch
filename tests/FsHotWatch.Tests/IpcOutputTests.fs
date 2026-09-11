@@ -2060,6 +2060,7 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]
 [<InlineData("different-run", 2)>]
+[<InlineData("analysis-only", 2)>]
 [<InlineData("different-model", 2)>]
 [<InlineData("refused", 2)>]
 let ``green publication requires the graded run's current model receipt`` kind expectedExit =
@@ -2067,7 +2068,7 @@ let ``green publication requires the graded run's current model receipt`` kind e
         let receipts =
             if kind = "missing" then []
             else
-                [ { RunId = Some(if kind = "different-run" then System.Guid.NewGuid() else BaselineFixtures.runId)
+                [ { RunId = if kind = "analysis-only" then None else Some(if kind = "different-run" then System.Guid.NewGuid() else BaselineFixtures.runId)
                     Generation = if kind = "different-model" then 2L else 1L
                     Refusals = if kind = "refused" then [ "unknown debt" ] else [] } ]
         let evidence = DaemonEvidence.Served([], BaselineFixtures.model, receipts)
@@ -2081,6 +2082,7 @@ let ``green publication requires the graded run's current model receipt`` kind e
 [<Theory>]
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]
+[<InlineData("test-run", 2)>]
 [<InlineData("different-model", 2)>]
 [<InlineData("refused", 2)>]
 let ``analysis-only green requires its own completed model receipt`` kind expectedExit =
@@ -2088,7 +2090,7 @@ let ``analysis-only green requires its own completed model receipt`` kind expect
         let receipts =
             if kind = "missing" then []
             else
-                [ {| runId = (null : string)
+                [ {| runId = if kind = "test-run" then BaselineFixtures.runId.ToString("N") else (null : string)
                      modelGeneration = if kind = "different-model" then 2L else 1L
                      refusals = if kind = "refused" then [ "unchecked file" ] else [] |} ]
         let evidence =
