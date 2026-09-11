@@ -163,21 +163,29 @@ let ``observes the selected source value`` () =
 """
 
 let private preserveFailure (root: string) (daemonText: string) =
-    let destination = Path.Combine(Path.GetTempPath(), "fshw-cold-check-failures", Path.GetFileName root)
+    let destination =
+        Path.Combine(Path.GetTempPath(), "fshw-cold-check-failures", Path.GetFileName root)
+
     Directory.CreateDirectory destination |> ignore
     File.WriteAllText(Path.Combine(destination, "daemon-output.log"), daemonText)
     File.WriteAllText(Path.Combine(destination, "original-root.txt"), root)
+
     for file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories) do
         let relative = Path.GetRelativePath(root, file).Replace('\\', '/')
-        if not (relative.StartsWith(".git/", StringComparison.Ordinal))
-           && not (relative.Contains("/bin/", StringComparison.Ordinal))
-           && not (relative.Contains("/obj/", StringComparison.Ordinal)) then
+
+        if
+            not (relative.StartsWith(".git/", StringComparison.Ordinal))
+            && not (relative.Contains("/bin/", StringComparison.Ordinal))
+            && not (relative.Contains("/obj/", StringComparison.Ordinal))
+        then
             let target = Path.Combine(destination, relative)
             Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+
             try
                 File.Copy(file, target, true)
             with :? IOException as error ->
                 File.AppendAllText(Path.Combine(destination, "capture-errors.log"), $"{relative}: {error.Message}\n")
+
     eprintfn "Cold-check failure artifacts: %s" destination
 
 let withDaemon clock root body =
@@ -191,7 +199,7 @@ let withDaemon clock root body =
     // Program.Start synchronously runs RunWithIpc. Own that foreground daemon,
     // never the detached launcher used by ensureDaemon.
     let daemon = start root "dotnet" [ cli; "start" ]
-    let mutable failed = false
+    let mutable failed = true
 
     try
         let listening =
@@ -203,24 +211,43 @@ let withDaemon clock root body =
             Assert.Fail(output clock daemon)
 
         Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
-        try
-            body cli
-        with _ ->
-            failed <- true
-            reraise ()
+        let configIdentity = Path.Combine(root, ".fshw", "config.hash")
+
+        Assert.True(
+            File.Exists configIdentity,
+            "a listening direct-start daemon must publish its loaded config identity"
+        )
+
+        Assert.Equal(Program.computeConfigHashWith Program.defaultFileOps root, File.ReadAllText configIdentity)
+        body cli
+        Assert.False(daemon.Process.HasExited, "a check replaced the directly owned daemon")
+        Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
+        failed <- false
     finally
         try
-            if not daemon.Process.HasExited && IpcClient.isRunning pipe then
+            // This unique temporary repository owns the endpoint even if a bug
+            // replaced our original foreground daemon with a detached successor.
+            if IpcClient.isRunning pipe then
                 IpcClient.shutdown pipe
                 |> fun shutdown -> Async.RunSynchronously(shutdown, 10000) |> ignore
 
-            daemon.Process.WaitForExit(10000) |> ignore
+            Assert.True(
+                waitUntilTrue (fun () -> not (IpcClient.isRunning pipe)) 10000,
+                "fixture-owned daemon endpoint survived shutdown"
+            )
+
+            Assert.True(daemon.Process.WaitForExit(10000), "original daemon did not exit after fixture shutdown")
         finally
             disposeChild daemon
-            if failed then preserveFailure root (output clock daemon)
+
+            if failed then
+                preserveFailure root (output clock daemon)
 
 let check clock root cli =
+    let pidPath = Path.Combine(root, ".fshw", "daemon.pid")
+    let ownedPid = File.ReadAllText pidPath
     let code, text = run clock root "dotnet" [ cli; "check"; "--agent" ]
+    Assert.Equal(ownedPid, File.ReadAllText pidPath)
     let path = Path.Combine(root, ".fshw", "verdict.json")
     Assert.True(File.Exists path, $"check did not produce a verdict:\n{text}")
     use document = JsonDocument.Parse(File.ReadAllText path)

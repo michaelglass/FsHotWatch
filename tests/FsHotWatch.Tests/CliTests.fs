@@ -3004,3 +3004,52 @@ let ``remote fault without frame evidence preserves the original failure and nev
     test <@ attempts = 1 @>
     test <@ restarts = 0 @>
     test <@ reported |> Option.exists (fun error -> Object.ReferenceEquals(error, fault)) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``launcher cannot overwrite or manufacture daemon loaded config identity`` publishes =
+    withTempDir "daemon-config-owner" (fun root ->
+        let state = Path.Combine(root, ".fshw")
+        let identity = Path.Combine(state, "config.hash")
+
+        let ipc =
+            { fakeIpc () with
+                LaunchDaemon =
+                    fun _ _ _ ->
+                        if publishes then
+                            Directory.CreateDirectory state |> ignore
+                            File.WriteAllText(identity, "daemon-loaded-snapshot")
+                IsRunning = fun _ -> publishes }
+
+        let running =
+            startFreshDaemonWith defaultFileOps ipc root "fixture-pipe" "stale-client-snapshot" "" "logs" 0.
+
+        Assert.Equal(publishes, running)
+
+        if publishes then
+            Assert.Equal("daemon-loaded-snapshot", File.ReadAllText identity)
+        else
+            Assert.False(File.Exists identity, "a launch attempt cannot attest to a loaded configuration"))
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``loaded configuration identity retains the parsed snapshot across later file changes`` exists =
+    withTempDir "daemon-config-snapshot" (fun root ->
+        let path = Path.Combine(root, ".fshw.json")
+        let original = if exists then "{\"lint\":false}" else ""
+
+        if exists then
+            File.WriteAllText(path, original)
+
+        let loaded, source = loadConfigWithSource root
+        Assert.Equal(original, source)
+
+        if exists then
+            Assert.False(loaded.Lint)
+
+        let identity = configContentHash source
+        File.WriteAllText(path, "{\"lint\":true}")
+        Assert.Equal(configContentHash original, identity)
+        Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity))
