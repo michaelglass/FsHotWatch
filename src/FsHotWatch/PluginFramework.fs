@@ -841,8 +841,24 @@ let internal registerHandlerForOwner
                             // indistinguishable from a key accidentally salted with
                             // something machine-local unless the miss NAMES the input
                             // that moved.
+                            // A failed build needs a current worker launch witness.
+                            // Replayed diagnostics cannot reconstruct its domain receipt.
+                            // Keep ordinary lint/analyzer failures and successful builds
+                            // cacheable; only build-failure authority requires execution.
+                            let requiresBuildAttempt (result: TaskCache.TaskCacheResult) =
+                                (result.EmittedEvents |> List.exists (function
+                                    | TaskCache.CachedBuildCompleted(BuildFailed _) -> true
+                                    | _ -> false))
+                                || (pluginName = "build" && (match result.Status with
+                                    | TaskCache.CachedRunFailed _
+                                    | TaskCache.CachedFileFailed _ -> true
+                                    | _ -> false))
+
                             let lookupResult =
                                 match cache.Lookup compKey cacheKey with
+                                | TaskCache.CacheHit result when requiresBuildAttempt result ->
+                                    FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=false miss=build-failure-needs-current-attempt"
+                                    None
                                 | TaskCache.CacheHit result ->
                                     FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=true"
                                     Some result
