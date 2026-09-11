@@ -45,7 +45,7 @@ type LeakedTree =
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
 type Registry(?parent: Registry) =
-    let live = ConcurrentDictionary<int, Process>()
+    let live = ConcurrentDictionary<int, Process * (unit -> unit) option>()
     // Track pids alongside Process so Untrack can clean up even if the Process
     // handle has been disposed and `proc.Id` would throw.
     let pidByProc = ConcurrentDictionary<Process, int>(HashIdentity.Reference)
@@ -61,7 +61,7 @@ type Registry(?parent: Registry) =
     // Identity is captured at admission, while the caller owns a live handle.
     // Keep it for diagnostics if that handle is later disposed; never re-resolve
     // it during teardown, when the OS could have reused the number.
-    let terminate (pid: int) (p: Process) =
+    let terminate (pid: int) (p: Process) (ownedTermination: (unit -> unit) option) =
         let recordFailure reason =
             let leak =
                 { Pid = pid
@@ -76,11 +76,14 @@ type Registry(?parent: Registry) =
         let terminating =
             Task.Run(fun () ->
                 try
-                    if not p.HasExited then
-                        p.Kill(entireProcessTree = true)
+                    match ownedTermination with
+                    | Some terminateOwned -> terminateOwned ()
+                    | None ->
+                        if not p.HasExited then
+                            p.Kill(entireProcessTree = true)
 
-                        if not (p.WaitForExit(int teardownBudget.TotalMilliseconds)) then
-                            raise (TimeoutException("Child did not exit after shutdown kill"))
+                            if not (p.WaitForExit(int teardownBudget.TotalMilliseconds)) then
+                                raise (TimeoutException("Child did not exit after shutdown kill"))
 
                     Ok()
                 with failure ->
@@ -88,7 +91,7 @@ type Registry(?parent: Registry) =
                     // makes that benign; a disposed/unobservable handle is not
                     // proof that its OS child died.
                     try
-                        if p.HasExited then Ok() else Result.Error failure
+                        if ownedTermination.IsNone && p.HasExited then Ok() else Result.Error failure
                     with _ ->
                         Result.Error failure)
 
@@ -101,12 +104,12 @@ type Registry(?parent: Registry) =
             // because it returns a Result. Uncertain termination remains data.
             recordFailure $"Shutdown termination exceeded {teardownBudget}"
 
-    member _.Track(p: Process) =
+    member _.Track(p: Process, ?terminateOwned: unit -> unit) =
         let pid = p.Id
         // The daemon retains shutdown ownership even when an operation has a
         // narrower cancellation scope. Parent admission happens first: if it
         // already closed, it reaps this exact handle before admitting anything.
-        parent |> Option.iter (fun owner -> owner.Track p)
+        parent |> Option.iter (fun owner -> owner.Track(p, ?terminateOwned = terminateOwned))
 
         let accepted =
             lock admission (fun () ->
@@ -114,12 +117,12 @@ type Registry(?parent: Registry) =
                     false
                 else
                     pidByProc.TryAdd(p, pid) |> ignore
-                    live.TryAdd(pid, p) |> ignore
+                    live.TryAdd(pid, (p, terminateOwned)) |> ignore
                     true)
 
         if not accepted then
             try
-                terminate pid p
+                terminate pid p terminateOwned
             finally
                 parent |> Option.iter (fun owner -> owner.Untrack p)
 
@@ -132,12 +135,12 @@ type Registry(?parent: Registry) =
 
     member _.Snapshot() : Process list =
         [ for kv in live do
-              let p = kv.Value
+              let p, ownedTermination = kv.Value
 
               // A tolerated exception means "can't observe; treat as not alive".
               let alive =
                   try
-                      not p.HasExited
+                      ownedTermination.IsSome || not p.HasExited
                   with ex when isExpectedProcessException ex ->
                       false
 
@@ -167,9 +170,10 @@ type Registry(?parent: Registry) =
 
         for child in children do
             try
-                terminate child.Key child.Value
+                let process, ownedTermination = child.Value
+                terminate child.Key process ownedTermination
             finally
-                parent |> Option.iter (fun owner -> owner.Untrack child.Value)
+                parent |> Option.iter (fun owner -> owner.Untrack(fst child.Value))
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
@@ -209,6 +213,12 @@ let track (p: Process) =
         Logging.warn
             "process-registry"
             $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
+
+/// Register a spawn-time containment capability, including after its leader exits.
+let internal trackOwned (p: Process) (terminate: unit -> unit) =
+    match currentOpt () with
+    | Some r -> r.Track(p, terminateOwned = terminate)
+    | None -> ()
 
 let untrack (p: Process) =
     match currentOpt () with

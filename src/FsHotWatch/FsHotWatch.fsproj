@@ -119,4 +119,19 @@
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FsHotWatch.ProcessOwnership/FsHotWatch.ProcessOwnership.csproj" PrivateAssets="all" />
+    <ProjectReference Include="../FsHotWatch.ProcessHost/FsHotWatch.ProcessHost.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <Content Include="../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.dll;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.deps.json;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.runtimeconfig.json"
+             Link="fshw-process-host/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="true" PackagePath="tools/net10.0/" />
+    <None Include="buildTransitive/FsHotWatch.targets" Pack="true" PackagePath="buildTransitive/FsHotWatch.targets" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeProcessOwnership</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+  <Target Name="IncludeProcessOwnership" DependsOnTargets="BuildOnlySettings;ResolveReferences">
+    <ItemGroup>
+      <BuildOutputInPackage Include="$(OutputPath)FsHotWatch.ProcessOwnership.dll" />
+    </ItemGroup>
+  </Target>
 </Project>
