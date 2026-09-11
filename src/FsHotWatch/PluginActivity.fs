@@ -51,6 +51,7 @@ let private runRecordBytes (r: RunRecord) =
         | FailedRun e -> stringBytes e
         | TimedOut r -> stringBytes r
         | VerifiedNothing d -> stringBytes d
+        | NotEvaluated reason -> stringBytes reason
         | CompletedRun -> 0
 
     summaryBytes + errorBytes + (r.ActivityTail |> List.sumBy stringBytes)
@@ -248,7 +249,9 @@ type State() =
             let r = ensureRecording p
             r.OutcomeOverride <- Some outcome)
 
-    member _.RecordTerminal(plugin: string, outcome: RunOutcome, startedAt: DateTime, at: DateTime) : unit =
+    member _.RecordTerminal
+        (plugin: string, outcome: RunOutcome, startedAt: DateTime, at: DateTime, ?provenance: RunProvenance)
+        : unit =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
@@ -275,6 +278,7 @@ type State() =
                 { StartedAt = startedAt
                   Elapsed = at - startedAt
                   Outcome = effectiveOutcome
+                  Provenance = defaultArg provenance RunProvenance.Observed
                   Summary = derivedSummary
                   ActivityTail = tail }
 

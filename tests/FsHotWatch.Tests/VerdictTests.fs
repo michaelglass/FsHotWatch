@@ -143,6 +143,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Plugins =
         [ { Name = "test-prune"
             Outcome = Verdict.PluginOutcome.Ok
+            Provenance = FsHotWatch.Events.RunProvenance.Observed
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
@@ -1584,6 +1585,7 @@ let private status (view: StatusView) (elapsed: TimeSpan) (outcome: RunOutcome) 
             { StartedAt = DateTime.UtcNow
               Elapsed = elapsed
               Outcome = outcome
+              Provenance = FsHotWatch.Events.RunProvenance.Observed
               Summary = summary
               ActivityTail = [] }
       Diagnostics = ErrorLedger.DiagnosticCounts.empty }
@@ -1726,6 +1728,7 @@ let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not 
                     Plugins =
                         [ { Name = "p"
                             Outcome = outcome
+                            Provenance = FsHotWatch.Events.RunProvenance.Observed
                             ElapsedMs = Some 5L
                             Summary = None } ] }
 
@@ -2577,7 +2580,7 @@ let ``AUTOMATION-339: a verified-nothing plugin verdict is worded from the case 
         status
             (StatusView.Completed DateTime.UtcNow)
             (TimeSpan.FromSeconds 1.0)
-            (Events.VerifiedNothing "no project was selected")
+            (Events.RunOutcome.VerifiedNothing "no project was selected")
             None
 
     match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", wordless ]) with
@@ -3404,6 +3407,7 @@ let ``a red run with every suite green NAMES the failing plugin — the test tab
                 Plugins =
                     [ { Name = "analyzers"
                         Outcome = Verdict.PluginOutcome.Fail
+                        Provenance = FsHotWatch.Events.RunProvenance.Observed
                         ElapsedMs = Some 13L
                         Summary = Some "analyzed 1164 files, 3 findings (3 errors, 0 warnings)" } ]
                 Suites = allSuitesGreen }
@@ -3829,6 +3833,7 @@ let private redCheckWithCauses (pluginSummary: string) =
         Plugins =
             [ { Name = "coverage-count-gate"
                 Outcome = Verdict.PluginOutcome.Fail
+                Provenance = FsHotWatch.Events.RunProvenance.Observed
                 ElapsedMs = Some 12L
                 Summary = Some pluginSummary } ]
         RedCauses = [ fcsCause "coverage count gate: FAILED — 1 file(s) below floor" ] }

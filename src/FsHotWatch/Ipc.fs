@@ -104,6 +104,10 @@ let private outcomePayload (outcome: RunOutcome) : obj =
         {| tag = "verifiedNothing"
            detail = d |}
         :> obj
+    | NotEvaluated reason ->
+        {| tag = "notEvaluated"
+           reason = reason |}
+        :> obj
 
 let private pluginStatusPayload
     (host: PluginHost)
@@ -133,6 +137,11 @@ let private pluginStatusPayload
             {| startedAt = r.StartedAt.ToString("O")
                elapsedMs = int64 r.Elapsed.TotalMilliseconds
                outcome = outcomePayload r.Outcome
+               replayed =
+                r.Provenance
+                |> RunProvenance.replayed
+                |> Option.map box
+                |> Option.defaultValue null
                summary = summary
                activityTail = r.ActivityTail |}
             :> obj
