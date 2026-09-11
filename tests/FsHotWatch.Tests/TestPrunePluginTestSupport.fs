@@ -32,7 +32,8 @@ open FsHotWatch.Tests.TestHelpers
 /// For tests that build `TestsFinished` directly. Runs that must CLEAR something use
 /// `fullSuiteLaunch` / `filteredLaunch` below.
 let emptyLaunch: TestRunLaunch =
-    { ModelGeneration = None
+    { InputTreeHash = None
+      ModelGeneration = None
       SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
@@ -45,7 +46,8 @@ let emptyLaunch: TestRunLaunch =
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
 let fullSuiteLaunch (projects: string list) : TestRunLaunch =
-    { ModelGeneration = None
+    { InputTreeHash = None
+      ModelGeneration = None
       SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
@@ -58,7 +60,8 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
 /// A launch that ran only `classes` in each named project — an impact-filtered
 /// selection. Projects NOT named were skipped entirely.
 let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
-    { ModelGeneration = None
+    { InputTreeHash = None
+      ModelGeneration = None
       SymbolRevisions = Map.empty
       Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
