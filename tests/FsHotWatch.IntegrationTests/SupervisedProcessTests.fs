@@ -400,7 +400,9 @@ exit 0
     let active = queue.Submit((), CancellationToken.None)
 
     try
-        let parent, child = observed.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+        Task.WhenAny(observed.Task :> Task, active :> Task).WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        if active.IsCompleted then awaitResult active
+        let parent, child = observed.Task.GetAwaiter().GetResult()
         Assert.False(parent.HasExited, "parent must be held until both exact handles are captured")
         Assert.False(child.HasExited, "positive control: the descendant exists before releasing its parent")
         Assert.True(store.Snapshot.IsBusy)
