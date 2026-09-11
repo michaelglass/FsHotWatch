@@ -1909,18 +1909,31 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
         let outside =
             System.IO.Path.Combine(System.IO.Path.GetDirectoryName(root), "outside.fs")
 
+        let parentDirectory = System.IO.Path.GetDirectoryName(root)
+        let malformed = "invalid" + string (char 0) + "path"
         let pseudo = "<build>"
+        let opaque = [ outside; parentDirectory; malformed; pseudo ]
 
-        for key in [ insideAbsolute; insideRelative; outside; pseudo ] do
+        for key in [ insideAbsolute; insideRelative ] @ opaque do
             host.ReportErrors("test-prune", key, ghostEntry key)
 
-        host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
+        let inspected = System.Collections.Generic.List<string>()
+
+        host.PruneVanishedErrors(fun path ->
+            inspected.Add path
+            false)
+        |> ignore
 
         let remaining = host.GetErrors()
         test <@ not (remaining |> Map.containsKey insideAbsolute) @>
         test <@ not (remaining |> Map.containsKey insideRelative) @>
-        test <@ remaining |> Map.containsKey outside @>
-        test <@ remaining |> Map.containsKey pseudo @>)
+
+        for key in opaque do
+            test <@ remaining |> Map.containsKey key @>
+
+        // Malformed and external identities must not escape into filesystem
+        // probing or be silently discarded as missing repository files.
+        test <@ Set.ofSeq inspected = Set.ofList [ insideAbsolute; System.IO.Path.Combine(root, insideRelative) ] @>)
 
 // --- AUTOMATION-555 (rework): every plugin run lands on the phase ledger ---
 
