@@ -2253,7 +2253,11 @@ let private extractResults
                 | ParsedInput.ImplFile _ -> false
 
             let signatureName name = SyntheticSignaturePrefix + name
-            let declaredNames = symbols |> List.map _.FullName |> Set.ofList
+
+            let declaredKinds =
+                symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
+
+            let declaredNames = declaredKinds |> Map.keys |> Set.ofSeq
 
             let signatureDeclarations =
                 if isSignature then
@@ -2342,7 +2346,7 @@ let private extractResults
                                 ExternRef
                             else
                                 match classifiedTargetKinds.TryGetValue name with
-                                | _ when signatureDeclarations.Contains name && not (name.Contains '.') -> Module
+                                | _ when declaredKinds |> Map.tryFind name = Some Module -> Module
                                 | true, Module -> Module
                                 | _ -> ExternRef
 

@@ -835,6 +835,7 @@ module ``Signature edit soundness`` =
     [<Theory>]
     [<InlineData("changed")>]
     [<InlineData("removed")>]
+    [<InlineData("type-changed")>]
     [<InlineData("unchanged")>]
     let ``signature edits preserve consumer selection and both file baselines`` (edit: string) =
         let directory =
@@ -844,19 +845,21 @@ module ``Signature edit soundness`` =
         let signature = System.IO.Path.Combine(directory, "Library.fsi")
         let implementation = System.IO.Path.Combine(directory, "Library.fs")
         let consumer = System.IO.Path.Combine(directory, "Consumer.fs")
-        let before = "module Library\nval calculate:\n    int -> int\n"
+        let declarations = "module Library\ntype Token =\n    { Value: int }\n"
+        let before = declarations + "val calculate:\n    int -> int\n"
 
         let after =
             match edit with
-            | "changed" -> "module Library\nval calculate:\n    value: int -> int\n"
-            | "removed" -> "module Library\n"
+            | "changed" -> declarations + "val calculate:\n    value: int -> int\n"
+            | "removed" -> declarations
+            | "type-changed" -> before.Replace("Value: int", "Value: int64")
             | _ -> before
 
         let sources =
             [ signature, before
-              implementation, "module Library\nlet calculate value = value + 1\n"
+              implementation, "module Library\ntype Token = { Value: int }\nlet calculate value = value + 1\n"
               consumer,
-              "module Consumer\ntype FactAttribute() = inherit System.Attribute()\n[<Fact>]\nlet exercisesLibrary () = Library.calculate 1 |> ignore\n" ]
+              "module Consumer\ntype FactAttribute() = inherit System.Attribute()\n[<Fact>]\nlet exercisesLibrary () = Library.calculate ({ Value = 1 }: Library.Token).Value |> ignore\n" ]
 
         try
             for path, source in sources do
