@@ -3428,6 +3428,7 @@ let ``event receipt and cache wait for durable finalization after candidate publ
 let ``durable commit failures fault the actual receipt and retain the appropriate publication`` (failFinalize: bool) =
     let failure = System.IO.IOException("fixture durable write refused")
     let mutable readCommand: CommandHandler option = None
+    let mutable shouldFail = true
 
     let handler: PluginHandler<int, unit> =
         { Name = PluginName.create "durable-failure"
@@ -3436,10 +3437,9 @@ let ``durable commit failures fault the actual receipt and retain the appropriat
           PrepareCommit =
             Some(fun _ _ ->
                 async {
-                    if not failFinalize then
-                        return raise failure
-                    else
-                        return { Finalize = async { return raise failure } }
+                    if not shouldFail then return { Finalize = async.Return() }
+                    elif not failFinalize then return raise failure
+                    else return { Finalize = async { return raise failure } }
                 })
           Commands = [ "read", PluginCommand.Observe(fun _ state _ -> async { return string state }) ]
           Subscriptions = Set.singleton SubscribeFileChanged
@@ -3462,6 +3462,15 @@ let ``durable commit failures fault the actual receipt and retain the appropriat
     Assert.Same(failure, registration.Fault().Value)
     Assert.Equal((if failFinalize then "5" else "4"), readCommand.Value [||] |> Async.RunSynchronously)
     Assert.Equal(0L, registration.CompletedDispatches())
+
+    // An ordinary success cannot clear durable failure. A real successful
+    // uncached prepared commit must recover both publication and its receipt.
+    shouldFail <- false
+    dispatchAndAwait registration (DispatchFileChanged(SourceChanged [ "/tmp/repo/Commit.fs" ]))
+    Assert.True(registration.Fault().IsNone)
+    Assert.Equal((if failFinalize then "6" else "5"), readCommand.Value [||] |> Async.RunSynchronously)
+    Assert.Equal(1L, registration.CompletedDispatches())
+    Assert.False(registration.IsBusy())
 
 [<Fact(Timeout = 15000)>]
 [<Trait("WorkOwner", "CacheCommitOwnership")>]
@@ -3901,3 +3910,133 @@ let ``a terminal before shared admission cannot cache work that is claimed or qu
     Assert.True(entered.Task.IsCompleted, "the admitted worker must actually run")
     Assert.False(registration.IsBusy())
     Assert.True(registration.Fault().IsNone)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("WorkOwner", "FaultedExecutorCompletion")>]
+let ``executor fault preserves a live worker until cleanup and suppresses its completion fold`` failedStartup =
+    let owner = PluginWorkOwner.Owner(0)
+    let failure = System.IO.IOException("executor stopped while work was owned")
+    use entered = new System.Threading.ManualResetEventSlim(false)
+    use release = new System.Threading.ManualResetEventSlim(false)
+    let folded = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let mutable captured: PluginCtx<SharedWakeMsg> option = None
+
+    let handler: PluginHandler<int, SharedWakeMsg> =
+        { Name = PluginName.create "faulted-executor-completion"
+          Init = 0
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> captured <- Some ctx
+                    | Custom _ -> folded.TrySetResult(()) |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          PrepareCommit = None
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let services =
+        { defaultServices with
+            StartAsync =
+                fun work ->
+                    if failedStartup then
+                        raise (System.InvalidOperationException("start failed"))
+                    else
+                        Async.Start work
+            ReleaseSharedRun =
+                fun _ _ ->
+                    entered.Set()
+                    Assert.True(release.Wait(10000), "fixture must release actual startup cleanup") }
+
+    let registration = registerHandlerForOwner owner services handler
+    dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+
+    let attempt =
+        System.Threading.Tasks.Task.Run(fun () ->
+            if failedStartup then
+                Assert.Equal(
+                    SharedClaimed,
+                    captured.Value.RunExclusiveShared
+                        "work"
+                        "artifacts"
+                        (fun _ -> async.Return SharedFinished)
+                        (fun _ -> Ready)
+                        (fun _ -> SharedFinished)
+                )
+            else
+                Assert.Equal(
+                    Claimed,
+                    captured.Value.RunExclusive
+                        "work"
+                        (async {
+                            entered.Set()
+                            Assert.True(release.Wait(10000), "fixture must release actual work")
+                            return SharedFinished
+                        })
+                ))
+
+    try
+        Assert.True(entered.Wait(5000), "work or shared cleanup must actually start")
+        owner.FaultExecutor failure
+        Assert.True(owner.Snapshot.IsRunning "work")
+        Assert.True(registration.IsBusy(), "faulting the executor does not invent worker cleanup")
+    finally
+        release.Set()
+        attempt.WaitAsync(System.TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+        waitUntil (fun () -> not (registration.IsBusy())) 5000
+
+    Assert.False(registration.IsBusy())
+    Assert.False(folded.Task.IsCompleted, "a stopped executor cannot fold the completed result")
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.Equal(0, owner.Snapshot.State)
+    Assert.Equal(1L, registration.CompletedDispatches())
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "FaultedExecutorCommit")>]
+let ``external executor failure during finalization settles the original receipt only once`` () =
+    let owner = PluginWorkOwner.Owner(0)
+    let failure = System.IO.IOException("executor lost during durable finalization")
+    let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "faulted-executor-commit"
+          Init = 0
+          Update = fun _ state _ -> async.Return(state + 1)
+          PrepareCommit =
+            Some(fun _ _ ->
+                async.Return
+                    { Finalize =
+                        async {
+                            owner.FaultExecutor failure
+                            entered.TrySetResult(()) |> ignore
+                            return raise failure
+                        } })
+          Commands = []
+          Subscriptions = Set.singleton SubscribeBuildCompleted
+          CacheKey = None
+          Teardown = None }
+
+    let registration = registerHandlerForOwner owner defaultServices handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 5.)
+
+    Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
+    entered.Task.WaitAsync(System.TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.False(registration.IsBusy())
+    Assert.Equal(1, owner.Snapshot.State)
+    Assert.Equal(0L, registration.CompletedDispatches())
+
+    Assert.Same(
+        failure,
+        Assert.Throws<System.IO.IOException>(fun () ->
+            registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded) |> ignore)
+    )
