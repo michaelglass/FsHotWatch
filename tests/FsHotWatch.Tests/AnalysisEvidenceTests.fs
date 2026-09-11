@@ -23,7 +23,7 @@ let private withCheckedSource action =
         File.WriteAllText(sourceFile, source)
         let checker = sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let options = getScriptOptions checker sourceFile source |> Async.RunSynchronously
+        let options = checker.GetProjectOptionsFromScript(sourceFile, FSharp.Compiler.Text.SourceText.ofString source, assumeDotNetFramework = false) |> Async.RunSynchronously |> fst
         pipeline.RegisterProject(sourceFile, options)
         let result =
             pipeline.CheckFile(AbsFilePath.create sourceFile)
@@ -58,7 +58,7 @@ let ``analysis-only handler earns completion from a sealed actual analysis witho
         Assert.Empty host.WorkSnapshot.Evidence
         let analysis = Assert.Single host.WorkSnapshot.AnalysisEvidence
         Assert.Empty analysis.FailureReasons
-        Assert.Equal(files, analysis.CheckedFiles))
+        Assert.Equal<Set<AbsFilePath>>(files, analysis.CheckedFiles))
 
 [<Fact(Timeout = 30000)>]
 let ``analysis proof refuses missing stale and failed file outcomes and configured tests`` () =

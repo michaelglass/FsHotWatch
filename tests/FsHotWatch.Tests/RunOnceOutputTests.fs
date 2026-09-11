@@ -771,8 +771,8 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
 let ``run-once overwrites a current green before surfacing total discovery failure`` () =
     withProjectOnlyRepo "runonce-total-discovery-failure" (fun repoRoot ->
         // Seed the exact dangerous state: a readable green from an earlier run.
-        FsHotWatch.Cli.IpcOutput.publishVerdict
-            BaselineFixtures.model
+        TestHelpers.publishVerdict
+            (TestHelpers.modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             FsHotWatch.Cli.CheckVerdict.InnerLoop

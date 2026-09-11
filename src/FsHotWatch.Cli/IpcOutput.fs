@@ -864,8 +864,9 @@ module internal TestRunEvidence =
         | _ -> current, None
 
 /// The application error code and versioned data carry model failure over RPC.
-let internal modelUnavailable (error: exn) =
+let rec internal modelUnavailable (error: exn) =
     match error with
+    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 -> modelUnavailable aggregate.InnerExceptions[0]
     | :? FsHotWatch.ProjectModel.UnavailableException as unavailable -> Some unavailable.Observation
     | :? StreamJsonRpc.RemoteInvocationException as remote when remote.ErrorCode = FsHotWatch.ProjectModelWire.ErrorCode ->
         try
@@ -1187,39 +1188,6 @@ let internal publishVerdictForInvocation
         settledTree
         outcome
         None
-
-/// `publishVerdictForInvocation` for a publish that no CLI bracket wraps — tests and
-/// embedders. Production check/confirm paths always pass their invocation through.
-let internal publishVerdict
-    (projectModel: FsHotWatch.ProjectModel.Observation)
-    (repoRoot: string)
-    (excludePatterns: string list)
-    (checkMode: CheckVerdict.CheckMode)
-    (noWarnFail: bool)
-    (runReport: TestRunReport)
-    (checkScoped: Verdict.CheckScopedEvidence)
-    (statuses: Map<string, ParsedPluginStatus>)
-    (redCauses: Verdict.RedCause list)
-    (settledTree: SettledTree)
-    (outcome: CheckVerdict.CheckOutcome)
-    : int =
-    publishVerdictForInvocation
-        (Verdict.Invocation.start ())
-        repoRoot
-        excludePatterns
-        checkMode
-        noWarnFail
-        runReport
-        checkScoped
-        statuses
-        (IpcParsing.DaemonEvidence.Served([], projectModel,
-            match projectModel, runReport.RunId with
-            | FsHotWatch.ProjectModel.Observation.Available model, Some runId ->
-                [ { RunId = runId; Generation = model.Generation; Refusals = [] } ]
-            | _ -> []))
-        redCauses
-        settledTree
-        outcome
 
 /// Publish an infrastructure failure that made the run un-completable before
 /// plugin/test verdict inputs existed. Exit 2, never red, and the exact reason is
