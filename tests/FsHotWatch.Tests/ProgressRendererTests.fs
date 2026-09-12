@@ -1103,3 +1103,48 @@ let ``AUTOMATION-198: agent nextStep after a verified-nothing run points at stat
     // Control: the executing run still ends the loop.
     let done_ = agentAll [ "test-prune", genuinePassStatus () ] |> List.last
     test <@ done_.Contains "done" @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false, false)>]
+[<InlineData(false, true)>]
+[<InlineData(true, false)>]
+[<InlineData(true, true)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``declined measurement renders its reason and warning without an optional summary`` verbose strict =
+    let mode = if verbose then Verbose else Compact
+    let reason = "coverage report belongs to another build"
+    let measured = okStatus None
+    let declined =
+        { measured with
+            LastRun =
+                Some
+                    { completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None with
+                        Outcome = RunOutcome.NotEvaluated reason } }
+
+    let rendered = renderPlugin mode strict now "coverage-probe" declined |> stripMany
+    Assert.Contains("⚠", rendered.Head)
+    Assert.DoesNotContain("✓", rendered.Head)
+    Assert.Contains(reason, String.concat "\n" rendered)
+
+    // The same terminal lifecycle with an actual measured result earns success;
+    // declining remains visible even when ordinary warnings are advisory.
+    let control = renderPlugin mode strict now "coverage-probe" measured |> stripMany
+    Assert.Contains("✓", control.Head)
+    Assert.DoesNotContain("⚠", control.Head)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``agent decline uses the typed reason and escapes its quotes instead of reporting a success summary`` () =
+    let reason = "report \"coverage.json\" is unavailable"
+    let declined =
+        { okStatus None with
+            LastRun =
+                Some
+                    { completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) (Some "measurement succeeded") with
+                        Outcome = RunOutcome.NotEvaluated reason } }
+
+    let rendered = renderPlugin Agent false now "coverage-probe" declined
+    Assert.Equal(
+        "coverage-probe: not-evaluated summary=\"report \\\"coverage.json\\\" is unavailable\"",
+        Assert.Single rendered
+    )
