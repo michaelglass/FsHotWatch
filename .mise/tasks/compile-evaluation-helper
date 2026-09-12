@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Compile the standalone analyzer evaluation helper only"
+set -euo pipefail
+dotnet build src/FsHotWatch.AnalyzerEvaluationHost/FsHotWatch.AnalyzerEvaluationHost.csproj --nologo
