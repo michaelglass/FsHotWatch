@@ -35,7 +35,7 @@ type internal Containment private (isEmpty: unit -> bool, terminate: unit -> uni
                     if error = 3 then
                         true
                     else
-                        raise (Win32Exception(error, "Cannot establish whether the owned process group is empty."))
+                        raise (Win32Exception(error, $"Cannot establish whether the owned process group is empty. nativeErrorCode={error}"))
 
             new Containment(isEmpty, ignore, ignore)
 
