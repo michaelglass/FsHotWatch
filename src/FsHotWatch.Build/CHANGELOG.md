@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- AUTOMATION-104: publish completed failure evidence from actual build execution,
+  bound to its launch model and inputs. Cached build failures trigger a fresh attempt;
+  successful build replay retains artifact freshness checks.
+- AUTOMATION-481: a dependency that was not evaluated cannot authorize a build.
+
 ## 0.7.0-alpha.34 - 2026-09-06
 
 - Fix: stop the CLI prescribing a merge policy it does not own (AUTOMATION-394)

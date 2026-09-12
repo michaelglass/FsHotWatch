@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- AUTOMATION-104: retain ownership until queued state publication completes, and let
+  current completed build failures settle verdict waits without inventing test evidence.
+- AUTOMATION-106: read child exit receipts independently of the caller's synchronization
+  context. Ownership failures report bounded phase metadata and original stack traces
+  without logging command arguments, environment values, or protocol contents.
+- AUTOMATION-481: distinguish measurements that were not evaluated from successful
+  execution, and preserve explicit cache replay provenance.
+- AUTOMATION-523: retry superseded change batches with their original admitted inputs
+  and a fresh project model, retaining the current-generation publication guard.
+
 ## 0.10.0-alpha.30 - 2026-09-07
 
 - AUTOMATION-339: **`RunOutcome.VerifiedNothing of detail`** — a `Completed` run that

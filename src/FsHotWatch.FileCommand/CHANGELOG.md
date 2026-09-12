@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-481: configured decline exit codes produce an explicit not-evaluated
+  outcome. Declined results are not cached and cannot satisfy build dependencies.
+
 ## 0.7.0-alpha.21 - 2026-09-01
 
 - chore: rebuild against the updated FsHotWatch core dependency.

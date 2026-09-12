@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- AUTOMATION-104: report current completed build failures in check and confirm without
+  forcing tests against invalid artifacts or manufacturing a test run. Failure evidence
+  is checked against the project generation and readable source and project inputs.
+- AUTOMATION-481: required gates that decline evaluation keep full runs and confirmations
+  incomplete. A new decline cannot preserve an older confirmation as current; verdicts
+  distinguish actual execution from cache replay.
+
 - AUTOMATION-394: console scope refusals describe missing test evidence without
   prescribing a merge policy or calling a refused `check` a `confirm`.
 
