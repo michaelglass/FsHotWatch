@@ -125,6 +125,58 @@ module private AnalyzerProvenanceBuildFixture =
 
 [<Collection("Analyzer provenance builds")>]
 type AnalyzerProvenanceBuildTests() =
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("same-output")>]
+    [<InlineData("different-copy")>]
+    [<InlineData("retargeted-alias")>]
+    member _.``output aliases preserve physical receipt binding``(scenario: string) =
+        AnalyzerProvenanceBuildFixture.withProducerDir "output-alias" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let copied = Path.Combine(root, "Copied")
+            let alias = Path.Combine(root, "Alias")
+            AnalyzerProvenanceBuildFixture.prepare producer "Mini" "module MiniRules\nlet answer = 1" None false None
+            AnalyzerProvenanceBuildFixture.build producer "Mini" ""
+            |> AnalyzerProvenanceBuildFixture.succeeds
+
+            let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(original.IsSome, "The physical producer must establish a reusable baseline")
+            let output = AnalyzerProvenanceBuildFixture.output producer "Mini"
+            let copiedOutput = AnalyzerProvenanceBuildFixture.output copied "Mini"
+            Directory.CreateDirectory(Path.GetDirectoryName copiedOutput) |> ignore
+            File.Copy(output, copiedOutput)
+            File.Copy(output + ".fshw-analyzer.xml", copiedOutput + ".fshw-analyzer.xml")
+            Assert.True(File.ReadAllBytes(output) = File.ReadAllBytes(copiedOutput))
+
+            if scenario = "different-copy" then
+                Assert.True(
+                    (AnalyzerProvenanceBuildFixture.key copied "Mini").IsNone,
+                    "Identical bytes in a different physical output do not inherit the original receipt binding"
+                )
+            else
+                Directory.CreateSymbolicLink(alias, producer) |> ignore
+                try
+                    let aliased = AnalyzerProvenanceBuildFixture.key alias "Mini"
+                    Assert.True(aliased.IsSome, "A directory alias must admit the same physical analyzer output")
+                    Assert.Equal(original, aliased)
+
+                    let semantic directory =
+                        let outputDirectory = AnalyzerProvenanceBuildFixture.output directory "Mini" |> Path.GetDirectoryName
+                        match FsHotWatch.Analyzers.AnalyzerProvenance.trySnapshot ((<>) "Mini") [ outputDirectory ] with
+                        | Ok snapshot -> FsHotWatch.Analyzers.AnalyzerProvenance.semantic snapshot
+                        | Error reason -> failwith reason
+
+                    Assert.Equal(semantic producer, semantic alias)
+
+                    if scenario = "retargeted-alias" then
+                        Directory.Delete alias
+                        Directory.CreateSymbolicLink(alias, copied) |> ignore
+                        Assert.True(
+                            (AnalyzerProvenanceBuildFixture.key alias "Mini").IsNone,
+                            "Retargeting an admitted alias to a copy must recheck physical receipt binding"
+                        )
+                finally
+                    Directory.Delete alias)
+
     [<Fact(Timeout = 300000)>]
     member _.``real producer source link metadata does not partition equivalent workspace keys``() =
         AnalyzerProvenanceBuildFixture.withProducerDir "real-parity" (fun root ->
