@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 using System.Xml;
 
 namespace FsHotWatch.AnalyzerEvaluationHost;
@@ -70,11 +71,14 @@ internal static class ProjectProjection
             // Reader integration must classify SDK/NuGet versus first-party imports.
             var bytes = File.ReadAllBytes(path);
             using var stream = new MemoryStream(bytes, writable: false);
-            using var reader = XmlReader.Create(stream, new XmlReaderSettings
+            // MSBuild uses XmlTextReader: XmlReader.Create normalizes newlines
+            // in comments and attribute values before RawXml can witness them.
+            using var text = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
+            using var reader = new XmlTextReader(new Uri(path).AbsoluteUri, text)
             {
                 DtdProcessing = DtdProcessing.Prohibit,
                 XmlResolver = null
-            }, path);
+            };
             var readRoot = parseRoot.Invoke(null, new object[]
             {
                 reader, verificationCollection, preserveFormatting
