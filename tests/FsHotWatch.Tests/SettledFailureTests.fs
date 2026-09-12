@@ -16,6 +16,7 @@ open FsHotWatch.Tests.TestHelpers
 [<InlineData("new-project")>]
 [<InlineData("deleted-source")>]
 [<InlineData("unreadable-source")>]
+[<InlineData("unreadable-launch")>]
 [<InlineData("ignored-event")>]
 [<InlineData("cached-failure")>]
 [<InlineData("external-wire-inputs")>]
@@ -125,6 +126,11 @@ let ``public verdict wait reports current failed build without inventing test ev
                         [ FsHotWatch.TaskCache.CachedBuildCompleted(BuildFailed [ "cached build failure" ]) ] }
 
             host.RegisterHandler build
+
+            if transition = "unreadable-launch" then
+                System.IO.File.Delete source
+                System.IO.Directory.CreateDirectory source |> ignore
+
             host.EmitFileChanged(SourceChanged [ source ])
 
             waitUntil
@@ -204,6 +210,23 @@ let ``public verdict wait reports current failed build without inventing test ev
                     let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
                     malformed.["completedFailures"].[0].["modelGeneration"] <- generation
                     Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
+                for fragment in [ "null"; "[]"; "[null]"; "[{\"path\":\"Source.fs\"}]" ] do
+                    let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
+                    malformed.["completedFailures"].[0].["inputFiles"] <- System.Text.Json.Nodes.JsonNode.Parse fragment
+                    Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
+
+                let duplicated = System.Text.Json.Nodes.JsonNode.Parse diagnostics
+                let manifest = duplicated.["completedFailures"].[0].["inputFiles"].AsArray()
+                manifest.Add(manifest.[0].DeepClone())
+                Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (duplicated.ToJsonString()))
+
+                let badHash = System.Text.Json.Nodes.JsonNode.Parse diagnostics
+                badHash.["completedFailures"].[0].["inputFiles"].[0].["contentHash"] <- System.Text.Json.Nodes.JsonValue.Create("wrong")
+                Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (badHash.ToJsonString()))
+
+                for malformed in [ "{}"; "[]"; "not-json" ] do
+                    Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root malformed)
+
                 // Drive the public CLI publication path from real RPC diagnostics and
                 // the actual no-run test-scope response. Neither command may start tests.
                 for mode in
