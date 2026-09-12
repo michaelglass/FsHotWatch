@@ -23,8 +23,27 @@ module private AnalyzerProvenanceBuildFixture =
             | null -> candidate.FullName
             | target -> target.FullName
 
+    let ownProcesses () =
+        let registry = FsHotWatch.ProcessRegistry.Registry()
+        let scope = FsHotWatch.ProcessRegistry.install registry
+        { new IDisposable with
+            member _.Dispose() =
+                try
+                    Assert.Empty(registry.Snapshot())
+                    Assert.Empty(registry.Leaks)
+                finally
+                    scope.Dispose() }
+
     let withProducerDir prefix body =
-        withTempDir prefix (fun root -> body (physicalDirectory (DirectoryInfo root)))
+        let directory = Path.Combine(Path.GetTempPath(), $"fshw-{prefix}-{Guid.NewGuid():N}")
+        Directory.CreateDirectory directory |> ignore
+        let root = physicalDirectory (DirectoryInfo directory)
+        // Synthetic fixtures remain in place on failure, preserving path-bound receipts.
+        let result =
+            use ownership = ownProcesses ()
+            body root
+        Directory.Delete(root, true)
+        result
 
     let name value = XName.Get value
     let attr key (value: string) = XAttribute(name key, value)
@@ -155,6 +174,7 @@ type AnalyzerProvenanceBuildTests() =
         let root = Path.Combine(Path.GetTempPath(), "fshw-external-glob-" + Guid.NewGuid().ToString("N"))
         Directory.CreateDirectory root |> ignore
         let root = AnalyzerProvenanceBuildFixture.physicalDirectory (DirectoryInfo root)
+        use ownership = AnalyzerProvenanceBuildFixture.ownProcesses ()
         (fun root ->
             let producer = Path.Combine(root, "Producer")
             let shared = Path.Combine(root, "Shared")
@@ -247,7 +267,17 @@ type AnalyzerProvenanceBuildTests() =
             AnalyzerProvenanceBuildFixture.build producer "Mini" ""
             |> AnalyzerProvenanceBuildFixture.succeeds
 
-            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsSome)
+            let baseline = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            if baseline.IsNone then
+                let diagnostic =
+                    FsHotWatch.Analyzers.AnalyzerProvenance.trySnapshot
+                        (FsHotWatch.Analyzers.AnalyzersPlugin.isKnownNonAnalyzerPrefix
+                            FsHotWatch.Analyzers.AnalyzersPlugin.knownNonAnalyzerPrefixes)
+                        [ AnalyzerProvenanceBuildFixture.output producer "Mini" |> Path.GetDirectoryName ]
+                match diagnostic with
+                | Result.Error reason -> Assert.Fail($"ProjectReference producer refused: {reason}; synthetic fixture retained at {root}")
+                | Result.Ok _ -> Assert.Fail("Public ProjectReference key refused despite valid provenance")
+            Assert.True(baseline.IsSome)
             File.AppendAllText(Path.Combine(dependency, "Rules.fs"), "\nlet added = 2")
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
 
@@ -336,6 +366,57 @@ type AnalyzerProvenanceBuildTests() =
             File.Delete(source added)
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
 
+    [<Fact(Timeout = 300000)>]
+    member _.``optional external import invalidates unchanged source membership``() =
+        AnalyzerProvenanceBuildFixture.withProducerDir "optional-import" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let imported = Path.Combine(root, "Rules.props")
+
+            AnalyzerProvenanceBuildFixture.prepare
+                producer
+                "Mini"
+                "module MiniRules\n#if OPTIONAL_RULES\nlet answer = 2\n#else\nlet answer = 1\n#endif\n"
+                None
+                false
+                None
+
+            let projectPath = Path.Combine(producer, "Mini.fsproj")
+            let project = XElement.Load projectPath
+            let n = AnalyzerProvenanceBuildFixture.node
+            let a = AnalyzerProvenanceBuildFixture.attr
+
+            project.Add(
+                n
+                    "Import"
+                    [| a "Project" "../Rules.props"
+                       a "Condition" "Exists('../Rules.props')" |]
+            )
+
+            project.Save projectPath
+            Assert.False(File.Exists imported)
+            AnalyzerProvenanceBuildFixture.build producer "Mini" ""
+            |> AnalyzerProvenanceBuildFixture.succeeds
+
+            let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(original.IsSome, "The actual producer must establish reusable baseline provenance")
+            Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
+
+            // Outside producer discovery: only the evaluated import set changes.
+            // The existing Compile items and five effective context fields remain unchanged.
+            let rules =
+                n
+                    "Project"
+                    [| n
+                           "PropertyGroup"
+                           [| n "DefineConstants" [| "$(DefineConstants);OPTIONAL_RULES" |] |] |]
+
+            rules.Save imported
+
+            Assert.True(
+                (AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone,
+                "A newly resolved external import changing compiler options must refuse the old analyzer receipt"
+            ))
+
     [<Theory(Timeout = 300000)>]
     [<InlineData(false)>]
     [<InlineData(true)>]
@@ -356,7 +437,11 @@ type AnalyzerProvenanceBuildTests() =
                 let n = AnalyzerProvenanceBuildFixture.node
                 let a = AnalyzerProvenanceBuildFixture.attr
                 let value =
-                    if propertyFunction then $"$([System.Environment]::GetEnvironmentVariable('{variable}'))"
+                    if propertyFunction then
+                        project.Add(n "PropertyGroup" [|
+                            n "CurrentRuleSelection" [| $"$([System.Environment]::GetEnvironmentVariable('{variable}'))" |]
+                        |])
+                        "$(CurrentRuleSelection)"
                     else "$(" + variable + ")"
                 project.Add(n "ItemGroup" [|
                     a "Condition" ("'" + value + "' == 'enabled'")
@@ -411,6 +496,27 @@ type AnalyzerProvenanceBuildTests() =
     member _.``invocation globals survive private response file replay``(expected: string, encoded: string) =
         AnalyzerProvenanceBuildFixture.withProducerDir "global-escaping" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
+            let selectedSource = Path.Combine(root, "Selected.fs")
+            let selectsSource = expected = "semi;colon" || expected = "percent%value"
+
+            if selectsSource then
+                File.WriteAllText(selectedSource, "module SelectedRules\nlet value = 2")
+                let projectPath = Path.Combine(root, "Mini.fsproj")
+                let project = XElement.Load projectPath
+                let n = AnalyzerProvenanceBuildFixture.node
+                let a = AnalyzerProvenanceBuildFixture.attr
+
+                project.Add(
+                    n
+                        "ItemGroup"
+                        [| n
+                               "Compile"
+                               [| a "Include" "Selected.fs"
+                                  a "Condition" ("'$(RuleFlavor)' == '" + encoded + "'") |] |]
+                )
+
+                project.Save projectPath
+
             let argument =
                 if encoded.EndsWith("\\", StringComparison.Ordinal) then "-p:RuleFlavor=" + encoded
                 else "\"-p:RuleFlavor=" + encoded + "\""
@@ -424,7 +530,18 @@ type AnalyzerProvenanceBuildTests() =
                 context.Element(XName.Get "Globals").Elements(XName.Get "Property")
                 |> Seq.find (fun property -> property.Attribute(XName.Get "name").Value = "RuleFlavor")
                 |> fun property -> property.Attribute(XName.Get "value").Value
-            Assert.True((actual = expected), "Producer test invocation must preserve the intended synthetic value")
+            // IBuildEngine6 exposes escaped global values, as consumed by Project's constructor.
+            Assert.True((actual = encoded), "Private context must preserve the SDK's escaped global representation")
+
+            if selectsSource then
+                let compiledSources =
+                    receipt.Element(XName.Get "Inputs").Elements(XName.Get "File")
+                    |> Seq.filter (fun file -> file.Attribute(XName.Get "key").Value.StartsWith("source:", StringComparison.Ordinal))
+                    |> Seq.map (fun file -> file.Attribute(XName.Get "path").Value |> Path.GetFullPath)
+                    |> Seq.toList
+
+                Assert.Contains(Path.GetFullPath selectedSource, compiledSources)
+
             Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome))
 
     [<Theory(Timeout = 300000)>]
