@@ -490,6 +490,16 @@ merge verdict without one.
 | `pattern` | `string` | `"*.fsx"` | File extension pattern to match (e.g. `"*.fsx"`, `"*.sql"`). |
 | `command` | `string` | `"echo"` | Command to run when a matching file changes. |
 | `args` | `string` | `""` | Arguments to the command. |
+| `notEvaluatedExitCode` | `integer` | absent | An exit code from 1–255 meaning the command declined measurement. This produces `not-evaluated` with a reason, is never cached, and cannot satisfy a build dependency. |
+
+A declined gate may accompany a green impact-filtered `check`; full runs and
+`confirm` require evaluation and report incomplete if a gate declines. Ordinary
+nonzero exits and process timeouts remain failures. A configured decline with an
+incomplete output drain is also a failure.
+Plugin verdict entries carry `replayed: false` for observed work, `true` for cache
+replay, and `null` when provenance is unavailable. This metadata is independent of
+human-readable summaries.
+
 
 **`coverage` fields:**
 

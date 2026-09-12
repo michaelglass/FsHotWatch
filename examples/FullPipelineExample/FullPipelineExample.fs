@@ -105,6 +105,7 @@ let runFullPipeline (repoRoot: string) =
             "fsi --typecheck-only build.fsx" // args
             repoRoot // for resolving relative arg-file paths
             None // timeoutSec
+            None // notEvaluatedExitCode
     )
 
     // Coverage thresholds — checked after each test run. Reads the Cobertura XML

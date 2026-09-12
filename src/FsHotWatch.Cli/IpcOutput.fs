@@ -935,6 +935,23 @@ let private publishVerdictWithReason
     // misses exactly the case the double-hash exists to catch: the file said
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
+    // Decide the required measurement before touching the filesystem. A failed
+    // publication must return the same refusal, never the caller's former green.
+    let declined =
+        CheckVerdict.CheckInputs.requiredEvaluationDeclines checkMode runReport.Scope statuses
+
+    let outcome =
+        match declined, outcome with
+        | _ :: _, (CheckVerdict.CheckOutcome.Clean _ | CheckVerdict.CheckOutcome.UnearnedScope _) ->
+            CheckVerdict.CheckOutcome.Incomplete -1
+        | _ -> outcome
+
+    let terminalIncompleteReason =
+        match declined, outcome, terminalIncompleteReason with
+        | _ :: _, CheckVerdict.CheckOutcome.Incomplete _, None ->
+            Some("required gates were not evaluated: " + String.concat "; " declined)
+        | _ -> terminalIncompleteReason
+
     try
         // AUTOMATION-533. EVERY batch this check has evidence from, not just the one the
         // daemon's receipt names — see `Verdict.runSuites`.
@@ -1164,6 +1181,9 @@ let private publishVerdictWithReason
         let preservedPrior =
             priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
                 Verdict.priorConfirmation repoRoot excludePatterns)
+            // A new decline cannot leave an older full claim looking current,
+            // even when this filtered invocation may legitimately decline.
+            |> Option.filter (fun _ -> (CheckVerdict.CheckInputs.terminalEvaluationDeclines statuses).IsEmpty)
             |> Option.filter (fun prior ->
                 match projectModel with
                 | FsHotWatch.ProjectModel.Observation.Available model ->
