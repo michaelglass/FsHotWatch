@@ -308,6 +308,57 @@ type AnalyzerProvenanceBuildTests() =
             File.Delete(source added)
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
 
+    [<Fact(Timeout = 300000)>]
+    member _.``optional external import invalidates unchanged source membership``() =
+        withTempDir "a564-optional-import" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let imported = Path.Combine(root, "Rules.props")
+
+            AnalyzerProvenanceBuildFixture.prepare
+                producer
+                "Mini"
+                "module MiniRules\n#if OPTIONAL_RULES\nlet answer = 2\n#else\nlet answer = 1\n#endif\n"
+                None
+                false
+                None
+
+            let projectPath = Path.Combine(producer, "Mini.fsproj")
+            let project = XElement.Load projectPath
+            let n = AnalyzerProvenanceBuildFixture.node
+            let a = AnalyzerProvenanceBuildFixture.attr
+
+            project.Add(
+                n
+                    "Import"
+                    [| a "Project" "../Rules.props"
+                       a "Condition" "Exists('../Rules.props')" |]
+            )
+
+            project.Save projectPath
+            Assert.False(File.Exists imported)
+            AnalyzerProvenanceBuildFixture.build producer "Mini" ""
+            |> AnalyzerProvenanceBuildFixture.succeeds
+
+            let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(original.IsSome, "The actual producer must establish reusable baseline provenance")
+            Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
+
+            // Outside producer discovery: only the evaluated import set changes.
+            // The existing Compile items and five effective context fields remain unchanged.
+            let rules =
+                n
+                    "Project"
+                    [| n
+                           "PropertyGroup"
+                           [| n "DefineConstants" [| "$(DefineConstants);OPTIONAL_RULES" |] |] |]
+
+            rules.Save imported
+
+            Assert.True(
+                (AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone,
+                "A newly resolved external import changing compiler options must refuse the old analyzer receipt"
+            ))
+
     [<Theory(Timeout = 300000)>]
     [<InlineData(false)>]
     [<InlineData(true)>]
