@@ -142,6 +142,33 @@ module private AnalyzerProvenanceBuildFixture =
 
         handler.CacheKey.Value(FileChecked(fakeFileCheckResult (Path.Combine(directory, "Subject.fs"))))
 
+    let prepareProjectChain root transitive =
+        let dependency = Path.Combine(root, "Library")
+        let producer = Path.Combine(root, "Producer")
+        prepare dependency "Library" "module Library\nlet value = 1" None false None
+
+        let reference, source =
+            if transitive then
+                let middle = Path.Combine(root, "Middle")
+                prepare middle "Middle" "module Middle\nlet value = Library.value" None false (Some "../Library/Library.fsproj")
+                "../Middle/Middle.fsproj", "module MiniRules\nlet answer = Middle.value"
+            else
+                "../Library/Library.fsproj", "module MiniRules\nlet answer = Library.value"
+
+        prepare producer "Mini" source None false (Some reference)
+        build producer "Mini" "" |> succeeds
+        dependency, producer
+
+    let singleOutputSnapshot directory stem =
+        FsHotWatch.Analyzers.AnalyzerProvenance.trySnapshot
+            ((<>) stem)
+            [ output directory stem |> Path.GetDirectoryName ]
+
+    let requireSnapshot =
+        function
+        | Result.Ok snapshot -> snapshot
+        | Result.Error reason -> failwith $"Expected accountable analyzer output: {reason}"
+
 [<Collection("Analyzer provenance builds")>]
 type AnalyzerProvenanceBuildTests() =
     [<Theory(Timeout = 300000)>]
@@ -371,6 +398,107 @@ type AnalyzerProvenanceBuildTests() =
             |> AnalyzerProvenanceBuildFixture.fails "Analyzer inputs changed while compiler was running"
 
             Assert.False(File.Exists(AnalyzerProvenanceBuildFixture.output root "Mini" + ".fshw-analyzer.xml")))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    member _.``copied direct and transitive project outputs retain semantic identity and local binding``(transitive: bool) =
+        AnalyzerProvenanceBuildFixture.withProducerDir "project-copy-identity" (fun root ->
+            let dependency, producer = AnalyzerProvenanceBuildFixture.prepareProjectChain root transitive
+            let originalOutput = AnalyzerProvenanceBuildFixture.output dependency "Library"
+            let copiedOutput = AnalyzerProvenanceBuildFixture.output producer "Library"
+            Assert.True(File.Exists copiedOutput, "The actual build must copy the dependency implementation")
+            Assert.True(File.ReadAllBytes originalOutput = File.ReadAllBytes copiedOutput)
+
+            let original =
+                AnalyzerProvenanceBuildFixture.singleOutputSnapshot dependency "Library"
+                |> AnalyzerProvenanceBuildFixture.requireSnapshot
+
+            let copied =
+                AnalyzerProvenanceBuildFixture.singleOutputSnapshot producer "Library"
+                |> AnalyzerProvenanceBuildFixture.requireSnapshot
+
+            Assert.Equal(
+                FsHotWatch.Analyzers.AnalyzerProvenance.semantic original,
+                FsHotWatch.Analyzers.AnalyzerProvenance.semantic copied
+            )
+            Assert.NotEqual(
+                FsHotWatch.Analyzers.AnalyzerProvenance.materialization original,
+                FsHotWatch.Analyzers.AnalyzerProvenance.materialization copied
+            )
+            let baseline = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(baseline.IsSome, "All copied first-party outputs must be accountable through the public cache key")
+            AnalyzerProvenanceBuildFixture.build producer "Mini" "" |> AnalyzerProvenanceBuildFixture.succeeds
+            Assert.Equal(baseline, AnalyzerProvenanceBuildFixture.key producer "Mini"))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    member _.``dependency only rebuild cannot bless a stale analyzer copy``(transitive: bool) =
+        AnalyzerProvenanceBuildFixture.withProducerDir "project-copy-rebuild" (fun root ->
+            let dependency, producer = AnalyzerProvenanceBuildFixture.prepareProjectChain root transitive
+            let baseline = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(baseline.IsSome)
+            let copiedOutput = AnalyzerProvenanceBuildFixture.output producer "Library"
+            let copiedBytes = File.ReadAllBytes copiedOutput
+            File.WriteAllText(Path.Combine(dependency, "Rules.fs"), "module Library\nlet value = 2")
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone)
+
+            AnalyzerProvenanceBuildFixture.build dependency "Library" "" |> AnalyzerProvenanceBuildFixture.succeeds
+            Assert.True(copiedBytes = File.ReadAllBytes copiedOutput, "Building only Library must leave the consumer copy untouched")
+            Assert.False(copiedBytes = File.ReadAllBytes(AnalyzerProvenanceBuildFixture.output dependency "Library"))
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone,
+                        "A newly valid original dependency cannot attest the stale loaded copy")
+
+            AnalyzerProvenanceBuildFixture.build producer "Mini" "" |> AnalyzerProvenanceBuildFixture.succeeds
+            let rebuilt = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(rebuilt.IsSome)
+            Assert.NotEqual(baseline, rebuilt)
+            Assert.True(File.ReadAllBytes copiedOutput = File.ReadAllBytes(AnalyzerProvenanceBuildFixture.output dependency "Library")))
+
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("output-bytes")>]
+    [<InlineData("original-receipt")>]
+    member _.``copied dependency refuses replaced bytes or an original path receipt``(replacement: string) =
+        AnalyzerProvenanceBuildFixture.withProducerDir "project-copy-replacement" (fun root ->
+            let dependency, producer = AnalyzerProvenanceBuildFixture.prepareProjectChain root false
+            let baseline = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            Assert.True(baseline.IsSome)
+            let copiedOutput = AnalyzerProvenanceBuildFixture.output producer "Library"
+            let receipt = copiedOutput + ".fshw-analyzer.xml"
+            let originalBytes = File.ReadAllBytes copiedOutput
+            let originalReceipt = File.ReadAllBytes receipt
+
+            match replacement with
+            | "output-bytes" -> File.AppendAllText(copiedOutput, "changed local materialization")
+            | _ -> File.Copy(AnalyzerProvenanceBuildFixture.output dependency "Library" + ".fshw-analyzer.xml", receipt, true)
+
+            Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone)
+            File.WriteAllBytes(copiedOutput, originalBytes)
+            File.WriteAllBytes(receipt, originalReceipt)
+            Assert.Equal(baseline, AnalyzerProvenanceBuildFixture.key producer "Mini"))
+
+    [<Fact(Timeout = 300000)>]
+    member _.``producer refuses a dependency receipt naming another successful output``() =
+        AnalyzerProvenanceBuildFixture.withProducerDir "project-copy-foreign-receipt" (fun root ->
+            let dependency, producer = AnalyzerProvenanceBuildFixture.prepareProjectChain root false
+            let foreign = Path.Combine(root, "Foreign")
+            AnalyzerProvenanceBuildFixture.prepare foreign "Library" "module Library\nlet value = 1" None false None
+            AnalyzerProvenanceBuildFixture.build foreign "Library" "" |> AnalyzerProvenanceBuildFixture.succeeds
+            // Establish the same global-property context used by the publication probe.
+            AnalyzerProvenanceBuildFixture.build producer "Mini" "-t:Rebuild -p:BuildProjectReferences=false"
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            let publication = "-t:_FshwPrepareAnalyzerProvenance,_FshwPublishAnalyzerProvenance -p:BuildProjectReferences=false"
+            AnalyzerProvenanceBuildFixture.build producer "Mini" publication |> AnalyzerProvenanceBuildFixture.succeeds
+            let foreignReceipt = AnalyzerProvenanceBuildFixture.output foreign "Library" + ".fshw-analyzer.xml"
+            let dependencyReceipt = AnalyzerProvenanceBuildFixture.output dependency "Library" + ".fshw-analyzer.xml"
+            File.Copy(foreignReceipt, dependencyReceipt, true)
+
+            // Run the real producer publication boundary without rebuilding Library,
+            // which would otherwise replace the deliberately substituted receipt.
+            match AnalyzerProvenanceBuildFixture.build producer "Mini" publication with
+            | Failed _ -> ()
+            | other -> Assert.Fail($"Foreign dependency receipt was not refused: %A{other}"))
 
     [<Fact(Timeout = 300000)>]
     member _.``first party project dependencies have validated source provenance``() =
