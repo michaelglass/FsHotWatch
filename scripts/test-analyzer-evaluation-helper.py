@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import quoteattr
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--sdk-install", action="append", type=Path)
@@ -30,11 +31,12 @@ for install in installs:
         project = producer / "Mini.fsproj"
         # Actual literal XML, quotes and line breaks, not percent-encoded CLI text.
         xml_global = '<Configuration>\n  <Project Name="quoted">value</Project>\n</Configuration>'
+        xml_condition = quoteattr("'$(RuleXml)' == '" + xml_global + "'")
         project.write_text('''<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <TargetFramework>net%s.0</TargetFramework></PropertyGroup><ItemGroup>
 <Compile Include="Rules.fs"/><Compile Include="Selected.fs" Condition="'$(RuleFlavor)' == 'semi%%3Bcolon'"/>
-<Compile Include="XmlSelected.fs" Condition="'$(RuleXml.Length)' == '%s'"/>
-</ItemGroup><Import Project="../Rules.props" Condition="Exists('../Rules.props')"/></Project>''' % (install.name.split('.')[0], len(xml_global)))
+<Compile Include="XmlSelected.fs" Condition=%s/>
+</ItemGroup><Import Project="../Rules.props" Condition="Exists('../Rules.props')"/></Project>''' % (install.name.split('.')[0], xml_condition))
         (producer / "global.json").write_text(json.dumps({"sdk": {"version": install.name, "rollForward": "disable"}}))
         (producer / "Rules.fs").write_text("module Rules\nlet value = 1\n")
         (producer / "Selected.fs").write_text("module Selected\nlet value = 2\n")
