@@ -28,19 +28,24 @@ for install in installs:
         producer = root / "Producer"
         producer.mkdir()
         project = producer / "Mini.fsproj"
+        # Actual literal XML, quotes and line breaks, not percent-encoded CLI text.
+        xml_global = '<Configuration>\n  <Project Name="quoted">value</Project>\n</Configuration>'
         project.write_text('''<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <TargetFramework>net%s.0</TargetFramework></PropertyGroup><ItemGroup>
 <Compile Include="Rules.fs"/><Compile Include="Selected.fs" Condition="'$(RuleFlavor)' == 'semi%%3Bcolon'"/>
-</ItemGroup><Import Project="../Rules.props" Condition="Exists('../Rules.props')"/></Project>''' % install.name.split('.')[0])
+<Compile Include="XmlSelected.fs" Condition="'$(RuleXml.Length)' == '%s'"/>
+</ItemGroup><Import Project="../Rules.props" Condition="Exists('../Rules.props')"/></Project>''' % (install.name.split('.')[0], len(xml_global)))
         (producer / "global.json").write_text(json.dumps({"sdk": {"version": install.name, "rollForward": "disable"}}))
         (producer / "Rules.fs").write_text("module Rules\nlet value = 1\n")
         (producer / "Selected.fs").write_text("module Selected\nlet value = 2\n")
+        (producer / "XmlSelected.fs").write_text("module XmlSelected\nlet value = 3\n")
         request = root / "request.xml"
         def save_request(version=install.name):
             node = ET.Element("AnalyzerEvaluationRequest", version="1", project=str(project),
                               sdkRoot=str(sdk.resolve()), sdkVersion=version, msbuildVersion=msbuild_version)
             globals_node = ET.SubElement(node, "Globals")
             ET.SubElement(globals_node, "Property", name="RuleFlavor", value="semi%3Bcolon")
+            ET.SubElement(globals_node, "Property", name="RuleXml", value=xml_global)
             request.write_bytes(ET.tostring(node))
             os.chmod(request, 0o600)
         def run(success=True):
@@ -58,7 +63,7 @@ for install in installs:
         assert before["Properties"]["NETCoreSdkVersion"] == install.name
         assert before["Properties"]["MSBuildVersion"] == msbuild_version
         assert Path(before["Sdk"]["AssemblyPath"]).parent == sdk.resolve()
-        assert [Path(item["FullPath"]).name for item in before["Items"]["Compile"]] == ["Rules.fs", "Selected.fs"]
+        assert [Path(item["FullPath"]).name for item in before["Items"]["Compile"]] == ["Rules.fs", "Selected.fs", "XmlSelected.fs"]
         imported = root / "Rules.props"
         imported.write_text("<Project><PropertyGroup><DefineConstants>FIRST</DefineConstants></PropertyGroup></Project>")
         after = run()
