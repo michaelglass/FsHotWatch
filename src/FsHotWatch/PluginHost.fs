@@ -223,12 +223,17 @@ type PluginHost
     /// Only an idle, unchanged owner snapshot and matching readable launch inputs
     /// can authorize a completed failure for the current model.
     member internal _.CurrentCompletedFailures(snapshot: PluginWorkOwner.HostSnapshot) =
-        if snapshot.IsBusy then []
+        if snapshot.IsBusy then
+            []
         else
             match snapshot.ProjectModel with
             | ProjectModel.Observation.Available model ->
-                let candidates = snapshot.CompletedFailures |> List.filter (fun proof -> proof.Generation = model.Generation)
-                if candidates.IsEmpty then []
+                let candidates =
+                    snapshot.CompletedFailures
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
+
+                if candidates.IsEmpty then
+                    []
                 else
                     match TreeHash.tryReadableIdentity repoRoot with
                     | Some current when System.Object.ReferenceEquals(snapshot, workStore.Snapshot) ->
@@ -236,10 +241,15 @@ type PluginHost
                             candidates
                             |> List.filter (fun proof ->
                                 proof.InputTreeHash = current
-                                && (proof.InputFiles |> List.forall (fun (path, expected) ->
-                                    let actual = ContentHash.ofFile path
-                                    ContentHash.isReadable actual && actual = expected)))
-                        if System.Object.ReferenceEquals(snapshot, workStore.Snapshot) then matching else []
+                                && (proof.InputFiles
+                                    |> List.forall (fun (path, expected) ->
+                                        let actual = ContentHash.ofFile path
+                                        ContentHash.isReadable actual && actual = expected)))
+
+                        if System.Object.ReferenceEquals(snapshot, workStore.Snapshot) then
+                            matching
+                        else
+                            []
                     | _ -> []
             | _ -> []
 

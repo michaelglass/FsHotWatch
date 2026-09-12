@@ -207,14 +207,21 @@ let compute (repoRoot: string) (excludePatterns: string list) : Tree =
 let internal tryReadableIdentity repoRoot =
     try
         let walked = files repoRoot []
-        let entries = walked.Files |> List.map (fun (rel, path) -> rel, ContentHash.ofFile path)
-        if not (Directory.Exists repoRoot) || not walked.Skipped.IsEmpty
-           || (entries |> List.exists (snd >> ContentHash.isReadable >> not)) then
+
+        let entries =
+            walked.Files |> List.map (fun (rel, path) -> rel, ContentHash.ofFile path)
+
+        if
+            not (Directory.Exists repoRoot)
+            || not walked.Skipped.IsEmpty
+            || (entries |> List.exists (snd >> ContentHash.isReadable >> not))
+        then
             None
         else
             let absent =
                 walked.AbsentDeclarations
                 |> List.map (fun rel -> VerdictInputs.SentinelPrefix + rel, VerdictInputs.AbsentDeclaration)
+
             Some(hashEntries (List.sortBy fst (entries @ absent)))
     with
     | :? IOException

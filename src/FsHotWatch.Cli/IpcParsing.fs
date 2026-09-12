@@ -1130,13 +1130,15 @@ let internal hasCurrentCompletedFailure repoRoot (json: string) =
     try
         use doc = JsonDocument.Parse(json)
         let root = doc.RootElement
+
         let inputsMatch (proof: JsonElement) =
             match proof.TryGetProperty("inputFiles") with
             | true, files when files.ValueKind = JsonValueKind.Array && files.GetArrayLength() > 0 ->
                 let parsed =
                     files.EnumerateArray()
                     |> Seq.choose (fun file ->
-                        if file.ValueKind <> JsonValueKind.Object then None
+                        if file.ValueKind <> JsonValueKind.Object then
+                            None
                         else
                             match tryGetStringProp file "path", tryGetStringProp file "contentHash" with
                             | Some path, Some hash when not (String.IsNullOrWhiteSpace path) ->
@@ -1146,21 +1148,26 @@ let internal hasCurrentCompletedFailure repoRoot (json: string) =
                                 Some(System.IO.Path.GetFullPath(path, repoRoot), hash)
                             | _ -> None)
                     |> Seq.toList
+
                 parsed.Length = files.GetArrayLength()
                 && (parsed |> List.map fst |> Set.ofList |> Set.count) = parsed.Length
-                && (parsed |> List.forall (fun (path, expected) ->
-                    let actual = FsHotWatch.ContentHash.ofFile path
-                    FsHotWatch.ContentHash.isReadable actual && actual = expected))
+                && (parsed
+                    |> List.forall (fun (path, expected) ->
+                        let actual = FsHotWatch.ContentHash.ofFile path
+                        FsHotWatch.ContentHash.isReadable actual && actual = expected))
             | _ -> false
+
         match root.TryGetProperty("projectModel"), root.TryGetProperty("completedFailures") with
         | (true, model), (true, failures) when failures.ValueKind = JsonValueKind.Array ->
             match FsHotWatch.ProjectModelWire.tryRead model, FsHotWatch.TreeHash.tryReadableIdentity repoRoot with
             | Some(FsHotWatch.ProjectModel.Observation.Available current), Some identity ->
                 failures.EnumerateArray()
                 |> Seq.exists (fun proof ->
-                    if proof.ValueKind <> JsonValueKind.Object then false
+                    if proof.ValueKind <> JsonValueKind.Object then
+                        false
                     else
                         let text name = tryGetStringProp proof name
+
                         match proof.TryGetProperty("modelGeneration") with
                         | true, generation when generation.ValueKind = JsonValueKind.Number ->
                             match generation.TryGetInt64() with

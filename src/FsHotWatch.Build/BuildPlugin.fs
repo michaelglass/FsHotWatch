@@ -63,6 +63,7 @@ type BuildState =
         ForceRebuild: bool
         CompletedFailure: CompletedFailureEvidence option
     }
+
     interface ICompletedFailureState with
         member this.CompletedFailure = this.CompletedFailure
 
@@ -76,7 +77,11 @@ type BuildState =
 /// the two can never disagree.
 type BuildMsg =
     | BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
-    | ObservedBuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan * failure: CompletedFailureEvidence option
+    | ObservedBuildDone of
+        outcome: BuildOutcome *
+        entries: ErrorEntry list *
+        elapsed: TimeSpan *
+        failure: CompletedFailureEvidence option
     | ForceRebuildRequested of reply: System.Threading.Tasks.TaskCompletionSource<string>
 
 /// Diagnostic for the "MSBuild exited non-zero but produced no parseable
@@ -742,10 +747,12 @@ let createWith
                   yield! graph.GetAllProjects() |> List.map AbsProjectPath.value ]
                 |> List.distinct
                 |> List.map (fun path -> path, FsHotWatch.ContentHash.ofFile path)
+
             match FsHotWatch.TreeHash.tryReadableIdentity ctx.RepoRoot, ctx.ProjectGraph.ObserveModel() with
-            | Some identity, FsHotWatch.ProjectModel.Observation.Available current
-                when current.Generation = model.Generation
-                     && (files |> List.forall (snd >> FsHotWatch.ContentHash.isReadable)) ->
+            | Some identity, FsHotWatch.ProjectModel.Observation.Available current when
+                current.Generation = model.Generation
+                && (files |> List.forall (snd >> FsHotWatch.ContentHash.isReadable))
+                ->
                 Some(model.Generation, identity, files)
             | _ -> None
         | _ -> None
@@ -757,6 +764,7 @@ let createWith
             | _, Some(generation, identity, files) ->
                 Some(CompletedFailureEvidence.create generation identity files (buildSummary outcome entries))
             | _, None -> None
+
         ObservedBuildDone(outcome, entries, elapsed, failure)
 
     /// Run from the async build worker. Logging happens here (live UI), but
@@ -823,6 +831,7 @@ let createWith
                         "dotnet build"
                         (async {
                             let launch = captureLaunch ctx
+
                             try
                                 let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
@@ -867,13 +876,23 @@ let createWith
                                     error "build" "Build FAILED"
                                 | _ -> ()
 
-                                return applyBuildOutcome ctx launch outcome verifiedEntries (DateTime.UtcNow - buildStarted)
+                                return
+                                    applyBuildOutcome
+                                        ctx
+                                        launch
+                                        outcome
+                                        verifiedEntries
+                                        (DateTime.UtcNow - buildStarted)
                             with ex ->
                                 let crashEntry = ErrorEntry.error ex.Message
                                 // ReportErrors / EmitBuildCompleted belong to the synchronous
                                 // BuildDone handler, not here — see `applyBuildOutcome`.
                                 return
-                                    observedDone launch (BuildOutputFailed [ ex.Message ]) [ crashEntry ] (DateTime.UtcNow - buildStarted)
+                                    observedDone
+                                        launch
+                                        (BuildOutputFailed [ ex.Message ])
+                                        [ crashEntry ]
+                                        (DateTime.UtcNow - buildStarted)
                         }))
                 (function
                 | ObservedBuildDone(BuildPassed _, _, _, _)
@@ -943,6 +962,7 @@ let createWith
                             $"dotnet build ({roots.Length} roots)"
                             (async {
                                 let launch = captureLaunch ctx
+
                                 try
                                     let mutable failures = []
                                     let mutable outputs = []
@@ -1009,7 +1029,11 @@ let createWith
                                     error "build" $"Unexpected error: %s{ex.Message}"
 
                                     return
-                                        observedDone launch (BuildOutputFailed [ ex.Message ]) [ ErrorEntry.error ex.Message ] (DateTime.UtcNow - buildStarted)
+                                        observedDone
+                                            launch
+                                            (BuildOutputFailed [ ex.Message ])
+                                            [ ErrorEntry.error ex.Message ]
+                                            (DateTime.UtcNow - buildStarted)
                             }))
                     (function
                     | ObservedBuildDone(BuildPassed _, _, _, _)
@@ -1112,10 +1136,13 @@ let createWith
                 let state, event =
                     match event with
                     | Custom(ObservedBuildDone(outcome, entries, elapsed, failure)) ->
-                        { state with CompletedFailure = failure }, Custom(BuildDone(outcome, entries, elapsed))
+                        { state with
+                            CompletedFailure = failure },
+                        Custom(BuildDone(outcome, entries, elapsed))
                     | Custom(BuildDone _)
                     | Custom(ForceRebuildRequested _) -> { state with CompletedFailure = None }, event
                     | _ -> state, event
+
                 match event with
                 | Custom(ForceRebuildRequested reply) ->
                     reply.TrySetResult(JsonSerializer.Serialize({| status = "ok"; forced = true |}))

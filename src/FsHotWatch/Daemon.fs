@@ -1538,7 +1538,8 @@ let internal waitForAllTerminalCore
                         // A completed failing/refused outcome is still an answer.
                         // Its typed receipt crosses with the model; CLI publication
                         // cannot turn its refusal reasons into a green verdict.
-                        not evidence.IsEmpty || not analysisEvidence.IsEmpty
+                        not evidence.IsEmpty
+                        || not analysisEvidence.IsEmpty
                         || not (host.CurrentCompletedFailures(snapshot)).IsEmpty
 
             if satisfied then

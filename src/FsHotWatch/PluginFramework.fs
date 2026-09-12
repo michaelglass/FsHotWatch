@@ -851,17 +851,22 @@ let internal registerHandlerForOwner
                                     |> List.exists (function
                                         | TaskCache.CachedBuildCompleted(BuildFailed _) -> true
                                         | _ -> false)
+
                                 let failedStatus =
                                     match result.Status with
                                     | TaskCache.CachedRunFailed _
                                     | TaskCache.CachedFileFailed _ -> true
                                     | _ -> false
+
                                 emittedFailure || (pluginName = "build" && failedStatus)
 
                             let lookupResult =
                                 match cache.Lookup compKey cacheKey with
                                 | TaskCache.CacheHit result when requiresBuildAttempt result ->
-                                    FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=false miss=build-failure-needs-current-attempt"
+                                    FsHotWatch.Logging.debug
+                                        "task-cache"
+                                        $"plugin=%s{pluginName} hit=false miss=build-failure-needs-current-attempt"
+
                                     None
                                 | TaskCache.CacheHit result ->
                                     FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=true"

@@ -411,9 +411,13 @@ let private runOnceAndVerdictIn
         // same tree, same host, same instant as the verdict below. `None` when no
         // escalation was needed, which the verdict RECORDS rather than omitting.
         let impactScoped =
-            if CheckVerdict.confirmNeedsFullRun checkMode preEscalation.Scope
-               && not (CheckVerdict.CheckInputs.hasFailures preEscalation
-                       && not (daemon.Host.CurrentCompletedFailures(daemon.Host.WorkSnapshot)).IsEmpty) then
+            if
+                CheckVerdict.confirmNeedsFullRun checkMode preEscalation.Scope
+                && not (
+                    CheckVerdict.CheckInputs.hasFailures preEscalation
+                    && not (daemon.Host.CurrentCompletedFailures(daemon.Host.WorkSnapshot)).IsEmpty
+                )
+            then
                 Some(Verdict.impactScopedRun repoRoot finalRun.Value preEscalation)
             else
                 None

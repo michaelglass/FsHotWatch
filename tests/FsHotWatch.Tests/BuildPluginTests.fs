@@ -3103,4 +3103,3 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
     Assert.True(reply.Task.IsCompletedSuccessfully, "the original owner request must have completed")
     Assert.True((handler.CacheKey.Value forced event).IsNone)
     Assert.Equal<ContentHash option>(original, handler.CacheKey.Value handler.Init event)
-

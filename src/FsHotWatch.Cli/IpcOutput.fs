@@ -1491,9 +1491,13 @@ let pollAndRenderForInvocation
         let preEscalation = checkInputs noWarnFail firstRun firstResp
 
         let initialRead =
-            if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope
-               && not (CheckVerdict.CheckInputs.hasFailures preEscalation
-                       && IpcParsing.hasCurrentCompletedFailure repoRoot firstRaw) then
+            if
+                CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope
+                && not (
+                    CheckVerdict.CheckInputs.hasFailures preEscalation
+                    && IpcParsing.hasCurrentCompletedFailure repoRoot firstRaw
+                )
+            then
                 // AUTOMATION-259. Captured BEFORE the forced run, from state that already
                 // exists: same tree, same daemon, same scan generation, same instant as the
                 // verdict below. Two separate `check`/`confirm` invocations cannot produce
