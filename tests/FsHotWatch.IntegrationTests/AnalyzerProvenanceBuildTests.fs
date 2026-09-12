@@ -149,6 +149,59 @@ type AnalyzerProvenanceBuildTests() =
             Assert.Equal(firstKey, secondKey))
 
     [<Fact(Timeout = 300000)>]
+    member _.``source link mutation without rebuilding refuses the old producer binding``() =
+        AnalyzerProvenanceBuildFixture.withProducerDir "a564-sourcelink-binding" (fun root ->
+            AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None true None
+            AnalyzerProvenanceBuildFixture.build root "Mini" ""
+            |> AnalyzerProvenanceBuildFixture.succeeds
+            Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome)
+
+            let output = AnalyzerProvenanceBuildFixture.output root "Mini"
+            let originalAssembly = File.ReadAllBytes output
+            let links = Path.Combine(root, "obj", "links.json")
+            let original = File.ReadAllText links
+            let changed = original.Replace("example.invalid/source", "example.invalid/changed-source")
+            Assert.NotEqual(original, changed)
+            File.WriteAllText(links, changed)
+
+            Assert.Equal<byte>(originalAssembly, File.ReadAllBytes output)
+            Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsNone,
+                        "changed debug input must invalidate its local compiler binding until rebuilt"))
+
+    [<Fact(Timeout = 300000)>]
+    member _.``source link JSON also embedded as a resource remains a semantic analyzer input``() =
+        AnalyzerProvenanceBuildFixture.withProducerDir "a564-sourcelink-resource" (fun root ->
+            let directories = [ Path.Combine(root, "a"); Path.Combine(root, "a-longer-workspace") ]
+            let keys =
+                directories
+                |> List.map (fun directory ->
+                    AnalyzerProvenanceBuildFixture.prepare directory "Mini" "module MiniRules\nlet answer = 1" None true None
+                    let projectPath = Path.Combine(directory, "Mini.fsproj")
+                    let project = XElement.Load projectPath
+                    let n = AnalyzerProvenanceBuildFixture.node
+                    let a = AnalyzerProvenanceBuildFixture.attr
+                    project.Add(
+                        n "ItemGroup" [|
+                            n "EmbeddedResource" [|
+                                a "Include" "obj/links.json"
+                                n "LogicalName" [| "rule-map.json" |] |] |])
+                    project.Save projectPath
+                    AnalyzerProvenanceBuildFixture.build directory "Mini" ""
+                    |> AnalyzerProvenanceBuildFixture.succeeds
+
+                    // Prove that these same bytes are an assembly resource a rule
+                    // can read, not merely an authored project declaration.
+                    let assembly = System.Reflection.Assembly.Load(File.ReadAllBytes(AnalyzerProvenanceBuildFixture.output directory "Mini"))
+                    use resource = assembly.GetManifestResourceStream("rule-map.json")
+                    Assert.NotNull resource
+                    use reader = new StreamReader(resource)
+                    Assert.Equal(File.ReadAllText(Path.Combine(directory, "obj", "links.json")), reader.ReadToEnd())
+                    let key = AnalyzerProvenanceBuildFixture.key directory "Mini"
+                    Assert.True(key.IsSome, "the rebuilt dual-role producer must have valid provenance")
+                    key)
+            Assert.NotEqual(keys.[0], keys.[1]))
+
+    [<Fact(Timeout = 300000)>]
     member _.``real producer external glob detects new linked sources without refusing unchanged membership``() =
         // Keep this synthetic producer in place on failure: absolute-path receipts
         // cannot be diagnosed faithfully after copying/deleting their inputs.
