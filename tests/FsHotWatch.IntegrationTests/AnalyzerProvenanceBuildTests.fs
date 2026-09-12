@@ -137,7 +137,11 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``real producer external glob detects new linked sources without refusing unchanged membership``() =
-        withTempDir "a564-external-glob" (fun root ->
+        // Keep this synthetic producer in place on failure: absolute-path receipts
+        // cannot be diagnosed faithfully after copying/deleting their inputs.
+        let root = Path.Combine(Path.GetTempPath(), "fshw-a564-external-glob-" + Guid.NewGuid().ToString("N"))
+        Directory.CreateDirectory root |> ignore
+        (fun root ->
             let producer = Path.Combine(root, "Producer")
             let shared = Path.Combine(root, "Shared")
             Directory.CreateDirectory shared |> ignore
@@ -155,6 +159,16 @@ type AnalyzerProvenanceBuildTests() =
             |> AnalyzerProvenanceBuildFixture.succeeds
 
             let original = AnalyzerProvenanceBuildFixture.key producer "Mini"
+            if original.IsNone then
+                let outputDirectory = AnalyzerProvenanceBuildFixture.output producer "Mini" |> Path.GetDirectoryName
+                let diagnostic =
+                    FsHotWatch.Analyzers.AnalyzerProvenance.trySnapshot
+                        (FsHotWatch.Analyzers.AnalyzersPlugin.isKnownNonAnalyzerPrefix
+                            FsHotWatch.Analyzers.AnalyzersPlugin.knownNonAnalyzerPrefixes)
+                        [ outputDirectory ]
+                match diagnostic with
+                | Result.Error reason -> Assert.Fail($"Unchanged producer refused: {reason}; synthetic fixture retained at {root}")
+                | Result.Ok _ -> Assert.Fail($"Public cache key refused despite valid provenance; synthetic fixture retained at {root}")
             Assert.True(original.IsSome)
             Assert.Equal(original, AnalyzerProvenanceBuildFixture.key producer "Mini")
             File.WriteAllText(Path.Combine(shared, "NewRule.fs"), "module NewRule\nlet value = 2")
@@ -165,7 +179,7 @@ type AnalyzerProvenanceBuildTests() =
 
             let rebuilt = AnalyzerProvenanceBuildFixture.key producer "Mini"
             Assert.True(rebuilt.IsSome)
-            Assert.NotEqual(original, rebuilt))
+            Assert.NotEqual(original, rebuilt)) root
 
     [<Fact(Timeout = 300000)>]
     member _.``incremental build cannot bless a replaced compiler output``() =
