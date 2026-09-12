@@ -699,3 +699,79 @@ let ``ownership diagnostic writer failure cannot replace the original cancellati
         )
 
     Assert.Same(original, observed)
+
+[<Fact(Timeout = 15000)>]
+let ``same registered cleanup capability can settle after an audited failed attempt`` () =
+    // This Process is an identity fixture only. Every termination goes through
+    // the supplied callback; no operating-system kill is requested by this test.
+    use process = Process.GetCurrentProcess()
+    let parent = ProcessRegistry.Registry()
+    use installed = ProcessRegistry.install parent
+    let firstFailure = IOException("first containment query refused")
+    let mutable attempts = 0
+    let terminate () =
+        let attempt = Interlocked.Increment(&attempts)
+        if attempt = 1 then raise firstFailure
+    let mutable released = false
+
+    ProcessRegistry.withChildScope CancellationToken.None (fun settle ->
+        ProcessRegistry.trackOwned process terminate
+        let firstOutcome =
+            ProcessHelper.killTreeWith (TimeSpan.FromSeconds 2.) process.Id (fun () -> "recovery capability fixture") terminate
+        match firstOutcome with
+        | ProcessHelper.KillFailed error -> Assert.Same(firstFailure, error)
+        | other -> Assert.Fail $"Expected the original failed attempt, got {other}"
+        Assert.Single(ProcessRegistry.leaked()) |> ignore
+        ProcessHelper.settleOwnedProcess
+            None
+            terminate
+            (fun error -> ProcessRegistry.reportLeak process.Id "recovery capability fixture" error.Message)
+            (fun () ->
+                released <- true
+                ProcessRegistry.untrack process)
+        Assert.True(released)
+        Assert.Equal(2, attempts)
+        Assert.Single(ProcessRegistry.leaked()) |> ignore
+        Assert.Single(parent.Leaks) |> ignore
+        // A positive final cleanup does not rewrite the original failed attempt.
+        match firstOutcome with
+        | ProcessHelper.KillFailed error -> Assert.Same(firstFailure, error)
+        | other -> Assert.Fail $"Initial cleanup audit was rewritten: {other}"
+        settle ())
+    Assert.Single(parent.Leaks) |> ignore
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("untrack")>]
+[<InlineData("other-callback")>]
+[<InlineData("same-pid-wrapper")>]
+let ``unrelated release cannot resolve an audited cleanup refusal`` mode =
+    use original = Process.GetCurrentProcess()
+    use otherWrapper = Process.GetProcessById(original.Id)
+    Assert.False(obj.ReferenceEquals(original, otherWrapper))
+    Assert.Equal(original.Id, otherWrapper.Id)
+    let parent = ProcessRegistry.Registry()
+    use installed = ProcessRegistry.install parent
+    let refusal = IOException("original capability remains unverified")
+    let terminate () = raise refusal
+    let failure =
+        Assert.Throws<InvalidOperationException>(Action(fun () ->
+            ProcessRegistry.withChildScope CancellationToken.None (fun settle ->
+                ProcessRegistry.trackOwned original terminate
+                let attempted =
+                    ProcessHelper.killTreeWith (TimeSpan.FromSeconds 2.) original.Id (fun () -> "unresolved capability fixture") terminate
+                match attempted with
+                | ProcessHelper.KillFailed error -> Assert.Same(refusal, error)
+                | other -> Assert.Fail $"Expected original refusal, got {other}"
+                match mode with
+                | "untrack" -> ProcessRegistry.untrack original
+                | "other-callback" ->
+                    ProcessHelper.settleOwnedProcess None ignore ignore (fun () -> ProcessRegistry.untrack original)
+                | "same-pid-wrapper" ->
+                    ProcessRegistry.untrack original
+                    ProcessRegistry.trackOwned otherWrapper ignore
+                    ProcessHelper.settleOwnedProcess None ignore ignore (fun () -> ProcessRegistry.untrack otherWrapper)
+                | _ -> failwith "unknown fixture mode"
+                Assert.Single(ProcessRegistry.leaked()) |> ignore
+                settle ())))
+    Assert.Contains("could not establish termination", failure.Message)
+    Assert.Single(parent.Leaks) |> ignore
