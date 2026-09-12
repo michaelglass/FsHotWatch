@@ -19,13 +19,19 @@ internal static class Program
             FileSystemSecurity security = directory
                 ? new DirectoryInfo(path).GetAccessControl()
                 : new FileInfo(path).GetAccessControl();
-            if (!security.GetOwner(typeof(SecurityIdentifier)).Equals(identity.User) ||
+            var owner = security.GetOwner(typeof(SecurityIdentifier)) ?? throw new InvalidDataException();
+            var currentUser = identity.User ?? throw new InvalidDataException();
+            if (!owner.Equals(currentUser) ||
                 (directory && !security.AreAccessRulesProtected))
                 throw new InvalidDataException();
-            var allowed = security.GetAccessRules(true, true, typeof(SecurityIdentifier))
-                .Cast<FileSystemAccessRule>().Where(rule => rule.AccessControlType == AccessControlType.Allow).ToList();
-            if (allowed.Count == 0 || allowed.Any(rule => !rule.IdentityReference.Equals(identity.User)))
-                throw new InvalidDataException();
+            var allowed = 0;
+            foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+            {
+                if (rule.AccessControlType != AccessControlType.Allow) continue;
+                if (!rule.IdentityReference.Equals(currentUser)) throw new InvalidDataException();
+                allowed++;
+            }
+            if (allowed == 0) throw new InvalidDataException();
         }
         else
         {
