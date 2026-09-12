@@ -41,16 +41,28 @@ type LeakedTree =
         At: DateTime
     }
 
+/// Admission identity and its original termination authority. A positive return
+/// from this exact callback is the only way to establish final cleanup.
+type internal OwnedCapability(pid: int, terminate: unit -> unit, report: OwnedCapability -> LeakedTree -> unit) as this =
+    let mutable verified = 0
+    member _.Pid = pid
+    member _.IsVerified = Volatile.Read(&verified) = 1
+    member _.Terminate() =
+        terminate ()
+        Volatile.Write(&verified, 1)
+    member _.ReportFailure(description, reason) =
+        report this { Pid = pid; Description = description; Reason = reason; At = DateTime.UtcNow }
+
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
-type Registry(?parent: Registry) =
-    let live = ConcurrentDictionary<int, Process * (unit -> unit) option>()
+type Registry(?parent: Registry) as this =
+    let live = ConcurrentDictionary<int, Process * OwnedCapability option>()
     // Track pids alongside Process so Untrack can clean up even if the Process
     // handle has been disposed and `proc.Id` would throw.
     let pidByProc = ConcurrentDictionary<Process, int>(HashIdentity.Reference)
     // Append-only: a tree we could not account for is never un-leaked.
-    let leaks = ConcurrentQueue<LeakedTree>()
+    let leaks = ConcurrentQueue<LeakedTree * OwnedCapability option>()
 
     // Admission and the shutdown snapshot are one transition. OS operations
     // stay outside this lock so a slow kill cannot obstruct another owner.
@@ -61,7 +73,7 @@ type Registry(?parent: Registry) =
     // Identity is captured at admission, while the caller owns a live handle.
     // Keep it for diagnostics if that handle is later disposed; never re-resolve
     // it during teardown, when the OS could have reused the number.
-    let terminate (pid: int) (p: Process) (ownedTermination: (unit -> unit) option) =
+    let terminate (pid: int) (p: Process) (ownedTermination: OwnedCapability option) =
         let recordFailure reason =
             let leak =
                 { Pid = pid
@@ -69,15 +81,14 @@ type Registry(?parent: Registry) =
                   Reason = reason
                   At = DateTime.UtcNow }
 
-            leaks.Enqueue leak
-            parent |> Option.iter (fun owner -> owner.ReportLeak leak)
+            this.RecordLeak(leak, ownedTermination)
             Logging.error "process-registry" $"could not establish child termination: {leak.Description}: {reason}"
 
         let terminating =
             Task.Run(fun () ->
                 try
                     match ownedTermination with
-                    | Some terminateOwned -> terminateOwned ()
+                    | Some capability -> capability.Terminate()
                     | None ->
                         if not p.HasExited then
                             p.Kill(entireProcessTree = true)
@@ -107,13 +118,13 @@ type Registry(?parent: Registry) =
             // because it returns a Result. Uncertain termination remains data.
             recordFailure $"Shutdown termination exceeded {teardownBudget}"
 
-    member _.Track(p: Process, ?terminateOwned: unit -> unit) =
+    member private _.TrackCapability(p: Process, capability: OwnedCapability option) =
         let pid = p.Id
         // The daemon retains shutdown ownership even when an operation has a
         // narrower cancellation scope. Parent admission happens first: if it
         // already closed, it reaps this exact handle before admitting anything.
         parent
-        |> Option.iter (fun owner -> owner.Track(p, ?terminateOwned = terminateOwned))
+        |> Option.iter (fun owner -> owner.TrackCapability(p, capability))
 
         let accepted =
             lock admission (fun () ->
@@ -121,14 +132,24 @@ type Registry(?parent: Registry) =
                     false
                 else
                     pidByProc.TryAdd(p, pid) |> ignore
-                    live.TryAdd(pid, (p, terminateOwned)) |> ignore
+                    live.TryAdd(pid, (p, capability)) |> ignore
                     true)
 
         if not accepted then
             try
-                terminate pid p terminateOwned
+                terminate pid p capability
             finally
                 parent |> Option.iter (fun owner -> owner.Untrack p)
+
+    member internal _.TrackOwned(p: Process, terminateOwned: unit -> unit) =
+        let capability = OwnedCapability(p.Id, terminateOwned, fun token leak -> this.RecordLeak(leak, Some token))
+        this.TrackCapability(p, Some capability)
+        capability
+
+    member _.Track(p: Process, ?terminateOwned: unit -> unit) =
+        match terminateOwned with
+        | Some terminate -> this.TrackOwned(p, terminate) |> ignore
+        | None -> this.TrackCapability(p, None)
 
     member _.Untrack(p: Process) =
         match pidByProc.TryRemove(p) with
@@ -154,12 +175,21 @@ type Registry(?parent: Registry) =
     /// Record a process tree whose termination we could NOT establish. Append-only,
     /// and never cleared by `KillAll` — the point of the record is to outlive the
     /// live set and be readable at shutdown.
-    member _.ReportLeak(leak: LeakedTree) =
-        leaks.Enqueue leak
-        parent |> Option.iter (fun owner -> owner.ReportLeak leak)
+    member private _.RecordLeak(leak: LeakedTree, capability: OwnedCapability option) =
+        leaks.Enqueue(leak, capability)
+        parent |> Option.iter (fun owner -> owner.RecordLeak(leak, capability))
 
-    /// Every tree we failed to account for, oldest first.
-    member _.Leaks: LeakedTree list = List.ofSeq leaks
+    member _.ReportLeak(leak: LeakedTree) = this.RecordLeak(leak, None)
+
+    /// Historical failed attempts, including ones whose exact owner later recovered.
+    member _.Leaks: LeakedTree list = leaks |> Seq.map fst |> List.ofSeq
+
+    /// Legacy PID-only failures have no authority that can prove their recovery.
+    member _.UnresolvedLeaks: LeakedTree list =
+        leaks
+        |> Seq.choose (fun (leak, capability) ->
+            if capability |> Option.exists (fun token -> token.IsVerified) then None else Some leak)
+        |> List.ofSeq
 
     /// Close process admission before capturing children. A concurrent Track
     /// either belongs to this snapshot or observes closure and reaps its child.
@@ -182,7 +212,7 @@ type Registry(?parent: Registry) =
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
         // will not chase the pid (see `LeakedTree`).
-        for leak in leaks do
+        for leak in this.UnresolvedLeaks do
             let at = leak.At.ToString("HH:mm:ss")
 
             Logging.error
@@ -219,10 +249,15 @@ let track (p: Process) =
             $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
 
 /// Register a spawn-time containment capability, including after its leader exits.
-let internal trackOwned (p: Process) (terminate: unit -> unit) =
+let internal trackOwnedCapability (p: Process) (terminate: unit -> unit) =
     match currentOpt () with
-    | Some r -> r.Track(p, terminateOwned = terminate)
-    | None -> ()
+    | Some r -> r.TrackOwned(p, terminate)
+    | None ->
+        OwnedCapability(p.Id, terminate, fun _ leak ->
+            Logging.warn "process-registry" $"unconfirmed owned cleanup with no registry: pid {leak.Pid}")
+
+let internal trackOwned (p: Process) (terminate: unit -> unit) =
+    trackOwnedCapability p terminate |> ignore
 
 let untrack (p: Process) =
     match currentOpt () with
@@ -280,7 +315,7 @@ type private ChildScope(ct: CancellationToken) =
         // its callback before consulting leaks or publishing retirement.
         cancellation.Dispose()
 
-        if not registry.Leaks.IsEmpty then
+        if not registry.UnresolvedLeaks.IsEmpty then
             invalidOp "Operation child teardown could not establish termination"
 
     interface IDisposable with

@@ -70,6 +70,8 @@ type KillOutcome =
     /// telling us nothing. Both leave the tree unaccounted for and both fail closed,
     /// but only one of them has a reason to give.
     | KillTimedOut of budget: TimeSpan
+    /// Later cleanup through the same admitted authority verified termination.
+    | Recovered of initialAttempt: KillOutcome
 
 /// Outcome of running an external process. Tagged so callers can tell a
 /// nonzero exit from a timeout-induced kill without parsing the output.
@@ -224,6 +226,8 @@ let renderKill (kill: KillOutcome) : string =
     match kill with
     | KillOutcome.Killed
     | KillOutcome.AlreadyExited -> ""
+    | KillOutcome.Recovered _ ->
+        "\n[fshw] Cleanup recovered after an earlier failed attempt; the same admitted authority subsequently verified termination."
     | KillOutcome.KillFailed reason ->
         $"\n[fshw] KILL FAILED: %s{reason.GetType().Name}: %s{reason.Message} — we could NOT tear down this process \
           tree, so the child (and any grandchild it spawned) is STILL RUNNING and is no longer being watched. It may \
@@ -242,6 +246,7 @@ let renderKillBrief (kill: KillOutcome) : string =
     match kill with
     | KillOutcome.Killed
     | KillOutcome.AlreadyExited -> ""
+    | KillOutcome.Recovered _ -> " (cleanup recovered — termination verified)"
     | KillOutcome.KillFailed _ -> " (KILL FAILED — process tree STILL RUNNING)"
     | KillOutcome.KillTimedOut _ -> " (KILL TIMED OUT — process tree UNACCOUNTED FOR)"
 
@@ -399,6 +404,7 @@ let internal killTreeWith (budget: TimeSpan) (pid: int) (describe: unit -> strin
     // also reaches a human who is only reading stderr — and so the DURATION of the
     // teardown survives in the log whether or not the run produced a verdict.
     match outcome with
+    | KillOutcome.Recovered _ -> invalidOp "A single cleanup attempt cannot already be recovered"
     | KillOutcome.Killed -> Logging.info "process" $"killed the process tree for %s{what} in %d{took}ms"
     | KillOutcome.AlreadyExited ->
         Logging.info "process" $"process tree for %s{what} had already exited (%d{took}ms) — nothing to kill"
