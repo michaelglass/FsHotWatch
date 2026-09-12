@@ -143,6 +143,24 @@ type AnalyzerProvenanceBuildTests() =
                 AnalyzerProvenanceBuildFixture.build directory "Mini" ""
                 |> AnalyzerProvenanceBuildFixture.succeeds
 
+                // F# compiler ilwritepdb.fs emits this SourceLink kind on the
+                // portable PDB module; prove the actual payload for both roots.
+                let sourceLinkKind = Guid("cc110556-a091-4d38-9fec-25ab9a351a6a")
+                let pdbPath = Path.ChangeExtension(AnalyzerProvenanceBuildFixture.output directory "Mini", ".pdb")
+                use pdbStream = File.OpenRead pdbPath
+                use provider = System.Reflection.Metadata.MetadataReaderProvider.FromPortablePdbStream(pdbStream)
+                let metadata = provider.GetMetadataReader()
+                let sourceLinks =
+                    metadata.CustomDebugInformation
+                    |> Seq.map metadata.GetCustomDebugInformation
+                    |> Seq.filter (fun entry -> metadata.GetGuid(entry.Kind) = sourceLinkKind)
+                    |> Seq.toList
+                let sourceLink = Assert.Single sourceLinks
+                Assert.Equal(System.Reflection.Metadata.HandleKind.ModuleDefinition, sourceLink.Parent.Kind)
+                Assert.Equal<byte>(
+                    File.ReadAllBytes(Path.Combine(directory, "obj", "links.json")),
+                    metadata.GetBlobBytes(sourceLink.Value))
+
             let firstKey = AnalyzerProvenanceBuildFixture.key first "Mini"
             let secondKey = AnalyzerProvenanceBuildFixture.key second "Mini"
             Assert.True(firstKey.IsSome && secondKey.IsSome)
