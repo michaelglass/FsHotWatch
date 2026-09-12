@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Xml;
 
 namespace FsHotWatch.AnalyzerEvaluationHost;
 
@@ -50,15 +51,39 @@ internal static class ProjectProjection
             sources.Add(new Item(Path.GetFullPath(path)));
         }
 
+        var rootElementType = assembly.GetType("Microsoft.Build.Construction.ProjectRootElement", true)!;
+        var parseRoot = rootElementType.GetMethod("Create", new[]
+        {
+            typeof(XmlReader), collectionType, typeof(bool)
+        }) ?? throw new InvalidDataException();
+        using var verificationCollection = (IDisposable)Activator.CreateInstance(collectionType)!;
         var imports = new List<Import>();
         foreach (var import in (IEnumerable)Property(project, "Imports"))
         {
-            var path = (string)Property(Property(import, "ImportedProject"), "FullPath");
+            var evaluatedRoot = Property(import, "ImportedProject");
+            var evaluatedXml = (string)Property(evaluatedRoot, "RawXml");
+            var preserveFormatting = (bool)Property(evaluatedRoot, "PreserveFormatting");
+            var path = (string)Property(evaluatedRoot, "FullPath");
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) throw new InvalidDataException();
             path = Path.GetFullPath(path);
             // This is local binding data, never a package/shared semantic identity.
             // Reader integration must classify SDK/NuGet versus first-party imports.
-            var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+            var bytes = File.ReadAllBytes(path);
+            using var stream = new MemoryStream(bytes, writable: false);
+            using var reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null
+            }, path);
+            var readRoot = parseRoot.Invoke(null, new object[]
+            {
+                reader, verificationCollection, preserveFormatting
+            }) ?? throw new InvalidDataException();
+            if (!string.Equals(evaluatedXml, (string)Property(readRoot, "RawXml"), StringComparison.Ordinal))
+                throw new InvalidDataException("Evaluated import XML does not match its captured bytes.");
+            // The parser witness and digest use one read, so evaluation cannot
+            // authorize a hash of replacement content that it never consumed.
+            var hash = Convert.ToHexString(SHA256.HashData(bytes));
             imports.Add(new Import(path, hash));
         }
         return new Projection(1, new() { ["Compile"] = sources }, properties, imports, new(assembly.Location));
