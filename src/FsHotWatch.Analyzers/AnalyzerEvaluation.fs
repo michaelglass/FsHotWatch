@@ -70,10 +70,6 @@ let private quote (value: string) =
             slashes <- 0
     result.Append('\\', slashes * 2).Append('"').ToString()
 
-let private escapeProperty (value: string) =
-    value.Replace("%", "%25").Replace(";", "%3B").Replace(",", "%2C")
-        .Replace("\"", "%22").Replace("\r", "%0D").Replace("\n", "%0A")
-
 let private effectiveNames =
     [ "MSBuildVersion"; "NETCoreSdkVersion"; "Configuration"; "TargetFramework"; "Platform" ]
 
@@ -145,7 +141,9 @@ let private evaluate (context: XElement) =
             |> Seq.map (fun property ->
                 let key = required "name" property
                 System.Xml.XmlConvert.VerifyName key |> ignore
-                quote ("-property:" + key + "=" + escapeProperty (required "value" property)))
+                // IBuildEngine6.GetGlobalProperties returns SDK-escaped values.
+                // Re-escaping '%' changes their meaning on response-file replay.
+                quote ("-property:" + key + "=" + required "value" property))
             |> Seq.toList
         let lines =
             [ quote producer; "-nologo"; "-noAutoResponse"; "-getItem:Compile"
