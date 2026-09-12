@@ -836,6 +836,30 @@ module internal EarnedEvidence =
 type internal IEarnedEvidenceState =
     abstract EarnedEvidence: EarnedEvidence option
 
+/// An actual completed failure, distinct from evidence that tests or analysis ran.
+/// Only the owning worker can create it from its launch witnesses.
+type CompletedFailureEvidence =
+    private
+        { ModelGeneration: int64
+          InputIdentity: string
+          SourceIdentities: (string * string) list
+          FailureReason: string }
+
+    member this.Generation = this.ModelGeneration
+    member this.InputTreeHash = this.InputIdentity
+    member this.Reason = this.FailureReason
+    member internal this.InputFiles = this.SourceIdentities
+
+module internal CompletedFailureEvidence =
+    let create generation inputIdentity sourceIdentities reason =
+        { ModelGeneration = generation
+          InputIdentity = inputIdentity
+          SourceIdentities = sourceIdentities
+          FailureReason = reason }
+
+type internal ICompletedFailureState =
+    abstract CompletedFailure: CompletedFailureEvidence option
+
 /// A completed file analysis, retained without compiler trees or UI status.
 type AnalysisFileEvidence =
     private

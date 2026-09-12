@@ -177,7 +177,8 @@ type Queue<'State, 'Request>
           Completed = core.Completed
           Failure = core.Failure |> Option.map PluginWorkOwner.OperationFailure
           Evidence = None
-          AnalysisEvidence = None }
+          AnalysisEvidence = None
+          CompletedFailure = None }
 
     let rowId =
         store.Register(

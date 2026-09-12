@@ -38,7 +38,8 @@ type Queue<'State, 'Request>
           Completed = 0L
           Failure = input.Failure |> Option.map PluginWorkOwner.OperationFailure
           Evidence = None
-          AnalysisEvidence = None }
+          AnalysisEvidence = None
+          CompletedFailure = None }
 
     let id =
         store.Register(

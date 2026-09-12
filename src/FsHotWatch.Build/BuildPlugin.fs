@@ -61,7 +61,11 @@ type BuildState =
         ActiveTestRuns: Set<Guid>
         /// A requested real build remains owed until a build outcome is committed.
         ForceRebuild: bool
+        CompletedFailure: CompletedFailureEvidence option
     }
+
+    interface ICompletedFailureState with
+        member this.CompletedFailure = this.CompletedFailure
 
 /// Internal message posted from the async build runner back to the plugin's
 /// own mailbox. Carries the outcome AND the parsed diagnostic entries so the
@@ -73,6 +77,11 @@ type BuildState =
 /// the two can never disagree.
 type BuildMsg =
     | BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
+    | ObservedBuildDone of
+        outcome: BuildOutcome *
+        entries: ErrorEntry list *
+        elapsed: TimeSpan *
+        failure: CompletedFailureEvidence option
     | ForceRebuildRequested of reply: System.Threading.Tasks.TaskCompletionSource<string>
 
 /// Diagnostic for the "MSBuild exited non-zero but produced no parseable
@@ -728,6 +737,36 @@ let createWith
 
             $"build failed: %d{errCount} errors"
 
+    // Capture inside the acquired shared worker, not when the request queues.
+    // Model transitions during hashing refuse provenance rather than mix epochs.
+    let captureLaunch (ctx: PluginCtx<BuildMsg>) =
+        match ctx.ProjectGraph.ObserveModel() with
+        | FsHotWatch.ProjectModel.Observation.Available model ->
+            let files =
+                [ yield! graph.GetAllFiles() |> List.map AbsFilePath.value
+                  yield! graph.GetAllProjects() |> List.map AbsProjectPath.value ]
+                |> List.distinct
+                |> List.map (fun path -> path, FsHotWatch.ContentHash.ofFile path)
+
+            match FsHotWatch.TreeHash.tryReadableIdentity ctx.RepoRoot, ctx.ProjectGraph.ObserveModel() with
+            | Some identity, FsHotWatch.ProjectModel.Observation.Available current when
+                current.Generation = model.Generation
+                && (files |> List.forall (snd >> FsHotWatch.ContentHash.isReadable))
+                ->
+                Some(model.Generation, identity, files)
+            | _ -> None
+        | _ -> None
+
+    let observedDone launch outcome entries elapsed =
+        let failure =
+            match outcome, launch with
+            | BuildPassed _, _ -> None
+            | _, Some(generation, identity, files) ->
+                Some(CompletedFailureEvidence.create generation identity files (buildSummary outcome entries))
+            | _, None -> None
+
+        ObservedBuildDone(outcome, entries, elapsed, failure)
+
     /// Run from the async build worker. Logging happens here (live UI), but
     /// the *captured* operations (ReportErrors / ClearErrors /
     /// EmitBuildCompleted / the terminal status) are deferred to the
@@ -736,6 +775,7 @@ let createWith
     /// message; the framework posts it back via RunExclusive.
     let applyBuildOutcome
         (ctx: PluginCtx<BuildMsg>)
+        launch
         (outcome: BuildOutcome)
         (entries: ErrorEntry list)
         (elapsed: TimeSpan)
@@ -750,7 +790,7 @@ let createWith
             error "build" (staleDiagnostic stale)
         | BuildOutputFailed _ -> ()
 
-        BuildDone(outcome, entries, elapsed)
+        observedDone launch outcome entries elapsed
 
     /// Run verifyArtifactsFresh on a BuildPassed outcome and demote to
     /// BuildArtifactsStale if any project's DLL is stale. Other outcomes
@@ -790,6 +830,8 @@ let createWith
                         "build"
                         "dotnet build"
                         (async {
+                            let launch = captureLaunch ctx
+
                             try
                                 let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
@@ -834,20 +876,28 @@ let createWith
                                     error "build" "Build FAILED"
                                 | _ -> ()
 
-                                return applyBuildOutcome ctx outcome verifiedEntries (DateTime.UtcNow - buildStarted)
+                                return
+                                    applyBuildOutcome
+                                        ctx
+                                        launch
+                                        outcome
+                                        verifiedEntries
+                                        (DateTime.UtcNow - buildStarted)
                             with ex ->
                                 let crashEntry = ErrorEntry.error ex.Message
                                 // ReportErrors / EmitBuildCompleted belong to the synchronous
                                 // BuildDone handler, not here — see `applyBuildOutcome`.
                                 return
-                                    BuildDone(
-                                        BuildOutputFailed [ ex.Message ],
-                                        [ crashEntry ],
-                                        DateTime.UtcNow - buildStarted
-                                    )
+                                    observedDone
+                                        launch
+                                        (BuildOutputFailed [ ex.Message ])
+                                        [ crashEntry ]
+                                        (DateTime.UtcNow - buildStarted)
                         }))
                 (function
+                | ObservedBuildDone(BuildPassed _, _, _, _)
                 | BuildDone(BuildPassed _, _, _) -> Ready
+                | ObservedBuildDone(outcome, entries, _, _)
                 | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries)
                 | ForceRebuildRequested _ -> Invalid "Build worker returned a command instead of a build outcome")
                 (fun ex ->
@@ -873,7 +923,8 @@ let createWith
           PendingFiles = []
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false }
+          ForceRebuild = false
+          CompletedFailure = None }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -910,6 +961,8 @@ let createWith
                             "build"
                             $"dotnet build ({roots.Length} roots)"
                             (async {
+                                let launch = captureLaunch ctx
+
                                 try
                                     let mutable failures = []
                                     let mutable outputs = []
@@ -968,6 +1021,7 @@ let createWith
                                     return
                                         applyBuildOutcome
                                             ctx
+                                            launch
                                             (verifyAndDemote copyVerifiedOutcome)
                                             verifiedEntries
                                             (DateTime.UtcNow - buildStarted)
@@ -975,14 +1029,16 @@ let createWith
                                     error "build" $"Unexpected error: %s{ex.Message}"
 
                                     return
-                                        BuildDone(
-                                            BuildOutputFailed [ ex.Message ],
-                                            [ ErrorEntry.error ex.Message ],
-                                            DateTime.UtcNow - buildStarted
-                                        )
+                                        observedDone
+                                            launch
+                                            (BuildOutputFailed [ ex.Message ])
+                                            [ ErrorEntry.error ex.Message ]
+                                            (DateTime.UtcNow - buildStarted)
                             }))
                     (function
+                    | ObservedBuildDone(BuildPassed _, _, _, _)
                     | BuildDone(BuildPassed _, _, _) -> Ready
+                    | ObservedBuildDone(outcome, entries, _, _)
                     | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries)
                     | ForceRebuildRequested _ -> Invalid "Build worker returned a command instead of a build outcome")
                     (fun ex ->
@@ -1003,7 +1059,8 @@ let createWith
               PendingFiles = []
               SatisfiedDeps = Set.empty
               ActiveTestRuns = Set.empty
-              ForceRebuild = false }
+              ForceRebuild = false
+              CompletedFailure = None }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1071,10 +1128,21 @@ let createWith
           PendingFiles = []
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false }
+          ForceRebuild = false
+          CompletedFailure = None }
       Update =
         fun ctx state event ->
             async {
+                let state, event =
+                    match event with
+                    | Custom(ObservedBuildDone(outcome, entries, elapsed, failure)) ->
+                        { state with
+                            CompletedFailure = failure },
+                        Custom(BuildDone(outcome, entries, elapsed))
+                    | Custom(BuildDone _)
+                    | Custom(ForceRebuildRequested _) -> { state with CompletedFailure = None }, event
+                    | _ -> state, event
+
                 match event with
                 | Custom(ForceRebuildRequested reply) ->
                     reply.TrySetResult(JsonSerializer.Serialize({| status = "ok"; forced = true |}))
@@ -1338,6 +1406,8 @@ let createWith
             // cache, run Update.
             | FileChanged _ when not state.ActiveTestRuns.IsEmpty -> None
             | CommandCompleted result when depNames.Contains result.Name && not state.ActiveTestRuns.IsEmpty -> None
+            | FileChanged _ when state.CompletedFailure.IsSome -> None
+            | CommandCompleted result when depNames.Contains result.Name && state.CompletedFailure.IsSome -> None
             | FileChanged _ when state.ForceRebuild -> None
             | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild -> None
 

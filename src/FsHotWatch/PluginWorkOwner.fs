@@ -151,7 +151,8 @@ type Row =
       Completed: int64
       Failure: OwnerFailure option
       Evidence: EarnedEvidence option
-      AnalysisEvidence: AnalysisEvidence option }
+      AnalysisEvidence: AnalysisEvidence option
+      CompletedFailure: CompletedFailureEvidence option }
 
     member this.Fault = this.Failure |> Option.map (fun failure -> failure.Exception)
 
@@ -179,6 +180,9 @@ type HostSnapshot =
 
     member this.AnalysisEvidence =
         this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.AnalysisEvidence)
+
+    member this.CompletedFailures =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.CompletedFailure)
 
     member this.IsBusy =
         not this.Operations.IsEmpty || (this.Rows |> Map.exists (fun _ row -> row.Busy))
@@ -387,6 +391,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
           AnalysisEvidence =
             match box snapshot.State with
             | :? IAnalysisEvidenceState as domain -> domain.AnalysisEvidence
+            | _ -> None
+          CompletedFailure =
+            match box snapshot.State with
+            | :? ICompletedFailureState as domain -> domain.CompletedFailure
             | _ -> None }
 
     let id =

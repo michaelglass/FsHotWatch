@@ -218,9 +218,44 @@ type PluginHost
 
     let dispatchToAll event = dispatchTrackedToAll event |> ignore
 
-    /// Install the read-only project-graph accessor exposed to every plugin via
-    /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over its
-    /// live `ProjectGraph`, before registering plugins.
+    member internal _.RepoRoot = normalizedRepoRoot
+
+    /// Only an idle, unchanged owner snapshot and matching readable launch inputs
+    /// can authorize a completed failure for the current model.
+    member internal _.CurrentCompletedFailures(snapshot: PluginWorkOwner.HostSnapshot) =
+        if snapshot.IsBusy then
+            []
+        else
+            match snapshot.ProjectModel with
+            | ProjectModel.Observation.Available model ->
+                let candidates =
+                    snapshot.CompletedFailures
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
+
+                if candidates.IsEmpty then
+                    []
+                else
+                    match TreeHash.tryReadableIdentity repoRoot with
+                    | Some current when System.Object.ReferenceEquals(snapshot, workStore.Snapshot) ->
+                        let matching =
+                            candidates
+                            |> List.filter (fun proof ->
+                                proof.InputTreeHash = current
+                                && (proof.InputFiles
+                                    |> List.forall (fun (path, expected) ->
+                                        let actual = ContentHash.ofFile path
+                                        ContentHash.isReadable actual && actual = expected)))
+
+                        if System.Object.ReferenceEquals(snapshot, workStore.Snapshot) then
+                            matching
+                        else
+                            []
+                    | _ -> []
+            | _ -> []
+
+
+
+    /// Install the live graph before plugins are registered.
     member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
 
     /// Register a declarative framework-managed plugin handler.
