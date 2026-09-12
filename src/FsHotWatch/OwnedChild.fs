@@ -11,6 +11,25 @@ open System.Threading
 open System.Threading.Tasks
 
 module internal ChildProtocol =
+    // Exception messages and payloads can contain command arguments. Emit only
+    // locally captured metadata, concrete type and the original throwing stack.
+    let reportFailureWith (write: string -> unit) phase elapsedMs pid receiptStatus startupCancelled (error: exn) =
+        try
+            write
+                $"phase={phase} elapsedMs={elapsedMs} helperPid={pid} receipt={receiptStatus} startupCancelled={startupCancelled} exceptionType={error.GetType().FullName}\n{error.StackTrace}"
+        with _ ->
+            () // Diagnostics must never replace the boundary failure.
+
+    let reportFailure phase elapsedMs pid receiptStatus startupCancelled error =
+        reportFailureWith
+            (FsHotWatch.Logging.error "process-ownership")
+            phase
+            elapsedMs
+            pid
+            receiptStatus
+            startupCancelled
+            error
+
     // A previous bounded termination attempt may still own this monitor. Retrying
     // must report uncertainty, rather than turn the outer timeout into an infinite wait.
     let withLock (sync: obj) action =
@@ -48,7 +67,9 @@ module internal ChildProtocol =
 
     let receipt (reader: StreamReader) =
         task {
-            let! line = reader.ReadLineAsync()
+            // A synchronous process caller may own a context it cannot pump.
+            // Receipt completion must follow pipe I/O independently of that context.
+            let! line = reader.ReadLineAsync().ConfigureAwait(false)
             use message = parse line
             let root = message.RootElement
 
@@ -56,7 +77,7 @@ module internal ChildProtocol =
                 raise (failure root)
 
             let code = root.GetProperty("exitCode").GetInt32()
-            let! trailing = reader.ReadLineAsync()
+            let! trailing = reader.ReadLineAsync().ConfigureAwait(false)
 
             if not (isNull trailing) then
                 raise (IOException("Unexpected data after the target exit receipt."))
@@ -139,6 +160,7 @@ type internal OwnedChild
     private
     (proc: Process, pipe: NamedPipeServerStream, reader: StreamReader, writer: StreamWriter, containment: Containment) =
     let sync = obj ()
+    let helperPid = proc.Id
     let receipt = ChildProtocol.receipt reader
     let mutable cleanupVerified = false
     let mutable terminationRequested = false
@@ -164,17 +186,34 @@ type internal OwnedChild
         ChildProtocol.withLock sync (fun () ->
             ObjectDisposedException.ThrowIf(disposed, this)
             let elapsed = Stopwatch.StartNew()
-            this.WaitForHost elapsed
+            let mutable phase = "host-exit"
 
-            let code =
-                receipt.WaitAsync(ChildProtocol.remaining elapsed).GetAwaiter().GetResult()
+            try
+                this.WaitForHost elapsed
+                phase <- "exit-receipt"
 
-            if proc.ExitCode <> 137 then
-                raise (IOException($"Unexpected process host exit {proc.ExitCode}; target result is unconfirmed."))
+                let code =
+                    receipt.WaitAsync(ChildProtocol.remaining elapsed).GetAwaiter().GetResult()
 
-            ChildProtocol.waitForContainment containment elapsed
-            cleanupVerified <- true
-            code)
+                phase <- "host-exit-status"
+
+                if proc.ExitCode <> 137 then
+                    raise (IOException($"Unexpected process host exit {proc.ExitCode}; target result is unconfirmed."))
+
+                phase <- "containment-empty"
+                ChildProtocol.waitForContainment containment elapsed
+                cleanupVerified <- true
+                code
+            with error ->
+                ChildProtocol.reportFailure
+                    phase
+                    elapsed.ElapsedMilliseconds
+                    helperPid
+                    (string receipt.Status)
+                    "not-applicable"
+                    error
+
+                reraise ())
 
     member this.Terminate() =
         ChildProtocol.withLock sync (fun () ->
@@ -242,18 +281,27 @@ type internal OwnedChild
         let mutable containment = None
         let mutable owned = None
         let mutable started = false
+        let mutable knownPid = 0
+        let mutable phase = "host-start"
+        let elapsed = Stopwatch.StartNew()
+        let mutable startupToken = CancellationToken.None
 
         try
             if not (proc.Start()) then
                 raise (IOException("Process host did not start."))
 
             started <- true
+            knownPid <- proc.Id
             use startup = new CancellationTokenSource(TimeSpan.FromSeconds 5.)
+            startupToken <- startup.Token
+            phase <- "connect"
             pipe.WaitForConnectionAsync(startup.Token).GetAwaiter().GetResult()
             let controlReader = new StreamReader(pipe, UTF8Encoding(false), false, 1024, true)
             reader <- Some controlReader
             let controlWriter = new StreamWriter(pipe, UTF8Encoding(false), 1024, true)
             writer <- Some controlWriter
+
+            phase <- "ready-read"
 
             use ready =
                 ChildProtocol.parse (controlReader.ReadLineAsync(startup.Token).AsTask().GetAwaiter().GetResult())
@@ -263,11 +311,15 @@ type internal OwnedChild
             if root.GetProperty("kind").GetString() <> "ready" then
                 raise (ChildProtocol.failure root)
 
+            phase <- "containment-open"
             let boundary = Containment.Open(root, proc.Id, pipeName + "-job")
             containment <- Some boundary
             let child = new OwnedChild(proc, pipe, controlReader, controlWriter, boundary)
             owned <- Some child
+            phase <- "register"
             register.Invoke child
+
+            phase <- "start-send"
 
             ChildProtocol.withLock child.Sync (fun () ->
                 if child.Stopped then
@@ -277,6 +329,14 @@ type internal OwnedChild
 
             child
         with startupError ->
+            ChildProtocol.reportFailure
+                phase
+                elapsed.ElapsedMilliseconds
+                knownPid
+                "not-observed"
+                (string startupToken.IsCancellationRequested)
+                startupError
+
             match owned with
             | Some child ->
                 ChildProtocol.cleanupAfterFailure

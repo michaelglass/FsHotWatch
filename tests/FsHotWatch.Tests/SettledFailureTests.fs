@@ -210,9 +210,13 @@ let ``public verdict wait reports current failed build without inventing test ev
                     let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
                     malformed.["completedFailures"].[0].["modelGeneration"] <- generation
                     Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
+
                 for fragment in [ "null"; "[]"; "[null]"; "[{\"path\":\"Source.fs\"}]" ] do
                     let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
-                    malformed.["completedFailures"].[0].["inputFiles"] <- System.Text.Json.Nodes.JsonNode.Parse fragment
+
+                    malformed.["completedFailures"].[0].["inputFiles"] <-
+                        System.Text.Json.Nodes.JsonNode.Parse fragment
+
                     Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
 
                 let duplicated = System.Text.Json.Nodes.JsonNode.Parse diagnostics
@@ -221,7 +225,10 @@ let ``public verdict wait reports current failed build without inventing test ev
                 Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (duplicated.ToJsonString()))
 
                 let badHash = System.Text.Json.Nodes.JsonNode.Parse diagnostics
-                badHash.["completedFailures"].[0].["inputFiles"].[0].["contentHash"] <- System.Text.Json.Nodes.JsonValue.Create("wrong")
+
+                badHash.["completedFailures"].[0].["inputFiles"].[0].["contentHash"] <-
+                    System.Text.Json.Nodes.JsonValue.Create("wrong")
+
                 Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (badHash.ToJsonString()))
 
                 for malformed in [ "{}"; "[]"; "not-json" ] do
