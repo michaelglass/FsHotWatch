@@ -13,6 +13,19 @@ open FsHotWatch.Tests.TestHelpers
 type AnalyzerProvenanceBuildCollection() = class end
 
 module private AnalyzerProvenanceBuildFixture =
+    // Resolve parent directory aliases as the SDK process working directory does.
+    // GetFullPath alone keeps macOS /var while the producer records /private/var.
+    let rec physicalDirectory (directory: DirectoryInfo) =
+        if isNull directory.Parent then directory.FullName
+        else
+            let candidate = DirectoryInfo(Path.Combine(physicalDirectory directory.Parent, directory.Name))
+            match candidate.ResolveLinkTarget(true) with
+            | null -> candidate.FullName
+            | target -> target.FullName
+
+    let withProducerDir prefix body =
+        withTempDir prefix (fun root -> body (physicalDirectory (DirectoryInfo root)))
+
     let name value = XName.Get value
     let attr key (value: string) = XAttribute(name key, value)
     let node key (children: obj array) = XElement(name key, children)
@@ -114,7 +127,7 @@ module private AnalyzerProvenanceBuildFixture =
 type AnalyzerProvenanceBuildTests() =
     [<Fact(Timeout = 300000)>]
     member _.``real producer source link metadata does not partition equivalent workspace keys``() =
-        withTempDir "real-parity" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "real-parity" (fun root ->
             let first = Path.Combine(root, "a")
             let second = Path.Combine(root, "a-substantially-longer-workspace")
 
@@ -141,6 +154,7 @@ type AnalyzerProvenanceBuildTests() =
         // cannot be diagnosed faithfully after copying/deleting their inputs.
         let root = Path.Combine(Path.GetTempPath(), "fshw-external-glob-" + Guid.NewGuid().ToString("N"))
         Directory.CreateDirectory root |> ignore
+        let root = AnalyzerProvenanceBuildFixture.physicalDirectory (DirectoryInfo root)
         (fun root ->
             let producer = Path.Combine(root, "Producer")
             let shared = Path.Combine(root, "Shared")
@@ -183,7 +197,7 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``incremental build cannot bless a replaced compiler output``() =
-        withTempDir "replaced-output" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "replaced-output" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
 
             AnalyzerProvenanceBuildFixture.build root "Mini" ""
@@ -207,7 +221,7 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``a source changed after compiler execution cannot receive a successful receipt``() =
-        withTempDir "mid-build" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "mid-build" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
 
             AnalyzerProvenanceBuildFixture.build root "Mini" "-p:MutateAfterCompile=true"
@@ -217,7 +231,7 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``first party project dependencies have validated source provenance``() =
-        withTempDir "project-dependency" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "project-dependency" (fun root ->
             let dependency = Path.Combine(root, "Library")
             let producer = Path.Combine(root, "Producer")
             AnalyzerProvenanceBuildFixture.prepare dependency "Library" "module Library\nlet value = 1" None false None
@@ -245,7 +259,7 @@ type AnalyzerProvenanceBuildTests() =
     [<InlineData("excluded-and-removed")>]
     [<InlineData("custom-global")>]
     member _.``evaluated membership preserves the producer source selection``(shape: string) =
-        withTempDir "evaluated-membership" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "evaluated-membership" (fun root ->
             let producer = Path.Combine(root, "Producer")
             let shared = Path.Combine(root, "Shared")
             let source filename = Path.Combine(shared, filename)
@@ -326,7 +340,7 @@ type AnalyzerProvenanceBuildTests() =
     [<InlineData(false)>]
     [<InlineData(true)>]
     member _.``current environment membership is observed without replaying environment values``(propertyFunction: bool) =
-        withTempDir "current-environment" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "current-environment" (fun root ->
             let producer = Path.Combine(root, "Producer")
             let shared = Path.Combine(root, "Shared")
             Directory.CreateDirectory shared |> ignore
@@ -362,7 +376,7 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``producer invocation values stay in private local context``() =
-        withTempDir "private-invocation" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "private-invocation" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
             let probe = "synthetic-private-global-" + Guid.NewGuid().ToString("N")
             AnalyzerProvenanceBuildFixture.build root "Mini" ("-p:RuleFlavor=" + probe)
@@ -395,7 +409,7 @@ type AnalyzerProvenanceBuildTests() =
     [<InlineData("two words", "two words")>]
     [<InlineData("trailing\\", "trailing\\")>]
     member _.``invocation globals survive private response file replay``(expected: string, encoded: string) =
-        withTempDir "global-escaping" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "global-escaping" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
             let argument =
                 if encoded.EndsWith("\\", StringComparison.Ordinal) then "-p:RuleFlavor=" + encoded
@@ -418,7 +432,7 @@ type AnalyzerProvenanceBuildTests() =
     [<InlineData("digest")>]
     [<InlineData("another-producer")>]
     member _.``missing or mismatched private invocation context refuses reuse``(damage: string) =
-        withTempDir "context-refusal" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "context-refusal" (fun root ->
             let producer = Path.Combine(root, "Producer")
             AnalyzerProvenanceBuildFixture.prepare producer "Mini" "module MiniRules\nlet answer = 1" None false None
             AnalyzerProvenanceBuildFixture.build producer "Mini" ""
@@ -444,7 +458,7 @@ type AnalyzerProvenanceBuildTests() =
 
     [<Fact(Timeout = 300000)>]
     member _.``producer rejects another valid private context before publication comparison``() =
-        withTempDir "publish-context-binding" (fun root ->
+        AnalyzerProvenanceBuildFixture.withProducerDir "publish-context-binding" (fun root ->
             let producer = Path.Combine(root, "Producer")
             let other = Path.Combine(root, "Other")
             for directory in [ producer; other ] do
