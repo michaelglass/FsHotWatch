@@ -434,6 +434,27 @@ type AnalyzerProvenanceBuildTests() =
     member _.``invocation globals survive private response file replay``(expected: string, encoded: string) =
         withTempDir "a564-global-escaping" (fun root ->
             AnalyzerProvenanceBuildFixture.prepare root "Mini" "module MiniRules\nlet answer = 1" None false None
+            let selectedSource = Path.Combine(root, "Selected.fs")
+            let selectsSource = expected = "semi;colon" || expected = "percent%value"
+
+            if selectsSource then
+                File.WriteAllText(selectedSource, "module SelectedRules\nlet value = 2")
+                let projectPath = Path.Combine(root, "Mini.fsproj")
+                let project = XElement.Load projectPath
+                let n = AnalyzerProvenanceBuildFixture.node
+                let a = AnalyzerProvenanceBuildFixture.attr
+
+                project.Add(
+                    n
+                        "ItemGroup"
+                        [| n
+                               "Compile"
+                               [| a "Include" "Selected.fs"
+                                  a "Condition" ("'$(RuleFlavor)' == '" + encoded + "'") |] |]
+                )
+
+                project.Save projectPath
+
             let argument =
                 if encoded.EndsWith("\\", StringComparison.Ordinal) then "-p:RuleFlavor=" + encoded
                 else "\"-p:RuleFlavor=" + encoded + "\""
@@ -447,7 +468,18 @@ type AnalyzerProvenanceBuildTests() =
                 context.Element(XName.Get "Globals").Elements(XName.Get "Property")
                 |> Seq.find (fun property -> property.Attribute(XName.Get "name").Value = "RuleFlavor")
                 |> fun property -> property.Attribute(XName.Get "value").Value
-            Assert.True((actual = expected), "Producer test invocation must preserve the intended synthetic value")
+            // IBuildEngine6 exposes escaped global values, as consumed by Project's constructor.
+            Assert.True((actual = encoded), "Private context must preserve the SDK's escaped global representation")
+
+            if selectsSource then
+                let compiledSources =
+                    receipt.Element(XName.Get "Inputs").Elements(XName.Get "File")
+                    |> Seq.filter (fun file -> file.Attribute(XName.Get "key").Value.StartsWith("source:", StringComparison.Ordinal))
+                    |> Seq.map (fun file -> file.Attribute(XName.Get "path").Value |> Path.GetFullPath)
+                    |> Seq.toList
+
+                Assert.Contains(Path.GetFullPath selectedSource, compiledSources)
+
             Assert.True((AnalyzerProvenanceBuildFixture.key root "Mini").IsSome))
 
     [<Theory(Timeout = 300000)>]
