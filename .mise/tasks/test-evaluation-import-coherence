@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Check evaluated analyzer import XML matches its hashed bytes"
+#MISE depends=["compile-evaluation-helper"]
+set -euo pipefail
+python3 scripts/test-analyzer-import-coherence.py "$@"
