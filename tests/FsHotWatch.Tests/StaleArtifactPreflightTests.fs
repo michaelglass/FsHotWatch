@@ -196,7 +196,7 @@ let ``a manifest generated after its restore is not reported`` () =
 /// rebuild.
 ///
 /// A raw `dotnet build`: a consuming repository may refuse that command
-/// outright — thellma/intelligence puts a shim first on `PATH` that rejects it, so the
+/// outright — a large private downstream repository puts a shim first on `PATH` that rejects it, so the
 /// gate was prescribing an action its own operator cannot take — and it is the weaker
 /// command anyway, because the cached build result is exactly what let the work be
 /// skipped. `dotnet fshw rerun build` clears that result, and every repository reading
@@ -508,7 +508,7 @@ let ``a tripped breaker does NOT block a run with nothing stale in it`` () =
 /// Before this, `List.partition` split the round into `tripped` and `toRepair` and then
 /// refused BOTH — so the tree that produced the refusal was byte-identical on the next
 /// run, and the only exit was a human deleting the ledger. Observed twice in
-/// thellma/intelligence: every project passed, a queued re-run refused, executed
+/// a large private downstream repository: every project passed, a queued re-run refused, executed
 /// nothing, and recorded `outcome: red, scope: none, reddenedByCount: 0`.
 [<Fact(Timeout = 15000)>]
 let ``a file the breaker has tripped does not block another project's repair`` () =
