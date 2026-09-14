@@ -2053,3 +2053,73 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
         match Verdict.read repoRoot with
         | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
         | _ -> ())
+
+// This is the real parse -> publish -> persisted verdict path.
+// Removing clock-quality propagation must make these assertions fail even when
+// the test receipt is independently green. No wall-clock changes or sleeps.
+[<Theory>]
+[<InlineData("discontinuous")>]
+[<InlineData("legacy")>]
+[<InlineData("malformed")>]
+[<InlineData("valid")>]
+[<InlineData("unknown-version")>]
+let ``daemon clock quality cannot disappear before verdict publication`` (scenario: string) =
+    TestHelpers.withTempDir "ipcoutput-clock-quality" (fun repoRoot ->
+        let runId = System.Guid.NewGuid()
+        let _ = writeSevenSuiteRun repoRoot runId
+
+        let runReport =
+            { BaselineFixtures.reportOf (FullSuite 7) with
+                RunId = Some runId
+                Baseline = BaselineFixtures.reading }
+
+        // A stopped stopwatch makes publication deterministic: this test is
+        // about the explicit quality refusal, not inferred percentage gaps.
+        let invocation: Verdict.Invocation =
+            { Id = "clock-quality"
+              OriginUtc = System.DateTime(2026, 9, 9, 0, 0, 0, System.DateTimeKind.Utc)
+              Clock = System.Diagnostics.Stopwatch() }
+
+        let quality =
+            match scenario with
+            | "legacy" -> ""
+            | "malformed" -> ",\"clockQuality\":17"
+            | "valid" -> ",\"clockQuality\":{\"version\":1,\"kind\":\"valid\"}"
+            | "unknown-version" -> ",\"clockQuality\":{\"version\":999,\"kind\":\"valid\"}"
+            | _ ->
+                ",\"clockQuality\":{\"version\":1,\"kind\":\"unmeasurable\",\"reason\":\"clock discontinuity: "
+                + scenario
+                + "\"}"
+
+        let payload =
+            "{\"daemonPhases\":[{\"scope\":\"daemon.scan\","
+            + "\"startedAt\":\"2026-09-09T00:00:00Z\",\"elapsedMs\":601000"
+            + quality
+            + "}]}"
+
+        let exitCode =
+            publishVerdictForInvocation
+                invocation
+                repoRoot
+                []
+                CheckVerdict.Confirmation
+                false
+                runReport
+                Verdict.NoReading
+                Map.empty
+                (DaemonEvidence.parse payload)
+                []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
+        Assert.Equal(0, exitCode)
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            Assert.True(Verdict.isFullSuiteGreen verdict)
+            let hasClockRefusal =
+                verdict.TimingIncompleteReasons
+                |> List.exists (fun reason -> reason.Contains("clock", System.StringComparison.OrdinalIgnoreCase))
+
+            Assert.Equal(scenario <> "valid", hasClockRefusal)
+        | other -> failwithf "expected independently green test verdict with clock quality, got %A" other)
