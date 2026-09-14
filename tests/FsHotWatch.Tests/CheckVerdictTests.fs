@@ -1140,3 +1140,70 @@ let ``AUTOMATION-339: a Completed plugin whose run VERIFIED NOTHING is not a fai
             PluginStatuses = Map.ofList [ "test-prune", failed ] }
 
     test <@ exitCode (verdict InnerLoop failedPlugin) = 1 @>
+
+// AUTOMATION-474. The reproduction the ticket asks for, as a deterministic unit
+// test rather than a harness: `converge` is pure, so the losing sequence can be
+// scripted exactly.
+//
+// WHAT THIS PINS IS TODAY'S BEHAVIOUR, NOT THE DESIRED ONE. It documents the
+// defect's surface so the fix has something to flip, and so nobody has to rerun a
+// real check to see the shape.
+
+/// Re-reads that vary the SCOPE as well as the coverage — the existing `scripted`
+/// helper holds the scope fixed, and the whole point here is a late scope change.
+let private scriptedScopes (steps: (bool * Coverage * TestScope) list) =
+    let queue = System.Collections.Generic.Queue<bool * Coverage * TestScope>(steps)
+    let scans = ref 0
+    let mutable last = (false, Incomplete 1, anyScope)
+
+    let triggerScan () = scans.Value <- scans.Value + 1
+
+    let reread () =
+        if queue.Count > 0 then
+            last <- queue.Dequeue()
+
+        let (failures, coverage, scope) = last
+        inputs failures coverage scope
+
+    (triggerScan, reread, scans)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-474")>]
+let ``converge: a zero-test final read ends the loop, discarding the progress earlier attempts made`` () =
+    // The sequence from the ticket: impacted runs in flight and making progress,
+    // then a final scan that selected zero tests.
+    let (triggerScan, reread, scans) =
+        scriptedScopes
+            [ (false, Incomplete 2, ImpactFiltered(2, 5))
+              (false, Complete, NoTestsRun NoTestsReason.AlreadyVerified) ]
+
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) (ImpactFiltered(1, 5)))
+
+    // TODAY: the zero-test read is terminal, so convergence returns it and the
+    // earlier attempts contribute nothing. `converge` carries no candidate result
+    // between attempts — only `prevMagnitude`, an int — so there is nothing for a
+    // later read to be weighed against.
+    test <@ outcome = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
+
+    // It got there by making progress first, which is what makes this the ticket's
+    // sequence rather than a run that simply never tested anything.
+    test <@ scans.Value = 2 @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-474")>]
+let ``converge: a clean read wins immediately, so clean-then-zero-test is NOT the losing sequence`` () =
+    // Rules out the obvious hypothesis. `Clean` is terminal too, so if an earlier
+    // attempt had produced a passing complete result, convergence would have
+    // returned it and never reached a later zero-test read. Whatever evidence goes
+    // missing in this ticket is therefore lost BEFORE `converge` can see it — which
+    // is why the fix cannot live in this function alone.
+    let (triggerScan, reread, _) =
+        scriptedScopes
+            [ (false, Complete, FullSuite 5)
+              (false, Complete, NoTestsRun NoTestsReason.AlreadyVerified) ]
+
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) (ImpactFiltered(1, 5)))
+
+    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
