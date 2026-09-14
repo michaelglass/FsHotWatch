@@ -19,6 +19,7 @@
     <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
     <Compile Include="StringHelpersTests.fs" />
+    <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
