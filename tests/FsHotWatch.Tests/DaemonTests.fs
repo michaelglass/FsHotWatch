@@ -4,8 +4,13 @@ module FsHotWatch.Tests.DaemonTests
 open System
 open System.IO
 open System.Threading
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open FsHotWatch
+// `DiscoverySnapshot` is an alias for `ProjectModel.Counts`, so
+// its record labels resolve from the ProjectModel module rather than from Daemon.
+open FsHotWatch.ProjectModel
 open FsHotWatch.Build
 open FsHotWatch.Daemon
 open FsHotWatch.FcsDiagnosticFilter
@@ -1952,3 +1957,105 @@ let ``a forced scan records daemon.scan and daemon.startup phases on the ledger`
                 task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
             with :? AggregateException ->
                 ())
+
+// `Completed` returns None both while an attempt is in flight and
+// when nothing was ever discovered. A scan that cannot tell those apart reads an
+// in-flight rediscovery as an empty project model and reports NO TESTS RAN, which
+// a consumer can read as a pass. These pin that the two are now distinguishable.
+
+[<Fact(Timeout = 15000)>]
+let ``an unobserved coordinator is not the same answer as one that is rediscovering`` () =
+    let coordinator = DiscoveryCoordinator()
+    test <@ coordinator.Observation = ProjectModel.Observation.Unobserved @>
+
+[<Fact(Timeout = 15000)>]
+let ``THE RACE: a discovery in flight reports rediscovering, never an empty model`` () =
+    let coordinator = DiscoveryCoordinator()
+
+    let started =
+        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let inFlight =
+        coordinator.Run(fun () ->
+            async {
+                started.TrySetResult() |> ignore
+                do! release.Task |> Async.AwaitTask
+
+                return
+                    { Discovered = 3
+                      Loaded = 3
+                      OptionsMapped = 3
+                      Registered = 3 },
+                    ()
+            })
+        |> Async.StartAsTask
+
+    started.Task.GetAwaiter().GetResult()
+
+    // Mid-flight: `Completed` is None — the pre-fix reading that looks like an
+    // empty model. The observation says WHY it is None.
+    test <@ coordinator.Completed = None @>
+
+    match coordinator.Observation with
+    | ProjectModel.Observation.Rediscovering generation -> test <@ generation > 0L @>
+    | other -> failwith $"expected Rediscovering while discovery was in flight, got %A{other}"
+
+    release.TrySetResult() |> ignore
+    inFlight.GetAwaiter().GetResult()
+
+    match coordinator.Observation with
+    | ProjectModel.Observation.Available snapshot -> test <@ snapshot.Counts.Registered = 3 @>
+    | other -> failwith $"expected Available once discovery completed, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``a faulted discovery reports unobserved rather than a stale success`` () =
+    let coordinator = DiscoveryCoordinator()
+
+    coordinator.Run(fun () ->
+        async {
+            return
+                { Discovered = 2
+                  Loaded = 2
+                  OptionsMapped = 2
+                  Registered = 2 },
+                ()
+        })
+    |> Async.RunSynchronously
+
+    test <@ coordinator.Observation <> ProjectModel.Observation.Unobserved @>
+
+    let faulting: Async<DiscoverySnapshot * unit> =
+        async { return raise (InvalidOperationException "loader exploded") }
+
+    Assert.Throws<InvalidOperationException>(fun () -> coordinator.Run(fun () -> faulting) |> Async.RunSynchronously)
+    |> ignore
+
+    test <@ coordinator.Observation = ProjectModel.Observation.Unobserved @>
+
+[<Fact(Timeout = 15000)>]
+let ``the coordinator announces rediscovery before it announces a settled model`` () =
+    let announced =
+        System.Collections.Concurrent.ConcurrentQueue<ProjectModel.Observation>()
+
+    let coordinator = DiscoveryCoordinator(announced.Enqueue)
+
+    coordinator.Run(fun () ->
+        async {
+            return
+                { Discovered = 1
+                  Loaded = 1
+                  OptionsMapped = 1
+                  Registered = 1 },
+                ()
+        })
+    |> Async.RunSynchronously
+
+    let observed = announced.ToArray() |> List.ofArray
+
+    match observed with
+    | [ ProjectModel.Observation.Rediscovering _; ProjectModel.Observation.Available snapshot ] ->
+        test <@ snapshot.Counts.Registered = 1 @>
+    | other -> failwith $"expected rediscovering then available, got %A{other}"
