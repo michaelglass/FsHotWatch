@@ -647,6 +647,11 @@
         "platform": "linux"
       }
     ],
+    "ProjectModelWire.fs": {
+      "line": 100,
+      "branch": 88,
+      "reason": "honest floor at the achieved value for a brand-new file: 100% line, 88% branch. Lines are fully covered. The uncovered branches are the fail-closed arms of tryRead - an envelope whose schema is unrecognised, whose observation kind is unknown, or whose stage counts are absent, non-integral or non-positive. Each is reachable only from a malformed payload; ProjectModelTests exercises the representative ones (unknown-or-malformed envelope, incomplete stage evidence, a loader failure that must not be relabelled a registration failure) rather than every malformed permutation. Left honest rather than padded with permutation tests that would pin no additional behaviour."
+    },
     "RunClaim.fs": [
       {
         "line": 83,
