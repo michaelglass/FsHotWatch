@@ -249,17 +249,26 @@ let internal waitForVerdictUnlessDiscoveryFailed
 /// number returned by Ionide/MSBuild into the project graph; `Registered` is the
 /// later FCS pipeline count. Keeping both prevents a registration defect from
 /// being mislabeled as the AUTOMATION-290 loader failure.
-type internal DiscoverySnapshot =
-    { Discovered: int
-      Loaded: int
-      OptionsMapped: int
-      Registered: int }
+/// The same four counts `ProjectModel` classifies, so a coordinator outcome and
+/// a published observation can never disagree about what was discovered.
+type internal DiscoverySnapshot = ProjectModel.Counts
 
 /// Serializes every clear/load/map/register transaction and publishes only one
 /// immutable, completed outcome. `InProgress` deliberately hides the preceding
 /// outcome: a check arriving while a repair discovery is running must wait for
 /// that attempt, not fail from either transient empty stores or stale failure.
-type internal DiscoveryCoordinator() =
+type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
+    // AUTOMATION-523: a scan reading project state while rediscovery is clearing
+    // it sees an empty model and reports NO TESTS RAN, which a consumer can read
+    // as a pass. `Completed` already hides the preceding outcome while an attempt
+    // is pending, but hiding it makes IN-FLIGHT and NOTHING-DISCOVERED the same
+    // answer. Publishing the observation says WHICH, so a reader can wait instead
+    // of concluding.
+    let announce =
+        match publish with
+        | Some f -> f
+        | None -> ignore
+
     let admission = new SemaphoreSlim(1, 1)
     let stateGate = obj ()
     let mutable generation = 0L
@@ -301,6 +310,20 @@ type internal DiscoveryCoordinator() =
 
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
+    /// AUTOMATION-523: what a reader should believe about the project model right
+    /// now, as a value rather than an absence. `Completed` returns `None` both
+    /// when an attempt is in flight and when nothing was ever observed; this
+    /// distinguishes them, so a scan can wait for `Rediscovering` instead of
+    /// treating it as an empty model.
+    member _.Observation: ProjectModel.Observation =
+        lock stateGate (fun () ->
+            if pendingAttempts > 0 then
+                ProjectModel.Observation.Rediscovering generation
+            else
+                match completed with
+                | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
+                | None -> ProjectModel.Observation.Unobserved)
+
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
         task {
             let! _, completed = waitForStableAdmission ()
@@ -322,6 +345,11 @@ type internal DiscoveryCoordinator() =
 
                     generation)
 
+            // Announced OUTSIDE `stateGate`: a subscriber that reads the
+            // coordinator back would deadlock against the lock it was published
+            // under.
+            announce (ProjectModel.Observation.Rediscovering attempt)
+
             do! admission.WaitAsync() |> Async.AwaitTask
 
             try
@@ -341,6 +369,13 @@ type internal DiscoveryCoordinator() =
                                 None)
 
                     completion |> Option.iter (fun pending -> pending.TrySetResult() |> ignore)
+
+                    // Only the attempt that quiesced the coordinator announces a
+                    // settled model. While others are still pending the honest
+                    // answer is still `Rediscovering`, which `Observation` reports.
+                    if completion.IsSome then
+                        announce (ProjectModel.ofCompleted attempt snapshot)
+
                     return result
                 with ex ->
                     let completion =
@@ -356,6 +391,13 @@ type internal DiscoveryCoordinator() =
                                 None)
 
                     completion |> Option.iter (fun pending -> pending.TrySetException(ex) |> ignore)
+
+                    // A failed attempt that quiesced the coordinator clears the
+                    // completed outcome, so the honest published answer is that
+                    // nothing has been observed — never a stale success.
+                    if completion.IsSome then
+                        announce ProjectModel.Observation.Unobserved
+
                     return raise ex
             finally
                 admission.Release() |> ignore
