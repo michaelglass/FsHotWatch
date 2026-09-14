@@ -165,7 +165,7 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
 /// AUTOMATION-495: it no longer says `dotnet build` either, and that is wrong in two
 /// directions rather than one.
 ///
-///   * A REPOSITORY MAY REFUSE IT. thellma/intelligence puts a shim first on `PATH`
+///   * A REPOSITORY MAY REFUSE IT. One large private downstream repository puts a shim first on `PATH`
 ///     that rejects `dotnet build`, `test`, `exec` and friends outright (its ADR 0200),
 ///     because raw builds bypass the analyzer and format plugins that are part of its
 ///     gate. A refusal that prescribes an action the operator cannot take is a dead

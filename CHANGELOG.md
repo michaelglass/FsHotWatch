@@ -196,7 +196,7 @@ All notable changes to FsHotWatch packages are documented here.
 - AUTOMATION-495: **the stale-artifact preflight no longer prescribes a command a
   repository may refuse.** `StaleArtifactPreflight.remedyFor` said `dotnet build` in all
   three arms and escalated to `dotnet build --no-incremental` for a byte-differing copy.
-  thellma/intelligence puts a shim first on `PATH` that rejects `dotnet build` outright
+  A large private downstream repository puts a shim first on `PATH` that rejects `dotnet build` outright
   (its ADR 0200, because raw builds bypass the analyzer and format plugins in its gate),
   so the message an operator reads while wedged named the one action they cannot take.
   It is also the weaker command: the cached build result is precisely what let the work
@@ -1848,7 +1848,7 @@ YamlDotNet dependency exists in this repo.
 
 ### Daemon: auto-refresh FCS on `.fsproj` and `obj/project.assets.json` changes
 
-Reported by `thellma/intelligence` during the `bedrock-spike` landing
+Reported by a large private downstream repository during the `bedrock-spike` landing
 (docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25). Adding an
 `AWSSDK.Bedrock` `PackageReference` and running `dotnet restore` left
 the daemon reporting `FS0039: namespace 'Bedrock' is not defined`
