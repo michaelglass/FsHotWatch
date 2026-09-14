@@ -27,7 +27,7 @@ The stated reason was "a repair whose run never launches is a ledger entry bough
 nothing". That is true of one run in isolation and false in aggregate: it is precisely
 what made the state non-convergent. Nothing was repaired, so the next run met a
 byte-identical tree, took the identical decision, and refused again. The only exit was
-a human deleting the ledger — and in thellma/intelligence the ledger regrew to 95
+a human deleting the ledger — and in a large private downstream repository the ledger regrew to 95
 entries in roughly six hours of ordinary work, so the exit had to be taken repeatedly.
 
 Observed twice (2026-08-23 and 2026-08-24, on two CLI versions): every project passed,
