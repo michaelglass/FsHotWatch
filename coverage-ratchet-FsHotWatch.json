@@ -483,8 +483,8 @@
     "OperationWatchdog.fs": [
       {
         "line": 90,
-        "branch": 100,
-        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns \u002B Begin/End \u002B WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback\u0027s overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) \u2014 pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run.",
+        "branch": 91,
+        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns \u002B Begin/End \u002B WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback\u0027s overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) \u2014 pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run. || 2026-09-16: three further full runs (two on the AUTOMATION-818 change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum (AUTOMATION-813).",
         "platform": "macos"
       },
       {
@@ -1419,8 +1419,8 @@
     "OperationWatchdog.fs": [
       {
         "coveredLines": 63,
-        "coveredBranches": 12,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical \u2014 the watchdog timing path that wobbled 12 -\u003E 11 in covered branches on 2026-09-04 did not wobble today). Recaptured for AUTOMATION-813 after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 11,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical \u2014 the watchdog timing path that wobbled 12 -\u003E 11 in covered branches on 2026-09-04 did not wobble today). Recaptured for AUTOMATION-813 after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). || 2026-09-16: three further full runs (two on the AUTOMATION-818 change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum (AUTOMATION-813).",
         "platform": "macos"
       },
       {
@@ -1779,8 +1779,8 @@
     "Verdict.fs": [
       {
         "coveredLines": 1444,
-        "coveredBranches": 443,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for AUTOMATION-813 after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 442,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for AUTOMATION-813 after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). || 2026-09-16: three further full runs (two on the AUTOMATION-818 change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum (AUTOMATION-813).",
         "platform": "macos"
       },
       {
