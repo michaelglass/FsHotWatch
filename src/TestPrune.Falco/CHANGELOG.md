@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.1.4 - 2026-09-15
+
 - Recognize accessible and escaped test declarations and file modules when
   attributing route changes to tests and dependency edges.
 
