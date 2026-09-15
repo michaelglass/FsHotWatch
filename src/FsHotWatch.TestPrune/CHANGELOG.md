@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.35 - 2026-09-16
+
 - Adopt TestPrune.Core 8.2.0: signature-file declarations are indexed as their
   own occurrences and the in-memory store keeps a real declaration's owner over
   a reference placeholder.
