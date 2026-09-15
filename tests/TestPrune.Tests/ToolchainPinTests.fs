@@ -18,8 +18,12 @@ let private repoRoot () =
     up (DirectoryInfo(AppContext.BaseDirectory))
 
 [<Theory>]
-// Change this one parameter only after the watcher/run-once fix has a real CLI release.
-[<InlineData("0.14.0-alpha.29")>]
+// Change this one parameter only after the behaviour this repo's gate depends on
+// has a real CLI release. alpha.45 is the first pin whose bundled TestPrune plugin
+// selects the CTRF report flag by runner family, which is what lets the gate drive
+// an xunit.v3 4.0.0 runner; the xunit-3-only flag made a 4.0.0 host exit 5 and
+// report zero tests rather than fail.
+[<InlineData("0.14.0-alpha.45")>]
 let ``FsHotWatch gate uses the reviewed released pin`` (expectedReleasedVersion: string) =
     let root = repoRoot ()
 
