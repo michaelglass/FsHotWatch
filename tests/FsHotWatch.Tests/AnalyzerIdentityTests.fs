@@ -146,6 +146,70 @@ let ``a first-party DLL whose PDB is gone is MissingPdb, not a byte digest`` () 
 
         test <@ identityOf (Some repoRoot) dll = Error(Refusal.MissingPdb dll) @>)
 
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``a sidecar PDB that is not the one the build wrote is PdbMismatch`` () =
+    withTempDir "az-id-wrongpdb" (fun root ->
+        let dll = relocate root
+        // This test host's own PDB, wearing the analyzer's name: a stale sidecar.
+        File.Copy(
+            Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Tests.pdb"),
+            Path.ChangeExtension(dll, ".pdb"),
+            true
+        )
+
+        test <@ identityOf (Some root) dll = Error(Refusal.PdbMismatch(dll, Path.ChangeExtension(dll, ".pdb"))) @>)
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``a document the receipt names but the tree lacks is DocumentMissing`` () =
+    withTempDir "az-id-missing" (fun root ->
+        let dll = relocate root
+        let source = Path.Combine(root, rulesSourceRel)
+        File.Delete source
+
+        test <@ identityOf (Some root) dll = Error(Refusal.DocumentMissing source) @>)
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``two project files in the producer directory anchor nothing: a relocated receipt is a package`` () =
+    withTempDir "az-id-twoproj" (fun root ->
+        let dll = relocate root
+        let project = Path.Combine(root, rulesProjectRel)
+        File.Copy(project, Path.Combine(Path.GetDirectoryName project, "Other.fsproj"))
+
+        test
+            <@
+                identityOf (Some root) dll = Ok(
+                    AnalyzerAssemblyIdentity.PackageBytes(sha256Lower (File.ReadAllBytes dll))
+                )
+            @>)
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``a checksum algorithm this module cannot recompute is UnverifiableChecksum`` () =
+    withTempDir "az-id-alg" (fun root ->
+        let dll = relocate root
+        let unknown = Guid "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+        recordChecksumAlgorithm root unknown
+
+        match identityOf (Some root) dll with
+        | Error(Refusal.UnverifiableChecksum(_, algorithm)) -> test <@ algorithm = unknown @>
+        | other -> failwith $"expected UnverifiableChecksum, got %A{other}")
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``a SHA-1 receipt is recomputed as SHA-1, so a SHA-256 blob under it reads as drift`` () =
+    withTempDir "az-id-sha1" (fun root ->
+        let dll = relocate root
+        recordChecksumAlgorithm root (Guid "ff1816ec-aa5e-4d10-87f7-6f4963833460")
+
+        match identityOf (Some root) dll with
+        | Error(Refusal.DocumentDrift(_, recorded, actual)) ->
+            test <@ recorded.Length = 64 @>
+            test <@ actual.Length = 40 @>
+        | other -> failwith $"expected DocumentDrift, got %A{other}")
+
 // ---------------------------------------------------------------------------
 // Package bytes
 // ---------------------------------------------------------------------------

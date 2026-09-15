@@ -392,7 +392,7 @@ let ``a refused analyzer identity means no cache key, no cache entry, and the an
             waitForTerminalStatus host "analyzers" 20000
 
             // Nothing was written: a verdict that cannot be named cannot be replayed.
-            test <@ System.IO.Directory.GetFiles(store, "*", System.IO.SearchOption.AllDirectories) = [||] @>))
+            test <@ Array.isEmpty (System.IO.Directory.GetFiles(store, "*", System.IO.SearchOption.AllDirectories)) @>))
 
 [<Fact(Timeout = 15000)>]
 let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =
@@ -420,6 +420,115 @@ let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)
             System.IO.Directory.Delete(dir, true)
         with _ ->
             ()
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``describeRefusals names the file and the cause for every refusal, and never a hash`` () =
+    let g = System.Guid "8829d00f-11b8-4213-878b-770e8597ac16"
+
+    let described =
+        describeRefusals
+            [ FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.Unreadable("/a.dll", "locked")
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.MissingPdb "/b.dll"
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.PdbMismatch("/c.dll", "/c.pdb")
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.UnverifiableChecksum("/d.fs", g)
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.DocumentMissing "/e.fs"
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.DocumentDrift("/f.fs", "aaaa", "bbbb")
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.ProducerNotFound "/g.dll"
+              FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.OutputOlderThanProject("/h.dll", "/h.fsproj") ]
+
+    for named in
+        [ "/a.dll"
+          "locked"
+          "/b.dll"
+          "/c.pdb"
+          "/d.fs"
+          "/e.fs"
+          "/f.fs"
+          "/g.dll"
+          "/h.fsproj" ] do
+        test <@ described.Contains named @>
+
+    test <@ not (described.Contains "aaaa") @>
+    test <@ not (described.Contains "bbbb") @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``an unreadable analyzer DLL is a refusal, never a throw, and its digest still changes`` () =
+    let dir = analyzerBinWith "Locked" [| 1uy; 2uy |]
+    let dll = System.IO.Path.Combine(dir, "Locked.dll")
+
+    try
+        let readable = snapshotAnalyzerSet None knownNonAnalyzerPrefixes [ dir ]
+        System.IO.File.SetUnixFileMode(dll, System.IO.UnixFileMode.None)
+        let locked = snapshotAnalyzerSet None knownNonAnalyzerPrefixes [ dir ]
+
+        test <@ Result.isOk readable.Inputs @>
+        test <@ Result.isError locked.Inputs @>
+        test <@ readable.Materialization <> locked.Materialization @>
+    finally
+        try
+            System.IO.File.SetUnixFileMode(dll, System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``one live handler follows a rebuilt DLL: the set is reloaded and the key moves with it`` () =
+    // The warm-daemon case: the handler outlives the build that refreshes the DLL. The
+    // key must describe the set now on disk, not the one loaded at construction.
+    let dir = analyzerBinWith "Live" [| 0uy; 1uy; 2uy |]
+
+    try
+        let handler = create None [ dir ] None DiagnosticSeverity.Hint
+        let event = FileChecked(fakeResult $"{dir}/Subject.fs")
+        let before = (handler.CacheKey.Value) event
+
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Live.dll"), [| 9uy; 9uy; 9uy |])
+        let after = (handler.CacheKey.Value) event
+        let again = (handler.CacheKey.Value) event
+
+        test <@ before.IsSome && after.IsSome @>
+        test <@ before <> after @>
+        test <@ after = again @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-812")>]
+let ``a refusal that changes cause is re-noticed; the key stays absent throughout`` () =
+    withTempDir "az-refusal-change" (fun dir ->
+        let repoRoot = AnalyzerFixtures.repoRoot
+
+        let dll =
+            System.IO.Path.Combine(dir, System.IO.Path.GetFileName AnalyzerFixtures.rulesDll)
+
+        System.IO.File.Copy(AnalyzerFixtures.rulesDll, dll)
+        let handler = create (Some repoRoot) [ dir ] None DiagnosticSeverity.Hint
+
+        let event =
+            FileChecked(fakeResult (System.IO.Path.Combine(repoRoot, "src", "Probe.fs")))
+
+        // MissingPdb: no receipt beside a first-party build.
+        test <@ (handler.CacheKey.Value) event = None @>
+
+        // PdbMismatch: a sidecar that is not this build's. The snapshot is retaken
+        // every event while refused, so the new cause is seen without a byte moving.
+        System.IO.File.Copy(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Tests.pdb"),
+            System.IO.Path.ChangeExtension(dll, ".pdb")
+        )
+
+        test <@ (handler.CacheKey.Value) event = None @>
+
+        // The right PDB: the refusal clears, again without the DLL changing.
+        System.IO.File.Copy(AnalyzerFixtures.rulesPdb, System.IO.Path.ChangeExtension(dll, ".pdb"), true)
+        // ...but a DLL in a temp dir has no producer project above it in the repo.
+        test <@ (handler.CacheKey.Value) event = None @>)
 
 [<Fact(Timeout = 15000)>]
 let ``cache key for Custom event returns None`` () =

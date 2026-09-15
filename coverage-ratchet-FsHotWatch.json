@@ -1,5 +1,13 @@
 {
   "overrides": {
+    "AnalyzerIdentity.fs": [
+      {
+        "line": 97,
+        "branch": 83,
+        "reason": "AUTOMATION-812 (2026-09-16): new file. Measured line=97.9% branch=83.8% (62/74 branches) by mise run coverage-check on the merge (2026-09-16, full FsHotWatch.Tests run); floors are the observed values rounded down. Its tests are pure (no daemon, no timing), so the sub-1pp headroom is deliberate. Uncovered: a PE without metadata (NotAnAssembly via HasMetadata), the null-parent arm of the producer walk (the walk stops at the repo root first), the Error arm of the post-refusal List.choose (unreachable by construction), and compiler-synthesised branches in comprehensions/loops.",
+        "platform": "macos"
+      }
+    ],
     "AnalyzersPlugin.fs": [
       {
         "line": 81,
@@ -74,9 +82,9 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 86,
+        "line": 81,
         "branch": 66,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can\u0027t lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can\u0027t lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line 86 -> 81 on 2026-09-16 (AUTOMATION-812 gate, but independent of it): three full local coverage-check runs - at the 09-15 floor commit mzwzmkxk, at main c6c0323c and at the AUTOMATION-812 merge - all measured 160/194 lines (82.5%) with an IDENTICAL uncovered set; the 8 lines between 160 and 168 are the body of CheckFileWithOptions, called only from Daemon.fs tier checks, which only the coverage-excluded integration tests drive. 1pp headroom under the observed minimum, three-run basis.",
         "platform": "macos"
       },
       {
@@ -840,11 +848,19 @@
     ]
   },
   "countFloors": {
+    "AnalyzerIdentity.fs": [
+      {
+        "coveredLines": 191,
+        "coveredBranches": 62,
+        "reason": "AUTOMATION-812 (2026-09-16): observed on the merge by mise run coverage-check (191/195 lines, 62/74 branches). Deterministic unit tests, so pinned at the observed count; the four uncovered lines are named in the percentage entry.",
+        "platform": "macos"
+      }
+    ],
     "AnalyzersPlugin.fs": [
       {
         "coveredLines": 368,
-        "coveredBranches": 17,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 16,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). Branches 17 -> 16 on 2026-09-16 (AUTOMATION-812): the branch TOTAL fell 22 -> 20 because analyzerAssemblyIdentity (two covered branches: the missing-path arm and the unreadable-DLL catch) moved to AnalyzerIdentity.fs, where both are covered; measured 16/20 (80.0%) by mise run coverage-check. The four still uncovered are pre-existing and integration-only: the CliContext ctor-shape failwith (SDK change), the timeout/cancelled outcome arm, the real-analyzer-output arm of analysisOutcome, and the Array.exists lambda in isKnownNonAnalyzerPrefix. Lines measured 404 (floor 368 unchanged).",
         "platform": "macos"
       },
       {
@@ -930,9 +946,9 @@
     ],
     "CheckPipeline.fs": [
       {
-        "coveredLines": 168,
+        "coveredLines": 160,
         "coveredBranches": 28,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312). Lines 168 -> 160 on 2026-09-16: measured 160/194 in three full local runs (09-15 floor commit, main c6c0323c, AUTOMATION-812 merge), identical uncovered set each time - the CheckFileWithOptions body, a daemon-only path the coverage-excluded integration tests drive; 168 was not reproducible on this box at the very commit that recorded it.",
         "platform": "macos"
       },
       {
