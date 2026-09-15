@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.47 - 2026-09-16
+
 - Adopt TestPrune.Falco 3.1.4 and TestPrune.Core 8.2.0. Route attribution now
   recognizes test declarations behind accessibility modifiers, escaped
   identifiers and file modules — a test class spelled `type private FooTests()`
