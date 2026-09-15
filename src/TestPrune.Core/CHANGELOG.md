@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: index declarations from signature files (`.fsi`) as their own source
+  occurrences, hashed independently of the implementation bodies they describe,
+  so a consumer whose dependency edge runs through a signature is selected when
+  that signature changes. Signature ranges cover multiline types and constraints,
+  which FCS identifier ranges omit; compiler declaration kinds are verified rather
+  than assumed.
+- fix: the in-memory store follows SQLite's upsert rule for repeated symbols: a
+  reference placeholder can no longer replace a real declaration's kind or owning
+  file, and an extern is used only when no real declaration exists.
+
 ## 8.1.5 - 2026-08-29
 
 - perf: collect shared literals through FCS's typed syntax fold instead of recursively
