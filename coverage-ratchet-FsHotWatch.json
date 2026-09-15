@@ -150,9 +150,9 @@
     ],
     "Daemon.fs": [
       {
-        "line": 80,
+        "line": 79,
         "branch": 76,
-        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line floor 80 -\u003E 79 on 2026-09-15: three full local runs measured 1190/1190/1186 covered lines (daemon timing paths), and the third sat just under 80.0% \u2014 the same under-1pp-headroom shape the 2026-08-07 restoration corrected. 1pp headroom under the observed minimum, three-run basis.",
         "platform": "macos"
       },
       {
@@ -910,6 +910,10 @@
         "platform": "linux"
       }
     ],
+    "CacheResidency.fs": {
+      "coveredLines": 30,
+      "coveredBranches": 8
+    },
     "CheckCache.fs": [
       {
         "coveredLines": 59,
@@ -1010,9 +1014,9 @@
     ],
     "Daemon.fs": [
       {
-        "coveredLines": 1175,
-        "coveredBranches": 149,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered lines wobbled 1074 -\u003E 1071 between the two runs (daemon timing paths); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 1186,
+        "coveredBranches": 155,
+        "reason": "min of THREE full local runs 2026-09-15 (3172 tests each): covered lines 1190, 1190, 1186 \u2014 the daemon timing paths still wobble, as they did on 2026-09-04 (1074 -\u003E 1071); floor = the observed minimum. Recaptured. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1050,6 +1054,10 @@
         "platform": "linux"
       }
     ],
+    "DaemonPhases.fs": {
+      "coveredLines": 82,
+      "coveredBranches": 16
+    },
     "DeadCode.fs": [
       {
         "coveredLines": 70,
@@ -1134,6 +1142,10 @@
         "platform": "linux"
       }
     ],
+    "FantomasTool.fs": {
+      "coveredLines": 180,
+      "coveredBranches": 42
+    },
     "FcsDiagnosticFilter.fs": [
       {
         "coveredLines": 9,
@@ -1246,6 +1258,10 @@
         "platform": "linux"
       }
     ],
+    "FullSuiteBaseline.fs": {
+      "coveredLines": 43,
+      "coveredBranches": 6
+    },
     "Heartbeat.fs": [
       {
         "coveredLines": 37,
@@ -1262,9 +1278,9 @@
     ],
     "IdleExit.fs": [
       {
-        "coveredLines": 71,
+        "coveredLines": 70,
         "coveredBranches": 33,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1305,8 +1321,8 @@
     "Ipc.fs": [
       {
         "coveredLines": 288,
-        "coveredBranches": 41,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 38,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1318,9 +1334,9 @@
     ],
     "IpcOutput.fs": [
       {
-        "coveredLines": 611,
-        "coveredBranches": 154,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 612,
+        "coveredBranches": 155,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1404,7 +1420,7 @@
       {
         "coveredLines": 63,
         "coveredBranches": 12,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered branches wobbled 12 -\u003E 11 between the two runs (watchdog timing path); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical \u2014 the watchdog timing path that wobbled 12 -\u003E 11 in covered branches on 2026-09-04 did not wobble today). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1459,8 +1475,8 @@
     "PluginActivity.fs": [
       {
         "coveredLines": 182,
-        "coveredBranches": 40,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 36,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1542,9 +1558,9 @@
     ],
     "Program.fs": [
       {
-        "coveredLines": 828,
+        "coveredLines": 838,
         "coveredBranches": 156,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1582,6 +1598,22 @@
         "platform": "linux"
       }
     ],
+    "ProjectModel.fs": {
+      "coveredLines": 38,
+      "coveredBranches": 12
+    },
+    "ProjectModelWire.fs": {
+      "coveredLines": 66,
+      "coveredBranches": 30
+    },
+    "RepoIdentity.fs": {
+      "coveredLines": 47,
+      "coveredBranches": 14
+    },
+    "RunClaim.fs": {
+      "coveredLines": 106,
+      "coveredBranches": 13
+    },
     "RunLog.fs": [
       {
         "coveredLines": 35,
@@ -1627,8 +1659,8 @@
     "SafeWalk.fs": [
       {
         "coveredLines": 81,
-        "coveredBranches": 13,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 12,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1638,6 +1670,14 @@
         "platform": "linux"
       }
     ],
+    "ScanActivity.fs": {
+      "coveredLines": 25,
+      "coveredBranches": 4
+    },
+    "ScanMetrics.fs": {
+      "coveredLines": 84,
+      "coveredBranches": 15
+    },
     "SolutionScope.fs": [
       {
         "coveredLines": 193,
@@ -1738,9 +1778,9 @@
     ],
     "Verdict.fs": [
       {
-        "coveredLines": 1445,
-        "coveredBranches": 449,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 1444,
+        "coveredBranches": 443,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1753,8 +1793,8 @@
     "VerdictInputs.fs": [
       {
         "coveredLines": 153,
-        "coveredBranches": 19,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 20,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
