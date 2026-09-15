@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- AUTOMATION-812 (step 1): `AnalyzerIdentity`, an internal module that identifies an
+  analyzer assembly by the compiler's receipt rather than by its bytes. fsc writes the
+  portable PDB's absolute path into the PE, so a house-rules DLL built from identical
+  source in two checkouts differs byte-for-byte and every fresh workspace missed the
+  shared per-file analyzer cache. A DLL whose PDB records documents under the
+  repository root is `FirstParty`, keyed by (repo-relative document path, the PDB's
+  own SHA-256 of that document), the assembly references and the producer `.fsproj`;
+  every document is re-hashed from disk and any disagreement is a named `Refusal`
+  (drift, missing document, missing or stale PDB, no producer, output older than its
+  project). Anything else (the NuGet shim and its bundled dependencies) keeps the byte
+  digest. Not yet wired into the cache key: this release adds the module and its tests
+  only.
+
 ## 0.7.0-alpha.31 - 2026-09-15
 
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure
