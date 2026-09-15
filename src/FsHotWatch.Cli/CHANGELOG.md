@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.46 - 2026-09-15
+
 - console scope refusals describe missing test evidence without
   prescribing a merge policy or calling a refused `check` a `confirm`.
 
