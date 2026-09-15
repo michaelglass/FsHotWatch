@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.2.0 - 2026-09-15
+
 - fix: index declarations from signature files (`.fsi`) as their own source
   occurrences, hashed independently of the implementation bodies they describe,
   so a consumer whose dependency edge runs through a signature is selected when

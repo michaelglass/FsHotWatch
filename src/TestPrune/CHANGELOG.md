@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 8.2.0 - 2026-09-15
+
+- Docs: de-identify comments that named a private tracker or downstream repo
+- Changelog: name the Core fixes released since 8.1.5
+- Finish: preserve real declaration ownership in the in-memory store
+- Finish: verify multiline signatures and compiler declaration kinds
+- Finish: index signature declarations for consumer impact selection
+- Merge: land the coverage impact selection domain
+- Finish: add coverage impact selection domain
+
+
 ## 8.1.5 - 2026-08-29
 
 - perf: reduce cold-scan latency and retained allocation pressure when TestPrune analyzes
