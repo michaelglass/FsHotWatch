@@ -63,8 +63,12 @@ let stringSetting name fallback =
     | value -> value
 
 let configuration () =
+    // The budget has to outlast nuget.org's index lag, not just its upload. A package
+    // whose Release run was green is routinely not restorable for ~15 minutes
+    // afterwards, so a barrier that gives up sooner fails closed on ordinary
+    // releases. 80 × 15s = 20 minutes: the observed lag plus margin.
     match
-        positiveSetting "FSHW_NUGET_PROBE_ATTEMPTS" 20,
+        positiveSetting "FSHW_NUGET_PROBE_ATTEMPTS" 80,
         positiveSetting "FSHW_NUGET_PROBE_DELAY_MS" 15000,
         positiveSetting "FSHW_NUGET_PROBE_PROCESS_TIMEOUT_MS" 120000
     with
@@ -469,10 +473,20 @@ let probe config packageId projectPath =
                         else
                             runRestore config probeProject probeConfig probePackages
 
+                    let started = Stopwatch.StartNew()
+
                     let rec wait attempt lastDetail =
                         if attempt > config.Attempts then
+                            // Report the wall-clock the barrier actually spent, not the budget it
+                            // was configured with: a genuinely failed publish and a slow index give
+                            // the same last restore result and differ only in how long was waited.
+                            let elapsed = started.Elapsed
+
+                            let elapsedText =
+                                $"%d{int elapsed.TotalMinutes}m%02d{elapsed.Seconds}s (%d{int elapsed.TotalSeconds}s)"
+
                             Error
-                                $"%s{packageId} %s{version} was still not restorable from %s{config.Source} after %d{config.Attempts} attempts. Last restore result: %s{lastDetail}"
+                                $"%s{packageId} %s{version} was still not restorable from %s{config.Source} after %d{config.Attempts} attempts over %s{elapsedText} of measured wall-clock time. Last restore result: %s{lastDetail}. If the package's Release run was green, this is most likely index lag — re-run `mise run release` to resume from this stage; if it was not, the package was never published and the barrier is right to fail."
                         else
                             let retryOr detail description =
                                 if attempt < config.Attempts then
