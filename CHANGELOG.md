@@ -502,6 +502,18 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### release: the publication barrier waits long enough for nuget.org to index (AUTOMATION-818)
+
+`scripts/wait-for-nuget.fsx` gave up after 20 × 15s = 5 minutes. nuget.org routinely
+takes ~15 minutes to make a freshly pushed version restorable, so the barrier failed
+closed on ordinary green releases and each one had to be resumed by hand. The default
+is now 80 × 15s = 20 minutes; `FSHW_NUGET_PROBE_ATTEMPTS` and
+`FSHW_NUGET_PROBE_DELAY_MS` still override it. The give-up message reports the
+attempts and the MEASURED elapsed wall-clock time, not the configured budget, and
+says which reading is likely: a green Release run means index lag (re-run
+`mise run release` to resume from this stage); anything else means the package was
+never published. Fail-closed is unchanged.
+
 ### release: the publication barrier verifies a dotnet TOOL by installing and running it (AUTOMATION-602)
 
 `FsHotWatch.Cli 0.14.0-alpha.30` was published, indexed, and publicly downloadable. The
