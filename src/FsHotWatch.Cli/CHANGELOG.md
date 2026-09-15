@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Adopt TestPrune.Falco 3.1.4 and TestPrune.Core 8.2.0. Route attribution now
+  recognizes test declarations behind accessibility modifiers, escaped
+  identifiers and file modules — a test class spelled `type private FooTests()`
+  was losing its routes, so a handler change did not select it and the gate
+  reported green having never run it. Measured in one consumer's corpus:
+  98 private/internal test types, 9 escaped-identifier types and 934 of 1000
+  test files declared as file modules. Core 8.2.0 also indexes signature
+  declarations for consumer impact selection.
+
 ## 0.14.0-alpha.46 - 2026-09-15
 
 - console scope refusals describe missing test evidence without
