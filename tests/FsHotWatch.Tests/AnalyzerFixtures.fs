@@ -147,3 +147,12 @@ let rewriteSource (root: string) (newSource: string) =
     let bytes = Text.Encoding.UTF8.GetBytes newSource
     File.WriteAllBytes(source, bytes)
     patchUnique pdb recorded (SHA256.HashData bytes)
+
+/// Make the relocated checkout under `root` one whose PDB records its document
+/// checksums under `algorithm` instead of SHA-256 — the compiler's `HashAlgorithm`
+/// column, which lives in the PDB's GUID heap. fsc writes SHA-256 today; a receipt in
+/// another algorithm is what an older or foreign toolchain leaves behind.
+let recordChecksumAlgorithm (root: string) (algorithm: Guid) =
+    let pdb = Path.Combine(root, rulesBinRel, "FsHotWatch.ConventionAnalyzers.pdb")
+    let sha256 = Guid "8829d00f-11b8-4213-878b-770e8597ac16"
+    patchUnique pdb (sha256.ToByteArray()) (algorithm.ToByteArray())
