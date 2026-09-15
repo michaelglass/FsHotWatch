@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- AUTOMATION-568: a batch is split across `dotnet tool run fantomas` invocations by the
+  CHARACTER budget of the command line, not by a fixed count of 200 files. The count was
+  the wrong unit — the platform limit is on characters — and on a large tree it was the
+  format stage's dominant cost: every chunk re-pays the tool's start-up and JIT warm-up,
+  and the per-file cost roughly halves once one process sees the whole batch. Measured on
+  a 1884-file F# tree (31.7 MB of source), five interleaved trials on one box: ONE
+  invocation 7.7/8.3/8.3 s wall and 47-51 s CPU, against 16.0-18.4 s wall and 74-91 s CPU
+  for the same tree as ten 200-file chunks. The budget is 30000 characters on Windows
+  (under `CreateProcess`'s 32767 limit) and 128 KB elsewhere (every Unix ARG_MAX in
+  practice is at least 256 KB), so that tree is now one invocation instead of ten.
+
 ## 0.7.0-alpha.23 - 2026-09-04
 
 - AUTOMATION-564: the format-check cache key names its files — and its `.editorconfig`

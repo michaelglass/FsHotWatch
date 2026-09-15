@@ -303,8 +303,49 @@ let ``check reads a killed child as TimedOut`` () =
     | Error(ToolFailure.TimedOut(after, KillOutcome.Killed)) -> test <@ after = TimeSpan.FromSeconds 1.0 @>
     | other -> failwith $"expected TimedOut, got %A{other}"
 
+// --- how a batch is split across invocations (AUTOMATION-568) ---
+//
+// The unit of a chunk is the CHARACTER budget of the command line, not a file count:
+// a count spends spawns a short-path repository does not need, and every extra spawn
+// re-pays the tool's start-up and JIT warm-up (measured: one invocation over a
+// 1884-file tree cost half the wall time of ten 200-file chunks).
+
+let private identityQuote (s: string) = s
+
 [<Fact>]
-let ``check chunks a large batch into several invocations and folds the reports`` () =
+let ``a batch that fits the budget is one invocation`` () =
+    let files = [ for i in 1..450 -> $"/w/F%03d{i}.fs" ]
+
+    test <@ chunkByArgumentLength 10_000 identityQuote files = [ files ] @>
+
+[<Fact>]
+let ``a batch over the budget splits on the character count, keeping order`` () =
+    // Each path costs its length + 1 separator = 5; a budget of 12 holds two.
+    let files = [ "/a.fs"; "/b.fs"; "/c.fs"; "/d.fs"; "/e.fs" ]
+
+    let expected = [ [ "/a.fs"; "/b.fs" ]; [ "/c.fs"; "/d.fs" ]; [ "/e.fs" ] ]
+
+    test <@ chunkByArgumentLength 12 identityQuote files = expected @>
+
+[<Fact>]
+let ``the quoting is charged to the budget`` () =
+    let quoted (s: string) = "\"" + s + "\""
+
+    // With quotes each path costs 7, so only one fits a budget of 12.
+    test <@ chunkByArgumentLength 12 quoted [ "/a.fs"; "/b.fs" ] = [ [ "/a.fs" ]; [ "/b.fs" ] ] @>
+
+[<Fact>]
+let ``a single path longer than the whole budget still goes to the tool`` () =
+    let huge = String('x', 500)
+
+    test <@ chunkByArgumentLength 10 identityQuote [ huge; "/b.fs" ] = [ [ huge ]; [ "/b.fs" ] ] @>
+
+[<Fact>]
+let ``an empty batch is no invocations`` () =
+    test <@ chunkByArgumentLength 10 identityQuote [] = [] @>
+
+[<Fact>]
+let ``check folds the reports of every invocation a batch needs`` () =
     let calls = ResizeArray<string>()
 
     let runner: Runner =
@@ -314,12 +355,18 @@ let ``check chunks a large batch into several invocations and folds the reports`
             let first = args.Split('"', StringSplitOptions.RemoveEmptyEntries).[1]
             Failed(NeedsFormattingExitCode, drained $"%s{first} needs formatting")
 
-    let files = [ for i in 1..450 -> $"/w/F%03d{i}.fs" ]
+    // Long enough paths, and enough of them, to exceed the budget on every platform
+    // (the Unix budget is the larger of the two at 128 KB).
+    let padding = String('p', 200)
+    let files = [ for i in 1..2000 -> $"/w/%s{padding}/F%04d{i}.fs" ]
 
     match check runner pin "/w" (TimeSpan.FromSeconds 1.0) files with
     | Ok report ->
-        test <@ calls.Count = 3 @>
-        test <@ report.NeedsFormatting = [ "/w/F001.fs"; "/w/F201.fs"; "/w/F401.fs" ] @>
+        // Several invocations, and every one of them contributed its finding.
+        test <@ calls.Count > 1 @>
+        test <@ report.NeedsFormatting.Length = calls.Count @>
+        test <@ List.head report.NeedsFormatting = List.head files @>
+        test <@ report.NeedsFormatting |> List.forall (fun f -> List.contains f files) @>
     | Error e -> failwith $"unexpected %A{e}"
 
 // =============================================================================
