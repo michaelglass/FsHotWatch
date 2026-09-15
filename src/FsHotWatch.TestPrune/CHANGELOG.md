@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.34 - 2026-09-15
+
 - retain an executed filtered receipt across a same-input
   `already-verified` drain. Receipt reuse requires readable, matching input bytes
   at launch, completion, and scope read; changed inputs and aborted runs cannot
