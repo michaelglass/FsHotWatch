@@ -288,6 +288,11 @@ let ``restore failures retry to the bound then fail and clean up`` () =
         test <@ result.ExitCode = 1 @>
         test <@ File.ReadAllText countFile = "3" @>
         test <@ result.Stderr.Contains("after 3 attempts") @>
+        // The give-up line reports MEASURED wall-clock, not the configured budget, and
+        // says how to read it — index lag after a green Release run resumes from here.
+        test <@ result.Stderr.Contains("of measured wall-clock time") @>
+        test <@ result.Stderr.Contains("most likely index lag") @>
+        test <@ result.Stderr.Contains("re-run `mise run release`") @>
         test <@ result.Stderr.Contains("synthetic restore failure") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
