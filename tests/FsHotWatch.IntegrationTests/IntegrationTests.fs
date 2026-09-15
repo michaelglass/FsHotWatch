@@ -3017,3 +3017,94 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                 ()
         finally
             (daemon :> IDisposable).Dispose())
+
+// ---------------------------------------------------------------------------
+// FSHW-SPAWN-001 (item 3) — a child spawned outside the one path
+// that registers it for reaping is re-parented to init and outlives the daemon.
+// The daemon already warns at RUNTIME ("spawned pid N with no registry in
+// scope"), which is far too late to act on; this turns it into a build failure.
+//
+// The control that matters most here is the LAST one. `Thread.Start`,
+// `Timer.Start` and `Stopwatch.Start` all answer to `Start`, and FsHotWatch has a
+// live `runLoopThread.Start()` in MacFsEvents.fs. A rule whose first finding in
+// this repository is a false positive is one people learn to suppress rather than
+// obey, so the `Process` qualifier is required rather than matching a bare
+// `.Start()`.
+// ---------------------------------------------------------------------------
+
+let private spawnPreamble =
+    [ "module Temp"
+      "open System.Diagnostics"
+      "let psi = ProcessStartInfo(\"/bin/sh\")" ]
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-SPAWN-001 fires on a process spawned outside ProcessHelper`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource (
+                spawnPreamble
+                @ [ "let a () = Process.Start(psi)"
+                    "let b () = System.Diagnostics.Process.Start(psi)" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
+
+        // One per spawn, in both spellings that reach the same method.
+        test <@ findings.Length = 2 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-SPAWN-001 stays silent inside ProcessHelper, the sanctioned spawn path`` () =
+    withAnalyzerGate (fun () ->
+        // ProcessHelper is the one place that calls ProcessRegistry.track, straight
+        // after starting the child. Policing it would flag the fix itself.
+        let source = fsSource (spawnPreamble @ [ "let a () = Process.Start(psi)" ])
+
+        let findings =
+            runRulesOnFile "ProcessHelper.fs" source
+            |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
+
+        test <@ findings.IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-SPAWN-001 stays silent on a spawn documented as a deliberate detach`` () =
+    withAnalyzerGate (fun () ->
+        // The live exemption is the CLI's daemon launcher: it starts /bin/sh, which
+        // backgrounds the daemon and exits, so the daemon MUST outlive the CLI.
+        let source =
+            fsSource (
+                spawnPreamble
+                @ [ "// FSHW-SPAWN-001 ok: detaches on purpose — the daemon outlives this process"
+                    "let a () = Process.Start(psi)" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
+
+        test <@ findings.IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-SPAWN-001 does not fire on starting a thread, timer or stopwatch`` () =
+    withAnalyzerGate (fun () ->
+        // MacFsEvents.fs really does `runLoopThread.Start()`. If this ever fires,
+        // the rule has started matching a bare `.Start()` and will be suppressed
+        // rather than obeyed.
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.Threading"
+                  "open System.Diagnostics"
+                  "let t = new Thread(fun () -> ())"
+                  "let sw = new Stopwatch()"
+                  "let go () ="
+                  "    t.Start()"
+                  "    sw.Start()" ]
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
+
+        test <@ findings.IsEmpty @>)

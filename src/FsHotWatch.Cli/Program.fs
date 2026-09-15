@@ -392,6 +392,16 @@ let defaultIpcOps: IpcOps =
 
             psi.WorkingDirectory <- repoRoot
             psi.UseShellExecute <- false
+
+            // FSHW-SPAWN-001 ok: this spawn detaches ON PURPOSE and must not be
+            // tracked. What is started here is `/bin/sh`, which backgrounds the
+            // daemon with `nohup … &` and exits immediately; `WaitForExit` below
+            // waits for that shell, not for the daemon. Registering it would be
+            // pointless — the shell reaps itself in milliseconds — and registering
+            // the DAEMON would be wrong, because the whole point of launching it
+            // this way is that it outlives the CLI that asked for it. A tracked
+            // daemon would be killed by the next CLI shutdown that tore its
+            // registry down.
             let proc = System.Diagnostics.Process.Start(psi)
             proc.WaitForExit() }
 
