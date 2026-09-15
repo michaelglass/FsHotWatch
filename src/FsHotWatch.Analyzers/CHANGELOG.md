@@ -2,18 +2,22 @@
 
 ## Unreleased
 
-- step 1: `AnalyzerIdentity`, an internal module that identifies an
-  analyzer assembly by the compiler's receipt rather than by its bytes. fsc writes the
+- the per-file analyzer cache is keyed on the compiler's receipt,
+  not on analyzer DLL bytes, so a fresh workspace HITS the shared store. fsc writes the
   portable PDB's absolute path into the PE, so a house-rules DLL built from identical
-  source in two checkouts differs byte-for-byte and every fresh workspace missed the
-  shared per-file analyzer cache. A DLL whose PDB records documents under the
+  source in two checkouts differed byte-for-byte and every fresh workspace missed.
+  New internal module `AnalyzerIdentity`: a DLL whose PDB records documents under the
   repository root is `FirstParty`, keyed by (repo-relative document path, the PDB's
   own SHA-256 of that document), the assembly references and the producer `.fsproj`;
-  every document is re-hashed from disk and any disagreement is a named `Refusal`
-  (drift, missing document, missing or stale PDB, no producer, output older than its
-  project). Anything else (the NuGet shim and its bundled dependencies) keeps the byte
-  digest. Not yet wired into the cache key: this release adds the module and its tests
-  only.
+  anything else (the NuGet shim and its bundled dependencies) keeps the byte digest.
+  Cache-key slot `analyzer-assemblies` (bytes) is replaced by `analyzer-inputs`
+  (semantic identity); salt bumped to `analyzers-merkle-v5`, orphaning byte-keyed
+  entries. Reload-if-stale still watches the raw-byte digest: a rebuild with an
+  unchanged receipt is reloaded into the process and keeps its cache entries.
+  Every in-repo document is re-hashed from disk; a refusal (source drifted since
+  the build, missing or stale PDB, no producer project, output older than its
+  project) turns the cache OFF for that event — the analyzers still run, nothing is
+  read or written — with one warning per distinct refusal set, not one per file.
 
 ## 0.7.0-alpha.31 - 2026-09-15
 

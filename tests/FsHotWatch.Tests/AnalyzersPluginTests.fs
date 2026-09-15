@@ -280,17 +280,22 @@ let private analyzerBinWith (name: string) (bytes: byte array) =
     System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, $"{name}.dll"), bytes)
     dir
 
+/// The `analyzer-inputs` slot for a set of throwaway analyzer bins. No PDB, no
+/// repository: every DLL is identified by its bytes, which is what these tests need.
+let private inputsOf (dirs: string list) =
+    (snapshotAnalyzerSet None knownNonAnalyzerPrefixes dirs).Inputs
+
 [<Fact(Timeout = 15000)>]
-let ``analyzerAssemblyIdentity changes when an analyzer DLL's content changes`` () =
+let ``analyzer-inputs changes when an analyzer DLL's content changes`` () =
     let dir = analyzerBinWith "MyAnalyzer" [| 1uy; 2uy; 3uy |]
 
     try
-        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let before = inputsOf [ dir ]
 
         // A rebuild: same path, same DLL filename, new bytes. The identity shift is what
         // invalidates the stale per-file cache entry.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "MyAnalyzer.dll"), [| 9uy; 8uy; 7uy; 6uy |])
-        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let after = inputsOf [ dir ]
 
         test <@ before <> after @>
     finally
@@ -300,15 +305,15 @@ let ``analyzerAssemblyIdentity changes when an analyzer DLL's content changes`` 
             ()
 
 [<Fact(Timeout = 15000)>]
-let ``analyzerAssemblyIdentity changes when a new analyzer DLL is added`` () =
+let ``analyzer-inputs changes when a new analyzer DLL is added`` () =
     let dir = analyzerBinWith "First" [| 1uy; 2uy |]
 
     try
-        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let before = inputsOf [ dir ]
 
         // Adding a second analyzer to the same path must change identity.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Second.dll"), [| 3uy; 4uy |])
-        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let after = inputsOf [ dir ]
 
         test <@ before <> after @>
     finally
@@ -318,12 +323,12 @@ let ``analyzerAssemblyIdentity changes when a new analyzer DLL is added`` () =
             ()
 
 [<Fact(Timeout = 15000)>]
-let ``analyzerAssemblyIdentity is stable for identical content (cache hits survive a no-op rescan)`` () =
+let ``analyzer-inputs is stable for identical content (cache hits survive a no-op rescan)`` () =
     let dir = analyzerBinWith "Stable" [| 5uy; 5uy; 5uy |]
 
     try
-        let a = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
-        let b = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let a = inputsOf [ dir ]
+        let b = inputsOf [ dir ]
         test <@ a = b @>
     finally
         try
@@ -332,14 +337,14 @@ let ``analyzerAssemblyIdentity is stable for identical content (cache hits survi
             ()
 
 [<Fact(Timeout = 15000)>]
-let ``analyzerAssemblyIdentity ignores known-non-analyzer (bundled dep) DLLs`` () =
+let ``analyzer-inputs ignores known-non-analyzer (bundled dep) DLLs`` () =
     // Otherwise an FSharp.Core refresh would invalidate every cached verdict.
     let dir = analyzerBinWith "RealAnalyzer" [| 1uy |]
 
     try
-        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let before = inputsOf [ dir ]
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "FSharp.Core.dll"), [| 42uy; 43uy |])
-        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let after = inputsOf [ dir ]
         test <@ before = after @>
     finally
         try
@@ -348,16 +353,45 @@ let ``analyzerAssemblyIdentity ignores known-non-analyzer (bundled dep) DLLs`` (
             ()
 
 [<Fact(Timeout = 15000)>]
-let ``analyzerAssemblyIdentity does not throw on a missing path`` () =
-    // A configured-but-missing path contributes a stable sentinel, never a throw
-    // that would abort plugin construction.
-    let id1 =
-        analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ "/tmp/no-such-analyzer-dir-id-xyz" ]
-
-    let id2 =
-        analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ "/tmp/no-such-analyzer-dir-id-xyz" ]
+let ``analyzer set snapshot does not throw on a missing path`` () =
+    // A configured-but-missing path contributes nothing, never a throw that would
+    // abort plugin construction; the 0-analyzer guard is what reports it.
+    let id1 = inputsOf [ "/tmp/no-such-analyzer-dir-id-xyz" ]
+    let id2 = inputsOf [ "/tmp/no-such-analyzer-dir-id-xyz" ]
 
     test <@ id1 = id2 @>
+    test <@ Result.isOk id1 @>
+
+[<Fact(Timeout = 30000)>]
+let ``a refused analyzer identity means no cache key, no cache entry, and the analyzers still run`` () =
+    // The house-rules DLL copied WITHOUT its PDB: its CodeView entry places the PDB
+    // under this repository, so the receipt is expected and missing (`MissingPdb`).
+    withTempDir "az-refused" (fun dir ->
+        withTempDir "az-refused-store" (fun store ->
+            let dll =
+                System.IO.Path.Combine(dir, System.IO.Path.GetFileName AnalyzerFixtures.rulesDll)
+
+            System.IO.File.Copy(AnalyzerFixtures.rulesDll, dll)
+
+            let repoRoot = AnalyzerFixtures.repoRoot
+
+            let cache =
+                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = repoRoot) :> FsHotWatch.TaskCache.ITaskCache
+
+            let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+            let handler = create (Some repoRoot) [ dir ] None DiagnosticSeverity.Hint
+            // The analyzers loaded: the refusal is about the CACHE, not the run.
+            test <@ handler.Init.LoadedCount >= 1 @>
+            host.RegisterHandler(handler)
+
+            let file = System.IO.Path.Combine(repoRoot, "src", "Probe.fs")
+            test <@ (handler.CacheKey.Value) (FileChecked(fakeResult file)) = None @>
+
+            host.EmitFileChecked(fakeResult file)
+            waitForTerminalStatus host "analyzers" 20000
+
+            // Nothing was written: a verdict that cannot be named cannot be replayed.
+            test <@ System.IO.Directory.GetFiles(store, "*", System.IO.SearchOption.AllDirectories) = [||] @>))
 
 [<Fact(Timeout = 15000)>]
 let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =

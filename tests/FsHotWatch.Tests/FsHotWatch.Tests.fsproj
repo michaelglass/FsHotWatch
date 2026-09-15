@@ -18,6 +18,11 @@
          that watches a directory. -->
     <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
+    <!-- RepoTasks and AnalyzerFixtures read the repository itself (mise.toml, the
+         built house-rules analyzer); BCL-only, so they sit before every test file
+         that relocates an analyzer into a temp checkout. -->
+    <Compile Include="RepoTasks.fs" />
+    <Compile Include="AnalyzerFixtures.fs" />
     <Compile Include="StringHelpersTests.fs" />
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
@@ -98,7 +103,6 @@
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="RunLevelHookGapTests.fs" />
-    <Compile Include="RepoTasks.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />
     <Compile Include="AnalyzerMaterializationTests.fs" />
     <Compile Include="AnalyzerIdentityTests.fs" />

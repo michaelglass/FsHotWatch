@@ -846,3 +846,106 @@ let ``the project options hash relativizes every source file, not just the first
             CheckCache.getProjectOptionsHashRelativeTo (Some a) (manySources a)
             <> CheckCache.getProjectOptionsHashRelativeTo (Some a) (optionsAt a)
         @>
+
+// ---------------------------------------------------------------------------
+// analyzers — the house rules, built in each checkout
+// ---------------------------------------------------------------------------
+
+open FsHotWatch.Tests.AnalyzerFixtures
+
+/// The analyzers key one checkout computes for `file` with the house rules loaded
+/// from that checkout's own build output.
+let private analyzersKeyOf (root: string) (dll: string) (file: string) =
+    let handler =
+        FsHotWatch.Analyzers.AnalyzersPlugin.create
+            (Some root)
+            [ Path.GetDirectoryName dll ]
+            None
+            ErrorLedger.DiagnosticSeverity.Hint
+
+    test <@ handler.Init.LoadedCount >= 1 @>
+
+    (handler.CacheKey.Value) (
+        FileChecked
+            { fakeFileCheckResult file with
+                Source = "let x = 1\n" }
+    )
+
+let private analyzersCompositeFor (repoRoot: string) (file: string) : CompositeKey =
+    { Plugin = "analyzers"
+      File = Some(CachePathIdentity.keyOf (Some repoRoot) file) }
+
+/// Two checkouts that each BUILT the house rules: same sources, and DLLs that differ
+/// by the one thing fsc salts with the build path.
+let private withBuiltTwins (prefix: string) (body: string -> string -> string -> string -> 'a) : 'a =
+    withTwinCheckouts prefix (fun _ -> ()) (fun a b ->
+        let dllA = relocate a
+        let dllB = relocate b
+        saltCodeViewPath dllB
+        test <@ File.ReadAllBytes dllA <> File.ReadAllBytes dllB @>
+        body a dllA b dllB)
+
+[<Fact(Timeout = 30000)>]
+let ``an analyzers entry written in one checkout is a HIT in another whose analyzer DLL bytes differ`` () =
+    // THE acceptance criterion: the DLL bytes differ between the checkouts (they did
+    // under v4's byte-keyed slot too, which is why every fresh workspace missed), and
+    // the key does not.
+    withTempDir "store" (fun store ->
+        withBuiltTwins "twin" (fun a dllA b dllB ->
+            let fileA = Path.Combine(a, "src", "A.fs")
+            let fileB = Path.Combine(b, "src", "A.fs")
+            let keyA = analyzersKeyOf a dllA fileA
+            let keyB = analyzersKeyOf b dllB fileB
+
+            test <@ keyA.IsSome @>
+            test <@ keyA = keyB @>
+
+            let writer =
+                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = a) :> ITaskCache
+
+            writer.Set (analyzersCompositeFor a fileA) keyA.Value (entryFor keyA.Value fileA)
+
+            let reader =
+                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = b) :> ITaskCache
+
+            match reader.Lookup (analyzersCompositeFor b fileB) keyB.Value with
+            | CacheHit result -> test <@ result.Errors |> List.map fst = [ fileB ] @>
+            | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))
+
+[<Fact(Timeout = 30000)>]
+let ``an analyzer built from different SOURCE is a MISS across checkouts naming analyzer-inputs`` () =
+    withTempDir "store-miss" (fun store ->
+        withBuiltTwins "twin-miss" (fun a dllA b dllB ->
+            let fileA = Path.Combine(a, "src", "A.fs")
+            let fileB = Path.Combine(b, "src", "A.fs")
+            let keyA = analyzersKeyOf a dllA fileA
+
+            let writer =
+                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = a) :> ITaskCache
+
+            writer.Set (analyzersCompositeFor a fileA) keyA.Value (entryFor keyA.Value fileA)
+
+            // B's house rules were built from a different ConventionAnalyzers.fs: the
+            // source and the checksum fsc recorded for it both say so.
+            rewriteSource b (File.ReadAllText(Path.Combine(b, rulesSourceRel)) + "\n// a rule changed\n")
+            let keyB = analyzersKeyOf b dllB fileB
+            test <@ keyB.IsSome @>
+            test <@ keyA <> keyB @>
+
+            let reader =
+                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = b) :> ITaskCache
+
+            match reader.Lookup (analyzersCompositeFor b fileB) keyB.Value with
+            | CacheHit _ -> failwith "a changed analyzer must never hit"
+            | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "analyzer-inputs" ] @>))
+
+[<Fact(Timeout = 30000)>]
+let ``an analyzer whose source drifted after its build has no analyzers key at all`` () =
+    // An edited source with the OLD build beside it is neither the old analyzer nor
+    // the new one. No key: the analyzers run, nothing is read or written.
+    withBuiltTwins "twin-drift" (fun a dllA b dllB ->
+        let keyA = analyzersKeyOf a dllA (Path.Combine(a, "src", "A.fs"))
+        test <@ keyA.IsSome @>
+
+        File.AppendAllText(Path.Combine(b, rulesSourceRel), "\n// edited, not rebuilt\n")
+        test <@ analyzersKeyOf b dllB (Path.Combine(b, "src", "A.fs")) = None @>)
