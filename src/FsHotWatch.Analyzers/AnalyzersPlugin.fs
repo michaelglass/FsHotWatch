@@ -77,49 +77,80 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
     prefixes
     |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal))
 
-/// Content-addressed identity of the analyzer assemblies in the configured paths.
-/// The per-file analyzer cache folds this in so that rebuilding a custom-analyzer
-/// DLL (a rule changed, or a new analyzer added) invalidates the cached per-file
-/// verdicts: keying on the analyzer PATH STRINGS alone replays stale verdicts for
-/// unchanged source when the DLL changed but its path did not, masking the
-/// new/changed rule's findings.
+/// The DLLs the loader inspects: every `*.dll` in each existing configured path,
+/// in configured order, minus the known-non-analyzer prefixes — excluding those keeps
+/// the identity from churning on unrelated bundled-dep refreshes. A missing path
+/// contributes nothing here; the 0-analyzer guard reports it.
+let internal analyzerCandidates (prefixes: string array) (paths: string list) : string list =
+    paths
+    |> List.collect (fun path ->
+        if Directory.Exists path then
+            Directory.GetFiles(path, "*.dll")
+            |> Array.filter (fun dll -> not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
+            |> Array.sort
+            |> Array.toList
+        else
+            [])
+
+/// What the plugin knows about the analyzer set on disk at one moment.
 ///
-/// Hashes the same DLL set the loader inspects: every `*.dll` in each existing path
-/// whose filename is NOT a known-non-analyzer prefix — excluding those keeps the
-/// identity from churning on unrelated bundled-dep refreshes. Per-file digests are
-/// sorted so directory enumeration order is irrelevant. A missing path or unreadable
-/// DLL contributes a stable sentinel rather than throwing, so identity computation
-/// never crashes plugin construction.
-let internal analyzerAssemblyIdentity (prefixes: string array) (paths: string list) : string =
-    let perFile =
-        paths
-        |> List.sort
-        |> List.collect (fun path ->
-            if not (Directory.Exists(path)) then
-                [ $"%s{path}=>missing" ]
-            else
-                Directory.GetFiles(path, "*.dll")
-                |> Array.filter (fun dll ->
-                    not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
-                |> Array.map (fun dll ->
-                    let name = Path.GetFileName dll
+/// `Inputs` is the `analyzer-inputs` cache-key slot: the set's SEMANTIC identity
+/// (`AnalyzerIdentity`), which a first-party analyzer keeps across checkouts because
+/// it is derived from the compiler's receipt rather than from bytes fsc salted with
+/// the PDB path. `Error` carries why no such identity exists right now — a DLL whose
+/// sources have drifted, a missing PDB — in which case the analyzers still run but
+/// nothing is read from or written to the cache: a verdict that cannot be named
+/// cannot be replayed.
+///
+/// `Materialization` is the raw-byte digest of the same DLLs. It drives
+/// reload-if-stale: a rebuild whose receipt is unchanged (same sources, new bytes —
+/// the cross-workspace case) swaps the loaded set in the process but keeps every
+/// cache entry.
+type internal AnalyzerSetSnapshot =
+    { Inputs: Result<string, AnalyzerIdentity.Refusal list>
+      Materialization: string }
 
-                    let contentHash =
-                        try
-                            File.ReadAllBytes dll
-                            |> System.Security.Cryptography.SHA256.HashData
-                            |> System.Convert.ToHexString
-                        with ex ->
-                            // Unreadable (transient lock, perms): a stable sentinel
-                            // keyed on the message so distinct failures stay distinct,
-                            // never a throw that aborts plugin construction.
-                            $"unreadable:%s{ex.Message}"
+/// The raw-byte digest of the candidate DLLs; the one thing a snapshot needs that
+/// never depends on the tree. An unreadable DLL yields a digest of the refusal, so a
+/// transient lock is a change to observe rather than a throw that aborts the event.
+let private materializationOf (candidates: string list) : string =
+    match AnalyzerIdentity.ofPaths None candidates with
+    | Result.Ok identity -> identity.MaterializationDigest
+    | Result.Error refusals -> FsHotWatch.CheckCache.sha256Hex $"unreadable:%A{refusals}"
 
-                    $"%s{name}:%s{contentHash}")
-                |> Array.toList)
-        |> List.sort
+let internal snapshotAnalyzerSet
+    (repoRoot: string option)
+    (prefixes: string array)
+    (paths: string list)
+    : AnalyzerSetSnapshot =
+    let candidates = analyzerCandidates prefixes paths
 
-    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" perFile)
+    match AnalyzerIdentity.ofPaths repoRoot candidates with
+    | Result.Ok identity ->
+        { Inputs = Result.Ok identity.SemanticKey
+          Materialization = identity.MaterializationDigest }
+    | Result.Error refusals ->
+        { Inputs = Result.Error refusals
+          Materialization = materializationOf candidates }
+
+/// One line per refusal, for the warning that explains why the analyzer cache is
+/// off. Hashes are left out: the reader needs the file and the cause, not 64 hex
+/// digits, and the line doubles as the de-duplication signature below.
+let internal describeRefusals (refusals: AnalyzerIdentity.Refusal list) : string =
+    refusals
+    |> List.map (fun refusal ->
+        match refusal with
+        | AnalyzerIdentity.Refusal.Unreadable(dll, reason) -> $"%s{dll}: unreadable (%s{reason})"
+        | AnalyzerIdentity.Refusal.MissingPdb dll -> $"%s{dll}: no portable PDB beside a first-party build"
+        | AnalyzerIdentity.Refusal.PdbMismatch(dll, pdb) -> $"%s{dll}: %s{pdb} is not the PDB this build wrote"
+        | AnalyzerIdentity.Refusal.UnverifiableChecksum(file, algorithm) ->
+            $"%s{file}: checksum algorithm %O{algorithm} cannot be recomputed"
+        | AnalyzerIdentity.Refusal.DocumentMissing file -> $"%s{file}: named by the PDB, absent from the tree"
+        | AnalyzerIdentity.Refusal.DocumentDrift(file, _, _) ->
+            $"%s{file}: differs from what the analyzer was compiled from"
+        | AnalyzerIdentity.Refusal.ProducerNotFound dll -> $"%s{dll}: no unique *.fsproj above it in the repository"
+        | AnalyzerIdentity.Refusal.OutputOlderThanProject(dll, project) -> $"%s{dll}: older than %s{project}")
+    |> String.concat "; "
 
 /// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
 /// The SDK's constructor shape is reflected at startup (`apoCtor`); kept separate
@@ -291,16 +322,41 @@ let internal createWithSlowHook
     // guard catches that — the cache key only invalidates stale RESULTS for the
     // loaded set, and the fail-loud guard only fires on a 0-analyzer load.
     //
-    // So track the content identity of the loaded assembly set (the same hash the
-    // cache key uses) and re-load the client at the start of a FileChecked event
-    // when the on-disk identity differs. Volatile-guarded per the plugin convention.
-    let mutable loadedAssemblyIdentity =
-        analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+    // So track a snapshot of the analyzer set and refresh it when the bytes on disk
+    // move: reload the client into a FRESH instance and recompute the cache-key slot.
+    // While the slot is refused, the snapshot is retaken on every event instead —
+    // a refusal can clear without any byte moving (an edited source reverted, a
+    // touched project file rebuilt to the same bytes), and a daemon that only
+    // watched bytes would stay uncached for its whole life. Volatile-guarded per the
+    // plugin convention.
+    let mutable snapshot =
+        snapshotAnalyzerSet repoRoot knownNonAnalyzerPrefixes analyzerPaths
 
-    let reloadIfStale () =
-        let onDisk = analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+    // The refusal warning is emitted once per distinct refusal SET (by file and
+    // cause, not by hash), not once per file checked: a thousand FileChecked events
+    // under one drifted analyzer are one fact.
+    let mutable warnedRefusals: string option = None
 
-        if onDisk <> Volatile.Read(&loadedAssemblyIdentity) then
+    let warnOnce (refusals: AnalyzerIdentity.Refusal list) =
+        let signature = describeRefusals refusals
+
+        if Volatile.Read(&warnedRefusals) <> Some signature then
+            Volatile.Write(&warnedRefusals, Some signature)
+
+            warn
+                "analyzers"
+                $"Analyzer cache is off — no checkout-independent identity for the analyzer set: %s{signature}"
+
+    match snapshot.Inputs with
+    | Result.Error refusals -> warnOnce refusals
+    | Result.Ok _ -> ()
+
+    let refreshAnalyzerSet () =
+        let candidates = analyzerCandidates knownNonAnalyzerPrefixes analyzerPaths
+        let onDisk = materializationOf candidates
+        let current = Volatile.Read(&snapshot)
+
+        if onDisk <> current.Materialization then
             // Load the current set into a FRESH client and swap it in, so the added
             // analyzer is live (and any removed/changed one is gone) before we analyze.
             let fresh = Client<CliAnalyzerAttribute, CliContext>()
@@ -308,11 +364,19 @@ let internal createWithSlowHook
             let reloadedCount = reloaded |> List.sumBy snd
 
             Volatile.Write(&client, fresh)
-            Volatile.Write(&loadedAssemblyIdentity, onDisk)
 
             info
                 "analyzers"
                 $"Analyzer assembly set changed on disk — reloaded %d{reloadedCount} analyzers from %d{analyzerPaths.Length} paths"
+
+        if onDisk <> current.Materialization || Result.isError current.Inputs then
+            let retaken = snapshotAnalyzerSet repoRoot knownNonAnalyzerPrefixes analyzerPaths
+
+            Volatile.Write(&snapshot, retaken)
+
+            match retaken.Inputs with
+            | Result.Error refusals -> warnOnce refusals
+            | Result.Ok _ -> ()
 
     let analyzerTimeout =
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
@@ -345,7 +409,7 @@ let internal createWithSlowHook
 
                         let mutable runStarted = DateTime.UtcNow
 
-                        reloadIfStale ()
+                        refreshAnalyzerSet ()
 
                         let checkResultsObj =
                             match result.CheckResults with
@@ -586,28 +650,32 @@ let internal createWithSlowHook
                      |> List.sort)
             )
 
-        // CONTENT identity, not just the path strings — see `analyzerAssemblyIdentity`.
-        let analyzerAssemblyHash =
-            analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
-
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
             | FileChecked result ->
-                // fcs-signature captures cross-file FCS state changes so
-                // upstream symbol changes invalidate this file's cache.
-                let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+                // The key is computed once per event on the plugin's own loop, before
+                // the lookup and the run, so refreshing here is what makes the entry
+                // looked up and the analyzers that run describe the same set on disk.
+                refreshAnalyzerSet ()
 
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        // v4 orphans every entry written under the path-ABSOLUTE key
-                        // (v3), which could not be read in another checkout anyway.
-                        [ "plugin-version", "analyzers-merkle-v4"
-                          "analyzer-paths", analyzerPathsHash
-                          "analyzer-assemblies", analyzerAssemblyHash
-                          "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
-                          "source", result.Source
-                          "fcs-signature", fcsSignature ]
-                )
+                match (Volatile.Read(&snapshot)).Inputs with
+                | Result.Error _ -> None
+                | Result.Ok analyzerInputs ->
+                    // fcs-signature captures cross-file FCS state changes so
+                    // upstream symbol changes invalidate this file's cache.
+                    let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+
+                    Some(
+                        FsHotWatch.TaskCache.merkleCacheKey
+                            // v5 orphans every entry keyed on analyzer BYTES (v4's
+                            // `analyzer-assemblies`), which no second checkout could hit.
+                            [ "plugin-version", "analyzers-merkle-v5"
+                              "analyzer-paths", analyzerPathsHash
+                              "analyzer-inputs", analyzerInputs
+                              "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
+                              "source", result.Source
+                              "fcs-signature", fcsSignature ]
+                    )
             | _ -> None
 
         Some cacheKey

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- AUTOMATION-812: a fresh workspace of a repository that builds its own analyzers now
+  hits the shared per-file analyzer cache instead of re-analyzing every file: the
+  analyzer set is identified by what it was compiled from, not by DLL bytes that
+  differ per checkout. When that identity cannot be established (an analyzer source
+  edited since its build, a missing PDB) the daemon logs one
+  `Analyzer cache is off — …` warning naming the cause and runs the analyzers uncached.
+
 ## 0.14.0-alpha.46 - 2026-09-15
 
 - AUTOMATION-394: console scope refusals describe missing test evidence without

@@ -7,76 +7,13 @@ module FsHotWatch.Tests.AnalyzerIdentityTests
 
 open System
 open System.IO
-open System.Reflection.Metadata
-open System.Security.Cryptography
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Analyzers.AnalyzerIdentity
 open FsHotWatch.Tests.TestHelpers
 
-let private repoRoot = RepoTasks.repoRoot ()
+open FsHotWatch.Tests.AnalyzerFixtures
 
-/// Repository-relative location of the house-rules build output, as `.fshw.json`
-/// `analyzers.paths` names it.
-let private rulesBinRel =
-    Path.Combine("analyzers", "FsHotWatch.Rules", "bin", "Debug", "net10.0")
-
-let private rulesDll =
-    let dll = Path.Combine(repoRoot, rulesBinRel, "FsHotWatch.ConventionAnalyzers.dll")
-
-    if not (File.Exists dll) then
-        failwith $"house-rules analyzer not built at %s{dll}: run `mise run build-analyzers`"
-
-    dll
-
-let private sha256Lower (bytes: byte array) =
-    SHA256.HashData bytes |> Convert.ToHexStringLower
-
-/// Every (recorded path, checksum length) in a portable PDB's Document table.
-let private pdbDocuments (pdb: string) =
-    use stream = File.OpenRead pdb
-    use provider = MetadataReaderProvider.FromPortablePdbStream stream
-    let reader = provider.GetMetadataReader()
-
-    reader.Documents
-    |> Seq.map (fun handle ->
-        let document = reader.GetDocument handle
-        reader.GetString document.Name, reader.GetBlobBytes(document.Hash).Length)
-    |> Seq.toList
-
-/// The recorded documents that lie under the repository root — the ones the
-/// identity is built from and the ones a relocated copy must carry.
-let private inRepoDocuments (pdb: string) =
-    pdbDocuments pdb
-    |> List.map fst
-    |> List.filter (fun path ->
-        path.StartsWith(repoRoot + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
-
-let private copyTo (target: string) (source: string) =
-    Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
-    File.Copy(source, target, true)
-
-/// Rebuild the house-rules layout under `root`: DLL + PDB in the bin directory, the
-/// producer fsproj, and every in-repo document at its repository-relative path — the
-/// shape a second checkout has after building the same source. Timestamps are set
-/// explicitly so the copy cannot trip the mtime refusal by accident.
-let private relocate (root: string) : string =
-    let pdb = Path.ChangeExtension(rulesDll, ".pdb")
-
-    let project =
-        Path.Combine(repoRoot, "analyzers", "FsHotWatch.Rules", "FsHotWatch.Rules.fsproj")
-
-    let relTo (absolute: string) =
-        Path.GetRelativePath(repoRoot, absolute)
-
-    for source in [ rulesDll; pdb; project ] @ inRepoDocuments pdb do
-        copyTo (Path.Combine(root, relTo source)) source
-
-    let dll = Path.Combine(root, relTo rulesDll)
-    let stamp = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-    File.SetLastWriteTimeUtc(Path.Combine(root, relTo project), stamp)
-    File.SetLastWriteTimeUtc(dll, stamp.AddHours 1.0)
-    dll
 
 let private throwawayDll (dir: string) (name: string) (bytes: byte array) =
     let dll = Path.Combine(dir, $"%s{name}.dll")
@@ -100,7 +37,7 @@ let ``fsc records a checksum for every source document in the portable PDB`` () 
             |> List.filter (fun (path, _) -> path.EndsWith(".fs", StringComparison.Ordinal))
 
         test <@ not (List.isEmpty sources) @>
-        test <@ sources |> List.forall (fun (_, hashLength) -> hashLength > 0) @>
+        test <@ sources |> List.forall (fun (_, hash) -> hash.Length > 0) @>
 
 // ---------------------------------------------------------------------------
 // The cross-workspace property
