@@ -101,6 +101,7 @@
     <Compile Include="RepoTasks.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />
     <Compile Include="AnalyzerMaterializationTests.fs" />
+    <Compile Include="AnalyzerIdentityTests.fs" />
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
     <Compile Include="LoggingTests.fs" />
