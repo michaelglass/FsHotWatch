@@ -342,7 +342,7 @@ let ``a single path longer than the whole budget still goes to the tool`` () =
 
 [<Fact>]
 let ``an empty batch is no invocations`` () =
-    test <@ chunkByArgumentLength 10 identityQuote [] = [] @>
+    test <@ List.isEmpty (chunkByArgumentLength 10 identityQuote []) @>
 
 [<Fact>]
 let ``check folds the reports of every invocation a batch needs`` () =
