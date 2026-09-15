@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Adopt TestPrune.Core 8.2.0: signature-file declarations are indexed as their
+  own occurrences and the in-memory store keeps a real declaration's owner over
+  a reference placeholder.
+
 ## 0.13.0-alpha.34 - 2026-09-15
 
 - AUTOMATION-394: retain an executed filtered receipt across a same-input
