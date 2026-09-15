@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-09-15
+
+- Finish: update SourceLink to fix CVE-2026-62900 restore failure
+
+
 ## 0.7.0-alpha.23 - 2026-09-04
 
 - AUTOMATION-564: the lint cache key names its file REPO-RELATIVELY, so a lint verdict

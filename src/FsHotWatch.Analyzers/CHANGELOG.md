@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.31 - 2026-09-15
+
+- Finish: update SourceLink to fix CVE-2026-62900 restore failure
+
+
 ## 0.7.0-alpha.30 - 2026-09-04
 
 - AUTOMATION-564: the analyzers cache key names its file — and the analyzer

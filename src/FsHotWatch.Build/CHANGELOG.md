@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.35 - 2026-09-15
+
+- Finish: update SourceLink to fix CVE-2026-62900 restore failure
+
+
 ## 0.7.0-alpha.34 - 2026-09-06
 
 - Fix: stop the CLI prescribing a merge policy it does not own (AUTOMATION-394)

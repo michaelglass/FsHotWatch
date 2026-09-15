@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-09-15
+
 - AUTOMATION-568: a batch is split across `dotnet tool run fantomas` invocations by the
   CHARACTER budget of the command line, not by a fixed count of 200 files. The count was
   the wrong unit — the platform limit is on characters — and on a large tree it was the

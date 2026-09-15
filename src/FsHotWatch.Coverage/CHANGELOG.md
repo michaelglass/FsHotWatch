@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.23 - 2026-09-15
+
+- Finish: update SourceLink to fix CVE-2026-62900 restore failure
+
+
 ## 0.7.0-alpha.22 - 2026-09-01
 
 - chore: rebuild against the updated FsHotWatch core dependency.
