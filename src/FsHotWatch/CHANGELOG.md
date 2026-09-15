@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.31 - 2026-09-15
+
+- Fix: a scan can no longer read an in-flight rediscovery as an empty project model
+- Add: a typed project-model observation, so a scan can tell rediscovery from emptiness
+- Finish: update SourceLink to fix CVE-2026-62900 restore failure
+
+
 ## 0.10.0-alpha.30 - 2026-09-07
 
 - **`RunOutcome.VerifiedNothing of detail`** — a `Completed` run that
