@@ -343,6 +343,29 @@ module Detect =
     let private posLeq (aLine: int, aCol: int) (bLine: int, bCol: int) =
         aLine < bLine || (aLine = bLine && aCol <= bCol)
 
+    /// FSHW-SPAWN-001 material. A `Process.Start …` CALL, in the spellings that
+    /// reach the same method: `Process.Start(psi)`,
+    /// `System.Diagnostics.Process.Start(psi)`, `Diagnostics.Process.Start(psi)`.
+    ///
+    /// The `Process` qualifier is REQUIRED rather than matching a bare `.Start()`.
+    /// Threads, timers and stopwatches all answer to `Start`, and a rule that
+    /// flagged `runLoopThread.Start()` would be wrong at the one call site in
+    /// MacFsEvents.fs — an analyzer whose first finding is a false positive is one
+    /// people learn to suppress rather than obey.
+    let private isProcessStartPath (ids: Ident list) =
+        match List.rev ids |> List.map (fun i -> i.idText) with
+        | "Start" :: "Process" :: _ -> true
+        | _ -> false
+
+    let private processStartCall (e: SynExpr) : range option =
+        match e with
+        | SynExpr.App(funcExpr = f) ->
+            match unwrapParen f with
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when isProcessStartPath ids -> Some e.Range
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when isProcessStartPath ids -> Some e.Range
+            | _ -> None
+        | _ -> None
+
     let private rangeContains (outer: range) (inner: range) =
         posLeq (outer.StartLine, outer.StartColumn) (inner.StartLine, inner.StartColumn)
         && posLeq (inner.EndLine, inner.EndColumn) (outer.EndLine, outer.EndColumn)
@@ -374,9 +397,18 @@ module Detect =
         member val AssertionScopes = ResizeArray<range>()
         member val BindingScopes = ResizeArray<range>()
 
+        /// FSHW-SPAWN-001 material: every `Process.Start` call. Whether one is a
+        /// FINDING depends on the file it sits in, which the collector cannot see,
+        /// so the filtering lives in `untrackedSpawns`.
+        member val ProcessStarts = ResizeArray<range>()
+
         override this.WalkExpr(_path, expr) =
             match discardedClaimInExpr expr with
             | Some r -> this.DiscardedClaims.Add r
+            | None -> ()
+
+            match processStartCall expr with
+            | Some r -> this.ProcessStarts.Add r
             | None -> ()
 
             match threadSleepCall expr with
@@ -569,6 +601,56 @@ module Detect =
             |> List.ofSeq
             |> List.filter (fun sleep -> synchronises sleep && not (optedOut sleep))
 
+    /// The opt-out for a spawn that is DELIBERATELY not tracked. Same shape as
+    /// `OptOutMarker`: on the call's own line or anywhere in the contiguous comment
+    /// block directly above it, with the reason.
+    ///
+    ///     // FSHW-SPAWN-001 ok: detaches on purpose — see the comment above
+    ///     let proc = System.Diagnostics.Process.Start(psi)
+    ///
+    /// `rg "FSHW-SPAWN-001 ok"` then lists every sanctioned un-tracked spawn, which
+    /// is the property that matters: the exceptions have to be countable.
+    [<Literal>]
+    let SpawnOptOutMarker = "FSHW-SPAWN-001 ok"
+
+    /// `ProcessHelper.fs` IS the sanctioned spawn path — it is the one place that
+    /// calls `ProcessRegistry.track`, immediately after starting the child. Policing
+    /// it would flag the fix itself.
+    let private isSanctionedSpawnSource (fileName: string) : bool =
+        fileName.Replace('\\', '/').EndsWith("/ProcessHelper.fs", System.StringComparison.Ordinal)
+
+    /// Ranges where a process is spawned OUTSIDE the one path that registers it for
+    /// reaping.
+    ///
+    /// Production sources only. A child spawned with no registry in scope outlives
+    /// the daemon as an init-reparented orphan, which is a cost a long-running
+    /// daemon pays and a test process does not: test processes die with the run.
+    /// Policing the ~14 spawn sites under tests/ would buy fourteen opt-outs and no
+    /// safety.
+    let untrackedSpawns (getLine: int -> string) (fileName: string) (input: ParsedInput) : range list =
+        if isTestSource fileName || isSanctionedSpawnSource fileName then
+            []
+        else
+            let optedOut (spawn: range) =
+                let rec scan (line: int) (remaining: int) =
+                    if remaining <= 0 || line < 1 then
+                        false
+                    else
+                        let text = getLine line
+
+                        if text.Contains(SpawnOptOutMarker) then
+                            true
+                        elif line = spawn.StartLine || text.TrimStart().StartsWith("//") then
+                            scan (line - 1) (remaining - 1)
+                        else
+                            false
+
+                scan spawn.StartLine 25
+
+            (collect input).ProcessStarts
+            |> List.ofSeq
+            |> List.filter (fun spawn -> not (optedOut spawn))
+
 [<CliAnalyzer("RunClaimDiscardedAnalyzer",
               "A RunClaim (RunExclusive's result) must be matched, never discarded — a dropped SlotBusy is dropped work (AUTOMATION-99)")>]
 let runClaimDiscardedAnalyzer: Analyzer<CliContext> =
@@ -644,6 +726,37 @@ let sleepSynchronisationAnalyzer: Analyzer<CliContext> =
                       Message =
                         "Thread.Sleep before an event assertion is not synchronisation — it is a bet on latency. A brand-new temp dir carries 4-20s of FSEvents cold-start on macOS, so the single write behind this sleep can land before the watcher is live and never be reported, and the red then names a production bug that does not exist. Write REPEATEDLY until the event arrives: WatchedDir.withWatchedDir + WriteUntil (tests/FsHotWatch.Tests/WatchedDir.fs), or probeLoop / waitUntilTrue directly. A sleep that is deliberate (asserting a NEGATIVE inside a window) opts out with a `// FSHW-WAIT-001 ok: <reason>` comment on this line or the one above."
                       Code = "FSHW-WAIT-001"
+                      Severity = Severity.Error
+                      Range = range
+                      Fixes = [] })
+        }
+
+[<CliAnalyzer("UntrackedSpawnAnalyzer",
+              "In production sources: forbids spawning a process outside ProcessHelper, the one path that registers a child for reaping")>]
+let untrackedSpawnAnalyzer: Analyzer<CliContext> =
+    fun (context: CliContext) ->
+        async {
+            // Same defensive shape as the sleep rule: an analyzer that throws takes
+            // the whole run's findings with it, and no opt-out comment is worth that.
+            let getLine (line: int) =
+                try
+                    if line >= 1 && line <= context.SourceText.GetLineCount() then
+                        context.SourceText.GetLineString(line - 1)
+                    else
+                        ""
+                with _ ->
+                    ""
+
+            return
+                Detect.untrackedSpawns getLine context.FileName context.ParseFileResults.ParseTree
+                |> List.map (fun range ->
+                    { Type = "Process spawned outside the tracked path"
+                      Message =
+                        "this starts a child process without going through ProcessHelper, which is the one place that calls ProcessRegistry.track. \
+                         An untracked child cannot be reaped at daemon shutdown — it is re-parented to init and outlives the daemon, and the runtime \
+                         warning it produces ('spawned pid N with no registry in scope') arrives far too late to act on. Route it through \
+                         ProcessHelper, or, if it detaches on purpose, say so with a `FSHW-SPAWN-001 ok: <reason>` comment on the call or the lines above it."
+                      Code = "FSHW-SPAWN-001"
                       Severity = Severity.Error
                       Range = range
                       Fixes = [] })
