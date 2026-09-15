@@ -227,10 +227,51 @@ let parseOutput (workDir: string) (requested: string list) (output: string) : Ch
     { NeedsFormatting = needsFormatting
       FormatErrors = formatErrors }
 
-/// Files per invocation: keeps the argument string far under every platform's limit
-/// while still amortising the tool's start-up over a batch.
-[<Literal>]
-let private ChunkSize = 200
+/// The longest argument string one invocation may carry, in characters.
+///
+/// A chunk is sized by the LENGTH of the command line it produces, never by a file
+/// COUNT, because the platform limit is on characters. A fixed count (this was 200)
+/// is the wrong unit twice over: on a repository of short paths it spends spawns it
+/// does not need, and on one of long paths it could still overflow.
+///
+/// The tracked issue measured what the count costs. A 1884-file F# tree checked in ONE
+/// invocation took 7.7/8.3/8.3s wall (47-51s CPU); the same tree as ten 200-file
+/// chunks took 16.0-18.4s wall (74-91s CPU) — five interleaved, load-matched trials
+/// on the same box. Every chunk re-pays the tool's start-up and its JIT warm-up, and
+/// the per-file cost roughly HALVES once one process sees the whole batch. Chunking
+/// was doubling the gate's format stage.
+///
+/// Windows caps a command line at 32767 characters (`CreateProcess`), so the budget
+/// there is 30000 — the remainder covers the `tool run fantomas --check ` prefix.
+/// Every Unix ARG_MAX in practice is at least 256 KB (macOS 1 MB, Linux 2 MB) and
+/// counts the environment block too, so 128 KB leaves an order of magnitude spare.
+let private argumentBudget =
+    if OperatingSystem.IsWindows() then 30_000 else 128 * 1024
+
+/// Split `files` into the fewest invocations whose quoted argument strings each fit
+/// `budget` characters. A single path longer than the budget goes alone rather than
+/// producing an empty chunk — the tool then decides, which beats this module
+/// silently dropping a file.
+let internal chunkByArgumentLength (budget: int) (quoteArg: string -> string) (files: string list) : string list list =
+    let cost (file: string) = (quoteArg file).Length + 1 // + the separating space
+
+    let folded, current, _ =
+        (([], [], 0), files)
+        ||> List.fold (fun (chunks, current, used) file ->
+            let size = cost file
+
+            if List.isEmpty current || used + size <= budget then
+                chunks, file :: current, used + size
+            else
+                List.rev current :: chunks, [ file ], size)
+
+    let all =
+        if List.isEmpty current then
+            folded
+        else
+            List.rev current :: folded
+
+    List.rev all
 
 /// Was this the SDK refusing to run the tool, rather than the tool speaking?
 let private isNotRestored (output: string) =
@@ -281,7 +322,7 @@ let private runChunked
         { NeedsFormatting = []
           FormatErrors = [] }
 
-    (Ok empty, List.chunkBySize ChunkSize files)
+    (Ok empty, chunkByArgumentLength argumentBudget quote files)
     ||> List.fold (fun acc chunk ->
         acc
         |> Result.bind (fun report ->
