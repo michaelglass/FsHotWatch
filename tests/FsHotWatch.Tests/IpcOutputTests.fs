@@ -2053,3 +2053,85 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
         match Verdict.read repoRoot with
         | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
         | _ -> ())
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``AUTOMATION-474 quiet convergence refuses evidence after an exact-tree-only edit`` (declaredInput: bool) =
+    TestHelpers.withTempDir "a474-exact-tree-convergence" (fun repoRoot ->
+        let source = System.IO.Path.Combine(repoRoot, "src", "Candidate.fs")
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName source)
+        |> ignore
+
+        System.IO.File.WriteAllText(source, "module Candidate\nlet value = 1\n")
+        let policy = System.IO.Path.Combine(repoRoot, "coverage-policy.txt")
+        System.IO.File.WriteAllText(policy, "floor=80\n")
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(repoRoot, ".fshw.json"),
+            """{"verdictInputs":{"hashed":[{"path":"coverage-policy.txt","why":"test coverage policy affects the gate"}]}}"""
+        )
+
+        let before = FsHotWatch.TreeHash.compute repoRoot []
+        let runId = executedA.RunId.Value
+        writeEvidenceSuite repoRoot runId
+        let mutable errorReads = 0
+        let mutable scopeReads = 0
+        let mutable rescans = 0
+
+        let getErrors () =
+            errorReads <- errorReads + 1
+
+            if errorReads = 1 then
+                """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
+            else
+                """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+        let getRun () =
+            scopeReads <- scopeReads + 1
+
+            if scopeReads = 1 then
+                BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+            elif scopeReads = 2 then
+                executedA
+            else
+                BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+
+        let rescan () =
+            rescans <- rescans + 1
+
+            if declaredInput then
+                System.IO.File.WriteAllText(policy, "floor=90\n")
+            else
+                System.IO.File.AppendAllText(source, "// exact tree changed without changing symbol bodies\n")
+
+            "idle"
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                getErrors
+                getRun
+                (fun () -> IpcParsing.ReachUnavailable "not used")
+                (fun () -> failwith "inner-loop check must not force confirm")
+                rescan
+
+        let after = FsHotWatch.TreeHash.compute repoRoot []
+        test <@ before.Hash <> after.Hash @>
+        test <@ rescans = 1 @>
+        test <@ exitCode = 3 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId <> Some runId @>
+            test <@ verdict.Scope = NoTestsRun NoTestsReason.AlreadyVerified @>
+        | other -> failwithf "expected an explicit non-evidence verdict, got %A" other)
