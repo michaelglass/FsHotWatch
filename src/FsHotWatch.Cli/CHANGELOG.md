@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- The daemon now outlives the process group of the command that launched it. The old
+  `/bin/sh -c "nohup … &"` launch left the daemon in the caller's process group (a
+  non-interactive shell has no job control), so anything that signalled that group — a
+  closing terminal, a test runner or agent harness tearing down its tree — killed the
+  daemon too. The launch now runs through a short-lived copy of the CLI (the new
+  `DetachedLaunch` module) that calls `setsid` and then `execv`s the launch shell, so the
+  daemon starts in a session and process group of its own, with stdin at `/dev/null`. The
+  helper is bounded and reaped, and a failed `setsid`, `execv` or launch shell is now an
+  error naming the command instead of a silent non-start. The executable and log paths are
+  now shell-quoted, so a path containing a quote no longer breaks the launch.
+- Fixed: the first `check` against a daemon started directly with `fshw start` (a test
+  fixture, a service manager) replaced that daemon, because only the launcher wrote
+  `.fshw/config.hash` and a directly started daemon therefore looked like a config change.
+  The daemon now publishes the identity of the `.fshw.json` text it actually parsed before
+  its pipe listens, and the launcher no longer writes it at all, so it can neither overwrite
+  nor invent that identity. `DaemonConfig.loadConfigWithSource` returns the parsed text
+  alongside the configuration; `Program.configContentHash` hashes it.
+- Breaking (library API): `Program.executeCommand` takes the loaded configuration identity
+  as its new first argument, and `Program.startFreshDaemonWith` no longer takes a config
+  hash.
+
 - breaking: a `check`/`confirm` whose reading was taken without an
   available project model is no longer graded as if the model were healthy. A scan that
   raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously

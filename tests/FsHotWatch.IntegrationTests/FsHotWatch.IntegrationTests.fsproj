@@ -26,10 +26,13 @@
     <Compile Include="NuGetToolBarrierOracleTests.fs" />
     <Compile Include="ColdCheckFixture.fs" />
     <Compile Include="ColdCheckCommandTests.fs" />
+    <Compile Include="LauncherGroupSurvivalTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Built for LauncherGroupSurvivalTests, which runs it from its own bin directory; not referenced as code. -->
+    <ProjectReference Include="../Fixtures/LauncherLifetimeFixture/LauncherLifetimeFixture.fsproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />

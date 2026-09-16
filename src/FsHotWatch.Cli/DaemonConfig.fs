@@ -1040,16 +1040,19 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
             "config"
             $"verdictInputs: %d{List.length declaration.Hashed} declared, %d{List.length resolved.Files} file(s) folded into the tree hash, %d{List.length resolved.Absent} absent"
 
-/// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
+/// Load config from .fshw.json in repoRoot, together with the exact text that was
+/// parsed (`""` when there is no file). The text is what a daemon's loaded-config
+/// identity is computed from: re-reading the file later could describe an edit the
+/// daemon never loaded. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
-let loadConfig (repoRoot: string) : DaemonConfiguration =
+let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     let defaults = defaultConfigFor repoRoot
 
     if not (File.Exists configPath) then
         Logging.info "config" "No .fshw.json found, using defaults (build + format + lint)"
-        defaults
+        defaults, ""
     else
         let json =
             try
@@ -1062,10 +1065,14 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
             validateVerdictInputs repoRoot json
             validateTestScope repoRoot config
             Logging.info "config" "Loaded .fshw.json"
-            config
+            config, json
         with
         | ConfigError _ -> reraise ()
         | ex -> raise (ConfigError $".fshw.json: %s{ex.Message}")
+
+/// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
+/// Raises ConfigError on read / parse / validation failure.
+let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.

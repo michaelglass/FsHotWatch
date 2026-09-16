@@ -793,7 +793,7 @@ let private exec (ipc: IpcOps) (command: Command) : int =
     Directory.CreateDirectory("/tmp/.fshw") |> ignore
     FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
     File.WriteAllText("/tmp/.fshw/config.hash", computeConfigHashWith defaultFileOps "/tmp")
-    executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
+    executeCommand "" (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Stop calls shutdown`` () =
@@ -986,7 +986,7 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
                 IsRunning = fun _ -> false }
 
         let exitCode =
-            executeCommand createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
+            executeCommand "" createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
 
         test <@ exitCode = 2 @>
         test <@ not createDaemonCalled @>
@@ -1008,6 +1008,7 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
 
         let exitCode =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1044,7 +1045,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
         let threw =
             try
-                executeCommand createDaemon ipc tmpDir "pipe" Start defaultGlobalOptions fakeConfig 30.0
+                executeCommand "" createDaemon ipc tmpDir "pipe" Start defaultGlobalOptions fakeConfig 30.0
                 |> ignore
 
                 false
@@ -1123,6 +1124,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let stderr, exitCode =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (daemonWithNativeStream
                         (fun _ -> Interlocked.Increment(&produced.contents) |> ignore)
                         alwaysRefused)
@@ -1177,6 +1179,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let secondRun =
             try
                 executeCommand
+                    ""
                     secondCreateDaemon
                     ipc
                     tmpDir
@@ -1464,6 +1467,7 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1787,7 +1791,16 @@ let private withStartupFailure command =
             { fakeIpc () with
                 IsRunning = fun _ -> false }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" command defaultGlobalOptions fakeConfig 0.0)
+        executeCommand
+            ""
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            tmpDir
+            "pipe"
+            command
+            defaultGlobalOptions
+            fakeConfig
+            0.0)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns 2 when daemon startup fails`` () =
@@ -1943,6 +1956,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -1985,6 +1999,7 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2013,6 +2028,7 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2040,6 +2056,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2084,6 +2101,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
         let stderr, result =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2132,6 +2150,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
         let stderr, failedResult =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     tmpDir
@@ -2149,6 +2168,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
 
         let nextResult =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -2174,6 +2194,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
         let d = runningDaemon ()
 
         executeCommand
+            ""
             (fun _ -> Unchecked.defaultof<_>)
             (fakeDaemonIpc tmpDir d)
             tmpDir
@@ -2225,6 +2246,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
         let stderr, _ =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     (fakeDaemonIpc tmpDir d)
                     tmpDir
@@ -2424,6 +2446,37 @@ let ``runIpcWithSelfHeal reports the retry fault without restarting twice`` () =
     test <@ restartCalls = 1 @>
     test <@ failures.Length = 1 @>
     test <@ obj.ReferenceEquals(failures.Head, retryFault) @>
+
+/// A daemon-side fault whose remote stack trace carries no frame-reader evidence is
+/// not a corrupted pipe, whatever its type: the caller sees that exact failure, the
+/// action is not retried, and the daemon is not restarted.
+[<Theory(Timeout = 15000)>]
+[<InlineData("System.OutOfMemoryException")>]
+[<InlineData("System.OverflowException")>]
+[<InlineData("System.TimeoutException")>]
+[<InlineData("System.AggregateException")>]
+let ``remote fault without frame evidence preserves the original failure and never restarts`` (typeName: string) =
+    let fault = remoteIpcFault typeName "remote operation failed" null
+    let mutable restarts = 0
+    let mutable attempts = 0
+    let mutable reported: exn option = None
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restarts <- restarts + 1
+                true)
+            (fun error ->
+                reported <- Some error
+                71)
+            (fun () ->
+                attempts <- attempts + 1
+                raise fault)
+
+    test <@ result = 71 @>
+    test <@ attempts = 1 @>
+    test <@ restarts = 0 @>
+    test <@ reported |> Option.exists (fun error -> obj.ReferenceEquals(error, fault)) @>
 
 [<Fact(Timeout = 15000)>]
 let ``runIpcWithSelfHeal does not restart for an unrelated remote fault`` () =

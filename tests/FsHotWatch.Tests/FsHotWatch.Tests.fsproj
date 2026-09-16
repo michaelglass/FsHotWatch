@@ -102,6 +102,9 @@
     <Compile Include="CliTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="DetachedLaunchTests.fs" />
+    <Compile Include="LauncherLifetimeTests.fs" />
+    <Compile Include="LoadedConfigIdentityTests.fs" />
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />

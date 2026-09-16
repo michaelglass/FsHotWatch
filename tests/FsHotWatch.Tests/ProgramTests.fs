@@ -10,6 +10,18 @@ open FsHotWatch.Cli.Program
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Tests.TestHelpers
 
+let private captureStderr (f: unit -> 'a) : string * 'a =
+    let original = Console.Error
+    use sw = new StringWriter()
+    Console.SetError(sw)
+
+    try
+        let result = f ()
+        sw.Flush()
+        sw.ToString(), result
+    finally
+        Console.SetError(original)
+
 // --- Helper: shared fake config and IPC ---
 
 let private fakeConfig: DaemonConfiguration =
@@ -165,25 +177,25 @@ let ``killStaleDaemonWith handles invalid pid file gracefully`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``startFreshDaemonWith returns true when daemon starts immediately`` () =
-    let mutable hashWritten = ""
+    let mutable written = false
     let mutable launchCalled = false
 
     let fileOps =
         { defaultFileOps with
             CreateDirectory = fun _ -> ()
-            WriteAllText = fun _path content -> hashWritten <- content }
+            WriteAllText = fun _path _content -> written <- true }
 
     let ipc =
         { fakeIpc () with
             IsRunning = fun _ -> true
             LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
-    let result =
-        startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" "logs" 5.0
+    let result = startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "" "logs" 5.0
 
     test <@ result @>
     test <@ launchCalled @>
-    test <@ hashWritten = "abc123" @>
+    // The launcher attests nothing: the daemon publishes its own loaded identity.
+    test <@ not written @>
 
 [<Fact(Timeout = 15000)>]
 let ``startFreshDaemonWith returns false when daemon never starts`` () =
@@ -197,8 +209,7 @@ let ``startFreshDaemonWith returns false when daemon never starts`` () =
             IsRunning = fun _ -> false
             LaunchDaemon = fun _ _ _ -> () }
 
-    let result =
-        startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" "logs" 0.0
+    let result = startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "" "logs" 0.0
 
     test <@ not result @>
 
@@ -216,7 +227,7 @@ let ``startFreshDaemonWith passes extra args to LaunchDaemon`` () =
             IsRunning = fun _ -> true
             LaunchDaemon = fun _ args _ -> receivedArgs <- args }
 
-    startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "hash" "--verbose " "logs" 5.0
+    startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "--verbose " "logs" 5.0
     |> ignore
 
     test <@ receivedArgs = "--verbose " @>
@@ -246,8 +257,7 @@ let ``restart flow handles shutdown failure gracefully`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
-        let result =
-            startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" "logs" 5.0
+        let result = startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "logs" 5.0
 
         test <@ result @>
         test <@ launchCalled @>)
@@ -274,21 +284,43 @@ let ``killStaleDaemonWith handles missing PID file gracefully`` () =
 // --- startFreshDaemonWith ---
 
 [<Fact(Timeout = 15000)>]
-let ``startFreshDaemonWith writes config hash file`` () =
+let ``startFreshDaemonWith reports a failed launch without waiting for a daemon`` () =
+    withTempDir "prog-launch-fails" (fun tmpDir ->
+        let mutable probes = 0
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning =
+                    fun _ ->
+                        probes <- probes + 1
+                        false
+                LaunchDaemon = fun _ _ _ -> invalidOp "helper exited 7 launching: start" }
+
+        let clock = Diagnostics.Stopwatch.StartNew()
+
+        let stderr, result =
+            captureStderr (fun () -> startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "logs" 10.0)
+
+        test <@ not result @>
+        test <@ clock.Elapsed < TimeSpan.FromSeconds 5.0 @>
+        test <@ probes = 1 @>
+        test <@ stderr.Contains "Could not launch the daemon: helper exited 7 launching: start" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``startFreshDaemonWith leaves loaded config identity to the daemon`` () =
     withTempDir "prog-hash-write" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
+
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        let result =
-            startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "abcd1234abcd1234" "" "logs" 5.0
+        let result = startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "logs" 5.0
 
         test <@ result @>
         let hashPath = Path.Combine(tmpDir, ".fshw", "config.hash")
-        test <@ File.Exists hashPath @>
-        let hash = File.ReadAllText(hashPath).Trim()
-        test <@ hash = "abcd1234abcd1234" @>)
+        test <@ not (File.Exists hashPath) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``startFreshDaemonWith creates log directory from logDirName param`` () =
@@ -298,7 +330,7 @@ let ``startFreshDaemonWith creates log directory from logDirName param`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" "custom-logs" 5.0
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "custom-logs" 5.0
         |> ignore
 
         test <@ Directory.Exists(Path.Combine(tmpDir, "custom-logs")) @>
@@ -315,8 +347,7 @@ let ``startFreshDaemonWith accepts absolute logDirName`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" absLogDir 5.0
-        |> ignore
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" absLogDir 5.0 |> ignore
 
         test <@ Directory.Exists absLogDir @>)
 
@@ -330,7 +361,7 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ args _ -> receivedArgs <- args }
 
-        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "--verbose --no-cache " "logs" 5.0
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "--verbose --no-cache " "logs" 5.0
         |> ignore
 
         test <@ receivedArgs = "--verbose --no-cache " @>)
@@ -341,6 +372,7 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
 let ``executeCommand Completions returns 0`` () =
     let result =
         executeCommand
+            ""
             (fun _ -> Unchecked.defaultof<_>)
             (fakeIpc ())
             "/tmp"
@@ -386,7 +418,16 @@ let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start defaultGlobalOptions fakeConfig 5.0
+            executeCommand
+                ""
+                createDaemon
+                (fakeIpc ())
+                tmpDir
+                "pipe-singleton"
+                Start
+                defaultGlobalOptions
+                fakeConfig
+                5.0
 
         test <@ result = 0 @>
         test <@ not createDaemonCalled @>)
@@ -413,7 +454,16 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start defaultGlobalOptions fakeConfig 5.0
+            executeCommand
+                ""
+                createDaemon
+                (fakeIpc ())
+                tmpDir
+                "pipe-concurrent"
+                Start
+                defaultGlobalOptions
+                fakeConfig
+                5.0
 
         test <@ result = 0 @>
         test <@ createDaemonCalls = 0 @>)
@@ -439,6 +489,7 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -469,6 +520,7 @@ let ``executeCommand Stop reports when no daemon is running`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc
                 tmpDir
@@ -496,6 +548,7 @@ let ``executeCommand Init creates config in empty dir`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 (fakeIpc ())
                 tmpDir
@@ -516,6 +569,7 @@ let ``executeCommand Init returns 1 when config already exists`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 (fakeIpc ())
                 tmpDir
@@ -588,7 +642,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" Scan defaultGlobalOptions fakeConfig 5.0
+        executeCommand "" (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" Scan defaultGlobalOptions fakeConfig 5.0
         |> ignore
 
         let mutable launchCalled = false
@@ -600,6 +654,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
 
         let result =
             executeCommand
+                ""
                 (fun _ -> Unchecked.defaultof<_>)
                 ipc2
                 tmpDir
@@ -627,7 +682,16 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
                 IsRunning = fun _ -> false }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd defaultGlobalOptions fakeConfig 0.0
+            executeCommand
+                ""
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe"
+                cmd
+                defaultGlobalOptions
+                fakeConfig
+                0.0
 
         test <@ result = 1 @>)
 

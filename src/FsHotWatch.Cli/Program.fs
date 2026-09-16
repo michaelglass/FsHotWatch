@@ -336,6 +336,13 @@ let defaultProcessOps: ProcessOps =
       KillProcess = fun proc -> proc.Kill()
       WaitForExit = fun proc timeout -> proc.WaitForExit(timeout) }
 
+/// The production daemon launch: background `exe toolPrefix extraArgs start` with its
+/// output appended to `logFile`, in a new session and process group of its own, so the
+/// daemon outlives both this CLI and anything that signals this CLI's group.
+/// Raises when the launch itself fails; see `DetachedLaunch`.
+let launchDaemonProcess (exe: string) (toolPrefix: string) (repoRoot: string) (extraArgs: string) (logFile: string) =
+    DetachedLaunch.launch repoRoot (DetachedLaunch.daemonShellCommand exe toolPrefix extraArgs logFile)
+
 /// Injectable IPC operations for testability.
 type IpcOps =
     { Shutdown: string -> Async<string>
@@ -378,27 +385,7 @@ let defaultIpcOps: IpcOps =
                 |> Option.map (fun a -> a.Location)
 
             let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
-
-            let psi =
-                System.Diagnostics.ProcessStartInfo(
-                    "/bin/sh",
-                    $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
-                )
-
-            psi.WorkingDirectory <- repoRoot
-            psi.UseShellExecute <- false
-
-            // FSHW-SPAWN-001 ok: this spawn detaches ON PURPOSE and must not be
-            // tracked. What is started here is `/bin/sh`, which backgrounds the
-            // daemon with `nohup … &` and exits immediately; `WaitForExit` below
-            // waits for that shell, not for the daemon. Registering it would be
-            // pointless — the shell reaps itself in milliseconds — and registering
-            // the DAEMON would be wrong, because the whole point of launching it
-            // this way is that it outlives the CLI that asked for it. A tracked
-            // daemon would be killed by the next CLI shutdown that tore its
-            // registry down.
-            let proc = System.Diagnostics.Process.Start(psi)
-            proc.WaitForExit() }
+            launchDaemonProcess exe toolPrefix repoRoot extraArgs logFile }
 
 /// Unwrap nested AggregateException down to the most informative inner exception
 /// so we don't print "One or more errors occurred. (...)" wrapping the real message.
@@ -874,6 +861,15 @@ let private ensureAndQueryErrors
                     // there is ONE definition of "make the tree fresh".
                     (fun () -> forceScanAndWait ipc pipeName))
 
+/// The identity of one `.fshw.json` text (`""` for no file): what `.fshw/config.hash`
+/// records. A daemon publishes it for the text it PARSED; a CLI compares it with the
+/// hash of the file as it is now.
+let configContentHash (configContent: string) : string =
+    let hash =
+        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
+
+    Convert.ToHexStringLower(hash).Substring(0, 16)
+
 /// Compute a hash of the `.fshw.json` config content for restart-on-config-change
 /// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:
 /// binary staleness is the DaemonIdentity handshake's job (assembly version +
@@ -887,10 +883,7 @@ let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
         else
             ""
 
-    let hash =
-        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
-
-    Convert.ToHexStringLower(hash).Substring(0, 16)
+    configContentHash configContent
 
 /// Compute a hash of the config file for staleness detection.
 let private computeConfigHash (repoRoot: string) =
@@ -969,13 +962,10 @@ let startFreshDaemonWith
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let stateDir = Path.Combine(repoRoot, ".fshw")
-
     let logDir =
         if Path.IsPathRooted(logDirName) then
             logDirName
@@ -991,10 +981,24 @@ let startFreshDaemonWith
         fileOps.DeleteFile startupFailure
 
     eprintfn "Starting daemon... (log: %s)" logFile
-    ipc.LaunchDaemon repoRoot extraArgs logFile
-    fileOps.CreateDirectory stateDir
-    fileOps.WriteAllText (Path.Combine(stateDir, "config.hash")) currentHash
-    let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
+    // No `config.hash` is written here: only the daemon knows which configuration it
+    // actually parsed, and it publishes that before its pipe listens. A hash written by
+    // the launcher would attest to a file the daemon may never have loaded.
+    let launched =
+        try
+            ipc.LaunchDaemon repoRoot extraArgs logFile
+            true
+        with ex ->
+            // Nothing was started, so there is no pipe worth waiting for.
+            eprintfn "  Could not launch the daemon: %s" ex.Message
+            false
+
+    let deadline =
+        if launched then
+            DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
+        else
+            DateTime.MinValue
+
     let mutable isUp = ipc.IsRunning pipeName
     // A daemon that recorded a refusal has exited: stop waiting for a pipe that will
     // never come up, so the reason is printed now rather than after the timeout.
@@ -1011,12 +1015,11 @@ let private startFreshDaemon
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 let private ensureDaemon
     (ipc: IpcOps)
@@ -1032,7 +1035,7 @@ let private ensureDaemon
 
     if not (ipc.IsRunning pipeName) then
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+        startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
     else
         let storedHash =
             if File.Exists hashPath then
@@ -1058,7 +1061,7 @@ let private ensureDaemon
                 eprintfn "  Shutdown request failed: %s" ex.Message
 
             killStaleDaemon repoRoot
-            startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate.
@@ -1652,6 +1655,7 @@ let withRunHooksFor
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
+    (loadedConfigIdentity: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
     (repoRoot: string)
@@ -1754,14 +1758,7 @@ let executeCommand
 
             killStaleDaemon repoRoot
 
-            startFreshDaemon
-                ipc
-                repoRoot
-                pipeName
-                (computeConfigHash repoRoot)
-                opts.DaemonExtraArgs
-                config.LogDir
-                startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -1889,6 +1886,11 @@ let executeCommand
                     // record. Any daemon that never wrote one reads as `NotRecorded`
                     // — and is restarted.
                     DaemonIdentity.recordCurrent repoRoot
+
+                    // Likewise the identity of the configuration THIS process parsed:
+                    // whoever launched it, and whatever the file says by now, a CLI
+                    // must compare against what is actually running.
+                    File.WriteAllText(Path.Combine(stateDir, "config.hash"), loadedConfigIdentity)
 
                     // The pidfile is released on EVERY way out of this block — a clean
                     // stop, a refused watcher start, an unexpected exception — and the
@@ -2400,8 +2402,7 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
-[<EntryPoint>]
-let main args =
+let private runCli (args: string array) : int =
     let argList = args |> Array.toList
 
     // Bare `--help` / `-h` / `help` (no subcommand) prints global help with global flags.
@@ -2450,9 +2451,9 @@ let main args =
             | RunCommand(globals, command) ->
                 let opts = applyGlobalFlags globals
 
-                let config =
+                let config, configSource =
                     try
-                        loadConfig repoRoot
+                        loadConfigWithSource repoRoot
                     with ConfigError msg ->
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
@@ -2491,7 +2492,8 @@ let main args =
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
-                executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+                let loadedIdentity = configContentHash configSource
+                executeCommand loadedIdentity createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.
@@ -2506,3 +2508,10 @@ let main args =
                 forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
+
+[<EntryPoint>]
+let main args =
+    // The detached-launch helper is a copy of this CLI; it must never reach parsing.
+    match DetachedLaunch.tryRun args with
+    | Some exitCode -> exitCode
+    | None -> runCli args

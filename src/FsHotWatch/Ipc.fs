@@ -523,8 +523,50 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
-    /// Accept a single connection, handle it, and clean up when done.
-    let private acceptOne (pipeName: string) (target: DaemonRpcTarget) (ct: CancellationToken) : Async<unit> =
+    /// How long a stopping server lets its open connections finish before closing them.
+    /// A connection normally ends the moment its client has read the reply — including
+    /// the reply to `Shutdown` itself — but under load that takes far longer than it
+    /// looks: half a second lost that reply in a parallel test run. Only a client that
+    /// holds a connection open without a call in flight ever reaches this bound.
+    let ConnectionDrainBound = TimeSpan.FromSeconds 5.0
+
+    /// How long a stopped server waits for its name to stop accepting connections.
+    let ReleaseBound = TimeSpan.FromSeconds 1.0
+
+    /// Whether anything accepts a connection on `pipeName` at this instant: one attempt,
+    /// no retry. Only a listening socket can accept, even with nobody left to serve it.
+    let internal acceptsConnection (pipeName: string) : bool =
+        use probe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)
+
+        try
+            probe.Connect 0
+            true
+        with _ ->
+            false
+
+    /// Poll `accepts` until it is false or `bound` has passed; true when it went false.
+    let internal waitUntilRefused (accepts: unit -> bool) (bound: TimeSpan) : Async<bool> =
+        async {
+            let clock = Diagnostics.Stopwatch.StartNew()
+            let mutable accepting = accepts ()
+
+            while accepting && clock.Elapsed < bound do
+                do! Async.Sleep 1
+                accepting <- accepts ()
+
+            return not accepting
+        }
+
+    /// Accept a single connection, handle it, and clean up when done. Until its
+    /// teardown has finished — the pipe disposed, not merely the RPC completed — the
+    /// connection stays in `connections`, keyed to that teardown, so shutdown can wait
+    /// for it or close it.
+    let private acceptOne
+        (pipeName: string)
+        (target: DaemonRpcTarget)
+        (connections: Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>)
+        (ct: CancellationToken)
+        : Async<unit> =
         async {
             let pipeServer =
                 new NamedPipeServerStream(
@@ -543,9 +585,14 @@ module IpcServer =
                 let rpc = new JsonRpc(handler, target)
                 rpc.StartListening()
 
-                rpc.Completion.ContinueWith(fun _ ->
-                    rpc.Dispose()
-                    pipeServer.Dispose())
+                let teardown =
+                    rpc.Completion.ContinueWith(fun (_: Task) ->
+                        rpc.Dispose()
+                        pipeServer.Dispose())
+
+                connections[pipeServer] <- teardown
+
+                teardown.ContinueWith(fun (_: Task) -> connections.TryRemove pipeServer |> ignore)
                 |> ignore
             with
             | :? OperationCanceledException ->
@@ -560,12 +607,18 @@ module IpcServer =
         }
 
     /// Start the IPC server. Keeps multiple accept tasks running concurrently
-    /// so clients don't have to wait for the accept loop to cycle.
+    /// so clients don't have to wait for the accept loop to cycle. On shutdown,
+    /// connections still open after `drainBound` are closed.
     ///
     /// Owns the `OperationWatchdog.Watchdog` (see `DaemonRpcTarget`): a background
     /// timer logs the structured "operation exceeded Ns" record plus a periodic
     /// heartbeat. Disposed when the server loop exits (daemon shutdown).
-    let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
+    let internal startWithin
+        (drainBound: TimeSpan)
+        (pipeName: string)
+        (config: DaemonRpcConfig)
+        (cts: CancellationTokenSource)
+        : Async<unit> =
         async {
             use watchdog =
                 new OperationWatchdog.Watchdog(
@@ -577,11 +630,14 @@ module IpcServer =
 
             let target = DaemonRpcTarget(config, watchdog)
 
+            let connections =
+                Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>(HashIdentity.Reference)
+
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []
 
             let startAccept () =
-                Async.StartAsTask(acceptOne pipeName target cts.Token) :> Task
+                Async.StartAsTask(acceptOne pipeName target connections cts.Token) :> Task
 
             acceptTasks <- [ startAccept (); startAccept (); startAccept () ]
 
@@ -599,13 +655,16 @@ module IpcServer =
                         Logging.error "ipc" $"IPC accept task faulted: %s{completed.Exception.ToString()}"
                         do! Task.Delay(1000, cts.Token) |> Async.AwaitTask
 
-                    acceptTasks <-
-                        acceptTasks
-                        |> List.map (fun t ->
-                            if Object.ReferenceEquals(t, completed) then
-                                startAccept ()
-                            else
-                                t)
+                    // Never replace an acceptor once shutdown has begun: a replacement
+                    // would only open a new pipe server for shutdown to wait out.
+                    if not cts.Token.IsCancellationRequested then
+                        acceptTasks <-
+                            acceptTasks
+                            |> List.map (fun t ->
+                                if Object.ReferenceEquals(t, completed) then
+                                    startAccept ()
+                                else
+                                    t)
                 with
                 | :? OperationCanceledException ->
                     // Normal shutdown signal — the while condition exits the loop.
@@ -614,7 +673,47 @@ module IpcServer =
                     // A real server-loop fault. Log and keep serving: killing the
                     // daemon's IPC over one bad cycle is worse than a logged retry.
                     Logging.error "ipc" $"IPC accept loop error: %s{ex.ToString()}"
+
+            // Return only once nothing holds this pipe name. On Unix every server
+            // stream — a connected one included — keeps the shared listening socket
+            // open until it is disposed, so a CLI probing just after this returned
+            // would otherwise connect to a daemon that has stopped.
+            //
+            // Acceptors first: each waits on the same cancelled token, so this is
+            // prompt, and once they are done no connection can be added.
+            try
+                do! Task.WhenAll(acceptTasks |> List.toArray) |> Async.AwaitTask
+            with ex ->
+                Logging.warn "ipc" $"IPC acceptor failed during shutdown: %s{ex.Message}"
+
+            let open' = connections.ToArray()
+
+            let teardowns =
+                Task.WhenAll(open' |> Array.map (fun connection -> connection.Value))
+
+            let! first = Task.WhenAny(teardowns, Task.Delay drainBound) |> Async.AwaitTask
+
+            // Disposing the pipe ends its RPC too, whose own teardown then finds both
+            // already disposed.
+            if not (Object.ReferenceEquals(first, teardowns)) then
+                for connection in open' do
+                    connection.Key.Dispose()
+
+            // Disposal is not yet release: a cancelled accept still holds the listening
+            // socket, and the runtime closes it moments later (measured: about 1 ms, in
+            // roughly half of shutdowns). Only a refused connection proves it is gone.
+            let! released = waitUntilRefused (fun () -> acceptsConnection pipeName) ReleaseBound
+
+            if not released then
+                Logging.warn
+                    "ipc"
+                    $"IPC pipe %s{pipeName} still accepts connections %g{ReleaseBound.TotalSeconds}s after shutdown — another server may own it"
         }
+
+    /// Start the IPC server; see `startWithin`. When this returns, the pipe name no
+    /// longer accepts connections (or `ReleaseBound` has passed, logged).
+    let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
+        startWithin ConnectionDrainBound pipeName config cts
 
 /// IPC client that connects to the daemon's named pipe and calls methods via StreamJsonRpc.
 module IpcClient =

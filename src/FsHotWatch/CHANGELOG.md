@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fixed: when `IpcServer.start` returned, its pipe name could still accept connections for
+  a moment, so a client probing just after a daemon stopped found a daemon that was not
+  there (measured: most of 25 consecutive shutdowns). The server no longer replaces an
+  acceptor once shutdown has begun, waits for its acceptors, lets open connections finish
+  for up to `IpcServer.ConnectionDrainBound` before closing them, and then waits up to
+  `IpcServer.ReleaseBound` until a connection to the name is refused — disposing a pipe
+  does not release its listening socket at once.
+- Fixed: a `Shutdown` RPC ran the daemon's whole teardown inline on the RPC handler's
+  thread (the cancellation continuation was synchronous), so its reply waited on the
+  teardown. `RunWithIpc` now continues asynchronously and waits for the IPC server
+  without blocking a thread.
+
 - breaking: the daemon now serves its project model to clients.
   `DaemonRpcConfig` gains the required `GetProjectModel: unit -> ProjectModel.Observation`,
   and the `GetDiagnostics` reply carries it as `projectModel` — the versioned
