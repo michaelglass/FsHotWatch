@@ -81,6 +81,17 @@ module CachePathIdentity =
             else
                 Path.GetFullPath(path, root)
 
+        // A directory named with a trailing separator (`analyzers/bin/`, the way
+        // `.fshw.json` paths are commonly written) is the same directory without it.
+        // Left in, the separator survives GetRelativePath as an empty last segment,
+        // the portable grammar rejects it, and the identity silently falls back to the
+        // ABSOLUTE path — a workspace-specific key wearing a repo-relative label.
+        let absolute =
+            let trimmed =
+                absolute.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+
+            if String.IsNullOrEmpty trimmed then absolute else trimmed
+
         let relative = Path.GetRelativePath(root, absolute) |> normalizeNativeSeparators
 
         if isPortableRelative relative then

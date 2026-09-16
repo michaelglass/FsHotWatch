@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `CachePathIdentity.ofPath` names a directory the same with or
+  without a trailing separator. `.fshw.json` analyzer paths are written
+  `…/bin/Debug/net10.0/`; the separator survived as an empty last segment, the
+  portable grammar rejected it, and the analyzers cache key's `analyzer-paths` slot
+  silently fell back to the ABSOLUTE path — so no second checkout could hit it even
+  once the assemblies were identified by their receipt.
+
 - the box-wide task-cache store is now actually shared between the
   checkouts of one repository. `RepoIdentity.namespaceOf` named the store directory
   `<checkout name>-<digest>`, so every jj workspace had a private directory (65 of

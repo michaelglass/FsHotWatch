@@ -903,10 +903,14 @@ open FsHotWatch.Tests.AnalyzerFixtures
 /// The analyzers key one checkout computes for `file` with the house rules loaded
 /// from that checkout's own build output.
 let private analyzersKeyOf (root: string) (dll: string) (file: string) =
+    // The path as `.fshw.json` writes it — ABSOLUTE after the daemon resolves it, and
+    // with the trailing separator the config carries. The separator is what made the
+    // `analyzer-paths` slot fall back to a workspace-specific absolute key while this
+    // test, built without one, stayed green.
     let handler =
         FsHotWatch.Analyzers.AnalyzersPlugin.create
             (Some root)
-            [ Path.GetDirectoryName dll ]
+            [ Path.GetDirectoryName dll + string Path.DirectorySeparatorChar ]
             None
             ErrorLedger.DiagnosticSeverity.Hint
 
