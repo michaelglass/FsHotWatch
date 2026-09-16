@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.48 - 2026-09-16
+
 - a check no longer loses the executed evidence an earlier read of the
   same check retained when a later same-tree read is quiet. `TestRunEvidence.reconcile`
   (shared by `check` and `--run-once`) classifies every reading as `Executed`,
