@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.38 - 2026-09-16
+
 - a file that no longer exists is GONE, not a file that failed
   analysis. `FileFreshness.EntryPresence` (`Present | Gone`, via `resolvePresence`) is
   resolved wherever the plugin reads or writes a per-file record: `FileFreshness.load`

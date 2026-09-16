@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.25 - 2026-09-16
+
 - **BREAKING:** `FantomasTool.editorConfigInputs` moved to core as
   `FsHotWatch.CacheInputs.editorConfigInputs` (same behaviour, same labels), shared with the
   analyzers cache key. The format-check key is unchanged.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.33 - 2026-09-16
+
 - the per-file cache key names two inputs that decide the verdict and
   were missing, so changing either can no longer replay an old result.
   `fail-on-severity`: entries are stored after promotion, so a Hint was a pass under one
