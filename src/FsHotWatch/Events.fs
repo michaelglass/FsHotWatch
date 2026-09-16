@@ -2,22 +2,63 @@
 module FsHotWatch.Events
 
 open System.IO
+open System.Threading
 open FSharp.Compiler.CodeAnalysis
 
+/// The process working directory was deleted while the process still stood in it, so a
+/// relative path has nothing to resolve against. Names the directory the process was last
+/// seen in — the cause — rather than surfacing as a missing file at every call site.
+type WorkingDirectoryMissingException(lastKnownDirectory: string option, inner: exn) =
+    inherit
+        DirectoryNotFoundException(
+            (match lastKnownDirectory with
+             | Some dir -> $"The process working directory '{dir}' no longer exists"
+             | None -> "The process working directory no longer exists (it was never read successfully)")
+            + "; relative paths cannot be resolved until the process is restarted in a directory that exists.",
+            inner
+        )
+
+    /// The working directory as last read successfully by this process, if it ever was.
+    member _.LastKnownDirectory = lastKnownDirectory
+
+/// Resolves paths to absolute form without letting a vanished working directory hide.
+module private AbsolutePath =
+    let mutable private lastKnownWorkingDirectory: string option = None
+
+    let private workingDirectory () =
+        try
+            let dir = Directory.GetCurrentDirectory()
+            Volatile.Write(&lastKnownWorkingDirectory, Some dir)
+            dir
+        with :? FileNotFoundException as ex ->
+            raise (WorkingDirectoryMissingException(Volatile.Read(&lastKnownWorkingDirectory), ex))
+
+    /// A fully qualified path is only normalized and never consults the working directory;
+    /// a relative one resolves against it.
+    let resolve (path: string) =
+        if Path.IsPathFullyQualified path then
+            Path.GetFullPath path
+        else
+            Path.GetFullPath(path, workingDirectory ())
+
 /// Absolute file path — normalized at construction time via Path.GetFullPath.
+/// Raises WorkingDirectoryMissingException for a relative path once the working directory is gone.
 [<Struct>]
 type AbsFilePath = private AbsFilePath of string
 
 module AbsFilePath =
-    let create (path: string) = AbsFilePath(Path.GetFullPath(path))
+    let create (path: string) = AbsFilePath(AbsolutePath.resolve path)
     let value (AbsFilePath p) = p
 
 /// Absolute project path (.fsproj) — normalized at construction time via Path.GetFullPath.
+/// Raises WorkingDirectoryMissingException for a relative path once the working directory is gone.
 [<Struct>]
 type AbsProjectPath = private AbsProjectPath of string
 
 module AbsProjectPath =
-    let create (path: string) = AbsProjectPath(Path.GetFullPath(path))
+    let create (path: string) =
+        AbsProjectPath(AbsolutePath.resolve path)
+
     let value (AbsProjectPath p) = p
 
 /// Opaque content hash — wraps raw hash strings to prevent mixing with other strings.

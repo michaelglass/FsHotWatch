@@ -22,6 +22,11 @@
   `model-unavailable` outcome beside an available one; `Verdict.read` applies the same rule
   and reads a v1 file, or a v2 file without a readable `projectModel`, as unreadable.
 
+## 0.14.0-alpha.52 - 2026-09-16
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.51 - 2026-09-16
 
 - Adopts CommandTree 0.11.0 (from 0.8.1). A mistyped `fshw` command whose name is close

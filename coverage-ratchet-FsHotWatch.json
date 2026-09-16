@@ -285,6 +285,12 @@
         "branch": 87,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
+      },
+      {
+        "line": 100,
+        "branch": 87,
+        "reason": "(2026-09-16): the working-directory guard in AbsolutePath added 4 branches. Measured on macOS before this floor: 8 branches; the never-read message arm is now pinned by a direct test, leaving 7/8 (87.5 percent). The one uncovered arm is the rethrow when getcwd fails with something other than ENOENT (FileNotFoundException): it cannot be provoked in-process, and catching everything instead would report a permissions failure as a deleted directory. Floor is the observed value rounded down.",
+        "platform": "macos"
       }
     ],
     "FantomasTool.fs": [

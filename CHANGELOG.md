@@ -210,6 +210,22 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: a deleted working directory is named once, not reported as 130 missing files
+
+`AbsFilePath.create` and `AbsProjectPath.create` resolved relative input against the
+process working directory through `Path.GetFullPath`. When that directory was deleted
+under a running process (a bulk `bin`/`obj` reclaim removed the test host's own output
+directory), every call site threw a bare `FileNotFoundException: Unable to find the
+specified file.` from `Interop.Sys.GetCwd` — which reads as a missing source file, and
+cascaded into 131 unrelated test failures that took hours to attribute.
+
+Relative input now raises `WorkingDirectoryMissingException`, whose message names the
+directory the process was last seen in: "The process working directory '<dir>' no
+longer exists". It derives from `DirectoryNotFoundException`, so existing `IOException`
+handlers still catch it, and keeps the operating system's error as its inner exception.
+A fully qualified path never consults the working directory and keeps resolving while
+it is gone. No retry: a directory that is gone stays gone.
+
 ### test-prune: a superseded restore is named before the suite runs, not after a route dies
 
 A reused workspace could build green and then die with `FileNotFoundException: Could not
