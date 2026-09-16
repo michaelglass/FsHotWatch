@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.51 - 2026-09-16
+
 - Adopts CommandTree 0.11.0 (from 0.8.1). A mistyped `fshw` command whose name is close
   to a real one is now refused with one `Did you mean '...'?` line. A bad typed
   positional value is reported naming the argument and the accepted values. A flag case
