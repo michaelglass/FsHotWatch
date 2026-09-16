@@ -23,7 +23,7 @@ let private repoRoot () =
 // selects the CTRF report flag by runner family, which is what lets the gate drive
 // an xunit.v3 4.0.0 runner; the xunit-3-only flag made a 4.0.0 host exit 5 and
 // report zero tests rather than fail.
-[<InlineData("0.14.0-alpha.49")>]
+[<InlineData("0.14.0-alpha.50")>]
 let ``FsHotWatch gate uses the reviewed released pin`` (expectedReleasedVersion: string) =
     let root = repoRoot ()
 
