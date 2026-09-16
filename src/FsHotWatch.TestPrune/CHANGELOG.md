@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.36 - 2026-09-16
+
 - a zero-test completion on an unchanged tree no longer replaces an
   earned test-evidence receipt with an unbound one. The `TestsFinished` handler folds a
   typed `ReceiptTransition` (`Earned` / `Noop` / `Revoked`) into the receipt store
