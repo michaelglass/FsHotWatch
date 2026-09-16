@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.37 - 2026-09-16
+
 - the impact filter `fshw check` builds now quotes each affected class
   name before substituting it into `filterTemplate`, so a class whose name contains
   spaces (a backticked sentence-style test module, e.g.
