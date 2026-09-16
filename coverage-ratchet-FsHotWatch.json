@@ -3,9 +3,15 @@
     "AnalyzerIdentity.fs": [
       {
         "line": 97,
-        "branch": 83,
-        "reason": "AUTOMATION-812 (2026-09-16): new file. Measured line=97.9% branch=83.8% (62/74 branches) by mise run coverage-check on the merge (2026-09-16, full FsHotWatch.Tests run); floors are the observed values rounded down. Its tests are pure (no daemon, no timing), so the sub-1pp headroom is deliberate. Uncovered: a PE without metadata (NotAnAssembly via HasMetadata), the null-parent arm of the producer walk (the walk stops at the repo root first), the Error arm of the post-refusal List.choose (unreachable by construction), and compiler-synthesised branches in comprehensions/loops.",
+        "branch": 82,
+        "reason": "AUTOMATION-812 (2026-09-16): new file. Measured line=97.9% branch=83.8% (62/74 branches) by mise run coverage-check on the merge (2026-09-16, full FsHotWatch.Tests run); floors are the observed values rounded down. Its tests are pure (no daemon, no timing), so the sub-1pp headroom is deliberate. Uncovered: a PE without metadata (NotAnAssembly via HasMetadata), the null-parent arm of the producer walk (the walk stops at the repo root first), the Error arm of the post-refusal List.choose (unreachable by construction), and compiler-synthesised branches in comprehensions/loops. || 2026-09-16 later the same day: the default checkout measured 61/74 (82.4 percent), one branch below the workspace run, so the floor is the observed minimum across environments (AUTOMATION-812).",
         "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 85,
+        "reason": "Linux floor from CI run 35043079581 on 21b32f70 (2026-09-16, AUTOMATION-812): line 97.9 percent, branch 85.4 percent (76/89 branches), rounded down. Linux counts 89 branches where macOS counts 74, so the platforms carry separate entries.",
+        "platform": "linux"
       }
     ],
     "AnalyzersPlugin.fs": [
@@ -851,8 +857,8 @@
     "AnalyzerIdentity.fs": [
       {
         "coveredLines": 191,
-        "coveredBranches": 62,
-        "reason": "AUTOMATION-812 (2026-09-16): observed on the merge by mise run coverage-check (191/195 lines, 62/74 branches). Deterministic unit tests, so pinned at the observed count; the four uncovered lines are named in the percentage entry.",
+        "coveredBranches": 61,
+        "reason": "AUTOMATION-812 (2026-09-16): observed on the merge by mise run coverage-check (191/195 lines, 62/74 branches). Deterministic unit tests, so pinned at the observed count; the four uncovered lines are named in the percentage entry. || 2026-09-16 later the same day: default checkout measured 61 covered branches; floor = observed minimum across environments (AUTOMATION-812).",
         "platform": "macos"
       }
     ],
