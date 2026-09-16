@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.35 - 2026-09-16
+
+- A deleted working directory is named once, not reported as a missing file at every call site
+
+
 ## 0.10.0-alpha.34 - 2026-09-16
 
 - new `FsHotWatch.CacheInputs` module for cache-key inputs that live
