@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>fshw</ToolCommandName>
         <PackageId>FsHotWatch.Cli</PackageId>
-        <Version>0.14.0-alpha.50</Version>
+        <Version>0.14.0-alpha.51</Version>
         <Authors>Michael Glass</Authors>
         <Description>CLI for FsHotWatch — F# file watcher daemon</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -73,7 +73,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
-        <PackageReference Include="CommandTree" Version="0.8.1" />
+        <PackageReference Include="CommandTree" Version="0.11.0" />
         <PackageReference Include="TestPrune.Falco" Version="3.1.4" />
         <PackageReference Include="TestPrune.Sql" Version="0.1.0" />
         <PackageReference Include="TestPrune.SqlHydra" Version="0.1.0" />
