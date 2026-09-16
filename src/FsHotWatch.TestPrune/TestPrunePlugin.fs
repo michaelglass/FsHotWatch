@@ -2267,6 +2267,110 @@ let internal scopeOf (projects: string list) (coverage: RunCoverage) : ScopeRepo
     else
         ScopeFiltered(Set.count covered, total)
 
+/// What ONE completed run does to the stored `EvidenceReceipt`.
+///
+/// The store used to have a single replace arm: every completion that was not the
+/// exact AlreadyVerified no-op wrote a fresh receipt, and a zero-test completion on an
+/// unchanged tree whose launch happened to be UNBOUND (`ReceiptInputTree.read` returned
+/// `None` — a skipped entry, an unreadable file, the aborted-launch path) replaced an
+/// earned, servable receipt with one that can never match any tree. The evidence the
+/// earlier attempt had produced was gone, and `test-scope` then served no run id at all.
+///
+/// A transition names what the run establishes, and the fold below is total over it:
+/// there is no arm that constructs a receipt from a run that verified nothing, so
+/// "replaced by an unbound receipt" is unrepresentable rather than guarded against.
+[<RequireQualifiedAccess>]
+type ReceiptTransition =
+    /// Executed at least one project to a verdict, `Outcome = Normal`, and the input
+    /// tree it launched against is the tree read at completion. The only case that
+    /// constructs a receipt.
+    | Earned of TestEvidenceReceipt
+    /// A quiet completion that adds nothing and takes nothing away: the selector chose
+    /// zero tests because the change was already verified, the run covered nothing and
+    /// produced no results, and the tree the previous receipt was earned on is the tree
+    /// read now. ALSO the full-to-narrower case: a narrower executed run on a tree the
+    /// previous receipt already covers in FULL says nothing the receipt does not.
+    ///
+    /// Deliberately blind to the outstanding-failure ledger: failures are the LEDGER's
+    /// claim (they keep the plugin red on their own), and a retained receipt cannot
+    /// mask them — `IpcOutputTests` proves retained coverage under a red plugin exits 1.
+    | Noop
+    /// The stored receipt no longer describes the tree, or this run could not stand
+    /// behind one: aborted, launched unbound, the tree moved between launch and
+    /// completion, or zero tests ran for a reason that is not "already verified".
+    | Revoked of reason: string
+
+module ReceiptTransition =
+    let private allResultsCompleted (completed: TestRunCompleted) =
+        completed.Results
+        |> Map.forall (fun _ result ->
+            match result with
+            | TestsPassed _
+            | TestsFailed _
+            | TestsNoMatch _ -> true
+            | _ -> false)
+
+    /// Classify a completion. `previous` is consulted ONLY to decide whether a quiet
+    /// completion is a `Noop` (it must have something to keep, on the same tree) —
+    /// never to construct a receipt.
+    let classify
+        (runnableProjects: string list)
+        (previous: TestEvidenceReceipt option)
+        (currentInputTree: string option)
+        (launch: TestRunLaunch)
+        (completed: TestRunCompleted)
+        (coverage: RunCoverage)
+        : ReceiptTransition =
+        let previousBoundToCurrentTree =
+            match previous with
+            | Some prior -> ReceiptInputTree.matches prior.InputTreeHash currentInputTree
+            | None -> false
+
+        let executed =
+            completed.Results
+            |> Map.exists (fun _ result -> TestResult.executedTests result)
+
+        let quietAlreadyVerified =
+            launch.ZeroSelection = ZeroSelection.AlreadyVerified
+            && Map.isEmpty coverage
+            && Map.isEmpty completed.Results
+
+        match completed.Outcome with
+        | Aborted reason -> ReceiptTransition.Revoked $"the run aborted: %s{reason}"
+        | Normal when quietAlreadyVerified ->
+            if previousBoundToCurrentTree then
+                ReceiptTransition.Noop
+            else
+                ReceiptTransition.Revoked "already verified, but no receipt is bound to the current tree"
+        | Normal when not executed -> ReceiptTransition.Revoked "the run executed no project to a verdict"
+        | Normal when not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) ->
+            ReceiptTransition.Revoked "the input tree was unbound at launch or moved before completion"
+        | Normal ->
+            let narrowerThanPrevious =
+                previousBoundToCurrentTree
+                && allResultsCompleted completed
+                && (previous
+                    |> Option.exists (fun prior -> RunCoverage.coversWholeSuite runnableProjects prior.Coverage))
+                && not (RunCoverage.coversWholeSuite runnableProjects coverage)
+
+            if narrowerThanPrevious then
+                ReceiptTransition.Noop
+            else
+                ReceiptTransition.Earned
+                    { InputTreeHash = currentInputTree
+                      RunId = completed.RunId
+                      Coverage = coverage
+                      Seeds = launch.Seeds
+                      ZeroSelection = launch.ZeroSelection }
+
+    /// Fold one transition into the store. Total, and the only place the store changes
+    /// on a completion.
+    let apply (previous: TestEvidenceReceipt option) (transition: ReceiptTransition) : TestEvidenceReceipt option =
+        match transition with
+        | ReceiptTransition.Earned receipt -> Some receipt
+        | ReceiptTransition.Noop -> previous
+        | ReceiptTransition.Revoked _ -> None
+
 /// The launch selection `executeTests` will actually honour, from the per-project class
 /// map. ONE derivation, so the run's real selection and the one projects
 /// through cannot read the same map differently.
@@ -6326,8 +6430,17 @@ let internal createWithLaunchDeadline
                         // pathological flush can carry thousands of seeds, and a
                         // reply that grows without bound to serve a diagnostic line
                         // is a new failure mode in the path that earns verdicts.
+                        //
+                        // A zero-test completion no longer writes a
+                        // receipt (`ReceiptTransition`), so the seeds and the zero
+                        // reason it used to carry are read from the state the same
+                        // completion wrote: `LastSeeds` is the change that last
+                        // selected tests, `LastZeroSelection` why this one selected
+                        // none. A retained receipt still speaks for itself.
                         let evidenceSeeds =
-                            receipt |> Option.map (fun receipt -> receipt.Seeds) |> Option.defaultValue []
+                            receipt
+                            |> Option.map (fun receipt -> receipt.Seeds)
+                            |> Option.defaultValue state.LastSeeds
 
                         let seeds = evidenceSeeds |> List.truncate 8 |> List.toArray
                         let seedCount = List.length evidenceSeeds
@@ -6404,7 +6517,7 @@ let internal createWithLaunchDeadline
                                 let zero =
                                     receipt
                                     |> Option.map (fun receipt -> receipt.ZeroSelection)
-                                    |> Option.defaultValue ZeroSelection.NotAZero
+                                    |> Option.defaultValue state.LastZeroSelection
 
                                 return
                                     JsonSerializer.Serialize(
@@ -7393,48 +7506,32 @@ let internal createWithLaunchDeadline
 
                     let currentInputTree = ReceiptInputTree.read repoRoot
 
-                    let candidateReceipt =
-                        { InputTreeHash =
-                            if ReceiptInputTree.matches launch.InputTreeHash currentInputTree then
-                                currentInputTree
-                            else
-                                None
-                          RunId = completed.RunId
-                          Coverage = coverage
-                          Seeds = launch.Seeds
-                          ZeroSelection = launch.ZeroSelection }
+                    // A typed transition, not a candidate-then-guard: see
+                    // `ReceiptTransition`. `Noop` keeps whatever was earned, `Revoked`
+                    // clears it, and only `Earned` can write.
+                    let receiptTransition =
+                        ReceiptTransition.classify
+                            (Set.toList runnableProjects)
+                            state.EvidenceReceipt
+                            currentInputTree
+                            launch
+                            completed
+                            coverage
+
+                    match receiptTransition with
+                    | ReceiptTransition.Revoked reason -> ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
+                    | ReceiptTransition.Earned _
+                    | ReceiptTransition.Noop -> ()
 
                     let evidenceReceipt =
-                        match state.EvidenceReceipt with
-                        | Some previous when
-                            ReceiptInputTree.matches previous.InputTreeHash currentInputTree
-                            && ReceiptInputTree.matches candidateReceipt.InputTreeHash currentInputTree
-                            && completed.Outcome = Normal
-                            && ((launch.ZeroSelection = ZeroSelection.AlreadyVerified
-                                 && Map.isEmpty coverage
-                                 && Map.isEmpty completed.Results
-                                 && outstandingFailures.IsEmpty)
-                                || (RunCoverage.coversWholeSuite (Set.toList runnableProjects) previous.Coverage
-                                    && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) coverage)
-                                    && (completed.Results
-                                        |> Map.exists (fun _ result -> TestResult.executedTests result))
-                                    && (completed.Results
-                                        |> Map.forall (fun _ result ->
-                                            match result with
-                                            | TestsPassed _
-                                            | TestsFailed _
-                                            | TestsNoMatch _ -> true
-                                            | _ -> false))))
-                            ->
-                            previous
-                        | _ -> candidateReceipt
+                        ReceiptTransition.apply state.EvidenceReceipt receiptTransition
 
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
-                            EvidenceReceipt = Some evidenceReceipt
+                            EvidenceReceipt = evidenceReceipt
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.

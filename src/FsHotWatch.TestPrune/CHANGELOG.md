@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- a zero-test completion on an unchanged tree no longer replaces an
+  earned test-evidence receipt with an unbound one. The `TestsFinished` handler folds a
+  typed `ReceiptTransition` (`Earned` / `Noop` / `Revoked`) into the receipt store
+  instead of writing a candidate receipt through a guard: only a run that executed a
+  project on a bound tree constructs a receipt, an `already-verified` completion on the
+  tree the receipt was earned on keeps it (whatever the outstanding-failure ledger
+  says — the ledger keeps the plugin red on its own), and an aborted, unbound or
+  tree-moved completion revokes it. `test-scope` keeps serving the earned run id and
+  scope through such a completion, and reads the zero reason and seeds a quiet
+  completion used to carry from the state it wrote (`LastZeroSelection`, `LastSeeds`).
+
 ## 0.13.0-alpha.35 - 2026-09-16
 
 - Adopt TestPrune.Core 8.2.0: signature-file declarations are indexed as their

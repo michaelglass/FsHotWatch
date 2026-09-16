@@ -74,7 +74,7 @@ let ``positive bounded filtered project counts are retainable executed evidence`
     test <@ effective = executedA @>
 
     match retained with
-    | Some evidence -> test <@ evidence.Report = executedA @>
+    | Some evidence -> test <@ QualifyingEvidence.report evidence = executedA @>
     | None -> failwith "valid filtered evidence was not retained"
 
 [<Theory>]
@@ -104,17 +104,15 @@ let ``already-verified on a changed tree cannot reuse executed evidence`` () =
 
 [<Theory>]
 [<InlineData("changes-uncovered")>]
-[<InlineData("unstated")>]
 [<InlineData("unknown-reason")>]
 [<InlineData("unreadable")>]
-let ``only already-verified can reuse prior evidence`` (kind: string) =
+let ``a disqualifying same-tree read drops prior evidence`` (kind: string) =
     let tree = evidenceTree "sha256:same"
     let _, retained = TestRunEvidence.reconcile tree executedA None
 
     let scope =
         match kind with
         | "changes-uncovered" -> NoTestsRun(NoTestsReason.ChangesUncovered([ "M.f" ], 1, UnrunnableCoverage.none))
-        | "unstated" -> NoTestsRun NoTestsReason.Unstated
         | "unknown-reason" -> NoTestsRun(NoTestsReason.UnknownReason "future")
         | _ -> ScopeUnreadable "broken reply"
 
@@ -123,8 +121,103 @@ let ``only already-verified can reuse prior evidence`` (kind: string) =
     let effective, retainedAfterRefusal =
         TestRunEvidence.reconcile tree current retained
 
+    test <@ ReadKind.Disqualifying scope = TestRunEvidence.classify tree current retained @>
     test <@ effective = current @>
     test <@ retainedAfterRefusal = None @>
+
+// Until this ticket the theory above also listed `unstated`, and the
+// fold's wildcard arm dropped the evidence for it. A same-tree read that ran nothing and
+// gave no reason is a QUIET read, exactly as `already-verified` is: it neither adds to
+// nor contradicts what an earlier read of the same check executed on the same tree.
+[<Fact>]
+let ``same-tree unstated keeps prior executed evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+    let current = BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
+
+    test <@ TestRunEvidence.classify tree current retained = ReadKind.QuietSameTree retained.Value @>
+
+    let effective, retainedAfterQuiet = TestRunEvidence.reconcile tree current retained
+
+    test <@ effective = executedA @>
+    test <@ retainedAfterQuiet = retained @>
+
+[<Fact>]
+let ``unstated on a moved tree cannot reuse executed evidence`` () =
+    let _, retained = TestRunEvidence.reconcile (evidenceTree "sha256:a") executedA None
+    let current = BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
+
+    let effective, retainedAfterMove =
+        TestRunEvidence.reconcile (evidenceTree "sha256:b") current retained
+
+    test <@ effective = current @>
+    test <@ retainedAfterMove = None @>
+
+// `scope: "running"` is what a check reads while the daemon is mid-run.
+// It says nothing about what ran and nothing about the tree, so it is neither composed
+// nor allowed to wipe: the settled read that follows decides.
+[<Fact>]
+let ``an in-flight read neither composes nor wipes retained evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+    let running = BaselineFixtures.reportOf ScopeUnknown
+
+    test <@ TestRunEvidence.classify tree running retained = ReadKind.InFlight @>
+
+    let effective, retainedAfterRunning =
+        TestRunEvidence.reconcile tree running retained
+
+    test <@ effective = running @>
+    test <@ retainedAfterRunning = retained @>
+
+    // The quiet read that follows the run serves the evidence the in-flight read kept.
+    let afterSettle, _ =
+        TestRunEvidence.reconcile tree (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)) retained
+
+    test <@ afterSettle = executedA @>
+
+[<Fact>]
+let ``a quiet read with no retained evidence is disqualifying, not quiet`` () =
+    let tree = evidenceTree "sha256:same"
+    let current = BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
+    test <@ TestRunEvidence.classify tree current None = ReadKind.Disqualifying current.Scope @>
+    test <@ TestRunEvidence.reconcile tree current None = (current, None) @>
+
+// The arms the fold names that the driver reaches only on its bad
+// paths, pinned here so they are exercised as the pure functions they are.
+[<Fact>]
+let ``an executed read on a check that never settled qualifies nothing`` () =
+    test <@ TestRunEvidence.ofExecuted NeverSettled executedA = None @>
+    test <@ TestRunEvidence.classify NeverSettled executedA None = ReadKind.Disqualifying executedA.Scope @>
+    test <@ TestRunEvidence.reconcile NeverSettled executedA None = (executedA, None) @>
+
+[<Fact>]
+let ``a quiet read after the settled tree is lost cannot reuse retained evidence`` () =
+    let _, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:same") executedA None
+
+    let quiet = BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+    test <@ TestRunEvidence.classify NeverSettled quiet retained = ReadKind.Disqualifying quiet.Scope @>
+    test <@ TestRunEvidence.reconcile NeverSettled quiet retained = (quiet, None) @>
+
+[<Fact>]
+let ``a later filtered run on a moved tree replaces full-suite evidence from the old tree`` () =
+    // The full-beats-filtered rule holds only on the SAME tree: `--run-once` re-captures
+    // the settled tree after a forced run, and evidence keyed to the old one is no
+    // longer a claim about this one.
+    let _, retainedFull =
+        TestRunEvidence.reconcile (evidenceTree "sha256:a") executedB None
+
+    let effective, retainedAfterMove =
+        TestRunEvidence.reconcile (evidenceTree "sha256:b") executedA retainedFull
+
+    test <@ effective = executedA @>
+
+    match retainedAfterMove with
+    | Some evidence ->
+        test <@ QualifyingEvidence.report evidence = executedA @>
+        test <@ QualifyingEvidence.treeHash evidence = "sha256:b" @>
+    | None -> failwith "the executed read on the new tree must be retained"
 
 [<Fact>]
 let ``a later executed report wholly replaces the prior report`` () =
@@ -134,7 +227,7 @@ let ``a later executed report wholly replaces the prior report`` () =
     test <@ effective = executedB @>
 
     match retainedB with
-    | Some evidence -> test <@ evidence.Report = executedB @>
+    | Some evidence -> test <@ QualifyingEvidence.report evidence = executedB @>
     | None -> failwith "the later executed report must itself be retained"
 
 [<Fact>]
@@ -159,7 +252,7 @@ let ``a later full-suite run upgrades same-tree filtered evidence`` () =
     test <@ effective = executedB @>
 
     match retainedFull with
-    | Some evidence -> test <@ evidence.Report = executedB @>
+    | Some evidence -> test <@ QualifyingEvidence.report evidence = executedB @>
     | None -> failwith "full-suite evidence must replace filtered evidence"
 
 [<Fact>]
@@ -2054,11 +2147,84 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
         | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
         | _ -> ())
 
+// The losing sequence from the ticket, end to end through the real
+// `observeTestRun` fold: an impact-filtered run executed on this tree, then the daemon's
+// later reads say nothing new — `no tests ran (the daemon did not say why)`, or a
+// mid-run `running` followed by `already-verified`. Before the fix each of those reads
+// wiped the executed evidence, and the verdict graded a run of nothing: exit 3 over a
+// tree this same check had just tested.
 [<Theory(Timeout = 15000)>]
-[<InlineData(false)>]
-[<InlineData(true)>]
-let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declaredInput: bool) =
+[<InlineData("unstated")>]
+[<InlineData("running-then-already-verified")>]
+let ``daemon command keeps executed evidence through quiet same-tree re-reads`` (sequence: string) =
+    TestHelpers.withTempDir "quiet-rereads" (fun repoRoot ->
+        let runId = executedA.RunId.Value
+        writeEvidenceSuite repoRoot runId
+        let mutable errorReads = 0
+        let mutable scopeReads = 0
+
+        // Two converge re-scans, so there are two re-reads after the executed one.
+        let getErrors () =
+            errorReads <- errorReads + 1
+
+            match errorReads with
+            | 1 -> """{"count":0,"files":{},"statuses":{},"unchecked":2}"""
+            | 2 -> """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
+            | _ -> """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+        // Read 1 is the baseline, read 2 the settled executed run; the
+        // rest are the convergence re-reads this test is about.
+        let getTestRun () =
+            scopeReads <- scopeReads + 1
+
+            match sequence, scopeReads with
+            | _, 1
+            | _, 2 -> executedA
+            | "unstated", _ -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
+            | _, 3 -> BaselineFixtures.reportOf ScopeUnknown
+            | _ -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                getErrors
+                getTestRun
+                (fun () -> IpcParsing.ReachUnavailable "not used")
+                ignore
+                (fun () -> "idle")
+
+        test <@ scopeReads = 4 @>
+        test <@ exitCode = 0 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId = Some runId @>
+            test <@ verdict.Scope = executedA.Scope @>
+            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
+        | other -> failwithf "expected a published command verdict, got %A" other)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false, "already-verified")>]
+[<InlineData(true, "already-verified")>]
+[<InlineData(false, "unstated")>]
+[<InlineData(true, "unstated")>]
+let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declaredInput: bool, quietRead: string) =
     TestHelpers.withTempDir "exact-tree-convergence" (fun repoRoot ->
+        // A same-tree quiet read of either reason keeps evidence; a moved tree refuses
+        // BOTH. `unstated` is the reason that used to be dropped everywhere.
+        let quietReason =
+            match quietRead with
+            | "unstated" -> NoTestsReason.Unstated
+            | _ -> NoTestsReason.AlreadyVerified
+
         let source = System.IO.Path.Combine(repoRoot, "src", "Candidate.fs")
 
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName source)
@@ -2096,7 +2262,7 @@ let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declar
             elif scopeReads = 2 then
                 executedA
             else
-                BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+                BaselineFixtures.reportOf (NoTestsRun quietReason)
 
         let rescan () =
             rescans <- rescans + 1
@@ -2133,5 +2299,5 @@ let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declar
         match Verdict.read repoRoot with
         | Verdict.Reading.Found verdict ->
             test <@ verdict.RunId <> Some runId @>
-            test <@ verdict.Scope = NoTestsRun NoTestsReason.AlreadyVerified @>
+            test <@ verdict.Scope = NoTestsRun quietReason @>
         | other -> failwithf "expected an explicit non-evidence verdict, got %A" other)

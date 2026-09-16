@@ -1177,15 +1177,47 @@ let ``converge: a zero-test final read ends the loop, discarding the progress ea
     let outcome =
         converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) (ImpactFiltered(1, 5)))
 
-    // TODAY: the zero-test read is terminal, so convergence returns it and the
-    // earlier attempts contribute nothing. `converge` carries no candidate result
-    // between attempts — only `prevMagnitude`, an int — so there is nothing for a
-    // later read to be weighed against.
+    // `converge` is NOT where the evidence lives, and the fix left it alone: it carries
+    // no candidate result between attempts — only `prevMagnitude`, an int — so fed
+    // scopes directly it still returns the zero-test read. The store that keeps the
+    // earlier attempt's run is `IpcOutput.TestRunEvidence` (the fold `observeTestRun`
+    // puts every read through before `converge` sees it); the sibling below feeds
+    // this same sequence through it.
     test <@ outcome = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
 
     // It got there by making progress first, which is what makes this the ticket's
     // sequence rather than a run that simply never tested anything.
     test <@ scans.Value = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``the evidence store keeps the earlier attempt's executed run through the zero-test read converge ends on`` () =
+    // The ticket's sequence through the fold `observeTestRun` applies to every read
+    // BEFORE it reaches `converge`: the executed attempt is retained on the settled
+    // tree, and the zero-test read that ends the loop is graded from it.
+    let tree =
+        FsHotWatch.Cli.IpcOutput.VerifiedTree
+            { FsHotWatch.TreeHash.Hash = "sha256:same"
+              FileCount = 1
+              SkippedCount = 0
+              DeclaredCount = 0
+              AbsentDeclarationCount = 0 }
+
+    let executed =
+        { BaselineFixtures.reportOf (ImpactFiltered(2, 5)) with
+            RunId = Some(Guid.Parse "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") }
+
+    let _, retained =
+        FsHotWatch.Cli.IpcOutput.TestRunEvidence.reconcile tree executed None
+
+    let graded, _ =
+        FsHotWatch.Cli.IpcOutput.TestRunEvidence.reconcile
+            tree
+            (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified))
+            retained
+
+    test <@ graded.RunId = executed.RunId @>
+    test <@ graded.Scope = ImpactFiltered(2, 5) @>
+    test <@ verdict InnerLoop (inputs false Complete graded.Scope) = CheckOutcome.Clean BaselineFixtures.baseline @>
 
 [<Fact(Timeout = 15000)>]
 let ``converge: a clean read wins immediately, so clean-then-zero-test is NOT the losing sequence`` () =

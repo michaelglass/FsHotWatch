@@ -1617,16 +1617,20 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
 
 [<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
+    let root = isolatedRoot ()
+
     let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+        create ":memory:" root (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
 
     let fullRun =
-        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+        testsFinishedEvent
+            [ "ProjA", passed false; "ProjB", passed false ]
+            (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree root)
 
     let narrowRun =
         testsFinishedEvent
             [ "ProjA", impactSkipped; "ProjB", passed true ]
-            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree root)
 
     let mutable claims = [ LocalSlotBusy; SharedClaimed ]
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
@@ -1698,8 +1702,10 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
+    let root = isolatedRoot ()
+
     let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA" ]) None None None None []
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
 
     let seedsA = [ "Lib.A.changed" ]
     let seedsB = [ "Lib.B.changed" ]
@@ -1707,6 +1713,7 @@ let ``a run receipt keeps its launch seeds when a later cohort flushes while it 
     let launch =
         { fullSuiteLaunch [ "ProjA" ] with
             Seeds = seedsA }
+        |> bindReceiptTree root
 
     let run = testsFinishedEvent [ "ProjA", passed false ] launch
 
@@ -1727,29 +1734,50 @@ let ``a run receipt keeps its launch seeds when a later cohort flushes while it 
     test <@ receipt.Seeds = seedsA @>
 
 [<Fact(Timeout = 20000)>]
-let ``a zero-selection receipt carries the previous seeds captured at launch`` () =
+let ``a zero-selection completion keeps the receipt whose seeds last selected tests`` () =
+    // A zero-selection completion writes NO receipt of its own: the
+    // seeds a `check` that selected nothing reports are the ones the RETAINED receipt
+    // was earned with — the change that last did select tests — not whatever cohort
+    // flushed while the quiet run was in flight.
+    let root = isolatedRoot ()
+
     let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA" ]) None None None None []
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
 
     let previousSeeds = [ "Lib.PreviouslyVerified.changed" ]
+
+    let earned =
+        testsFinishedEvent
+            [ "ProjA", passed false ]
+            ({ fullSuiteLaunch [ "ProjA" ] with
+                Seeds = previousSeeds }
+             |> bindReceiptTree root)
+
+    let earnedRunId =
+        match earned with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
 
     let zeroLaunch =
         { emptyLaunch with
             Seeds = previousSeeds
             ZeroSelection = ZeroSelection.AlreadyVerified }
+        |> bindReceiptTree root
 
     let run = testsFinishedEvent [] zeroLaunch
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let afterEarned = handler.Update ctx handler.Init earned |> Async.RunSynchronously
 
     let stateAtCompletion =
-        { handler.Init with
+        { afterEarned with
             LastSeeds = [ "Lib.Later.changed" ] }
 
-    let ctx, _, _ = makeTestPruneRecordingCtx ()
     let final = handler.Update ctx stateAtCompletion run |> Async.RunSynchronously
     let receipt = final.EvidenceReceipt.Value
 
+    test <@ receipt.RunId = earnedRunId @>
     test <@ receipt.Seeds = previousSeeds @>
-    test <@ receipt.ZeroSelection = ZeroSelection.AlreadyVerified @>
+    test <@ final.LastZeroSelection = ZeroSelection.AlreadyVerified @>
 
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow failure remains red while the earlier full-suite receipt is retained`` () =
@@ -2902,6 +2930,95 @@ let ``an aborted same-input run cannot reuse an earlier passing receipt`` () =
         | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
         | other -> Assert.Fail($"aborted run retained positive scope: {other}"))
 
+let private runIdOf (event: PluginEvent<TestPruneMsg>) =
+    match event with
+    | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+    | _ -> failwith "expected TestsFinished"
+
+/// The completion that reproduces the tracked issue: zero tests selected because the change
+/// was already verified, and a launch whose `InputTreeHash` is `None` — the receipt-tree
+/// read skipped or could not read an entry, so the launch never bound the tree it ran
+/// on. Before the fix this wrote an unbound receipt over the earned one.
+let private unboundQuietCompletion () =
+    let event =
+        { emptyLaunch with
+            ZeroSelection = ZeroSelection.AlreadyVerified }
+        |> testsFinishedEvent []
+
+    match event with
+    | Custom(TestsFinished(_, _, launch)) -> test <@ launch.InputTreeHash = None @>
+    | _ -> ()
+
+    event
+
+[<Fact(Timeout = 20000)>]
+let ``an unbound quiet completion on an unchanged tree keeps the earned receipt`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ran = partialReceiptRun repoRoot
+        let earnedRunId = runIdOf ran
+
+        // Positive control: the bound impacted pass alone IS served. If this fails the
+        // receipt was never earned and the ticket is about binding, not retention.
+        let _, _, _, afterRan = driveRuns handler [ ran ]
+        test <@ (receiptScope repoRoot handler afterRan).RunId = Some earnedRunId @>
+
+        let _, _, _, final = driveRuns handler [ ran; unboundQuietCompletion () ]
+        let report = receiptScope repoRoot handler final
+
+        test <@ report.RunId = Some earnedRunId @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>)
+
+[<Fact(Timeout = 20000)>]
+let ``an unbound quiet completion after a real edit serves no receipt`` () =
+    withReceiptSource (fun repoRoot source ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx, _, _ = makeTestPruneRecordingCtx ()
+        let ran = partialReceiptRun repoRoot
+        let earned = handler.Update ctx handler.Init ran |> Async.RunSynchronously
+        test <@ earned.EvidenceReceipt |> Option.map (fun receipt -> receipt.RunId) = Some(runIdOf ran) @>
+
+        File.AppendAllText(source, "let later = 2\n")
+
+        let final =
+            handler.Update ctx earned (unboundQuietCompletion ()) |> Async.RunSynchronously
+
+        test <@ final.EvidenceReceipt = None @>
+        let report = receiptScope repoRoot handler final
+        test <@ report.RunId = None @>
+
+        match report.Scope with
+        | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
+        | other -> Assert.Fail($"a moved tree served positive scope: {other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``a quiet completion keeps the receipt AND the ledger keeps the plugin red`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // Executed with a red: the receipt is earned (it records what ran, not whether it
+        // passed) and the ledger owes ProjA. The quiet completion must neither drop the
+        // receipt because the ledger is non-empty, nor let the receipt hide the red.
+        let ran =
+            testsFinishedEvent
+                [ "ProjA", failedProjA; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
+
+        let _, statuses, _, final = driveRuns handler [ ran; unboundQuietCompletion () ]
+
+        test <@ not final.OutstandingFailures.IsEmpty @>
+        test <@ final.EvidenceReceipt |> Option.map (fun receipt -> receipt.RunId) = Some(runIdOf ran) @>
+        test <@ (receiptScope repoRoot handler final).RunId = Some(runIdOf ran) @>
+
+        match lastStatus statuses with
+        | PluginStatus.Failed _ -> ()
+        | other -> Assert.Fail($"the ledger's red must survive a quiet completion, got %A{other}"))
+
 [<Theory(Timeout = 20000)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
@@ -3011,7 +3128,7 @@ let ``unavailable execution revokes a previously earned receipt`` (artifactsUnav
         let ctx, statuses, _ = makeTestPruneRecordingCtx ()
 
         let fullRun =
-            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ] |> bindReceiptTree root)
 
         let earned = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
         test <@ earned.EvidenceReceipt.IsSome @>
@@ -3047,7 +3164,7 @@ let ``new dependency debt is not retired by unavailable execution after a pass``
                         SharedClaimed }
 
         let fullRun =
-            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ] |> bindReceiptTree root)
 
         let earned = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
 

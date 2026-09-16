@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- a check no longer loses the executed evidence an earlier read of the
+  same check retained when a later same-tree read is quiet. `TestRunEvidence.reconcile`
+  (shared by `check` and `--run-once`) classifies every reading as `Executed`,
+  `QuietSameTree`, `InFlight` or `Disqualifying` before folding it: a same-tree
+  `no tests ran (the daemon did not say why)` read and a mid-run `running` read now keep
+  the retained run instead of wiping it (exit 3 over a tree the check had just tested),
+  while changes-uncovered, unreadable-scope and moved-tree reads still clear it and a
+  check with no executed evidence still exits 3. Retained evidence is a
+  `QualifyingEvidence` value constructible only from a report with a run id and an
+  executed scope.
+
 - a fresh workspace of a repository that builds its own analyzers now
   hits the shared per-file analyzer cache instead of re-analyzing every file: the
   analyzer set is identified by what it was compiled from, not by DLL bytes that

@@ -773,12 +773,51 @@ let internal priorVerdictToPreserve
         | Verdict.PriorConfirmation.MustEarn -> None
     | _ -> None
 
-type internal RetainedTestRun =
-    { Report: TestRunReport
-      TreeHash: string }
+/// Executed test evidence, keyed to the tree it was earned on.
+///
+/// The representation is PRIVATE: the only constructor is `TestRunEvidence.ofExecuted`,
+/// which refuses a report with no run id or with a scope that executed nothing. So a
+/// value of this type IS the claim "a run with this id executed this scope on this
+/// tree" — a retained store of it cannot hold an unbound placeholder, and the fold
+/// over it has no arm that could write one.
+type internal QualifyingEvidence =
+    private
+        { Report: TestRunReport
+          TreeHash: string }
+
+module internal QualifyingEvidence =
+    let report (evidence: QualifyingEvidence) : TestRunReport = evidence.Report
+    let treeHash (evidence: QualifyingEvidence) : string = evidence.TreeHash
+
+    let internal coversFullSuite (evidence: QualifyingEvidence) =
+        match evidence.Report.Scope with
+        | FullSuite _ -> true
+        | _ -> false
+
+/// What ONE reading of the daemon's `test-scope` says about the
+/// evidence a check has retained so far. Classified BEFORE it is folded, so the fold
+/// is total over four named cases instead of a wildcard that wipes.
+[<RequireQualifiedAccess>]
+type internal ReadKind =
+    /// A run id and a non-empty executed scope on the settled tree. Replaces what is
+    /// retained — except that a filtered run cannot downgrade same-tree full-suite
+    /// evidence (`reconcile`).
+    | Executed of QualifyingEvidence
+    /// A quiet read on the tree the retained evidence was earned on: the daemon ran
+    /// nothing because the change was already verified, or reported no scope and no
+    /// run at all. Neither adds nor takes away; the retained evidence stands.
+    | QuietSameTree of retained: QualifyingEvidence
+    /// A read that disqualifies whatever was retained: the daemon says the changes are
+    /// uncovered, the scope could not be read, the tree moved, or the check never
+    /// settled. `current` is reported and the store is cleared.
+    | Disqualifying of TestScope
+    /// A mid-run read (`scope: "running"`). It says nothing about what ran and nothing
+    /// about the tree, so it neither composes nor wipes: `current` is reported, the
+    /// store is kept for the settled read that follows.
+    | InFlight
 
 module internal TestRunEvidence =
-    let private executed (report: TestRunReport) =
+    let private executedScope (report: TestRunReport) =
         match report.RunId, report.Scope with
         | None, _ -> false
         | Some _, FullSuite _ -> true
@@ -786,6 +825,34 @@ module internal TestRunEvidence =
         | Some _, NoTestsRun _
         | Some _, ScopeUnknown
         | Some _, ScopeUnreadable _ -> false
+
+    /// The ONLY constructor of `QualifyingEvidence`: a run id AND an executed scope,
+    /// on a tree the check has verified.
+    let ofExecuted (settledTree: SettledTree) (report: TestRunReport) : QualifyingEvidence option =
+        match settledTree with
+        | VerifiedTree tree when executedScope report ->
+            Some
+                { Report = report
+                  TreeHash = tree.Hash }
+        | VerifiedTree _
+        | NeverSettled -> None
+
+    let private sameTree (settledTree: SettledTree) (evidence: QualifyingEvidence) =
+        match settledTree with
+        | VerifiedTree tree -> String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal)
+        | NeverSettled -> false
+
+    let classify (settledTree: SettledTree) (current: TestRunReport) (retained: QualifyingEvidence option) : ReadKind =
+        match ofExecuted settledTree current with
+        | Some evidence -> ReadKind.Executed evidence
+        | None ->
+            match current.Scope, current.RunId, retained with
+            | ScopeUnknown, _, _ -> ReadKind.InFlight
+            | NoTestsRun(NoTestsReason.AlreadyVerified | NoTestsReason.Unstated), None, Some evidence when
+                sameTree settledTree evidence
+                ->
+                ReadKind.QuietSameTree evidence
+            | scope, _, _ -> ReadKind.Disqualifying scope
 
     /// The runs THIS CHECK is accountable for, folded from one reading
     /// of the daemon.
@@ -819,38 +886,32 @@ module internal TestRunEvidence =
 
         soFar @ newlyRun |> List.distinct
 
+    /// Fold one reading into the retained store. Returns the report the verdict is
+    /// graded from and the store as it stands after the read.
+    ///
+    /// Before this, the fold ended in `| _ -> current, None`: a same-tree
+    /// `NoTestsRun Unstated`, a mid-run `ScopeUnknown` read, or any read the arms above
+    /// it did not name, wiped the executed evidence an earlier read of the same check
+    /// had retained — and the verdict then graded a run that executed nothing (exit 3)
+    /// over a tree this very check had tested. Now only `Disqualifying` clears.
     let reconcile
         (settledTree: SettledTree)
         (current: TestRunReport)
-        (retained: RetainedTestRun option)
-        : TestRunReport * RetainedTestRun option =
-        match settledTree, current.Scope with
-        | VerifiedTree tree, ImpactFiltered _ ->
+        (retained: QualifyingEvidence option)
+        : TestRunReport * QualifyingEvidence option =
+        match classify settledTree current retained with
+        | ReadKind.Executed evidence ->
             match retained with
-            | Some evidence when
-                String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal)
-                && (match evidence.Report.Scope with
-                    | FullSuite _ -> true
-                    | _ -> false)
+            | Some prior when
+                sameTree settledTree prior
+                && QualifyingEvidence.coversFullSuite prior
+                && not (QualifyingEvidence.coversFullSuite evidence)
                 ->
-                evidence.Report, retained
-            | _ when executed current ->
-                current,
-                Some
-                    { Report = current
-                      TreeHash = tree.Hash }
-            | _ -> current, None
-        | VerifiedTree tree, _ when executed current ->
-            current,
-            Some
-                { Report = current
-                  TreeHash = tree.Hash }
-        | VerifiedTree tree, NoTestsRun NoTestsReason.AlreadyVerified ->
-            match retained with
-            | Some evidence when String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal) ->
-                evidence.Report, retained
-            | _ -> current, None
-        | _ -> current, None
+                prior.Report, retained
+            | _ -> evidence.Report, Some evidence
+        | ReadKind.QuietSameTree evidence -> evidence.Report, retained
+        | ReadKind.InFlight -> current, retained
+        | ReadKind.Disqualifying _ -> current, None
 
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
 /// (stdout not a TTY) — print the steering block that names it. The file and the exit
@@ -1296,7 +1357,7 @@ let pollAndRenderForInvocation
     let finalRun =
         ref (TestRunReport.ofScopeOnly (ScopeUnreadable "the check aborted before the test scope could be read"))
 
-    let retainedTestRun: RetainedTestRun option ref = ref None
+    let retainedTestRun: QualifyingEvidence option ref = ref None
 
     // What the daemon had ALREADY completed before this check began.
     // Read HERE, before the scan provokes anything, because it is the only moment at

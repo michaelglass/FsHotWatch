@@ -326,7 +326,7 @@ let private runOnceAndVerdictIn
         // which is how a verdict ends up describing a run that isn't the one it graded.
         let finalStatuses = ref (snapshotHost daemon.Host statuses)
         let finalRun = ref (TestRunReport.ofScopeOnly ScopeUnknown)
-        let retainedTestRun: IpcOutput.RetainedTestRun option ref = ref None
+        let retainedTestRun: IpcOutput.QualifyingEvidence option ref = ref None
 
         // Every run this check has provoked, oldest first. The baseline
         // is KNOWN-EMPTY and needs no read: `createDaemon` above made this host for this
