@@ -52,6 +52,22 @@ let private tryReadPointer (path: string) =
     with _ ->
         None
 
+/// Resolve a pointer file's target against the directory the pointer lives in, the
+/// way the tool that wrote it will read it back. jj writes a RELATIVE `.jj/repo`
+/// pointer (`../../../.jj/repo`) and git may write a relative `gitdir:`; hashing the
+/// pointer TEXT gave every same-depth workspace one identity and the default checkout
+/// another, so no workspace ever shared a namespace with the checkout that seeded it.
+let private resolvePointer (pointerFile: string) (pointer: string) =
+    let target = pointer.Replace('\\', '/').TrimEnd('/')
+
+    let resolved =
+        try
+            Path.GetFullPath(Path.Combine(Path.GetDirectoryName pointerFile, target))
+        with _ ->
+            target
+
+    resolved.Replace('\\', '/').TrimEnd('/')
+
 /// Identify the repository `repoRoot` is a checkout of.
 let describe (repoRoot: string) : RepoIdentitySource =
     let root =
@@ -64,19 +80,21 @@ let describe (repoRoot: string) : RepoIdentitySource =
     let gitPath = Path.Combine(root, ".git")
 
     if Directory.Exists jjRepo then
-        RepoIdentitySource.Jujutsu jjRepo
+        RepoIdentitySource.Jujutsu(jjRepo.Replace('\\', '/').TrimEnd('/'))
     else
         match tryReadPointer jjRepo with
-        // A secondary jj workspace stores the absolute path of the shared repo
-        // directory. Every workspace of the repository stores the SAME path.
-        | Some pointer -> RepoIdentitySource.Jujutsu(pointer.Replace('\\', '/').TrimEnd('/'))
+        // A secondary jj workspace stores where the shared repo directory is. Every
+        // workspace of the repository resolves to the SAME directory.
+        | Some pointer -> RepoIdentitySource.Jujutsu(resolvePointer jjRepo pointer)
         | None ->
             if Directory.Exists gitPath then
                 RepoIdentitySource.Git(canonicalGitDir gitPath)
             else
                 match tryReadPointer gitPath with
                 | Some pointer when pointer.StartsWith("gitdir:", StringComparison.Ordinal) ->
-                    RepoIdentitySource.Git(canonicalGitDir (pointer.Substring("gitdir:".Length).Trim()))
+                    RepoIdentitySource.Git(
+                        canonicalGitDir (resolvePointer gitPath (pointer.Substring("gitdir:".Length).Trim()))
+                    )
                 | _ -> RepoIdentitySource.CheckoutPath root
 
 /// The string an identity is hashed from. Tagged by kind so a `.git` directory and a
@@ -87,9 +105,23 @@ let internal identitySource (source: RepoIdentitySource) =
     | RepoIdentitySource.Git gitDir -> "git:" + gitDir
     | RepoIdentitySource.CheckoutPath root -> "path:" + root
 
-/// A filesystem-safe namespace for `repoRoot`'s repository: the checkout's directory
+/// The repository's own directory name, read off the identity: the directory that
+/// holds `.jj` or `.git`, or the checkout itself when nothing was recognised. The
+/// same for every checkout of one repository, unlike the checkout's own name.
+/// `GetDirectoryName`/`GetFileName` never throw: on a path with nothing above it
+/// they return null, which `namespaceOf` treats as "no usable name".
+let private repositoryName (source: RepoIdentitySource) =
+    match source with
+    | RepoIdentitySource.Jujutsu repoDir -> Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName repoDir))
+    | RepoIdentitySource.Git gitDir -> Path.GetFileName(Path.GetDirectoryName gitDir)
+    | RepoIdentitySource.CheckoutPath root -> Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar))
+
+/// A filesystem-safe namespace for `repoRoot`'s repository: the REPOSITORY's directory
 /// name (so a human can tell the directories apart) plus a digest of the identity
-/// source (so telling them apart is not left to the name).
+/// source (so telling them apart is not left to the name). Both halves come from the
+/// identity, never from the checkout: this string IS the shared store's directory, so
+/// anything checkout-specific in it would give every workspace a private store — which
+/// is what the checkout's own name did.
 let namespaceOf (repoRoot: string) : string =
     let source = describe repoRoot
 
@@ -97,11 +129,7 @@ let namespaceOf (repoRoot: string) : string =
         (FsHotWatch.CheckCache.sha256Hex (identitySource source)).Substring(0, 16)
 
     let label =
-        let name =
-            try
-                Path.GetFileName(Path.GetFullPath(repoRoot).TrimEnd(Path.DirectorySeparatorChar))
-            with _ ->
-                ""
+        let name = repositoryName source
 
         // A name is a convenience for whoever lists the cache directory, never part of
         // the identity — so anything that is not plainly safe is simply dropped.

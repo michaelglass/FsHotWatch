@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- the box-wide task-cache store is now actually shared between the
+  checkouts of one repository. `RepoIdentity.namespaceOf` named the store directory
+  `<checkout name>-<digest>`, so every jj workspace had a private directory (65 of
+  them for one repository on one box), and `describe` hashed the TEXT of jj's
+  relative `.jj/repo` pointer, so workspaces and the default checkout did not even
+  agree on the digest. Pointers are now resolved against the directory they live in
+  and the label is the repository's own directory name; the tests assert the
+  directory, not just the digest. Existing per-checkout directories are orphaned,
+  not deleted; the repository-level directory warms once.
+
 ## 0.10.0-alpha.31 - 2026-09-15
 
 - Fix: a scan can no longer read an in-flight rediscovery as an empty project model

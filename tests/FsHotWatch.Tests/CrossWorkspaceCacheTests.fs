@@ -377,24 +377,74 @@ let ``the routed cache sends each plugin's entries to exactly one store`` () =
 // Repository identity — the namespace the shared store is partitioned by
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
-let ``two jj workspaces of one repository share a cache namespace`` () =
+/// A jj repository at `root/main` and a secondary workspace at `root/.workspaces/ws`,
+/// laid out as `jj workspace add` lays them out: the workspace's `.jj/repo` is a FILE
+/// holding a pointer at the shared repo directory.
+let private withJjWorkspace (pointer: string -> string -> string) (body: string -> string -> unit) =
     withTempDir "jj" (fun root ->
         let main = Path.Combine(root, "main")
-        let secondary = Path.Combine(root, "ws")
+        let secondary = Path.Combine(root, "main", ".workspaces", "ws")
         let sharedRepoDir = Path.Combine(main, ".jj", "repo")
         Directory.CreateDirectory(sharedRepoDir) |> ignore
         Directory.CreateDirectory(Path.Combine(secondary, ".jj")) |> ignore
-        // What `jj workspace add` writes: a pointer at the shared repo directory.
-        File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), sharedRepoDir)
+        File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), pointer sharedRepoDir secondary)
+        body main secondary)
 
-        test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Jujutsu sharedRepoDir @>
+[<Fact(Timeout = 15000)>]
+let ``a jj workspace with the RELATIVE pointer jj writes shares the main checkout's store directory`` () =
+    // What `jj workspace add` actually writes: a path relative to the `.jj` directory
+    // the pointer lives in. Hashing the pointer text gave every same-depth workspace
+    // one identity and the main checkout another; the DIRECTORY must be equal.
+    withJjWorkspace (fun _ _ -> Path.Combine("..", "..", "..", ".jj", "repo")) (fun main secondary ->
+        test <@ RepoIdentity.describe secondary = RepoIdentity.describe main @>
+        test <@ RepoIdentity.namespaceOf secondary = RepoIdentity.namespaceOf main @>)
 
-        // The namespace's identity half must agree even though the labels differ.
-        let digestOf (dir: string) =
-            (RepoIdentity.namespaceOf dir).Split('-') |> Array.last
+[<Fact(Timeout = 15000)>]
+let ``a jj workspace with an ABSOLUTE pointer shares the main checkout's store directory`` () =
+    withJjWorkspace (fun sharedRepoDir _ -> sharedRepoDir) (fun main secondary ->
+        test <@ RepoIdentity.describe secondary = RepoIdentity.describe main @>
+        test <@ RepoIdentity.namespaceOf secondary = RepoIdentity.namespaceOf main @>)
 
-        test <@ digestOf main = digestOf secondary @>)
+[<Fact(Timeout = 15000)>]
+let ``the store directory is named after the repository, not the checkout`` () =
+    // The label is the REPOSITORY's directory name (`main` here), read off the
+    // identity, so it is the same string in every checkout; the checkout's own name
+    // (`ws`) was the label, which gave every workspace a private
+    // store while the comment above it promised sharing.
+    withJjWorkspace (fun _ _ -> Path.Combine("..", "..", "..", ".jj", "repo")) (fun main secondary ->
+        test <@ (RepoIdentity.namespaceOf secondary).StartsWith "main-" @>
+        test <@ (RepoIdentity.namespaceOf main).StartsWith "main-" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a corrupt workspace pointer still yields an identity and a namespace instead of crashing daemon start`` () =
+    // A pointer that cannot be made a path (a null character): `Path.GetFullPath`
+    // throws, the raw text stands in as the identity, and the namespace takes the
+    // awkward-name form. A private, stable namespace — never an exception on the
+    // daemon's startup path.
+    withJjWorkspace (fun _ _ -> "../../\000/.jj/repo") (fun _ secondary ->
+        match RepoIdentity.describe secondary with
+        | RepoIdentity.RepoIdentitySource.Jujutsu repoDir -> test <@ repoDir.Length > 0 @>
+        | other -> failwith $"expected a Jujutsu identity from the pointer, got %A{other}"
+
+        test <@ (RepoIdentity.namespaceOf secondary).StartsWith "repo-" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``this checkout's identity resolves to a directory that exists`` () =
+    // Through the real code path, on the real checkout the tests run in: whatever the
+    // pointer said, the identity is an absolute directory that is there — and when this
+    // is a secondary jj workspace, the same store directory the main checkout uses.
+    let root = RepoTasks.repoRoot ()
+
+    match RepoIdentity.describe root with
+    | RepoIdentity.RepoIdentitySource.Jujutsu repoDir ->
+        test <@ Directory.Exists repoDir @>
+        test <@ Path.IsPathRooted repoDir @>
+        let main = Path.GetDirectoryName(Path.GetDirectoryName repoDir)
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf root @>
+    | RepoIdentity.RepoIdentitySource.Git gitDir ->
+        test <@ Directory.Exists gitDir @>
+        test <@ Path.IsPathRooted gitDir @>
+    | RepoIdentity.RepoIdentitySource.CheckoutPath _ -> ()
 
 [<Fact(Timeout = 15000)>]
 let ``two unrelated checkouts never share a cache namespace`` () =
@@ -702,10 +752,7 @@ let ``a colocated git checkout and its worktrees share an identity`` () =
         test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Git gitDir @>
         test <@ RepoIdentity.describe worktree = RepoIdentity.RepoIdentitySource.Git gitDir @>
 
-        let digestOf (dir: string) =
-            (RepoIdentity.namespaceOf dir).Split('-') |> Array.last
-
-        test <@ digestOf main = digestOf worktree @>)
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf worktree @>)
 
 [<Fact(Timeout = 15000)>]
 let ``the identity source is tagged by kind so two kinds cannot collide`` () =
@@ -722,7 +769,7 @@ let ``the identity source is tagged by kind so two kinds cannot collide`` () =
 [<Fact(Timeout = 15000)>]
 let ``a checkout whose directory name is not filesystem-plain still gets a namespace`` () =
     // The name is a convenience for whoever lists the cache directory; the DIGEST is
-    // the identity, so an awkward name is dropped rather than escaped.
+    // the identity, so an awkward repository name is dropped rather than escaped.
     let awkward =
         Path.Combine(Path.GetTempPath(), $"fshw awkward {Guid.NewGuid():N}")
         |> Path.GetFullPath
