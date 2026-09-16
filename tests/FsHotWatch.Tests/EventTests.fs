@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.EventTests
 
 open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -337,3 +338,85 @@ let ``PluginStatus.verifiedNothingNow is a Completed status, never a Failed one`
     match PluginStatus.verifiedNothingNow "no test executed" TimeSpan.Zero with
     | Completed(_, verdict) -> test <@ verdict.NothingVerified = Some "no test executed" @>
     | other -> failwithf "expected Completed, got %A" other
+
+// ---------------------------------------------------------------------------
+// A deleted process working directory.
+//
+// When the directory the process stands in is deleted, every relative path that needs it
+// fails. The failure must say so — naming the directory that vanished — instead of a bare
+// `FileNotFoundException` that looks like a missing source file. A rooted path never
+// needed the working directory, so it must keep working.
+//
+// Changes the process working directory, hence the LogGlobal serialized collection.
+// ---------------------------------------------------------------------------
+[<Collection(LogGlobalCollectionName)>]
+type DeletedWorkingDirectoryTests() =
+
+    /// Stands the process in a fresh directory, hands `body` that directory as the process
+    /// reports it (macOS resolves /var to /private/var) and a way to delete it, and restores
+    /// the original working directory whatever happens.
+    let inWorkingDirectory (body: string -> (unit -> unit) -> unit) =
+        let original = Directory.GetCurrentDirectory()
+        let dir = Path.Combine(Path.GetTempPath(), $"fshw-cwd-{Guid.NewGuid():N}")
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            Directory.SetCurrentDirectory dir
+            body (Directory.GetCurrentDirectory()) (fun () -> Directory.Delete dir)
+        finally
+            Directory.SetCurrentDirectory original
+
+            if Directory.Exists dir then
+                Directory.Delete dir
+
+    [<Fact(Timeout = 15000)>]
+    member _.``a relative path after the working directory is deleted fails naming that directory``() =
+        inWorkingDirectory (fun cwd deleteIt ->
+            // Control: while the directory exists, a relative path resolves inside it.
+            test <@ AbsFilePath.value (AbsFilePath.create "before.fs") = Path.Combine(cwd, "before.fs") @>
+
+            deleteIt ()
+
+            let fileEx =
+                Assert.Throws<WorkingDirectoryMissingException>(fun () -> AbsFilePath.create "after.fs" |> ignore)
+
+            let projectEx =
+                Assert.Throws<WorkingDirectoryMissingException>(fun () ->
+                    AbsProjectPath.create "after.fsproj" |> ignore)
+
+            test <@ fileEx.Message.Contains $"'{cwd}' no longer exists" @>
+            test <@ projectEx.Message.Contains $"'{cwd}' no longer exists" @>
+            test <@ fileEx.LastKnownDirectory = Some cwd @>
+            // Still an IOException, so existing `IOException` handlers keep catching it; the
+            // operating system's own failure is kept as the inner exception.
+            test <@ (box fileEx :? IOException) && (fileEx.InnerException :? FileNotFoundException) @>)
+
+    [<Fact(Timeout = 15000)>]
+    member _.``a working directory the process never read is still reported as gone, without inventing a name``() =
+        // Reachable when the first relative path a process resolves comes after the deletion.
+        let inner = FileNotFoundException "Unable to find the specified file."
+        let ex = WorkingDirectoryMissingException(None, inner)
+
+        test <@ ex.LastKnownDirectory = None @>
+
+        test
+            <@ ex.Message.StartsWith "The process working directory no longer exists (it was never read successfully)" @>
+
+        test <@ obj.ReferenceEquals(ex.InnerException, inner) @>
+
+    [<Fact(Timeout = 15000)>]
+    member _.``a rooted path still resolves while the working directory is gone``() =
+        inWorkingDirectory (fun cwd deleteIt ->
+            deleteIt ()
+
+            let root = Path.GetPathRoot cwd
+            let file = Path.Combine(root, "repo", "src", "Lib.fs")
+            let project = Path.Combine(root, "repo", "src", "Lib.fsproj")
+
+            test <@ AbsFilePath.value (AbsFilePath.create file) = file @>
+            test <@ AbsProjectPath.value (AbsProjectPath.create project) = project @>
+            // Normalization still happens without the working directory.
+            test
+                <@
+                    AbsFilePath.value (AbsFilePath.create (Path.Combine(root, "repo", "tests", "..", "src", "Lib.fs"))) = file
+                @>)

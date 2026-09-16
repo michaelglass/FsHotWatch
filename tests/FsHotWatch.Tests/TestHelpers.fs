@@ -551,7 +551,8 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
 // ----------------------------------------------------------------------------
 
 /// Name of the serialized collection grouping every test class touching PROCESS-GLOBAL
-/// state: the logging globals, `Console.Error`, and the process ENVIRONMENT (`withEnv`).
+/// state: the logging globals, `Console.Error`, the process ENVIRONMENT (`withEnv`), and the
+/// process WORKING DIRECTORY (every relative path in every parallel test resolves against it).
 ///
 /// The environment is the easiest of the three to miss: a class that mutates it and spawns
 /// a child which snapshots it races every other class doing the same, and the symptom is
