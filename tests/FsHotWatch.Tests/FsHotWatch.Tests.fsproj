@@ -99,6 +99,7 @@
     <Compile Include="CliTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />

@@ -87,9 +87,26 @@ the output directory.
 > ```
 >
 > FsHotWatch fails loud rather than quiet here: an `analyzers.paths` entry that
-> resolves to **0 analyzers** aborts startup with
-> `config error: Analyzer path(s) loaded 0 analyzers`. Silence is not treated as
-> success.
+> resolves to **0 analyzers** aborts startup (exit 2) with
+> `Analyzer path(s) loaded 0 analyzers`. Silence is not treated as success. The
+> message lists each such path with what is on disk: **MISSING** (not built yet —
+> the usual state of a fresh workspace, since analyzer outputs are build products),
+> **WRONG CONFIGURATION** (absent, but its `Debug`/`Release` twin exists), **EMPTY**
+> (no `.dll` files), or **NO ANALYZERS** (`.dll` files, none of which loaded one).
+>
+> A repository can name its own build command per path; it is printed verbatim
+> under that path when it loads nothing, and omitting it prints no hint:
+>
+> ```json
+> "analyzers": {
+>   "paths": ["analyzers/Rules/bin/Release/net10.0"],
+>   "bootstrapHints": {
+>     "analyzers/Rules/bin/Release/net10.0": "dotnet build analyzers/Rules -c Release"
+>   }
+> }
+> ```
+>
+> Each `bootstrapHints` key must be spelled exactly as in `paths`.
 
 ## House rules: repo-local analyzers
 

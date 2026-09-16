@@ -64,25 +64,25 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
 ///
 /// PER PATH, not just in aggregate: a `.fshw.json` with several analyzer paths where ONE
 /// points at a bin dir that doesn't exist in CI (built in the wrong configuration) or is
-/// empty loads 0 from that path yet would stay green because the OTHERS loaded. Both
-/// per-path failure modes collapse to a count of 0: the path didn't resolve, or it
-/// resolved but holds no analyzer DLLs.
+/// empty loads 0 from that path yet would stay green because the OTHERS loaded. Every
+/// per-path failure mode collapses to a count of 0; `AnalyzerPathDiagnosis` then reads
+/// the filesystem to say which one each path is.
 ///
-/// Input is the per-ORIGINAL-configured-path (absolute path, contributed count) list.
-/// Returns `Some message` naming each zero-loading path when any exists, `None`
-/// otherwise — unconfigured (empty list), or every path loaded ≥1.
-let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
+/// Input is the per-ORIGINAL-configured-path (absolute path, contributed count) list and
+/// the bootstrap hint for each absolute path. Returns `Some message` naming each
+/// zero-loading path with its classification when any exists, `None` otherwise —
+/// unconfigured (empty list), or every path loaded ≥1.
+let analyzerPathFailuresWith (hintFor: string -> string option) (loadedByPath: (string * int) list) : string option =
     let zeroPaths =
         loadedByPath |> List.filter (fun (_, count) -> count = 0) |> List.map fst
 
     match zeroPaths with
     | [] -> None
-    | paths ->
-        let joined = String.concat "; " paths
+    | paths -> Some(AnalyzerPathDiagnosis.render (AnalyzerPathDiagnosis.diagnose hintFor paths))
 
-        Some
-            $"Analyzer path(s) loaded 0 analyzers (missing/empty or built in the wrong configuration): \
-              %s{joined} — check .fshw.json analyzers.paths vs the build config"
+/// `analyzerPathFailuresWith` for a configuration that declares no bootstrap hints.
+let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
+    analyzerPathFailuresWith (fun _ -> None) loadedByPath
 
 
 /// Default global per-operation timeout (seconds) applied when neither a
@@ -185,7 +185,8 @@ type DaemonConfiguration =
         Cache: CacheBackendConfig
         Analyzers:
             {| Paths: string list
-               FailOnSeverity: DiagnosticSeverity |} option
+               FailOnSeverity: DiagnosticSeverity
+               BootstrapHints: Map<string, string> |} option
         Tests:
             {| BeforeRun: string list option
                Extensions: TestExtensionConfig list
@@ -421,12 +422,40 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         DiagnosticSeverity.Hint
                 | _ -> DiagnosticSeverity.Hint
 
+            let bootstrapHints =
+                match v.TryGetProperty("bootstrapHints") with
+                | true, hints when hints.ValueKind = JsonValueKind.Object ->
+                    hints.EnumerateObject()
+                    |> Seq.map (fun hint ->
+                        if not (List.contains hint.Name paths) then
+                            raise (
+                                ConfigError(
+                                    $"analyzers.bootstrapHints names '%s{hint.Name}', which is not an analyzers.paths entry \
+                                      — a hint for an unconfigured path could never be shown"
+                                )
+                            )
+
+                        match hint.Value.ValueKind with
+                        | JsonValueKind.String when not (String.IsNullOrWhiteSpace(hint.Value.GetString())) ->
+                            hint.Name, hint.Value.GetString()
+                        | _ ->
+                            raise (
+                                ConfigError(
+                                    $"analyzers.bootstrapHints['%s{hint.Name}'] must be a non-blank string command"
+                                )
+                            ))
+                    |> Map.ofSeq
+                | true, hints when hints.ValueKind = JsonValueKind.Null -> Map.empty
+                | true, _ -> raise (ConfigError "analyzers.bootstrapHints must be an object of path → command")
+                | _ -> Map.empty
+
             if paths.IsEmpty then
                 None
             else
                 Some
                     {| Paths = paths
-                       FailOnSeverity = failOnSeverity |}
+                       FailOnSeverity = failOnSeverity
+                       BootstrapHints = bootstrapHints |}
         | _ -> None
 
     let tests =
@@ -1516,13 +1545,19 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // Analyzers plugin
     match config.Analyzers with
     | Some a ->
-        let absolutePaths =
-            a.Paths
-            |> List.map (fun p ->
-                if Path.IsPathRooted(p) then
-                    p
-                else
-                    Path.GetFullPath(Path.Combine(repoRoot, p)))
+        let toAbsolute (p: string) =
+            if Path.IsPathRooted(p) then
+                p
+            else
+                Path.GetFullPath(Path.Combine(repoRoot, p))
+
+        let absolutePaths = a.Paths |> List.map toAbsolute
+
+        let hintByAbsolutePath =
+            a.BootstrapHints
+            |> Map.toList
+            |> List.map (fun (p, hint) -> toAbsolute p, hint)
+            |> Map.ofList
 
         let resolvedPaths =
             resolveExistingPathsWithRetry Directory.Exists System.Threading.Thread.Sleep absolutePaths
@@ -1556,7 +1591,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.map (fun p -> p, (Map.tryFind p countByResolvedPath |> Option.defaultValue 0))
 
         // Fail-loud — see `analyzerPathFailures`.
-        match analyzerPathFailures loadedByOriginalPath with
+        match analyzerPathFailuresWith (fun p -> Map.tryFind p hintByAbsolutePath) loadedByOriginalPath with
         | Some message -> raise (ConfigError message)
         | None ->
             // Every configured path loaded ≥1 here: we are inside `Some a`, so paths

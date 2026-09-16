@@ -810,7 +810,7 @@ let private ensureAndQueryErrors
     // the daemon was still cold-scanning timed out and poisoned the verdict as
     // exit 1 ("failures found") for an autonomous loop.
     if not (ensureDaemon ()) then
-        eprintfn "Failed to start daemon — the check could not run. See logs/daemon.log."
+        eprintfn "%s" (DaemonStartupFailure.describeLaunchFailure (DaemonStartupFailure.tryRead repoRoot))
         2
     else
         match waitReady () with
@@ -984,16 +984,26 @@ let startFreshDaemonWith
 
     fileOps.CreateDirectory logDir
     let logFile = Path.Combine(logDir, "daemon.log")
+    // A refusal recorded by an EARLIER launch must never be read back as this one's.
+    let startupFailure = DaemonStartupFailure.path repoRoot
+
+    if fileOps.FileExists startupFailure then
+        fileOps.DeleteFile startupFailure
+
     eprintfn "Starting daemon... (log: %s)" logFile
     ipc.LaunchDaemon repoRoot extraArgs logFile
     fileOps.CreateDirectory stateDir
     fileOps.WriteAllText (Path.Combine(stateDir, "config.hash")) currentHash
     let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
     let mutable isUp = ipc.IsRunning pipeName
+    // A daemon that recorded a refusal has exited: stop waiting for a pipe that will
+    // never come up, so the reason is printed now rather than after the timeout.
+    let mutable refused = fileOps.FileExists startupFailure
 
-    while not isUp && DateTime.UtcNow < deadline do
+    while not isUp && not refused && DateTime.UtcNow < deadline do
         Thread.Sleep(100)
         isUp <- ipc.IsRunning pipeName
+        refused <- fileOps.FileExists startupFailure
 
     isUp
 
@@ -1808,7 +1818,10 @@ let executeCommand
 
         let withDaemon (action: unit -> int) : int =
             if not (ensureDaemonFn ()) then
-                eprintfn "Failed to start daemon"
+                match DaemonStartupFailure.tryRead repoRoot with
+                | Some message -> eprintfn $"Failed to start daemon. The daemon refused to start:\n%s{message}"
+                | None -> eprintfn "Failed to start daemon"
+
                 1
             else
                 action ()
@@ -1885,6 +1898,9 @@ let executeCommand
                         try
                             let daemon = createDaemon repoRoot
                             registerPlugins daemon repoRoot config
+                            // Registered: any refusal a previous launch recorded no longer
+                            // describes this daemon.
+                            DaemonStartupFailure.clear repoRoot
                             let cts = new CancellationTokenSource()
 
                             Console.CancelKeyPress.Add(fun e ->
@@ -1906,7 +1922,8 @@ let executeCommand
 
                             eprintfn "Daemon stopped."
                             0
-                        with :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
+                        with
+                        | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
                             // case 2: macOS refused the native FSEvents
                             // stream on every attempt of the retry budget. Persistent, so
                             // fail closed — `Daemon.create` already disposed the partial
@@ -1916,6 +1933,16 @@ let executeCommand
                             eprintfn
                                 $"fshw: daemon not started — %s{ex.Message}. Nothing is left running (no watcher, no pidfile, no lock). Run `fshw start` again once fseventsd is healthy; if it keeps refusing, the repository is on a volume FSEvents cannot watch — move it to a local volume."
 
+                            2
+                        | ConfigError message ->
+                            // an expected, user-correctable refusal (e.g.
+                            // analyzers.paths that have not been built) — never an unhandled
+                            // exception with a stack trace. Exit 2, the fail-closed startup
+                            // code: nothing ran, so nothing may read as green. Recorded so the
+                            // CLI that launched this detached daemon can print the reason
+                            // itself instead of pointing at daemon.log.
+                            eprintfn $"fshw: daemon not started — config error:\n%s{message}"
+                            DaemonStartupFailure.record repoRoot message
                             2
                     finally
                         if File.Exists pidFile then

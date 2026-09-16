@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- a daemon whose `analyzers.paths` load no analyzers — most often a
+  freshly created workspace where the analyzer outputs have not been built — no longer
+  dies with an unhandled `ConfigError` and a stack trace. `fshw start` catches the
+  refusal, prints it and exits 2 (the fail-loud guard is unchanged: nothing is checked
+  without the declared analyzers). The message lists every path that contributed none,
+  each classified from the filesystem by `AnalyzerPathDiagnosis.AnalyzerPathProblem`:
+  `Missing`, `BuiltInOtherConfiguration` (its `Debug`/`Release` twin exists), `Empty`
+  (no `.dll`), or `NoAnalyzersInDlls` — replacing the single "missing/empty or built in
+  the wrong configuration" guess.
+- The refusal reaches the CLI that launched the detached daemon: the daemon records it in
+  `.fshw/startup-failure` and `check`/`confirm` print it after "Failed to start daemon"
+  instead of only pointing at `logs/daemon.log`, and stop waiting as soon as it is
+  recorded rather than sitting out the startup timeout. Every launch clears a record left
+  by an earlier one.
+- New optional `analyzers.bootstrapHints` in `.fshw.json`: configured path → the
+  repository's own build command, echoed verbatim under that path when it loads nothing.
+  Absent means no hint; a key that is not an `analyzers.paths` entry, or a non-string
+  value, is a config error.
+
 ## 0.14.0-alpha.49 - 2026-09-16
 
 - `test-rerun --filter-class` / `--filter-trait` quote their values with
