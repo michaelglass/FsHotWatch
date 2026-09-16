@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.33 - 2026-09-16
+
 - `ProcessHelper.quoteArg` / `ProcessHelper.splitArgs` — the one
   per-argument quoting rule for a child's `ProcessStartInfo.Arguments` string and its
   inverse. Every builder of a runner arg string (TestPrune's impact filter, the CLI's
