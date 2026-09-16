@@ -1,0 +1,20 @@
+files total=180; key pass over all files: first 1750 ms, second 1191 ms
+  tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj: 90 files, 2944 KiB
+  src/FsHotWatch/FsHotWatch.fsproj: 50 files, 793 KiB
+  src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj: 14 files, 694 KiB
+  tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj: 9 files, 190 KiB
+  src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj: 8 files, 573 KiB
+  src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj: 2 files, 57 KiB
+  src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj: 2 files, 33 KiB
+  src/FsHotWatch.Build/FsHotWatch.Build.fsproj: 2 files, 72 KiB
+  src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj: 1 files, 19 KiB
+  src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj: 1 files, 13 KiB
+  src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj: 1 files, 10 KiB
+== edits in src/FsHotWatch/FsHotWatch.fsproj
+first (#1 Logging.fs): project 50/50 (100%); all projects 180/180 (100%)
+middle (#26 RepoIdentity.fs): project 25/50 (50%); all projects 155/180 (86%)
+last (#50 Daemon.fs): project 1/50 (2%); all projects 131/180 (73%)
+== edits in tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj
+first (#1 TestHelpers.fs): project 90/90 (100%); all projects 99/180 (55%)
+middle (#46 TestPrunePendingVerificationTests.fs): project 45/90 (50%); all projects 45/180 (25%)
+last (#90 LoggingTests.fs): project 1/90 (1%); all projects 1/180 (1%)

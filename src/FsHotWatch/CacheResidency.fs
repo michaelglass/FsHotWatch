@@ -43,8 +43,9 @@ type Residency =
 ///
 /// • `analyzers` — keyed on the semantic identity of the analyzer assemblies (not merely
 ///   their paths), the failure threshold, every `.editorconfig`/`fsharplint.json`
-///   between the repository root and the file, the repo-relative path,
-///   the source and the FCS signature.
+///   between the repository root and the file, the repo-relative path, the source, the
+///   CONTENT of every source the file's check could read (earlier files in compile
+///   order and referenced F# projects) and the FCS signature.
 ///   Diagnostics only.
 ///
 /// Workspace-local:

@@ -9,6 +9,9 @@ module FsHotWatch.Tests.AnalyzerCacheKeyTests
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
+open FSharp.Compiler.Text
 open FsHotWatch
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
@@ -27,7 +30,8 @@ let private resultIn (root: string) =
     File.WriteAllText(file, "let x = 1\n")
 
     { fakeFileCheckResult file with
-        Source = "let x = 1\n" }
+        Source = "let x = 1\n"
+        ProjectOptions = fakeProjectOptions (Path.Combine(root, "src", "App.fsproj")) [ file ] }
 
 /// Write under `a`'s key in a store, then look it up under `b`'s — the framework's own
 /// hit-or-miss decision, not an inference from two hashes.
@@ -129,5 +133,88 @@ let ``identical analyzer config in a second checkout still hits`` () =
             test <@ keyA.IsSome && keyB.IsSome @>
 
             match lookupAcross a keyA.Value b keyB.Value "src/A.fs" with
+            | CacheHit _ -> ()
+            | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))
+
+// ---------------------------------------------------------------------------
+// dependency-closure: the sources this file's check read (real FCS)
+// ---------------------------------------------------------------------------
+
+/// Check `A.fsx`, which uses `B.T` from `B.fs`, with `B.fs` declaring `typeB`.
+let private checkScript (root: string) (typeB: string) =
+    let b = Path.Combine(root, "B.fs")
+    let a = Path.Combine(root, "A.fsx")
+    let sourceA = "#load \"B.fs\"\nlet describe (t: B.T) = string t\n"
+    File.WriteAllText(b, $"module B\n%s{typeB}\n")
+    File.WriteAllText(a, sourceA)
+
+    // A fresh checker with SDK references: the shared one resolves scripts against the
+    // .NET Framework and every check fails to find `string`.
+    let checker =
+        FSharpChecker.Create(keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript(a, SourceText.ofString sourceA, assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+
+    let parse, answer =
+        checker.ParseAndCheckFileInProject(a, 0, SourceText.ofString sourceA, options)
+        |> Async.RunSynchronously
+
+    let check =
+        match answer with
+        | FSharpCheckFileAnswer.Succeeded r -> r
+        | FSharpCheckFileAnswer.Aborted -> failwith "check aborted"
+
+    // What a typed analyzer asks (cf. MGA WildcardAnalyzer's TryFullName lookup): is
+    // the type this file names a union?
+    let tIsUnion =
+        check.GetAllUsesOfAllSymbolsInFile()
+        |> Seq.pick (fun u ->
+            match u.Symbol with
+            | :? FSharpEntity as e when e.DisplayName = "T" -> Some e.IsFSharpUnion
+            | _ -> None)
+
+    let result =
+        { File = AbsFilePath.create a
+          Source = sourceA
+          ParseResults = parse
+          CheckResults = FullCheck check
+          ProjectOptions = options
+          Version = 0L }
+
+    result, check.Diagnostics, tIsUnion
+
+[<Fact(Timeout = 60000)>]
+let ``the analyzers key differs when a dependency changes a type this file analyzes`` () =
+    withTempDir "xfile-a" (fun rootA ->
+        withTempDir "xfile-b" (fun rootB ->
+            let resultA, diagsA, unionA = checkScript rootA "type T = { X: int }"
+            let resultB, diagsB, unionB = checkScript rootB "type T = | X of int"
+
+            // Same file bytes, same (empty) diagnostics, different typed answer.
+            test <@ resultA.Source = resultB.Source @>
+            test <@ Array.isEmpty diagsA && Array.isEmpty diagsB @>
+            test <@ unionA <> unionB @>
+
+            let keyA = keyFor (Some rootA) DiagnosticSeverity.Hint resultA
+            let keyB = keyFor (Some rootB) DiagnosticSeverity.Hint resultB
+            test <@ keyA.IsSome && keyB.IsSome @>
+
+            match lookupAcross rootA keyA.Value rootB keyB.Value "A.fsx" with
+            | CacheHit _ -> failwith "a changed dependency must never hit"
+            | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "dependency-closure" ] @>))
+
+[<Fact(Timeout = 60000)>]
+let ``an unchanged dependency in a second checkout still hits`` () =
+    withTempDir "xfile-hit-a" (fun rootA ->
+        withTempDir "xfile-hit-b" (fun rootB ->
+            let resultA, _, _ = checkScript rootA "type T = { X: int }"
+            let resultB, _, _ = checkScript rootB "type T = { X: int }"
+            let keyA = keyFor (Some rootA) DiagnosticSeverity.Hint resultA
+            let keyB = keyFor (Some rootB) DiagnosticSeverity.Hint resultB
+            test <@ keyA.IsSome && keyB.IsSome @>
+
+            match lookupAcross rootA keyA.Value rootB keyB.Value "A.fsx" with
             | CacheHit _ -> ()
             | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))

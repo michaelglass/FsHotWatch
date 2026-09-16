@@ -23,7 +23,8 @@ let private compositeFileKey (repoRoot: string) (file: string) =
 let private fakeResult file =
     { fakeFileCheckResult file with
         Source = "let x = 1"
-        ParseResults = Unchecked.defaultof<_> }
+        ParseResults = Unchecked.defaultof<_>
+        ProjectOptions = fakeProjectOptions "/tmp/Fake.fsproj" [ file ] }
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
@@ -53,7 +54,8 @@ let ``analyzer error path does not crash`` () =
     let fakeResult =
         { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
             Source = ""
-            ParseResults = Unchecked.defaultof<_> }
+            ParseResults = Unchecked.defaultof<_>
+            ProjectOptions = fakeProjectOptions "/tmp/nonexistent/Fake.fsproj" [ "/tmp/nonexistent/Fake.fs" ] }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -157,7 +159,8 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let parseOnlyResult =
         { fakeFileCheckResult "/tmp/Fake.fs" with
             Source = ""
-            ParseResults = Unchecked.defaultof<_> }
+            ParseResults = Unchecked.defaultof<_>
+            ProjectOptions = fakeProjectOptions "/tmp/Fake.fsproj" [ "/tmp/Fake.fs" ] }
 
     let fullCheckResult =
         { parseOnlyResult with
@@ -176,7 +179,11 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None [] None DiagnosticSeverity.Hint
+    // A crash stands in for an analyzer that throws: the event's project options are real
+    // (the cache key reads them), so the hook is what makes the run fail.
+    let handler =
+        createWithSlowHook None [] None DiagnosticSeverity.Hint (Some(fun () -> failwith "analyzer threw"))
+
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -184,15 +191,15 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           Source = "let x = 1"
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
+          ProjectOptions = fakeProjectOptions "/tmp/nonexistent/Fake.fsproj" [ "/tmp/nonexistent/Fake.fs" ]
           Version = 0L }
 
     host.EmitFileChecked(fakeResult)
 
     waitForTerminalStatus host "analyzers" 12000
 
-    // The crash IS the evidence: with a null ParseResults the analyzer must fail via
-    // AnalysisFailed, proving the worker ran rather than skipping synchronously.
+    // The crash IS the evidence: only the worker runs the hook, so an "Analyzer crashed"
+    // entry proves the worker ran rather than skipping synchronously.
     let errors = host.GetErrorsByPlugin("analyzers")
 
     let hasAnalyzerCrash =
@@ -214,7 +221,11 @@ let ``empty analyzer paths still creates working handler`` () =
 let ``AnalysisFailed custom message sets status to Completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None [] None DiagnosticSeverity.Hint
+    // A crash stands in for an analyzer that throws: the event's project options are real
+    // (the cache key reads them), so the hook is what makes the run fail.
+    let handler =
+        createWithSlowHook None [] None DiagnosticSeverity.Hint (Some(fun () -> failwith "analyzer threw"))
+
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeResult "/tmp/test/FailAnalysis.fs")
@@ -737,7 +748,11 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None [] None DiagnosticSeverity.Hint
+    // A crash stands in for an analyzer that throws: the event's project options are real
+    // (the cache key reads them), so the hook is what makes the run fail.
+    let handler =
+        createWithSlowHook None [] None DiagnosticSeverity.Hint (Some(fun () -> failwith "analyzer threw"))
+
     host.RegisterHandler(handler)
 
     let events =

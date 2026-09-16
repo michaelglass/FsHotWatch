@@ -643,7 +643,8 @@ let internal createWithSlowHook
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key: the analyzer set's identity and failure threshold, the
-        // config files the analyzers discover, the file, its source and its fcs-signature.
+        // config files the analyzers discover, the file, its source and every source its
+        // check could have read.
         // REPO-RELATIVE, like every other path in this key: an analyzer directory
         // inside the repository (`analyzers/`, the usual layout) named absolutely made
         // the key workspace-specific for no analytical reason. The CONTENT of the
@@ -686,10 +687,16 @@ let internal createWithSlowHook
                 | Result.Ok analyzerInputs ->
                     let file = AbsFilePath.value result.File
 
-                    Some(
+                    // A typed analyzer sees every source this file's check read. The
+                    // file's own diagnostics (`fcs-signature`) do not move when a type it
+                    // uses changes shape and it still compiles. A
+                    // dependency that cannot be read leaves no key: the analyzers run and
+                    // nothing is read from or written to the cache.
+                    FsHotWatch.CacheInputs.dependencyClosureHash repoRoot result.ProjectOptions file
+                    |> Option.map (fun dependencyClosure ->
                         FsHotWatch.TaskCache.merkleCacheKey
-                            // v6 orphans every entry keyed without the failure threshold
-                            // and the analyzers' config files.
+                            // v6 orphans every entry keyed without the failure threshold,
+                            // the analyzers' config files and the dependency closure.
                             [ "plugin-version", "analyzers-merkle-v6"
                               "analyzer-paths", analyzerPathsHash
                               "analyzer-inputs", analyzerInputs
@@ -699,10 +706,8 @@ let internal createWithSlowHook
                               "analyzer-config", analyzerConfigHash file
                               "file", FsHotWatch.CachePathIdentity.keyOf repoRoot file
                               "source", result.Source
-                              // fcs-signature captures cross-file FCS state changes so
-                              // upstream symbol changes invalidate this file's cache.
-                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
-                    )
+                              "dependency-closure", dependencyClosure
+                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ])
             | _ -> None
 
         Some cacheKey

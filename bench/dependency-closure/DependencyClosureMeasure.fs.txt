@@ -1,0 +1,116 @@
+module FsHotWatch.Tests.MeasureScratch
+
+open System
+open System.IO
+open System.Xml.Linq
+open Xunit
+open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.Tests.TestHelpers
+
+let private measure (workspace: string) (dirs: string list) (targets: string list) (out: string) =
+    withTempDir "measure" (fun root ->
+        let projects =
+            dirs
+            |> List.collect (fun d -> Directory.GetFiles(Path.Combine(workspace, d), "*.fsproj", SearchOption.AllDirectories) |> List.ofArray)
+            |> List.filter (fun p -> not (p.Contains "/bin/" || p.Contains "/obj/" || p.Contains "Fixtures" || Path.GetRelativePath(workspace, p).Contains ".workspaces"))
+
+        let rel (p: string) = Path.GetRelativePath(workspace, p)
+        let copyPath (p: string) = Path.Combine(root, rel p)
+
+        let parsed =
+            projects
+            |> List.map (fun proj ->
+                let doc = XDocument.Load proj
+                let dir = Path.GetDirectoryName proj
+
+                let items name =
+                    doc.Descendants()
+                    |> Seq.filter (fun e -> e.Name.LocalName = name)
+                    |> Seq.choose (fun e ->
+                        match e.Attribute(XName.Get "Include") with
+                        | null -> None
+                        | a -> Some(Path.GetFullPath(Path.Combine(dir, a.Value.Replace('\\', '/')))))
+                    |> Seq.toList
+
+                let sources = items "Compile" |> List.filter File.Exists
+                proj, sources, items "ProjectReference")
+
+        for proj, sources, _ in parsed do
+            for f in proj :: sources do
+                let target = copyPath f
+                Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+                File.Copy(f, target, true)
+
+        let byProj = parsed |> List.map (fun (p, s, r) -> p, (s, r)) |> Map.ofList
+        let memo = Collections.Generic.Dictionary<string, FSharpProjectOptions>()
+
+        let rec optionsOf (proj: string) =
+            match memo.TryGetValue proj with
+            | true, o -> o
+            | _ ->
+                let sources, refs = byProj[proj]
+
+                let o =
+                    { fakeProjectOptions (copyPath proj) (sources |> List.map copyPath) with
+                        ReferencedProjects =
+                            refs
+                            |> List.filter byProj.ContainsKey
+                            |> List.map (fun r -> FSharpReferencedProject.FSharpReference(r + ".dll", optionsOf r))
+                            |> List.toArray }
+
+                memo[proj] <- o
+                o
+
+        let allFiles =
+            parsed
+            |> List.collect (fun (p, sources, _) -> sources |> List.map (fun s -> p, copyPath s))
+
+        let keys () =
+            allFiles
+            |> List.map (fun (p, f) ->
+                (p, f), (FsHotWatch.CacheInputs.dependencyClosureHash (Some root) (optionsOf p) f, File.ReadAllText f))
+            |> Map.ofList
+
+        let sw = Diagnostics.Stopwatch.StartNew()
+        let _ = keys ()
+        let cold = sw.ElapsedMilliseconds
+        sw.Restart()
+        let baseline = keys ()
+        let warm = sw.ElapsedMilliseconds
+
+        let lines = Collections.Generic.List<string>()
+        lines.Add $"files total=%d{allFiles.Length}; key pass over all files: first %d{cold} ms, second %d{warm} ms"
+
+        for p, sources, _ in parsed |> List.sortByDescending (fun (_, s, _) -> s.Length) |> List.truncate 12 do
+            let kib = (sources |> List.sumBy (fun f -> FileInfo(f).Length)) / 1024L
+            lines.Add $"  %s{rel p}: %d{sources.Length} files, %d{kib} KiB"
+
+        for target in targets do
+          let core = projects |> List.find (fun p -> p.EndsWith target)
+          let coreSources, _ = byProj[core]
+          lines.Add $"== edits in %s{target}"
+          for label, index in [ "first", 0; "middle", coreSources.Length / 2; "last", coreSources.Length - 1 ] do
+              let edited = copyPath coreSources[index]
+              let original = File.ReadAllText edited
+              File.AppendAllText(edited, "\n// edit\n")
+              let after = keys ()
+              File.WriteAllText(edited, original)
+
+              let changed =
+                  allFiles |> List.filter (fun k -> baseline[k] <> after[k])
+
+              let inCore = changed |> List.filter (fun (p, _) -> p = core) |> List.length
+              let coreTotal = coreSources.Length
+
+              lines.Add
+                  $"%s{label} (#%d{index + 1} %s{Path.GetFileName edited}): project %d{inCore}/%d{coreTotal} (%.0f{100.0 * float inCore / float coreTotal}%%); all projects %d{changed.Length}/%d{allFiles.Length} (%.0f{100.0 * float changed.Length / float allFiles.Length}%%)"
+
+        File.WriteAllLines(out, lines))
+
+[<Fact(Timeout = 900000)>]
+let ``SCRATCH measure fshotwatch`` () =
+    measure (RepoTasks.repoRoot ()) [ "src"; "tests" ] [ "src/FsHotWatch/FsHotWatch.fsproj"; "tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" ] "/tmp/a605k-measure.txt"
+
+[<Fact(Timeout = 900000)>]
+let ``SCRATCH measure intelligence`` () =
+    measure "/Users/michaelglass/Developer/work/thellma/intelligence" [ "src"; "tests" ] [ "src/Intelligence/Intelligence.fsproj" ] "/tmp/a605k-measure-intel.txt"

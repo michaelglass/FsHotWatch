@@ -1,0 +1,17 @@
+files total=1870; key pass over all files: first 57273 ms, second 61991 ms
+  src/Intelligence/Intelligence.fsproj: 518 files, 7855 KiB
+  tests/Intelligence.Tests.Unit/Intelligence.Tests.Unit.fsproj: 439 files, 6423 KiB
+  tests/Intelligence.Tests.Database/Intelligence.Tests.Database.fsproj: 183 files, 3058 KiB
+  tests/Intelligence.Tests.Integration/Intelligence.Tests.Integration.fsproj: 119 files, 2312 KiB
+  tests/Intelligence.Build.Dev.Tests/Intelligence.Build.Dev.Tests.fsproj: 116 files, 2294 KiB
+  src/Intelligence.Lab/Intelligence.Lab.fsproj: 111 files, 1468 KiB
+  src/Intelligence.Build.Dev/Intelligence.Build.Dev.fsproj: 86 files, 1905 KiB
+  src/Intelligence.Build.Ops/Intelligence.Build.Ops.fsproj: 70 files, 1563 KiB
+  tests/Intelligence.Build.Tests/Intelligence.Build.Tests.fsproj: 61 files, 872 KiB
+  src/Intelligence.Build/Intelligence.Build.fsproj: 29 files, 677 KiB
+  src/Intelligence.Client/Intelligence.Client.fsproj: 28 files, 550 KiB
+  tests/Intelligence.Tests.Common/Intelligence.Tests.Common.fsproj: 25 files, 212 KiB
+== edits in src/Intelligence/Intelligence.fsproj
+first (#1 SelectionMarkers.fs): project 518/518 (100%); all projects 1542/1870 (82%)
+middle (#260 ArticleText.fs): project 259/518 (50%); all projects 1283/1870 (69%)
+last (#518 RouteEndpoints.fs): project 1/518 (0%); all projects 1025/1870 (55%)
