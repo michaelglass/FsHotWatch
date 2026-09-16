@@ -210,6 +210,33 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### test-prune/cli: verification debt no longer vanishes without a run — BREAKING for repos with undeclared indexed test projects
+
+- **A symbol covered by a test project the daemon does not run stays owed.** It used to be
+  dropped from the queue with a warning (the "owed-but-unrunnable" write-off above), so a
+  green from the configured suite discharged tests that never ran. Now it keeps the check
+  red, and the status names the project: `N symbol(s) still owed to tests in X, which this
+  daemon does not run`. Only a `tests.excluded` entry with a reason removes an unconfigured
+  project from the claim; a configured project is always required. A symbol dropped because
+  of such a declaration is still reported as `changes-uncovered`, naming the project.
+- **Exclusions resolve to the project identity the symbol index uses**, the project file's
+  name, against the solution and the currently discovered projects. An alias matching two
+  solution projects, a declared project discovery has not seen, or a second discovered
+  project with the same file name is refused rather than guessed. A refusal leaves the debt
+  owed.
+- **Solutions below the repo root reconcile correctly.** Project paths are read relative to
+  the solution file, so a nested solution's test projects are found and governed.
+- **The per-project coverage ratchet no longer fails with SQLite error 19.** It looked up
+  symbol ids and wrote them in separate transactions, so a concurrent graph rebuild could
+  delete a symbol in between. Both steps now share one write transaction.
+- **An edit made after a BootScan cohort seals is not retired by the full run already in
+  flight**, even if the edit restores the sealed bytes. Late cohort symbols retire only at
+  the revision they were captured at, over matching input trees.
+- **This repository** lists `tests/Fixtures/Xunit4RunnerFixture` in `FsHotWatch.slnx` and
+  declares it in `tests.excluded`, because discovery indexes its tests.
+
+See `docs/adr-026-test-debt-waits-on-every-covering-project-a-declaration-can-remove.md`.
+
 ### core: a deleted working directory is named once, not reported as 130 missing files
 
 `AbsFilePath.create` and `AbsProjectPath.create` resolved relative input against the

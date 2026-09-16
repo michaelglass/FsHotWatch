@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `tests.excluded` now also governs TestPrune verification debt. Registration passes
+  `SolutionScope.createExclusionResolver` to the plugin. It resolves each declaration to the
+  discovered project file name, and refuses ambiguous aliases, blank reasons, undiscovered
+  projects and file-name collisions. `SolutionScope.solutionProjects` keeps `../` and rooted
+  paths, and `reconcile` reads them relative to the solution file, so a solution below the
+  repo root reconciles against the right projects. `resolveExcludedProjectNames` is the
+  pure resolution.
+
 - breaking: a `check`/`confirm` whose reading was taken without an
   available project model is no longer graded as if the model were healthy. A scan that
   raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously

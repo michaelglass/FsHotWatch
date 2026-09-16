@@ -440,10 +440,15 @@ let private invalidateLegacyRatchetOutput (db: Database) (coverageOutput: string
 
         pending
 
-let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: string) =
+let private mapProjectRatchetCoverage
+    (conn: Microsoft.Data.Sqlite.SqliteConnection)
+    (transaction: Microsoft.Data.Sqlite.SqliteTransaction)
+    (repoRoot: string)
+    (xml: string)
+    =
     let rows = parseCobertura xml
-    use conn = db.OpenConnection()
     use lookup = conn.CreateCommand()
+    lookup.Transaction <- transaction
 
     let normalizeSourceFile (filename: string) =
         (if Path.IsPathRooted filename then
@@ -488,8 +493,22 @@ let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: st
       Ingested = ingested
       Skipped = skipped }
 
-let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
-    let mapped = mapProjectRatchetCoverage db repoRoot xml
+let internal persistProjectRatchetCoverageWithMapped
+    (afterMapped: unit -> unit)
+    (db: Database)
+    (repoRoot: string)
+    (input: CoverageInput)
+    (xml: string)
+    =
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+    // The ids `mapProjectRatchetCoverage` returns are foreign keys into `symbols`. Look
+    // them up inside the same IMMEDIATE (write-locked) transaction that persists them: on
+    // a separate read, a concurrent graph rebuild could delete a mapped symbol before the
+    // write, and the insert then fails with SQLite error 19 (FOREIGN KEY constraint).
+    use transaction = conn.BeginTransaction(deferred = false)
+    let mapped = mapProjectRatchetCoverage conn transaction repoRoot xml
+    afterMapped ()
 
     let replaceFull =
         input.Scope = CoverageRunScope.Full
@@ -497,10 +516,6 @@ let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (inp
         && not (symbolGraphLooksIncomplete mapped.Ingested mapped.Skipped)
 
     if replaceFull || input.Scope = CoverageRunScope.Partial then
-        use conn = db.OpenConnection()
-        ensureProjectRatchetCoverageTable conn
-        use transaction = conn.BeginTransaction()
-
         if replaceFull then
             use delete = conn.CreateCommand()
             delete.Transaction <- transaction
@@ -525,9 +540,10 @@ let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (inp
             upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
             upsert.ExecuteNonQuery() |> ignore
 
-        transaction.Commit()
+    transaction.Commit()
 
-    mapped
+let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
+    persistProjectRatchetCoverageWithMapped ignore db repoRoot input xml
 
 let private removeProjectRatchetCoverage (db: Database) (project: string) =
     use conn = db.OpenConnection()
@@ -678,7 +694,7 @@ let internal ingestAndEmitCoverageForProjects
                 let ratchetResult =
                     if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
                         let result = ingestCobertura db (Some repoRoot) xml
-                        persistProjectRatchetCoverage db repoRoot input xml |> ignore
+                        persistProjectRatchetCoverage db repoRoot input xml
                         Some result
                     else
                         removeProjectRatchetCoverage db input.Project |> ignore
@@ -1402,10 +1418,13 @@ type TestPruneState =
         /// Cleared when the rerun is dispatched.
         PendingRerun: bool
         /// Symbols established by a BootScan cohort while a requested full-suite run was
-        /// already in flight. The run covers the built tree being baselined, but these
-        /// symbols are absent from its immutable launch snapshot. They may be committed
-        /// only after that run produces genuinely green full-suite evidence.
-        BootScanDebtDuringFullRun: Set<string>
+        /// already in flight, each with the debt revision captured when the cohort sealed.
+        /// The run covers the built tree being baselined, but these symbols are absent from
+        /// its immutable launch snapshot. They may be committed only after that run produces
+        /// genuinely green full-suite evidence over the input tree it launched against, and
+        /// only while the symbol is still at its captured revision: a later edit is new debt
+        /// the held run never built, even if the edit restores the sealed bytes.
+        BootScanDebtDuringFullRun: Map<string, int64>
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -4931,6 +4950,11 @@ let internal cacheKeyFor
 /// to a different DB than the plugin's.
 let internal createWithLaunchDeadline
     (launchDeadline: TimeSpan)
+    // The declared exclusions: indexed test-project name -> written reason. Called once
+    // per debt classification (flush, launch, completion), so a caller can re-resolve
+    // them against the current project inventory. A throw is a refusal to classify, and
+    // leaves the debt owed.
+    (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -5129,19 +5153,10 @@ let internal createWithLaunchDeadline
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
-    /// The symbol DB indexes test methods from EVERY test project it
-    /// analyzed, which is not the same set as the projects fshw is configured to run. A
-    /// symbol covered ONLY by an unconfigured project can never be proven green — its
-    /// covering project never executes, so it never appears in a run's results and never
-    /// commits, sitting in the pending queue forever while the verdict stays red.
-    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
-    /// `check` exited 1, because those symbols were covered by
-    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
-    ///
-    /// So "covered" means "covered by a test we can actually run". A symbol whose only
-    /// covering tests are unrunnable is dropped from the queue by the same rule as one
-    /// with no covering test at all — but it is REPORTED as owed-but-unrunnable, naming
-    /// the projects, never silently (see `flushAndQueryAffected`).
+    /// The symbol DB indexes test methods from EVERY test project it analyzed, which is
+    /// not the same set. A symbol covered by a project outside this set is NOT covered by
+    /// a test we can run, and it is not thereby verified either: see `debtScope` for the
+    /// only way such a project stops owing.
     let runnableProjects: Set<string> =
         match testConfigs with
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
@@ -5244,6 +5259,21 @@ let internal createWithLaunchDeadline
     /// The flag is a request; the scope report is the evidence.
     let mutable fullSuiteScopeRef = false
 
+    /// The debt revision of each queued symbol this session enqueued: a monotonic stamp
+    /// taken at every enqueue, so "the same symbol, edited again" is a different
+    /// revision even when its bytes are restored. A symbol loaded from the durable queue
+    /// and never re-enqueued is at revision 0 (`revisionOf`). In-memory on purpose:
+    /// revisions compare captures taken within one session, and a restart has no run in
+    /// flight to borrow.
+    let mutable symbolRevisionsRef: Map<string, int64> = Map.empty
+
+    let mutable lastDebtRevisionRef = 0L
+
+    let revisionOf (symbol: string) : int64 =
+        Volatile.Read(&symbolRevisionsRef)
+        |> Map.tryFind symbol
+        |> Option.defaultValue 0L
+
     /// Add `symbols` to the in-memory queue. Called at the FileChecked
     /// accumulation point; the durable persist is batched to the flush
     /// chokepoint (`flushAndQueryAffected` saves BEFORE the analysis flush
@@ -5255,6 +5285,15 @@ let internal createWithLaunchDeadline
         if not symbols.IsEmpty then
             let updated = (pendingQueueRef, symbols) ||> List.fold (fun q s -> Set.add s q)
             Volatile.Write(&pendingQueueRef, updated)
+            // Every enqueue is a new revision, including a re-edit of a symbol already
+            // queued: a run captured before it cannot have built it.
+            let revision = Interlocked.Increment(&lastDebtRevisionRef)
+
+            let revisions =
+                (Volatile.Read(&symbolRevisionsRef), symbols)
+                ||> List.fold (fun revisions s -> Map.add s revision revisions)
+
+            Volatile.Write(&symbolRevisionsRef, revisions)
 
     /// Remove `symbols` from the persisted queue and flush to disk. Called only
     /// when a covering test run for those symbols completed green (or a symbol
@@ -5263,6 +5302,13 @@ let internal createWithLaunchDeadline
         if not symbols.IsEmpty then
             let updated = Set.difference pendingQueueRef symbols
             Volatile.Write(&pendingQueueRef, updated)
+
+            Volatile.Write(
+                &symbolRevisionsRef,
+                Volatile.Read(&symbolRevisionsRef)
+                |> Map.filter (fun s _ -> not (Set.contains s symbols))
+            )
+
             persistQueue " after commit"
 
     /// The reds no covering run has passed since, mirrored out of the
@@ -5345,17 +5391,54 @@ let internal createWithLaunchDeadline
             changedFiles
             (DateTimeOffset.UtcNow - RuntimeCoverageMaxAge)
 
-    /// Tests covering `symbol` that this daemon can actually run. Empty ⇒ nothing
-    /// runnable can ever verify it. When analysis-only (no test configs at all), the
-    /// runnable filter is not applied — that mode produces no test verdict, so the old
-    /// "any covering test" semantics are preserved.
-    let runnableCoveringTests (symbol: string) =
-        let covering = db.QueryAffectedTests [ symbol ]
+    /// The covering test projects a symbol's debt waits on, under ONE resolution of the
+    /// declared exclusions. Empty ⇒ nothing is owed for it and it may leave the queue.
+    ///
+    /// A covering project counts unless it is unconfigured AND declared excluded with a
+    /// written reason. That is the whole policy, applied at every place debt is
+    /// classified — the flush that drops uncovered symbols, the launch that captures each
+    /// symbol's coverers, the completion that retires them (launch and BootScan cohorts
+    /// alike), and the residual diagnostics that name what is still owed:
+    ///   * a CONFIGURED project always counts, whatever an exclusion says;
+    ///   * an unconfigured project with no declaration counts. Nothing can run it here,
+    ///     so the symbol stays owed and the verdict stays red, naming the project. The
+    ///     earlier rule dropped such a symbol, which let a configured-suite green
+    ///     discharge tests that never ran;
+    ///   * a blank reason declares nothing.
+    /// Excluding a project is never evidence that its tests passed: the declaration only
+    /// removes that project from THIS gate's claim.
+    ///
+    /// `excluded` is lazy so a classification that never meets an unconfigured coverer
+    /// never resolves the declarations. Analysis-only daemons make no test claim, so every
+    /// covering project counts and the declarations are never consulted.
+    let debtScope (excluded: Lazy<Map<string, string>>) : string -> Set<string> =
+        let declaredExcluded (project: string) =
+            match Map.tryFind project excluded.Value with
+            | Some reason -> not (String.IsNullOrWhiteSpace reason)
+            | None -> false
 
-        if Set.isEmpty runnableProjects then
-            covering
-        else
-            covering |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
+        fun symbol ->
+            let covering =
+                db.QueryAffectedTests [ symbol ]
+                |> List.map (fun t -> t.TestProject)
+                |> Set.ofList
+
+            if Set.isEmpty runnableProjects then
+                covering
+            else
+                covering
+                |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
+
+    /// `debtScope` resolving the declarations only if a classification needs them.
+    let lazyDebtScope () =
+        debtScope (lazy (resolveExcludedProjects ()))
+
+    /// The unconfigured projects `owedTo` still waits on for `symbols`, for a message
+    /// that has to name them.
+    let owedElsewhere (owedTo: string -> Set<string>) (symbols: string seq) : Set<string> =
+        symbols
+        |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
+        |> Set.unionMany
 
     // Flush pending analysis to DB and query affected tests from changed symbols.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
@@ -5451,7 +5534,7 @@ let internal createWithLaunchDeadline
                 // Scoped to projects this daemon actually runs. Selecting tests in an
                 // unconfigured project would put classes in the run map that never
                 // execute — and make `allChangesUncovered` (and so the zero-affected
-                // skip) disagree with the commit rule. See `runnableCoveringTests`.
+                // skip) disagree with the commit rule. See `debtScope`.
                 let queryRunnable (seeds: string list) =
                     db.QueryAffectedTests(seeds)
                     |> fun ts ->
@@ -5599,27 +5682,27 @@ let internal createWithLaunchDeadline
 
                 affected
 
-        // Drop queued symbols that have no RUNNABLE covering test from the durable
-        // queue immediately: there is nothing for them to wait on, and retaining them
-        // would wedge the queue forever (every future run would re-select zero
-        // runnable tests yet the queue would never empty → permanent non-green). A
-        // symbol is "covered" iff it has at least one covering test IN A PROJECT THIS
-        // DAEMON RUNS (see `runnableCoveringTests` — a symbol covered
-        // only by an unconfigured project is unverifiable here and wedged the verdict).
-        // Only ever REMOVES from the queue, so it cannot under-test.
+        // Classify every considered symbol ONCE, under one resolution of the declared
+        // exclusions (see `debtScope`):
         //
-        // the two ways of having no runnable covering test are told
-        // apart and the second is REPORTED, never merely dropped: a symbol with no test
-        // anywhere, and a symbol whose only covering tests live in a project
-        // `tests.projects` does not list. The rule wrote the second off
-        // as the first; that is the "documented, deliberate hole" the
-        // reviewer named as a candidate cause for a red the gate never selected. The
-        // queue still drops it (nothing here can ever discharge it), but the write-off
-        // names the project, in the log AND on the verdict (`UncoveredChanges`).
+        //  * NOTHING OWED — no covering test at all, or only coverers that `tests.excluded`
+        //    declares out of scope with a reason. Dropped from the durable queue now:
+        //    retaining it would re-select zero tests forever and never empty. Only ever
+        //    REMOVES from the queue. A declaration-covered drop is a WRITE-OFF, not a
+        //    discharge, so it is REPORTED, naming the project, in the log and on the verdict
+        //    (`UncoveredChanges`).
+        //  * OWED ELSEWHERE — a covering project this daemon does not run and nothing
+        //    declares excluded. Nothing here can discharge it, and dropping it would let a
+        //    configured-suite green retire tests that never ran. It STAYS owed; the verdict
+        //    stays red and names the project until the config lists or excludes it.
+        let owedTo = lazyDebtScope ()
+        let owing = symbols |> List.map (fun s -> s, owedTo s) |> Map.ofList
+
         let uncovered =
-            symbols
-            |> List.filter (fun s -> (runnableCoveringTests s).IsEmpty)
-            |> Set.ofList
+            owing
+            |> Map.filter (fun _ projects -> Set.isEmpty projects)
+            |> Map.keys
+            |> Set.ofSeq
 
         let unrunnable: UnrunnableCoverage =
             if Set.isEmpty uncovered || Set.isEmpty runnableProjects then
@@ -5633,10 +5716,15 @@ let internal createWithLaunchDeadline
                     | projects -> Some(s, projects))
                 |> Map.ofList
 
+        let owedToUnrunnable =
+            owing
+            |> Map.map (fun _ projects -> Set.difference projects runnableProjects)
+            |> Map.filter (fun _ projects -> not (Set.isEmpty projects))
+
         if not (Set.isEmpty uncovered) then
             Logging.info
                 "test-prune"
-                $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
+                $"Dropping %d{Set.count uncovered} queued symbol(s) with no covering test in a governed project from pending-verification queue"
 
             if not (Map.isEmpty unrunnable) then
                 let projects =
@@ -5644,12 +5732,23 @@ let internal createWithLaunchDeadline
 
                 Logging.warn
                     "test-prune"
-                    $"%d{Map.count unrunnable} of them ARE covered — by tests in %s{projects}, which `tests.projects` does \
-                      not list, so this daemon cannot run them. The obligation is written off here, not discharged: \
-                      list the project, or declare it excluded, if its tests are meant to gate. Symbols: \
+                    $"%d{Map.count unrunnable} of them ARE covered — only by tests in %s{projects}, which \
+                      `tests.excluded` declares out of this gate's scope. The obligation is written off by that \
+                      declaration, not discharged by a test. Symbols: \
                       %s{describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
 
             commitPending uncovered
+
+        if not (Map.isEmpty owedToUnrunnable) then
+            let projects =
+                UnrunnableCoverage.projects owedToUnrunnable |> Set.toList |> String.concat ", "
+
+            Logging.warn
+                "test-prune"
+                $"%d{Map.count owedToUnrunnable} queued symbol(s) stay OWED to tests in %s{projects}, which this \
+                  daemon does not run and `tests.excluded` does not declare. No run here can discharge them, so \
+                  the verdict stays red: list the project in `tests.projects`, or declare it in `tests.excluded` \
+                  with a reason. Symbols: %s{describeAll (owedToUnrunnable |> Map.keys |> List.ofSeq)}"
 
         // Keep the in-memory hot view aligned with the durable queue so the
         // ChangedSymbols carried in state (and the cache-key snapshot) don't
@@ -5704,8 +5803,10 @@ let internal createWithLaunchDeadline
                   proof they are untested. Refusing the zero-test green; this run verifies them for real. \
                   Unknown: %s{describeAll unknownToIndex}"
 
+        // Symbols still owed elsewhere are not uncovered: the zero-test green must not
+        // retire the red they hold.
         let allChangesUncovered =
-            if noCoveringTest && List.isEmpty unknownToIndex then
+            if noCoveringTest && List.isEmpty unknownToIndex && Map.isEmpty owedToUnrunnable then
                 UncoveredChanges.AllUncovered(List.sort symbols, unrunnable)
             else
                 UncoveredChanges.No
@@ -5776,7 +5877,7 @@ let internal createWithLaunchDeadline
           LastRunId = None
           LastSeeds = []
           PendingRerun = false
-          BootScanDebtDuringFullRun = Set.empty
+          BootScanDebtDuringFullRun = Map.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
@@ -5915,19 +6016,14 @@ let internal createWithLaunchDeadline
                 // throw here must produce the Aborted lifecycle below (an honest,
                 // re-runnable "tests did not run" verdict) rather than escaping to
                 // the framework's `runOne`, which would only log-and-strand the run.
-                // Only RUNNABLE covering projects gate a symbol's commit — the same
-                // rule `flushAndQueryAffected` uses to drop unverifiable symbols, so
-                // the two cannot disagree. Gating on a project this daemon never runs
-                // would block the commit forever ('s permanent red).
-                let coveringProjectsBySymbol =
-                    launchedSymbols
-                    |> Set.toList
-                    |> List.map (fun s ->
-                        let projs =
-                            runnableCoveringTests s |> List.map (fun t -> t.TestProject) |> Set.ofList
+                // The projects gating a symbol's commit are `debtScope`'s — the same
+                // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
+                // disagree. An unconfigured, undeclared coverer blocks the commit on
+                // purpose: its tests never ran, so they verified nothing.
+                let owedTo = lazyDebtScope ()
 
-                        s, projs)
-                    |> Map.ofList
+                let coveringProjectsBySymbol =
+                    launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
 
                 // Extension-contributed edges were already written to the DB by
                 // flushAndQueryAffected, so `inputs.AffectedTests` already includes tests
@@ -7322,8 +7418,16 @@ let internal createWithLaunchDeadline
 
                                     return
                                         { flushedState with
+                                            // The FIRST captured revision stands: a later
+                                            // seal must not advance a symbol past an edit
+                                            // the held run never built.
                                             BootScanDebtDuringFullRun =
-                                                Set.union flushedState.BootScanDebtDuringFullRun pendingQueueRef }
+                                                (flushedState.BootScanDebtDuringFullRun, pendingQueueRef)
+                                                ||> Set.fold (fun captured symbol ->
+                                                    if Map.containsKey symbol captured then
+                                                        captured
+                                                    else
+                                                        Map.add symbol (revisionOf symbol) captured) }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -7495,6 +7599,17 @@ let internal createWithLaunchDeadline
                     | BuildFailed _ -> return state
 
                 | Custom(TestsFinished(started, completed, launch)) ->
+                    // The declarations this completion retires debt under, resolved ONCE and
+                    // BEFORE any side effect. A resolution that throws (an ambiguous or
+                    // unobserved excluded project) fails this handler before it has emitted,
+                    // recorded or committed anything, so the framework settles the work as a
+                    // failure and every symbol stays owed.
+                    let owedTo =
+                        if Set.isEmpty runnableProjects then
+                            lazyDebtScope ()
+                        else
+                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ()))
+
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
                     // and re-fire on cache replay — subscribers that key off
@@ -7643,7 +7758,7 @@ let internal createWithLaunchDeadline
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
-                            BootScanDebtDuringFullRun = Set.empty
+                            BootScanDebtDuringFullRun = Map.empty
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
@@ -7686,9 +7801,16 @@ let internal createWithLaunchDeadline
                         if aborted then
                             Set.empty
                         else
+                            // A late BootScan symbol may borrow this run only when the run
+                            // was actually full, over the input tree it launched against,
+                            // and the symbol is still at the revision its cohort sealed.
                             let bootScanCandidates =
                                 match completed.Verification with
-                                | Ran FullSuite -> bootScanDebtDuringFullRun
+                                | Ran FullSuite when ReceiptInputTree.matches launch.InputTreeHash currentInputTree ->
+                                    bootScanDebtDuringFullRun
+                                    |> Map.filter (fun symbol captured -> revisionOf symbol = captured)
+                                    |> Map.keys
+                                    |> Set.ofSeq
                                 | _ -> Set.empty
 
                             Set.union launch.Symbols bootScanCandidates
@@ -7696,11 +7818,7 @@ let internal createWithLaunchDeadline
                                 match Map.tryFind s launch.CoveringProjectsBySymbol with
                                 | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
                                 | Some _ -> true
-                                | None ->
-                                    runnableCoveringTests s
-                                    |> List.map (fun t -> t.TestProject)
-                                    |> Set.ofList
-                                    |> Set.forall projectPassed)
+                                | None -> owedTo s |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info
@@ -7811,6 +7929,21 @@ let internal createWithLaunchDeadline
                     let queueAfterCommit = pendingQueueRef
                     let remainingChangedSymbols = queueAfterCommit |> Set.toList
 
+                    // Why the queue is still non-empty, in words. Symbols owed to projects
+                    // this daemon cannot run are not "waiting on build": no build will
+                    // discharge them, so the message names the projects and the way out.
+                    // A function: it queries each queued symbol, and only non-green
+                    // branches ask.
+                    let pendingDescription () =
+                        match owedElsewhere owedTo queueAfterCommit |> Set.toList with
+                        | [] -> $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
+                        | projects ->
+                            let names = projects |> String.concat ", "
+
+                            $"%d{Set.count queueAfterCommit} symbol(s) still owed to tests in %s{names}, which this \
+                              daemon does not run: list them in `tests.projects`, or declare them in \
+                              `tests.excluded` with a reason"
+
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both rerun and final-idle branches must call this.
                     let recordRunOutcome (results: TestResults) =
@@ -7855,7 +7988,7 @@ let internal createWithLaunchDeadline
                             // deferred (never-ran) project.
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
-                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                    $"%s{pendingDescription ()}%s{carriedNote}"
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
                                     results.Elapsed
                             )
@@ -8056,7 +8189,7 @@ let internal createWithLaunchDeadline
                                     // the next BuildCompleted re-selects and runs them.
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                            $"%s{pendingDescription ()}%s{carriedNote}"
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
@@ -8469,13 +8602,22 @@ let internal createWithLaunchDeadline
         Some cacheKey
       Teardown = None }
 
-/// Create a TestPrune handler with the launch policy captured at construction.
-/// Environment configuration is process-global, so reading it lazily at run time can
-/// retroactively change already-created handlers (and made a short-deadline regression
-/// kill unrelated in-flight test children under parallel CI). A handler's policy is now
-/// immutable for its lifetime; tests inject it through `createWithLaunchDeadline` without
-/// mutating process-global state.
-let create
+/// Create a TestPrune handler that honors declared test-scope exclusions.
+///
+/// `resolveExcludedProjects` returns indexed test-project name (the project file's name
+/// without extension) -> written reason. A covering project that is not configured and
+/// is declared here with a non-blank reason no longer holds a symbol's verification
+/// debt; every other covering project does, configured or not. It is called at each
+/// debt classification; a throw refuses that classification and leaves the debt owed.
+///
+/// The launch policy is captured at construction. Environment configuration is
+/// process-global, so reading it lazily at run time can retroactively change
+/// already-created handlers (and made a short-deadline regression kill unrelated
+/// in-flight test children under parallel CI). A handler's policy is immutable for its
+/// lifetime; tests inject it through `createWithLaunchDeadline` without mutating
+/// process-global state.
+let createWithScope
+    (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -8492,6 +8634,30 @@ let create
 
     createWithLaunchDeadline
         launchDeadline
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
+
+/// Create a TestPrune handler with no declared exclusions: every covering test project
+/// holds its symbols' verification debt. See `createWithScope`.
+let create
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    createWithScope
+        (fun () -> Map.empty)
         dbPath
         repoRoot
         testConfigs

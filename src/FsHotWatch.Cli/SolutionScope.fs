@@ -195,8 +195,11 @@ let identitiesOfGated (gated: GatedProject) : string list =
 // Reading a solution
 // ---------------------------------------------------------------------------
 
-/// Every project a solution references, as repo-relative project FILE paths —
-/// as the solution wrote them, with only the separators normalised.
+/// Every project a solution references, as project FILE paths relative to the
+/// SOLUTION's directory — as the solution wrote them, with only the separators and a
+/// leading `./` normalised. Parent traversal (`../`) and rooted paths are kept: they
+/// are what makes the path resolvable against the solution's own directory, which is
+/// how `reconcile` turns them into repo-relative identities.
 ///
 /// The path is NOT reduced to its directory here: `tryReadProject` has to open
 /// the file, and a project that lives at the repo root (`App.fsproj`) has no
@@ -223,7 +226,13 @@ let solutionProjects (solutionText: string) : string list =
 
         Regex.Matches(solutionText, pattern, RegexOptions.IgnoreCase)
         |> Seq.cast<Match>
-        |> Seq.map (fun m -> m.Groups[1].Value.Replace('\\', '/').Trim().TrimStart('.', '/'))
+        |> Seq.map (fun m ->
+            let path = m.Groups[1].Value.Replace('\\', '/').Trim()
+
+            if path.StartsWith("./", StringComparison.Ordinal) then
+                path.Substring 2
+            else
+                path)
         |> Seq.distinct
         |> List.ofSeq
 
@@ -432,6 +441,17 @@ let private tryReadProject (repoRoot: string) (relative: string) : string option
     | :? IOException -> None
     | :? UnauthorizedAccessException -> None
 
+/// A project path as the solution (or discovery) wrote it, interpreted at the directory
+/// that declared it and re-expressed relative to the repo root. A solution kept below
+/// the root names its projects relative to ITSELF; reading those names as repo-relative
+/// looks up files that are not there, and a missing project classifies as no test
+/// project at all.
+let private projectPathRelativeToRepo (repoRoot: string) (baseDirectory: string) (path: string) : string =
+    let absolute =
+        Path.GetFullPath(Path.Combine(baseDirectory, path.Replace('\\', '/')))
+
+    Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
+
 /// Reconcile `.fshw.json`'s test scope with the solution on disk.
 ///
 /// `[]` means the config's scope covers every test project in the solution, or
@@ -471,7 +491,9 @@ let reconcile
                 with :? IOException ->
                     ""
 
-            let allProjects = solutionProjects text
+            let allProjects =
+                solutionProjects text
+                |> List.map (projectPathRelativeToRepo repoRoot (Path.GetDirectoryName solutionPath))
 
             let testProjects =
                 allProjects
@@ -559,3 +581,125 @@ let solutionNameFor (repoRoot: string) (solutionOverride: string option) : strin
         match solutionCandidates repoRoot with
         | [ one ] -> one
         | _ -> "the solution"
+
+// ---------------------------------------------------------------------------
+// Exclusions as verification debt sees them
+// ---------------------------------------------------------------------------
+
+/// PURE: resolve each declared exclusion to the identity TestPrune's symbol index uses
+/// for a test project — the project FILE name without its extension — paired with its
+/// reason.
+///
+/// This is what lets an exclusion retire verification debt, so every step refuses rather
+/// than guesses:
+///   * the declaration must name exactly ONE solution project, by any spelling
+///     `identitiesOf` accepts or by its file name. An alias matching two projects
+///     (`Fixture` for `one/Fixture/A.fsproj` and `two/Fixture/B.fsproj`) is ambiguous;
+///   * it must carry a non-blank reason;
+///   * the discovered project inventory must contain THAT project, and no other project
+///     with the same file name. The index keys tests by file name alone, so a namesake
+///     elsewhere (in any letter case: case-sensitive filesystems hold both) would be
+///     exempted too. An inventory that does not contain the project at all is not
+///     evidence of its identity either.
+/// A directory name is only a spelling for finding the solution entry; the identity
+/// returned is always the actual discovered file name.
+///
+/// `solutionProjectPaths` and `discoveredProjectPaths` are repo-relative.
+let resolveExcludedProjectNames
+    (solutionProjectPaths: string list)
+    (discoveredProjectPaths: string list)
+    (excluded: Exclusion list)
+    : Result<Map<string, string>, string> =
+    let pathKey (path: string) =
+        let slashed = path.Replace('\\', '/').Trim()
+
+        if slashed.StartsWith("./", StringComparison.Ordinal) then
+            slashed.Substring 2
+        else
+            slashed
+
+    let same (left: string) (right: string) =
+        String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
+
+    let stemOf (path: string) =
+        Path.GetFileNameWithoutExtension(pathKey path)
+
+    let solution = solutionProjectPaths |> List.map pathKey |> List.distinct
+    let discovered = discoveredProjectPaths |> List.map pathKey |> List.distinct
+
+    let resolve (exclusion: Exclusion) : Result<string * string, string> =
+        let requested = pathKey exclusion.Project
+
+        let named (project: string) =
+            project :: stemOf project :: identitiesOf project
+            |> List.exists (same requested)
+
+        match solution |> List.filter named with
+        | [] -> Error $"Excluded project %s{exclusion.Project} does not resolve to an authoritative solution project."
+        | [ _ ] when String.IsNullOrWhiteSpace exclusion.Reason ->
+            Error $"Excluded project %s{exclusion.Project} requires a non-empty reason."
+        | [ project ] ->
+            let stem = stemOf project
+
+            match
+                discovered
+                |> List.filter (fun path -> String.Equals(stemOf path, stem, StringComparison.OrdinalIgnoreCase))
+            with
+            | [ owner ] when same owner project -> Ok(stemOf owner, exclusion.Reason)
+            | [] ->
+                Error
+                    $"Excluded project %s{project} is absent from the discovered project inventory; its indexed identity cannot be established."
+            | owners ->
+                let names = owners |> String.concat ", "
+                Error $"Excluded project %s{project} has ambiguous indexed identity %s{stem}: %s{names}."
+        | projects ->
+            let names = projects |> String.concat ", "
+            Error $"Excluded project alias %s{exclusion.Project} is ambiguous: %s{names}."
+
+    (Ok Map.empty, excluded)
+    ||> List.fold (fun resolved exclusion ->
+        match resolved, resolve exclusion with
+        | Ok entries, Ok(name, reason) -> Ok(Map.add name reason entries)
+        | Error error, _
+        | _, Error error -> Error error)
+
+/// Read the solution authority ONCE and return a resolver that re-resolves the
+/// declarations against the CURRENT discovered inventory each time it is called, so a
+/// project discovered later that collides with an excluded name is refused then rather
+/// than silently exempted. The resolver throws `InvalidOperationException` when the
+/// declarations cannot be resolved safely; see `resolveExcludedProjectNames`.
+///
+/// No declarations need neither a solution nor an inventory, so the common case reads
+/// nothing. `getDiscoveredProjects` may return absolute or repo-relative paths.
+let createExclusionResolver
+    (repoRoot: string)
+    (solutionOverride: string option)
+    (excluded: Exclusion list)
+    (getDiscoveredProjects: unit -> string list)
+    : unit -> Map<string, string> =
+    if List.isEmpty excluded then
+        fun () -> Map.empty
+    else
+        let solutionName =
+            match solutionOverride with
+            | Some name when not (String.IsNullOrWhiteSpace name) -> name
+            | _ ->
+                match solutionCandidates repoRoot with
+                | [ name ] -> name
+                | _ -> invalidOp "Test exclusions require one unambiguous authoritative solution."
+
+        let solutionPath = Path.GetFullPath(Path.Combine(repoRoot, solutionName))
+
+        let projects =
+            File.ReadAllText solutionPath
+            |> solutionProjects
+            |> List.map (projectPathRelativeToRepo repoRoot (Path.GetDirectoryName solutionPath))
+
+        fun () ->
+            let inventory =
+                getDiscoveredProjects ()
+                |> List.map (projectPathRelativeToRepo repoRoot repoRoot)
+
+            match resolveExcludedProjectNames projects inventory excluded with
+            | Ok resolved -> resolved
+            | Error error -> invalidOp $"Test scope exclusion is unsafe: %s{error}"

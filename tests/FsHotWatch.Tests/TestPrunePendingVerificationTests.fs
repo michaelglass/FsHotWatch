@@ -305,7 +305,17 @@ let ``incident: a test child that never becomes a live process drives the run to
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            createWithLaunchDeadline (TimeSpan.FromSeconds 1.0) ":memory:" tmpDir (Some configs) None None None None []
+            createWithLaunchDeadline
+                (TimeSpan.FromSeconds 1.0)
+                (fun () -> Map.empty)
+                ":memory:"
+                tmpDir
+                (Some configs)
+                None
+                None
+                None
+                None
+                []
 
         host.RegisterHandler(handler)
 
@@ -581,7 +591,7 @@ type private ScenarioOutcome =
       Queue: Set<string>
       Status: PluginStatus option }
 
-let private runCohortScenario name trigger testExitCode =
+let private runCohortScenario name trigger testExitCode editAfterSeal restoreAfterEdit =
     withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
@@ -667,6 +677,25 @@ let fooTest () = assert (foo 1 = 2)
         // sleep made this test assert scheduler speed on loaded Linux runners: the full
         // run could finish before CheckFile, turning BootScan into a real second run.
         host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+
+        // The cohort is sealed and the full run is still held. Edit the symbol again
+        // (and optionally restore the sealed bytes); each command is the same mailbox
+        // barrier, so the edit is observed before the run is released.
+        if editAfterSeal then
+            let sources =
+                [ "module Lib\nlet foo (x: int) = x + 3\n"
+                  if restoreAfterEdit then
+                      libSource2 ]
+
+            for source in sources do
+                File.WriteAllText(libFile, source)
+
+                match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+                | Some result -> host.EmitFileChecked(result)
+                | None -> failwith "post-seal changed-file check failed"
+
+                host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
@@ -681,7 +710,7 @@ let ``boot-scan symbols discovered during a green full run are covered without a
     // when its cohort seal arrives during the full run that a cold confirm launched.
     // The scan is a baseline over the same built tree, so that full run covers its
     // symbols; queueing another run silently doubles CI.
-    let outcome = runCohortScenario "tp-boot-scan" BootScan 0
+    let outcome = runCohortScenario "tp-boot-scan" BootScan 0 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -694,7 +723,7 @@ let ``an in-session cohort discovered during a full run still queues exactly one
     // Mutation caught: matching every BatchChecked as BootScan would disable the real
     // edit queue. The only difference from the regression above is cohort provenance.
     let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
-    let outcome = runCohortScenario "tp-in-session" trigger 0
+    let outcome = runCohortScenario "tp-in-session" trigger 0 false false
     Assert.Equal(2, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -706,13 +735,26 @@ let ``an in-session cohort discovered during a full run still queues exactly one
 let ``a failing full run cannot discharge boot-scan debt`` () =
     // Mutation caught: absorbing boot debt on the requested scope rather than the
     // completed run's actual green evidence would erase work that no passing test proved.
-    let outcome = runCohortScenario "tp-failed-full" BootScan 1
+    let outcome = runCohortScenario "tp-failed-full" BootScan 1 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ outcome.Queue.Contains "Lib.foo" @>
 
     match outcome.Status with
     | Some(Failed _) -> ()
     | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a source edit after a boot cohort seal cannot borrow the held full run`` restoreAfterEdit =
+    // The full run attached the cohort's debt at the revision the seal captured. A later
+    // edit is a new revision no successor cohort has selected, so the held run cannot
+    // retire it, even when the edit restores the sealed bytes.
+    let outcome =
+        runCohortScenario "tp-boot-seal-edited" BootScan 0 true restoreAfterEdit
+
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Queue.Contains "Lib.foo" @>
 
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
@@ -1392,21 +1434,18 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``a symbol covered only by an unconfigured test project drops instead of wedging the verdict red`` () =
+let ``a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
-    // set of projects fshw is configured to run. A symbol covered only by an unconfigured
-    // project can never be proven green: its covering project never executes, so it never
-    // lands in a run's results and never commits. Live: two full suites passed
-    // back-to-back and `check` still exited 1, because the only covering tests lived in
-    // FsHotWatch.IntegrationTests, which the daemon does not run.
-    //
-    // "Covered" means "covered by a test we can actually run"; anything else is
-    // indistinguishable from having no covering test and drops by the same rule.
+    // set of projects fshw is configured to run. A symbol whose only covering tests live
+    // in such a project was once DROPPED from the queue, so a configured-suite green
+    // discharged somebody else's tests. Nothing ran them; nothing proved them. Unless the
+    // project is declared excluded with a reason, the debt stays owed and the verdict
+    // names the project that owes it.
     withTempDir "tp-unrunnable" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
 
-        // Lib.orphan's ONLY covering test lives in P2 — which is not in `configs`.
+        // Lib.orphan's ONLY covering test lives in P2, which is not in `configs`.
         PendingQueueHelpers.seedCoveredSymbol db "Lib.orphan" "Orphan.fs" "P2" "P2Tests" "orphanTest"
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
@@ -1430,15 +1469,14 @@ let ``a symbol covered only by an unconfigured test project drops instead of wed
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
-        // Unverifiable by construction, so dropped rather than retained forever.
         let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ not (queue.Contains("Lib.orphan")) @>
+        Assert.Contains("Lib.orphan", queue)
 
         match host.GetStatus("test-prune") with
-        | Some(PluginStatus.Failed(msg, _, _)) ->
-            Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
-        | _ -> ())
+        | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
+        | other -> Assert.Fail($"unrunnable debt must deny green and name its project: %A{other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =

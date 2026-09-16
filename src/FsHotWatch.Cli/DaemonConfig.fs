@@ -1735,8 +1735,25 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
+        // `tests.excluded`, resolved to the project identities the symbol index keys
+        // tests by, against the solution and the CURRENT discovered projects. A declared,
+        // reasoned exclusion is what lets debt covered only by that project leave the
+        // queue; any other unconfigured covering project keeps it owed.
+        let excludedProjects =
+            SolutionScope.createExclusionResolver repoRoot t.Solution t.Excluded (fun () ->
+                daemon.Graph.GetAllProjects() |> List.map AbsProjectPath.value)
+
         let handler =
-            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths t.DependsOn
+            createWithScope
+                excludedProjects
+                dbPath
+                repoRoot
+                (Some testConfigs)
+                buildExtensions
+                beforeRun
+                None
+                coveragePaths
+                t.DependsOn
 
         daemon.RegisterHandler(handler)
     | None -> ()
