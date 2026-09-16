@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.32 - 2026-09-16
+
 - the per-file analyzer cache is keyed on the compiler's receipt,
   not on analyzer DLL bytes, so a fresh workspace HITS the shared store. fsc writes the
   portable PDB's absolute path into the PE, so a house-rules DLL built from identical

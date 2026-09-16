@@ -2726,6 +2726,96 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
            (ProcessOutput.text output).Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
        | _ -> false
 
+/// THE CAUSE OF A FAILED RUN THAT NAMED NO TEST — never empty.
+///
+/// A run refused by the shard-pool guard ("Test shard pool '…' is already in use by
+/// PID 6862 …") printed its cause as line 1 of a 351-byte output. That line reached
+/// `logs/daemon.log` and the run's `.output.log`; the ledger entry — and so the verdict's
+/// `reddenedBy`, the surface agents are told to read — said only "Tests failed in X", and
+/// a reader of it concluded a wedged daemon and reaped daemons that were fine. The tool
+/// knew the cause and told the reader where to look instead of what it knew.
+///
+/// So the message CARRIES the cause: the HEAD of the captured output (the first
+/// `HeadLines` non-blank lines, bounded by `HeadMaxChars`), then the path of the full
+/// log. Content first, pointer second. The head, not the tail, because the head is where
+/// a killed, wedged or refused run states its cause — the same claim the daemon-log
+/// sentence had always made while printing the tail.
+///
+/// And it is a TYPE with a private constructor: the only two builders each yield a
+/// sentence, so a blank output cannot produce a blank message — it produces
+/// `unknownPointing`, which SAYS nothing was captured. "Unexplained" and "explained
+/// elsewhere" are different facts, and an empty string states neither.
+type FailureCause = private FailureCause of string
+
+module FailureCause =
+    /// How many non-blank lines of the head are quoted. Twenty: an MTP runner's banner
+    /// (version, discovery, the first migrations) is under ten lines, so a cause stated
+    /// at the start of the run is inside the excerpt with room to spare, while a verdict
+    /// listing `MaxRedCauses` such entries stays a page, not a log.
+    [<Literal>]
+    let HeadLines = 20
+
+    /// The byte bound on the head, so twenty lines of a verbose runner cannot turn the
+    /// verdict file into the run log. 4 KB × ten causes is the most `reddenedBy` grows.
+    [<Literal>]
+    let HeadMaxChars = 4096
+
+    /// The first `HeadLines` non-blank lines of `output`, trimmed, cut to `HeadMaxChars`
+    /// in total. Empty only when the output has no non-blank line.
+    let headOf (output: string) : string list =
+        let lines =
+            (if isNull output then "" else output).Split('\n')
+            |> Array.map (fun l -> l.TrimEnd('\r').TrimEnd())
+            |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
+            |> Array.truncate HeadLines
+            |> Array.toList
+
+        // Spend the character budget line by line (one char per line for the newline);
+        // the line that crosses it is cut and marked, and nothing follows it.
+        let rec take (budget: int) (acc: string list) (rest: string list) =
+            match rest with
+            | [] -> List.rev acc
+            | l :: tail when l.Length + 1 <= budget -> take (budget - l.Length - 1) (l :: acc) tail
+            | l :: _ when budget > 1 -> List.rev ((l.Substring(0, budget - 1) + "…") :: acc)
+            | _ -> List.rev acc
+
+        take HeadMaxChars [] lines
+
+    /// Where the full output is, or why it is nowhere. ONE rendering of the `RunLog.Ref`,
+    /// so both builders point the same way.
+    let private pointer (runLog: RunLog.Ref) : string =
+        match runLog with
+        | RunLog.Ref.Written path -> $"see %s{path}"
+        | RunLog.Ref.Unavailable reason -> $"no output log was saved (%s{reason})"
+
+    /// The message when the run produced NOTHING to quote. Says so explicitly, and
+    /// points at the log (or at the reason there is none).
+    let unknownPointing (project: string) (runLog: RunLog.Ref) : FailureCause =
+        FailureCause
+            $"%s{project}: run failed, no per-test 'failed' line was parsed, and no cause captured — the runner \
+              produced no output to quote; %s{pointer runLog}"
+
+    /// The message for a run whose output named no failing test: its head, then the
+    /// pointer. Routes a blank output to `unknownPointing`, so this is the only door from
+    /// captured text and cannot yield an empty message.
+    let ofOutput (project: string) (runLog: RunLog.Ref) (output: string) : FailureCause =
+        match headOf output with
+        | [] -> unknownPointing project runLog
+        | head ->
+            let quoted = head |> List.map (fun l -> "  | " + l) |> String.concat "\n"
+
+            let where =
+                match runLog with
+                | RunLog.Ref.Written path -> $"full output: %s{path}"
+                | RunLog.Ref.Unavailable reason ->
+                    $"full output was NOT saved (%s{reason}); the lines above are all that was kept"
+
+            FailureCause
+                $"%s{project}: run failed but no per-test 'failed' line was parsed. The run's output begins (first %d{head.Length} non-blank lines; the head is where a killed, wedged or refused run states its cause):\n%s{quoted}\n%s{where}"
+
+    /// The sentence. Total; never empty by construction.
+    let render (FailureCause s) : string = s
+
 /// Build the human-readable error lines for a FAILED test project run, parsed
 /// from the runner's captured `output`. The header line plus the per-test
 /// `failed ...` lines plus the MTP summary lines (`total:`/`failed:`/
@@ -2752,6 +2842,13 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 /// The path comes from a `RunLog.Ref`, never a formatted guess: a path is printed only
 /// when something actually opened it, and otherwise the REASON there is no file takes
 /// its place. A message that points at a log nobody wrote is worse than none.
+///
+/// The summary is taken from BOTH ends. The sentence above already said
+/// the head is where a killed or wedged run states its cause — and then printed only the
+/// tail, so the one thing it claimed to know was the one thing it withheld. A refused run
+/// (the shard-pool guard) says everything on line 1; a run killed mid-way says how far it
+/// got on the last line. The head is `FailureCause.headOf`, the same excerpt the ledger
+/// entry (and so `reddenedBy`) carries, so the daemon log and the verdict agree.
 let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (output: string) : string list =
     let lines = output.Split('\n')
 
@@ -2775,21 +2872,27 @@ let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (out
       yield! failedTests |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       yield! summaryLines |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       if List.isEmpty failedTests then
+          let nonBlank =
+              lines |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
+
+          let head = FailureCause.headOf output
+          let tail = nonBlank.[max head.Length (nonBlank.Length - 40) ..]
+
           match runLog with
           | RunLog.Ref.Written path ->
-              $"%s{projectName}: run failed but no per-test 'failed' line was parsed. The FULL output — including \
-                the HEAD, which is where a killed or wedged run states its cause — was streamed to %s{path}. READ \
-                THAT FIRST; the last output lines follow only as a summary:"
+              $"%s{projectName}: run failed but no per-test 'failed' line was parsed. The FULL output was streamed \
+                to %s{path}. The first %d{head.Length} of its %d{nonBlank.Length} non-blank lines follow — the \
+                HEAD is where a killed, wedged or refused run states its cause:"
           | RunLog.Ref.Unavailable reason ->
               $"%s{projectName}: run failed but no per-test 'failed' line was parsed, and NO output log was saved \
-                (%s{reason}) — so the last output lines below are ALL there is, and the head of the run is gone:"
+                (%s{reason}) — so the lines below are ALL there is. The first %d{head.Length} of %d{nonBlank.Length} \
+                non-blank lines — the HEAD is where a killed, wedged or refused run states its cause:"
 
-          let tail =
-              lines
-              |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
-              |> (fun ls -> ls.[max 0 (ls.Length - 40) ..])
+          yield! head |> List.map (fun l -> $"  | %s{l}")
 
-          yield! tail |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
+          if not (Array.isEmpty tail) then
+              $"%s{projectName}: … and the last %d{tail.Length} lines, where a run killed mid-way says how far it got:"
+              yield! tail |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
 
 /// The human-readable report for a run whose HOST DIED — the counterpart to
 /// `formatFailureReport`, and deliberately NOT it.
@@ -3541,7 +3644,15 @@ let internal failedTestsOfRun
 /// about the PROJECT, and a later class-filtered green must not be allowed to
 /// vindicate it. Deferred/errored projects are project-level for the same reason —
 /// nothing about them was verified.
-let internal failuresOf (classFiles: Map<string, string>) (results: TestResults) : OutstandingFailure list =
+///
+/// `runLogOf` names the run log a project's output was streamed to: a
+/// project-level red carries the head of its output AND the path, so the verdict says
+/// what the tool knows and where the rest is.
+let internal failuresOf
+    (runLogOf: string -> RunLog.Ref)
+    (classFiles: Map<string, string>)
+    (results: TestResults)
+    : OutstandingFailure list =
     let synthetic (project: string) = $"<tests/%s{project}>"
 
     results.Results
@@ -3566,7 +3677,16 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                 // ONCE. This is the only arm where that text is the entry's own
                 // subject: no test was named, so the run itself is what the reader has
                 // to go on.
-                [ projectLevel (ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output) ]
+                //
+                // The MESSAGE carries the head of that output and the
+                // log path — the verdict records only `Message`, and "Tests failed in X"
+                // with the cause hidden in a `Detail` no surface prints sent a reader to
+                // reap daemons over a shard-pool refusal stated on line 1.
+                [ projectLevel (
+                      ErrorLedger.ErrorEntry.errorWithDetail
+                          (FailureCause.render (FailureCause.ofOutput project (runLogOf project) output))
+                          output
+                  ) ]
             else
                 parsed
                 |> List.map (fun (className, methodName, line) ->
@@ -7397,7 +7517,19 @@ let internal createWithLaunchDeadline
 
                     let passedTests = passedTestsOfRun repoRoot completed.RunId
 
-                    let foundFailures = failuresOf state.TestClassFiles testResults
+                    // The run log a project-level cause points at. Named
+                    // only when it is on disk: `Written` is otherwise reserved for the
+                    // code holding the open handle, and a message must never point at
+                    // a log nobody wrote.
+                    let runLogOf (project: string) : RunLog.Ref =
+                        let path = RunLog.pathIn (Ctrf.runDir repoRoot completed.RunId) project
+
+                        if File.Exists path then
+                            RunLog.Ref.Written path
+                        else
+                            RunLog.Ref.Unavailable "no output log is on disk for this run"
+
+                    let foundFailures = failuresOf runLogOf state.TestClassFiles testResults
 
                     let checkReach, conditionalFailureRecall =
                         failedTestsOfRun repoRoot completed.RunId testResults

@@ -156,7 +156,7 @@ let private structuralRedCause: Verdict.RedCause =
     { Source = "test-fixture"
       File = "src/Lib/Thing.fs"
       Severity = "error"
-      Message = "the fixture's structural failure"
+      Message = Verdict.RedCauseMessage.ofLedger "test-fixture" "src/Lib/Thing.fs" "the fixture's structural failure"
       Kind = Verdict.AboutThisTree }
 
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
@@ -3441,7 +3441,7 @@ let private fcsCause (message: string) : Verdict.RedCause =
     { Source = "fcs"
       File = "src/Lib/Thing.fs"
       Severity = "error"
-      Message = message
+      Message = Verdict.RedCauseMessage.ofLedger "fcs" "src/Lib/Thing.fs" message
       // Classified by PRODUCTION, not stamped: a fixture that hand-picked the kind
       // would keep passing if `classify` stopped working, and these causes are the
       // exact shape (`fcs` + `internal error:`) the classifier exists to recognise.
@@ -4353,7 +4353,7 @@ let private aboutThisTree (source: string) : Verdict.RedCause =
     { Source = source
       File = "<build>"
       Severity = "error"
-      Message = "boom"
+      Message = Verdict.RedCauseMessage.ofLedger source "<build>" "boom"
       Kind = Verdict.AboutThisTree }
 
 let private failedPlugin (name: string) : string * ParsedPluginStatus =
@@ -4446,7 +4446,7 @@ let ``a red made only of causes fshw cannot attribute is INCOMPARABLE, never agr
         { Source = "fcs"
           File = "/gone/Vanished.fs"
           Severity = "error"
-          Message = "internal error: boom"
+          Message = Verdict.RedCauseMessage.ofLedger "fcs" "/gone/Vanished.fs" "internal error: boom"
           Kind = Verdict.CheckerFault }
 
     let c =
@@ -5777,3 +5777,79 @@ let ``the projected check reading is green RELATIVE TO the daemon's baseline, an
     match noBaseline.Divergence with
     | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "no full-suite baseline" @>
     | other -> failwithf "a projection with no baseline must be incomparable, got %A" other
+
+// ---------------------------------------------------------------------------
+// A `reddenedBy` entry can never carry an EMPTY message. "Unexplained"
+// and "explained elsewhere" are different facts, and a blank string states neither: the
+// reader who found `message: ""` beside a red concluded a wedged daemon. The guarantee is
+// the TYPE — `RedCauseMessage` has a private constructor and only two builders, each of
+// which yields a sentence — not a runtime check at the serializer.
+
+[<Fact(Timeout = 15000)>]
+let ``RedCauseMessage: a known message is kept, a blank one becomes the pointer sentence`` () =
+    let known =
+        Verdict.RedCauseMessage.ofLedger "test-prune" "<tests/P>" "Some.Test FAILED"
+
+    test <@ Verdict.RedCauseMessage.value known = "Some.Test FAILED" @>
+
+    for blank in [ ""; "   "; "\n\t" ] do
+        let unknown = Verdict.RedCauseMessage.ofLedger "test-prune" "<tests/P>" blank
+        let text = Verdict.RedCauseMessage.value unknown
+        test <@ not (String.IsNullOrWhiteSpace text) @>
+        test <@ text.Contains("no cause captured") @>
+        // Says WHERE to look, and WHO failed to say why.
+        test <@ text.Contains("logs/daemon.log") @>
+        test <@ text.Contains("test-prune") @>
+
+    let pointer = Verdict.RedCauseMessage.unknownPointing "fcs" "src/Lib/Thing.fs"
+    test <@ (Verdict.RedCauseMessage.value pointer).Contains("no cause captured") @>
+    test <@ (Verdict.RedCauseMessage.value pointer).Contains("src/Lib/Thing.fs") @>
+
+[<Fact(Timeout = 15000)>]
+let ``reddenedBy never serializes an empty message, and never reads one back as empty`` () =
+    withTempDir "verdict-409-no-empty-message" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        // A plain path, not the plugin's `<tests/P>` synthetic key: the serializer
+        // escapes `<` as `\u003C`, and this test edits the written JSON by plain replace.
+        let blankCause: Verdict.RedCause =
+            { Source = "test-prune"
+              File = "src/Lib/Thing.fs"
+              Severity = "error"
+              Message = Verdict.RedCauseMessage.ofLedger "test-prune" "src/Lib/Thing.fs" ""
+              Kind = Verdict.AboutThisTree }
+
+        let spec =
+            { greenVerdict tree.Hash tree.FileCount with
+                Command = Verdict.Check
+                Outcome = Verdict.Red
+                ExitCode = 1
+                RedCauses = [ blankCause ] }
+
+        use json = JsonDocument.Parse(serializeSpec spec)
+
+        let message =
+            json.RootElement.GetProperty("reddenedBy").[0].GetProperty("message").GetString()
+
+        test <@ not (String.IsNullOrWhiteSpace message) @>
+        test <@ message.Contains("no cause captured") @>
+
+        // A verdict written by an OLDER build (or a hand-edited one) with `"message": ""`
+        // reads back through the same builder: the file cannot make the type lie.
+        // The pointer sentence carries nothing JSON escapes, so a plain replace edits
+        // exactly the one field.
+        let hostile = (serializeSpec spec).Replace(message, "")
+
+        let path = Path.Combine(root, Verdict.RelativePath)
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, hostile)
+
+        use check = JsonDocument.Parse(hostile)
+        test <@ check.RootElement.GetProperty("reddenedBy").[0].GetProperty("message").GetString() = "" @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            let readBack = Verdict.RedCauseMessage.value (List.exactlyOne v.RedCauses).Message
+            test <@ readBack.Contains("no cause captured") @>
+        | other -> failwithf "expected a readable verdict, got %A" other)

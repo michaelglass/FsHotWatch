@@ -869,6 +869,12 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
 
 open FsHotWatch.ProcessHelper
 
+/// `failuresOf` names the run log a project-level cause points at; these
+/// tests are about severities and shapes, not the pointer, so none was saved.
+let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
+    FsHotWatch.RunLog.Ref.Unavailable "fixture: no run log"
+
+
 let private rep total passed failed skipped other : Flakiness.TestReport =
     { Total = total
       Passed = passed
@@ -1118,7 +1124,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
         { Results = Map.ofList [ "ProjA", TestsErrored "test host was KILLED by SIGKILL (exit 137)" ]
           Elapsed = TimeSpan.Zero }
 
-    let entry = (failuresOf Map.empty aborted |> List.exactlyOne).Entry
+    let entry = (failuresOf noRunLog Map.empty aborted |> List.exactlyOne).Entry
 
     test <@ entry.Severity = FsHotWatch.ErrorLedger.HostAborted @>
     test <@ FsHotWatch.ErrorLedger.ErrorEntry.isRunnerAbort entry @>
@@ -1135,7 +1141,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
         { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let realFailures = failuresOf Map.empty failed
+    let realFailures = failuresOf noRunLog Map.empty failed
     test <@ not realFailures.IsEmpty @>
 
     test

@@ -14,6 +14,21 @@
   quote-aware `--project` discovery now reads the arg string through the matching
   `ProcessHelper.splitArgs`. An unspaced class name is unchanged byte-for-byte.
 
+- a test run that fails without a parseable per-test `failed` line now
+  puts the cause the tool already knows INTO its ledger entry — and so into the verdict's
+  `reddenedBy` — instead of pointing at a log. The entry's message carries the HEAD of the
+  run's captured output (the first 20 non-blank lines, bounded to 4 KB) followed by the
+  path of the full `.output.log`: content first, pointer second. The head, because that is
+  where a killed, wedged or refused run (the shard-pool guard's "already in use by PID …")
+  states its cause; before, the message was the fixed "Tests failed in X" with the output
+  in a `Detail` no surface records, and a reader concluded a wedged daemon. The message is
+  a `FailureCause` value (private constructor; `ofOutput` / `unknownPointing`), so a run
+  with no output yields "no cause captured … see <path>", never an empty message. The
+  daemon-log report (`formatFailureReport`) now summarises from both ends — the head it
+  had always claimed to be the place to look, then the tail — instead of the tail alone.
+
+## 0.13.0-alpha.36 - 2026-09-16
+
 - a zero-test completion on an unchanged tree no longer replaces an
   earned test-evidence receipt with an unbound one. The `TestsFinished` handler folds a
   typed `ReceiptTransition` (`Earned` / `Noop` / `Revoked`) into the receipt store

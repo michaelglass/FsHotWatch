@@ -8,6 +8,16 @@
   class name. A value with only a single quote or a backslash is no longer needlessly
   wrapped in quotes; whitespace and double quotes still are.
 
+- a `reddenedBy` entry can no longer carry an empty `message`.
+  `RedCause.Message` is now a `RedCauseMessage` — a private-constructor type whose only
+  builders are `ofLedger` (the ledger's own text) and `unknownPointing` (a sentence that
+  says no cause was captured, names the reporting source and file, and points at
+  `.fshw/logs/daemon.log`). A blank ledger message, and a blank `message` in a verdict
+  file read back from disk, both render as the pointer sentence, so "unexplained" is
+  distinguishable from "explained elsewhere" on the surface agents are told to read.
+
+## 0.14.0-alpha.48 - 2026-09-16
+
 - a check no longer loses the executed evidence an earlier read of the
   same check retained when a later same-tree read is quiet. `TestRunEvidence.reconcile`
   (shared by `check` and `--run-once`) classifies every reading as `Executed`,

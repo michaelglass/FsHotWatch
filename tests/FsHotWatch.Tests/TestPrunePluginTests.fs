@@ -2516,9 +2516,129 @@ let ``the console tail cannot reach the head — which is why the log exists`` (
         formatFailureReport "Intelligence.Tests.Integration" savedLog output
         |> String.concat "\n"
 
-    test <@ not (report.Contains("already in use by PID 18024")) @>
-    // ...so the message had better point at something that does contain it.
+    // The console summary used to print ONLY the tail, so this line
+    // (the cause, on line 1) was structurally unreachable and the reader was sent to the
+    // log. The report now summarises from the HEAD as well: the cause is in the report
+    // itself. The log is still named — the head is an excerpt, not the file.
+    test <@ report.Contains("already in use by PID 18024") @>
     test <@ report.Contains(".output.log") @>
+
+// --- the cause the tool already knows goes IN the verdict ---
+//
+// A run refused by the shard-pool guard printed its cause as the first line of a
+// 351-byte output. That line reached daemon.log and the run's `.output.log`, but the
+// ledger entry (and so `reddenedBy`) said only "Tests failed in X" with the output in a
+// `Detail` no surface records. A reader of verdict.json concluded a wedged daemon and
+// reaped daemons that were fine.
+
+/// An output whose HEAD and TAIL differ: the cause first, then enough repeated noise
+/// that a fixed tail cannot reach it.
+let private headTailOutput =
+    [ "Test shard pool 'intelligence_test_9f80_integration' is already in use by PID 6862"
+      yield! List.init 80 (fun i -> $"Applying migration 2025071%d{i}_AddThing")
+      "TAIL-MARKER: last line of the run" ]
+    |> String.concat "\n"
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport summarises from the HEAD (and the tail) when no failed line parses`` () =
+    let report =
+        formatFailureReport "Intelligence.Tests.Integration" savedLog headTailOutput
+        |> String.concat "\n"
+
+    // The head is where a killed or wedged run states its cause — and it is what the
+    // daemon.log sentence had always claimed the log was for.
+    test <@ report.Contains("already in use by PID 6862") @>
+    // The tail is kept too: a run that died mid-way states that at the end.
+    test <@ report.Contains("TAIL-MARKER") @>
+    // Not the whole output: the middle is elided and the log still named for it.
+    test <@ not (report.Contains("Applying migration 20250740_AddThing")) @>
+    test <@ report.Contains(".output.log") @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: a run with no per-test failure carries the HEAD of its output, then the log path`` () =
+    let path = "/repo/.fshw/test-runs/abc123/Intelligence.Tests.Integration.output.log"
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "Intelligence.Tests.Integration", TestsFailed(headTailOutput, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry =
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) Map.empty failed
+         |> List.exactlyOne)
+            .Entry
+
+    // The HEAD is what appears — the cause, not the tail.
+    test <@ entry.Message.Contains("already in use by PID 6862") @>
+    test <@ not (entry.Message.Contains("TAIL-MARKER")) @>
+    // Bounded: N lines, not the whole capture.
+    test <@ not (entry.Message.Contains("Applying migration 20250740_AddThing")) @>
+    // Content FIRST, pointer SECOND.
+    test <@ entry.Message.Contains(path) @>
+    test <@ entry.Message.IndexOf("PID 6862") < entry.Message.IndexOf(path) @>
+    // Still a red, still failing.
+    test <@ entry.Severity = FsHotWatch.ErrorLedger.Error @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: the head excerpt is bounded in bytes, not only in lines`` () =
+    // Twenty lines of 1 KB each is 20 KB; the excerpt must stop well short of that so a
+    // verbose runner cannot turn the verdict file into the run log.
+    let wide = String('x', 1024)
+
+    let output =
+        [ "CAUSE-LINE first"; yield! List.replicate 19 wide ] |> String.concat "\n"
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry =
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written "/r/P.output.log") Map.empty failed
+         |> List.exactlyOne)
+            .Entry
+
+    test <@ entry.Message.Contains("CAUSE-LINE first") @>
+    test <@ entry.Message.Length < FailureCause.HeadMaxChars + 512 @>
+
+[<Fact(Timeout = 15000)>]
+let ``FailureCause.unknownPointing renders the pointer sentence, never an empty message`` () =
+    // "Unexplained" must be distinguishable from "explained elsewhere": when nothing is
+    // known the message SAYS so and points at the log — it is never blank.
+    let path = "/repo/.fshw/test-runs/abc123/P.output.log"
+
+    let known = FailureCause.unknownPointing "P" (FsHotWatch.RunLog.Ref.Written path)
+    test <@ (FailureCause.render known).Contains("no cause captured") @>
+    test <@ (FailureCause.render known).Contains($"see %s{path}") @>
+
+    let unsaved =
+        FailureCause.unknownPointing "P" (FsHotWatch.RunLog.Ref.Unavailable "disk full")
+
+    test <@ (FailureCause.render unsaved).Contains("no cause captured") @>
+    test <@ (FailureCause.render unsaved).Contains("disk full") @>
+    test <@ not (String.IsNullOrWhiteSpace(FailureCause.render unsaved)) @>
+
+[<Fact(Timeout = 15000)>]
+let ``FailureCause.ofOutput on a blank output falls back to the pointer sentence`` () =
+    // The only way to build a cause from output: blank output cannot yield a blank
+    // message, because the builder routes it to `unknownPointing`.
+    let path = "/repo/.fshw/test-runs/abc123/P.output.log"
+
+    let cause =
+        FailureCause.ofOutput "P" (FsHotWatch.RunLog.Ref.Written path) "  \n\n  "
+
+    test <@ (FailureCause.render cause).Contains("no cause captured") @>
+    test <@ (FailureCause.render cause).Contains(path) @>
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed("", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry =
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) Map.empty failed
+         |> List.exactlyOne)
+            .Entry
+
+    test <@ not (String.IsNullOrWhiteSpace entry.Message) @>
+    test <@ entry.Message.Contains("no cause captured") @>
 
 // --- isZeroTestsUnderFilter ---
 //
