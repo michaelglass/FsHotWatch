@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.32 - 2026-09-16
+
 - `CachePathIdentity.ofPath` names a directory the same with or
   without a trailing separator. `.fshw.json` analyzer paths are written
   `…/bin/Debug/net10.0/`; the separator survived as an empty last segment, the
