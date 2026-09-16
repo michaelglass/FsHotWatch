@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Adopts CommandTree 0.11.0 (from 0.8.1). A mistyped `fshw` command whose name is close
+  to a real one is now refused with one `Did you mean '...'?` line. A bad typed
+  positional value is reported naming the argument and the accepted values. A flag case
+  that would bind more than one value is now a construction-time error instead of a
+  crash on first use; `fshw` declares none, so its commands and flags are unchanged.
+
 ## 0.14.0-alpha.50 - 2026-09-16
 
 - a daemon whose `analyzers.paths` load no analyzers — most often a
