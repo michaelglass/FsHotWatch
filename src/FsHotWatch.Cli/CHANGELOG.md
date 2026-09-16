@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.49 - 2026-09-16
+
 - `test-rerun --filter-class` / `--filter-trait` quote their values with
   the shared `ProcessHelper.quoteArg` (the `ProcessStartInfo.Arguments` rule) instead of a
   private copy, so `test-rerun` and `check` hand the runner the same token for the same
