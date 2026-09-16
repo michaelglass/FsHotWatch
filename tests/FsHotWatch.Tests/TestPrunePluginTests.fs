@@ -70,11 +70,19 @@ let ``changed-files command returns empty list when no files checked`` () =
 let ``test-prune error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
+    let root = isolatedRoot ()
+    let handler = create ":memory:" root None None None None None []
     host.RegisterHandler(handler)
 
+    // The file must EXIST: an analysis failure for a path that is not on disk is a
+    // deleted file, not a failed one, and reports no Failed status.
+    // This test is about null check results for a real file.
+    let fakeFile = Path.Combine(root, "src", "Fake.fs")
+    Directory.CreateDirectory(Path.GetDirectoryName fakeFile) |> ignore
+    File.WriteAllText(fakeFile, "")
+
     let fakeResult =
-        { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
+        { fakeFileCheckResult fakeFile with
             Source = "" }
 
     try

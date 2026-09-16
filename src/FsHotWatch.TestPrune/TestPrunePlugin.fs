@@ -6890,28 +6890,51 @@ let internal createWithLaunchDeadline
                     // cannot manufacture a terminal. The ledger entry and the
                     // force-full-suite consequence persist either way.
                     let markUnanalysable (reason: string) (detail: string) (logDetail: string) : TestPruneState =
-                        Logging.error
-                            "test-prune"
-                            $"%s{reason} for %s{relPath}: %s{logDetail} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+                        match FileFreshness.resolvePresence repoRoot relPath with
+                        | FileFreshness.Gone ->
+                            // A path that no longer exists is GONE, not a
+                            // file that failed analysis: there is no source to be invisible
+                            // and no parse error to fix. Warning here named files a merge had
+                            // deleted, and the warning denied the gate its green. Forget the
+                            // file everywhere this plugin remembers it instead.
+                            Logging.info
+                                "test-prune"
+                                $"%s{relPath} no longer exists; dropping it rather than reporting '%s{reason}' (%s{detail})"
 
-                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath detail ]
-
-                        ctx.ReportStatus(
-                            PluginStatus.Failed(
-                                $"%s{reason}: %s{detail}",
-                                DateTime.UtcNow,
-                                RunVerdict.create $"%s{reason}: %s{detail}" (DateTime.UtcNow - analysisStarted)
-                            )
-                        )
-
-                        { state with
-                            UnanalyzableFiles =
-                                Map.add
+                            updateFreshness (
+                                FileFreshness.stamp
+                                    FileFreshness.Gone
+                                    false
+                                    DateTime.UtcNow
                                     relPath
-                                    { RelPath = relPath
-                                      File = fileStr
-                                      Reason = detail }
-                                    state.UnanalyzableFiles }
+                                    (Volatile.Read(&freshnessRef))
+                            )
+
+                            { state with
+                                UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
+                        | FileFreshness.Present ->
+                            Logging.error
+                                "test-prune"
+                                $"%s{reason} for %s{relPath}: %s{logDetail} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+
+                            ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath detail ]
+
+                            ctx.ReportStatus(
+                                PluginStatus.Failed(
+                                    $"%s{reason}: %s{detail}",
+                                    DateTime.UtcNow,
+                                    RunVerdict.create $"%s{reason}: %s{detail}" (DateTime.UtcNow - analysisStarted)
+                                )
+                            )
+
+                            { state with
+                                UnanalyzableFiles =
+                                    Map.add
+                                        relPath
+                                        { RelPath = relPath
+                                          File = fileStr
+                                          Reason = detail }
+                                        state.UnanalyzableFiles }
 
                     try
                         // Canonical project identity. For real .fsproj files, FCS
@@ -7157,13 +7180,16 @@ let internal createWithLaunchDeadline
                             // previously-clean entry to dirty.
                             let now = DateTime.UtcNow
 
+                            // a check of a path that has since vanished
+                            // forgets the record rather than re-stamping it — see
+                            // `FileFreshness.stamp`.
                             let updatedFreshness =
-                                let prior = Volatile.Read(&freshnessRef)
-
-                                if currentClean && state.BuildCompletedInThisSession then
-                                    FileFreshness.markClean now relPath prior
-                                else
-                                    FileFreshness.markUnverified relPath prior
+                                FileFreshness.stamp
+                                    (FileFreshness.resolvePresence repoRoot relPath)
+                                    (currentClean && state.BuildCompletedInThisSession)
+                                    now
+                                    relPath
+                                    (Volatile.Read(&freshnessRef))
 
                             updateFreshness updatedFreshness
 

@@ -135,12 +135,36 @@ type CheckPipeline
 
     /// Register project options for a project. Maps each source file to this project's options.
     /// Filters out generated files in obj/ and bin/ directories that should not be checked.
+    ///
+    /// Re-registering a project REPLACES its compile-item set: a file the prior options
+    /// listed and these do not stops mapping to this project, and stops being registered at
+    /// all when no other project lists it. Without that, a file removed
+    /// from the project survived in the per-file map with the project's OLD options, and
+    /// every later check and scan of the registered set kept reaching for it.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         let filteredOptions =
             { options with
                 SourceFiles =
                     options.SourceFiles
                     |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
+
+        let removedFiles =
+            match projectOptionsByProject.TryGetValue(projectPath) with
+            | true, prior -> Set.difference (Set.ofArray prior.SourceFiles) (Set.ofArray filteredOptions.SourceFiles)
+            | false, _ -> Set.empty
+
+        for removed in removedFiles do
+            let key = AbsFilePath.create removed
+
+            match projectOptionsByFile.TryGetValue(key) with
+            | true, existing ->
+                match
+                    existing
+                    |> List.filter (fun o -> o.ProjectFileName <> filteredOptions.ProjectFileName)
+                with
+                | [] -> projectOptionsByFile.TryRemove(key) |> ignore
+                | remaining -> projectOptionsByFile[key] <- remaining
+            | false, _ -> ()
 
         projectOptionsByProject[projectPath] <- filteredOptions
         projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot filteredOptions

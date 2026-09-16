@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `CheckPipeline.RegisterProject` REPLACES a project's compile-item set on
+  re-registration. A file the prior options listed and the new ones do not stops mapping
+  to that project, and leaves `GetAllRegisteredFiles` when no other project lists it;
+  before, it survived with the project's old options. Daemon discovery was not exposed
+  (it calls `PrepareForRediscovery` first), but the public `Daemon.RegisterProject` was.
+
 ## 0.10.0-alpha.33 - 2026-09-16
 
 - `ProcessHelper.quoteArg` / `ProcessHelper.splitArgs` — the one
