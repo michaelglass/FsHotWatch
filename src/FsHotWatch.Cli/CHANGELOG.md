@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.50 - 2026-09-16
+
 - a daemon whose `analyzers.paths` load no analyzers — most often a
   freshly created workspace where the analyzer outputs have not been built — no longer
   dies with an unhandled `ConfigError` and a stack trace. `fshw start` catches the
