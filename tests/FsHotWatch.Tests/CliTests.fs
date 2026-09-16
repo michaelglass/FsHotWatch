@@ -2717,6 +2717,42 @@ let ``a passing run does NOT print the search evidence`` () =
     test <@ not (stderr.Contains("Searched:")) @>
     test <@ not (stderr.Contains("Filter:")) @>
 
+// --- A passing project cannot vouch for a selected sibling that produced no result ---
+//
+// `ran-partial` says at least one project executed. It does not say every selected project
+// did, so a run where one project passed and another errored, deferred or reported a
+// status this build cannot read must not print "Tests passed". A sibling that matched
+// nothing under the filter is different: it was selected by no test the filter named.
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("errored", 3)>]
+[<InlineData("deferred", 3)>]
+[<InlineData("future-unknown-status", 3)>]
+let ``a passing project cannot hide another selected project's missing result`` (status: string, expectedExit: int) =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Integration","status":"OUTCOME","output":"runner did not produce a report","counts":null}]}"""
+            .Replace("OUTCOME", status)
+
+    let output, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = expectedExit @>
+    test <@ not (output.Contains("Tests passed")) @>
+    test <@ output.Contains("Integration") @>
+
+[<Fact(Timeout = 15000)>]
+let ``filtered zero-match siblings do not invalidate an actual passing selection`` () =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Unrelated","status":"no-tests-matched","output":"","counts":{"total":0,"succeeded":0,"failed":0,"skipped":0,"other":0}}]}"""
+
+    let output, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 0 @>
+    test <@ output.Contains("Tests passed") @>
+
 // --- criterion 3: the CLI states per-project test counts ---
 //
 // "The missing summary line is the tell that separates a real pass from a vacuous one,

@@ -1257,14 +1257,14 @@
     "Flakiness.fs": [
       {
         "coveredLines": 107,
-        "coveredBranches": 29,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 28,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-17: 29 -> 28 because covered code was deleted, not because a test stopped covering it. `Flakiness.TestReport.allClear` (a short-circuit `&&` the tests drove both ways) and the former verdict reader `tryParseReport` were removed when verdicts moved to `Ctrf.tryVerdictReport`. Measured on the change by a full `mise run ci` (3337 tests): 28/40 branches.",
         "platform": "macos"
       },
       {
         "coveredLines": 107,
-        "coveredBranches": 38,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 37,
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || 2026-09-17: PROVISIONAL 38 -> 37, not measured on Linux: lowered by the macOS delta for the same deleted `allClear` branch. Re-settle from the first CI run, and raise it if Linux measures higher.",
         "platform": "linux"
       }
     ],

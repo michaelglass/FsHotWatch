@@ -3419,12 +3419,14 @@ let pluginVerdicts
 ///
 /// The counts are copied INLINE into the verdict. The path is provenance, not the
 /// carrier: a number that depends on a second file still being readable is a number
-/// that can evaporate.
+/// that can evaporate. For the same reason only VERDICT evidence is copied
+/// (`Ctrf.verdictReportsForRun`): once inline, a summary its rows never accounted for
+/// would outlive the file as passes nobody observed.
 let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
     match runId with
     | None -> []
     | Some id ->
-        Ctrf.reportsForRun repoRoot id
+        Ctrf.verdictReportsForRun repoRoot id
         |> List.map (fun r ->
             { Project = r.Project
               Ctrf = Path.GetRelativePath(repoRoot, r.Path).Replace('\\', '/')

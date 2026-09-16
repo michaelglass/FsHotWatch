@@ -46,8 +46,15 @@ let private ctrfJson (tests: int) (passed: int) (failed: int) (stop: DateTime) =
                start = ms - 1000L
                stop = ms |}
 
+    // Rows for every counted test: a clean summary its rows do not account for is not
+    // verdict evidence, and the suites are read as verdict evidence.
+    let rows =
+        List.init passed (fun i -> $"""{{"name":"Lib.Tests.T.passes%d{i}","status":"passed"}}""")
+        @ List.init failed (fun i -> $"""{{"name":"Lib.Tests.T.fails%d{i}","status":"failed"}}""")
+        |> String.concat ","
+
     let results =
-        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[]}}"""
+        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[%s{rows}]}}"""
 
     $"""{{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"%s{Guid.NewGuid().ToString()}","results":%s{results}}}"""
 
@@ -6054,3 +6061,20 @@ let ``a check-vs-confirm comparison never reads a model-unavailable run as an an
         test <@ earned.Contains "model gone" @>
         test <@ check.Contains "model gone" @>
     | other -> failwith $"a model-unavailable run is no answer to compare, got %A{other}"
+
+[<Fact>]
+let ``durable suite verdicts refuse a partial clean report`` () =
+    // The verdict copies counts INLINE, so a summary claiming seven passes beside one row
+    // would outlive the file as seven passes nobody observed.
+    withTempDir "ctrf-durable-partial" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = Ctrf.runDir root runId
+        Directory.CreateDirectory dir |> ignore
+
+        File.WriteAllText(
+            Path.Combine(dir, "Lib.Tests" + Ctrf.ReportSuffix),
+            """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+        )
+
+        test <@ List.isEmpty (Verdict.suiteVerdicts root (Some runId)) @>)

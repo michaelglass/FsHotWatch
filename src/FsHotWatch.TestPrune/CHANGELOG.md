@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- (breaking) A project's verdict is decided only by a coherent report
+  (`Ctrf.tryVerdictReport`). `ReportEvidence.ReportRequested` now carries
+  `Result<Ctrf.VerdictReport, string>`. When a report was requested from the runner and
+  none is usable (absent, unreadable, or incoherent), the project is `TestsErrored` on any
+  exit; a clean exit used to make it `TestsPassed`. A coherent report counting zero tests
+  after a clean exit is also `TestsErrored`; after a non-zero exit it stays `TestsFailed`.
+  The per-project counts `run-tests` replies with come from the same strict reader.
+  `Flakiness.TestReport`, `Flakiness.TestReport.allClear` and `Flakiness.tryParseReport`,
+  the former verdict reader, are removed.
+
 ## 0.13.0-alpha.38 - 2026-09-16
 
 - a file that no longer exists is GONE, not a file that failed

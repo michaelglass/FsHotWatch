@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A test run where one project passed and another selected project errored, deferred or
+  reported a status this build does not recognise no longer prints "Tests passed" and
+  exits 0. It names the projects and exits 3 (nothing verified for them). A sibling that
+  matched nothing under the filter still does not block the pass.
+- `Verdict.suiteVerdicts` copies counts only from coherent reports
+  (`Ctrf.verdictReportsForRun`), so `.fshw/verdict.json` cannot carry passes a report's
+  rows never accounted for.
+
 - breaking: a `check`/`confirm` whose reading was taken without an
   available project model is no longer graded as if the model were healthy. A scan that
   raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously

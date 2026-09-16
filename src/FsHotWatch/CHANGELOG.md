@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `Ctrf.tryVerdictReport` validates a CTRF report as verdict evidence and returns the
+  opaque `Ctrf.VerdictReport` (read its counts with `VerdictReport.summary`); it is the
+  only way to construct one. All six summary counters (`tests`, `passed`, `failed`,
+  `pending`, `skipped`, `other`) must be present nonnegative integers, and a clean
+  summary (no `failed`, no `other`) must be accounted for by its `tests` rows: one row
+  per counted test, every row `passed`, `pending` or `skipped`, and each of those counts
+  matching. A red summary stays authoritative without its rows, because a test that threw
+  a raw exception is counted but gets none. A clean summary claiming seven tests beside
+  one row was previously read as seven passes. `Ctrf.tryReadVerdictReport` and
+  `Ctrf.verdictReportsForRun` are the strict counterparts of `tryReadReport` and
+  `reportsForRun`, which stay diagnostic.
+
 - breaking: the daemon now serves its project model to clients.
   `DaemonRpcConfig` gains the required `GetProjectModel: unit -> ProjectModel.Observation`,
   and the `GetDiagnostics` reply carries it as `projectModel` — the versioned

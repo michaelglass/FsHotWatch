@@ -87,8 +87,8 @@ let private ctrfTestsArray (root: JsonNode) : JsonArray =
 ///
 /// NOTE: a real report OMITS per-test entries for tests that threw a raw
 /// (non-assertion) exception while still counting them in the summary — so
-/// this array is NOT a reliable run total. Use `tryParseReport` (summary
-/// counts) for the pass/fail verdict; this array is only for flakiness history.
+/// this array is NOT a reliable run total. Use `Ctrf.tryVerdictReport` for the
+/// pass/fail verdict; this array is only for flakiness history.
 let internal parseCtrfTests (json: string) : TestRunRecord list =
     try
         match JsonNode.Parse(json) with
@@ -113,28 +113,6 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
                 |> Seq.toList
     with _ ->
         []
-
-/// Aggregate, runner-agnostic view of a test run, read from the report's SUMMARY
-/// block. An abbreviation of `FsHotWatch.Ctrf.Summary`, not a second copy: the
-/// pass/fail verdict, the flakiness recorder and the `suites` in
-/// `.fshw/verdict.json` all read one report through one parser, so they cannot
-/// disagree about what it says.
-type TestReport = FsHotWatch.Ctrf.Summary
-
-module TestReport =
-    /// "All clear" — the run produced NOTHING that is not a clean pass-or-skip.
-    /// `Failed` and `Other` are both problems (a test that threw an unrecognised
-    /// raw exception is NOT a pass); `Pending` is skip-like and does not block
-    /// green. No `Total > 0` guard, deliberately: an unfiltered zero-test run is
-    /// the verdict layer's call (it knows `wasFiltered`), so this stays a pure
-    /// "no bad results" predicate.
-    let allClear (r: TestReport) : bool = r.Failed = 0 && r.Other = 0
-
-/// Parse a CTRF report's SUMMARY counts. `None` when the JSON is unparseable or
-/// carries no summary object — the signal the verdict logic reads as "no usable
-/// report", so a truncated or never-flushed report is never mistaken for a clean
-/// run.
-let internal tryParseReport (json: string) : TestReport option = FsHotWatch.Ctrf.trySummary json
 
 /// Compute a flakiness score in [0.0, 1.0] over a sequence of outcomes ordered
 /// most-recent-first. Skipped runs are filtered out before counting (a skip

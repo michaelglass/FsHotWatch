@@ -291,7 +291,7 @@ let private writeEvidenceSuite (repoRoot: string) (runId: System.Guid) =
 
     System.IO.File.WriteAllText(
         System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[{"name":"A.Tests.T.passes1","status":"passed"},{"name":"A.Tests.T.passes2","status":"passed"},{"name":"A.Tests.T.passes3","status":"passed"}]}}"""
     )
 
 [<Theory(Timeout = 15000)>]
@@ -1041,9 +1041,14 @@ let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: str
     let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
     System.IO.Directory.CreateDirectory(runDir) |> ignore
 
+    let rows =
+        List.init tests (fun i -> $"""{{"name":"%s{project}.T.passes%d{i}","status":"passed"}}""")
+        |> String.concat ","
+
     let json =
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"batch","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":N,"passed":N,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"batch","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":N,"passed":N,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[ROWS]}}"""
             .Replace("N", string<int> tests)
+            .Replace("ROWS", rows)
 
     System.IO.File.WriteAllText(System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix), json)
 
@@ -1851,7 +1856,7 @@ let private writeSevenSuiteRun (repoRoot: string) (runId: System.Guid) : string 
     for project in projects do
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix),
-            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"seven","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"seven","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[{"name":"A.Tests.T.passes1","status":"passed"},{"name":"A.Tests.T.passes2","status":"passed"},{"name":"A.Tests.T.passes3","status":"passed"}]}}"""
         )
 
     List.sort projects

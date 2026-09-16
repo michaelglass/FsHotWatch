@@ -2939,10 +2939,11 @@ type ReportEvidence =
     /// No report was requested (an unknown / unsupported runner) — the process
     /// exit code is the only pass/fail signal available.
     | NoReportRequested
-    /// A report WAS requested from a capable runner. `Some` carries the parsed
-    /// summary; `None` means the file was absent / unreadable / unparseable —
-    /// the host aborted before flushing, or wrote a truncated report.
-    | ReportRequested of report: Flakiness.TestReport option
+    /// A report WAS requested from a capable runner. `Ok` carries a report that passed
+    /// `Ctrf.tryVerdictReport`; `Error` says why there is none — the file was absent or
+    /// unreadable (the host aborted before flushing), or what it held is not evidence (a
+    /// truncated report, malformed counters, a clean summary its rows do not account for).
+    | ReportRequested of report: Result<Ctrf.VerdictReport, string>
 
 /// Decide a single project's verdict. The structured test report (when present and
 /// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
@@ -2956,13 +2957,12 @@ type ReportEvidence =
 ///   1. report has any failed/other result → `TestsFailed` (red). Exit irrelevant.
 ///   2. report is all-clear (no failed/other) AND ran ≥1 test → `TestsPassed`
 ///      (green) EVEN IF the process exited non-zero — the flake case.
-///   3. no usable report (absent / unparseable / no summary) AND exit ≠ 0:
-///        - report WAS requested from a capable runner → `TestsErrored`: the host
-///          aborted before writing results; nothing was verified. Never green,
-///          never the misleading "tests failed".
-///        - report NOT requested (unknown runner) → exit code is the only signal
-///          we have → `TestsFailed`.
-///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
+///   3. a report WAS requested from a capable runner and there is no usable one
+///      (absent, unreadable, or not coherent evidence) → `TestsErrored` on ANY exit:
+///      nothing was verified. Never green, never the misleading "tests failed". A
+///      clean exit is not a substitute for the report that was asked for.
+///   4. no report was requested (unknown runner) → the exit code is the only signal
+///      there is → `TestsPassed` or `TestsFailed`.
 ///
 ///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
 ///      A killed host did not finish, so nothing it wrote is a result — including a
@@ -2971,8 +2971,8 @@ type ReportEvidence =
 ///      This arm is why the report is not consulted there: outcome 1 would read that
 ///      partial report and call a machine that ran out of CPU a mass regression.
 ///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
-///   run (the filtered case was handled upstream) — a real misconfiguration, so
-///   it falls to the exit-code tie-break rather than going green.
+///   run (the filtered case was handled upstream) — a real misconfiguration. It is
+///   never green: a non-zero exit keeps it red, and a clean exit verified nothing.
 ///
 /// Outcome 2 deliberately does NOT also require a whitelisted shutdown exit code: the
 /// benign codes are runner/version-specific, and a report positively showing zero
@@ -3011,9 +3011,11 @@ let internal classifyTestOutcome
         // not a verdict, or they will open it and find their "mass regression".
         let reportNote =
             match evidence with
-            | ReportRequested(Some r) ->
+            | ReportRequested(Ok report) ->
+                let r = Ctrf.VerdictReport.summary report
+
                 $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
-            | ReportRequested None -> " It wrote no parseable report."
+            | ReportRequested(Error reason) -> $" It wrote no usable report: %s{reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 
         TestsErrored(
@@ -3024,29 +3026,30 @@ let internal classifyTestOutcome
         let succeeded = isSucceeded outcome
 
         match evidence with
-        | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
-            // Outcome 1.
-            TestsFailed(output, wasFiltered, elapsed)
-        | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
-            // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
-            TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested(Some _) ->
-            // Total == 0: an unfiltered zero-test run. Defer to the exit code so an
-            // empty suite stays red.
-            if succeeded then
-                TestsPassed(output, wasFiltered, elapsed)
-            else
+        | ReportRequested(Ok report) ->
+            let r = Ctrf.VerdictReport.summary report
+
+            if r.Failed > 0 || r.Other > 0 then
+                // Outcome 1.
                 TestsFailed(output, wasFiltered, elapsed)
-        | _ when succeeded ->
-            // Outcome 4.
+            elif r.Total > 0 then
+                // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
+                TestsPassed(output, wasFiltered, elapsed)
+            elif succeeded then
+                // An unfiltered zero-test run that exited cleanly. The report is coherent
+                // and proves only that the runner wrote it.
+                TestsErrored "test host exited cleanly but its report counts zero tests — nothing verified"
+            else
+                // An unfiltered zero-test run that exited non-zero: an empty suite stays red.
+                TestsFailed(output, wasFiltered, elapsed)
+        | ReportRequested(Error reason) ->
+            // Outcome 3 — the report that was asked for is not evidence, whatever the exit.
+            let exit = if succeeded then "exited cleanly" else "exited non-zero"
+            TestsErrored $"test host %s{exit} but left no usable report (%s{reason}) — nothing verified"
+        | NoReportRequested when succeeded ->
+            // Outcome 4. Unknown runner we never asked for a report: the exit code is all there is.
             TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested None ->
-            // Outcome 3 — the host aborted before writing results, so nothing was
-            // verified. Never green, never the misleading "tests failed".
-            TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
-        | NoReportRequested ->
-            // Unknown runner we never asked for a report: the exit code is all there is.
-            TestsFailed(output, wasFiltered, elapsed)
+        | NoReportRequested -> TestsFailed(output, wasFiltered, elapsed)
 
 /// Tokenize the `ProcessStartInfo.Arguments` string far enough to discover a project
 /// path — the one word-splitting rule in `ProcessHelper.splitArgs`. An unfinished quote
@@ -4325,9 +4328,10 @@ let private executeTests
                                 | None -> None
 
                             let reportEvidence =
-                                match ctrfPath with
-                                | None -> NoReportRequested
-                                | Some _ -> ReportRequested(reportJson |> Option.bind Flakiness.tryParseReport)
+                                match ctrfPath, reportJson with
+                                | None, _ -> NoReportRequested
+                                | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
+                                | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
 
                             let result =
                                 if apphostMissing then
@@ -6309,9 +6313,11 @@ let internal createWithLaunchDeadline
                     // the run id the daemon just handed back — declared membership, never
                     // an mtime scan of a shared pile. An empty list from an existing
                     // run-dir means the run executed no tests, and that is exactly the
-                    // fact the CLI has to be able to state.
+                    // fact the CLI has to be able to state. Only verdict evidence is
+                    // read, so the counts printed beside a status are the ones that
+                    // decided it.
                     let runReports =
-                        FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
+                        FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
                         |> List.map (fun r -> r.Project, r.Summary)
                         |> Map.ofList
 
