@@ -38,7 +38,7 @@
       "rollForward": false
     },
     "fssemantictagger": {
-      "version": "0.14.0-alpha.8",
+      "version": "0.14.0-alpha.10",
       "commands": [
         "fssemantictagger"
       ],
@@ -52,7 +52,7 @@
       "rollForward": false
     },
     "fshotwatch.cli": {
-      "version": "0.14.0-alpha.50",
+      "version": "0.14.0-alpha.51",
       "commands": [
         "fshw"
       ],
