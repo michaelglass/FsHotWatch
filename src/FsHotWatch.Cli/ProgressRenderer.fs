@@ -844,7 +844,9 @@ module AgentHints =
                     causes
                     |> List.mapi (fun i (c: Verdict.RedCause) ->
                         let label = if i = 0 then "REDDENED" else "        "
-                        let msg = c.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
+
+                        let msg =
+                            (Verdict.RedCauseMessage.value c.Message).Replace('\r', ' ').Replace('\n', ' ').Trim()
 
                         // The kind is printed only when it is NOT
                         // `AboutThisTree`, so the ordinary red keeps its ordinary line and

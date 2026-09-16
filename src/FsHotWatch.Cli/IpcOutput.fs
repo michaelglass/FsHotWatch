@@ -108,7 +108,7 @@ let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdic
         { Verdict.Source = e.Plugin
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = e.Message
+          Verdict.Message = Verdict.RedCauseMessage.ofLedger e.Plugin file e.Message
           Verdict.Kind = Verdict.RedCause.classify e.Plugin file e.Message })
 
 /// How many of the failing entries are NOT claims about the tree on disk

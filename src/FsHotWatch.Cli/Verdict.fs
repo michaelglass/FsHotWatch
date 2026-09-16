@@ -511,13 +511,47 @@ module RunSuites =
 /// So the file now names them. `Source` is the LEDGER KEY that reported the entry — a
 /// plugin name, or `fcs` — precisely because the interesting case is the one that is not
 /// a plugin.
+/// WHAT A RED CAUSE SAYS — never nothing.
+///
+/// A reader who found a `reddenedBy` entry with no usable message beside
+/// a red concluded a wedged daemon and reaped daemons that were fine; the cause had been
+/// in `logs/daemon.log` the whole time. "Unexplained" and "explained elsewhere" are
+/// different facts, and an empty string states neither. So the message is a TYPE that
+/// cannot be constructed empty: the constructor is private, and its only two builders
+/// each yield a sentence — the ledger's own text when there is one, and otherwise a
+/// sentence that says so and points at where the cause was logged. Not a runtime check
+/// at the serializer: a check can be forgotten at the next writer, a type cannot.
+type RedCauseMessage = private RedCauseMessage of string
+
+module RedCauseMessage =
+    /// The sentence. Total; never empty by construction.
+    let value (RedCauseMessage s) : string = s
+
+    /// The message for a cause whose reporter said nothing. Names the reporter and the
+    /// file so the reader knows WHOSE silence this is, and points at the daemon log,
+    /// which is the one surface every reporter writes to. Carries nothing JSON would
+    /// escape, so a verdict consumer can grep for it verbatim.
+    let unknownPointing (source: string) (file: string) : RedCauseMessage =
+        RedCauseMessage
+            $"no cause captured: %s{source} reported a failing diagnostic against %s{file} with no message; see .fshw/logs/daemon.log"
+
+    /// The message for a ledger entry. The entry's own text when it has any; the pointer
+    /// sentence when it is blank. THE only door from a raw string, so no writer can put
+    /// an empty message on the wire.
+    let ofLedger (source: string) (file: string) (raw: string) : RedCauseMessage =
+        if System.String.IsNullOrWhiteSpace raw then
+            unknownPointing source file
+        else
+            RedCauseMessage raw
+
 type RedCause =
     {
         Source: string
         /// Repo-relative where the ledger gave one; otherwise as reported.
         File: string
         Severity: string
-        Message: string
+        /// Never empty — see `RedCauseMessage`.
+        Message: RedCauseMessage
         /// Is this diagnostic a claim about THE TREE ON DISK — see `RedCauseKind`.
         Kind: RedCauseKind
     }
@@ -1863,7 +1897,7 @@ let serialize (v: Verdict) : string =
                   {| source = c.Source
                      file = c.File
                      severity = c.Severity
-                     message = c.Message
+                     message = RedCauseMessage.value c.Message
                      // Whether this cause is a claim about the tree on
                      // disk at all. Recorded per cause, not summarised, because the
                      // interesting file is the MIXED one — some real, some not — and a
@@ -2831,10 +2865,23 @@ let read (repoRoot: string) : Reading =
                              | Some arr when arr.ValueKind = JsonValueKind.Array ->
                                  arr.EnumerateArray()
                                  |> Seq.map (fun el ->
-                                     { Source = tryString el "source" |> Option.defaultValue "(unnamed source)"
-                                       File = tryString el "file" |> Option.defaultValue ""
+                                     let source = tryString el "source" |> Option.defaultValue "(unnamed source)"
+
+                                     let file = tryString el "file" |> Option.defaultValue ""
+
+                                     { Source = source
+                                       File = file
                                        Severity = tryString el "severity" |> Option.defaultValue "error"
-                                       Message = tryString el "message" |> Option.defaultValue ""
+                                       // A file written before the
+                                       // builder existed (or hand-edited) may carry a
+                                       // blank; it reads back as the pointer sentence, so
+                                       // the type holds for what is READ as well as what
+                                       // is written.
+                                       Message =
+                                         RedCauseMessage.ofLedger
+                                             source
+                                             file
+                                             (tryString el "message" |> Option.defaultValue "")
                                        // A verdict written before `kind` existed said
                                        // nothing about attribution, and "said nothing"
                                        // must read as the CONSERVATIVE answer — a red is

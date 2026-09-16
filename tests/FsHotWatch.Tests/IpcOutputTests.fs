@@ -1545,7 +1545,12 @@ let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invi
     // ONE traversal, so they agree by construction — asserted, not assumed.
     test <@ List.length causes = exitCodeFromResponse false resp * 2 @>
     test <@ causes |> List.exists (fun c -> c.Source = "fcs" && c.File = "src/Lib/Thing.fs") @>
-    test <@ causes |> List.exists (fun c -> c.Message.Contains "internal error") @>
+
+    test
+        <@
+            causes
+            |> List.exists (fun c -> (Verdict.RedCauseMessage.value c.Message).Contains "internal error")
+        @>
 
     // `--no-warn-fail` drops the warning from BOTH — the causes may never name something
     // the exit code did not count, or the file would explain a red it does not have.

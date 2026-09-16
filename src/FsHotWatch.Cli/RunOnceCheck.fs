@@ -178,7 +178,7 @@ let private redCauses (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: st
         { Verdict.Source = source
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = e.Message
+          Verdict.Message = Verdict.RedCauseMessage.ofLedger source file e.Message
           Verdict.Kind = Verdict.RedCause.classify source file e.Message })
 
 /// How many failing entries are NOT claims about the tree on disk — the
