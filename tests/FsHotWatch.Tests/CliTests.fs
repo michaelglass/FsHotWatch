@@ -1557,6 +1557,36 @@ let ``RerunFilter.render quotes patterns containing whitespace`` () =
     test <@ rendered = "--filter-class \"Foo Bar\"" @>
 
 [<Fact>]
+let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced class name`` () =
+    // `fshw check` (TestPrune's impact filter) and `fshw test-rerun --filter-class` must
+    // hand the runner the SAME argument for the same class — one quoting function, two
+    // callers. Before the tracked issue the check path emitted the name bare and it
+    // word-split into five arguments.
+    let spaced = "Ns.Type+Every background job declares its idempotence"
+    let rerun = RerunFilter.render [ FilterClass spaced ]
+
+    let config: FsHotWatch.TestPrune.TestPrunePlugin.TestConfig =
+        { Project = "P"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = " "
+          TimeoutSec = None
+          ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect }
+
+    let check =
+        FsHotWatch.TestPrune.TestPrunePlugin.buildFilterArgs config (Map.ofList [ "P", [ spaced ] ])
+
+    test <@ check = Some $"-- %s{rerun}" @>
+    test <@ FsHotWatch.ProcessHelper.splitArgs rerun = Some [| "--filter-class"; spaced |] @>
+
+[<Fact>]
+let ``RerunFilter.render leaves an unspaced class pattern byte-for-byte unchanged`` () =
+    test <@ RerunFilter.render [ FilterClass "Ns.Type+PlainClass" ] = "--filter-class Ns.Type+PlainClass" @>
+
+[<Fact>]
 let ``RerunFilter.render quotes only the value half of a trait pair`` () =
     let rendered = RerunFilter.render [ FilterTrait "Category=Slow Browser" ]
     test <@ rendered = "--filter-trait Category=\"Slow Browser\"" @>

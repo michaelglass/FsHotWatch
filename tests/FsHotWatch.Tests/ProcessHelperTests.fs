@@ -1598,3 +1598,61 @@ let ``POSITIVE CONTROL: killing a real child really does surface as 128 + signum
                 $"a child killed with SIGKILL exited %d{code}, and `terminatingSignalOf` did not recognise it — \
                   the discriminator the whole abort-vs-failure fix rests on is dead on this platform"
     | other -> Assert.Fail $"expected a Failed outcome from a SIGKILLed child, got %A{other}"
+
+// =============================================================================
+// one per-argument quoting function for every runner arg string.
+//
+// `ProcessStartInfo.Arguments` is ONE string the runtime word-splits; a value with
+// whitespace must be quoted by the rule that splitter applies or it becomes several
+// arguments. `quoteArg` is that rule; `splitArgs` is the matching parser.
+// =============================================================================
+
+[<Fact>]
+let ``quoteArg leaves an argument without whitespace or quotes byte-for-byte unchanged`` () =
+    Assert.Equal<string>("Ns.Type+PlainClass", quoteArg "Ns.Type+PlainClass")
+    Assert.Equal<string>("*CryptoTests*", quoteArg "*CryptoTests*")
+    Assert.Equal<string>("Category=Browser", quoteArg "Category=Browser")
+    Assert.Equal<string>("it's", quoteArg "it's")
+
+[<Fact>]
+let ``quoteArg wraps a spaced argument in double quotes`` () =
+    Assert.Equal<string>(
+        "\"Ns.Type+Every background job declares its idempotence\"",
+        quoteArg "Ns.Type+Every background job declares its idempotence"
+    )
+
+[<Fact>]
+let ``quoteArg quotes the empty argument so it survives as a token`` () =
+    Assert.Equal<string>("\"\"", quoteArg "")
+    Assert.Equal<string[] option>(Some [| "" |], splitArgs (quoteArg ""))
+
+[<Theory>]
+[<InlineData("Ns.Type+Every background job declares its idempotence")>]
+[<InlineData("has \"embedded\" quotes")>]
+[<InlineData("trailing backslash\\")>]
+[<InlineData("back\\slash before \\\"quote")>]
+[<InlineData("tab\tseparated")>]
+[<InlineData("Plain")>]
+let ``quoteArg round-trips through splitArgs as exactly one token`` (arg: string) =
+    Assert.Equal<string[] option>(Some [| arg |], splitArgs (quoteArg arg))
+
+[<Fact>]
+let ``quoted arguments keep their neighbours as separate tokens`` () =
+    let cls = "Ns.Type+Every background job declares its idempotence"
+
+    let line =
+        String.concat " " [ "--"; "--filter-class"; quoteArg cls; "--filter-class"; quoteArg "Other" ]
+
+    Assert.Equal<string[] option>(Some [| "--"; "--filter-class"; cls; "--filter-class"; "Other" |], splitArgs line)
+
+[<Fact>]
+let ``splitArgs keeps a backslash run at the end of an unquoted arg string literal`` () =
+    // No quote follows the run, so the backslashes are ordinary characters — a Windows
+    // path as the LAST token must not lose its trailing separator.
+    Assert.Equal<string[] option>(Some [| "--out"; "C:\\logs\\" |], splitArgs "--out C:\\logs\\")
+    Assert.Equal<string[] option>(Some [| "a"; "b" |], splitArgs "  a  b  ")
+
+[<Fact>]
+let ``splitArgs fails closed on an unfinished quote`` () =
+    Assert.Equal<string[] option>(None, splitArgs "--filter-class \"unterminated")
+    Assert.Equal<string[] option>(Some [||], splitArgs "   ")

@@ -2676,7 +2676,11 @@ let internal unanalyzableFileDiagnostic (relPath: string) (reason: string) : Err
            this cycle (safe over-selection) until the file analyses cleanly. Fix the reported parse/check error — a \
            misplaced `///` doc comment (FS3520) is the usual cause."
 
-/// Build the filter arg string for a config given affected classes.
+/// Build the filter arg string for a config given affected classes. Each class name is
+/// quoted with `ProcessHelper.quoteArg` before the join, so a name containing spaces
+/// (a backticked sentence-style test module) reaches the runner as ONE argument instead
+/// of word-splitting into several that match nothing. An unspaced
+/// name is unchanged.
 let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
     let classes =
         classesByProject |> Map.tryFind config.Project |> Option.defaultValue []
@@ -2687,7 +2691,9 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
         Logging.debug "test-prune" $"No filterTemplate configured — running all tests for %s{config.Project}"
         None
     | classes, Some template ->
-        let joined = classes |> String.concat config.ClassJoin
+        let joined =
+            classes |> List.map ProcessHelper.quoteArg |> String.concat config.ClassJoin
+
         let result = template.Replace("{classes}", joined)
         Logging.info "test-prune" $"Filter: %s{result}"
         Some result
@@ -2939,66 +2945,10 @@ let internal classifyTestOutcome
             // Unknown runner we never asked for a report: the exit code is all there is.
             TestsFailed(output, wasFiltered, elapsed)
 
-/// Parse the `ProcessStartInfo.Arguments` string far enough to discover a project
-/// path. Double quotes group; a backslash before a quote follows the same odd/even
-/// escaping rule as ProcessStartInfo; single quotes are ordinary characters. An
-/// unfinished quote is not a partial command line, so discovery fails closed.
-let private argTokens (args: string) : string[] option =
-    if String.IsNullOrWhiteSpace args then
-        Some [||]
-    else
-        let tokens = ResizeArray<string>()
-        let token = Text.StringBuilder()
-        let mutable tokenStarted = false
-        let mutable inQuotes = false
-        let mutable index = 0
-
-        let flush () =
-            if tokenStarted then
-                tokens.Add(token.ToString())
-                token.Clear() |> ignore
-                tokenStarted <- false
-
-        while index < args.Length do
-            match args[index] with
-            | '\\' ->
-                let start = index
-
-                while index < args.Length && args[index] = '\\' do
-                    index <- index + 1
-
-                let slashCount = index - start
-
-                if index < args.Length && args[index] = '"' then
-                    token.Append('\\', slashCount / 2) |> ignore
-                    tokenStarted <- true
-
-                    if slashCount % 2 = 0 then
-                        inQuotes <- not inQuotes
-                    else
-                        token.Append('"') |> ignore
-
-                    index <- index + 1
-                else
-                    token.Append('\\', slashCount) |> ignore
-                    tokenStarted <- true
-            | '"' ->
-                tokenStarted <- true
-                inQuotes <- not inQuotes
-                index <- index + 1
-            | character when Char.IsWhiteSpace character && not inQuotes ->
-                flush ()
-                index <- index + 1
-            | character ->
-                token.Append(character) |> ignore
-                tokenStarted <- true
-                index <- index + 1
-
-        if inQuotes then
-            None
-        else
-            flush ()
-            Some(tokens.ToArray())
+/// Tokenize the `ProcessStartInfo.Arguments` string far enough to discover a project
+/// path — the one word-splitting rule in `ProcessHelper.splitArgs`. An unfinished quote
+/// is not a partial command line, so discovery fails closed.
+let private argTokens (args: string) : string[] option = ProcessHelper.splitArgs args
 
 /// The value following `--project`/`-p` in the quote-aware tokenized args.
 /// Shared by `tryApphostPresent` and `detectCtrfRunnerFamily` (both derive a project

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `ProcessHelper.quoteArg` / `ProcessHelper.splitArgs` — the one
+  per-argument quoting rule for a child's `ProcessStartInfo.Arguments` string and its
+  inverse. Every builder of a runner arg string (TestPrune's impact filter, the CLI's
+  `test-rerun` filter) quotes through it so a spaced value survives as one argument.
+
 ## 0.10.0-alpha.32 - 2026-09-16
 
 - `CachePathIdentity.ofPath` names a directory the same with or

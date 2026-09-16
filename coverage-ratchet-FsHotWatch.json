@@ -1588,9 +1588,9 @@
     ],
     "Program.fs": [
       {
-        "coveredLines": 838,
-        "coveredBranches": 156,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 833,
+        "coveredBranches": 154,
+        "reason": "(2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {

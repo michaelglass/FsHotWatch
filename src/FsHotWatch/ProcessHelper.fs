@@ -490,6 +490,114 @@ let mergeDotnetEnv (_command: string) (env: (string * string) list) : (string * 
     else
         env
 
+// ---------------------------------------------------------------------------
+// The child's argument string.
+//
+// `ProcessStartInfo.Arguments` is ONE string the runtime word-splits: double quotes
+// group, a backslash escapes only a following quote (2n backslashes + `"` is n
+// backslashes then a quote boundary; 2n+1 is n backslashes and a literal quote),
+// everything else is literal. A value containing whitespace — a backticked
+// sentence-style test module name, say — MUST be quoted by that rule or it lands on
+// the child as several arguments. `quoteArg` is the writer and `splitArgs` the
+// reader for that one rule; every builder of a runner arg string uses `quoteArg`.
+// ---------------------------------------------------------------------------
+
+/// Quote ONE argument for `ProcessStartInfo.Arguments`. An argument with no
+/// whitespace and no double quote is returned byte-for-byte unchanged; anything else
+/// (the empty string included) is wrapped in double quotes with embedded quotes and
+/// the backslashes that precede them escaped so `splitArgs` yields it back verbatim.
+let quoteArg (arg: string) : string =
+    let needsQuotes =
+        arg.Length = 0 || arg |> Seq.exists (fun c -> Char.IsWhiteSpace c || c = '"')
+
+    if not needsQuotes then
+        arg
+    else
+        let sb = StringBuilder()
+        sb.Append('"') |> ignore
+        let mutable index = 0
+
+        while index < arg.Length do
+            let start = index
+
+            while index < arg.Length && arg[index] = '\\' do
+                index <- index + 1
+
+            let slashCount = index - start
+
+            if index = arg.Length then
+                // Trailing backslashes precede the closing quote: double them so
+                // they stay literal instead of escaping it.
+                sb.Append('\\', slashCount * 2) |> ignore
+            elif arg[index] = '"' then
+                sb.Append('\\', slashCount * 2 + 1).Append('"') |> ignore
+                index <- index + 1
+            else
+                sb.Append('\\', slashCount).Append(arg[index]) |> ignore
+                index <- index + 1
+
+        sb.Append('"').ToString()
+
+/// Split a `ProcessStartInfo.Arguments` string into the tokens the child receives —
+/// the inverse of `quoteArg`. Single quotes are ordinary characters. An unfinished
+/// quote is not a partial command line, so the split fails closed (`None`).
+let splitArgs (args: string) : string[] option =
+    if String.IsNullOrWhiteSpace args then
+        Some [||]
+    else
+        let tokens = ResizeArray<string>()
+        let token = StringBuilder()
+        let mutable tokenStarted = false
+        let mutable inQuotes = false
+        let mutable index = 0
+
+        let flush () =
+            if tokenStarted then
+                tokens.Add(token.ToString())
+                token.Clear() |> ignore
+                tokenStarted <- false
+
+        while index < args.Length do
+            match args[index] with
+            | '\\' ->
+                let start = index
+
+                while index < args.Length && args[index] = '\\' do
+                    index <- index + 1
+
+                let slashCount = index - start
+
+                if index < args.Length && args[index] = '"' then
+                    token.Append('\\', slashCount / 2) |> ignore
+                    tokenStarted <- true
+
+                    if slashCount % 2 = 0 then
+                        inQuotes <- not inQuotes
+                    else
+                        token.Append('"') |> ignore
+
+                    index <- index + 1
+                else
+                    token.Append('\\', slashCount) |> ignore
+                    tokenStarted <- true
+            | '"' ->
+                tokenStarted <- true
+                inQuotes <- not inQuotes
+                index <- index + 1
+            | character when Char.IsWhiteSpace character && not inQuotes ->
+                flush ()
+                index <- index + 1
+            | character ->
+                token.Append(character) |> ignore
+                tokenStarted <- true
+                index <- index + 1
+
+        if inQuotes then
+            None
+        else
+            flush ()
+            Some(tokens.ToArray())
+
 /// Build the `ProcessStartInfo` for a spawned child: redirected stdio, the
 /// working directory, the sanitized+overlaid environment, and the realpath'd
 /// `DOTNET_HOST_PATH`. Shared by every spawn path (`runProcessWithTimeout` and

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `test-rerun --filter-class` / `--filter-trait` quote their values with
+  the shared `ProcessHelper.quoteArg` (the `ProcessStartInfo.Arguments` rule) instead of a
+  private copy, so `test-rerun` and `check` hand the runner the same token for the same
+  class name. A value with only a single quote or a backslash is no longer needlessly
+  wrapped in quotes; whitespace and double quotes still are.
+
 - a check no longer loses the executed evidence an earlier read of the
   same check retained when a later same-tree read is quiet. `TestRunEvidence.reconcile`
   (shared by `check` and `--run-once`) classifies every reading as `Executed`,

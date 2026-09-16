@@ -38,19 +38,14 @@ type RerunFlag =
 let DefaultTestRerunWaitSec = 600
 
 /// Render `RerunFlag list` to the raw arg string the xUnit v3 standalone
-/// runner expects, quoting values that contain whitespace / shell metachars.
+/// runner expects, quoting values that contain whitespace / double quotes by the
+/// `ProcessStartInfo.Arguments` rule the spawn word-splits with.
 /// Empty flag list renders to "".
 module RerunFilter =
-    let private needsQuoting (s: string) =
-        s
-        |> Seq.exists (fun c -> Char.IsWhiteSpace(c) || c = '"' || c = '\'' || c = '\\')
-
-    let private quoteIfNeeded (s: string) =
-        if needsQuoting s then
-            let escaped = s.Replace("\\", "\\\\").Replace("\"", "\\\"")
-            $"\"%s{escaped}\""
-        else
-            s
+    // The ONE per-argument quoting rule (`ProcessHelper.quoteArg`) — shared with
+    // TestPrune's `buildFilterArgs`, so `test-rerun` and `check` hand the runner the
+    // same token for the same class name.
+    let private quoteIfNeeded (s: string) = ProcessHelper.quoteArg s
 
     let private quoteTrait (s: string) =
         match s.IndexOf('=') with

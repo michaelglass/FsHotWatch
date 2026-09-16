@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- the impact filter `fshw check` builds now quotes each affected class
+  name before substituting it into `filterTemplate`, so a class whose name contains
+  spaces (a backticked sentence-style test module, e.g.
+  `…JobIdempotenceAuditTests+Every background job declares its idempotence`) reaches
+  the runner as ONE `--filter-class` argument instead of word-splitting into several
+  that match nothing — the gate then reported "Zero tests ran" for a change whose only
+  impacted class had such a name. Quoting lives in one place, `ProcessHelper.quoteArg`
+  (the `ProcessStartInfo.Arguments` rule the spawn word-splits with), shared with the
+  CLI's `test-rerun --filter-class` so both paths emit the same token; the plugin's
+  quote-aware `--project` discovery now reads the arg string through the matching
+  `ProcessHelper.splitArgs`. An unspaced class name is unchanged byte-for-byte.
+
 - a zero-test completion on an unchanged tree no longer replaces an
   earned test-evidence receipt with an unbound one. The `TestsFinished` handler folds a
   typed `ReceiptTransition` (`Earned` / `Noop` / `Revoked`) into the receipt store

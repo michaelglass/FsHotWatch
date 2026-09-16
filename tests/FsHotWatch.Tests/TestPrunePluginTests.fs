@@ -2944,6 +2944,55 @@ let ``buildFilterArgs ignores classes from other projects`` () =
     let result = buildFilterArgs config classesByProject
     test <@ result = Some "-- --filter-class ClassA" @>
 
+[<Fact(Timeout = 15000)>]
+let ``buildFilterArgs leaves an unspaced class name byte-for-byte unchanged`` () =
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = " "
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
+
+    let classesByProject =
+        Map.ofList [ "TestProj", [ "FsHotWatch.Tests.CliTests"; "FsHotWatch.Tests.CliTests+Nested" ] ]
+
+    let result = buildFilterArgs config classesByProject
+    test <@ result = Some "-- --filter-class FsHotWatch.Tests.CliTests FsHotWatch.Tests.CliTests+Nested" @>
+
+[<Fact(Timeout = 15000)>]
+let ``buildFilterArgs quotes a spaced class name so the runner receives it as one argument`` () =
+    // A backticked sentence-style test module produces a class name with spaces. Handed
+    // to the runner unquoted it word-splits and matches nothing ("Zero tests ran").
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = " "
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
+
+    let spaced = "Ns.Type+Every background job declares its idempotence"
+    let classesByProject = Map.ofList [ "TestProj", [ spaced; "Ns.Plain" ] ]
+
+    let result = buildFilterArgs config classesByProject
+
+    test <@ result = Some $"-- --filter-class \"%s{spaced}\" Ns.Plain" @>
+
+    // Round-trip through the same word-splitting rule the spawn applies: the `--`
+    // separator survives and the spaced class is exactly one token.
+    test
+        <@
+            result |> Option.bind FsHotWatch.ProcessHelper.splitArgs = Some
+                [| "--"; "--filter-class"; spaced; "Ns.Plain" |]
+        @>
+
 // --- Schema-drift recovery ---
 
 [<Fact(Timeout = 2000)>]
