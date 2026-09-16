@@ -176,6 +176,12 @@ type DaemonRpcConfig =
         /// pipeline's registered-files denominator — NOT the stale ScanComplete
         /// snapshot.
         GetUncheckedCount: unit -> int
+        /// What the daemon believes about its project model at request
+        /// time — `Rediscovering` while a discovery attempt is in flight, `Available`
+        /// only once every discovery stage produced evidence. Served in the SAME reply
+        /// as `unchecked` and the statuses, so a verdict is graded against the model
+        /// that was current when its other inputs were read, never a later one.
+        GetProjectModel: unit -> ProjectModel.Observation
     }
 
 /// Sentinel key under which a wedge report is carried in the status JSON map.
@@ -402,7 +408,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                files = allErrors
                statuses = statuses
                daemonPhases = daemonPhases
-               unchecked = config.GetUncheckedCount() |}
+               unchecked = config.GetUncheckedCount()
+               // The versioned `fshw-project-model-v1` payload. Without
+               // it an empty model mid-rediscovery and a healthy model that selected
+               // nothing reach the CLI as the same reply, and the second is a green.
+               projectModel = ProjectModelWire.payload (config.GetProjectModel()) |}
 
         JsonSerializer.Serialize(result)
 

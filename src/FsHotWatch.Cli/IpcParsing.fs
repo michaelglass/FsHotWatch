@@ -33,13 +33,88 @@ type Coverage =
     /// Coverage data was absent or unparseable. Never treated as complete.
     | Unknown
 
+/// What this reading established about the daemon's PROJECT MODEL —
+/// the graph of projects and files every other input is computed against.
+///
+/// It exists because two states used to arrive at the CLI as the same reply. A scan
+/// that raced a re-discovery analysed a model with ZERO projects and selected nothing;
+/// a healthy scan of an unchanged tree also selects nothing. The first verified nothing
+/// and the second verified that nothing needed verifying, and a verdict that cannot tell
+/// them apart turns the first into a green.
+///
+/// `Observed` carries the daemon's own typed observation verbatim. `NotReported` is the
+/// `Coverage.Unknown` of this question: the reply carried no observation this build can
+/// read, or no daemon was asked. Neither `NotReported` nor any observation other than
+/// `Available` may support a green.
+[<RequireQualifiedAccess>]
+type ProjectModelReading =
+    | Observed of FsHotWatch.ProjectModel.Observation
+    | NotReported of reason: string
+
+module ProjectModelReading =
+    open FsHotWatch.ProjectModel
+
+    /// The completed, every-stage-evidenced snapshot, when there is one. THE predicate a
+    /// green is gated on, so a new observation case is "not available" unless it is
+    /// explicitly made otherwise here.
+    let available (reading: ProjectModelReading) : Snapshot option =
+        match reading with
+        | ProjectModelReading.Observed(Observation.Available snapshot) -> Some snapshot
+        | ProjectModelReading.Observed Observation.Unobserved
+        | ProjectModelReading.Observed(Observation.Rediscovering _)
+        | ProjectModelReading.Observed(Observation.Unavailable _)
+        | ProjectModelReading.NotReported _ -> None
+
+    /// Operator-facing words for a reading that is NOT available: the cause, then what to
+    /// DO. `None` for an available one — there is nothing to explain, and a sentence would
+    /// read as a warning.
+    ///
+    /// The remedies differ, which is why the reading is a value and not a bool: a model
+    /// mid-rediscovery settles on its own; a failed one does not.
+    let describeUnavailable (reading: ProjectModelReading) : string option =
+        match reading with
+        | ProjectModelReading.Observed(Observation.Available _) -> None
+        | ProjectModelReading.Observed(Observation.Rediscovering _ as observation) ->
+            failure observation
+            |> Option.map (fun cause ->
+                $"%s{cause} The daemon is re-discovering projects (a project file changed): nothing was verified \
+                   against a settled model. Wait for discovery to settle and re-run.")
+        | ProjectModelReading.Observed(Observation.Unobserved as observation) ->
+            failure observation
+            |> Option.map (fun cause ->
+                $"%s{cause} Re-run; if it repeats, read the discovery lines in logs/daemon.log.")
+        | ProjectModelReading.Observed(Observation.Unavailable _ as observation) ->
+            failure observation
+            |> Option.map (fun cause ->
+                $"%s{cause} Re-running will not clear this: read logs/daemon.log for the discovery stage that \
+                   produced nothing.")
+        | ProjectModelReading.NotReported reason ->
+            Some
+                $"PROJECT MODEL NOT REPORTED: %s{reason}. No available project model was observed, so nothing is \
+                   claimed about the tree. A daemon older than this CLI does not report one: `fshw stop`, then re-run."
+
+    /// Read the `projectModel` field of a daemon reply. Fails CLOSED: absent, malformed and
+    /// unknown payloads are `NotReported`, never an observation.
+    let ofReply (root: JsonElement) : ProjectModelReading =
+        match root.TryGetProperty("projectModel") with
+        | true, model ->
+            match FsHotWatch.ProjectModelWire.tryRead model with
+            | Some observation -> ProjectModelReading.Observed observation
+            | None ->
+                ProjectModelReading.NotReported "the daemon's project-model observation is not one this build can read"
+        | false, _ -> ProjectModelReading.NotReported "the daemon did not report its project model"
+
 /// Parsed GetDiagnostics response. `Coverage` is a REQUIRED field of the parsed
 /// shape (not optional) so a verdict can never be computed without it.
 type DiagnosticsResponse =
-    { Count: int
-      Files: Map<string, DiagnosticEntry list>
-      Statuses: Map<string, ParsedPluginStatus>
-      Coverage: Coverage }
+    {
+        Count: int
+        Files: Map<string, DiagnosticEntry list>
+        Statuses: Map<string, ParsedPluginStatus>
+        Coverage: Coverage
+        /// Read from the SAME reply as `Coverage` and `Statuses`.
+        ProjectModel: ProjectModelReading
+    }
 
 /// Of the changed symbols a zero-selection run dropped as uncovered, the
 /// ones that DO have covering tests — in test projects `tests.projects` does not list.
@@ -505,7 +580,8 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
     { Count = count
       Files = files
       Statuses = statuses
-      Coverage = coverage }
+      Coverage = coverage
+      ProjectModel = ProjectModelReading.ofReply root }
 
 /// What the last completed test run covered, AND WHICH RUN IT WAS.
 ///

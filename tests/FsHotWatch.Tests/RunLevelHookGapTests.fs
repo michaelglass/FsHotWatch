@@ -70,7 +70,12 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
-      GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
+      GetDiagnostics =
+        fun _ _ ->
+            async {
+                return
+                    """{"count": 0, "files": {}, "projectModel": {"schema": "fshw-project-model-v1", "status": "available", "generation": 7, "counts": {"discovered": 3, "loaded": 3, "optionsMapped": 3, "registered": 3}, "reasonCode": null}}"""
+            }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
@@ -100,6 +105,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
         []
         FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
         []
+        ProjectModelFixtures.available
     |> FsHotWatch.Cli.Verdict.withAttribution
         { Hooks =
             [ { Scope = "tests.beforeRun"
@@ -875,6 +881,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                 []
                 FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
                 []
+                ProjectModelFixtures.available
 
         FsHotWatch.Cli.Verdict.write root verdict
 

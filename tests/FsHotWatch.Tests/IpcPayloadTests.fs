@@ -27,7 +27,8 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
-      GetUncheckedCount = fun () -> unchecked }
+      GetUncheckedCount = fun () -> unchecked
+      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved }
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host
 
@@ -313,3 +314,27 @@ let ``GetDiagnostics caps the whole response's detail, and says so rather than d
             details
             |> List.forall (fun d -> d.Length <= FsHotWatch.ErrorLedger.Transport.MaxFieldChars + 64)
         @>
+
+// ---------------------------------------------------------------------------
+// the daemon SERVES its project model in the diagnostics reply, from
+// the same request as the coverage and statuses a verdict is computed from.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``GetDiagnostics payload carries the daemon's project-model observation at request time`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable current = FsHotWatch.ProjectModel.Observation.Rediscovering 3L
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                GetProjectModel = fun () -> current }
+        )
+
+    // Read per request, never cached: the reply names the model as it is NOW.
+    test <@ (parseDiagnosticsResponse (target.GetDiagnostics "")).ProjectModel = ProjectModelReading.Observed current @>
+
+    current <- ProjectModelFixtures.observation
+
+    let resp = parseDiagnosticsResponse (target.GetDiagnostics "")
+    test <@ resp.ProjectModel = ProjectModelFixtures.available @>

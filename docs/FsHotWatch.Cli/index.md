@@ -280,7 +280,7 @@ sufficient.
 
 ```json
 {
-  "schema": "fshw-verdict-v1",
+  "schema": "fshw-verdict-v2",
   "producedAt": "2026-07-14T10:52:03.4471180Z",
   "command": "confirm",
   "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
@@ -294,6 +294,9 @@ sufficient.
   "outcome": { "kind": "green",
                "baseline": { "kind": "full-suite-run", "runId": "24bf66063d004decb0447e3cc3ece719",
                              "earnedAt": "2026-07-14T10:50:31.0000000Z", "projects": 6 } },
+  "projectModel": { "schema": "fshw-project-model-v1", "status": "available", "generation": 3,
+                    "counts": { "discovered": 21, "loaded": 21, "optionsMapped": 21, "registered": 21 },
+                    "reasonCode": null },
   "exitCode": 0,
   "plugins": [
     { "name": "test-prune", "outcome": "ok", "elapsedMs": 91449,
@@ -390,7 +393,8 @@ field.
 
 | Field | Values |
 |-------|--------|
-| `outcome.kind` | `green` (with `baseline`) · `red` · `incomplete` (with `reason`) |
+| `outcome.kind` | `green` (with `baseline`) · `red` · `incomplete` (with `reason`) · `model-unavailable` (with `reason`) |
+| `projectModel.status` | `available` · `rediscovering` · `unavailable` (with `reasonCode`) · `unobserved` · `not-reported` (with `reason`, no `schema`) |
 | `outcome.baseline.kind` | `full-suite-run` (with `runId` / `earnedAt` / `projects`) · `no-test-suite` |
 | `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
@@ -410,6 +414,22 @@ test projects can make.
 `incomplete` is the honest third answer: **nothing is known to be broken, and
 nothing is known to be sound either.** A `confirm` whose tests ran impact-filtered
 lands here. It is never laundered into a green.
+
+**A verdict names the project model it was graded against.** `projectModel` is the
+daemon's own `fshw-project-model-v1` observation, read in the same reply as the
+coverage and plugin statuses. Only `available` — every discovery stage produced
+evidence — can support a `green`, and `fshw verdict` refuses a file that says
+otherwise. When the model was NOT available (a re-discovery was in flight because a
+project file changed, discovery never completed or produced nothing, or the daemon did
+not say), the outcome is `model-unavailable` and the exit code is **2**. That is a
+different answer from a healthy model that selected nothing to run
+(`incomplete`, "nothing needed re-verifying"): a graph with zero projects makes
+coverage vacuously complete and the impact set vacuously empty, so it verifies nothing,
+and the reader's move is to wait for the model rather than to conclude there was
+nothing to do. `projectModel.status` says which case it was; `rediscovering` settles on
+its own, `unavailable` names the discovery stage that produced nothing. A
+`fshw-verdict-v1` file cannot say which model its green saw, so this build reads it as
+unreadable.
 
 ### The one rule: a verdict applies only to the tree it verified, from the binary that verified it
 

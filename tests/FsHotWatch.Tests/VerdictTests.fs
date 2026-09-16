@@ -102,6 +102,9 @@ type private Spec =
         /// What the daemon said its greens are relative to. Defaults to
         /// the shared fixture, which is the baseline `greenVerdict`'s outcome names.
         Baseline: BaselineReading
+        /// The project model the verdict was graded against. Defaults to
+        /// the shared available fixture — the only reading a green may record.
+        ProjectModel: ProjectModelReading
     }
 
 let private build (s: Spec) : Verdict.Verdict =
@@ -125,6 +128,7 @@ let private build (s: Spec) : Verdict.Verdict =
          | _ -> failwith "a spec declares Suites or Runs, never both")
         s.Comparison
         s.RedCauses
+        s.ProjectModel
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
@@ -132,6 +136,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Scope = FullSuite 2
       Outcome = Verdict.Green BaselineFixtures.baseline
       Baseline = BaselineFixtures.reading
+      ProjectModel = ProjectModelFixtures.available
       ExitCode = 0
       Plugins =
         [ { Name = "test-prune"
@@ -541,7 +546,11 @@ let ``a truncated verdict file is Unreadable, never a green`` () =
     withTempDir "verdict-torn" (fun root ->
         makeRepo root
         Directory.CreateDirectory(FsHwPaths.root root) |> ignore
-        File.WriteAllText(Verdict.path root, """{"schema":"fshw-verdict-v1","outcome":{"kind":"gr""")
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"outcome":{"kind":"gr"""
+        )
 
         match Verdict.read root with
         | Verdict.Reading.Unreadable _ -> ()
@@ -570,7 +579,7 @@ let ``a verdict with no treeHash is Unreadable — a verdict that cannot say WHI
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
         )
 
         match Verdict.read root with
@@ -1125,7 +1134,7 @@ let ``a verdict written before runs[] existed rehydrates as ONE batch, named by 
         let dir = runId.ToString("N")
 
         let legacy =
-            $$"""{ "schema": "fshw-verdict-v1", "command": "check", "runId": "{{dir}}",
+            $$"""{ "schema": "fshw-verdict-v2", "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}, "command": "check", "runId": "{{dir}}",
                    "treeHash": "sha256:abc", "treeHashAlgorithm": "{{TreeHash.Algorithm}}",
                    "outcome": { "kind": "green", "baseline": { "kind": "full-suite-run", "runId": "{{dir}}",
                                                                 "earnedAt": "2026-09-06T12:00:00Z", "projects": 1 } },
@@ -1664,7 +1673,7 @@ let ``a scope this build cannot read is ScopeUnreadable — distinct from "no sc
         let write (scopeJson: string) =
             File.WriteAllText(
                 Verdict.path root,
-                $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },"scope":{{scopeJson}}}"""
+                $$"""{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },"scope":{{scopeJson}}}"""
             )
 
             match Verdict.read root with
@@ -1732,7 +1741,7 @@ let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not 
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"red"},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"red"},
                 "plugins":[{"name":"p","outcome":"transcendent"},{"name":"q"}]}"""
         )
 
@@ -1760,7 +1769,7 @@ let ``a verdict file that says GREEN while a plugin says FAIL is not a verdict �
         let contradictory (pluginOutcome: string) =
             File.WriteAllText(
                 Verdict.path root,
-                $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },
+                $$"""{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },
                     "plugins":[{"name":"p","outcome":"{{pluginOutcome}}"}]}"""
             )
 
@@ -1848,7 +1857,7 @@ let ``a legacy confirm+filtered verdict FILE is UNREADABLE — it is re-earned, 
         let legacy (command: string) =
             File.WriteAllText(
                 Verdict.path root,
-                $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"{{command}}",
+                $$"""{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","command":"{{command}}",
                     "scope":{"kind":"filtered","ranProjects":5,"totalProjects":6},
                     "outcome":{"kind":"red"},"exitCode":1,"plugins":[]}"""
             )
@@ -1895,6 +1904,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 Verdict.NoReading
                 Map.empty
                 redCauses
+                ProjectModelFixtures.available
                 (IpcOutput.SettledTree.capture root [])
                 outcome
             |> ignore
@@ -1978,7 +1988,8 @@ let private impactScopedReading (root: string) (scope: TestScope) (failingDiagno
           RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
           Coverage = coverage
           Scope = scope
-          Baseline = BaselineFixtures.reading }
+          Baseline = BaselineFixtures.reading
+          ProjectModel = ProjectModelFixtures.available }
 
 /// Drive the PRODUCER, as the 258 tests do: the transports hand `publishVerdict` what they
 /// observed, and what lands on disk is what a reader gets.
@@ -2004,6 +2015,7 @@ let private publishConfirm
          | None -> Verdict.NoReading)
         Map.empty
         redCauses
+        ProjectModelFixtures.available
         (IpcOutput.SettledTree.capture root [])
         outcome
     |> ignore
@@ -2092,6 +2104,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
                 Verdict.NoReading
                 Map.empty
                 []
+                ProjectModelFixtures.available
                 (IpcOutput.SettledTree.capture root [])
                 outcome
 
@@ -2280,7 +2293,7 @@ let ``a verdict written before the tracked issue still reads — as NOT RECORDED
         // read as is a comparison that happened.
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","command":"confirm",
                 "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
                 "outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},"exitCode":0,"plugins":[]}"""
         )
@@ -2299,7 +2312,7 @@ let ``a verdict written before the tracked issue still reads — as NOT RECORDED
         // two must not share a value.
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","command":"confirm",
                 "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
                 "outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},"exitCode":0,"plugins":[],
                 "checkComparison":{"divergence":{"kind":"agreed-modulo-flakes"}}}"""
@@ -2409,7 +2422,7 @@ let ``an outcome this build cannot read is Unreadable, never a green`` () =
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"chartreuse"}}"""
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"chartreuse"}}"""
         )
 
         match Verdict.read root with
@@ -2423,7 +2436,7 @@ let ``an incomplete verdict with no recorded reason still reads as incomplete`` 
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"incomplete"},"exitCode":2}"""
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"incomplete"},"exitCode":2}"""
         )
 
         match Verdict.read root with
@@ -2441,7 +2454,7 @@ let ``a verdict whose exitCode is missing defaults to 2 — 'unconfirmed', never
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
         )
 
         match Verdict.read root with
@@ -2754,7 +2767,8 @@ let ``an UNKNOWN scope on an inner-loop check stays consistent with its clean ex
               RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
               Coverage = Complete
               Scope = ScopeUnknown
-              Baseline = BaselineFixtures.reading }
+              Baseline = BaselineFixtures.reading
+              ProjectModel = ProjectModelFixtures.available }
 
     let v =
         { greenVerdict "sha256:abc" 12 with
@@ -2789,7 +2803,7 @@ let ``a plugin with no elapsedMs is NOT a zero-length run — it is an unmeasure
     withTempDir "verdict-noelapsed" (fun root ->
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "plugins":[{"name":"test-prune","outcome":"ok"}]}"""
 
         match Verdict.read root with
@@ -2805,7 +2819,7 @@ let ``a genuinely instantaneous run is still MEASURED — Some 0L, not None`` ()
     withTempDir "verdict-zeroelapsed" (fun root ->
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "plugins":[{"name":"build","outcome":"ok","elapsedMs":0}]}"""
 
         match Verdict.read root with
@@ -2819,7 +2833,7 @@ let ``a suite missing its counts makes the verdict UNREADABLE — never a clean 
         // from thin air reads as "the suite ran and nothing failed".
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "suites":[{"project":"Lib.Tests","ctrf":".fshw/test-runs/x/Lib.Tests.ctrf.json"}]}"""
 
         match Verdict.read root with
@@ -2833,7 +2847,7 @@ let ``a suite missing ONE count is as unreadable as one missing all of them`` ()
     withTempDir "verdict-partialcounts" (fun root ->
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "suites":[{"project":"Lib.Tests","total":63,"passed":63,"skipped":0}]}"""
 
         match Verdict.read root with
@@ -2845,7 +2859,7 @@ let ``a plugin entry with no name makes the verdict unreadable`` () =
     withTempDir "verdict-noname" (fun root ->
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "plugins":[{"outcome":"ok","elapsedMs":5}]}"""
 
         match Verdict.read root with
@@ -2899,7 +2913,7 @@ let ``a verdict with NO producer recorded does not apply — provenance unestabl
 
         writeRaw
             root
-            $$"""{"schema":"fshw-verdict-v1","treeHash":"{{tree.Hash}}","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },"exitCode":0}"""
+            $$"""{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"{{tree.Hash}}","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },"exitCode":0}"""
 
         match Verdict.report root [] with
         | Verdict.Report.Stale(_, reason) -> test <@ reason.Contains "DIFFERENT fshw binary" @>
@@ -3090,7 +3104,7 @@ let ``a bad entry ANYWHERE in plugins or suites makes the whole verdict unreadab
     withTempDir "verdict-fold" (fun root ->
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "plugins":[{"name":"build","outcome":"ok"},{"outcome":"ok"}]}"""
 
         match Verdict.read root with
@@ -3099,7 +3113,7 @@ let ``a bad entry ANYWHERE in plugins or suites makes the whole verdict unreadab
 
         writeRaw
             root
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "suites":[{"project":"A","total":1,"passed":1,"failed":0,"skipped":0},
                           {"project":"B","total":1}]}"""
 
@@ -3485,7 +3499,7 @@ let ``a persisted unexplained red degrades to incomplete`` () =
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"red"},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"red"},
                 "exitCode":1,"plugins":[],"reddenedBy":[],"reddenedByCount":0}"""
         )
 
@@ -4107,7 +4121,7 @@ let ``a verdict written before the field existed does not get to claim completen
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
                 "scope":{"kind":"full","ranProjects":6,"totalProjects":6}}"""
         )
 
@@ -4577,7 +4591,7 @@ let ``the sample's BASIS round-trips, and a verdict that predates the field read
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","command":"confirm",
                 "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
                 "outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},"exitCode":0,"plugins":[],
                 "checkComparison":{"divergence":{"kind":"agreed"},
@@ -5699,7 +5713,7 @@ let ``a green that names NO baseline is not a verdict this build can read`` () =
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green"},"exitCode":0,"plugins":[]}"""
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green"},"exitCode":0,"plugins":[]}"""
         )
 
         match Verdict.read root with
@@ -5725,6 +5739,7 @@ let ``create refuses a no-test-suite green beside a scope that says tests ran`` 
             [ { RunId = None; Suites = spec.Suites } ]
             spec.Comparison
             []
+            spec.ProjectModel
         |> ignore
 
     let ex = Assert.Throws<ArgumentException>(fun () -> attempt ())
@@ -5853,3 +5868,189 @@ let ``reddenedBy never serializes an empty message, and never reads one back as 
             let readBack = Verdict.RedCauseMessage.value (List.exactlyOne v.RedCauses).Message
             test <@ readBack.Contains("no cause captured") @>
         | other -> failwithf "expected a readable verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// The project model a verdict was graded against is ON the record,
+// tied to the outcome in both directions, and read back fail-closed.
+// ---------------------------------------------------------------------------
+
+let private rediscovering =
+    ProjectModelReading.Observed(ProjectModel.Observation.Rediscovering 12L)
+
+let private notReported =
+    ProjectModelReading.NotReported "the daemon did not report its project model"
+
+let private modelUnavailableSpec (model: ProjectModelReading) : Spec =
+    { greenVerdict "sha256:the tracked issue" 1 with
+        Command = Verdict.Check
+        Outcome = Verdict.ModelUnavailable "NO VERDICT — PROJECT MODEL UNAVAILABLE"
+        ExitCode = 2
+        ProjectModel = model }
+
+[<Theory>]
+[<InlineData("rediscovering")>]
+[<InlineData("unobserved")>]
+[<InlineData("registration-failed")>]
+[<InlineData("not-reported")>]
+let ``create REFUSES a green graded against a project model that was not available`` (model: string) =
+    let reading =
+        match model with
+        | "rediscovering" -> rediscovering
+        | "unobserved" -> ProjectModelReading.Observed ProjectModel.Observation.Unobserved
+        | "registration-failed" ->
+            ProjectModelReading.Observed(
+                ProjectModel.ofCompleted
+                    3L
+                    { Discovered = 2
+                      Loaded = 2
+                      OptionsMapped = 2
+                      Registered = 0 }
+            )
+        | _ -> notReported
+
+    let ex =
+        Assert.Throws<ArgumentException>(fun () ->
+            build
+                { greenVerdict "sha256:the tracked issue" 1 with
+                    ProjectModel = reading }
+            |> ignore)
+
+    test <@ ex.Message.Contains "no available project model" @>
+
+[<Fact>]
+let ``create REFUSES a model-unavailable outcome beside a model that WAS available`` () =
+    let ex =
+        Assert.Throws<ArgumentException>(fun () ->
+            build (modelUnavailableSpec ProjectModelFixtures.available) |> ignore)
+
+    test <@ ex.Message.Contains "MODEL-UNAVAILABLE verdict records an available project model" @>
+
+[<Theory>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a model-unavailable verdict round-trips — outcome, exit code and the model state it names`` (observed: bool) =
+    let model = if observed then rediscovering else notReported
+
+    withTempDir "verdict-roundtrip" (fun root ->
+        makeRepo root
+        writeSpec root (modelUnavailableSpec model)
+
+        let outcomeKind, modelSchema, modelStatus =
+            use doc = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+            let projectModel = doc.RootElement.GetProperty("projectModel")
+
+            doc.RootElement.GetProperty("outcome").GetProperty("kind").GetString(),
+            (match projectModel.TryGetProperty("schema") with
+             | true, schema -> Some(schema.GetString())
+             | false, _ -> None),
+            projectModel.GetProperty("status").GetString()
+
+        test <@ outcomeKind = "model-unavailable" @>
+
+        // An observation is the daemon's own versioned payload; a missing one carries no
+        // schema, so a consumer validating the schema cannot mistake it for an observation.
+        if observed then
+            test <@ modelSchema = Some "fshw-project-model-v1" @>
+            test <@ modelStatus = "rediscovering" @>
+        else
+            test <@ modelSchema = None @>
+            test <@ modelStatus = "not-reported" @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v.Outcome = Verdict.ModelUnavailable "NO VERDICT — PROJECT MODEL UNAVAILABLE" @>
+            test <@ v.ExitCode = 2 @>
+            test <@ v.ProjectModel = model @>
+            test <@ not (Verdict.isFullSuiteGreen v) @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Theory>]
+[<InlineData("absent")>]
+[<InlineData("malformed")>]
+[<InlineData("not-reported-without-reason")>]
+let ``a v2 verdict whose projectModel is absent or unreadable is Unreadable, never a green`` (shape: string) =
+    let modelField =
+        match shape with
+        | "absent" -> ""
+        | "malformed" -> ""","projectModel":{"schema":"fshw-project-model-v1","status":"available"}"""
+        | _ -> ""","projectModel":{"status":"not-reported"}"""
+
+    withTempDir "verdict-nomodel" (fun root ->
+        makeRepo root
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            $$"""{"schema":"fshw-verdict-v2"{{modelField}},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} } }"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Unreadable reason -> test <@ reason.Contains "projectModel" @>
+        | other -> failwith $"a verdict that does not say what model it was graded against is not one, got %A{other}")
+
+[<Fact>]
+let ``a hand-edited green beside a REDISCOVERING project model is refused on the way in`` () =
+    withTempDir "verdict-edited" (fun root ->
+        makeRepo root
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"rediscovering","generation":4,"counts":null,"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Unreadable reason -> test <@ reason.Contains "no available project model" @>
+        | other -> failwith $"expected Unreadable, got %A{other}")
+
+[<Fact>]
+let ``a v1 verdict is Unreadable — it cannot say whether its green saw an available model`` () =
+    withTempDir "verdict-v1" (fun root ->
+        makeRepo root
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}}}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Unreadable reason -> test <@ reason.Contains "fshw-verdict-v2" @>
+        | other -> failwith $"expected Unreadable, got %A{other}")
+
+[<Fact>]
+let ``a terminal verdict records that no project model was read`` () =
+    withTempDir "verdict-terminal" (fun root ->
+        makeRepo root
+
+        Verdict.writeHookFailure root [] Verdict.Check (Verdict.Invocation.start ()) [] [] "beforeRun refused"
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            match v.ProjectModel with
+            | ProjectModelReading.NotReported _ -> ()
+            | other -> failwith $"a terminal verdict read no model, got %A{other}"
+        | other -> failwith $"expected a readable terminal verdict, got %A{other}")
+
+[<Fact>]
+let ``a check-vs-confirm comparison never reads a model-unavailable run as an answer`` () =
+    let reading outcome : Verdict.ImpactScopedRun =
+        { Scope = ImpactFiltered(1, 2)
+          Outcome = outcome
+          FailingSuites = []
+          Basis = Verdict.SampleBasis.Executed
+          Missed = Verdict.MissedFailures.NotEnumerable }
+
+    let unavailable = Verdict.ModelUnavailable "model gone"
+
+    let earnedSide =
+        Verdict.CheckComparison.ofRun (Some(reading (Verdict.Green BaselineFixtures.baseline))) unavailable
+
+    let checkSide =
+        Verdict.CheckComparison.ofRun (Some(reading unavailable)) (Verdict.Green BaselineFixtures.baseline)
+
+    match earnedSide.Divergence, checkSide.Divergence with
+    | Verdict.Divergence.Incomparable earned, Verdict.Divergence.Incomparable check ->
+        test <@ earned.Contains "model gone" @>
+        test <@ check.Contains "model gone" @>
+    | other -> failwith $"a model-unavailable run is no answer to compare, got %A{other}"

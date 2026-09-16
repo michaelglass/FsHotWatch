@@ -682,6 +682,25 @@ let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string
 /// The full-suite baseline every green in these tests is relative to.
 /// One fixture, so a test that grades a green names the SAME baseline the daemon reply
 /// it mocks reports — a green and its baseline are one value, not two settings.
+/// The project-model readings a verdict can be graded against. `available`
+/// is what every healthy fixture reports — one value, so a test whose subject is not the
+/// model cannot accidentally grade against an unavailable one and pass for the wrong reason.
+module ProjectModelFixtures =
+    let counts: FsHotWatch.ProjectModel.Counts =
+        { Discovered = 3
+          Loaded = 3
+          OptionsMapped = 3
+          Registered = 3 }
+
+    let observation = FsHotWatch.ProjectModel.ofCompleted 7L counts
+
+    let available = FsHotWatch.Cli.IpcParsing.ProjectModelReading.Observed observation
+
+    /// The wire reply fragment the daemon serves for `available` — prefixed with a comma,
+    /// ready to splice into a hand-written `GetDiagnostics` JSON object.
+    let replyFragment =
+        ""","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}"""
+
 module BaselineFixtures =
     let runId = System.Guid.Parse("b0000000-1100-4000-8000-000000000110")
 
@@ -710,4 +729,5 @@ module BaselineFixtures =
         match o with
         | FsHotWatch.Cli.Verdict.Green _ -> true
         | FsHotWatch.Cli.Verdict.Red
-        | FsHotWatch.Cli.Verdict.Incomplete _ -> false
+        | FsHotWatch.Cli.Verdict.Incomplete _
+        | FsHotWatch.Cli.Verdict.ModelUnavailable _ -> false

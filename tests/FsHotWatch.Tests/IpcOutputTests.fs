@@ -278,7 +278,8 @@ let ``retained test evidence cannot hide a later plugin failure`` () =
           RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
           Coverage = Complete
           Scope = effective.Scope
-          Baseline = BaselineFixtures.reading }
+          Baseline = BaselineFixtures.reading
+          ProjectModel = ProjectModelFixtures.available }
 
     let outcome = CheckVerdict.verdict CheckVerdict.InnerLoop inputs
     test <@ outcome = CheckVerdict.CheckOutcome.FailuresFound @>
@@ -307,11 +308,11 @@ let ``daemon command retains executed evidence across a same-tree quiet converge
             errorReads <- errorReads + 1
 
             if errorReads = 1 then
-                """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
+                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
             elif failSecondRead then
-                """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0}"""
+                """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
             else
-                """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
         // The FIRST read is the driver's baseline, taken before the scan
         // so it can tell this check's runs from the ones that preceded it; the executed
@@ -472,7 +473,8 @@ let ``exitCodeFromResponse returns 0 for count 0`` () =
         { Count = 0
           Files = Map.empty
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ exitCodeFromResponse false resp = 0 @>
 
@@ -490,7 +492,8 @@ let ``exitCodeFromResponse returns 1 for errors`` () =
                       Column = 0
                       Detail = None } ] ]
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
@@ -508,7 +511,8 @@ let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
                       Column = 0
                       Detail = None } ] ]
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ exitCodeFromResponse true resp = 0 @>
 
@@ -526,7 +530,8 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
                       Column = 0
                       Detail = None } ] ]
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
@@ -681,7 +686,8 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
                       Column = 0
                       Detail = None } ] ]
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ exitCodeFromResponse false resp = 0 @>
 
@@ -733,9 +739,9 @@ let private statusJsonFor (testRunFinished: bool) : string =
 /// exactly as during the Idle race window.
 let private diagnosticsJsonFor (testRunFinished: bool) : string =
     if testRunFinished then
-        """{"count":1,"files":{"tests/Foo.fs":[{"plugin":"test-prune","message":"1 test failed","severity":"error","line":0,"column":0,"detail":null}]},"statuses":{},"unchecked":0}"""
+        """{"count":1,"files":{"tests/Foo.fs":[{"plugin":"test-prune","message":"1 test failed","severity":"error","line":0,"column":0,"detail":null}]},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
     else
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+        """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)`` () =
@@ -831,7 +837,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
         statusJsonFor true
 
     let cleanDiagnostics () : string =
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+        """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
     // The verdict the daemon transport publishes is stamped with the
     // invocation that drove it, so the wrapping CLI can attach its hook timing to THIS
@@ -869,6 +875,164 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
 
     test <@ exitCode = 0 @>
     test <@ recordedInvocation = Some invocationId @>
+
+// --- the project model reaches the verdict file ---
+
+/// A clean `GetDiagnostics` reply carrying `projectModel` exactly as the daemon serves it
+/// (`ProjectModelWire.payload`), or no `projectModel` at all for `None` — an older daemon.
+let private diagnosticsWithModel (model: FsHotWatch.ProjectModel.Observation option) : string =
+    let modelField =
+        match model with
+        | Some observation ->
+            let payload =
+                System.Text.Json.JsonSerializer.Serialize(FsHotWatch.ProjectModelWire.payload observation)
+
+            $""","projectModel":%s{payload}"""
+        | None -> ""
+
+    $"""{{"count":0,"files":{{}},"statuses":{{}},"unchecked":0%s{modelField}}}"""
+
+/// The fields of the written `.fshw/verdict.json` these tests read, as plain values.
+type private SeenFile =
+    { Schema: string
+      OutcomeKind: string
+      ExitCode: int
+      ModelStatus: string
+      ModelSchema: string option
+      ModelObservation: FsHotWatch.ProjectModel.Observation option }
+
+let private seenFileOf (raw: string) : SeenFile =
+    use doc = System.Text.Json.JsonDocument.Parse raw
+    let root = doc.RootElement
+    let model = root.GetProperty("projectModel")
+
+    { Schema = root.GetProperty("schema").GetString()
+      OutcomeKind = root.GetProperty("outcome").GetProperty("kind").GetString()
+      ExitCode = root.GetProperty("exitCode").GetInt32()
+      ModelStatus = model.GetProperty("status").GetString()
+      ModelSchema =
+        match model.TryGetProperty("schema") with
+        | true, schema -> Some(schema.GetString())
+        | false, _ -> None
+      ModelObservation = FsHotWatch.ProjectModelWire.tryRead model }
+
+/// Drive the daemon transport to a published verdict over a fully passing test run, and
+/// return the exit code, the verdict read back, and the written file.
+let private driveWithModel
+    (mode: CheckVerdict.CheckMode)
+    (run: TestRunReport)
+    (diagnostics: string)
+    : int * Verdict.Reading * SeenFile =
+    TestHelpers.withTempDir "ipcoutput" (fun repoRoot ->
+        let code =
+            pollAndRenderForInvocation
+                (Verdict.Invocation.startAs " ")
+                ProgressRenderer.Agent
+                mode
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> statusJsonFor true)
+                (fun () -> statusJsonFor true)
+                (fun () -> diagnostics)
+                (fun () -> run)
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                ignore
+                (fun () -> "idle")
+
+        let raw = System.IO.File.ReadAllText(Verdict.path repoRoot)
+        code, Verdict.read repoRoot, seenFileOf raw)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("rediscovering", "rediscovering")>]
+[<InlineData("loading-failed", "unavailable")>]
+[<InlineData("unobserved", "unobserved")>]
+[<InlineData("older-daemon", "not-reported")>]
+let ``a check over a passing FULL-SUITE run is NOT green when the daemon's project model was unavailable``
+    (model: string, status: string)
+    =
+    // Every other input is the one `pollAndRender surfaces a clean verdict` goes green on.
+    // Only the project model differs — so the refusal can only have come from it.
+    let observation =
+        match model with
+        | "rediscovering" -> Some(FsHotWatch.ProjectModel.Observation.Rediscovering 12L)
+        | "loading-failed" ->
+            Some(
+                FsHotWatch.ProjectModel.ofCompleted
+                    11L
+                    { Discovered = 21
+                      Loaded = 0
+                      OptionsMapped = 0
+                      Registered = 0 }
+            )
+        | "unobserved" -> Some FsHotWatch.ProjectModel.Observation.Unobserved
+        | _ -> None
+
+    let exitCode, reading, file =
+        driveWithModel
+            CheckVerdict.InnerLoop
+            (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+            (diagnosticsWithModel observation)
+
+    test <@ exitCode = 2 @>
+
+    // The machine-readable half: its own outcome kind, and the model state beside it.
+    test <@ file.Schema = "fshw-verdict-v2" @>
+    test <@ file.OutcomeKind = "model-unavailable" @>
+    test <@ file.ModelStatus = status @>
+    test <@ file.ExitCode = 2 @>
+
+    match reading with
+    | Verdict.Reading.Found v ->
+        match v.Outcome with
+        | Verdict.ModelUnavailable _ -> ()
+        | other -> failwith $"expected model-unavailable, got %A{other}"
+
+        test <@ IpcParsing.ProjectModelReading.available v.ProjectModel |> Option.isNone @>
+
+        match observation with
+        | Some o -> test <@ v.ProjectModel = IpcParsing.ProjectModelReading.Observed o @>
+        | None -> ()
+    | other -> failwith $"the refusal must still be a READABLE verdict, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``POSITIVE CONTROL: a healthy model that selected nothing records its own answer and the available model`` () =
+    let exitCode, reading, file =
+        driveWithModel
+            CheckVerdict.InnerLoop
+            (BaselineFixtures.reportOf (IpcParsing.NoTestsRun IpcParsing.NoTestsReason.AlreadyVerified))
+            (diagnosticsWithModel (Some ProjectModelFixtures.observation))
+
+    // The pre-existing answer for "nothing needed re-verifying" — not the model alarm.
+    test <@ exitCode = 3 @>
+    test <@ file.OutcomeKind = "incomplete" @>
+    test <@ file.ModelStatus = "available" @>
+    test <@ file.ModelSchema = Some "fshw-project-model-v1" @>
+
+    match reading with
+    | Verdict.Reading.Found v ->
+        match v.Outcome with
+        | Verdict.Incomplete reason ->
+            test <@ reason.Contains "nothing needed re-verifying" @>
+            test <@ not (reason.Contains "PROJECT MODEL") @>
+        | other -> failwith $"a healthy empty selection must keep its own reading, got %A{other}"
+
+        test <@ v.ProjectModel = ProjectModelFixtures.available @>
+    | other -> failwith $"expected a readable verdict, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``a green verdict file records the available project model it was graded against`` () =
+    let exitCode, _, file =
+        driveWithModel
+            CheckVerdict.InnerLoop
+            (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+            (diagnosticsWithModel (Some ProjectModelFixtures.observation))
+
+    test <@ exitCode = 0 @>
+    test <@ file.OutcomeKind = "green" @>
+    test <@ file.ModelObservation = Some ProjectModelFixtures.observation @>
 
 // --- one check, several run directories ---
 
@@ -913,7 +1077,7 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
         statusJsonFor true
 
     let cleanDiagnostics () : string =
-        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+        """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
     let earlier = System.Guid.NewGuid()
     let firstBatch = System.Guid.NewGuid()
@@ -1067,7 +1231,8 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () -> "idle") // waitForScan
                 waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                 // no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1122,7 +1287,8 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () -> "idle") // waitForScan
                 waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                 // no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1166,7 +1332,8 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 (fun () -> "idle") // waitForScan
                 (fun () -> "idle") // waitForComplete
                 (fun () -> "{}") // getStatus
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 getTestRun
                 // no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1204,7 +1371,8 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> "idle")
                 (fun () -> "idle")
                 (fun () -> "{}")
-                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 (fun () -> BaselineFixtures.reportOf (FullSuite 1))
                 // no projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
@@ -1261,7 +1429,8 @@ let private driveConfirmForVerdict
             (fun () -> "idle")
             (fun () -> "idle")
             (fun () -> "{}")
-            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+            (fun () ->
+                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
             getTestRun
             getCheckReach
             (fun () -> forceCalls <- forceCalls + 1)
@@ -1537,7 +1706,8 @@ let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invi
                       Column = 1
                       Detail = None } ] ]
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     let causes = redCausesOf false resp
 
@@ -1566,7 +1736,8 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
         { Count = 0
           Files = Map.empty
           Statuses = Map.empty
-          Coverage = Complete }
+          Coverage = Complete
+          ProjectModel = ProjectModelFixtures.available }
 
     test <@ List.isEmpty (redCausesOf false clean) @>
 
@@ -1611,7 +1782,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 moved <- true
                 System.IO.File.WriteAllText(tracked, "an edit that landed while the check was finishing")
 
-            """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+            """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
         let exitCode =
             pollAndRender
@@ -1731,6 +1902,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 Verdict.NoReading
                 (Map.ofList [ "test-prune", greenTestPrune ])
                 []
+                ProjectModelFixtures.available
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
@@ -1765,7 +1937,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
               Coverage = Incomplete 1
               Scope = FullSuite 7
-              Baseline = BaselineFixtures.reading }
+              Baseline = BaselineFixtures.reading
+              ProjectModel = ProjectModelFixtures.available }
 
         let zeroTestInputs =
             { initialInputs with
@@ -1788,6 +1961,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 Verdict.NoReading
                 Map.empty
                 []
+                ProjectModelFixtures.available
                 (SettledTree.capture repoRoot [])
                 outcome
 
@@ -1840,6 +2014,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
             Verdict.NoReading
             Map.empty
             []
+            ProjectModelFixtures.available
             (SettledTree.capture repoRoot [])
             (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
         |> ignore
@@ -1856,6 +2031,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
                 Verdict.NoReading
                 Map.empty
                 []
+                ProjectModelFixtures.available
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
 
@@ -1879,6 +2055,7 @@ let private publishPrior (repoRoot: string) (kind: string) =
             Verdict.NoReading
             statuses
             []
+            ProjectModelFixtures.available
             (SettledTree.capture repoRoot [])
             outcome
         |> ignore
@@ -1945,6 +2122,7 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
                 Verdict.NoReading
                 Map.empty
                 []
+                ProjectModelFixtures.available
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.UnearnedScope noTests)
 
@@ -1992,6 +2170,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             Verdict.NoReading
             Map.empty
             []
+            ProjectModelFixtures.available
             (SettledTree.capture repoRoot [])
             (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
         |> ignore
@@ -2013,7 +2192,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun () -> "{}")
                 (fun () ->
                     diagnosticsReads <- diagnosticsReads + 1
-                    """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 (fun () -> BaselineFixtures.reportOf (ImpactFiltered(1, 3)))
                 (fun () -> IpcParsing.ReachUnavailable "must not be read")
                 (fun () -> forcedRuns <- forcedRuns + 1)
@@ -2140,7 +2319,8 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
                     (fun () -> "idle")
                     waitForComplete
                     (fun () -> "{}")
-                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () ->
+                        """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
@@ -2173,9 +2353,12 @@ let ``daemon command keeps executed evidence through quiet same-tree re-reads`` 
             errorReads <- errorReads + 1
 
             match errorReads with
-            | 1 -> """{"count":0,"files":{},"statuses":{},"unchecked":2}"""
-            | 2 -> """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
-            | _ -> """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+            | 1 ->
+                """{"count":0,"files":{},"statuses":{},"unchecked":2, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+            | 2 ->
+                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+            | _ ->
+                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
         // Read 1 is the baseline, read 2 the settled executed run; the
         // rest are the convergence re-reads this test is about.
@@ -2255,9 +2438,9 @@ let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declar
             errorReads <- errorReads + 1
 
             if errorReads = 1 then
-                """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
+                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
             else
-                """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
         let getRun () =
             scopeReads <- scopeReads + 1

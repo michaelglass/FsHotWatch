@@ -1811,14 +1811,14 @@
     "Verdict.fs": [
       {
         "coveredLines": 1444,
-        "coveredBranches": 442,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum.",
+        "coveredBranches": 427,
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum. || the tracked issue (2026-09-16): branches 442 -> 428 from IL shape, not lost coverage. `Verdict.Outcome` gained a fourth case (`ModelUnavailable`), and a four-case union match compiles to a `switch` the collector does not instrument, so every `match` on `Outcome` left the branch report entirely (main: lines 686, 1162/1168, 1499, 1752, 3116/3202, 3495 = 27 covered branches) while the new arms added 12 covered. Measured by diffing per-line cobertura of main@origin 38d3f2cc against the change: total branches 534 -> 516 despite added code; no line covered on main is uncovered now. Floor = observed minimum of the two full runs after the change (428, 427): Verdict.fs still wobbles by one branch run to run, as recorded above.",
         "platform": "macos"
       },
       {
         "coveredLines": 1173,
-        "coveredBranches": 551,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 536,
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || the tracked issue (2026-09-16): PROVISIONAL 551 -> 536, not measured on Linux. Same four-case `Outcome` switch as the macos entry, which measured -15 branches from IL shape alone; lowered by that delta so the shape change does not red Linux CI. RE-SETTLE FROM THE FIRST CI RUN, and raise it if Linux measures higher.",
         "platform": "linux"
       }
     ],

@@ -1318,7 +1318,8 @@ let ``confirm still rejects a filtered green as UnearnedScope`` () =
                   RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total)
-                  Baseline = BaselineFixtures.reading }
+                  Baseline = BaselineFixtures.reading
+                  ProjectModel = ProjectModelFixtures.available }
 
         test <@ FsHotWatch.Cli.CheckVerdict.exitCode outcome = 3 @>
     | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
@@ -1353,7 +1354,8 @@ let ``x 129: a RAW-filter run with no report evidence claims NO coverage, so the
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun FsHotWatch.Cli.IpcParsing.NoTestsReason.Unstated
-          Baseline = BaselineFixtures.reading }
+          Baseline = BaselineFixtures.reading
+          ProjectModel = ProjectModelFixtures.available }
 
     let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation noTestsRan
@@ -1391,7 +1393,8 @@ let ``x 112: a raw-filter run WITH evidence is a FILTERED scope, and confirm sti
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2)
-          Baseline = BaselineFixtures.reading }
+          Baseline = BaselineFixtures.reading
+          ProjectModel = ProjectModelFixtures.available }
 
     let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation filtered

@@ -622,3 +622,83 @@ let ``a zero-selection reply names the symbols covered only by unlisted projects
     match older.Scope with
     | NoTestsRun(NoTestsReason.ChangesUncovered(_, _, unrunnable)) -> test <@ unrunnable = UnrunnableCoverage.none @>
     | other -> failwithf "expected changes-uncovered, got %A" other
+
+// ---------------------------------------------------------------------------
+// the project model in the GetDiagnostics reply, read fail-closed.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a diagnostics reply with no projectModel is NotReported — an older daemon never reads as available`` () =
+    let resp =
+        parseDiagnosticsResponse """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+    match resp.ProjectModel with
+    | ProjectModelReading.NotReported reason -> test <@ reason.Contains "did not report" @>
+    | other -> failwith $"expected NotReported, got %A{other}"
+
+    test <@ ProjectModelReading.available resp.ProjectModel = None @>
+
+[<Fact>]
+let ``a diagnostics reply with a projectModel this build cannot read is NotReported, never an observation`` () =
+    let resp =
+        parseDiagnosticsResponse
+            """{"count":0,"files":{},"statuses":{},"unchecked":0,"projectModel":{"schema":"fshw-project-model-v9","status":"available","generation":1}}"""
+
+    match resp.ProjectModel with
+    | ProjectModelReading.NotReported reason -> test <@ reason.Contains "not one this build can read" @>
+    | other -> failwith $"expected NotReported, got %A{other}"
+
+[<Fact>]
+let ``a diagnostics reply carries the daemon's observation verbatim`` () =
+    for observation in
+        [ FsHotWatch.ProjectModel.Observation.Rediscovering 5L
+          FsHotWatch.ProjectModel.Observation.Unobserved
+          ProjectModelFixtures.observation ] do
+        let payload =
+            JsonSerializer.Serialize(FsHotWatch.ProjectModelWire.payload observation)
+
+        let resp =
+            parseDiagnosticsResponse $"""{{"count":0,"unchecked":0,"projectModel":%s{payload}}}"""
+
+        test <@ resp.ProjectModel = ProjectModelReading.Observed observation @>
+
+[<Fact>]
+let ``every unavailable model reading is explained with a cause AND a remedy; an available one says nothing`` () =
+    let loadingFailed =
+        FsHotWatch.ProjectModel.ofCompleted
+            2L
+            { Discovered = 4
+              Loaded = 0
+              OptionsMapped = 0
+              Registered = 0 }
+
+    let explain = ProjectModelReading.describeUnavailable
+
+    test <@ explain ProjectModelFixtures.available = None @>
+
+    let rediscovering =
+        explain (ProjectModelReading.Observed(FsHotWatch.ProjectModel.Observation.Rediscovering 8L))
+        |> Option.defaultValue ""
+
+    test <@ rediscovering.Contains "generation 8 is still in progress" @>
+    test <@ rediscovering.Contains "Wait for discovery to settle" @>
+
+    let unobserved =
+        explain (ProjectModelReading.Observed FsHotWatch.ProjectModel.Observation.Unobserved)
+        |> Option.defaultValue ""
+
+    test <@ unobserved.Contains "no completed discovery" @>
+    test <@ unobserved.Contains "logs/daemon.log" @>
+
+    let failed =
+        explain (ProjectModelReading.Observed loadingFailed) |> Option.defaultValue ""
+
+    test <@ failed.Contains "loading-failed" @>
+    test <@ failed.Contains "Re-running will not clear this" @>
+
+    let unreported =
+        explain (ProjectModelReading.NotReported "the daemon did not report its project model")
+        |> Option.defaultValue ""
+
+    test <@ unreported.StartsWith("PROJECT MODEL NOT REPORTED: the daemon did not report", StringComparison.Ordinal) @>
+    test <@ unreported.Contains "`fshw stop`" @>

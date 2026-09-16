@@ -772,6 +772,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             FsHotWatch.Cli.Verdict.NoReading
             Map.empty
             []
+            ProjectModelFixtures.available
             (FsHotWatch.Cli.IpcOutput.SettledTree.capture repoRoot [])
             (FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
         |> ignore
@@ -1294,7 +1295,8 @@ let private innerLoopExitFor (scope: FsHotWatch.Cli.IpcParsing.TestScope) : int 
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = scope
-          Baseline = BaselineFixtures.reading }
+          Baseline = BaselineFixtures.reading
+          ProjectModel = ProjectModelFixtures.available }
 
     FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.InnerLoop inputs
     |> FsHotWatch.Cli.CheckVerdict.exitCode
@@ -1377,7 +1379,8 @@ let ``confirm refuses every scope it did not positively establish — fault or n
               RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
               Coverage = FsHotWatch.Cli.IpcParsing.Complete
               Scope = scope
-              Baseline = BaselineFixtures.reading }
+              Baseline = BaselineFixtures.reading
+              ProjectModel = ProjectModelFixtures.available }
 
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation inputs
         |> FsHotWatch.Cli.CheckVerdict.exitCode

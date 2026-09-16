@@ -39,7 +39,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
-      GetUncheckedCount = fun () -> 0 }
+      GetUncheckedCount = fun () -> 0
+      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved }
 
 [<Fact(Timeout = 15000)>]
 let ``server responds to GetStatus`` () =

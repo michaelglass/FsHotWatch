@@ -769,7 +769,12 @@ let private fakeIpc () : IpcOps =
       GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
-      GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
+      GetDiagnostics =
+        fun _ _ ->
+            async {
+                return
+                    """{"count": 0, "files": {}, "projectModel": {"schema": "fshw-project-model-v1", "status": "available", "generation": 7, "counts": {"discovered": 3, "loaded": 3, "optionsMapped": 3, "registered": 3}, "reasonCode": null}}"""
+            }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
@@ -955,7 +960,7 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
                         calledWith <- name
 
                         return
-                            """{"count": 0, "files": {}, "statuses": {"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null, "diagnostics": {"errors": 0, "warnings": 0}}}}"""
+                            """{"count": 0, "files": {}, "statuses": {"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null, "diagnostics": {"errors": 0, "warnings": 0}}}, "projectModel": {"schema": "fshw-project-model-v1", "status": "available", "generation": 7, "counts": {"discovered": 3, "loaded": 3, "optionsMapped": 3, "registered": 3}, "reasonCode": null}}"""
                     } }
 
     let result = exec ipc (Status(Some "lint"))
@@ -1450,7 +1455,12 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
                 IsRunning = fun _ -> true
                 WaitForScan = fun _ _ -> async { return "idle" }
                 GetStatus = fun _ -> async { return getStatus () }
-                GetDiagnostics = fun _ _ -> async { return """{"count": 0, "unchecked": 0}""" } }
+                GetDiagnostics =
+                    fun _ _ ->
+                        async {
+                            return
+                                """{"count": 0, "unchecked": 0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+                        } }
 
         let result =
             executeCommand
@@ -1705,7 +1715,9 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                 fun _ _ ->
                     async {
                         getErrorsCalled <- true
-                        return """{"count": 0, "unchecked": 0}"""
+
+                        return
+                            """{"count": 0, "unchecked": 0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
                     } }
 
     let result = exec ipc (Check [])
@@ -1895,7 +1907,9 @@ let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
             fun _ _ ->
                 async {
                     d.Served.Add d.Generation
-                    return """{"count": 0, "files": {}, "unchecked": 0}"""
+
+                    return
+                        """{"count": 0, "files": {}, "unchecked": 0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
                 } }
 
 /// A daemon already running from generation 1. Its identity is whatever the caller staged
@@ -2062,7 +2076,9 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                                 raiseFrameReaderOverflow ()
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+
+                            return
+                                """{"count": 0, "files": {}, "unchecked": 0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
                         } }
 
         let stderr, result =
@@ -2108,7 +2124,9 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                                 raise (OutOfMemoryException("client heap exhausted"))
 
                             d.Served.Add d.Generation
-                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+
+                            return
+                                """{"count": 0, "files": {}, "unchecked": 0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
                         } }
 
         let stderr, failedResult =

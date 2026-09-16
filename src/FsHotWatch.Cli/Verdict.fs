@@ -33,8 +33,13 @@ open FsHotWatch.Cli.IpcParsing
 
 /// Identifies the on-disk contract. Consumers depend on this file now; a
 /// breaking change to its shape MUST bump this string.
+///
+/// v2: every verdict records the `projectModel` it was graded against,
+/// and `outcome.kind` gains `model-unavailable`. A v1 file cannot say whether its green
+/// was earned against an available model, so this build reads it as unreadable rather
+/// than trusting it.
 [<Literal>]
-let Schema = "fshw-verdict-v1"
+let Schema = "fshw-verdict-v2"
 
 /// ONE `check`/`confirm` invocation as seen by the CLI wrapper that
 /// brackets it: the identity the verdict is stamped with, and the ONE origin every
@@ -679,6 +684,13 @@ type Outcome =
     | Green of baseline: CheckVerdict.Baseline
     | Red
     | Incomplete of reason: string
+    /// Nothing was verified because there was no available PROJECT MODEL
+    /// to verify against — a re-discovery in flight, a discovery that never completed or
+    /// produced nothing, or a daemon that did not say. Its own kind, never folded into
+    /// `incomplete`'s "no tests ran": that answer is also what a HEALTHY model with
+    /// nothing to re-verify gives, and the reader's next action is the opposite one.
+    /// The verdict's `projectModel` field says which unavailable state it was.
+    | ModelUnavailable of reason: string
 
 module Outcome =
     /// The wire tag. Total.
@@ -687,6 +699,7 @@ module Outcome =
         | Green _ -> "green"
         | Red -> "red"
         | Incomplete _ -> "incomplete"
+        | ModelUnavailable _ -> "model-unavailable"
 
 /// The words a non-green `CheckOutcome` is explained in — ONE copy, read by every
 /// surface that has to explain one: this file's structured `Outcome`, the daemon-path
@@ -802,6 +815,18 @@ module CheckProse =
            output is already on disk under `.fshw/test-runs/`; read that before spending another full cycle. If \
            this recurs, it is the size of what the daemon is being asked to hand back, not the size of the box."
 
+    /// A reading taken without an available project model, in its own
+    /// words — the cause and the remedy both come from the reading, because a model
+    /// mid-rediscovery settles on its own and a failed one does not. The sentence that
+    /// does the work is the second: this is NOT "no tests needed to run".
+    let modelUnavailable (reading: IpcParsing.ProjectModelReading) =
+        let detail =
+            IpcParsing.ProjectModelReading.describeUnavailable reading
+            |> Option.defaultValue "PROJECT MODEL UNAVAILABLE."
+
+        $"NO VERDICT — %s{detail}\nThis is not an empty test selection: nothing was checked against a settled \
+           project model, so nothing is reported broken and nothing is reported sound."
+
     /// A scope that could not be READ. Its own words, never `confirm`'s: this is not
     /// "the run was too narrow", it is "we could not see what the run was" — and a
     /// consumer told the former would retry a broken check forever.
@@ -882,6 +907,9 @@ module CheckProse =
         // the reader is about to draw the usual conclusion from a non-zero exit, and the
         // usual conclusion — "re-run it" — is the expensive wrong move here.
         | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Some(resultUnreceived reason)
+        // Never borrows the "NO TESTS RAN" words: those describe a model
+        // that selected nothing, and this model was never there to select from.
+        | CheckVerdict.CheckOutcome.ModelUnavailable reading -> Some(modelUnavailable reading)
         | CheckVerdict.CheckOutcome.Clean _
         | CheckVerdict.CheckOutcome.FailuresFound -> None
 
@@ -945,6 +973,9 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     // `outcome.kind` would break every consumer that switches on three; giving it no
     // exit code of its own would leave the caller unable to act on it at all.
     | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Incomplete(CheckProse.resultUnreceived reason)
+    // Its own `outcome.kind`, so a consumer of `verdict.json` can branch
+    // on "wait for the model" without parsing prose — and exit 2 beside it.
+    | CheckVerdict.CheckOutcome.ModelUnavailable reading -> ModelUnavailable(CheckProse.modelUnavailable reading)
 
 // ---------------------------------------------------------------------------
 // the check-vs-confirm sample every `confirm` already had
@@ -1162,11 +1193,13 @@ module CheckComparison =
         match o with
         | Green _ -> Some false
         | Red -> Some true
-        | Incomplete _ -> None
+        | Incomplete _
+        | ModelUnavailable _ -> None
 
     let private whyNoAnswer (o: Outcome) : string =
         match o with
-        | Incomplete reason -> reason
+        | Incomplete reason
+        | ModelUnavailable reason -> reason
         | Green _
         | Red -> Outcome.tag o
 
@@ -1338,6 +1371,10 @@ type Verdict =
             /// the owning invocation. Additive: a verdict written before the field
             /// existed reads back as `Attribution.none`.
             attribution: Attribution
+            /// The project model this verdict's inputs were read against.
+            /// `validate` ties it to `outcome` in both directions: a `Green` requires an
+            /// available model, and a `ModelUnavailable` may not name one.
+            projectModel: IpcParsing.ProjectModelReading
         }
 
     member this.ProducedAt = this.producedAt
@@ -1433,6 +1470,10 @@ type Verdict =
     member this.InvocationId = this.attribution.InvocationId
     member this.Attribution = this.attribution
 
+    /// The project model the verdict was graded against. Never unavailable
+    /// on a `Green` — guaranteed by `create` and by `read`.
+    member this.ProjectModel = this.projectModel
+
 let private hasFailingPlugin (v: Verdict) : bool =
     v.Plugins |> List.exists (fun p -> PluginOutcome.isFailing p.Outcome)
 
@@ -1459,7 +1500,31 @@ let private baselineAgreesWithScope (v: Verdict) : Result<Verdict, string> =
                full-suite run it is relative to."
     | Green(CheckVerdict.Baseline.FullSuiteRun _), _
     | Red, _
-    | Incomplete _, _ -> Ok v
+    | Incomplete _, _
+    | ModelUnavailable _, _ -> Ok v
+
+/// The outcome and the project model are one fact split across two
+/// fields, and these are the two ways of stating it wrong: a GREEN over a model nobody
+/// observed as available — the incident, persisted — and a `model-unavailable` outcome
+/// beside a model that WAS available, which would send a reader to wait for a discovery
+/// that already finished.
+let private outcomeAgreesWithProjectModel (v: Verdict) : Result<Verdict, string> =
+    let available =
+        IpcParsing.ProjectModelReading.available v.ProjectModel |> Option.isSome
+
+    match v.Outcome with
+    | Green _ when not available ->
+        Error
+            "a GREEN verdict records no available project model — nothing establishes that its checks and tests \
+             ran against a settled graph of projects rather than an empty one, and an empty one verifies nothing."
+    | ModelUnavailable _ when available ->
+        Error
+            "a MODEL-UNAVAILABLE verdict records an available project model — one of the two is wrong and a \
+             reader cannot tell which."
+    | Green _
+    | ModelUnavailable _
+    | Red
+    | Incomplete _ -> Ok v
 
 [<Literal>]
 let private UnexplainedRedReason =
@@ -1497,7 +1562,8 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 
     let outcomeAgreesWithPlugins () =
         match v.Outcome with
-        | Incomplete _ -> Ok v
+        | Incomplete _
+        | ModelUnavailable _ -> Ok v
         | Red when isUnexplainedRed v -> Error $"a RED verdict is unexplained — %s{UnexplainedRedReason}."
         | Red -> Ok v
         | Green _ ->
@@ -1544,6 +1610,7 @@ let private validate (v: Verdict) : Result<Verdict, string> =
     scopeAgreesWithCommand ()
     |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
     |> Result.bind (fun _ -> baselineAgreesWithScope v)
+    |> Result.bind (fun _ -> outcomeAgreesWithProjectModel v)
     |> Result.bind (fun _ -> divergenceAgreesWithRecord ())
 
 /// The scope a `command`'s verdict may RECORD, given what the run actually reported.
@@ -1603,6 +1670,10 @@ let create
     // short list as the whole story. Required, not optional: a caller that could omit it
     // is a caller that can produce a red naming nothing, which is the defect.
     (redCauses: RedCause list)
+    // The project model the outcome was computed against, from the SAME
+    // reading. Required: a caller that could omit it could write a green nobody can tell
+    // from the one an empty model produced.
+    (projectModel: IpcParsing.ProjectModelReading)
     : Verdict =
     let candidate =
         { producedAt = DateTime.UtcNow
@@ -1625,7 +1696,8 @@ let create
           redCauseCount = List.length redCauses
           trigger = runReport.Seeds
           triggerCount = runReport.SeedCount
-          attribution = Attribution.none }
+          attribution = Attribution.none
+          projectModel = projectModel }
 
     match validate candidate with
     | Ok v -> v
@@ -1759,6 +1831,23 @@ let private outcomeJson (outcome: Outcome) : obj =
         {| kind = "incomplete"
            reason = reason |}
         :> obj
+    | ModelUnavailable reason ->
+        {| kind = "model-unavailable"
+           reason = reason |}
+        :> obj
+
+/// on the wire. An observation is written in the daemon's own versioned
+/// `fshw-project-model-v1` payload, byte-for-byte what the daemon served — no second
+/// encoding of the same fact. A reading with no observation says so with its own
+/// `status` and reason, and carries no `schema`: it is not a daemon payload, and a
+/// consumer that validates the schema must not mistake it for one.
+let private projectModelJson (reading: IpcParsing.ProjectModelReading) : obj =
+    match reading with
+    | IpcParsing.ProjectModelReading.Observed observation -> ProjectModelWire.payload observation
+    | IpcParsing.ProjectModelReading.NotReported reason ->
+        {| status = "not-reported"
+           reason = reason |}
+        :> obj
 
 /// on the wire. Tagged with `kind` like every other sum in this file, so a
 /// consumer reads ONE field and never has to parse prose to learn what happened. `reason`
@@ -1859,6 +1948,7 @@ let serialize (v: Verdict) : string =
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
            scope = scopeJson v.Excluded v.Scope
            outcome = outcomeJson v.Outcome
+           projectModel = projectModelJson v.ProjectModel
            checkComparison = checkComparisonJson v.Excluded v.Comparison
            exitCode = v.ExitCode
            plugins =
@@ -2166,6 +2256,7 @@ let private terminalVerdict
         []
         CheckComparison.notRecorded
         []
+        (IpcParsing.ProjectModelReading.NotReported "the invocation ended before the project model could be read")
 
 /// The top-level `beforeRun` hook refused the run before the daemon was contacted.
 /// Nothing else will publish, so this is the ONLY record of the invocation — and the
@@ -2503,7 +2594,18 @@ let private parseOutcome (el: JsonElement) : Outcome option =
     | Some "green" -> tryProp el "baseline" |> Option.bind parseBaseline |> Option.map Green
     | Some "red" -> Some Red
     | Some "incomplete" -> Some(Incomplete(tryString el "reason" |> Option.defaultValue "no reason recorded"))
+    | Some "model-unavailable" ->
+        Some(ModelUnavailable(tryString el "reason" |> Option.defaultValue "no reason recorded"))
     | _ -> None
+
+/// read back. `None` for anything this build cannot read — including an
+/// ABSENT field — which `read` refuses outright: a v2 verdict that does not say what model
+/// it was graded against has not recorded a verdict.
+let private parseProjectModel (el: JsonElement) : IpcParsing.ProjectModelReading option =
+    match ProjectModelWire.tryRead el, tryString el "status", tryString el "reason" with
+    | Some observation, _, _ -> Some(IpcParsing.ProjectModelReading.Observed observation)
+    | None, Some "not-reported", Some reason -> Some(IpcParsing.ProjectModelReading.NotReported reason)
+    | None, _, _ -> None
 
 /// read back. Every way of not getting a classification lands on a case
 /// that is NOT `Agreed` — an unreadable comparison is not an agreement, exactly as an
@@ -2802,10 +2904,14 @@ let read (repoRoot: string) : Reading =
                         | true, g -> Some g
                         | _ -> None)
 
-                match tryString root "treeHash", outcome, parsePlugins root, parseRuns root gradedRunId with
-                | _, _, Error e, _ -> Reading.Unreadable e
-                | _, _, _, Error e -> Reading.Unreadable e
-                | Some treeHash, Some outcome, Ok plugins, Ok runs ->
+                let projectModel = tryProp root "projectModel" |> Option.bind parseProjectModel
+
+                match
+                    tryString root "treeHash", outcome, parsePlugins root, parseRuns root gradedRunId, projectModel
+                with
+                | _, _, Error e, _, _ -> Reading.Unreadable e
+                | _, _, _, Error e, _ -> Reading.Unreadable e
+                | Some treeHash, Some outcome, Ok plugins, Ok runs, Some projectModel ->
                     // Rehydrated through the SAME invariant `create` enforces (see
                     // `validate`), so a hand-edited green over a failing plugin is
                     // refused on the way in.
@@ -2910,7 +3016,8 @@ let read (repoRoot: string) : Reading =
                                  |> Seq.toList
                              | _ -> [])
                           triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0
-                          attribution = parseAttribution root }
+                          attribution = parseAttribution root
+                          projectModel = projectModel }
 
                     // Old and malformed files can carry a bare red with
                     // no structural evidence. It is still a usable, fail-closed reading,
@@ -2929,8 +3036,11 @@ let read (repoRoot: string) : Reading =
                     match validate failClosed with
                     | Ok v -> Reading.Found v
                     | Error reason -> Reading.Unreadable reason
-                | None, _, _, _ -> Reading.Unreadable "no treeHash — the verdict does not say which tree it verified"
-                | _, None, _, _ -> Reading.Unreadable "no recognizable outcome"
+                | None, _, _, _, _ -> Reading.Unreadable "no treeHash — the verdict does not say which tree it verified"
+                | _, None, _, _, _ -> Reading.Unreadable "no recognizable outcome"
+                | _, _, _, _, None ->
+                    Reading.Unreadable
+                        "no readable projectModel — the verdict does not say what project model it was graded against"
         with
         | :? JsonException as ex -> Reading.Unreadable $"not valid JSON: %s{ex.Message}"
         | :? IOException as ex -> Reading.Unreadable $"could not be read: %s{ex.Message}"
@@ -3115,7 +3225,8 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
 let isFullSuiteGreen (v: Verdict) : bool =
     match v.Outcome with
     | Red
-    | Incomplete _ -> false
+    | Incomplete _
+    | ModelUnavailable _ -> false
     | Green _ -> TestScope.isFullSuite v.Scope
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
@@ -3202,7 +3313,8 @@ let describeStillApplies (v: Verdict) : string =
         match v.Outcome with
         | Green b -> $"; %s{CheckVerdict.Baseline.describe b}"
         | Red
-        | Incomplete _ -> ""
+        | Incomplete _
+        | ModelUnavailable _ -> ""
 
     $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence}%s{baseline})"
 
@@ -3500,7 +3612,8 @@ let projectedImpactScopedRun
                     refuse
                         "the run recorded failing tests and a green verdict at the same time — the projection will \
                          not compare two readings that contradict each other"
-                | Incomplete why -> refuse why
+                | Incomplete why
+                | ModelUnavailable why -> refuse why
                 | Red ->
                     match NonTestRed.classify statuses causes with
                     | NoneBeyondTheTests ->

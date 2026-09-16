@@ -171,7 +171,8 @@ let internal checkInputs
       RunnerAborted = runnerAborted resp
       Coverage = resp.Coverage
       Scope = run.Scope
-      Baseline = run.Baseline }
+      Baseline = run.Baseline
+      ProjectModel = resp.ProjectModel }
 
 /// True if a DiagnosticsResponse contains failures: any plugin Failed (or in a status
 /// this build cannot read), or any error/warning-severity diagnostic (warnings
@@ -948,6 +949,10 @@ let private publishVerdictWithReason
     // returned exit 1 with every plugin `ok` and 9,064 tests passed, and the file it
     // wrote named nothing at all.
     (redCauses: Verdict.RedCause list)
+    // The project model `outcome` was computed against, from the SAME
+    // reading as `statuses` and `redCauses`. The verdict records it, and refuses a green
+    // beside anything but an available one.
+    (projectModel: IpcParsing.ProjectModelReading)
     // The tree the CALLER was verifying, captured at its settle
     // boundary. Required, not derived: see `SettledTree` — a tree hashed here is
     // hashed too late to catch a move, because the move happens between settling and
@@ -1108,7 +1113,18 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
+            Verdict.create
+                command
+                runReport
+                atWrite
+                excluded
+                verdictOutcome
+                exitCode
+                plugins
+                runs
+                comparison
+                redCauses
+                projectModel
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1174,6 +1190,7 @@ let internal publishVerdictForInvocation
     (statuses: Map<string, ParsedPluginStatus>)
     (daemonEvidence: IpcParsing.DaemonEvidence)
     (redCauses: Verdict.RedCause list)
+    (projectModel: IpcParsing.ProjectModelReading)
     (settledTree: SettledTree)
     (outcome: CheckVerdict.CheckOutcome)
     : int =
@@ -1188,6 +1205,7 @@ let internal publishVerdictForInvocation
         statuses
         daemonEvidence
         redCauses
+        projectModel
         settledTree
         outcome
         None
@@ -1203,6 +1221,7 @@ let internal publishVerdict
     (checkScoped: Verdict.CheckScopedEvidence)
     (statuses: Map<string, ParsedPluginStatus>)
     (redCauses: Verdict.RedCause list)
+    (projectModel: IpcParsing.ProjectModelReading)
     (settledTree: SettledTree)
     (outcome: CheckVerdict.CheckOutcome)
     : int =
@@ -1217,6 +1236,7 @@ let internal publishVerdict
         statuses
         IpcParsing.DaemonEvidence.NotServed
         redCauses
+        projectModel
         settledTree
         outcome
 
@@ -1242,6 +1262,8 @@ let internal publishTerminalIncompleteForInvocation
         Map.empty
         IpcParsing.DaemonEvidence.NotServed
         []
+        (IpcParsing.ProjectModelReading.NotReported
+            "the run ended on an infrastructure failure before the project model could be read")
         settledTree
         (CheckVerdict.CheckOutcome.Incomplete -1)
         (Some reason)
@@ -1350,6 +1372,15 @@ let pollAndRenderForInvocation
     // was computed from rather than a second query's.
     let finalCauses: Verdict.RedCause list ref = ref []
 
+    // Captured with the statuses, at every read, from the SAME response —
+    // the model the verdict is graded against is the one that reading was taken against.
+    // Before anything is asked it says so, like `finalRun` below.
+    let finalModel =
+        ref (
+            IpcParsing.ProjectModelReading.NotReported
+                "the check aborted before the daemon's project model could be read"
+        )
+
     // The placeholder before anything has been ASKED. It reaches `publishVerdict` only
     // on the abort paths below (a wedged plugin, a daemon that shut down mid-wait), and
     // on those paths it must not say "the daemon reported no scope" — nobody asked it.
@@ -1413,6 +1444,7 @@ let pollAndRenderForInvocation
         finalStatuses.Value <- firstResp.Statuses
         finalEvidence.Value <- IpcParsing.DaemonEvidence.parse firstRaw
         finalCauses.Value <- redCausesOf noWarnFail firstResp
+        finalModel.Value <- firstResp.ProjectModel
 
         // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
         // not just report" step). Invoked only when the first read is
@@ -1436,6 +1468,7 @@ let pollAndRenderForInvocation
             finalStatuses.Value <- resp.Statuses
             finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
             finalCauses.Value <- redCausesOf noWarnFail resp
+            finalModel.Value <- resp.ProjectModel
             checkInputs noWarnFail run resp
 
         let firstRun = getTestRun () |> observeTestRun
@@ -1508,6 +1541,7 @@ let pollAndRenderForInvocation
                 finalStatuses.Value
                 finalEvidence.Value
                 finalCauses.Value
+                finalModel.Value
                 settledTree.Value
                 outcome
 
@@ -1584,6 +1618,7 @@ let pollAndRenderForInvocation
                 finalStatuses.Value
                 finalEvidence.Value
                 finalCauses.Value
+                finalModel.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.ResultUnreceived reason)
 
@@ -1617,6 +1652,7 @@ let pollAndRenderForInvocation
                 finalStatuses.Value
                 finalEvidence.Value
                 finalCauses.Value
+                finalModel.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
@@ -1648,6 +1684,7 @@ let pollAndRenderForInvocation
                 finalStatuses.Value
                 finalEvidence.Value
                 finalCauses.Value
+                finalModel.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 

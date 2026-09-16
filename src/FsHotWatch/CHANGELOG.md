@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- breaking: the daemon now serves its project model to clients.
+  `DaemonRpcConfig` gains the required `GetProjectModel: unit -> ProjectModel.Observation`,
+  and the `GetDiagnostics` reply carries it as `projectModel` — the versioned
+  `fshw-project-model-v1` payload (`ProjectModelWire.payload`) — read at request time
+  beside `unchecked` and the statuses. `Daemon.ProjectModel()` exposes the coordinator's
+  observation: `Rediscovering` while a discovery attempt is in flight, `Unobserved` before
+  any completed, otherwise the classified completed outcome. This is what lets a client
+  tell a model mid-rediscovery from a healthy one that selected nothing; before, both
+  reached the CLI as the same empty reply.
+
 ## 0.10.0-alpha.34 - 2026-09-16
 
 - new `FsHotWatch.CacheInputs` module for cache-key inputs that live

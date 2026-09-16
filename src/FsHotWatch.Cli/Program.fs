@@ -2203,6 +2203,8 @@ let executeCommand
                     say $"  %s{CheckVerdict.Baseline.describe baseline}"
                 | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
                 | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
+                // The reason already opens with "NO VERDICT — PROJECT MODEL …".
+                | Verdict.ModelUnavailable reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: %s{reason}"
             | Verdict.Report.Stale(v, reason) ->
                 // A green from a different tree — or a different BINARY — is still a green,
                 // which is exactly why it may never be REPORTED as one.

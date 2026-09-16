@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- breaking: a `check`/`confirm` whose reading was taken without an
+  available project model is no longer graded as if the model were healthy. A scan that
+  raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously
+  complete and the impact set vacuously empty; nothing distinguished that from a healthy
+  model with nothing to re-verify. The daemon's observation now travels with every
+  reading (`IpcParsing.ProjectModelReading`: the daemon's `Observed` observation, or
+  `NotReported` when the reply carries none this build can read), is a required
+  `CheckVerdict.CheckInputs.ProjectModel`, and anything but `Available` yields the new
+  `CheckOutcome.ModelUnavailable` — exit 2, terminal (never converged), and never a
+  green in any mode, scope, coverage or baseline. A real failure or a dead test host
+  still takes precedence. A healthy model that selected nothing keeps its existing
+  answer.
+- `.fshw/verdict.json` is now `fshw-verdict-v2`. Every verdict records `projectModel` (the
+  daemon's `fshw-project-model-v1` payload, or `{"status":"not-reported","reason":…}`
+  without a `schema`), and `outcome.kind` gains `model-unavailable` (`Verdict.Outcome.ModelUnavailable`)
+  with its own operator text naming the cause and remedy (`CheckProse.modelUnavailable`).
+  `Verdict.create` takes the reading and refuses a green beside an unavailable model, and a
+  `model-unavailable` outcome beside an available one; `Verdict.read` applies the same rule
+  and reads a v1 file, or a v2 file without a readable `projectModel`, as unreadable.
+
 ## 0.14.0-alpha.51 - 2026-09-16
 
 - Adopts CommandTree 0.11.0 (from 0.8.1). A mistyped `fshw` command whose name is close

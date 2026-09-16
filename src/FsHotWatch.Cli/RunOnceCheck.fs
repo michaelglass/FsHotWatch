@@ -348,6 +348,11 @@ let private runOnceAndVerdictIn
             finalRun.Value <- effective
             effective
 
+        // The model the latest reading was taken against — recorded in
+        // the verdict beside the outcome that reading produced.
+        let finalModel =
+            ref (IpcParsing.ProjectModelReading.Observed(daemon.ProjectModel()))
+
         /// Read the current state of the host. NO scan — the caller decides when work
         /// happens, so a read can never be mistaken for one.
         ///
@@ -359,6 +364,7 @@ let private runOnceAndVerdictIn
             // atomic completed discovery outcome at every convergence reading.
             awaitDiscovery ()
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
+            finalModel.Value <- IpcParsing.ProjectModelReading.Observed(daemon.ProjectModel())
             let run = readTestRun daemon.Host |> observeTestRun
 
             { PluginStatuses = finalStatuses.Value
@@ -368,7 +374,10 @@ let private runOnceAndVerdictIn
               RunnerAborted = runnerAborted daemon pluginName
               Coverage = liveCoverage daemon
               Scope = run.Scope
-              Baseline = run.Baseline }
+              Baseline = run.Baseline
+              // In-process there is no wire to fail: the host's own coordinator answers,
+              // so the reading is always an observation, never `NotReported`.
+              ProjectModel = finalModel.Value }
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
@@ -478,6 +487,7 @@ let private runOnceAndVerdictIn
                 finalStatuses.Value
                 (IpcParsing.DaemonEvidence.ofHost daemon.Host)
                 (redCauses daemon noWarnFail pluginName)
+                finalModel.Value
                 settledTree.Value
                 outcome
 

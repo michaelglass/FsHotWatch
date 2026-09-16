@@ -1745,6 +1745,12 @@ type Daemon
     /// attempt has completed or one is currently between clear and completion.
     member internal _.DiscoverySnapshot() : DiscoverySnapshot option = discovery.Completed
 
+    /// The project model as a value rather than an absence:
+    /// `Rediscovering` while an attempt is in flight, `Unobserved` before any attempt
+    /// completed (or after the settling one faulted), and otherwise the classified
+    /// completed outcome. The one reading a verdict may be green on is `Available`.
+    member _.ProjectModel() : ProjectModel.Observation = discovery.Observation
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -2001,7 +2007,8 @@ type Daemon
                       InvalidateCache =
                         fun () ->
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
-                      GetUncheckedCount = getUncheckedCount }
+                      GetUncheckedCount = getUncheckedCount
+                      GetProjectModel = this.ProjectModel }
 
                 // rework. Everything before the pipe listens — runtime
                 // boot, config and analyzer loading, the singleton lock — is wall time

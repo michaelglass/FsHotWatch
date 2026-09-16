@@ -251,6 +251,25 @@ type CheckOutcome =
     /// only that it finished and its result did not arrive. `reason` names the fault
     /// that ate it.
     | ResultUnreceived of reason: string
+    /// No failures — and NO AVAILABLE PROJECT MODEL behind the reading:
+    /// the daemon was re-discovering its projects, discovery never completed, a stage of
+    /// it produced nothing, or the reply did not say.
+    ///
+    /// The incident: a scan raced a re-discovery, analysed a graph with ZERO projects,
+    /// selected nothing, and reported NO TESTS RAN over a tree nothing had been checked
+    /// against. An empty impact set on a model that was never there is not a finding; it
+    /// is a failure to observe. So it is its own outcome, distinct from every "nothing to
+    /// run" answer a HEALTHY model gives — the reader's action differs ("wait for the
+    /// model" vs "nothing needed doing"), and one value for both is how the first
+    /// borrowed the second's meaning.
+    ///
+    /// Never green (nothing was verified), never red (nothing failed). A real failure
+    /// beside it still short-circuits to `FailuresFound`: a crashed plugin or an
+    /// attributable diagnostic is a claim about the tree whatever the model is doing.
+    ///
+    /// Carries the reading, which is never `Available` here — `verdict` is the only
+    /// constructor and gates on `ProjectModelReading.available`.
+    | ModelUnavailable of IpcParsing.ProjectModelReading
 
 /// Total exit-code mapping. Exhaustive over every CheckOutcome case — adding a
 /// new case is a compile error here, so a new state can never silently fall
@@ -279,6 +298,10 @@ let exitCode (outcome: CheckOutcome) : int =
     // 5 absent, 6 in flight — with the case those three have no room for: the run
     // finished and its result never reached the process that publishes verdicts.
     | CheckOutcome.ResultUnreceived _ -> 7
+    // "Could not complete — retry", the `WaitingOnBuild` class: nothing
+    // was verified, nothing failed, and the ordinary cause (a re-discovery in flight)
+    // settles on its own.
+    | CheckOutcome.ModelUnavailable _ -> 2
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
 ///
@@ -334,6 +357,10 @@ type CheckInputs =
         /// is never a baseline, exactly as `Coverage.Unknown` is never `Complete`. A
         /// transport that forgets it fails to compile.
         Baseline: BaselineReading
+        /// The project model the other inputs were computed against, read
+        /// in the SAME observation. Only `Available` can support a green; a transport that
+        /// forgets it fails to compile rather than grading an empty model as healthy.
+        ProjectModel: IpcParsing.ProjectModelReading
     }
 
 module CheckInputs =
@@ -412,6 +439,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         // build race, and "re-run once the build settles" is advice that never arrives
         // for a machine that is simply out of CPU.
         CheckOutcome.RunnerAborted(RunnerAbort.aborts inputs.RunnerAborted)
+    elif (IpcParsing.ProjectModelReading.available inputs.ProjectModel).IsNone then
+        // No real failure, and the reading was taken against a project
+        // model that was not available. Everything below — build waits, coverage, scope,
+        // baseline — is computed against that model, so none of it can be believed:
+        // zero projects registered makes coverage vacuously complete and the impact set
+        // vacuously empty. Checked BEFORE all of them for that reason, and AFTER
+        // failures and aborts, which are claims that stand on their own evidence.
+        CheckOutcome.ModelUnavailable inputs.ProjectModel
     elif BuildWait.isWaiting inputs.WaitingOnBuild then
         // No real failure, but a project's tests DID NOT RUN because its build
         // artifact wasn't ready. Non-green, but "could not complete", never a red.
@@ -554,6 +589,11 @@ let converge
     // real crash into a slow green. Reporting the abort honestly, once, keeps that
     // distinction in the hands of the reader — who can see whether the machine was busy.
     | CheckOutcome.RunnerAborted _
+    // Terminal, not converged. A re-scan issued while the model is
+    // re-discovering waits for the discovery on the daemon side anyway; one that reads a
+    // FAILED model reads the same failure again. Either way the honest answer is the one
+    // already in hand: nothing was verified, exit 2, retry.
+    | CheckOutcome.ModelUnavailable _
     | CheckOutcome.UnearnedScope _
     // Terminal for the same reason: a re-scan does not clear stale daemon state. That
     // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault
