@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- the per-file cache key names three inputs that decide the verdict and
+  were missing, so a changed input can no longer replay an old result. `fail-on-severity`:
+  entries are stored after promotion, so a Hint was a pass under one threshold and a
+  failure under another behind the same key. `analyzer-config`: every `.editorconfig`
+  (MGA `mga_*` keys) and `fsharplint.json` (the FSharpLint shim) between the repository
+  root and the file. `dependency-closure`: a type a file uses could change shape in an
+  earlier file or a referenced project while the file still compiled cleanly, leaving its
+  own diagnostics — the only cross-file input before — unchanged. Salt bumped to
+  `analyzers-merkle-v6`. A dependency that cannot be read leaves no key (analyzers run,
+  nothing cached).
+
 ## 0.7.0-alpha.32 - 2026-09-16
 
 - the per-file analyzer cache is keyed on the compiler's receipt,

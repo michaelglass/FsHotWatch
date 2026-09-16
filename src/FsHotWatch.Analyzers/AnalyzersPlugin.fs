@@ -190,6 +190,12 @@ let internal buildAnalyzerProjectOptions
             warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
             null
 
+/// The configuration files analyzers find by walking up from the analyzed file, as
+/// (file name, cache-key label). Each one found between the repository root and the
+/// file is an input to the verdict.
+let internal analyzerConfigFiles =
+    [ ".editorconfig", "editorconfig"; "fsharplint.json", "fsharplint" ]
+
 /// A finding at or above the failure threshold becomes an Error, and the message
 /// records what it was BEFORE promotion so the provenance is not lost.
 ///
@@ -636,7 +642,9 @@ let internal createWithSlowHook
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
-        // pure-content cache key (file source + analyzer identity + fcs-signature).
+        // pure-content cache key: the analyzer set's identity and failure threshold, the
+        // config files the analyzers discover, the file, its source and every source its
+        // check could have read.
         // REPO-RELATIVE, like every other path in this key: an analyzer directory
         // inside the repository (`analyzers/`, the usual layout) named absolutely made
         // the key workspace-specific for no analytical reason. The CONTENT of the
@@ -650,6 +658,22 @@ let internal createWithSlowHook
                      |> List.sort)
             )
 
+        let analyzerConfigHash (file: string) =
+            // Analyzers read configuration by walking up from the file, not by being told:
+            // MichaelGlass.FSharp.Analyzers reads `mga_*` keys from `.editorconfig`, and the
+            // FSharpLint shim reads `fsharplint.json`. Without a repository root the walk
+            // has no floor, so it runs to the filesystem root.
+            let root =
+                repoRoot
+                |> Option.defaultWith (fun () -> Path.GetPathRoot(Path.GetFullPath file))
+
+            analyzerConfigFiles
+            |> List.collect (fun (fileName, label) ->
+                FsHotWatch.CacheInputs.configChainInputs root fileName label [ file ])
+            |> List.map (fun (label, content) -> $"%s{label} %s{FsHotWatch.CheckCache.sha256Hex content}")
+            |> String.concat "\n"
+            |> FsHotWatch.CheckCache.sha256Hex
+
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
             | FileChecked result ->
@@ -661,21 +685,29 @@ let internal createWithSlowHook
                 match (Volatile.Read(&snapshot)).Inputs with
                 | Result.Error _ -> None
                 | Result.Ok analyzerInputs ->
-                    // fcs-signature captures cross-file FCS state changes so
-                    // upstream symbol changes invalidate this file's cache.
-                    let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+                    let file = AbsFilePath.value result.File
 
-                    Some(
+                    // A typed analyzer sees every source this file's check read. The
+                    // file's own diagnostics (`fcs-signature`) do not move when a type it
+                    // uses changes shape and it still compiles. A
+                    // dependency that cannot be read leaves no key: the analyzers run and
+                    // nothing is read from or written to the cache.
+                    FsHotWatch.CacheInputs.dependencyClosureHash repoRoot result.ProjectOptions file
+                    |> Option.map (fun dependencyClosure ->
                         FsHotWatch.TaskCache.merkleCacheKey
-                            // v5 orphans every entry keyed on analyzer BYTES (v4's
-                            // `analyzer-assemblies`), which no second checkout could hit.
-                            [ "plugin-version", "analyzers-merkle-v5"
+                            // v6 orphans every entry keyed without the failure threshold,
+                            // the analyzers' config files and the dependency closure.
+                            [ "plugin-version", "analyzers-merkle-v6"
                               "analyzer-paths", analyzerPathsHash
                               "analyzer-inputs", analyzerInputs
-                              "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
+                              // Entries are stored AFTER promotion, so the same finding is
+                              // a failure under one threshold and a pass under another.
+                              "fail-on-severity", DiagnosticSeverity.toString failOnSeverity
+                              "analyzer-config", analyzerConfigHash file
+                              "file", FsHotWatch.CachePathIdentity.keyOf repoRoot file
                               "source", result.Source
-                              "fcs-signature", fcsSignature ]
-                    )
+                              "dependency-closure", dependencyClosure
+                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ])
             | _ -> None
 
         Some cacheKey

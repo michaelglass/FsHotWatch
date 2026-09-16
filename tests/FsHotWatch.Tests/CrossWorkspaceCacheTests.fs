@@ -919,7 +919,8 @@ let private analyzersKeyOf (root: string) (dll: string) (file: string) =
     (handler.CacheKey.Value) (
         FileChecked
             { fakeFileCheckResult file with
-                Source = "let x = 1\n" }
+                Source = "let x = 1\n"
+                ProjectOptions = fakeProjectOptions (Path.Combine(root, "src", "App.fsproj")) [ file ] }
     )
 
 let private analyzersCompositeFor (repoRoot: string) (file: string) : CompositeKey =

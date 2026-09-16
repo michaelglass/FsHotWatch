@@ -18,6 +18,22 @@ let sharedChecker =
 let dummyParseResults () : FSharpParseFileResults =
     RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
 
+/// Minimal real project options naming `sourceFiles` in compile order, with no compiler
+/// options and no referenced projects — what a plugin that keys on a file's dependency
+/// closure needs from a fixture that never ran FCS.
+let fakeProjectOptions (projectFile: string) (sourceFiles: string list) : FSharpProjectOptions =
+    { ProjectFileName = projectFile
+      ProjectId = None
+      SourceFiles = List.toArray sourceFiles
+      OtherOptions = [||]
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = DateTime(2026, 1, 1)
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
 /// Build a FileCheckResult with safe-uninitialized FCS parts. Lets plugin tests
 /// fire FileChecked events without spinning up real FCS.
 let fakeFileCheckResult (file: string) : FileCheckResult =

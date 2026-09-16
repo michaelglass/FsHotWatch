@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **BREAKING:** `FantomasTool.editorConfigInputs` moved to core as
+  `FsHotWatch.CacheInputs.editorConfigInputs` (same behaviour, same labels), shared with the
+  analyzers cache key. The format-check key is unchanged.
+
 ## 0.7.0-alpha.24 - 2026-09-15
 
 - a batch is split across `dotnet tool run fantomas` invocations by the

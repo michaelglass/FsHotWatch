@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- new `FsHotWatch.CacheInputs` module for cache-key inputs that live
+  outside the judged file. `configChainInputs` collects a walked-up config file (every
+  one from the repository root down to the file, repo-relative label, content);
+  `editorConfigInputs` is its `.editorconfig` case, moved here from
+  `FsHotWatch.Fantomas.FantomasTool`. `dependencyClosureHash` hashes the CONTENT of every
+  source a type check of a file can read — the project's options, its earlier sources in
+  compile order, and every referenced F# project transitively — never output DLL bytes,
+  so two checkouts of the same tree still share entries.
+
 ## 0.10.0-alpha.33 - 2026-09-16
 
 - `ProcessHelper.quoteArg` / `ProcessHelper.splitArgs` — the one
