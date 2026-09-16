@@ -43,7 +43,9 @@
 
     <ItemGroup>
         <Compile Include="SolutionScope.fs" />
+        <Compile Include="AnalyzerPathDiagnosis.fs" />
         <Compile Include="DaemonConfig.fs" />
+        <Compile Include="DaemonStartupFailure.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
         <Compile Include="IpcParsing.fs" />

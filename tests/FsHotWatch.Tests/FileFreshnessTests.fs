@@ -13,6 +13,13 @@ open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.SymbolDiff
 
+/// Put `relPath` on disk under `repoRoot`. `load` keeps a record only for a file that
+/// exists, so a fixture about what a record SAYS needs its file present.
+let private writeSource (repoRoot: string) (relPath: string) : unit =
+    let path = Path.Combine(repoRoot, relPath)
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, "module M\n")
+
 [<Fact(Timeout = 5000)>]
 let ``empty store created when sidecar file does not exist`` () =
     withTempDir "ff-empty-load" (fun tmpDir ->
@@ -35,6 +42,8 @@ let ``save then load round-trips a known dict`` () =
                 { FcsClean = false
                   LastCleanCheckAt = None }
 
+        writeSource tmpDir "src/Foo.fs"
+        writeSource tmpDir "src/Bar.fs"
         save tmpDir store
 
         let loaded = load tmpDir
@@ -254,6 +263,7 @@ let private afterFaithfulRecreate (tmpDir: string) : Database * Store =
     test <@ (db.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
 
     let now = DateTime(2026, 8, 14, 0, 0, 0, DateTimeKind.Utc)
+    writeSource tmpDir "src/Lib.fs"
     save tmpDir (markClean now "src/Lib.fs" Map.empty)
 
     // The schema bump an older TestPrune.Core would have left behind.
@@ -317,6 +327,7 @@ let ``PositiveControl: a Clean stamp over an index that still HAS the rows stays
         db.RebuildProjects [ AnalysisResult.Create([ libFoo ], [], []) ]
 
         let now = DateTime(2026, 8, 14, 0, 0, 0, DateTimeKind.Utc)
+        writeSource tmpDir "src/Lib.fs"
         save tmpDir (markClean now "src/Lib.fs" Map.empty)
 
         // No schema stamp, so the reopen is compatible and nothing is recreated.

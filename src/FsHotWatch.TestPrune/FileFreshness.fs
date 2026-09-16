@@ -85,11 +85,36 @@ let private deserializeState (node: JsonNode) : FileState =
 let sidecarPath (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "test-prune", "file-freshness.json")
 
+/// What a freshness record's SUBJECT is on disk right now.
+///
+/// A record is a statement about a file's last check, and a file that
+/// no longer exists has no last check worth stating — it is GONE, which is a different
+/// fact from "it failed analysis" or "it ended dirty". Keeping a record for it is not
+/// conservative, it is wrong: the sidecar kept naming files a merge had deleted, and
+/// hand-deleting those keys did not hold because the next check of the vanished path
+/// stamped them straight back.
+///
+/// Resolved once, here, as a type — so a caller cannot reach the stamp or the load
+/// without having said which of the two it is holding.
+type EntryPresence =
+    | Present
+    | Gone
+
+/// Resolve `relPath` (repo-relative, as the sidecar keys it) against the working tree.
+let resolvePresence (repoRoot: string) (relPath: string) : EntryPresence =
+    if File.Exists(Path.Combine(repoRoot, relPath)) then
+        Present
+    else
+        Gone
+
 /// Load the sidecar. Returns an empty map if the file is missing or
 /// unreadable/unparseable — the freshness data is derivative and a fresh
 /// daemon can rebuild it on the next clean check. Crashing on a corrupt
 /// sidecar would be a worse trade than over-marking files dirty for one
 /// cycle.
+///
+/// An entry whose file is `Gone` is dropped, silently: there is nothing to warn about
+/// and nothing to fix, and the next `save` writes the store without it.
 let load (repoRoot: string) : Store =
     let path = sidecarPath repoRoot
 
@@ -111,11 +136,12 @@ let load (repoRoot: string) : Store =
 
                     obj
                     |> Seq.choose (fun kv ->
-                        if kv.Value = null then
-                            None
-                        else
+                        match kv.Value, resolvePresence repoRoot kv.Key with
+                        | null, _
+                        | _, Gone -> None
+                        | value, Present ->
                             try
-                                Some(kv.Key, deserializeState kv.Value)
+                                Some(kv.Key, deserializeState value)
                             with _ ->
                                 None)
                     |> Map.ofSeq
@@ -185,6 +211,20 @@ let markUnverified (relPath: string) (store: Store) : Store =
             { FcsClean = false
               LastCleanCheckAt = None }
             store
+
+/// Record the outcome of ONE check of `relPath`: the plugin's single write to the store.
+///
+///   - `Gone`    — forget the file. A check of a path that has since
+///                 vanished is not evidence about a file; stamping it is how a deleted
+///                 file's record came back after being removed by hand.
+///   - `Present` — `markClean` when the check is `verifiedClean` (FCS-clean AND a build
+///                 has completed this session), otherwise `markUnverified`, which never
+///                 downgrades a prior clean record.
+let stamp (presence: EntryPresence) (verifiedClean: bool) (now: DateTime) (relPath: string) (store: Store) : Store =
+    match presence with
+    | Gone -> Map.remove relPath store
+    | Present when verifiedClean -> markClean now relPath store
+    | Present -> markUnverified relPath store
 
 /// What the freshness sidecar RECORDS about a file's last check. This type is the
 /// evidence, not the decision — `trustStoredRows` below owns what may be done with

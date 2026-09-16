@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- a file that no longer exists is GONE, not a file that failed
+  analysis. `FileFreshness.EntryPresence` (`Present | Gone`, via `resolvePresence`) is
+  resolved wherever the plugin reads or writes a per-file record: `FileFreshness.load`
+  drops an entry whose file is not on disk (silently — there is nothing to fix), the new
+  `FileFreshness.stamp` FORGETS a `Gone` file instead of re-stamping it (which is how a
+  hand-deleted `file-freshness.json` key for a merge-deleted file came straight back),
+  and an analysis failure for a `Gone` file no longer raises the
+  "symbol analysis failed" warning or enters the full-suite fallback set — it is dropped
+  from both. A file that exists and genuinely fails analysis still warns, unchanged.
+
 ## 0.13.0-alpha.37 - 2026-09-16
 
 - the impact filter `fshw check` builds now quotes each affected class

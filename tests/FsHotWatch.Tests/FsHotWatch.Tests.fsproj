@@ -74,6 +74,7 @@
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
+    <Compile Include="DeletedFileFreshnessTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />
@@ -101,6 +102,7 @@
     <Compile Include="CliTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
