@@ -296,7 +296,8 @@
       },
       {
         "line": 100,
-        "branch": 93,
+        "branch": 92,
+        "reason": "the tracked issue moved editorConfigInputs (4 branches, all covered) to core CacheInputs.fs. The old 93 floor admits at most 42/45 covered here; removing those 4 leaves at most 38/41 = 92.7%, so 93 is structurally unreachable. Lowered by exactly that arithmetic, not measured on Linux - refresh from the first Linux CI run on this change.",
         "platform": "linux"
       }
     ],
@@ -1173,8 +1174,9 @@
       }
     ],
     "FantomasTool.fs": {
-      "coveredLines": 180,
-      "coveredBranches": 42
+      "coveredLines": 157,
+      "coveredBranches": 38,
+      "reason": "re-baselined: editorConfigInputs (23 covered lines, 4 covered branches) moved to core CacheInputs.fs, where the same tests cover it at 100/100. Measured on macOS after the move: 157 lines, 38 branches."
     },
     "FcsDiagnosticFilter.fs": [
       {

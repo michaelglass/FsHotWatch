@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- new `FsHotWatch.CacheInputs` module for cache-key inputs that live
+  outside the judged file. `configChainInputs` collects a walked-up config file (every
+  one from the repository root down to the file, repo-relative label, content);
+  `editorConfigInputs` is its `.editorconfig` case, moved here from
+  `FsHotWatch.Fantomas.FantomasTool`.
+
 ## 0.10.0-alpha.33 - 2026-09-16
 
 - `ProcessHelper.quoteArg` / `ProcessHelper.splitArgs` — the one

@@ -300,7 +300,7 @@ let internal createFormatCheckWith
                             // v3 orphans every entry written under the path-ABSOLUTE
                             // key (v2), which no other checkout could have read.
                             [ "plugin-version", "format-check-pinned-tool-v3"; "fantomas-pin", pin.Version ]
-                            @ editorConfigInputs repoRoot sortedFiles
+                            @ FsHotWatch.CacheInputs.editorConfigInputs repoRoot sortedFiles
                             @ fileInputs
                         )
                     )

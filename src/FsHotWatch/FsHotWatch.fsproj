@@ -67,6 +67,7 @@
     <Compile Include="ContentHash.fs" />
     <Compile Include="DaemonIdentity.fs" />
     <Compile Include="CheckCache.fs" />
+    <Compile Include="CacheInputs.fs" />
     <Compile Include="StructureFiles.fs" />
     <Compile Include="InMemoryCheckCache.fs" />
     <Compile Include="StringHelpers.fs" />
