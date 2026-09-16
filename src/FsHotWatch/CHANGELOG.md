@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.34 - 2026-09-16
+
 - new `FsHotWatch.CacheInputs` module for cache-key inputs that live
   outside the judged file. `configChainInputs` collects a walked-up config file (every
   one from the repository root down to the file, repo-relative label, content);
