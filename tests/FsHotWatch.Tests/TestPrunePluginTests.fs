@@ -46,7 +46,7 @@ let ``testprune subscribes to BatchChecked`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``affected-tests command returns empty array when no files checked`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
@@ -57,7 +57,7 @@ let ``affected-tests command returns empty array when no files checked`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``changed-files command returns empty list when no files checked`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
@@ -68,7 +68,7 @@ let ``changed-files command returns empty list when no files checked`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``test-prune error path sets Failed status on null check results`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let root = isolatedRoot ()
     let handler = create ":memory:" root None None None None None []
@@ -86,7 +86,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
             Source = "" }
 
     try
-        host.EmitFileChecked(fakeResult)
+        host.EmitFileChecked(stampFixture fakeResult)
     with _ ->
         ()
 
@@ -112,7 +112,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
     withTempDir "tp-test" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
@@ -126,7 +126,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
                 Source = "module Lib\nlet x = 1\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -136,7 +136,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
 [<Fact(Timeout = 15000)>]
 let ``a clean FileChecked with zero symbols still records runtime file debt`` () =
     withTempDir "tp-runtime-zero-symbol" (fun tmpDir ->
-        let host = PluginHost.create sharedChecker.Value tmpDir
+        let host = createModelHost sharedChecker.Value tmpDir
 
         let handler =
             create (Path.Combine(tmpDir, "test.db")) tmpDir None None None None None []
@@ -202,7 +202,7 @@ let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () 
         let db = Database.create dbPath
         db.ReplaceRuntimeCoverage("RuntimeProject", "baseline", [ "src/RuntimeOnly.fs" ])
 
-        let host = PluginHost.create sharedChecker.Value tmpDir
+        let host = createModelHost sharedChecker.Value tmpDir
 
         let handler =
             create dbPath tmpDir (Some [ config ]) None None None (Some coveragePaths) []
@@ -249,7 +249,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
     withTempDir "tp-dup" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
@@ -263,7 +263,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
 
         for _ in 1..2 do
             try
-                host.EmitFileChecked(fakeResult)
+                host.EmitFileChecked(stampFixture fakeResult)
             with _ ->
                 ()
 
@@ -272,7 +272,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``test-results command returns not run initially`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
@@ -283,7 +283,7 @@ let ``test-results command returns not run initially`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let configs =
         [ { Project = "TestProject"
@@ -329,7 +329,7 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler =
             create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ fakeExtension ])) None None None []
@@ -365,7 +365,7 @@ let ``extension error is caught and does not crash plugin`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler =
             create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ failingExtension ])) None None None []
@@ -442,7 +442,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 [<Fact(Timeout = 15000)>]
 let ``FileChecked never transitions plugin to Running status`` () =
     withTempDir "tp-no-running" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir None None None None None []
         host.RegisterHandler(handler)
 
@@ -462,7 +462,7 @@ let ``FileChecked never transitions plugin to Running status`` () =
                 Source = "module Lib\nlet x = 1\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -489,7 +489,7 @@ let ``FileChecked does not set Running status`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
@@ -503,7 +503,7 @@ let ``FileChecked does not set Running status`` () =
                 Source = "module Lib\nlet x = 1\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -539,7 +539,7 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -564,7 +564,7 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
                 Source = "module Lib\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -587,7 +587,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
     withTempDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
@@ -600,7 +600,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
                 Source = "module Lib\nlet x = 1\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -628,7 +628,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -648,7 +648,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
                 Source = "module New" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -682,7 +682,7 @@ let ``run-tests command runs all projects and returns results`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -719,7 +719,7 @@ let ``run-tests with project filter runs only named project`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -747,7 +747,7 @@ let ``run-tests with filter passes raw filter args through to the test command``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -789,7 +789,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -809,7 +809,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests not registered when no testConfigs`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
@@ -924,7 +924,7 @@ let ``test failures are reported to error ledger`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -954,7 +954,7 @@ let ``test errors are cleared when all tests pass`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -999,7 +999,7 @@ let ``RerunQueued path records previous run outcome to history before starting r
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -1081,7 +1081,7 @@ let private emitFileAndWait
         let! result = pipeline.CheckFile(AbsFilePath.create filePath)
 
         match result with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith $"CheckFile returned None for {filePath}"
 
         let fileName = Path.GetFileName(filePath)
@@ -1117,7 +1117,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
@@ -1146,7 +1146,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         // No testConfigs — analysis-only mode.
         let handler = create dbPath tmpDir None None None None None []
@@ -1188,7 +1188,7 @@ let beta () = ()
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         let testConfigs =
             [ { Project = "MyTests"
@@ -1214,7 +1214,7 @@ let beta () = ()
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match result with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "CheckFile returned None"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -1269,7 +1269,7 @@ let computeTest () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         // testConfigs is required for the plugin to subscribe to BuildCompleted; without
         // it flushAndQueryAffected never fires. The command itself is a no-op.
@@ -1303,7 +1303,7 @@ let computeTest () =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile failed"
 
         // No waitUntil for `Lib.fsx` in ChangedFiles: the first detectChanges against an
@@ -1312,7 +1312,7 @@ let computeTest () =
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match testsResult with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "tests CheckFile failed"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -1331,7 +1331,7 @@ let compute (x: int) = x + 2
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult2 with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile 2 failed"
 
         let mutable affectedTests = ""
@@ -1378,7 +1378,7 @@ let ``cross-file type change only runs affected test classes`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
@@ -1436,14 +1436,14 @@ let testOtherStuff () =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile failed"
 
         let testsResult =
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match testsResult with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "tests CheckFile failed"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -1465,7 +1465,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult2 with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile 2 failed"
 
         let mutable affectedTests = ""
@@ -1583,14 +1583,14 @@ let private selectAfterSeededEdit
     let pipeline = CheckPipeline(checker)
     pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
 
-    let host = PluginHost.create checker tmpDir
+    let host = createModelHost checker tmpDir
     let handler = create dbPath tmpDir None None None None None []
     host.RegisterHandler(handler)
 
     File.WriteAllText(libFile, libSourceEdited)
 
     match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-    | Some r -> host.EmitFileChecked(r)
+    | Some r -> host.EmitFileChecked(stampFixture r)
     | None -> failwith "edited lib CheckFile failed"
 
     let mutable affected = ""
@@ -1623,7 +1623,7 @@ let private selectAfterSeededEditAndFlush
     let pipeline = CheckPipeline(checker)
     pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
 
-    let host = PluginHost.create checker tmpDir
+    let host = createModelHost checker tmpDir
     let handler = create dbPath tmpDir None None None None None []
     host.RegisterHandler(handler)
 
@@ -1738,7 +1738,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
@@ -1764,7 +1764,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
                 Source = "module Late\nlet x = 1\n" }
 
         try
-            host.EmitFileChecked(fakeResult)
+            host.EmitFileChecked(stampFixture fakeResult)
         with _ ->
             ()
 
@@ -1830,7 +1830,7 @@ let ``all changed symbols with no covering test complete green without running``
         // drops this symbol as uncovered, leaving an empty affected set.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Orphan.uncovered" ])
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         // No prior run this session ⇒ hasCachedResults = false, which used to force the
         // cold-start branch into a FULL suite even though the only pending symbol is
@@ -1949,7 +1949,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
             cmd.ExecuteNonQuery() |> ignore
 
         // The next run opens a DB that has never heard of `Lib.foo`.
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2010,7 +2010,7 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.renamedAway" ])
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2074,7 +2074,7 @@ let ``ParseOnly FileChecked fails closed and reports the file as unanalysable`` 
     // full-suite fallback proved independently by the tests below.
     withTempDir "tp-parse-only" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
@@ -2086,7 +2086,7 @@ let ``ParseOnly FileChecked fails closed and reports the file as unanalysable`` 
             { fakeFileCheckResult fakeFile with
                 Source = "module Lib\nlet foo = 2\n" }
 
-        host.EmitFileChecked(fakeResult)
+        host.EmitFileChecked(stampFixture fakeResult)
         waitForPluginTerminal host "test-prune" 12.0
 
         match host.GetStatus("test-prune") with
@@ -2132,7 +2132,7 @@ let lazyComputeTest () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         let testConfigs =
             [ { Project = "Lib"
@@ -2160,11 +2160,11 @@ let lazyComputeTest () =
         emitBuildAndWaitTerminal host
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile failed"
 
         match pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "tests CheckFile failed"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -2179,7 +2179,7 @@ let compute (x: int) = x + 2
         File.WriteAllText(libFile, libSource2)
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile 2 failed"
 
         let mutable affectedTests = ""
@@ -2211,7 +2211,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2241,7 +2241,7 @@ let ``skip tests when 0 affected classes and not cold start`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler =
             create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None []
@@ -2311,7 +2311,7 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         // Wire the fake graph BEFORE registering the plugin (mirrors the daemon).
         host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
 
@@ -2359,7 +2359,7 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
 
         let handler =
@@ -2391,7 +2391,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check comment-only source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result -> env.Host.EmitFileChecked(stampFixture result)
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -2409,7 +2409,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check AST-changed source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result -> env.Host.EmitFileChecked(stampFixture result)
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -2768,7 +2768,7 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2832,7 +2832,7 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
                 // which AutoDetect could learn its flag family.
                 ReportVerificationFormat = Ctrf } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2879,7 +2879,7 @@ let ``run-tests emits a NULL counts field for a project that wrote no report`` (
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2912,7 +2912,7 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2943,7 +2943,7 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -3221,7 +3221,7 @@ let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
 [<Fact(Timeout = 30000)>]
 let ``executeTests emits a TestProgress per group as groups finish`` () =
     withTempDir "tp-progressive" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getEvents, recorder) = testProgressRecorder ()
         host.RegisterHandler(recorder)
 
@@ -3297,7 +3297,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
 [<Fact(Timeout = 15000)>]
 let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
     withTempDir "tp-wasfiltered-full" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
@@ -3349,7 +3349,7 @@ let private runLogsUnder (repoRoot: string) =
 [<Fact(Timeout = 60000)>]
 let ``a test project KILLED at its timeout still leaves its partial run log`` () =
     withTempDir "tp-runlog-kill" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
@@ -3396,7 +3396,7 @@ let ``a PASSING project gets a run log too — no special-casing the suspect sui
     // Which project will need explaining is not knowable in advance, and a passing-but-slow
     // suite is worth reading. The log is not a failure artifact.
     withTempDir "tp-runlog-pass" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
@@ -4074,7 +4074,7 @@ cp "%s{source}" "$output"
                   IncludeInRatchet = project = "UnitTests" || integrationEnabled
                   ArgsTemplate = "--coverage-output {output}" }
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        let host = createModelHost (Unchecked.defaultof<_>) dir
 
         let handler =
             create dbPath dir (Some configs) None None None (Some coveragePaths) []
@@ -4445,7 +4445,7 @@ let ``clearFcsCheckCache is a no-op when there is no cache dir`` () =
 [<Fact(Timeout = 15000)>]
 let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` () =
     withTempDir "tp-ranfullsuite-full" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
@@ -5100,7 +5100,7 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
 

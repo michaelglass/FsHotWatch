@@ -33,6 +33,7 @@ open FsHotWatch.Tests.TestHelpers
 /// `fullSuiteLaunch` / `filteredLaunch` below.
 let emptyLaunch: TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
       Symbols = Set.empty
       SymbolRevisions = Map.empty
       ChangedFiles = []
@@ -47,6 +48,7 @@ let emptyLaunch: TestRunLaunch =
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
 let fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
       Symbols = Set.empty
       SymbolRevisions = Map.empty
       ChangedFiles = []
@@ -61,6 +63,7 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
 /// selection. Projects NOT named were skipped entirely.
 let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
     { InputTreeHash = None
+      ModelGeneration = None
       Symbols = Set.empty
       SymbolRevisions = Map.empty
       ChangedFiles = []
@@ -108,7 +111,7 @@ let waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: 
 /// analysis as an in-handler side-effect with no status transition, so
 /// `beginAwaitNextTerminal` would hang the full timeout — quiescence is the right sync.
 let emitFileAndQuiesce (host: PluginHost) (result: FileCheckResult) =
-    host.EmitFileChecked result
+    host.EmitFileChecked(stampFixture result)
     waitForQuiescent host 10000
 
 /// Emit the BatchChecked cohort-complete signal over `files` and wait for the mailbox to
@@ -162,7 +165,7 @@ let withSingleProjectHarness (tmpDir: string) (projectName: string) =
             TimeoutSec = None
             ReportVerificationFormat = AutoDetect } ]
 
-    let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+    let host = createModelHost (Unchecked.defaultof<_>) tmpDir
     let handler = create ":memory:" tmpDir (Some configs) None None None None []
     host.RegisterHandler(handler)
     host, sentinel

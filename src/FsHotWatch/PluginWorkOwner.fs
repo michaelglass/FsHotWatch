@@ -79,10 +79,19 @@ type HostSnapshot =
           Published: int64
           Rows: Map<WorkId, Row>
           Operations: Map<WorkId, Operation>
-          SettledFailures: Map<WorkId, string * exn> }
+          SettledFailures: Map<WorkId, string * exn>
+          Model: ProjectModel.Observation
+          ModelFiles: (int64 * Set<Events.AbsFilePath>) option }
 
     /// Increases by one with every publication.
     member this.Version = this.Published
+
+    /// The project model this publication was made under.
+    member this.ProjectModel = this.Model
+
+    /// The checkable files of the available model, paired with its generation. `None`
+    /// whenever the model is not available: membership never outlives its model.
+    member this.ProjectModelFiles = this.ModelFiles
 
     member this.IsBusy =
         not this.Operations.IsEmpty
@@ -163,7 +172,9 @@ type Store() =
           Published = 0L
           Rows = Map.empty
           Operations = Map.empty
-          SettledFailures = Map.empty }
+          SettledFailures = Map.empty
+          Model = ProjectModel.Observation.Unobserved
+          ModelFiles = None }
 
     let agent =
         MailboxProcessor<Mutation>.Start(fun inbox ->
@@ -209,6 +220,30 @@ type Store() =
         (changeAsync transition).GetAwaiter().GetResult()
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
+
+    /// Publish a model observation whose checkable membership is not known.
+    member _.PublishProjectModel(observation: ProjectModel.Observation) =
+        change (fun _ snapshot ->
+            { snapshot with
+                Model = observation
+                ModelFiles = None },
+            ())
+
+    /// Publish a model observation and, when it is available, its checkable files. Both
+    /// change in one publication, so no reader sees the new model with the old membership.
+    member _.PublishProjectModelWithFiles(observation: ProjectModel.Observation, files: Set<Events.AbsFilePath>) =
+        let modelFiles =
+            match observation with
+            | ProjectModel.Observation.Available model -> Some(model.Generation, files)
+            | ProjectModel.Observation.Unobserved
+            | ProjectModel.Observation.Rediscovering _
+            | ProjectModel.Observation.Unavailable _ -> None
+
+        change (fun _ snapshot ->
+            { snapshot with
+                Model = observation
+                ModelFiles = modelFiles },
+            ())
 
     /// Changes posted but not yet published. A diagnostic, and a witness for tests that
     /// need to know a change is queued behind a held one.

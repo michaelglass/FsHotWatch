@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Check results carry the project-model generation they were captured against
+  (`FileCheckResult.ModelGeneration`, `BatchChecked.ModelGeneration`; `CheckPipeline`
+  leaves it `None`). A scan and a change batch capture the model once discovery is
+  settled and publish only while it is still current. A scan admitted during a
+  rediscovery waits for it. A scan whose model is replaced fails with the reason
+  "invalidated before scan publication". A change batch reruns against the current model
+  and keeps its admitted inputs. After 5 superseded attempts it fails ("the project
+  model kept changing during the batch"), and its changes run ahead of the next batch. The host work store publishes the model with its
+  checkable files, and plugins read it through `ProjectGraphAccessor.ObserveModel`, which a
+  `PluginHost` always answers from its own store. Breaking for code that constructs these
+  records.
+
 - Scans and watcher change batches run under a bounded supervisor (`SupervisedWork`,
   `DebouncedWork`) that publishes into the host work store. `GetScanState`,
   `GetScanGeneration` and `FormatScanStatus` never wait for a scan; in-flight scans and

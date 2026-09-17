@@ -177,7 +177,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
 
         let beforeRun = Some(fun _ -> failwith "beforeRun boom")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let mutable startedId: Guid option = None
         let mutable completedId: Guid option = None
 
@@ -256,7 +256,7 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
         // A preflight failure, modelling a real csrf-gate step.
         let beforeRun = Some(fun _ -> failwith "csrf-gate failed")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
         host.RegisterHandler(handler)
 
@@ -303,7 +303,7 @@ let ``incident: a test child that never becomes a live process drives the run to
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
         let handler =
             createWithLaunchDeadline
@@ -354,7 +354,7 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
 
         let beforeRun = Some(fun _ -> ran.Value <- true)
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
         host.RegisterHandler(handler)
 
@@ -394,7 +394,7 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
             [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never"))
               PendingQueueHelpers.flagConfig tmpDir "P2" p2flag ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -446,7 +446,7 @@ let barTest () = assert (bar 1 = 2)
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         // The sleep is the window the mid-run injection needs.
         let configs =
@@ -476,7 +476,7 @@ let barTest () = assert (bar 1 = 2)
 
         for f in [ libFile; testsFile ] do
             match pipeline.CheckFile(AbsFilePath.create f) |> Async.RunSynchronously with
-            | Some r -> host.EmitFileChecked(r)
+            | Some r -> host.EmitFileChecked(stampFixture r)
             | None -> failwith $"CheckFile failed for {f}"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -487,7 +487,7 @@ let barTest () = assert (bar 1 = 2)
         File.WriteAllText(libFile, libSource2)
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile (foo change) failed"
 
         waitForPluginIdle host "test-prune" 10.0
@@ -508,7 +508,7 @@ let barTest () = assert (bar 1 = 2)
         File.WriteAllText(libFile, libSource3)
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith "lib CheckFile (bar change) failed"
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -564,7 +564,7 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
@@ -634,14 +634,14 @@ let fooTest () = assert (foo 1 = 2)
 
         // Prime the persisted symbol graph in an analysis-only host. The second host is
         // the cold daemon: empty in-memory state over a warm on-disk impact database.
-        let primingHost = PluginHost.create checker tmpDir
+        let primingHost = createModelHost checker tmpDir
         primingHost.RegisterHandler(create dbPath tmpDir None None None None None [])
         primingHost.EmitBuildCompleted(BuildSucceeded)
         waitForPluginIdle primingHost "test-prune" 5.0
 
         for file in [ libFile; testsFile ] do
             match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
-            | Some result -> primingHost.EmitFileChecked(result)
+            | Some result -> primingHost.EmitFileChecked(stampFixture result)
             | None -> failwith $"priming check failed for {file}"
 
         emitBatchAndQuiesce primingHost [ libFile; testsFile ]
@@ -658,7 +658,7 @@ let fooTest () = assert (foo 1 = 2)
                 TimeoutSec = Some 15
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
 
         host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
@@ -672,7 +672,7 @@ let fooTest () = assert (foo 1 = 2)
         let committedBefore = committedBy host "test-prune"
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some result -> host.EmitFileChecked(result)
+        | Some result -> host.EmitFileChecked(stampFixture result)
         | None -> failwith "cold-scan changed-file check failed"
 
         host.EmitBatchChecked(
@@ -699,7 +699,7 @@ let fooTest () = assert (foo 1 = 2)
                 let committedBeforeEdit = committedBy host "test-prune"
 
                 match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-                | Some result -> host.EmitFileChecked(result)
+                | Some result -> host.EmitFileChecked(stampFixture result)
                 | None -> failwith "post-seal changed-file check failed"
 
                 test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L 10000 @>
@@ -793,7 +793,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -836,7 +836,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -899,7 +899,7 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1330,7 +1330,7 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1409,7 +1409,7 @@ let ``an UNREADABLE ledger widens to the FULL suite rather than greening on noth
         let p2Ran = Path.Combine(tmpDir, "p2-ran")
         let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1457,7 +1457,7 @@ let ``a MISSING ledger (fresh clone) is legitimately empty and does NOT force a 
         let p2Ran = Path.Combine(tmpDir, "p2-ran")
         let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1489,7 +1489,7 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         let p2Ran = Path.Combine(tmpDir, "p2-ran")
         let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1530,7 +1530,7 @@ let ``a symbol covered only by an unconfigured project stays owed`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1568,7 +1568,7 @@ let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1890,7 +1890,7 @@ let ``run-tests: an in-flight command-driven run is visible to the daemon model`
     withTempDir "tp-cmd-visible" (fun tmpDir ->
         let config, started, release, _doneFile = gatedRunConfig tmpDir
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
         host.RegisterHandler(handler)
 
@@ -1927,7 +1927,7 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
     withTempDir "tp-midrun-stamp" (fun tmpDir ->
         let config, started, release, doneFile = gatedRunConfig tmpDir
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
         host.RegisterHandler(handler)
 
@@ -2026,7 +2026,7 @@ let ``run-tests refused the slot is QUEUED and still runs — never a green it d
     withTempDir "tp-rerun-queued" (fun tmpDir ->
         let config, started, release, runs = countingGatedRunConfig tmpDir
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
         host.RegisterHandler(handler)
 
@@ -2070,7 +2070,7 @@ let ``a queued run-tests reply resolves — a refused claim can never strand the
     withTempDir "tp-rerun-noStrand" (fun tmpDir ->
         let config, started, release, _runs = countingGatedRunConfig tmpDir
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
         host.RegisterHandler(handler)
 
@@ -2098,7 +2098,7 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
     withTempDir "tp-rerun-bounded" (fun tmpDir ->
         let config, started, release, _runs = countingGatedRunConfig tmpDir
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
         host.RegisterHandler(handler)
 

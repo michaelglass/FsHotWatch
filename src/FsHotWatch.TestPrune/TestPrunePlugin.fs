@@ -1426,6 +1426,9 @@ type TestPruneState =
         /// (`PrepareCommit`'s `Finalize`). Each event starts with none.
         Replies: (Tasks.TaskCompletionSource<string> * string) list
         PendingAnalysis: Map<string, AnalysisResult list>
+        /// The project-model generation `PendingAnalysis` was accepted under. Analysis
+        /// from a replaced model is retired before any flush can persist it.
+        AnalysisModelGeneration: int64 option
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
         ChangedSymbols: string list
@@ -1610,6 +1613,9 @@ type TestRunLaunch =
     {
         /// Immutable input identity captured before this run executes.
         InputTreeHash: string option
+        /// The available project-model generation this run was selected under. A
+        /// completion observed under a different model discharges nothing.
+        ModelGeneration: int64 option
         Symbols: Set<string>
         /// The revision of each launched symbol at dispatch. A completion retires a
         /// symbol only while it is still at this revision: an edit made during the run
@@ -2434,8 +2440,8 @@ type ReceiptTransition =
     /// mask them — `IpcOutputTests` proves retained coverage under a red plugin exits 1.
     | Noop
     /// The stored receipt no longer describes the tree, or this run could not stand
-    /// behind one: aborted, launched unbound, the tree moved between launch and
-    /// completion, or zero tests ran for a reason that is not "already verified".
+    /// behind one: aborted, launched unbound, the tree or the project model changed
+    /// between launch and completion, or zero tests ran for a reason that is not "already verified".
     | Revoked of reason: string
 
 module ReceiptTransition =
@@ -2455,6 +2461,7 @@ module ReceiptTransition =
         (runnableProjects: string list)
         (previous: TestEvidenceReceipt option)
         (currentInputTree: string option)
+        (currentModelGeneration: int64 option)
         (launch: TestRunLaunch)
         (completed: TestRunCompleted)
         (coverage: RunCoverage)
@@ -2475,6 +2482,8 @@ module ReceiptTransition =
 
         match completed.Outcome with
         | Aborted reason -> ReceiptTransition.Revoked $"the run aborted: %s{reason}"
+        | Normal when launch.ModelGeneration <> currentModelGeneration ->
+            ReceiptTransition.Revoked "the project model was replaced between launch and completion"
         | Normal when quietAlreadyVerified ->
             if previousBoundToCurrentTree then
                 ReceiptTransition.Noop
@@ -5915,6 +5924,7 @@ let internal createWithLaunchDeadline
           CheckReach = None
           Replies = []
           PendingAnalysis = Map.empty
+          AnalysisModelGeneration = None
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
           ChangedSymbols = loadedDebt.PendingQueue |> Set.toList
@@ -5934,6 +5944,14 @@ let internal createWithLaunchDeadline
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None }
+
+    /// The generation of the model the host currently publishes, when it is available.
+    let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
+        match ctx.ProjectGraph.ObserveModel() with
+        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+        | FsHotWatch.ProjectModel.Observation.Unobserved
+        | FsHotWatch.ProjectModel.Observation.Rediscovering _
+        | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
@@ -6148,6 +6166,7 @@ let internal createWithLaunchDeadline
 
                 let launch =
                     { InputTreeHash = ReceiptInputTree.read repoRoot
+                      ModelGeneration = observeModelGeneration ctx
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
@@ -6365,6 +6384,7 @@ let internal createWithLaunchDeadline
                 // aborted run executed nothing, so it clears nothing.
                 let launch =
                     { InputTreeHash = None
+                      ModelGeneration = observeModelGeneration ctx
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
@@ -6409,6 +6429,7 @@ let internal createWithLaunchDeadline
         // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
             { InputTreeHash = None
+              ModelGeneration = observeModelGeneration ctx
               Symbols = Set.empty
               SymbolRevisions = Map.empty
               // A force-run is not launched from the changed files, so it consumes none.
@@ -7189,8 +7210,49 @@ let internal createWithLaunchDeadline
                 // Replies belong to the event that owes them; the previous event's were
                 // resolved when its state was published.
                 let state = { state with Replies = [] }
+                let modelGeneration = observeModelGeneration ctx
+
+                let state =
+                    if
+                        state.AnalysisModelGeneration <> modelGeneration
+                        && not state.PendingAnalysis.IsEmpty
+                    then
+                        // Pending compiler results belong to the model they were accepted
+                        // under. Retire them before a flush can write them into another
+                        // model's symbol index. Their changed symbols stay owed, and the
+                        // index can no longer vouch for what covers them, so every runnable
+                        // project owes a run.
+                        Logging.info
+                            "test-prune"
+                            $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis"
+
+                        { state with
+                            PendingAnalysis = Map.empty
+                            AnalysisModelGeneration = modelGeneration
+                            PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+                    else
+                        state
+
+                // Analysis folds only a result or seal published against the model this host
+                // publishes now. One from a replaced model was admitted before the
+                // replacement, and its cohort is retried against the current model. One
+                // with no model was captured against none, so it cannot describe this one.
+                let notCurrent (published: int64 option) =
+                    published.IsNone || published <> modelGeneration
 
                 match event with
+                | PluginEvent.FileChecked result when notCurrent result.ModelGeneration ->
+                    Logging.debug
+                        "test-prune"
+                        $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
+
+                    return state
+                | PluginEvent.BatchChecked batch when notCurrent batch.ModelGeneration ->
+                    Logging.debug
+                        "test-prune"
+                        $"ignoring BatchChecked from model %A{batch.ModelGeneration}; current %A{modelGeneration}"
+
+                    return state
                 | PluginEvent.FileChecked result ->
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
@@ -7480,6 +7542,7 @@ let internal createWithLaunchDeadline
                                     Debt = newDebt
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
+                                    AnalysisModelGeneration = modelGeneration
                                     ChangedSymbols = newChangedSymbols
                                     TestClassFiles = newClassFiles
                                     // The file analysed cleanly, so it is back in the impact
@@ -7941,6 +8004,7 @@ let internal createWithLaunchDeadline
                     let bootScanDebtDuringFullRun = state.BootScanDebtDuringFullRun
 
                     let currentInputTree = ReceiptInputTree.read repoRoot
+                    let currentModelGeneration = observeModelGeneration ctx
 
                     // A typed transition, not a candidate-then-guard: see
                     // `ReceiptTransition`. `Noop` keeps whatever was earned, `Revoked`
@@ -7950,6 +8014,7 @@ let internal createWithLaunchDeadline
                             (Set.toList runnableProjects)
                             state.EvidenceReceipt
                             currentInputTree
+                            currentModelGeneration
                             launch
                             completed
                             coverage
@@ -8004,10 +8069,13 @@ let internal createWithLaunchDeadline
                     // DISCHARGED by a project that executed nothing, and left
                     // pending-verification.json unverified. `verifiedGreen` is `Verified`
                     // only, so a project that ran nothing can no longer retire anything.
+                    // A run selected under a model this host has since replaced verified
+                    // that model, not the current one: it discharges nothing, like an abort.
                     let aborted =
-                        match completed.Outcome with
-                        | Aborted _ -> true
-                        | Normal -> false
+                        launch.ModelGeneration <> currentModelGeneration
+                        || match completed.Outcome with
+                           | Aborted _ -> true
+                           | Normal -> false
 
                     let projectPassed (proj: string) =
                         match Map.tryFind proj completed.Results with
@@ -8104,11 +8172,12 @@ let internal createWithLaunchDeadline
                         && executedFullSuite
                         && runnableProjects |> Set.forall projectPassed
 
+                    // Obligations this run launched were retired above; any left are newer
+                    // than the run and stay owed.
                     let debt =
                         if recovers then
                             { debt with
-                                RecoveryOutstanding = false
-                                RuntimeObligations = Map.empty }
+                                RecoveryOutstanding = false }
                         else
                             debt
 
