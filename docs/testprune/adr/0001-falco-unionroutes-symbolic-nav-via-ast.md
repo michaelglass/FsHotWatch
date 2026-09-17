@@ -19,7 +19,7 @@ Closing it needs a case→URL map: given the route DU, resolve `AdminPages.Setti
 `/admin/settings` and feed it to the same matcher. The question this ADR settles is *how* to obtain
 that map.
 
-`Route.link`/`Route.info` navigation is real in the intelligence consumer (e.g. `SystemHealth.fs`),
+`Route.link`/`Route.info` navigation is real in a large private downstream repository (e.g. its `SystemHealth.fs`),
 so this is a live gap, not a hypothetical one.
 
 ## Options
@@ -41,7 +41,7 @@ so this is a live gap, not a hypothetical one.
 ## Evidence
 
 Both options were built and measured head-to-head, in a synthetic corpus and against the real
-`Intelligence.Domain.Routes.Route` (241 distinct canonical URL patterns):
+route union of that downstream repository (241 distinct canonical URL patterns):
 
 | Resolver | Real-route exact | Over-selection | Runtime dep | Built assembly |
 | --- | --- | --- | --- | --- |
