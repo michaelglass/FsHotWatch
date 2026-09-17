@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.40 - 2026-09-17
+
 - Adopts TestPrune.Core 9.0.0. Its only breaking change (`AuditSink.Flush()` now returns a
   `FlushOutcome` instead of waiting forever) touches no API this plugin calls.
 
