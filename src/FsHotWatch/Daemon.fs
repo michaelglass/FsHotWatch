@@ -1937,6 +1937,7 @@ type Daemon
     do
         host.SetProjectGraph
             { ObserveModel = fun () -> host.WorkSnapshot.ProjectModel
+              ObserveCheckableFiles = fun () -> host.WorkSnapshot.ProjectModelFiles
               GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
@@ -2810,15 +2811,20 @@ let private performScan
             // registered files) skip — there's nothing to "flush and decide" against.
             // The seal is guarded even when there is nothing to seal: a scan whose model
             // was replaced must not complete as though it had checked that model.
+            //
+            // An EMPTY cohort is sealed too. The seal is the scan's answer about the whole
+            // model — "every checkable file of this generation has been dealt with" — and a
+            // model with no checkable files has that answer just as much as one with 2,000.
+            // Without it an analysis-only repository earns no receipt and can never be
+            // green, and a plugin waiting for the cohort waits forever.
             publishCurrent (fun () ->
-                if dispatchedFiles.Count > 0 then
-                    host.EmitBatchChecked
-                        { Trigger = BootScan
-                          Files = dispatchedFiles |> List.ofSeq
-                          Generation = newGeneration
-                          ModelGeneration = modelGeneration
-                          StartedAt = scanStartedAt
-                          CompletedAt = System.DateTime.UtcNow })
+                host.EmitBatchChecked
+                    { Trigger = BootScan
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = newGeneration
+                      ModelGeneration = modelGeneration
+                      StartedAt = scanStartedAt
+                      CompletedAt = System.DateTime.UtcNow })
 
             // One measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file

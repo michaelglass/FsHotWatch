@@ -215,9 +215,10 @@ type Queue<'State, 'Request>
               Completed = 0L
               Failure = None },
             fun core ->
-                { Busy = (fst (queueOf core.Phase)).IsSome
-                  Completed = core.Completed
-                  Failure = core.Failure |> Option.map OperationFailure }
+                RowStatus.ofWork
+                    (fst (queueOf core.Phase)).IsSome
+                    core.Completed
+                    (core.Failure |> Option.map OperationFailure)
         )
 
     let change transition =

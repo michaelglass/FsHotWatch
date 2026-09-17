@@ -1429,6 +1429,13 @@ type TestPruneState =
         /// The project-model generation `PendingAnalysis` was accepted under. Analysis
         /// from a replaced model is retired before any flush can persist it.
         AnalysisModelGeneration: int64 option
+        /// What each file's completed analysis concluded, for the model in
+        /// `AnalysisModelGeneration`. An analysis-only daemon's evidence is minted from
+        /// these at the cohort seal; a daemon that runs tests never reads them.
+        AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
+        /// The analysis-only evidence the last sealed cohort earned. `None` until a
+        /// cohort seals, and whenever tests are configured.
+        AnalysisReceipt: AnalysisEvidence option
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
         ChangedSymbols: string list
@@ -1529,7 +1536,17 @@ type TestPruneState =
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
+        /// What the last completion EARNED for the current project model: the run, what it
+        /// covered in full, and every reason it cannot support a green. Minted only by the
+        /// completion fold, and published with this state (`IEarnedEvidenceState`).
+        Earned: EarnedEvidence option
     }
+
+    interface IEarnedEvidenceState with
+        member this.EarnedEvidence = this.Earned
+
+    interface IAnalysisEvidenceState with
+        member this.AnalysisEvidence = this.AnalysisReceipt
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -5925,6 +5942,8 @@ let internal createWithLaunchDeadline
           Replies = []
           PendingAnalysis = Map.empty
           AnalysisModelGeneration = None
+          AnalysisFiles = Map.empty
+          AnalysisReceipt = None
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
           ChangedSymbols = loadedDebt.PendingQueue |> Set.toList
@@ -5943,7 +5962,8 @@ let internal createWithLaunchDeadline
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
-          EvidenceReceipt = None }
+          EvidenceReceipt = None
+          Earned = None }
 
     /// The generation of the model the host currently publishes, when it is available.
     let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
@@ -7229,6 +7249,8 @@ let internal createWithLaunchDeadline
                         { state with
                             PendingAnalysis = Map.empty
                             AnalysisModelGeneration = modelGeneration
+                            AnalysisFiles = Map.empty
+                            AnalysisReceipt = None
                             PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
                     else
                         state
@@ -7298,6 +7320,7 @@ let internal createWithLaunchDeadline
                             )
 
                             { state with
+                                AnalysisFiles = Map.remove result.File state.AnalysisFiles
                                 UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
                         | FileFreshness.Present ->
                             Logging.error
@@ -7315,6 +7338,11 @@ let internal createWithLaunchDeadline
                             )
 
                             { state with
+                                AnalysisFiles =
+                                    Map.add
+                                        result.File
+                                        (AnalysisFileEvidence.fromResult result (Error detail))
+                                        state.AnalysisFiles
                                 UnanalyzableFiles =
                                     Map.add
                                         relPath
@@ -7543,6 +7571,11 @@ let internal createWithLaunchDeadline
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     AnalysisModelGeneration = modelGeneration
+                                    AnalysisFiles =
+                                        Map.add
+                                            result.File
+                                            (AnalysisFileEvidence.fromResult result (Ok()))
+                                            state.AnalysisFiles
                                     ChangedSymbols = newChangedSymbols
                                     TestClassFiles = newClassFiles
                                     // The file analysed cleanly, so it is back in the impact
@@ -7633,6 +7666,27 @@ let internal createWithLaunchDeadline
                         tryRepairSchemaDrift ex
                         return state
                     | Ok flushedState ->
+                        // The seal is the moment an analysis-only daemon has an answer: every
+                        // checkable file of this model either analysed or did not. A daemon
+                        // that runs tests earns test evidence instead, and mints none here
+                        // (`AnalysisEvidence.fromCompleted` refuses when tests are configured).
+                        let flushedState =
+                            let membership =
+                                match ctx.ProjectGraph.ObserveCheckableFiles() with
+                                | Some(generation, files) when Some generation = modelGeneration -> Some files
+                                | Some _
+                                | None -> None
+
+                            { flushedState with
+                                AnalysisReceipt =
+                                    membership
+                                    |> Option.bind (fun files ->
+                                        AnalysisEvidence.fromCompleted
+                                            modelGeneration
+                                            files
+                                            runnableProjects
+                                            flushedState.AnalysisFiles) }
+
                         // ── DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are
                         // known. `BuildCompleted` cannot be the only test trigger: on a
@@ -8216,7 +8270,44 @@ let internal createWithLaunchDeadline
                         else
                             debt
 
-                    let state = { state with Debt = debt }
+                    // What this completion EARNED. Everything still owed is a refusal it
+                    // carries: a proof that records a red is still a proof of what ran.
+                    let pendingObligations =
+                        Set.count debt.PendingQueue
+                        + (debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count)
+                        + unanalyzable.Count
+                        + outstandingFailures.Length
+                        + (if debt.RecoveryOutstanding then 1 else 0)
+
+                    let earned =
+                        match completed.Verification with
+                        | NoProjectsSelected when
+                            pendingObligations = 0
+                            && not aborted
+                            && launch.ZeroSelection <> ZeroSelection.NotAZero
+                            && launch.ModelGeneration = currentModelGeneration
+                            ->
+                            // Nothing needed running, so this completion proves nothing new.
+                            // The evidence it was already verified by stands, while it belongs
+                            // to the current model.
+                            EarnedEvidence.retainedForZeroSelection currentModelGeneration state.Earned
+                        | NoProjectsSelected
+                        | AllZeroMatch _
+                        | NothingExecuted
+                        | Ran _ ->
+                            EarnedEvidence.fromCompletion
+                                started.RunId
+                                launch.ModelGeneration
+                                currentModelGeneration
+                                runnableProjects
+                                pendingObligations
+                                state.Earned
+                                completed
+
+                    let state =
+                        { state with
+                            Debt = debt
+                            Earned = earned }
 
                     if earnsBaseline then
                         let runId = completed.RunId.ToString("N")

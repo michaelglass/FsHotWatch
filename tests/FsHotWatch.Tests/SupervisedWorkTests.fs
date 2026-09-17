@@ -300,14 +300,7 @@ let ``admission after caller timeout still launches and settles its work`` () =
     let store = Store()
 
     let blocker =
-        store.Register(
-            "bounded writer fixture",
-            (),
-            fun () ->
-                { Busy = false
-                  Completed = 0L
-                  Failure = None }
-        )
+        store.Register("bounded writer fixture", (), fun () -> RowStatus.ofWork false 0L None)
 
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)

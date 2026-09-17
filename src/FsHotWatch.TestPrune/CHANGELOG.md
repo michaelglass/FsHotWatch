@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- (breaking) A completion mints evidence instead of only reporting a status.
+  `TestPruneState` gains `Earned` (the run's evidence for the current model, carrying its
+  refusals), `AnalysisFiles` and `AnalysisReceipt` (what an analysis-only daemon earned at a
+  cohort seal). A completion selected under a replaced model earns nothing; one that selected
+  nothing because everything was already verified retains the evidence that verified it.
+  Remaining obligations — queued symbols, runtime coverage, unanalysable files, outstanding
+  reds, unknown debt — are refusals the evidence carries.
+
 - (breaking) Analysis and runs are bound to the project model. A `FileChecked` or
   `BatchChecked` is ignored unless it is stamped with the host's current available model;
   a host that publishes no model gets no analysis. Pending analysis accepted under

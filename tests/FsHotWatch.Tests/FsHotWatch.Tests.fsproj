@@ -77,6 +77,7 @@
     <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneOwnerStateTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />
+    <Compile Include="VerdictEvidenceTests.fs" />
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />

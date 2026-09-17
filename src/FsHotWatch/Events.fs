@@ -683,6 +683,186 @@ type TestRunCompleted =
         Verification: RunVerification
     }
 
+/// What a completed test run earned for one project model: the run, the projects it
+/// verified in full (itself or through a same-model baseline), and every reason it cannot
+/// support a green. Only an owner's result fold constructs one.
+type EarnedEvidence =
+    private
+        { Completion: TestRunCompleted
+          ModelGeneration: int64
+          ExpectedProjects: Set<string>
+          WholeProjectCoverage: Set<string>
+          Refusals: string list }
+
+    member this.RunId = this.Completion.RunId
+    member this.Generation = this.ModelGeneration
+    member this.FailureReasons = this.Refusals
+
+module internal EarnedEvidence =
+    /// A launch with no model, one selected under a replaced model, or a completion that
+    /// belongs to a different launch earns nothing. Everything else is evidence of what
+    /// ran, carrying every reason it cannot support a green.
+    let fromCompletion
+        (launchRunId: System.Guid)
+        (launchModelGeneration: int64 option)
+        (currentModelGeneration: int64 option)
+        (expectedProjects: Set<string>)
+        (pendingObligationCount: int)
+        (baseline: EarnedEvidence option)
+        (completed: TestRunCompleted)
+        : EarnedEvidence option =
+        match launchModelGeneration, currentModelGeneration with
+        | Some launched, Some current when
+            launched = current
+            && launchRunId <> System.Guid.Empty
+            && launchRunId = completed.RunId
+            ->
+            let baselineProjects =
+                baseline
+                |> Option.filter (fun evidence -> evidence.Generation = current)
+                |> Option.map (fun evidence -> evidence.WholeProjectCoverage)
+                |> Option.defaultValue Set.empty
+
+            let wholeProjectCoverage =
+                completed.Results
+                |> Map.toSeq
+                |> Seq.choose (fun (project, result) ->
+                    match completed.Outcome, result with
+                    | Normal, TestsPassed(_, false, _)
+                    | Normal, TestsFailed(_, false, _) -> Some project
+                    | _ -> None)
+                |> Set.ofSeq
+                |> Set.union baselineProjects
+
+            let refusals =
+                [ match completed.Outcome with
+                  | Normal -> ()
+                  | Aborted reason -> yield $"run aborted: %s{reason}"
+
+                  if pendingObligationCount <> 0 then
+                      yield $"%d{pendingObligationCount} verification obligation(s) remain pending"
+
+                  if expectedProjects.IsEmpty then
+                      yield "no project obligations were selected"
+
+                  for project in expectedProjects do
+                      match Map.tryFind project completed.Results with
+                      | None when Set.contains project baselineProjects -> ()
+                      | None -> yield $"%s{project}: no result or baseline for an admitted obligation"
+                      | Some result ->
+                          match TestResult.verdict result with
+                          | Verified when Set.contains project wholeProjectCoverage -> ()
+                          | Verified -> yield $"%s{project}: filtered execution without a whole-project baseline"
+                          | Refuted -> yield $"%s{project}: tests failed or timed out"
+                          | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects ->
+                              ()
+                          | NothingVerified -> yield $"%s{project}: no tests verified"
+
+                  // A passing selected project cannot hide an errored or failing sibling.
+                  for KeyValue(project, result) in completed.Results do
+                      match result with
+                      | TestsDeferred reason
+                      | TestsErrored reason -> yield $"%s{project}: %s{reason}"
+                      | TestsFailed _
+                      | TestsTimedOut _ when not (Set.contains project expectedProjects) ->
+                          yield $"%s{project}: tests failed or timed out"
+                      | _ -> ()
+
+                  if not (TestResult.executedAnything completed.Results) then
+                      yield "the completion executed no tests" ]
+
+            Some
+                { Completion = completed
+                  ModelGeneration = current
+                  ExpectedProjects = expectedProjects
+                  WholeProjectCoverage = wholeProjectCoverage
+                  Refusals = List.distinct refusals }
+        | _ -> None
+
+    /// A completion that selected nothing because everything was already verified keeps the
+    /// evidence it was verified by, provided that evidence belongs to the current model.
+    let retainedForZeroSelection (currentModelGeneration: int64 option) (previous: EarnedEvidence option) =
+        previous
+        |> Option.filter (fun evidence -> Some evidence.Generation = currentModelGeneration)
+
+/// One file's completed analysis, kept as evidence without its compiler trees.
+type AnalysisFileEvidence =
+    private
+        { File: AbsFilePath
+          ModelGeneration: int64 option
+          Refusals: string list }
+
+module internal AnalysisFileEvidence =
+    /// A result plus what the analysis of it concluded. Compiler errors and a failed
+    /// symbol analysis are refusals; warnings are not.
+    let fromResult (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+        let refusals =
+            [ match result.CheckResults with
+              | ParseOnly -> yield "type checking did not complete"
+              | FullCheck checkedResult ->
+                  for diagnostic in checkedResult.Diagnostics do
+                      if diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error then
+                          yield diagnostic.Message
+
+              match symbolAnalysis with
+              | Ok() -> ()
+              | Error reason -> yield reason ]
+
+        { File = result.File
+          ModelGeneration = result.ModelGeneration
+          Refusals = List.distinct refusals }
+
+/// What an analysis-only daemon earned for one model: the checkable files of that model,
+/// and every reason the analysis cannot support a green. It makes no test claim.
+type AnalysisEvidence =
+    private
+        { ModelGeneration: int64
+          Files: Set<AbsFilePath>
+          Refusals: string list }
+
+    member this.Generation = this.ModelGeneration
+    member this.CheckedFiles = this.Files
+    member this.FailureReasons = this.Refusals
+
+module internal AnalysisEvidence =
+    /// The expected files are the model's checkable membership, never the subset that
+    /// happened to be observed: a file with no completed analysis is a refusal, not an
+    /// absence. `None` when no model was captured, or when tests are configured — a
+    /// daemon that runs tests earns test evidence instead.
+    let fromCompleted
+        (modelGeneration: int64 option)
+        (expectedFiles: Set<AbsFilePath>)
+        (configuredTestProjects: Set<string>)
+        (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
+        : AnalysisEvidence option =
+        match modelGeneration with
+        | Some generation when generation >= 0L && configuredTestProjects.IsEmpty ->
+            let refusals =
+                [ for file in expectedFiles do
+                      match Map.tryFind file outcomes with
+                      | Some outcome when outcome.File = file && outcome.ModelGeneration = Some generation ->
+                          for reason in outcome.Refusals do
+                              yield $"%s{AbsFilePath.value file}: %s{reason}"
+                      | Some _
+                      | None -> yield $"%s{AbsFilePath.value file}: no completed analysis for the current model" ]
+
+            Some
+                { ModelGeneration = generation
+                  Files = expectedFiles
+                  Refusals = refusals }
+        | Some _
+        | None -> None
+
+/// Implemented by a plugin state that owns analysis-only evidence. Published by the same
+/// owner retirement as the file-analysis fold that minted it.
+type internal IAnalysisEvidenceState =
+    abstract AnalysisEvidence: AnalysisEvidence option
+
+/// Implemented by a plugin state that owns earned test evidence. The work owner projects it
+/// in the same publication as the state's work, so evidence and retirement cannot disagree.
+type internal IEarnedEvidenceState =
+    abstract EarnedEvidence: EarnedEvidence option
+
 /// Current state of the daemon's scan operation.
 type ScanState =
     /// No scan in progress or completed.

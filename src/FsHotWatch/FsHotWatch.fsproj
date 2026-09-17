@@ -38,7 +38,11 @@
     <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
-  <!-- Allow tests to access internal members -->
+  <!-- Allow tests to access internal members.
+       FsHotWatch.TestPrune is here for the evidence minting: `EarnedEvidence`,
+       `AnalysisEvidence` and their `I*State` interfaces stay INTERNAL so no third-party
+       plugin can mint a receipt from a completion record it made up, and the one
+       first-party plugin whose folds do mint them needs the friend access. -->
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FsHotWatch.Tests</_Parameter1>
@@ -48,6 +52,9 @@
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FsHotWatch.Cli</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.TestPrune</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

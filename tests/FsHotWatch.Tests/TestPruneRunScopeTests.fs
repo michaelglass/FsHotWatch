@@ -3372,3 +3372,237 @@ let ``full-suite recovery preserves newer runtime obligations and rejects stale 
         test <@ candidate.EvidenceReceipt.IsNone @>
     else
         test <@ candidate.Debt.Baseline.IsSome @>
+
+/// Grade a TestPrune state the way `check` does: its terminal status and failing ledger
+/// entries, and the scope and baseline its `test-scope` command serves.
+let private gradeAsCheck
+    repoRoot
+    (handler: PluginHandler<TestPruneState, TestPruneMsg>)
+    (status: PluginStatus)
+    (ledger: System.Collections.Generic.Dictionary<string, FsHotWatch.ErrorLedger.ErrorEntry list>)
+    (state: TestPruneState)
+    (mode: FsHotWatch.Cli.CheckVerdict.CheckMode)
+    =
+    let report = receiptScope repoRoot handler state
+
+    let failing =
+        ledger.Values
+        |> Seq.sumBy (fun entries ->
+            entries
+            |> List.filter (fun entry -> entry.Severity = FsHotWatch.ErrorLedger.DiagnosticSeverity.Error)
+            |> List.length)
+
+    let inputs: FsHotWatch.Cli.CheckVerdict.CheckInputs =
+        { PluginStatuses =
+            Map.ofList
+                [ "test-prune",
+                  { Status = FsHotWatch.Cli.RunOnceOutput.StatusView.ofPluginStatus status
+                    Subtasks = []
+                    ActivityTail = []
+                    LastRun = None
+                    Diagnostics = FsHotWatch.ErrorLedger.DiagnosticCounts.empty } ]
+          FailingDiagnostics = failing
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
+          RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+          Coverage = FsHotWatch.Cli.IpcParsing.Complete
+          Scope = report.Scope
+          Baseline = report.Baseline
+          ProjectModel = ProjectModelFixtures.available }
+
+    report, FsHotWatch.Cli.CheckVerdict.verdict mode inputs
+
+/// Fold an event and publish it: the durable sidecars a restarted daemon reads are
+/// written by `PrepareCommit` and finalized after publication, exactly as the owner does.
+let private foldAndPublish (handler: PluginHandler<TestPruneState, TestPruneMsg>) ctx (prior: TestPruneState) event =
+    let candidate = handler.Update ctx prior event |> Async.RunSynchronously
+
+    let prepared = handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously
+
+    prepared.Finalize |> Async.RunSynchronously
+    candidate
+
+[<Theory(Timeout = 30000)>]
+[<InlineData("same-session")>]
+[<InlineData("restart")>]
+[<InlineData("quiet")>]
+let ``a red full-suite baseline cannot lend a green to a filtered run that never re-ran the red`` (sequence: string) =
+    withReceiptSource (fun repoRoot _ ->
+        let configs = Some [ projConfig "ProjA"; projConfig "ProjB" ]
+
+        let make () =
+            create ":memory:" repoRoot configs None None None None []
+
+        let handler = make ()
+
+        // A full suite that FAILED ProjA: accountable, so it records a baseline.
+        let redFullSuite =
+            testsFinishedEvent
+                [ "ProjA", failedProjA; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
+
+        // Nothing changed; the next check's filter reaches only the unrelated ProjB.
+        let unrelatedGreen =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
+
+        let quietDrain =
+            { emptyLaunch with
+                ZeroSelection = ZeroSelection.AlreadyVerified }
+            |> bindReceiptTree repoRoot
+            |> testsFinishedEvent []
+
+        let ctx, statuses, ledger = makeTestPruneRecordingCtx ()
+        let afterRed = foldAndPublish handler ctx handler.Init redFullSuite
+
+        // Positive control: the red run really did earn the baseline a filtered green
+        // would be graded relative to.
+        test <@ afterRed.Debt.Baseline.IsSome @>
+
+        let gradedHandler, final =
+            match sequence with
+            | "restart" ->
+                // A new daemon over the same repository: only the durable record remains.
+                let restarted = make ()
+                test <@ restarted.Init.Debt.Baseline.IsSome @>
+                restarted, foldAndPublish restarted ctx restarted.Init unrelatedGreen
+            | "quiet" -> handler, foldAndPublish handler ctx afterRed quietDrain
+            | _ -> handler, foldAndPublish handler ctx afterRed unrelatedGreen
+
+        for mode in
+            [ FsHotWatch.Cli.CheckVerdict.InnerLoop
+              FsHotWatch.Cli.CheckVerdict.Confirmation ] do
+            let report, outcome =
+                gradeAsCheck repoRoot gradedHandler (lastStatus statuses) ledger final mode
+
+            match report.Baseline with
+            | FsHotWatch.Cli.IpcParsing.BaselineReading.Valid _ -> ()
+            | other -> Assert.Fail($"positive control: the red run must be the served baseline, got %A{other}")
+
+            // The quiet drain is the retained-receipt case: the receipt of the red run is
+            // kept (it records what ran), and the outstanding red must still deny a green.
+            if sequence = "quiet" then
+                test <@ report.RunId = Some(runIdOf redFullSuite) @>
+
+            match outcome with
+            | FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean _ ->
+                Assert.Fail($"%s{sequence}/%A{mode}: ProjA failed and never ran again, yet the check is green")
+            | _ -> ())
+
+[<Theory(Timeout = 30000)>]
+[<InlineData("no report was written")>]
+[<InlineData("the summary counts tests its rows do not account for")>]
+let ``a full suite whose report could not vouch for it cannot lend a green to a later filtered run`` (reason: string) =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // ProjA's host exited cleanly but its requested report was unusable: the tests it
+        // ran are unknown, which includes any that failed.
+        let unvouched =
+            classifyTestOutcome
+                (ReportRequested(Error reason))
+                false
+                (TimeSpan.FromSeconds 1.0)
+                (ProcessOutcome.Succeeded(ProcessOutput.Drained "exit 0"))
+
+        let fullSuite =
+            testsFinishedEvent
+                [ "ProjA", unvouched; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
+
+        let unrelatedGreen =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
+
+        let ctx, statuses, ledger = makeTestPruneRecordingCtx ()
+        let afterFull = foldAndPublish handler ctx handler.Init fullSuite
+        let final = foldAndPublish handler ctx afterFull unrelatedGreen
+
+        for mode in
+            [ FsHotWatch.Cli.CheckVerdict.InnerLoop
+              FsHotWatch.Cli.CheckVerdict.Confirmation ] do
+            let _, outcome =
+                gradeAsCheck repoRoot handler (lastStatus statuses) ledger final mode
+
+            match outcome with
+            | FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean _ ->
+                Assert.Fail($"%A{mode}: ProjA's only run could not show what it ran, yet the check is green")
+            | _ -> ())
+
+/// The same completion, ended by a cancellation or supersession instead of normally.
+let private abortedAs (reason: string) (event: PluginEvent<TestPruneMsg>) =
+    match event with
+    | Custom(TestsFinished(started, completed, launch)) ->
+        Custom(
+            TestsFinished(
+                started,
+                { completed with
+                    Outcome = Aborted reason },
+                launch
+            )
+        )
+    | other -> other
+
+[<Theory(Timeout = 30000)>]
+[<InlineData("later-full-run-aborted-before-the-red-project")>]
+[<InlineData("later-full-run-ends-without-the-red-project")>]
+[<InlineData("later-full-run-errors-the-red-project")>]
+[<InlineData("red-run-superseded-then-full-run-without-it")>]
+let ``a superseded or partial full run cannot turn an earlier red into a baseline a filtered green borrows``
+    (sequence: string)
+    =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let fullLaunch () =
+            fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot
+
+        let redFullSuite =
+            testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullLaunch ())
+
+        // A second full run that never produces ProjA's verdict.
+        let partial =
+            match sequence with
+            | "later-full-run-aborted-before-the-red-project" ->
+                testsFinishedEvent [ "ProjB", passed false ] (fullLaunch ())
+                |> abortedAs "superseded by a newer build"
+            | "later-full-run-errors-the-red-project" ->
+                testsFinishedEvent
+                    [ "ProjA", TestsErrored "test host cancelled before it reported"
+                      "ProjB", passed false ]
+                    (fullLaunch ())
+            | _ -> testsFinishedEvent [ "ProjB", passed false ] (fullLaunch ())
+
+        let redRun =
+            if sequence = "red-run-superseded-then-full-run-without-it" then
+                redFullSuite |> abortedAs "superseded by a newer build"
+            else
+                redFullSuite
+
+        let unrelatedGreen =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
+
+        let ctx, statuses, ledger = makeTestPruneRecordingCtx ()
+
+        let final =
+            [ redRun; partial; unrelatedGreen ]
+            |> List.fold (foldAndPublish handler ctx) handler.Init
+
+        for mode in
+            [ FsHotWatch.Cli.CheckVerdict.InnerLoop
+              FsHotWatch.Cli.CheckVerdict.Confirmation ] do
+            let report, outcome =
+                gradeAsCheck repoRoot handler (lastStatus statuses) ledger final mode
+
+            match outcome with
+            | FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean _ ->
+                Assert.Fail(
+                    $"%s{sequence}/%A{mode}: ProjA failed in the only run that reported it, yet the check is green against baseline %A{report.Baseline}"
+                )
+            | _ -> ())

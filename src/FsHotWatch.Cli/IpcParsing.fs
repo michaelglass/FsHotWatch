@@ -1051,15 +1051,103 @@ let isAllTerminal (statuses: Map<string, StatusView>) : bool =
 /// plugin's `Running` interval, superseded runs included. `NotServed` is an older
 /// daemon (or an embedder) that carries no ledger: the verdict then falls back to
 /// each plugin's `lastRun`, and says so through its coverage rather than pretending.
+/// One receipt the daemon publishes for a project model: which run earned it, which model
+/// generation it belongs to, and every reason it refuses a green.
+///
+/// `RunId = None` is the analysis-only daemon's own receipt: it runs no tests, so no run
+/// can name it. A receipt with refusals is still evidence — of what ran — so it is
+/// carried rather than dropped, and the refusals are what deny the green.
+type ModelReceipt =
+    { RunId: Guid option
+      Generation: int64
+      Refusals: string list }
+
+/// Whether this daemon offers evidence receipts at all, and the ones it holds.
+/// `NotOffered` is a daemon with no evidence-minting plugin registered (or one older than
+/// receipts): it owes none, so the receipt rule says nothing about it. `Offered []` is a
+/// daemon that owes one and holds none, which refuses a green.
+[<RequireQualifiedAccess>]
+type ReceiptLedger =
+    | NotOffered
+    | Offered of ModelReceipt list
+
 [<RequireQualifiedAccess>]
 type DaemonEvidence =
     | NotServed
-    | Served of FsHotWatch.DaemonPhases.PhaseRecord list
+    | Served of phases: FsHotWatch.DaemonPhases.PhaseRecord list * receipts: ReceiptLedger
 
 module DaemonEvidence =
+    /// The receipts of an in-process host (`--run-once`), read from one publication so a
+    /// receipt cannot belong to a different snapshot than the work it retired.
+    let receiptsOfHost (host: FsHotWatch.PluginHost.PluginHost) : ModelReceipt list =
+        let snapshot = host.WorkSnapshot
+
+        [ for evidence in snapshot.Evidence do
+              yield
+                  { RunId = Some evidence.RunId
+                    Generation = evidence.Generation
+                    Refusals = evidence.FailureReasons }
+          for analysis in snapshot.AnalysisEvidence do
+              yield
+                  { RunId = None
+                    Generation = analysis.Generation
+                    Refusals = analysis.FailureReasons } ]
+
     /// The ledger of an in-process host (`--run-once`), read now.
     let ofHost (host: FsHotWatch.PluginHost.PluginHost) : DaemonEvidence =
-        DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow))
+        let receipts =
+            if host.WorkSnapshot.OffersEvidence then
+                ReceiptLedger.Offered(receiptsOfHost host)
+            else
+                ReceiptLedger.NotOffered
+
+        DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow), receipts)
+
+    /// The receipts a diagnostics response carries. An entry without a readable
+    /// generation, or with a `runId` this build cannot parse, is DROPPED: a receipt that
+    /// cannot be placed is not evidence, and its absence refuses the green.
+    let parseReceipts (root: JsonElement) : ReceiptLedger =
+        match root.TryGetProperty("modelReceipts") with
+        | true, receipts when receipts.ValueKind = JsonValueKind.Array ->
+            [ for receipt in receipts.EnumerateArray() do
+                  if receipt.ValueKind = JsonValueKind.Object then
+                      let generation =
+                          match receipt.TryGetProperty("modelGeneration") with
+                          | true, v when v.ValueKind = JsonValueKind.Number ->
+                              match v.TryGetInt64() with
+                              | true, n -> Some n
+                              | _ -> None
+                          | _ -> None
+
+                      // Absent or null names the analysis-only receipt; anything else must
+                      // parse as the run that earned it.
+                      let runId =
+                          match receipt.TryGetProperty("runId") with
+                          | true, v when v.ValueKind = JsonValueKind.Null -> Ok None
+                          | true, v when v.ValueKind = JsonValueKind.String ->
+                              match Guid.TryParse(v.GetString()) with
+                              | true, parsed -> Ok(Some parsed)
+                              | _ -> Result.Error "unparseable runId"
+                          | true, _ -> Result.Error "runId is not a string"
+                          | false, _ -> Ok None
+
+                      let refusals =
+                          match receipt.TryGetProperty("refusals") with
+                          | true, v when v.ValueKind = JsonValueKind.Array ->
+                              [ for reason in v.EnumerateArray() do
+                                    if reason.ValueKind = JsonValueKind.String then
+                                        yield reason.GetString() ]
+                          | _ -> []
+
+                      match generation, runId with
+                      | Some generation, Ok runId ->
+                          yield
+                              { RunId = runId
+                                Generation = generation
+                                Refusals = refusals }
+                      | _ -> () ]
+            |> ReceiptLedger.Offered
+        | _ -> ReceiptLedger.NotOffered
 
     /// The `daemonPhases` array of a diagnostics response. Entries that do not carry a
     /// scope, a parseable start and an elapsed time are dropped: a phase that cannot be
@@ -1107,7 +1195,7 @@ module DaemonEvidence =
                                      Detail = tryGetStringProp phase "detail" }
                                   : FsHotWatch.DaemonPhases.PhaseRecord)
                           | _ -> () ]
-                |> DaemonEvidence.Served
+                |> fun phases -> DaemonEvidence.Served(phases, parseReceipts root)
             | _ -> DaemonEvidence.NotServed
         with :? JsonException ->
             DaemonEvidence.NotServed

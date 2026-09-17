@@ -987,6 +987,46 @@ let private publishVerdictWithReason
         let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
+        // A green needs the graded run's receipt for the CURRENT model: the run the
+        // verdict is graded from must have earned evidence under the generation this
+        // reading was taken against, with nothing left refusing it. An analysis-only
+        // daemon names no run, so its own receipt carries no run id. A daemon that serves
+        // no receipts at all is a build older than this rule; the other refusals still
+        // apply to it, and this one cannot speak about evidence it was never sent.
+        let receiptRefusal () : string option =
+            match IpcParsing.ProjectModelReading.available projectModel, daemonEvidence with
+            | None, _
+            | _, IpcParsing.DaemonEvidence.NotServed
+            | _, IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.NotOffered) -> None
+            | Some model, IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.Offered receipts) ->
+                let describe =
+                    match runReport.RunId with
+                    | Some graded ->
+                        let runId = graded.ToString("N")
+                        $"the graded run %s{runId}"
+                    | None -> "an analysis-only daemon"
+
+                let forThisRun (receipt: IpcParsing.ModelReceipt) =
+                    receipt.Generation = model.Generation
+                    && match runReport.RunId with
+                       | Some graded -> receipt.RunId = Some graded
+                       | None -> receipt.RunId.IsNone
+
+                match receipts |> List.filter forThisRun with
+                | [] ->
+                    Some
+                        $"no evidence receipt for %s{describe} at project model generation %d{model.Generation} — nothing vouches for this green"
+                | matching ->
+                    let refusals = matching |> List.collect (fun receipt -> receipt.Refusals)
+
+                    if List.isEmpty refusals then
+                        None
+                    else
+                        Some(
+                            $"the evidence receipt for %s{describe} refuses a green: "
+                            + String.concat "; " (List.distinct refusals)
+                        )
+
         let verdictOutcome, exitCode =
             match terminalIncompleteReason, settledTree with
             // A terminal infrastructure failure is already the answer. Preserve its
@@ -994,9 +1034,15 @@ let private publishVerdictWithReason
             // down to the generic "coverage could not be confirmed" sentence that
             // sent away from the project-loader failure.
             | _, VerifiedTree settled when settled.Hash <> atWrite.Hash ->
-                Verdict.Incomplete
-                    "the working tree changed while the verdict was being produced — nothing is claimed about it",
-                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+                let reason =
+                    "the working tree changed while the verdict was being produced — nothing is claimed about it"
+
+                // Said out loud as well as recorded, for the same reason the receipt
+                // refusal below is: the caller explains the outcome it HANDED IN, which is
+                // clean, so an operator otherwise saw exit 2 and no sentence anywhere but
+                // in the file.
+                UI.fail reason
+                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
             | Some reason, _ ->
                 Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
             // A tree that held still — and, on the abort paths, a check that never
@@ -1005,7 +1051,15 @@ let private publishVerdictWithReason
             // `Incomplete`. Re-deciding it from a comparison with no left-hand side
             // would invent an answer rather than read one.
             | None, VerifiedTree _
-            | None, NeverSettled -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+            | None, NeverSettled ->
+                match outcome, receiptRefusal () with
+                // Everything else about this reading is clean, and no receipt earned it.
+                // Said out loud as well as recorded: the caller explains `Clean` by
+                // printing nothing, so without this an operator sees exit 2 and no reason.
+                | CheckVerdict.CheckOutcome.Clean _, Some reason ->
+                    UI.fail reason
+                    Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+                | _ -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -1105,7 +1159,7 @@ let private publishVerdictWithReason
         // to explain surfaces as the derived coverage gap, not as a silence.
         let daemonSpans =
             match daemonEvidence with
-            | IpcParsing.DaemonEvidence.Served phases ->
+            | IpcParsing.DaemonEvidence.Served(phases, _) ->
                 phases
                 |> List.choose (Verdict.TimingSpan.ofDaemonPhase invocation observedSoFar)
             | IpcParsing.DaemonEvidence.NotServed ->

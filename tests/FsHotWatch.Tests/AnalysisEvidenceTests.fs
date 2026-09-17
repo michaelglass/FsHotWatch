@@ -33,10 +33,9 @@ let ``model replacement atomically retires previous checkable membership`` () =
     // A pinned publication keeps the membership it was published with.
     Assert.Equal(Some(1L, oldFiles), before.ProjectModelFiles)
 
-/// Check a real source with the warm checker, stamped as captured against generation 1.
-let private withCheckedSource action =
+/// Check `source` with the warm checker, stamped as captured against generation 1.
+let private withCheckedText (source: string) action =
     withTempDir "analysis-evidence" (fun root ->
-        let source = "module Lib\nlet answer = 42\n"
         let sourceFile = Path.Combine(root, "Lib.fs")
         File.WriteAllText(sourceFile, source)
         let checker = sharedChecker.Value
@@ -66,6 +65,9 @@ let private withCheckedSource action =
             root
             { result with
                 ModelGeneration = Some 1L })
+
+let private withCheckedSource action =
+    withCheckedText "module Lib\nlet answer = 42\n" action
 
 /// A TestPrune context whose host currently publishes `generation` as its model.
 let private analysisContext root generation : PluginCtx<TestPruneMsg> =
@@ -217,3 +219,98 @@ let ``a host with a published model refuses a result or seal that names no model
         | _ -> persistedThroughHost (Some 1L) refused
 
     Assert.Empty persisted
+
+[<Fact(Timeout = 30000)>]
+let ``analysis proof refuses missing stale and failed file outcomes and configured tests`` () =
+    withCheckedSource (fun _ result ->
+        let files = Set.singleton result.File
+        let good = AnalysisFileEvidence.fromResult result (Ok())
+        let outcomes = Map.ofList [ result.File, good ]
+
+        let proof entries =
+            AnalysisEvidence.fromCompleted (Some 1L) files Set.empty entries |> Option.get
+
+        // Positive control: the actual completed analysis of every checkable file.
+        Assert.Empty((proof outcomes).FailureReasons)
+        // A file with no outcome at all is a refusal, never an empty success.
+        Assert.NotEmpty((proof Map.empty).FailureReasons)
+
+        let foreign =
+            AnalysisFileEvidence.fromResult
+                { result with
+                    File =
+                        AbsFilePath.create (
+                            Path.Combine(Path.GetDirectoryName(AbsFilePath.value result.File), "Other.fs")
+                        ) }
+                (Ok())
+
+        Assert.NotEmpty((proof (Map.ofList [ result.File, foreign ])).FailureReasons)
+
+        let stale =
+            AnalysisFileEvidence.fromResult
+                { result with
+                    ModelGeneration = Some 0L }
+                (Ok())
+
+        Assert.NotEmpty((proof (Map.ofList [ result.File, stale ])).FailureReasons)
+
+        let failed =
+            AnalysisFileEvidence.fromResult result (Error "symbol persistence failed")
+
+        Assert.NotEmpty((proof (Map.ofList [ result.File, failed ])).FailureReasons)
+
+        let parseOnly =
+            AnalysisFileEvidence.fromResult { result with CheckResults = ParseOnly } (Ok())
+
+        Assert.NotEmpty((proof (Map.ofList [ result.File, parseOnly ])).FailureReasons)
+        // No model, an invalid generation, or a configured test suite: no analysis claim.
+        Assert.True((AnalysisEvidence.fromCompleted None files Set.empty outcomes).IsNone)
+        Assert.True((AnalysisEvidence.fromCompleted (Some -1L) files Set.empty outcomes).IsNone)
+        Assert.True((AnalysisEvidence.fromCompleted (Some 1L) files (Set.singleton "Tests.fsproj") outcomes).IsNone))
+
+[<Fact(Timeout = 30000)>]
+let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =
+    withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
+        // Positive control: this source really does produce an incomplete-match WARNING.
+        match result.CheckResults with
+        | FullCheck checkedResult ->
+            Assert.Contains(
+                checkedResult.Diagnostics,
+                fun diagnostic -> diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
+            )
+        | ParseOnly -> Assert.Fail "the fixture requires an actual completed type check"
+
+        let outcome = AnalysisFileEvidence.fromResult result (Ok())
+
+        let proof =
+            AnalysisEvidence.fromCompleted
+                (Some 1L)
+                (Set.singleton result.File)
+                Set.empty
+                (Map.ofList [ result.File, outcome ])
+            |> Option.get
+
+        // A warning is not a refusal: the file was analysed.
+        Assert.Empty proof.FailureReasons)
+
+[<Fact(Timeout = 30000)>]
+let ``available empty model earns no-suite analysis only after its actual batch seal`` () =
+    withTempDir "analysis-empty-model" (fun root ->
+        let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value root
+        host.WorkStore.PublishProjectModelWithFiles(available 1L, Set.empty)
+        host.RegisterHandler(analysisHandler root "empty-model")
+
+        // Nothing is earned by the model being available.
+        Assert.Empty host.WorkSnapshot.AnalysisEvidence
+
+        host.EmitBatchChecked
+            { fakeBatchChecked [] with
+                ModelGeneration = Some 1L }
+
+        waitForQuiescent host 10000
+        let proof = Assert.Single host.WorkSnapshot.AnalysisEvidence
+        Assert.Equal(1L, proof.Generation)
+        Assert.Empty proof.CheckedFiles
+        Assert.Empty proof.FailureReasons
+        // An analysis-only daemon makes no test claim.
+        Assert.Empty host.WorkSnapshot.Evidence)

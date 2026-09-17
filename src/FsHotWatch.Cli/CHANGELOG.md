@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A green requires the graded run's evidence receipt for the current project model. `check`
+  reads `modelReceipts` from the daemon (or from the in-process host under `--run-once`) and
+  downgrades an otherwise-clean reading to incomplete (exit 2) when no receipt exists for
+  that run at the current model generation, or when the receipt refuses. An analysis-only
+  daemon is graded on its own receipt, which names no run. A receipt whose run id cannot be
+  parsed is dropped rather than trusted. A daemon that offers no receipts at all — one with
+  no evidence-minting plugin — is graded as before; an empty receipt list is not the same
+  answer, and refuses the green.
+
+- Fixed: a check downgraded because the working tree moved while the verdict was being
+  produced recorded its reason in `verdict.json` but printed nothing, so an operator saw
+  exit 2 with no explanation. It now says the same sentence at the terminal.
+
 ## 0.14.0-alpha.54 - 2026-09-17
 
 - Adopts TestPrune.Core 9.0.0, in lockstep with FsHotWatch.TestPrune.

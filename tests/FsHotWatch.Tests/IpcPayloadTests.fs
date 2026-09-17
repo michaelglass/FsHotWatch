@@ -341,3 +341,59 @@ let ``GetDiagnostics payload carries the daemon's project-model observation at r
 
     let resp = parseDiagnosticsResponse (target.GetDiagnostics "")
     test <@ resp.ProjectModel = ProjectModelFixtures.available @>
+
+// ---------------------------------------------------------------------------
+// The receipts a daemon publishes for the current project model. The property is
+// ABSENT when no registered plugin mints evidence, which is not the same answer as an
+// empty array — see ADR-033.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``GetDiagnostics carries the analysis receipt a sealed cohort earned`` () =
+    withTempDir "ipc-model-receipts" (fun repoRoot ->
+        let host = PluginHost.create nullChecker repoRoot
+        host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+
+        host.RegisterHandler(
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                (System.IO.Path.Combine(repoRoot, "receipts.db"))
+                repoRoot
+                None
+                None
+                None
+                None
+                None
+                []
+        )
+
+        // Before the seal there is nothing to report: the plugin owes a receipt it has
+        // not earned, so the property is served and empty.
+        let beforeSeal = DaemonRpcTarget(defaultRpcConfig host).GetDiagnostics("")
+
+        match DaemonEvidence.parse beforeSeal with
+        | DaemonEvidence.Served(_, ReceiptLedger.Offered []) -> ()
+        | other -> failwithf "an evidence-minting plugin with nothing earned must serve an empty ledger, got %A" other
+
+        host.EmitBatchChecked
+            { fakeBatchChecked [] with
+                ModelGeneration = Some fixtureModelGeneration }
+
+        waitForQuiescent host 10000
+        let afterSeal = DaemonRpcTarget(defaultRpcConfig host).GetDiagnostics("")
+
+        match DaemonEvidence.parse afterSeal with
+        | DaemonEvidence.Served(_, ReceiptLedger.Offered [ receipt ]) ->
+            // The analysis receipt names no run, and belongs to the model it sealed.
+            test <@ receipt.RunId = None @>
+            test <@ receipt.Generation = fixtureModelGeneration @>
+            test <@ List.isEmpty receipt.Refusals @>
+        | other -> failwithf "a sealed cohort must publish one analysis receipt, got %A" other)
+
+[<Fact(Timeout = 20000)>]
+let ``GetDiagnostics omits the receipts property for a daemon whose plugins mint no evidence`` () =
+    let host = PluginHost.create nullChecker "/tmp/fshw-no-evidence-plugin"
+    host.RegisterHandler(completedHandlerWith "no-evidence" "did something" (fun _ -> async { return () }))
+
+    match DaemonEvidence.parse (DaemonRpcTarget(defaultRpcConfig host).GetDiagnostics("")) with
+    | DaemonEvidence.Served(_, ReceiptLedger.NotOffered) -> ()
+    | other -> failwithf "a daemon with no evidence-minting plugin must offer no receipts, got %A" other

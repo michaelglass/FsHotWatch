@@ -51,9 +51,31 @@ type EventFailure =
 /// projection runs inside the same publication as its value, so the two cannot disagree.
 [<NoComparison; NoEquality>]
 type RowStatus =
-    { Busy: bool
-      Completed: int64
-      Failure: OwnerFailure option }
+    {
+        Busy: bool
+        Completed: int64
+        Failure: OwnerFailure option
+        /// The test evidence this row's state holds, projected WITH the state, inside the
+        /// same publication. A row whose state holds none leaves it `None`.
+        Evidence: Events.EarnedEvidence option
+        /// The analysis-only evidence this row's state holds, projected the same way.
+        Analysis: Events.AnalysisEvidence option
+        /// Whether this row's state is one that MINTS evidence at all. A host with no such
+        /// row offers no receipts, and a reader must not mistake that for a row that owed
+        /// one and produced nothing.
+        OffersEvidence: bool
+    }
+
+module RowStatus =
+    /// The projection of a row that holds no evidence: a supervised queue, a debounced
+    /// input, a fixture row.
+    let ofWork (busy: bool) (completed: int64) (failure: OwnerFailure option) : RowStatus =
+        { Busy = busy
+          Completed = completed
+          Failure = failure
+          Evidence = None
+          Analysis = None
+          OffersEvidence = false }
 
 [<NoComparison; NoEquality>]
 type private Row =
@@ -85,6 +107,20 @@ type HostSnapshot =
 
     /// Increases by one with every publication.
     member this.Version = this.Published
+
+    /// The test evidence the rows hold, read from this publication. A row's evidence and its
+    /// work are published together, so a reader can never see one without the other.
+    member this.Evidence: Events.EarnedEvidence list =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Status.Evidence)
+
+    /// The analysis-only evidence the rows hold, read from this publication.
+    member this.AnalysisEvidence: Events.AnalysisEvidence list =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Status.Analysis)
+
+    /// Does any row mint evidence? A host with none — an embedder that registers no
+    /// evidence-minting plugin — offers no receipts, which is not the same as owing one.
+    member this.OffersEvidence =
+        this.Rows |> Map.exists (fun _ row -> row.Status.OffersEvidence)
 
     /// The project model this publication was made under.
     member this.ProjectModel = this.Model
@@ -882,7 +918,22 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
               Committed = 0L
               Failed = None },
             fun snapshot ->
+                // The evidence a plugin state holds is projected HERE, where the state's
+                // type is known, and published with the work it belongs to.
                 { Busy = snapshot.IsBusy
+                  Evidence =
+                    match box snapshot.Domain with
+                    | :? Events.IEarnedEvidenceState as holder -> holder.EarnedEvidence
+                    | _ -> None
+                  Analysis =
+                    match box snapshot.Domain with
+                    | :? Events.IAnalysisEvidenceState as holder -> holder.AnalysisEvidence
+                    | _ -> None
+                  OffersEvidence =
+                    match box snapshot.Domain with
+                    | :? Events.IEarnedEvidenceState
+                    | :? Events.IAnalysisEvidenceState -> true
+                    | _ -> false
                   Completed = snapshot.Committed
                   Failure = snapshot.Failure }
         )

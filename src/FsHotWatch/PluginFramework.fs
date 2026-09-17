@@ -234,6 +234,11 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
         /// The project model of the host's current publication. A result stamped with
         /// a different `ModelGeneration` belongs to a model this one replaced.
         ObserveModel: unit -> FsHotWatch.ProjectModel.Observation
+        /// The available model's checkable files, with the generation they belong to.
+        /// `None` whenever no model is available: membership never outlives its model.
+        /// This is what an analysis-only completion must account for, so a file with no
+        /// completed analysis is a refusal rather than an absence.
+        ObserveCheckableFiles: unit -> (int64 * Set<FsHotWatch.Events.AbsFilePath>) option
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -251,6 +256,7 @@ module ProjectGraphAccessor =
     /// returns empty/None, so dependency-fanout consumers fall back cleanly.
     let none: ProjectGraphAccessor =
         { ObserveModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+          ObserveCheckableFiles = fun () -> None
           GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
