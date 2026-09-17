@@ -115,7 +115,7 @@ module ``parseProjectFile`` =
 module ``parsePackageReferences`` =
 
     [<Fact>]
-    let ``extracts direct PackageReference versions (non-CPM, e.g. intelligence)`` () =
+    let ``extracts direct PackageReference versions (non-CPM project)`` () =
         let tmpDir, fsprojPath =
             writeTempFsproj
                 """<Project Sdk="Microsoft.NET.Sdk">

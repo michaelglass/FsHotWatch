@@ -24,7 +24,7 @@
       {
         "line": 92,
         "branch": 73,
-        "reason": "phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
+        "reason": "Phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
       },
       {
         "line": 92,

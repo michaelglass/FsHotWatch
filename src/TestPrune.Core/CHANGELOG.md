@@ -187,8 +187,8 @@
   propagating relevance through itself.** An app's routing table or
   DI registration block references every handler in the codebase in order to *wire
   them up*, and an integration fixture that boots the app depends on it. The
-  reverse-walk therefore reaches every fixture-using test from every handler: on the
-  intelligence consumer, editing one line of `AdminJournal.translate` selected **537
+  reverse-walk therefore reaches every fixture-using test from every handler: in a large
+  private downstream repository, editing one line of `AdminJournal.translate` selected **537
   integration tests across 57 classes** — the entire suite, browser tests included,
   about four minutes per gate. Four unrelated handlers returned the identical number,
   so this was the normal case, not an edge.
@@ -228,7 +228,7 @@
   **Fail-safe: a barrier may narrow a test project's selection, never empty it.**
   The narrowing is only sound while some *other* attribution still reaches the
   covering tests — TestPrune.Falco's route→test edges, in the case this was built
-  for. That attribution is not total: Falco attributes 29 of intelligence's 32
+  for. That attribution is not total: Falco attributes 29 of that repository's 32
   handler files, and the three it misses are covered by browser tests that navigate
   by **clicking** (`page.ClickAsync "#stop-impersonating"`) rather than naming the
   URL. Barriering alone answers "no integration tests affected" for those — a green

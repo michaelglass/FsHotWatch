@@ -1,6 +1,6 @@
 # Function-scoped Falco route edges (fix browser-test over-selection)
 
-## Problem (reproduced, quantified in the intelligence repo)
+## Problem (reproduced, quantified in a large private downstream repository)
 
 TestPrune.Falco over-selects integration/browser tests. Measured against the
 53 integration `.fs` files:
@@ -26,7 +26,7 @@ file, not the changed function's route.
 
 ## Fix — connect each route's tests only to that route's handler function
 
-`RouteEndpoints.fs` (intelligence) already maps each route to its handler
+`RouteEndpoints.fs` (in that downstream repository) already maps each route to its handler
 function (`Route.Landing LandingRoute.Root -> Some Landing.index`). Carry that
 function name into the route store so edges become **function-scoped**:
 a route's tests link to the *specific* function serving that route.
@@ -77,10 +77,10 @@ handler function drops **no** genuinely-affected test. Backed by:
 New public API (`RouteHandlerEntry.HandlerFunction`, `GetRouteHandlersForSourceFile`)
 → FsSemanticTagger will pick a minor bump; do **not** hand-edit versions.
 
-**Do NOT:** run `mise run release`, push, or touch the intelligence repo.
+**Do NOT:** run `mise run release`, push, or touch the downstream repository.
 Leave it committed on a jj change for review.
 
-## Phase 2 — intelligence seed (separate, after Phase 1 releases)
+## Phase 2 — downstream seed (separate, after Phase 1 releases)
 
 - Populate `HandlerFunction` in `RouteMapping.generateMappings`. Preferred:
   AST-derive route→function from `RouteEndpoints.fs` (single source of truth,

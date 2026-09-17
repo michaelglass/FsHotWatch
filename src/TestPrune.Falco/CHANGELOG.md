@@ -67,7 +67,7 @@
 - fix: **A class must show evidence that it holds tests to be selected.**
   3.0.1 made module selection depend on a test attribute but
   left every `type X(...)` unconditionally selectable, so fixtures and helpers
-  were still returned as affected "test classes" — in the intelligence consumer,
+  were still returned as affected "test classes" — in a large private downstream repository,
   `IntegrationTestFixture`, `TestServer` and `BrowserErrorTracker`. Selecting one
   runs nothing on the filter path, and on the edge path fabricates test→handler
   edges out of fixture members that `QueryAffectedTests`' transitive reverse-walk
