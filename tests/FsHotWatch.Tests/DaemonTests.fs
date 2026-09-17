@@ -2921,3 +2921,94 @@ let ``a scan seals its cohort exactly once, with files or without`` (hasSource: 
             SpinWait.SpinUntil((fun () -> seals.Count = 2), TimeSpan.FromSeconds 15.0),
             "a second scan seals its own cohort"
         ))
+
+// ---------------------------------------------------------------------------
+// The wedge detector reads OWNED work, not completed dispatches alone. A scan that is
+// legitimately inside its supervisor deadline is working, however long it takes; one
+// that is past it with nothing moving is the wedge the detector exists to name.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 60000)>]
+let ``a scan blocked in discovery beyond the stall threshold is not a wedge`` () =
+    withTempDir "daemon-scan-not-wedged" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Blocked.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = BlockingWorkspaceLoader([])
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ -> [])
+
+        let scan = Async.StartAsTask(daemon.ScanAll())
+
+        try
+            Assert.True(loader.Entered.Wait(TimeSpan.FromSeconds 10.0), "the scan must enter controlled discovery")
+
+            // The scan owns work and no plugin dispatch is completing, which is exactly
+            // the shape the old detector called WEDGED. It is inside its deadline, so the
+            // wait must simply keep waiting: a timeout here, not a wedge.
+            let waiting =
+                waitForAllTerminalCore
+                    daemon.Host
+                    (TimeSpan.FromMilliseconds 900.0)
+                    (TimeSpan.FromMilliseconds 150.0)
+                    CancellationToken.None
+
+            let failure =
+                Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+
+            test <@ not (failure.Message.Contains "WEDGED") @>
+            test <@ failure.Message.Contains "timed out" @>
+        finally
+            loader.Resume()
+            scan.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult())
+
+[<Fact(Timeout = 60000)>]
+let ``supervised work held past its own deadline still reads as wedged`` () =
+    // The negative control for the test above: the bound is the supervisor's deadline, so
+    // work that outlived it with nothing published is named, not waited on forever.
+    let host = PluginHost.create nullChecker "/tmp/fshw-wedge-past-deadline"
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let queue =
+        SupervisedWork.Queue(
+            host.WorkStore,
+            "hung-operation",
+            (),
+            TimeSpan.FromMilliseconds 200.0,
+            (fun state _ -> state),
+            (fun state _ -> state),
+            ignore,
+            fun state (_: unit) _ _ ->
+                async {
+                    entered.Set()
+                    release.Wait()
+                    return state
+                }
+        )
+
+    try
+        queue.Submit((), CancellationToken.None) |> ignore
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the controlled operation must start")
+
+        let waiting =
+            waitForAllTerminalCore
+                host
+                (TimeSpan.FromSeconds 20.0)
+                (TimeSpan.FromMilliseconds 400.0)
+                CancellationToken.None
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+
+        test <@ failure.Message.Contains "WEDGED" @>
+        test <@ failure.Message.Contains "hung-operation" @>
+    finally
+        release.Set()

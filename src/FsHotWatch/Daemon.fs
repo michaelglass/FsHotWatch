@@ -1503,15 +1503,6 @@ let formatPluginWait
 
     $"%s{pluginName} (%s{elapsed}){subtaskPart}"
 
-/// Quiescence window applied after the last host activity (event dispatch or
-/// plugin status transition) before WaitForComplete declares the host idle.
-/// Picks up the "plugin transitioned through Idle between cycles" race: a
-/// plugin that's about to start a new cycle in response to a freshly-emitted
-/// event won't have updated its status yet, so the waiter must give the
-/// dispatch pipeline a chance to land before returning.
-let internal waitForAllTerminalQuiescenceWindow =
-    System.TimeSpan.FromMilliseconds(200.0)
-
 /// How long "nothing is Running, yet some plugin still reports work in flight"
 /// may persist before the wait declares that plugin WEDGED and fails.
 ///
@@ -1548,19 +1539,9 @@ let internal daemonShuttingDownMessage = "daemon shutting down"
 /// processes blocked on the daemon could either hang (in-process callers) or
 /// race the OS pipe teardown for a clean exit.
 ///
-/// `requireVerdict`: when true (the `WaitForComplete` verdict path) the host is
-/// only "at rest" once at least one plugin has reached a real terminal state, so a
-/// cold all-Idle daemon that has simply never run cannot resolve as a vacuous "No
-/// errors" exit-0; the wait blocks until a real verdict arrives, faulting on
-/// shutdown/timeout. When false (the in-process `RunOnce`/scan-settling path, and
-/// every other caller) an all-Idle host is tolerated, so the wait cannot hang on a
-/// plugin that legitimately has no work this cycle. `allPluginsAdvancedToTerminal`
-/// already requires Completed/Failed for every plugin, so the guard only constrains
-/// the quiescence (`allPluginsAtRest`) path.
 let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
-    (requireVerdict: bool)
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
@@ -1623,13 +1604,7 @@ let internal waitForAllTerminalCore
 
                 let reasons =
                     [ if not busy.IsEmpty then
-                          $"work still OWNED (an event not yet committed, a queued command, or an exclusive run before its result commits): %s{busyNames}"
-
-                      if sinceActivity < waitForAllTerminalQuiescenceWindow then
-                          $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
-
-                      if requireVerdict && not hasVerdict then
-                          "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report" ]
+                          $"work still OWNED (an event not yet committed, a queued command, or an exclusive run before its result commits): %s{busyNames}" ]
 
                 match reasons with
                 | [] ->
@@ -1669,25 +1644,14 @@ let internal waitForAllTerminalCore
             elif Logging.isEnabled Logging.LogLevel.Debug then
                 Logging.debug "wait" (formatTimeoutDetail ())
 
-    let isQuiescent () =
-        System.DateTime.UtcNow - host.LastActivityAt()
-        >= waitForAllTerminalQuiescenceWindow
-
     let allPluginsAtRest () =
-        // One publication answers "does the host own any work?" for every plugin and
-        // host operation at once, so a handoff from one owner to the next cannot be
-        // read as rest between two reads.
+        // ONE publication answers it. An event is owned from admission until its state is
+        // committed, an exclusive run from its claim until its result fold commits, and a
+        // dispatch fan-out until every recipient has admitted its event — so a handoff
+        // from one owner to the next can never be read as rest between two reads, and
+        // there is nothing left for a quiescence window to cover.
         let snapshot = host.WorkSnapshot
-        let statuses = host.GetAllStatuses()
-
-        not statuses.IsEmpty
-        && not snapshot.IsBusy
-        // Verdict guard: on the WaitForComplete path at least ONE plugin must have
-        // reached a real terminal state. An all-Idle host is not at rest for
-        // verdict purposes — see `requireVerdict`.
-        && (not requireVerdict
-            || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
-        && isQuiescent ()
+        not (Map.isEmpty (host.GetAllStatuses())) && not snapshot.IsBusy
 
     // Wedge detection state: how much work the host had FINISHED when we last
     // saw progress, and when that was.
@@ -1775,20 +1739,38 @@ let internal waitForAllTerminalCore
 
     Async.StartAsTask(loop (), cancellationToken = ct)
 
-/// Settling wait that tolerates an all-Idle host (no plugin needed work this
-/// cycle). This is the original `waitForAllTerminal` behavior, preserved for the
-/// in-process `RunOnce`/scan path and every existing caller — it must never hang
-/// on a legitimately never-run plugin. Defers to `waitForAllTerminalCore` with
-/// `requireVerdict=false`.
+/// Settling wait: the host owns no work. Used by the in-process `RunOnce`/scan path,
+/// which needs "everything admitted has been committed" and asks nothing about evidence.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout false waitForAllTerminalBusyStallThreshold ct
+    waitForAllTerminalCore host timeout waitForAllTerminalBusyStallThreshold ct
 
-/// Verdict-bearing wait used ONLY by the `WaitForComplete` RPC path: resolves
-/// only once at least one plugin has produced a real verdict (Completed/Failed),
-/// so a cold/never-ran daemon does not report a vacuous clean. Defers to
-/// `waitForAllTerminalCore` with `requireVerdict=true`.
+/// Does this publication hold evidence for the model it was taken under?
+///
+/// Three ways to have an answer about the current model: a test run earned a receipt, an
+/// analysis-only cohort sealed one, or a build failed and said so. A host whose plugins
+/// mint no evidence is asked nothing — the same rule the CLI's receipt gate uses, for the
+/// same reason: "nobody owes a receipt" is not "a receipt is missing". A model that is not
+/// available is not waited on either: the verdict refuses a green on it anyway, and
+/// blocking here would hide that answer behind a timeout.
+let internal hasEvidenceForCurrentModel (snapshot: PluginWorkOwner.HostSnapshot) =
+    match snapshot.ProjectModel with
+    | ProjectModel.Observation.Available model when snapshot.OffersEvidence ->
+        let forModel generation = generation = model.Generation
+
+        (snapshot.Evidence |> List.exists (fun evidence -> forModel evidence.Generation))
+        || (snapshot.AnalysisEvidence |> List.exists (fun analysis -> forModel analysis.Generation))
+        || (snapshot.CompletedFailures |> List.exists (fun failure -> forModel failure.Generation))
+    | ProjectModel.Observation.Available _
+    | ProjectModel.Observation.Unobserved
+    | ProjectModel.Observation.Rediscovering _
+    | ProjectModel.Observation.Unavailable _ -> true
+
+/// Verdict-bearing wait, used ONLY by the `WaitForComplete` RPC path: the host owns no
+/// work AND holds evidence for the model it is answering about. A cold daemon that has
+/// simply never run therefore cannot resolve as a vacuous clean — not because a status
+/// says so, but because nothing earned a receipt yet.
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout true waitForAllTerminalBusyStallThreshold ct
+    waitForEvidenceCore host timeout waitForAllTerminalBusyStallThreshold ct
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by

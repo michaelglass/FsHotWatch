@@ -102,11 +102,16 @@ type HostSnapshot =
           Rows: Map<WorkId, Row>
           Operations: Map<WorkId, Operation>
           SettledFailures: Map<WorkId, string * exn>
+          Observers: Set<WorkId>
           Model: ProjectModel.Observation
           ModelFiles: (int64 * Set<Events.AbsFilePath>) option }
 
     /// Increases by one with every publication.
     member this.Version = this.Published
+
+    /// How many clients are watching this host right now. A watcher is a reason not to
+    /// exit for idleness; it is NOT work, so it never makes the host busy.
+    member this.ObserverCount = this.Observers.Count
 
     /// The test evidence the rows hold, read from this publication. A row's evidence and its
     /// work are published together, so a reader can never see one without the other.
@@ -209,6 +214,7 @@ type Store() =
           Rows = Map.empty
           Operations = Map.empty
           SettledFailures = Map.empty
+          Observers = Set.empty
           Model = ProjectModel.Observation.Unobserved
           ModelFiles = None }
 
@@ -318,6 +324,21 @@ type Store() =
 
     member this.Change(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : 'Result =
         this.ChangeAsync(handle, transition).GetAwaiter().GetResult()
+
+    /// Take a client-observation lease: the host is being watched. The lease inhibits
+    /// idle exit and counts as no work at all. Disposing it twice releases it once — a
+    /// caller that disposes in a `finally` after a fault does exactly that.
+    member _.Observe() : IDisposable =
+        let id = change (fun fresh snapshot -> { snapshot with Observers = Set.add fresh snapshot.Observers }, fresh)
+        let mutable released = 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(&released, 1) = 0 then
+                    change (fun _ snapshot ->
+                        { snapshot with
+                            Observers = Set.remove id snapshot.Observers },
+                        ()) }
 
     /// Own a named host operation: a preprocessor pass, a dispatch fan-out, a scan.
     /// Starting one clears the retained failures of earlier, finished operations of the

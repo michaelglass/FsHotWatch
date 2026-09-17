@@ -198,3 +198,100 @@ let ``evidence and event retirement share the same immutable publication`` () =
     // A pinned publication never learns later evidence.
     Assert.True before.IsBusy
     Assert.Empty before.Evidence
+
+[<Fact>]
+let ``client observation inhibits idle exit without keeping observed work busy`` () =
+    let store = FsHotWatch.PluginWorkOwner.Store()
+    let before = store.Snapshot
+    let lease = store.Observe()
+    let observed = store.Snapshot
+    // A watching client is a reason not to exit, and no reason to call the host busy:
+    // the work it observes is exactly as finished as it was a moment ago.
+    Assert.Equal(0, before.ObserverCount)
+    Assert.Equal(1, observed.ObserverCount)
+    Assert.False observed.IsBusy
+    lease.Dispose()
+    // Releasing twice is the ordinary shape of a `use` inside a task that also faults.
+    lease.Dispose()
+    Assert.Equal(0, store.Snapshot.ObserverCount)
+    // A pinned publication keeps the count it was published with.
+    Assert.Equal(1, observed.ObserverCount)
+
+/// A host that publishes a model and registers the analysis-only TestPrune: it MINTS
+/// evidence, so a verdict wait may ask it for some.
+let private evidenceMintingHost (repoRoot: string) =
+    let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+    host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+
+    host.RegisterHandler(
+        FsHotWatch.TestPrune.TestPrunePlugin.create
+            (System.IO.Path.Combine(repoRoot, "wait.db"))
+            repoRoot
+            None
+            None
+            None
+            None
+            None
+            []
+    )
+
+    host
+
+[<Fact(Timeout = 30000)>]
+let ``a reported terminal status cannot mint evidence after its event drains`` () =
+    withTempDir "verdict-wait-unearned" (fun repoRoot ->
+        let host = evidenceMintingHost repoRoot
+
+        // A plugin that CLAIMS success. The claim carries no run, no coverage and no
+        // discharged obligations — it must remain legal to report progress without
+        // gaining the ability to end a verdict wait.
+        host.RegisterHandler
+            { Name = PluginName.create "claims-success"
+              Init = ()
+              Update =
+                fun ctx state _ ->
+                    async {
+                        ctx.ReportStatus(
+                            Completed(System.DateTime.UtcNow, RunVerdict.create "claimed success" System.TimeSpan.Zero)
+                        )
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.EmitFileChanged(SourceChanged [ "Unverified.fs" ])
+        waitForQuiescent host 10000
+
+        // Positive controls: the claim really was published, and the event really drained.
+        Assert.True(host.GetAllStatuses() |> Map.exists (fun _ status -> PluginStatus.isTerminal status))
+        Assert.False(host.AnyPluginBusy())
+        // Nothing earned it: no receipt exists for the published model.
+        Assert.Empty host.WorkSnapshot.Evidence
+        Assert.Empty host.WorkSnapshot.AnalysisEvidence
+
+        let waiting =
+            FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 1.0) CancellationToken.None
+
+        Assert.Throws<System.TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+        |> ignore)
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait ends on the analysis receipt its cohort seal earned`` () =
+    withTempDir "verdict-wait-earned" (fun repoRoot ->
+        let host = evidenceMintingHost repoRoot
+
+        host.EmitBatchChecked
+            { fakeBatchChecked [] with
+                ModelGeneration = Some fixtureModelGeneration }
+
+        waitForQuiescent host 10000
+        Assert.Single host.WorkSnapshot.AnalysisEvidence |> ignore
+
+        // The control for the test above: with evidence for the current model, the same
+        // wait resolves instead of timing out.
+        FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult())
