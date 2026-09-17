@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: `AuditSink.Flush()` no longer waits forever. The wait is bounded by
+  `flushTimeoutMs` (120s) and returns a `FlushOutcome`: `Flushed`, or
+  `FlushTimedOut` with the bound, reported on stderr. Before this, a sink whose
+  agent had stopped (a persist function that threw ends its loop) hung the caller
+  with no diagnostic. BREAKING CHANGE: `Flush()` returns `FlushOutcome` instead of
+  `unit`, so callers must handle the timeout rather than read it as a completed flush.
+
 ## 8.2.0 - 2026-09-15
 
 - fix: index declarations from signature files (`.fsi`) as their own source

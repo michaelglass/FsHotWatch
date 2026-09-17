@@ -26,11 +26,39 @@ module ``AuditSink basics`` =
 
         sink.Post(event1)
         sink.Post(event2)
-        sink.Flush()
+        test <@ sink.Flush() = Flushed @>
 
         test <@ received.Count = 2 @>
         test <@ received[0].Event = IndexStartedEvent 5 @>
         test <@ received[1].Event = IndexCompletedEvent(100, 50, 10) @>
+
+module ``bounded flush`` =
+
+    open System.Threading.Tasks
+
+    // A persist that throws ends the agent's loop, so the flush reply never comes: before the
+    // bound, this flush waited forever with no diagnostic. It runs off-thread and the test
+    // waits far longer (10s) than the flush's own 50ms bound, so a bounded flush finishes
+    // inside that window and an unbounded one does not.
+    [<Fact>]
+    let ``flush on a faulted agent ends within its bound as FlushTimedOut`` () =
+        let sink = createAuditSink (fun _ -> async { return failwith "persist failed" })
+        sink.Post(timestamp (IndexStartedEvent 1))
+
+        let flushTask = Task.Run(fun () -> sink.FlushWithin 50)
+
+        test <@ flushTask.Wait(10_000) @>
+        test <@ flushTask.Result = FlushTimedOut 50 @>
+
+    [<Fact>]
+    let ``flush on a healthy agent reports Flushed after persisting queued events`` () =
+        let received = System.Collections.Generic.List<Timestamped<AnalysisEvent>>()
+        let sink = createAuditSink (fun event -> async { received.Add(event) })
+        sink.Post(timestamp (IndexStartedEvent 1))
+        sink.Post(timestamp (IndexStartedEvent 2))
+
+        test <@ sink.Flush() = Flushed @>
+        test <@ received.Count = 2 @>
 
 module ``noopSink`` =
 
@@ -42,7 +70,10 @@ module ``noopSink`` =
             { Timestamp = DateTimeOffset.UtcNow
               Event = IndexStartedEvent 1 }
         )
-// NoopSink.Post is synchronous no-op, nothing to wait for
+
+    [<Fact>]
+    let ``noop sink flush reports Flushed immediately`` () =
+        test <@ (createNoopSink ()).Flush() = Flushed @>
 
 module ``timestamp helper`` =
 
@@ -67,7 +98,7 @@ module ``SQLite persistence`` =
             sink.Post(timestamp (IndexStartedEvent 5))
             sink.Post(timestamp (IndexCompletedEvent(100, 50, 10)))
 
-            sink.Flush()
+            test <@ sink.Flush() = Flushed @>
 
             let events = db.GetEvents(runId)
             test <@ events.Length = 2 @>
@@ -86,8 +117,8 @@ module ``SQLite persistence`` =
             sink2.Post(timestamp (IndexStartedEvent 2))
             sink2.Post(timestamp (IndexCompletedEvent(10, 5, 3)))
 
-            sink1.Flush()
-            sink2.Flush()
+            test <@ sink1.Flush() = Flushed @>
+            test <@ sink2.Flush() = Flushed @>
 
             let eventsA = db.GetEvents("run-a")
             let eventsB = db.GetEvents("run-b")
@@ -100,7 +131,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent "run-clear"
 
             sink.Post(timestamp (IndexStartedEvent 3))
-            sink.Flush()
+            test <@ sink.Flush() = Flushed @>
 
             test <@ db.GetEvents("run-clear").Length = 1 @>
 
@@ -132,7 +163,7 @@ module ``SQLite persistence`` =
             for event in events do
                 sink.Post(timestamp event)
 
-            sink.Flush()
+            test <@ sink.Flush() = Flushed @>
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 13 @>
@@ -159,7 +190,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent runId
 
             sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.newFunc", Added)))
-            sink.Flush()
+            test <@ sink.Flush() = Flushed @>
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 1 @>
@@ -174,7 +205,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent runId
 
             sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.oldFunc", Removed)))
-            sink.Flush()
+            test <@ sink.Flush() = Flushed @>
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 1 @>
@@ -192,9 +223,9 @@ module ``SQLite persistence`` =
 
         // Post an event — the error handler should catch the exception and eprintfn
         sink.Post(timestamp (IndexStartedEvent 1))
-        sink.Flush()
+        test <@ sink.Flush() = Flushed @>
 
         // If we reach here without an exception, the error handler worked.
         // Post another event to confirm the mailbox processor is still alive.
         sink.Post(timestamp (IndexCompletedEvent(1, 0, 0)))
-        sink.Flush()
+        test <@ sink.Flush() = Flushed @>
