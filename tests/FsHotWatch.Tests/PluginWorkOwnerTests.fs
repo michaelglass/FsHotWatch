@@ -23,10 +23,7 @@ let private complete (owner: Owner<'State>) run =
     owner.CompleteRun run
     |> Option.defaultWith (fun () -> failwith "fixture expected a live executor to fold the result")
 
-let private idle () =
-    { Busy = false
-      Completed = 0L
-      Failure = None }
+let private idle () = RowStatus.ofWork false 0L None
 
 let private assertResting (snapshot: Snapshot<'State>) =
     match snapshot.Phase with
@@ -821,13 +818,13 @@ let ``a row publishes its projection with its value and a failed change publishe
     let store = Store()
 
     let project (value: int) =
-        { Busy = value > 0
-          Completed = int64 value
-          Failure =
-            if value = 7 then
-                Some(OperationFailure(InvalidOperationException "seven"))
-            else
-                None }
+        RowStatus.ofWork
+            (value > 0)
+            (int64 value)
+            (if value = 7 then
+                 Some(OperationFailure(InvalidOperationException "seven"))
+             else
+                 None)
 
     let row = store.Register("queue", 0, project)
     let quiet = store.Register("quiet", (), fun () -> idle ())

@@ -1546,3 +1546,53 @@ let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in bo
         let v = verdictOnDisk repoRoot
         test <@ v.ExitCode = 0 @>
         test <@ BaselineFixtures.isGreen (v.Outcome) @>)
+
+/// `runOnceIn`, but with the REAL analysis-only TestPrune registered: no test projects, so
+/// its receipt is the analysis one, and the check is graded on evidence it actually earned.
+let private runOnceWithAnalysisOnlyTestPrune (repoRoot: string) : int =
+    let createDaemon (root: string) =
+        let daemon =
+            Daemon.createWith
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+
+        daemon.Host.RegisterHandler(
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                (System.IO.Path.Combine(root, "analysis.db"))
+                root
+                None
+                None
+                None
+                None
+                None
+                []
+        )
+
+        daemon
+
+    FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+        (fun _ -> "")
+        FsHotWatch.Cli.CheckVerdict.InnerLoop
+        false
+        createDaemon
+        repoRoot
+        (noTestProjectsConfig ())
+        None
+
+[<Fact(Timeout = 60000)>]
+let ``check --run-once accepts completed analysis without a test suite`` () =
+    // A repository with no test projects still has to EARN its green: the analysis-only
+    // receipt is what vouches for it, and a scan that seals nothing leaves it unearned.
+    withProjectOnlyRepo "check-runonce-analysis-only" (fun repoRoot ->
+        let exitCode = runOnceWithAnalysisOnlyTestPrune repoRoot
+
+        test <@ exitCode = 0 @>
+
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            // No run is named, and no suite ran: the claim rests on the analysis alone.
+            test <@ verdict.RunId = None @>
+            test <@ verdict.Suites.IsEmpty @>
+            test <@ BaselineFixtures.isGreen verdict.Outcome @>
+        | other -> failwithf "expected an analysis-only verdict, got %A" other)

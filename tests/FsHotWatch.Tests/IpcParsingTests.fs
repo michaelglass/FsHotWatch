@@ -534,7 +534,7 @@ let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it can
             ]}"""
 
     match DaemonEvidence.parse json with
-    | DaemonEvidence.Served phases ->
+    | DaemonEvidence.Served(phases, _) ->
         test <@ phases |> List.map (fun p -> p.Scope) = [ "daemon.scan"; "plugin.test-prune" ] @>
         test <@ phases.Head.StartedAt = DateTime(2026, 9, 5, 20, 35, 27, 851, DateTimeKind.Utc) @>
         test <@ phases.Head.StartedAt.Kind = DateTimeKind.Utc @>
@@ -702,3 +702,33 @@ let ``every unavailable model reading is explained with a cause AND a remedy; an
 
     test <@ unreported.StartsWith("PROJECT MODEL NOT REPORTED: the daemon did not report", StringComparison.Ordinal) @>
     test <@ unreported.Contains "`fshw stop`" @>
+
+[<Fact>]
+let ``model receipts accept explicit analysis identity and reject malformed run identity`` () =
+    let json =
+        """{"daemonPhases":[],"modelReceipts":[
+             {"runId":null,"modelGeneration":7,"refusals":[]},
+             {"runId":"b0000000110040008000000000000110","modelGeneration":7,"refusals":["1 obligation"]},
+             {"runId":"not-a-guid","modelGeneration":7,"refusals":[]},
+             {"runId":null,"refusals":[]},
+             {"runId":42,"modelGeneration":7,"refusals":[]}]}"""
+
+    match DaemonEvidence.parse json with
+    | DaemonEvidence.Served(_, ReceiptLedger.Offered receipts) ->
+        // The analysis receipt names no run; the run receipt keeps its refusals. The
+        // malformed run id, the missing generation and the non-string id are dropped,
+        // which leaves nothing to vouch for them.
+        test <@ receipts |> List.map (fun r -> r.RunId.IsNone) = [ true; false ] @>
+        test <@ receipts |> List.map (fun r -> r.Generation) = [ 7L; 7L ] @>
+        test <@ receipts |> List.map (fun r -> r.Refusals) = [ []; [ "1 obligation" ] ] @>
+    | other -> failwithf "a served modelReceipts array must parse as Offered, got %A" other
+
+    // A daemon with no evidence-minting plugin does not send the property at all, and that
+    // is NOT the same as sending an empty array: it owes no receipt.
+    match DaemonEvidence.parse """{"daemonPhases":[]}""" with
+    | DaemonEvidence.Served(_, ReceiptLedger.NotOffered) -> ()
+    | other -> failwithf "an absent modelReceipts property must parse as NotOffered, got %A" other
+
+    match DaemonEvidence.parse """{"daemonPhases":[],"modelReceipts":[]}""" with
+    | DaemonEvidence.Served(_, ReceiptLedger.Offered []) -> ()
+    | other -> failwithf "an empty modelReceipts array must parse as Offered [], got %A" other

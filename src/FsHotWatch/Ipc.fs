@@ -404,6 +404,24 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                      | Some d -> box d
                      | None -> null) |})
 
+        // The receipts this daemon holds for the current project model, read from ONE
+        // publication so a receipt cannot belong to a different snapshot than the work it
+        // retired. `runId` is null for the analysis-only receipt: no run earned it.
+        // `refusals` are the reasons it denies a green, carried rather than dropped.
+        let snapshot = config.Host.WorkSnapshot
+
+        let modelReceipts =
+            [ for evidence in snapshot.Evidence do
+                  yield
+                      {| runId = box (evidence.RunId.ToString("N"))
+                         modelGeneration = evidence.Generation
+                         refusals = evidence.FailureReasons |}
+              for analysis in snapshot.AnalysisEvidence do
+                  yield
+                      {| runId = null
+                         modelGeneration = analysis.Generation
+                         refusals = analysis.FailureReasons |} ]
+
         // `unchecked` is the request-time completeness signal: registered files that
         // currently lack a valid full-check result. The CLI parses it into a `Coverage`
         // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
@@ -413,6 +431,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                files = allErrors
                statuses = statuses
                daemonPhases = daemonPhases
+               // ABSENT, not empty, when no registered plugin mints evidence: an empty
+               // array says "a plugin owed a receipt and has none", which is a refusal.
+               modelReceipts = (if snapshot.OffersEvidence then box modelReceipts else null)
                unchecked = config.GetUncheckedCount()
                // The versioned `fshw-project-model-v1` payload. Without
                // it an empty model mid-rediscovery and a healthy model that selected

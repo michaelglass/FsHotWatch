@@ -63,9 +63,10 @@ type Queue<'State, 'Request>
               Closed = false
               Failure = None },
             fun input ->
-                { Busy = input.Pending.IsSome || not (List.isEmpty input.Admitting)
-                  Completed = 0L
-                  Failure = input.Failure |> Option.map OperationFailure }
+                RowStatus.ofWork
+                    (input.Pending.IsSome || not (List.isEmpty input.Admitting))
+                    0L
+                    (input.Failure |> Option.map OperationFailure)
         )
 
     let change transition =

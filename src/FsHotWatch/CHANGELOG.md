@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Test and analysis evidence are minted by the owner folds and published with the work they
+  belong to: `Events.EarnedEvidence` (a completion's run, what it covered in full, and every
+  reason it refuses a green), `Events.AnalysisEvidence` for a daemon with no test projects,
+  and `HostSnapshot.Evidence` / `.AnalysisEvidence` beside `IsBusy`. `ProjectGraphAccessor`
+  gains `ObserveCheckableFiles` (the available model's files and generation). `GetDiagnostics`
+  serves `modelReceipts` (`runId`, `modelGeneration`, `refusals`) — additive on the existing
+  reply, and omitted entirely when no registered plugin mints evidence. Every scan now seals
+  its cohort, including one that dispatched no file, so an analysis-only repository has an
+  answer about its model. Breaking for code that constructs `ProjectGraphAccessor`.
+
 - Check results carry the project-model generation they were captured against
   (`FileCheckResult.ModelGeneration`, `BatchChecked.ModelGeneration`; `CheckPipeline`
   leaves it `None`). A scan and a change batch capture the model once discovery is

@@ -180,6 +180,30 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core, testprune, cli: a green is minted from earned evidence
+
+A green used to be read from the last status a plugin reported. Now a completion mints
+evidence that joins the run, the model it was selected under, what it covered in full, and
+everything it leaves owed — and the verdict asks for it.
+
+- **Evidence, not a report.** Only the owner's result fold can mint it, and it is published
+  with the work it retires. A proof that records a red is still a proof of what ran: the
+  reasons it refuses a green travel with it.
+- **Analysis-only daemons earn their own.** A repository with no test projects gets a receipt
+  that accounts for every checkable file of its model. A file with no completed analysis is a
+  refusal, not an absence. Compiler warnings are not refusals.
+- **The verdict asks.** `check` refuses a green (exit 2, reason recorded in the verdict file)
+  when the daemon holds no receipt for the run it graded at the current model generation, or
+  when that receipt refuses.
+- **Nothing to run stays green.** A check that finds everything already verified keeps the
+  evidence that verified it, rather than minting a proof that nothing ran.
+- **A daemon that mints no evidence is graded as before.** An embedder that registers no
+  evidence-minting plugin offers no receipts, and the rule says nothing about it. A daemon
+  that should have minted one and has none is refused: the two are different answers, and
+  the wire keeps them apart.
+
+See `docs/adr-033-a-green-is-minted-from-earned-evidence.md`.
+
 ### core, testprune: check results carry the project model they were captured against
 
 A scan or change batch could publish results against a project model that a rediscovery

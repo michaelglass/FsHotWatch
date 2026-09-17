@@ -1827,6 +1827,36 @@ let ``a tree that moves mid-check exits 2 AND records incomplete — the file an
     | Verdict.Incomplete reason -> test <@ reason.Contains "working tree changed" @>
     | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other
 
+/// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
+let private captureStderr (f: unit -> 'a) : string * 'a =
+    let original = System.Console.Error
+    use writer = new System.IO.StringWriter()
+    System.Console.SetError(writer)
+
+    try
+        let result = f ()
+        writer.Flush()
+        writer.ToString(), result
+    finally
+        System.Console.SetError(original)
+
+[<Fact(Timeout = 15000)>]
+let ``a tree that moves mid-check says so at the terminal, not only in the verdict file`` () =
+    // The file was already right and silent at the terminal: an operator saw exit 2 with
+    // no sentence at all, because the caller explains the outcome it handed in (clean).
+    let stderr, (exitCode, _) =
+        captureStderr (fun () -> driveWithTreeMovedMidCheck true)
+
+    test <@ exitCode = 2 @>
+    test <@ stderr.Contains "working tree changed" @>
+
+    // The control: a tree that held still says nothing of the kind.
+    let quiet, (greenExit, _) =
+        captureStderr (fun () -> driveWithTreeMovedMidCheck false)
+
+    test <@ greenExit = 0 @>
+    test <@ not (quiet.Contains "working tree changed") @>
+
 [<Fact(Timeout = 15000)>]
 let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderings`` () =
     // The control. Without it, a publisher that answered `incomplete`/2 unconditionally
@@ -2494,3 +2524,157 @@ let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declar
             test <@ verdict.RunId <> Some runId @>
             test <@ verdict.Scope = NoTestsRun quietReason @>
         | other -> failwithf "expected an explicit non-evidence verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// A green needs the graded run's receipt for the current project model.
+// ---------------------------------------------------------------------------
+
+/// Publish an otherwise-clean reading with exactly `receipts` served beside it.
+let private publishWithReceipts
+    (repoRoot: string)
+    (receipts: IpcParsing.ModelReceipt list)
+    (runReport: IpcParsing.TestRunReport)
+    =
+    publishVerdictForInvocation
+        (Verdict.Invocation.start ())
+        repoRoot
+        []
+        CheckVerdict.InnerLoop
+        false
+        runReport
+        Verdict.NoReading
+        Map.empty
+        (IpcParsing.DaemonEvidence.Served([], IpcParsing.ReceiptLedger.Offered receipts))
+        []
+        ProjectModelFixtures.available
+        (SettledTree.capture repoRoot [])
+        (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
+/// The generation `ProjectModelFixtures.available` reports.
+let private currentGeneration = 7L
+
+[<Theory(Timeout = 20000)>]
+[<InlineData("matching", 0)>]
+[<InlineData("missing", 2)>]
+[<InlineData("different-run", 2)>]
+[<InlineData("analysis-only", 2)>]
+[<InlineData("different-model", 2)>]
+[<InlineData("refused", 2)>]
+let ``green publication requires the graded run's current model receipt`` (kind: string) (expectedExit: int) =
+    withTempDir "ipcoutput-model-receipt" (fun repoRoot ->
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let receipts =
+            if kind = "missing" then
+                []
+            else
+                [ { RunId =
+                      match kind with
+                      | "analysis-only" -> None
+                      | "different-run" -> Some(System.Guid.NewGuid())
+                      | _ -> Some BaselineFixtures.runId
+                    Generation =
+                      if kind = "different-model" then
+                          currentGeneration + 1L
+                      else
+                          currentGeneration
+                    Refusals =
+                      if kind = "refused" then
+                          [ "1 verification obligation(s) remain pending" ]
+                      else
+                          [] } ]
+
+        test <@ publishWithReceipts repoRoot receipts gradedRun = expectedExit @>)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData("matching", 0)>]
+[<InlineData("missing", 2)>]
+[<InlineData("test-run", 2)>]
+[<InlineData("different-model", 2)>]
+[<InlineData("refused", 2)>]
+let ``analysis-only green requires its own completed model receipt`` (kind: string) (expectedExit: int) =
+    withTempDir "ipcoutput-analysis-receipt" (fun repoRoot ->
+        // No run is named: this daemon runs no tests, so only its own receipt can vouch.
+        let analysisOnly = BaselineFixtures.reportOf (FullSuite 1)
+
+        let receipts =
+            if kind = "missing" then
+                []
+            else
+                [ { RunId =
+                      if kind = "test-run" then
+                          Some BaselineFixtures.runId
+                      else
+                          None
+                    Generation =
+                      if kind = "different-model" then
+                          currentGeneration + 1L
+                      else
+                          currentGeneration
+                    Refusals =
+                      if kind = "refused" then
+                          [ "Lib.fs: no completed analysis for the current model" ]
+                      else
+                          [] } ]
+
+        test <@ publishWithReceipts repoRoot receipts analysisOnly = expectedExit @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a daemon that serves no receipts keeps its verdict, so the analysis-only path cannot silently ungate`` () =
+    withTempDir "ipcoutput-receipts-not-served" (fun repoRoot ->
+        // A daemon older than the receipt rule says nothing about evidence. This gate
+        // cannot speak about what it was never sent, so the reading keeps its outcome —
+        // and this test is what stops that skew path from being widened by accident.
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let exitCode =
+            publishVerdictForInvocation
+                (Verdict.Invocation.start ())
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                gradedRun
+                Verdict.NoReading
+                Map.empty
+                IpcParsing.DaemonEvidence.NotServed
+                []
+                ProjectModelFixtures.available
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
+        test <@ exitCode = 0 @>
+
+        // A daemon that DOES serve receipts, and serves none for this run, is refused —
+        // the pair is the point: the skew path is narrow and deliberate.
+        test <@ publishWithReceipts repoRoot [] gradedRun = 2 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a refused receipt says why at the terminal, not only in the verdict file`` () =
+    withTempDir "ipcoutput-receipt-terminal" (fun repoRoot ->
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let stderr, exitCode =
+            captureStderr (fun () -> publishWithReceipts repoRoot [] gradedRun)
+
+        test <@ exitCode = 2 @>
+        test <@ stderr.Contains "no evidence receipt" @>
+
+        // The control: a receipt that earns the green says nothing.
+        let quiet, greenExit =
+            captureStderr (fun () ->
+                publishWithReceipts
+                    repoRoot
+                    [ { RunId = Some BaselineFixtures.runId
+                        Generation = currentGeneration
+                        Refusals = [] } ]
+                    gradedRun)
+
+        test <@ greenExit = 0 @>
+        test <@ not (quiet.Contains "no evidence receipt") @>)

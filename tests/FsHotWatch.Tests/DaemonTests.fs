@@ -2827,3 +2827,97 @@ let ``a change batch whose model changes on every attempt fails by name and keep
                 SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 30.0),
                 "all change ownership must retire before fixture disposal"
             ))
+
+[<Theory(Timeout = 45000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a scan seals its cohort exactly once, with files or without`` (hasSource: bool) =
+    withTempDir "daemon-scan-seal-count" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Probe.fsproj")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let source = Path.Combine(directory, "Probe.fs")
+        let sources = if hasSource then [ source ] else []
+
+        if hasSource then
+            File.WriteAllText(source, "module Probe\nlet value = 1\n")
+
+        let assets = FsHotWatch.DepsFreshness.assetsPath project
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+        let checker = sharedChecker.Value
+
+        let options =
+            if hasSource then
+                let scriptOptions, _ =
+                    checker.GetProjectOptionsFromScript(
+                        source,
+                        FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source),
+                        assumeDotNetFramework = false
+                    )
+                    |> Async.RunSynchronously
+
+                { scriptOptions with
+                    ProjectFileName = project
+                    SourceFiles = [| source |] }
+            else
+                makeProjectOptions project [] []
+
+        let loaded =
+            { minimalLoadedProject project with
+                SourceFiles = sources }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+        loader.Resume(1)
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                root
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ -> [ options ])
+                (fun _ _ _ _ _ -> failwith "this scan fixture must not construct a watcher")
+
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "seal-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0),
+            "the scan's dispatch must retire before the seals are counted"
+        )
+
+        // One seal per scan: the answer about the model, whether or not any file was
+        // dispatched. An empty model still gets one; a non-empty one does not get two.
+        let sealed' = Assert.Single(seals.ToArray())
+        Assert.Equal(sources.Length, sealed'.Files.Length)
+        Assert.Equal(Some 1L, sealed'.ModelGeneration)
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> seals.Count = 2), TimeSpan.FromSeconds 15.0),
+            "a second scan seals its own cohort"
+        ))
