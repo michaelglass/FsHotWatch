@@ -210,6 +210,39 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: plugin work is owned from admission to commit, and the host answers "at rest" from one publication
+
+The plugin framework and host now run on the work owner added below. Nothing about a
+plugin's `Update` changes; what changes is when work counts as finished.
+
+- **An event is outstanding until its state is committed.** Publication, `Finalize`, the
+  cache write and the event's receipt happen in that order. A throwing `Update` now fails
+  its event instead of acknowledging it, and a cache entry is written only for a state that
+  was published. `RegisteredPlugin.DispatchTracked` returns an event's receipt.
+- **Commands no longer wait behind running work.** `PluginCommand.Observe` reads the last
+  committed state immediately. A command is therefore no longer a way to wait for earlier
+  events to finish; wait on a receipt or on host rest instead.
+  `CommandCtx.EnqueueExclusiveIntent` queues a request behind an exclusive key and completes
+  when that request's state is committed.
+- **An exclusive run owns its key until its result is committed,** including shared-resource
+  classification and release. A shared run whose classifier or release fails records the
+  failure and folds no success. Children a run starts are torn down before it retires. The
+  run executes in the context its plugin was registered in.
+- **Failures stay visible.** `RegisteredPlugin.Fault` and `PluginHost.FailedWork` report a
+  failed update, commit or run until later work disproves it, not only a crashed executor.
+  `PluginHost.FaultedPlugins` still lists only stopped executors.
+- **Preprocessor passes and dispatch fan-out are owned host work,** so the host is not at rest
+  while a formatter runs or between two recipients of one event. A refused preprocessor is
+  recorded in `PluginHost.FailedOperations`.
+- **Removed:** `PluginHost.WorkCycleGenerations`. `WaitForComplete` settles on one snapshot of
+  owned work plus the quiescence window; a plugin that reports `Running` without owning work
+  no longer keeps it waiting.
+- **Breaking:** `PluginHostServices.ClaimOrQueueSharedRun` and `SharedRunScheduler.ClaimOrQueue`
+  take starters that return `SharedRunStart`; `PluginCtx` and `CommandCtx` gain
+  `EnqueueExclusiveIntent`.
+
+See `docs/adr-029-plugins-and-host-publish-through-the-work-owner.md`.
+
 ### core: plugin handlers state what they read and what they commit — BREAKING (plugin API)
 
 Every `PluginHandler` must change. A plugin written against the previous release does

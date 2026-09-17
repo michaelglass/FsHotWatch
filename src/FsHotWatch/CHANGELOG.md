@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Plugins run on the work owner. An event is outstanding until its state is committed
+  (publish, `Finalize`, cache write, receipt); `RegisteredPlugin.DispatchTracked` returns its
+  receipt. `PluginCommand.Observe` reads the committed snapshot without waiting. Exclusive
+  runs own their key through result commit and tear down their children before retiring.
+  `PluginHost` owns dispatch fan-out and preprocessor passes, reads busy/progress/faults from
+  one snapshot, and adds `FailedWork` and `FailedOperations`. Breaking: `WorkCycleGenerations`
+  is removed; shared starters return `SharedRunStart`; `PluginCtx`/`CommandCtx` gain
+  `EnqueueExclusiveIntent`.
 - Breaking plugin API: `PluginHandler.CacheKey` receives the committed state
   (`'State -> PluginEvent<'Msg> -> ContentHash option`); `Commands` are
   `PluginCommand.Observe` (reads state, cannot post) or `PluginCommand.Request` (posts,

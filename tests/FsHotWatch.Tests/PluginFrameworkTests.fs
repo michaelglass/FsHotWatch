@@ -54,6 +54,22 @@ let private registerWith
 /// Register with all defaults.
 let private registerDefault handler = registerWith handler None
 
+/// Wait for this event's commit, including cache replay and failure bookkeeping. This
+/// does not wait for background work the event launches.
+let private dispatchAndAwait (registration: RegisteredPlugin) event =
+    match registration.DispatchTracked event with
+    | Some receipt -> receipt.Wait(System.TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+    | None -> failwith "fixture expected a subscribed event"
+
+/// Wait for this event to settle, whether it committed or failed. A missed deadline still
+/// fails the test.
+let private dispatchAndSettle (registration: RegisteredPlugin) event =
+    try
+        dispatchAndAwait registration event
+    with
+    | :? System.TimeoutException -> reraise ()
+    | _ -> ()
+
 [<Fact>]
 let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
     let scheduler = SharedRunScheduler()
@@ -65,7 +81,7 @@ let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
                 "artifacts",
                 fun _ ->
                     order.Add "owner"
-                    true
+                    SharedStarted
             ) = Some Ready
         @>
 
@@ -75,7 +91,7 @@ let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
                 "artifacts",
                 fun _ ->
                     order.Add "second"
-                    true
+                    SharedStarted
             ) = None
         @>
 
@@ -85,7 +101,7 @@ let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
                 "artifacts",
                 fun _ ->
                     order.Add "third"
-                    true
+                    SharedStarted
             ) = None
         @>
 
@@ -94,24 +110,24 @@ let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
     scheduler.Release("artifacts", Ready)
     test <@ List.ofSeq order = [ "second"; "third" ] @>
     scheduler.Release("artifacts", Ready)
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
 
 [<Fact>]
 let ``shared run scheduler preserves invalid idle state until a later owner repairs it`` () =
     let scheduler = SharedRunScheduler()
 
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
     scheduler.Release("artifacts", Invalid "failed build")
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some(Invalid "failed build") @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some(Invalid "failed build") @>
     scheduler.Release("artifacts", Ready)
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
 
 [<Fact>]
 let ``throwing middle shared waiter cannot strand the tail`` () =
     let scheduler = SharedRunScheduler()
     let tailStates = ResizeArray<SharedResourceState>()
 
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
     test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> failwith "middle start fault") = None @>
 
     test
@@ -120,7 +136,7 @@ let ``throwing middle shared waiter cannot strand the tail`` () =
                 "artifacts",
                 fun state ->
                     tailStates.Add state
-                    true
+                    SharedStarted
             ) = None
         @>
 
@@ -128,7 +144,7 @@ let ``throwing middle shared waiter cannot strand the tail`` () =
     test <@ List.ofSeq tailStates = [ Invalid "shared waiter failed to start" ] @>
 
     scheduler.Release("artifacts", Ready)
-    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
 
 type private SharedWakeMsg =
     | SharedFinished
@@ -198,6 +214,9 @@ let ``shared start failure posts the typed failure and releases its accounting``
                 | _ -> false))
         5000
 
+    // The failure is reported before the run hands its typed failure message to the
+    // result fold, and that fold stays owned until its Update commits.
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
     test <@ not (registration.IsBusy()) @>
 
     test
@@ -369,10 +388,10 @@ let ``registered plugin dispatches FileChanged`` () =
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
-    // Running a command is how these tests synchronize: it queues behind the dispatched
-    // message in the same mailbox, so awaiting it proves that message was processed.
+    // The event's receipt settles only once its state is committed, so the read that
+    // follows observes it. A command is not a barrier: it reads the published snapshot.
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
@@ -393,7 +412,9 @@ let ``registered plugin skips unsubscribed events`` () =
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
+    // The subscribed event commits first. The unsubscribed ones below are filtered at
+    // dispatch, so nothing is admitted for them and there is nothing to wait for.
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
     reg.Dispatch(
         DispatchFileChecked
@@ -479,7 +500,7 @@ let ``Custom messages work for self-posting`` () =
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
         let (_, cmdHandler) = registeredCmd.Value
 
@@ -557,11 +578,11 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    reg.Dispatch(
-        DispatchCommandCompleted
+    dispatchAndSettle
+        reg
+        (DispatchCommandCompleted
             { Name = "my-cmd"
-              Outcome = CommandSucceeded "done" }
-    )
+              Outcome = CommandSucceeded "done" })
 
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
@@ -603,12 +624,10 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                 RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
             handler
 
-    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
 
-    // Drains the agent: the command queues behind the failing FileChanged, so awaiting it
-    // guarantees both statuses have been recorded by the time we read.
-    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
-
+    // The failed event's receipt settles after its failure has been reported, so both
+    // statuses have been recorded by the time we read.
     let statuses = reportedStatuses.ToArray() |> List.ofArray
 
     test
@@ -669,8 +688,7 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
                 RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
             handler
 
-    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
-    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
 
     let statuses = reportedStatuses.ToArray() |> List.ofArray
 
@@ -740,8 +758,7 @@ let ``pre-populated cache replays on the very first dispatch`` () =
         let reg =
             registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
         test <@ !updateCalls = 0 @>
     }
     |> Async.RunSynchronously
@@ -785,8 +802,7 @@ let ``cache key is computed exactly once per dispatched event on a cache miss`` 
         let reg =
             registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
         test <@ !keyCalls = 1 @>
     }
     |> Async.RunSynchronously
@@ -828,8 +844,7 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
         let reg =
             registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
         test <@ !keyCalls = 1 @>
     }
     |> Async.RunSynchronously
@@ -890,10 +905,9 @@ let ``RunExclusive does not start a second run while the first holds the slot`` 
         waitUntil (fun () -> !started = 1) 12000
         test <@ !started = 1 @>
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/b.fs" ]))
-        // Drains the agent, so the second FileChanged is known to have been processed
-        // before the assertion — otherwise "not started" would just mean "not yet".
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/b.fs" ]))
+        // The second FileChanged has committed before the assertion — otherwise "not
+        // started" would just mean "not yet".
         test <@ !started = 1 @>
 
         gate.Set()
@@ -1000,8 +1014,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
               Teardown = None }
 
         let reg = registerHandler services handler
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
 
         test <@ !updateCalls = 0 @>
 
@@ -1064,8 +1077,7 @@ let ``cache replay synthesizes a matching start for a completion captured after 
               Teardown = None }
 
         let reg = registerHandler services handler
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
 
         test <@ replayedStart.IsSome @>
         test <@ replayedCompletion.IsSome @>
@@ -1129,8 +1141,7 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/throw" ]))
         // The 20s polls are deliberately generous: under heavy parallel-collection load the
         // thread-pool can lag scheduling the runOne async by several seconds.
         waitUntil (fun () -> !started = 1) 20000
@@ -1248,9 +1259,8 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "x" ]))
-        // Drains, so ctx is captured and RunExclusive has been called.
-        let! _ = registeredCmd.Value [||]
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "x" ]))
+        // Committed, so ctx is captured and RunExclusive has been called.
         waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 12000
         observedRunning.Value <- capturedCtx.Value.IsRunning "k"
         test <@ !observedRunning @>
@@ -1298,10 +1308,9 @@ let ``plugin subscribing to BatchChecked receives event`` () =
           StartedAt = now
           CompletedAt = now.AddMilliseconds(50.0) }
 
-    reg.Dispatch(DispatchBatchChecked batch)
+    dispatchAndSettle reg (DispatchBatchChecked batch)
 
     let (_, cmdHandler) = registeredCmd.Value
-    cmdHandler [||] |> Async.RunSynchronously |> ignore
 
     test <@ received.Count = 1 @>
     let observed = received.ToArray().[0]
@@ -1349,11 +1358,9 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
               CompletedAt = now }
     )
 
-    // A subscribed event afterwards, so the mailbox can be drained at all.
-    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
-
-    let (_, cmdHandler) = registeredCmd.Value
-    cmdHandler [||] |> Async.RunSynchronously |> ignore
+    // A subscribed event afterwards, whose receipt proves the executor processed
+    // everything before it.
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
     test <@ not batchSeen @>
 

@@ -72,6 +72,7 @@ let private makeTestPruneRecordingCtx () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = ""
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
@@ -905,6 +906,7 @@ let ``completion publishes real CTRF recall through check-reach IPC`` () =
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = pluginCtx.ProjectGraph }
 
@@ -1554,6 +1556,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
@@ -1610,6 +1613,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
@@ -1691,6 +1695,7 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     let ctx =
         { recordingCtx with
             Post = fun message -> posted <- Some message
+            EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
             RunExclusiveShared =
                 fun _ _ _ _ failureMessage ->
                     posted <- Some(failureMessage (InvalidOperationException("host start fault")))
@@ -2835,6 +2840,7 @@ let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPr
         { RepoRoot = repoRoot
           Log = ignore
           Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           IsRunning = fun _ -> false
           ProjectGraph = ProjectGraphAccessor.none }
 
@@ -3111,6 +3117,7 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
             { RepoRoot = root
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = ProjectGraphAccessor.none }
 
@@ -3203,3 +3210,61 @@ let ``new dependency debt is not retired by unavailable execution after a pass``
         match lastStatus statuses with
         | PluginStatus.Failed _ -> ()
         | other -> Assert.Fail($"new dependency work cannot reuse the prior green, got %A{other}"))
+
+[<Fact(Timeout = 15000)>]
+let ``only-failed resolves current owner failures instead of the command snapshot`` () =
+    // A `Request` never sees state, so `run-tests --only-failed` posts its request and the
+    // plugin picks the failed projects from the state it folds the request into. A
+    // failure recorded after the command was issued is therefore part of the selection.
+    let configs = [ projConfig "ProjA"; projConfig "ProjB" ]
+
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some configs) None None None None []
+
+    let failure =
+        { Project = "ProjB"
+          Class = None
+          Method = None
+          File = "<tests/ProjB>"
+          Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "ProjB failed" }
+
+    // Folded into the initial state, nothing has failed yet: the request is refused.
+    let refused = System.Threading.Tasks.TaskCompletionSource<string>()
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    handler.Update recordingCtx handler.Init (Custom(RunFailedTestsRequested(None, refused)))
+    |> Async.RunSynchronously
+    |> ignore
+
+    test <@ refused.Task.Wait 5000 @>
+    test <@ refused.Task.Result.Contains "no previous results" @>
+
+    // Folded into a state that now owes ProjB, the same request selects ProjB alone and
+    // launches a run instead of replying with a refusal.
+    let current =
+        { handler.Init with
+            OutstandingFailures = [ failure ] }
+
+    let selected =
+        failedTestConfigs configs current.LastResults current.OutstandingFailures
+        |> Result.map (List.map (fun config -> config.Project))
+
+    test <@ selected = Ok [ "ProjB" ] @>
+
+    let mutable launched = false
+
+    let ctx =
+        { recordingCtx with
+            RunExclusiveShared =
+                fun _ _ _ _ _ ->
+                    launched <- true
+                    SharedClaimed }
+
+    let accepted = System.Threading.Tasks.TaskCompletionSource<string>()
+
+    handler.Update ctx current (Custom(RunFailedTestsRequested(None, accepted)))
+    |> Async.RunSynchronously
+    |> ignore
+
+    test <@ launched @>
+    test <@ not accepted.Task.IsCompleted @>

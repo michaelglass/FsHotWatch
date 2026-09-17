@@ -1051,15 +1051,15 @@
     ],
     "Daemon.fs": [
       {
-        "coveredLines": 1186,
-        "coveredBranches": 155,
-        "reason": "min of THREE full local runs 2026-09-15 (3172 tests each): covered lines 1190, 1190, 1186 \u2014 the daemon timing paths still wobble, as they did on 2026-09-04 (1074 -\u003E 1071); floor = the observed minimum. Recaptured. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 1165,
+        "coveredBranches": 152,
+        "reason": "min of THREE full local runs 2026-09-15 (3172 tests each): covered lines 1190, 1190, 1186 \u2014 the daemon timing paths still wobble, as they did on 2026-09-04 (1074 -\u003E 1071); floor = the observed minimum. Recaptured for Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || Lowered to 1165 lines / 152 branches on 2026-09-17 by deleting code, not by losing coverage: the plugin framework and host moved onto the work owner, and waitForAllTerminalCore lost its work-cycle generation leg (the generation snapshot, generationOf, allPluginsAdvancedToTerminal) and its per-status Running check, about 20 executable lines and the branches of their two status matches. Two full local runs of the new tree measured 1169/152 and 1165/152 (3399 and 3404 tests), the same 4-line wobble as before; floor = the observed minimum. No line added to the rewritten wait is uncovered.",
         "platform": "macos"
       },
       {
-        "coveredLines": 1086,
-        "coveredBranches": 238,
-        "reason": "Branches lowered 239 -\u003E 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry\u0027s lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredLines": 1065,
+        "coveredBranches": 235,
+        "reason": "Branches lowered 239 -\u003E 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry\u0027s lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || PROVISIONAL 2026-09-17: lowered by the macOS deltas (-21 lines, -3 branches) for the same deleted wait code (work-cycle generation leg and Running check); not yet measured on Linux CI. Refresh from the first Linux CI run of this tree.",
         "platform": "linux"
       }
     ],
@@ -1541,14 +1541,14 @@
     "PluginHost.fs": [
       {
         "coveredLines": 335,
-        "coveredBranches": 58,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 50,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || Branches lowered 58 -\u003E 50 on 2026-09-17 by deleted code: bumpGenerationIfStarting (its Running and previous-status matches and the edge test) and the per-plugin IsBusy/Fault scans behind AnyPluginBusy, BusyPluginNames, CompletedDispatches and FaultedPlugins were replaced by reads of one owner snapshot. Two full local runs measured 50 covered of 60; every uncovered branch is in code this change did not touch (duplicate-name warning, preprocessor loop enumerator, PruneVanishedErrors path classification).",
         "platform": "macos"
       },
       {
         "coveredLines": 281,
-        "coveredBranches": 75,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 75/87 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 67,
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 75/87 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || PROVISIONAL 2026-09-17: lowered 75 -\u003E 67 by the macOS delta (-8) for the same deleted generation-tracking and per-plugin scan code; not yet measured on Linux CI. Refresh from the first Linux CI run of this tree.",
         "platform": "linux"
       }
     ],

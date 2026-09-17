@@ -30,6 +30,9 @@ open FsHotWatch.Tests.TestHelpers
 type private ChildSpawningPreprocessor
     (entered: ManualResetEventSlim, release: ManualResetEventSlim, returned: ManualResetEventSlim) =
     let spawned = ResizeArray<Process>()
+    // Claimed and tested in one step: the daemon may run preprocessors from a scan and a
+    // change batch at the same time, and only the first call may spawn.
+    let mutable claimed = false
 
     member _.Spawned = lock spawned (fun () -> List.ofSeq spawned)
 
@@ -37,7 +40,13 @@ type private ChildSpawningPreprocessor
         member _.Name = "child-spawner"
 
         member _.Process (changedFiles: string list) (_repoRoot: string) =
-            if lock spawned (fun () -> spawned.Count = 0) then
+            let first =
+                lock spawned (fun () ->
+                    let first = not claimed
+                    claimed <- true
+                    first)
+
+            if first then
                 let psi = ProcessStartInfo("sleep", "120")
                 psi.UseShellExecute <- false
                 let p = Process.Start(psi)

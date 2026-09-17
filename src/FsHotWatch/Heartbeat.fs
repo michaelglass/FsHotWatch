@@ -59,12 +59,11 @@ let render (at: DateTime) : string =
 /// a verdict (`WaitForComplete`).
 ///
 /// Both legs are needed:
-///   * `anyPluginBusy` survives LONG QUIET PHASES. A plugin's inflight counter is
-///     held for the entire lifetime of a `RunExclusive` run — from slot claim until
-///     after the completion message is posted (see `PluginFramework`'s
-///     `inflightCount` doc comment). So a suite that runs for ten minutes emitting
-///     nothing keeps this true throughout: the beat tracks "a run is in progress",
-///     not log output.
+///   * `anyPluginBusy` survives LONG QUIET PHASES. A plugin's owner holds a
+///     `RunExclusive` run for its entire lifetime — from the claim until its result
+///     is committed (see `PluginWorkOwner`). So a suite that runs for ten minutes
+///     emitting nothing keeps this true throughout: the beat tracks "a run is in
+///     progress", not log output.
 ///   * `activeVerdictWaits` covers the instants where no plugin work is in flight but
 ///     a `fshw check` client is still connected and waiting.
 ///   * `scanInFlight` covers a full-repository scan — cold FCS

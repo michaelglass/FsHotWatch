@@ -730,6 +730,8 @@ let ``build-status command returns passed true after successful build`` () =
 
     waitForTerminalStatus host "build" 5000
 
+    waitForQuiescent host 30000
+
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     let doc = JsonDocument.Parse(result.Value)
@@ -745,6 +747,8 @@ let ``build-status command returns failed after failed build`` () =
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
+
+    waitForQuiescent host 30000
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -2020,6 +2024,8 @@ let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     waitForTerminalStatus host "build" 20000
 
+    waitForQuiescent host 30000
+
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     let doc = JsonDocument.Parse(result.Value)
@@ -2061,6 +2067,8 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         host.EmitFileChanged(SourceChanged [ srcPath ])
 
         waitForTerminalStatus host "build" 20000
+
+        waitForQuiescent host 30000
 
         let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>

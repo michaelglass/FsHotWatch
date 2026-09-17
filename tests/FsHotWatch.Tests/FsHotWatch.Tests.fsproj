@@ -44,6 +44,9 @@
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
+    <Compile Include="PluginFrameworkFixtures.fs" />
+    <Compile Include="PluginFrameworkOwnershipTests.fs" />
+    <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />

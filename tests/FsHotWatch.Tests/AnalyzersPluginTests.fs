@@ -1072,6 +1072,7 @@ let private makeAnalyzerRecordingCtx () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = ""
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
@@ -1089,6 +1090,7 @@ let private nullCommandCtx: FsHotWatch.PluginFramework.CommandCtx<AnalyzersMsg> 
     { RepoRoot = ""
       Log = fun _ -> ()
       Post = fun _ -> ()
+      EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
       IsRunning = fun _ -> false
       ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 

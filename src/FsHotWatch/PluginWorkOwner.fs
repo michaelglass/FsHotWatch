@@ -11,7 +11,7 @@
 /// writer. A receipt therefore never completes before the state it acknowledges is
 /// visible, and a successor is owned before its predecessor's receipt completes.
 ///
-/// Nothing is wired to this module yet.
+/// `PluginFramework` and `PluginHost` publish through this module (ADR-029).
 module internal FsHotWatch.PluginWorkOwner
 
 open System
@@ -99,6 +99,12 @@ type HostSnapshot =
 
     member this.CompletedEvents =
         this.Rows |> Map.toList |> List.sumBy (fun (_, row) -> row.Status.Completed)
+
+    /// Events committed by the rows registered under `name`.
+    member this.CompletedEventsOf(name: string) =
+        this.Rows
+        |> Map.toList
+        |> List.sumBy (fun (_, row) -> if row.Name = name then row.Status.Completed else 0L)
 
     member private this.HostFailures =
         let live =

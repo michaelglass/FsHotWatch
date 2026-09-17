@@ -66,6 +66,8 @@ let private runCheck (dir: string) (runner: Runner) (file: string) : string =
             | _ -> false)
         5000
 
+    waitForQuiescent host 30000
+
     (host.RunCommand("unformatted", [||]) |> Async.RunSynchronously).Value
 
 [<Fact(Timeout = 20000)>]

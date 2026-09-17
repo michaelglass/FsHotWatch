@@ -498,3 +498,100 @@ let ``runProcess preserves target exit and output without pumping the caller con
             File.WriteAllText(marker, "release")
             registry.KillAll()
             Assert.True(thread.Join(TimeSpan.FromSeconds 10.0), "the caller thread did not exit"))
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``exclusive completion cannot retire before its tracked child exits`` (failWork: bool) =
+    let parent = ProcessRegistry.Registry()
+    use scope = ProcessRegistry.install parent
+    let host = PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let folded =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let startInfo = Diagnostics.ProcessStartInfo("/bin/sleep", "20")
+    startInfo.UseShellExecute <- false
+    use child = new Diagnostics.Process(StartInfo = startInfo)
+    let mutable started = false
+    let workFailure = InvalidOperationException("exclusive fixture work failed")
+
+    let handler: PluginFramework.PluginHandler<unit, unit> =
+        { Name = PluginFramework.PluginName.create "exclusive-child"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | Events.FileChanged _ ->
+                        let claim =
+                            ctx.RunExclusive
+                                "child"
+                                (async {
+                                    Assert.True(child.Start())
+                                    started <- true
+                                    ProcessRegistry.track child
+                                    entered.Set()
+                                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+
+                                    if failWork then
+                                        raise workFailure
+
+                                    return ()
+                                })
+
+                        Assert.Equal(PluginFramework.Claimed, claim)
+                    | Events.Custom() -> folded.TrySetResult(()) |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton PluginFramework.SubscribeFileChanged
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+
+    host.RegisterHandler handler
+
+    try
+        host.EmitFileChanged(Events.SourceChanged [ "/tmp/exclusive-child.fs" ])
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0), "exclusive work must launch its actual child")
+        Assert.False(child.HasExited)
+        Assert.Contains(child, parent.Snapshot())
+        Assert.True(host.AnyPluginBusy())
+        release.Set()
+
+        if not failWork then
+            folded.Task.WaitAsync(TimeSpan.FromSeconds 7.0).GetAwaiter().GetResult()
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not (host.AnyPluginBusy())), TimeSpan.FromSeconds 5.0),
+            "completion fold must actually retire before child lifetime is inspected"
+        )
+
+        Assert.Equal(not failWork, folded.Task.IsCompletedSuccessfully)
+        Assert.Empty(host.FaultedPlugins())
+
+        if failWork then
+            let failures = host.FailedWork()
+            Assert.Single(failures) |> ignore
+            Assert.Same(workFailure, snd failures.Head)
+        else
+            Assert.Empty(host.FailedWork())
+
+        Assert.True(child.HasExited, "exclusive retirement must establish termination of its tracked child")
+        Assert.DoesNotContain(child, parent.Snapshot())
+    finally
+        release.Set()
+
+        if started then
+            if not child.HasExited then
+                child.Kill(entireProcessTree = true)
+
+            Assert.True(child.WaitForExit(5000), "fixture must reap only its own child")
+
+        parent.KillAll()
+        host.Teardown()

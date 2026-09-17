@@ -2220,6 +2220,8 @@ let ``BuildCompleted queries affected tests after flush`` () =
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
 
+        waitForQuiescent host 30000
+
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>)
 
@@ -2393,6 +2395,8 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
+        waitForQuiescent env.Host 30000
+
         let changedAfterComment =
             env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
@@ -2408,6 +2412,8 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
         | Some result -> env.Host.EmitFileChecked(result)
 
         waitForTerminalStatus env.Host "test-prune" 30000
+
+        waitForQuiescent env.Host 30000
 
         let changedAfterAst =
             env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
@@ -5099,6 +5105,8 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
 
+        waitForQuiescent host 30000
+
         let json = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ json.IsSome @>
 
@@ -5195,5 +5203,7 @@ let ``a cold-start BuildCompleted must NOT replay a test result from the task ca
         // ... and the plugin SAYS so. `scope: none` here is the release blocker: `confirm`
         // reads it and refuses ("NO TESTS RAN") on a tree the same plugin's status line is
         // simultaneously calling green.
+        waitForQuiescent host2 30000
+
         let scope = host2.RunCommand("test-scope", [||]) |> Async.RunSynchronously
         test <@ scope.IsSome && scope.Value.Contains "\"scope\":\"full\"" @>)

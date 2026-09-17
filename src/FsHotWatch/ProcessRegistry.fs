@@ -407,3 +407,27 @@ let internal withChildScope (ct: CancellationToken) (work: unit -> 'T) : 'T =
     match uncertainRetirement scope.Leaks with
     | None -> result
     | Some refusal -> raise refusal
+
+/// `withChildScope` for asynchronous work. The scope stays current across the work's
+/// continuations, and whatever the work left tracked is torn down before it may retire.
+let internal withChildScopeAsync (ct: CancellationToken) (work: Async<'T>) : Async<'T> =
+    async {
+        let scope = Registry(currentOpt ())
+        use _ = install scope
+        let cancellation = ct.Register(fun () -> scope.KillAll())
+
+        let! result =
+            async {
+                try
+                    return! work
+                finally
+                    try
+                        scope.KillAll()
+                    finally
+                        cancellation.Dispose()
+            }
+
+        match uncertainRetirement scope.Leaks with
+        | None -> return result
+        | Some refusal -> return raise refusal
+    }

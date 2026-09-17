@@ -23,7 +23,10 @@ open FsHotWatch.PluginFramework // PluginHandler, PluginName, SubscribeFileCheck
 
 type MyState = { FilesChecked: int }
 
-let myPlugin: PluginHandler<MyState, unit> =
+/// Messages the plugin posts to itself.
+type MyMsg = ResetCount
+
+let myPlugin: PluginHandler<MyState, MyMsg> =
     { Name = PluginName.create "my-plugin"
       Init = { FilesChecked = 0 }
       Update =
@@ -66,11 +69,20 @@ let myPlugin: PluginHandler<MyState, unit> =
                     return
                         { state with
                             FilesChecked = state.FilesChecked + 1 }
+                | Custom ResetCount -> return { state with FilesChecked = 0 }
                 | _ -> return state
             }
       Commands =
+        // An observation reads the last committed state and cannot start work.
         [ "my-status",
-          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" }) ]
+          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" })
+          // A request never sees state: it posts, and `Update` applies the message.
+          "my-reset",
+          PluginCommand.Request(fun ctx _args ->
+              async {
+                  ctx.Post ResetCount
+                  return "reset requested"
+              }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       PrepareCommit = None
       CacheKey = None
@@ -101,13 +113,21 @@ daemon.RegisterHandler(myPlugin)
 
 A command is one of two contracts, and the case you pick says which.
 
-- **`PluginCommand.Observe (fun ctx state args -> ...)`** reads state. Its context has no
-  `Post`, so an observation cannot start work.
+- **`PluginCommand.Observe (fun ctx state args -> ...)`** reads state. It receives the
+  last committed state, read from the plugin's published snapshot, so it answers at once
+  even while an `Update` is running. Its context has no `Post`, so an observation cannot
+  start work.
 - **`PluginCommand.Request (fun ctx args -> ...)`** asks the plugin to do something. It
   gets `ctx.Post` and never sees state. A choice that depends on state, such as "re-run
   the tests that failed", belongs in `Update`: post a message that names the request and
   let `Update` decide against the state it is folding the message into. A request that
   read state first and then posted could act on a result that was already stale.
+
+A request that has to report what the plugin did with it uses
+`ctx.EnqueueExclusiveIntent key coalescingKey message`. The message waits behind whatever
+holds `key` and is delivered once the key is free; the returned task completes when that
+exact message's state is committed, and fails if its `Update` fails. `ctx.Post` is
+fire-and-forget.
 
 `PluginCommand.invoke command ctx state args` runs either case against an explicit
 state, which is how a plugin's own tests drive a command without a host.
@@ -127,8 +147,14 @@ PrepareCommit =
         })
 ```
 
-If preparation throws, the candidate is discarded and the event fails. `Finalize` runs
-after the candidate is visible; if it throws, the candidate stays and the event fails.
+The framework commits an event in a fixed order: it publishes the candidate state, runs
+`Finalize`, writes the cache entry, and only then marks the event committed. Anything
+waiting on the event, and the host's "at rest" answer, sees it as outstanding until that
+last step.
+
+If preparation throws, the candidate is discarded and the event fails. If `Finalize` or
+the cache write throws, the candidate stays published and the event fails. A failed
+preparation or finalization is recorded until a later event's own preparation succeeds.
 
 ## Events
 

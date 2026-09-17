@@ -720,6 +720,8 @@ let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
+        waitForQuiescent env.Host 30000
+
         let changed = env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
         test <@ changed.Value.Contains(env.RelPath) @>)
 
@@ -934,6 +936,8 @@ let ``detectChanges: re-check of unchanged source with externs reports no change
         | Some r -> env.Host.EmitFileChecked(r)
 
         waitForTerminalStatus env.Host "test-prune" 30000
+
+        waitForQuiescent env.Host 30000
 
         let changedFiles =
             env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously

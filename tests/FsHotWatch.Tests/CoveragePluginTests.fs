@@ -411,14 +411,12 @@ let ``an aborted run is ignored even when it executed and covered the whole suit
 // The coverage check is VISIBLE while it runs.
 //
 // Claiming the exclusive slot with NO preceding `Running` rendered coverage's
-// status as ✓ while it was still running, and — because the work-cycle generation
-// only advances on a Running transition — kept coverage's generation at 0, so
-// `allPluginsAdvancedToTerminal()` could never be satisfied and EVERY
-// `WaitForComplete` fell back to the slower quiescence path.
+// status as ✓ while it was still running. The framework now reports `Running` at
+// the claim, and the run's terminal lands in coverage's activity history.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 20000)>]
-let ``coverage advances its work-cycle generation — the fast terminal wait is not starved`` () =
+let ``coverage records the completed run in its activity history`` () =
     withTempDir "coverage-gen" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -428,8 +426,8 @@ let ``coverage advances its work-cycle generation — the fast terminal wait is 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
-        // Never run ⇒ generation 0 (absent from the map).
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = None @>
+        // Never run ⇒ no run record.
+        test <@ host.GetHistory("coverage").IsEmpty @>
 
         emitRunCompleted host
 
@@ -440,10 +438,7 @@ let ``coverage advances its work-cycle generation — the fast terminal wait is 
                 | _ -> false)
             15000
 
-        // The check ran, so the plugin passed THROUGH Running — which is the
-        // only thing that advances the generation counter.
-        let gen = host.WorkCycleGenerations() |> Map.tryFind "coverage"
-        test <@ gen = Some 1L @>)
+        test <@ host.GetHistory("coverage").Length = 1 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``a coverage failure carries a verdict with an honest elapsed and a UTC timestamp`` () =
@@ -508,7 +503,7 @@ let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
         test <@ written <> defaultThresholdsJson @>
 
         // … and that it went through the MAILBOX, so the daemon can see it: Running
-        // at the claim (advancing the generation), then a terminal verdict.
+        // at the claim, then a terminal verdict in the run history.
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
@@ -520,7 +515,7 @@ let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
         | Some(Completed(_, v)) -> test <@ v.Summary.Contains "thresholds updated" @>
         | other -> failwithf "expected Completed carrying the ratchet verdict, got %A" other
 
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>)
+        test <@ host.GetHistory("coverage").Length = 1 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``coverage-ratchet with an explicit config path argument targets that file`` () =
@@ -618,8 +613,8 @@ let ``a second TestRunCompleted while a check is in flight is skipped, not stack
                 | _ -> false)
             20000
 
-        // Exactly ONE check cycle ran (one Running→terminal transition).
-        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>
+        // Exactly ONE check cycle ran (one terminal in the run history).
+        test <@ host.GetHistory("coverage").Length = 1 @>
         waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
 
 // ---------------------------------------------------------------------------

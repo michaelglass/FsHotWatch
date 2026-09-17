@@ -295,6 +295,8 @@ let ``warnings command reflects warning count after lint with warnings`` () =
 
     waitForTerminalStatus host "lint" 15000
 
+    waitForQuiescent host 30000
+
     let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
     test <@ cmdResult.IsSome @>
     test <@ cmdResult.Value.Contains("\"files\": 1") @>

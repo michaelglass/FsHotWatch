@@ -189,6 +189,55 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | _ -> false
         @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``host owns preprocessor work until its outcome is published`` (refuse: bool) =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    host.RegisterPreprocessor(
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "owned-preprocessor"
+
+            member _.Process files _ =
+                entered.Set()
+                Assert.True(release.Wait(10000), "fixture must release the preprocessor")
+
+                if refuse then
+                    Result.Error "controlled refusal"
+                else
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "controlled pass" }
+
+            member _.Dispose() = () }
+    )
+
+    let work =
+        System.Threading.Tasks.Task.Run(fun () -> host.RunPreprocessors([ "src/Lib.fs" ]))
+
+    try
+        Assert.True(entered.Wait(5000), "preprocessor must reach the controlled work")
+        Assert.True(host.AnyPluginBusy(), "preprocessor work must prevent host rest")
+        Assert.Contains("owned-preprocessor", host.BusyPluginNames())
+    finally
+        release.Set()
+        let result = work.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+        if refuse then
+            Assert.Equal<(string * string) list>([ "owned-preprocessor", "controlled refusal" ], result.Refused)
+        else
+            Assert.Equal<string list>([ "controlled pass" ], result.Evidence)
+
+    Assert.False(host.AnyPluginBusy(), "published preprocessor outcome retires its obligation")
+
+    // A refusal stays recorded against the preprocessor after its operation retires.
+    let failedOperations = host.FailedOperations() |> List.map fst
+    Assert.Equal<string list>((if refuse then [ "owned-preprocessor" ] else []), failedOperations)
+
 [<Fact(Timeout = 15000)>]
 let ``preprocessor runs before events are dispatched`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
@@ -759,43 +808,34 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
         @>
 
 [<Fact(Timeout = 20000)>]
-let ``work-cycle generation bumps once across consecutive Running reports`` () =
-    // `bumpGenerationIfStarting` bumps only on a non-Running ▸ Running EDGE, so a plugin
-    // that reports Running again with no terminal status in between must NOT bump twice.
+let ``repeated Running reports do not create owned work`` () =
+    // A reported `Running` is a status, not ownership: once both events commit, the host
+    // owns nothing, and a settling wait resolves even though the status still says Running.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
         { Name = PluginName.create "running-twice"
           Init = ()
           Update =
-            fun ctx state event ->
+            fun ctx state _ ->
                 async {
-                    match event with
-                    // ONLY Running, so the next FileChanged finds prev = Some(Running _).
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    | _ -> ()
-
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
                     return state
                 }
           Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          Subscriptions = Set.singleton SubscribeFileChanged
           PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
-    host.RegisterHandler(handler)
-
-    // First edge: Idle ▸ Running → generation 1.
+    host.RegisterHandler handler
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    waitUntil (fun () -> host.WorkCycleGenerations().TryFind "running-twice" = Some 1L) 12000
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
-
-    // Second report while already Running → NO second bump (stays at 1).
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-    waitForQuiescent host 12000
-    // Give the status agent a beat to apply any (non-)mutation before asserting.
-    Thread.Sleep(150)
-    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
+    waitUntil (fun () -> host.CompletedDispatches() = 2L) 12000
+    test <@ host.CompletedDispatches() = 2L @>
+    test <@ not (host.AnyPluginBusy()) @>
+
+    (waitForAllTerminal host (TimeSpan.FromSeconds 5.0) CancellationToken.None).GetAwaiter().GetResult()
 
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //

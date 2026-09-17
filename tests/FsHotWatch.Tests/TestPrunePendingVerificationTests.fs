@@ -561,11 +561,12 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
         host.EmitBuildCompleted(BuildSucceeded)
         waitUntil (fun () -> File.Exists started) 10000
 
-        // Re-observe the same debt while its covering run is active. RunCommand is a
-        // mailbox barrier: when it returns, the preceding BatchChecked has set
-        // PendingRerun, so releasing the runner cannot race the setup.
+        // Re-observe the same debt while its covering run is active. The run holds the
+        // host busy, so the witness is the BatchChecked's own commit: once it lands,
+        // PendingRerun is set, and releasing the runner cannot race the setup.
+        let committedBefore = committedBy host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        test <@ waitForCommitted host "test-prune" committedBefore 1L 10000 @>
 
         File.WriteAllText(release, "")
         waitForQuiescent host 20000
@@ -655,6 +656,8 @@ let fooTest () = assert (foo 1 = 2)
         host.EmitBuildCompleted(BuildSucceeded)
         waitUntil (fun () -> File.Exists started) 10000
 
+        let committedBefore = committedBy host "test-prune"
+
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some result -> host.EmitFileChecked(result)
         | None -> failwith "cold-scan changed-file check failed"
@@ -664,10 +667,10 @@ let fooTest () = assert (foo 1 = 2)
                 Trigger = trigger }
         )
 
-        // The command is deliberately held until the cohort seal is observed. A fixed
-        // sleep made this test assert scheduler speed on loaded Linux runners: the full
-        // run could finish before CheckFile, turning BootScan into a real second run.
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        // The run is held until the cohort seal has committed. A fixed sleep made this
+        // test assert scheduler speed on loaded Linux runners: the full run could finish
+        // before CheckFile, turning BootScan into a real second run.
+        test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000

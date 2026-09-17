@@ -1245,23 +1245,16 @@ let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(
 [<Literal>]
 let internal daemonShuttingDownMessage = "daemon shutting down"
 
-/// Wait for all plugins to settle. A plugin "settles" when:
-///   1. It's in a non-Running status (Idle / Completed / Failed) AND its
-///      work-cycle generation has advanced past the snapshot taken at call
-///      time — i.e. it has actually completed at least one cycle since we
-///      started waiting; OR
-///   2. It's been quiet through a 200ms quiescence window measured from the
-///      most recent host activity (event dispatch or status change). This
-///      handles plugins that legitimately have no work to do during this
-///      cycle (don't subscribe to a relevant event), and makes the wait
-///      bounded when nothing is happening.
+/// Wait for all plugins to settle: one pinned publication of the host's owned work
+/// holds none, and the host has been quiet through a 200ms quiescence window measured
+/// from the most recent host activity (event dispatch or status change).
 ///
-/// The quiescence window also closes the race that motivated this design:
-/// without it, WaitForComplete could observe `allTerminal=true` in the brief
-/// window between a plugin emitting BuildCompleted, transitioning Completed,
-/// and a downstream plugin's mailbox actually picking up the BuildCompleted
-/// event and transitioning into Running. Times out with TimeoutException
-/// after the specified timeout.
+/// Rest is read from the owner publication, never from reported statuses: an event is
+/// owned from admission until its state is committed, an exclusive run from its claim
+/// until its result fold commits, and a dispatch fan-out until every recipient has
+/// admitted its event. A plugin that merely reports `Running` owns nothing. The
+/// quiescence window covers work the daemon has not yet handed to the host (a scan
+/// between two files). Times out with TimeoutException after the specified timeout.
 ///
 /// `ct` is the daemon's shutdown token. When it fires mid-wait, the returned
 /// task faults with OperationCanceledException so the in-flight WaitForComplete
@@ -1295,16 +1288,6 @@ let internal waitForAllTerminalCore
 
     let mutable lastLogTime = System.DateTime.UtcNow
 
-    // Snapshot per-plugin generations at call time. A plugin satisfies the
-    // "advanced a generation" leg of the wait condition once its current
-    // generation exceeds the snapshot value AND it's in a non-Running status.
-    // Plugins registered after the snapshot default to 0, which any later
-    // Idle->Running transition will exceed.
-    let snapshotGenerations = host.WorkCycleGenerations()
-
-    let generationOf (name: string) (gens: Map<string, int64>) =
-        Map.tryFind name gens |> Option.defaultValue 0L
-
     let getRunningPlugins () =
         let now = System.DateTime.UtcNow
 
@@ -1334,10 +1317,10 @@ let internal waitForAllTerminalCore
     let formatTimeoutDetail () =
         match getRunningPlugins () with
         | [] ->
-            // Nothing is Running, so the wait died on one of the OTHER legs
-            // `allPluginsAtRest` requires — a stuck inflight counter, a quiescence
-            // window that never closes, or an unmet verdict guard. Name the one
-            // that actually blocked rather than reporting all three at once.
+            // Nothing is Running, so the wait died on one of the legs
+            // `allPluginsAtRest` requires — owned work that never retires, a
+            // quiescence window that never closes, or an unmet verdict guard. Name
+            // the one that actually blocked rather than reporting all three at once.
             let busy = host.BusyPluginNames()
             let sinceActivity = System.DateTime.UtcNow - host.LastActivityAt()
 
@@ -1354,7 +1337,7 @@ let internal waitForAllTerminalCore
 
                 let reasons =
                     [ if not busy.IsEmpty then
-                          $"plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{busyNames}"
+                          $"work still OWNED (an event not yet committed, a queued command, or an exclusive run before its result commits): %s{busyNames}"
 
                       if sinceActivity < waitForAllTerminalQuiescenceWindow then
                           $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
@@ -1404,49 +1387,15 @@ let internal waitForAllTerminalCore
         System.DateTime.UtcNow - host.LastActivityAt()
         >= waitForAllTerminalQuiescenceWindow
 
-    let allPluginsAdvancedToTerminal () =
-        let statuses = host.GetAllStatuses()
-        let currentGens = host.WorkCycleGenerations()
-
-        not statuses.IsEmpty
-        // Even when every plugin has reached terminal AND its generation has
-        // advanced past the snapshot, a downstream plugin can still have an
-        // event queued in its mailbox (or be inside a handler that hasn'''t yet
-        // returned). The BuildCompleted -> TestPrune.PendingRerun -> Running
-        // edge is the canonical case: BuildCompleted is dispatched
-        // (inflight=1) while TestPrune is still showing Completed from the
-        // prior FileChecked cycle. Without this gate the wait would resolve
-        // in that window.
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun name s ->
-               match s with
-               | Completed _
-               | Failed _ ->
-                   let snap = generationOf name snapshotGenerations
-                   let cur = generationOf name currentGens
-                   // Plugin must have completed a cycle DURING this wait.
-                   // For plugins already terminal at snapshot with the same
-                   // generation, that means no work happened — fall back to
-                   // quiescence in the caller.
-                   cur > snap
-               | _ -> false)
-
     let allPluginsAtRest () =
-        // Conservative quiescence-based completion: no plugin is Running, no
-        // plugin has events still inflight (queued or being processed by its
-        // mailbox), and no host-level activity has happened in the quiescence
-        // window. Together these prove there's no work in flight that we could
-        // miss by returning now.
+        // One publication answers "does the host own any work?" for every plugin and
+        // host operation at once, so a handoff from one owner to the next cannot be
+        // read as rest between two reads.
+        let snapshot = host.WorkSnapshot
         let statuses = host.GetAllStatuses()
 
         not statuses.IsEmpty
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun _ s ->
-               match s with
-               | Running _ -> false
-               | _ -> true)
+        && not snapshot.IsBusy
         // Verdict guard: on the WaitForComplete path at least ONE plugin must have
         // reached a real terminal state. An all-Idle host is not at rest for
         // verdict purposes — see `requireVerdict`.
@@ -1530,15 +1479,7 @@ let internal waitForAllTerminalCore
 
                 raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
 
-            // Two satisfaction paths:
-            //   1. Every plugin started a new cycle since the snapshot AND has
-            //      reached terminal — clearly all the work triggered while we
-            //      were waiting has completed.
-            //   2. No plugin is Running, no plugin has inflight events, and the
-            //      host has been quiet for the quiescence window. This handles
-            //      plugins that legitimately have nothing to do this cycle, and
-            //      bounds the wait when nothing is happening.
-            if allPluginsAdvancedToTerminal () || allPluginsAtRest () then
+            if allPluginsAtRest () then
                 return ()
             else
                 logRunningPlugins ()

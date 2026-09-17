@@ -189,6 +189,22 @@ let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string)
 let waitForQuiescent (host: FsHotWatch.PluginHost.PluginHost) (timeoutMs: int) =
     waitUntil (fun () -> not (host.AnyPluginBusy())) timeoutMs
 
+/// Events `plugin` has committed so far, from the host's owner publication.
+let committedBy (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =
+    host.WorkSnapshot.CompletedEventsOf plugin
+
+/// Wait until `plugin` has committed `count` events beyond `before` (a prior
+/// `committedBy` reading). The witness for events emitted while other owned work, such as
+/// a gated run, keeps the host busy. Returns whether it happened in time.
+let waitForCommitted
+    (host: FsHotWatch.PluginHost.PluginHost)
+    (plugin: string)
+    (before: int64)
+    (count: int64)
+    (timeoutMs: int)
+    =
+    waitUntilTrue (fun () -> committedBy host plugin >= before + count) timeoutMs
+
 /// Create a plugin that records BuildCompleted events.
 /// Returns (getBuildResult, handler) where getBuildResult() returns the captured result.
 let buildRecorder () =

@@ -12,7 +12,10 @@ open FsHotWatch.PluginFramework // PluginHandler, PluginName, SubscribeFileCheck
 
 type MyState = { FilesChecked: int }
 
-let myPlugin: PluginHandler<MyState, unit> =
+/// Messages the plugin posts to itself.
+type MyMsg = ResetCount
+
+let myPlugin: PluginHandler<MyState, MyMsg> =
     { Name = PluginName.create "my-plugin"
       Init = { FilesChecked = 0 }
       Update =
@@ -55,11 +58,20 @@ let myPlugin: PluginHandler<MyState, unit> =
                     return
                         { state with
                             FilesChecked = state.FilesChecked + 1 }
+                | Custom ResetCount -> return { state with FilesChecked = 0 }
                 | _ -> return state
             }
       Commands =
+        // An observation reads the last committed state and cannot start work.
         [ "my-status",
-          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" }) ]
+          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" })
+          // A request never sees state: it posts, and `Update` applies the message.
+          "my-reset",
+          PluginCommand.Request(fun ctx _args ->
+              async {
+                  ctx.Post ResetCount
+                  return "reset requested"
+              }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       PrepareCommit = None
       CacheKey = None

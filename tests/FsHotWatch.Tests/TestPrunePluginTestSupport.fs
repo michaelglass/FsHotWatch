@@ -88,36 +88,30 @@ let emitBatchAndQuiesce (host: PluginHost) (files: string list) =
     host.EmitBatchChecked(fakeBatchChecked files)
     waitForQuiescent host 10000
 
-/// Emit a successful BuildCompleted and wait for a terminal status. This handler spawns
-/// the test run via `Async.Start`, so the work outlives it and quiescence could return
-/// early — a terminal await is the right sync.
+/// Emit a successful BuildCompleted and wait until the host has committed it, and
+/// everything it launched, with test-prune at a terminal status.
 ///
 /// Tests that index files emit this FIRST: the sidecar's `markClean` only fires for
 /// FileChecked events arriving after a BuildCompleted has been observed in the session,
 /// mirroring fshw's cold scan where BuildPlugin's terminal status gates the FCS tiers.
 let emitBuildAndWaitTerminal (host: PluginHost) =
-    let generationBefore =
-        host.WorkCycleGenerations()
-        |> Map.tryFind "test-prune"
-        |> Option.defaultValue 0L
+    let committedBefore = host.CompletedDispatches()
 
+    // Admission is synchronous, so the event is owned from here until it commits.
     host.EmitBuildCompleted(BuildSucceeded)
 
     let completedNewCycle =
         waitUntilTrue
             (fun () ->
-                let generationAfter =
-                    host.WorkCycleGenerations()
-                    |> Map.tryFind "test-prune"
-                    |> Option.defaultValue 0L
-
                 let terminal =
                     match host.GetStatus("test-prune") with
                     | Some(Completed _)
                     | Some(Failed _) -> true
                     | _ -> false
 
-                generationAfter > generationBefore && terminal && not (host.AnyPluginBusy()))
+                host.CompletedDispatches() > committedBefore
+                && terminal
+                && not (host.AnyPluginBusy()))
             20000
 
     test <@ completedNewCycle @>

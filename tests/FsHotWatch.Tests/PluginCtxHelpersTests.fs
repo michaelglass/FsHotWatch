@@ -30,6 +30,7 @@ let private makeRecordingCtx () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = ""
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun k l -> calls.Add(sprintf "Start %s:%s" k l)
           UpdateSubtask = fun k l -> calls.Add(sprintf "Update %s:%s" k l)
           EndSubtask = fun k -> calls.Add(sprintf "End %s" k)

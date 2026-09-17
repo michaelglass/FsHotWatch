@@ -130,6 +130,8 @@ let ``all plugins receive events when checking a file`` () =
     host.EmitFileChanged(SourceChanged [ sourceFile ])
     test <@ host.GetStatus("format-check").IsSome @>
 
+    waitForQuiescent host 30000
+
     let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
     test <@ diagResult.IsSome @>
     test <@ diagResult.Value.Contains("analyzers") @>
@@ -658,6 +660,8 @@ let x = 5
                         | Some(PluginStatus.Failed _) -> true
                         | _ -> false)
                     5000
+
+                waitForQuiescent host 30000
 
                 let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
                 test <@ cmdResult.IsSome @>
@@ -1337,6 +1341,8 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 10000
 
+        waitForQuiescent host 30000
+
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
         let doc = JsonDocument.Parse(cmdResult.Value)
@@ -1377,6 +1383,8 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 10000
+
+        waitForQuiescent host 30000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -1762,6 +1770,8 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 
         // 15s covers `sleep 1` plus a possible re-run or skip.
         waitForTerminalStatus host "test-prune" 15000
+
+        waitForQuiescent host 30000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>

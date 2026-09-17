@@ -130,6 +130,8 @@ let ``command captures stdout output`` () =
             | _ -> false)
         5000
 
+    waitForQuiescent host 30000
+
     let result = host.RunCommand("echo-test-status", [||]) |> Async.RunSynchronously
 
     test <@ result.IsSome @>
@@ -329,6 +331,8 @@ let ``status command returns not run when no files matched`` () =
             | _ -> false)
         1000
 
+    waitForQuiescent host 30000
+
     let result = host.RunCommand("no-match-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
@@ -356,6 +360,8 @@ let ``status command returns false when command failed`` () =
             | Some(Failed _) -> true
             | _ -> false)
         5000
+
+    waitForQuiescent host 30000
 
     let result = host.RunCommand("fail-status-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -1331,6 +1337,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = "/tmp"
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
