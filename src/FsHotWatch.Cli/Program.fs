@@ -786,6 +786,7 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
 /// source of truth, and `fshw scan` is not a required manual pre-step.
 let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
     ipc.Scan pipeName |> Async.RunSynchronously |> ignore
+    // No client timeout by design: `-1L` is a scan generation, and the daemon's RPC seam deadline bounds this wait.
     ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
 
 let private ensureAndQueryErrors
