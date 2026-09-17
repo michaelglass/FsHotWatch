@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-09-17
+
+- Plugin handlers state what they read and what they commit (breaking plugin API)
+
+
 ## 0.7.0-alpha.23 - 2026-09-15
 
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure

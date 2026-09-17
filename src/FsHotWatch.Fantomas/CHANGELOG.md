@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-09-17
+
+- docs: reword comments and docs left ungrammatical by removing private references
+- Plugin handlers state what they read and what they commit (breaking plugin API)
+
+
 ## 0.7.0-alpha.25 - 2026-09-16
 
 - **BREAKING:** `FantomasTool.editorConfigInputs` moved to core as

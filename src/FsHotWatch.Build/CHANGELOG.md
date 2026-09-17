@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.36 - 2026-09-17
+
+- docs: reword comments and docs left ungrammatical by removing private references
+- Plugin handlers state what they read and what they commit (breaking plugin API)
+
+
 ## 0.7.0-alpha.35 - 2026-09-15
 
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure

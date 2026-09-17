@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.39 - 2026-09-17
+
 - `run-tests --only-failed` resolves which projects failed inside the plugin, against the
   state it folds the request into, rather than from state the IPC command read before
   posting. Commands migrate to `PluginCommand.Observe` / `PluginCommand.Request`, and the

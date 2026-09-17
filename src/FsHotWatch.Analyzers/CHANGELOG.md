@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.34 - 2026-09-17
+
+- Plugin handlers state what they read and what they commit (breaking plugin API)
+
+
 ## 0.7.0-alpha.33 - 2026-09-16
 
 - the per-file cache key names two inputs that decide the verdict and
