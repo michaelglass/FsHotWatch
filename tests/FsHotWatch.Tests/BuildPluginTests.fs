@@ -383,20 +383,43 @@ let ``build plugin emits BuildCompleted on successful build`` () =
             | _ -> false
         @>
 
+/// Register `handler` with an observing fixture command, returning a reader for the state
+/// the host's owner has committed.
+let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<BuildState, BuildMsg>) =
+    let mutable observed = None
+
+    let observe =
+        PluginCommand.Observe(fun _ state _ ->
+            async {
+                observed <- Some state
+                return "observed"
+            })
+
+    host.RegisterHandler
+        { handler with
+            Commands = ("fixture-build-state", observe) :: handler.Commands }
+
+    fun () ->
+        host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
+        observed.Value
+
 [<Fact(Timeout = 15000)>]
 let ``file changes observed during a test host defer the build until that run completes`` () =
     withTempDir "build-during-test-host" (fun tmpDir ->
         let marker = System.IO.Path.Combine(tmpDir, "build-ran")
+        let release = System.IO.Path.Combine(tmpDir, "release-test-host")
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
+        // The host stays live until the test releases it, so the deferral is observed while
+        // the run is provably in flight, however slowly this thread is scheduled.
         let tests =
             FsHotWatch.TestPrune.TestPrunePlugin.create
                 ":memory:"
                 tmpDir
                 (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
-                        Command = "sleep"
-                        Args = "1"
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                        Command = "sh"
+                        Args = $"-c \"while [ ! -f '%s{release}' ]; do sleep 0.02; done\""
                         Group = "default"
                         Environment = []
                         FilterTemplate = None
@@ -410,41 +433,37 @@ let ``file changes observed during a test host defer the build until that run co
                 []
 
         let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
-        let mutable liveRun: Guid option = None
 
-        let lifecycleRecorder: PluginHandler<unit, unit> =
-            { Name = PluginName.create "build-test-lifecycle-recorder"
-              Init = ()
-              Update =
-                fun _ state event ->
-                    async {
-                        match event with
-                        | TestRunStarted started -> liveRun <- Some started.RunId
-                        | _ -> ()
-
-                        return state
-                    }
-              Commands = []
-              Subscriptions = Set.singleton SubscribeTestRunStarted
-              PrepareCommit = None
-              CacheKey = None
-              Teardown = None }
-
-        host.RegisterHandler(lifecycleRecorder)
         host.RegisterHandler(tests)
-        host.RegisterHandler(build)
+        let committed = registerBuildObserver host build
 
         let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        waitUntil (fun () -> liveRun.IsSome) 5000
+        // Build's own committed state names the live run: the barrier the deferral reads.
+        Assert.True(
+            waitUntilTrue (fun () -> not (committed ()).ActiveTestRuns.IsEmpty) 10000,
+            "build never observed the live test run"
+        )
 
-        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
-        System.Threading.Thread.Sleep(250)
+        let change = SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ]
+        host.EmitFileChanged change
+
+        Assert.True(
+            waitUntilTrue (fun () -> (committed ()).PendingFiles = [ change ]) 10000,
+            "build never committed the change it received during the run"
+        )
+
         test <@ not (System.IO.File.Exists marker) @>
+        test <@ not runTask.IsCompleted @>
 
+        System.IO.File.WriteAllText(release, "")
         runTask.GetAwaiter().GetResult() |> ignore
 
-        waitUntil (fun () -> System.IO.File.Exists marker) 5000)
+        // The deferred change is owned work until its build is folded, so host rest is the
+        // barrier for it.
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
+        test <@ System.IO.File.Exists marker @>
+        test <@ (committed ()).PendingFiles.IsEmpty @>)
 
 let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
     withTempDir "build-test-overlap" (fun tmpDir ->
@@ -501,13 +520,24 @@ let private manualTestWaitsForBuild () =
     withTempDir "test-waits-for-build" (fun tmpDir ->
         let buildStarted = System.IO.Path.Combine(tmpDir, "build-started")
         let buildCompleted = System.IO.Path.Combine(tmpDir, "build-completed")
+        let release = System.IO.Path.Combine(tmpDir, "release-build")
+        let order = System.IO.Path.Combine(tmpDir, "order")
         let testStarted = System.IO.Path.Combine(tmpDir, "test-started")
         let buildScript = System.IO.Path.Combine(tmpDir, "build.sh")
         let testScript = System.IO.Path.Combine(tmpDir, "test.sh")
 
-        System.IO.File.WriteAllText(buildScript, $"touch '{buildStarted}'\nsleep 1\ntouch '{buildCompleted}'\n")
+        // The build holds the artifacts until the test releases it, so the manual host is
+        // observed waiting while the build is provably in flight, however slowly this
+        // thread is scheduled. Both scripts append to `order` as they reach their work.
+        System.IO.File.WriteAllText(
+            buildScript,
+            $"touch '{buildStarted}'\nwhile [ ! -f '{release}' ]; do sleep 0.02; done\nprintf 'build\\n' >> '{order}'\ntouch '{buildCompleted}'\n"
+        )
 
-        System.IO.File.WriteAllText(testScript, $"test -f '{buildCompleted}' || exit 42\ntouch '{testStarted}'\n")
+        System.IO.File.WriteAllText(
+            testScript,
+            $"printf 'test\\n' >> '{order}'\ntest -f '{buildCompleted}' || exit 42\ntouch '{testStarted}'\n"
+        )
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -531,20 +561,39 @@ let private manualTestWaitsForBuild () =
                 None
                 []
 
+        // Whether TestPrune's committed owner state holds the "tests" key: the manual run
+        // has claimed it, whether it is still queued for the artifacts or running.
+        let testsHeld =
+            PluginCommand.Observe(fun ctx _ _ -> async { return string (ctx.IsRunning "tests") })
+
         let build = BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] None
-        host.RegisterHandler(tests)
+
+        host.RegisterHandler
+            { tests with
+                Commands = ("fixture-tests-held", testsHeld) :: tests.Commands }
+
         host.RegisterHandler(build)
 
         host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
-        waitUntil (fun () -> System.IO.File.Exists buildStarted) 5000
+        Assert.True(waitUntilTrue (fun () -> System.IO.File.Exists buildStarted) 10000, "the build must start")
 
         let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        System.Threading.Thread.Sleep 250
-        test <@ not (System.IO.File.Exists testStarted) @>
+        Assert.True(
+            waitUntilTrue
+                (fun () -> host.RunCommand("fixture-tests-held", [||]) |> Async.RunSynchronously = Some(string true))
+                10000,
+            "the manual run never claimed the tests key"
+        )
 
+        test <@ not (System.IO.File.Exists order) @>
+        test <@ not runTask.IsCompleted @>
+
+        System.IO.File.WriteAllText(release, "")
         runTask.GetAwaiter().GetResult() |> ignore
-        test <@ System.IO.File.Exists buildCompleted @>
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
+
+        test <@ System.IO.File.ReadAllLines order = [| "build"; "test" |] @>
         test <@ System.IO.File.Exists testStarted @>)
 
 [<Fact(Timeout = 20000)>]
@@ -2102,26 +2151,6 @@ let private warmedWithKeyFn () =
 let private forceRebuildState (handler: PluginHandler<BuildState, BuildMsg>) =
     handler.Update Unchecked.defaultof<_> handler.Init (Custom ForceRebuildRequested)
     |> Async.RunSynchronously
-
-/// Register `handler` with an observing fixture command, returning a reader for the state
-/// the host's owner has committed.
-let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<BuildState, BuildMsg>) =
-    let mutable observed = None
-
-    let observe =
-        PluginCommand.Observe(fun _ state _ ->
-            async {
-                observed <- Some state
-                return "observed"
-            })
-
-    host.RegisterHandler
-        { handler with
-            Commands = ("fixture-build-state", observe) :: handler.Commands }
-
-    fun () ->
-        host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
-        observed.Value
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
