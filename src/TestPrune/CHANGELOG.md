@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 9.0.0 - 2026-09-17
+
 - fix: `index`, `run`, `status` and `dead-code` flush the audit sink before
   exiting, so the last queued audit events reach `.test-prune.db` instead of being
   lost when the process exits. A flush that times out prints a warning; the

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 9.0.0 - 2026-09-17
+
 - fix: `AuditSink.Flush()` no longer waits forever. The wait is bounded by
   `flushTimeoutMs` (120s) and returns a `FlushOutcome`: `Flushed`, or
   `FlushTimedOut` with the bound, reported on stderr. Before this, a sink whose
