@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.37 - 2026-09-17
+
 - Scans and watcher change batches run under a bounded supervisor (`SupervisedWork`,
   `DebouncedWork`) that publishes into the host work store. `GetScanState`,
   `GetScanGeneration` and `FormatScanStatus` never wait for a scan; in-flight scans and
