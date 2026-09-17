@@ -268,7 +268,8 @@ type CheckPipeline
                               ParseResults = parseResults
                               CheckResults = FullCheck checkResults
                               ProjectOptions = options
-                              Version = version }
+                              Version = version
+                              ModelGeneration = None }
                 | FSharpCheckFileAnswer.Aborted ->
                     return
                         Some
@@ -277,7 +278,8 @@ type CheckPipeline
                               ParseResults = parseResults
                               CheckResults = ParseOnly
                               ProjectOptions = options
-                              Version = version }
+                              Version = version
+                              ModelGeneration = None }
             with ex ->
                 Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                 return None

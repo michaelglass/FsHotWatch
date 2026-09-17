@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Check results carry the project-model generation they were captured against
+  (`FileCheckResult.ModelGeneration`, `BatchChecked.ModelGeneration`; `CheckPipeline`
+  leaves it `None`). A scan and a change batch capture the model once discovery is
+  settled and publish only while it is still current. A scan admitted during a
+  rediscovery waits for it. A scan whose model is replaced fails with the reason
+  "invalidated before scan publication". A change batch reruns against the current model
+  and keeps its admitted inputs. After 5 superseded attempts it fails ("the project
+  model kept changing during the batch"), and its changes run ahead of the next batch. The host work store publishes the model with its
+  checkable files, and plugins read it through `ProjectGraphAccessor.ObserveModel`, which a
+  `PluginHost` always answers from its own store. Breaking for code that constructs these
+  records.
+
 ## 0.10.0-alpha.37 - 2026-09-17
 
 - Scans and watcher change batches run under a bounded supervisor (`SupervisedWork`,
@@ -70,7 +82,6 @@
 
 - A deleted working directory is named once, not reported as a missing file at every call site
 
-
 ## 0.10.0-alpha.34 - 2026-09-16
 
 - new `FsHotWatch.CacheInputs` module for cache-key inputs that live
@@ -115,7 +126,6 @@
 - Fix: a scan can no longer read an in-flight rediscovery as an empty project model
 - Add: a typed project-model observation, so a scan can tell rediscovery from emptiness
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure
-
 
 ## 0.10.0-alpha.30 - 2026-09-07
 
@@ -364,11 +374,9 @@
 
 - confirm records the check-scoped verdict it already computes — as a PROJECTION when it does not have to escalate
 
-
 ## 0.10.0-alpha.16 - 2026-08-23
 
 - docs: remove three stray diff3 base markers from the changelogs
-
 
 ## 0.10.0-alpha.15 - 2026-08-23
 
@@ -433,7 +441,6 @@
 - a cache HIT must leave the ledger where a cache MISS leaves it
 - a renamed file must not leave findings about a path that is gone
 
-
 ## 0.10.0-alpha.12 - 2026-08-18
 
 - feat: `FsHotWatch.StructureFiles` — THE list of files that decide what is compiled
@@ -489,7 +496,6 @@
 - Comment audit: cut AI thinking-out-loud from comments
 
 - Comment audit: cut AI thinking-out-loud from comments
-
 
 ## 0.10.0-alpha.8 - 2026-08-12
 
@@ -710,12 +716,10 @@
 
 - check/confirm: classify "waiting on build" as Incomplete (exit 2), not a failure (exit 1)
 
-
 ## 0.10.0-alpha.5 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
 - chore: trim stale/historical comments to minimal current-state context
-
 
 ## 0.10.0-alpha.4 - 2026-07-22
 

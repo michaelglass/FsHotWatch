@@ -73,13 +73,14 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
                 ReportVerificationFormat = Disabled } ]
 
         let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
+        host.WorkStore.PublishProjectModel fixtureModel
         host.RegisterHandler(create (Path.Combine(tmpDir, "test.db")) tmpDir (Some configs) None None None None [])
 
-        host.EmitFileChecked checkedFile
+        host.EmitFileChecked(stampFixture checkedFile)
         waitForPluginTerminal host "test-prune" 12.0
 
         // Positive control: the same helper analysis remains cacheable while healthy.
-        host.EmitFileChecked checkedFile
+        host.EmitFileChecked(stampFixture checkedFile)
         test <@ waitForCachedReplay host "test-prune" 10000 @>
 
         host.EmitBuildCompleted BuildSucceeded
@@ -97,7 +98,7 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
         let freshLedger = host.GetErrorsByPlugin("test-prune")
         test <@ not (fresh.Contains "(cached)") @>
 
-        host.EmitFileChecked checkedFile
+        host.EmitFileChecked(stampFixture checkedFile)
         waitForQuiescent host 10000
 
         test <@ terminalSummaryOf host "test-prune" = fresh @>
@@ -117,9 +118,9 @@ let ``FileChecked analyzes its existing FCS payload without re-entering the chec
         // The event already contains both parse and full-check results. Making the
         // host checker unusable proves TestPrune consumes that payload instead of
         // starting a second ParseAndCheckFileInProject pass.
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         host.RegisterHandler(create (Path.Combine(tmpDir, "test.db")) tmpDir None None None None None [])
-        host.EmitFileChecked(result)
+        host.EmitFileChecked(stampFixture result)
         waitForPluginTerminal host "test-prune" 12.0
 
         match host.GetStatus("test-prune") with
@@ -304,7 +305,7 @@ let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirt
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -334,7 +335,7 @@ let badTypeUse : int = "not-an-int"
         // Sanity: the result really is poisoned.
         test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
 
-        host.EmitFileChecked(result)
+        host.EmitFileChecked(stampFixture result)
         waitForPluginTerminal host "test-prune" 10.0
 
         emitBuildAndWaitTerminal host
@@ -365,7 +366,7 @@ let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break c
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -429,7 +430,7 @@ let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildC
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         // No testConfigs, so BuildCompleted is unsubscribed and only FileChecked and
         // BatchChecked can drive the flush — the BatchChecked subscription is
         // unconditional.
@@ -457,7 +458,7 @@ let cleanTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        host.EmitFileChecked(result)
+        host.EmitFileChecked(stampFixture result)
         waitForPluginTerminal host "test-prune" 10.0
 
         // No BuildCompleted ever fires.
@@ -503,7 +504,7 @@ let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges fall
                 ReportVerificationFormat = AutoDetect } ]
 
         // Phase 1: clean check, flush populates DB.
-        let host1 = PluginHost.create checker tmpDir
+        let host1 = createModelHost checker tmpDir
         let handler1 = create dbPath tmpDir (Some testConfigs) None None None None []
         host1.RegisterHandler(handler1)
 
@@ -578,7 +579,7 @@ let badTypeUse : int = "wrong-type"
                     brokenResult.CheckResults
             @>
 
-        let host2 = PluginHost.create checker tmpDir
+        let host2 = createModelHost checker tmpDir
         let handler2 = create dbPath tmpDir (Some testConfigs) None None None None []
         host2.RegisterHandler(handler2)
 
@@ -669,7 +670,7 @@ let phaseBTest () = ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -716,7 +717,7 @@ let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed on AST-changed source")
-        | Some r -> env.Host.EmitFileChecked(r)
+        | Some r -> env.Host.EmitFileChecked(stampFixture r)
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -754,7 +755,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -775,7 +776,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
         // Deliberately NOT emitBuildAndWaitTerminal first.
-        host.EmitFileChecked(result)
+        host.EmitFileChecked(stampFixture result)
         waitForPluginTerminal host "test-prune" 10.0
 
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
@@ -800,7 +801,7 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -845,7 +846,7 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
-        let host = PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
@@ -933,7 +934,7 @@ let ``detectChanges: re-check of unchanged source with externs reports no change
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed on re-check")
-        | Some r -> env.Host.EmitFileChecked(r)
+        | Some r -> env.Host.EmitFileChecked(stampFixture r)
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -1105,7 +1106,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2110,7 +2111,7 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -2171,7 +2172,7 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
 
         let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 

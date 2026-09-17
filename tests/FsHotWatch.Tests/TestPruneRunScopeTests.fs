@@ -3318,3 +3318,57 @@ let ``only-failed resolves current owner failures instead of the command snapsho
 
     test <@ launched @>
     test <@ not accepted.Task.IsCompleted @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``full-suite recovery preserves newer runtime obligations and rejects stale model completion``
+    (modelChanged: bool)
+    =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA" ]) None None None None []
+
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+    // The run launched against revision 1 of the file's obligation; an edit during the
+    // run raised it to revision 2, which that run never built.
+    let obligations = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 2L ] ]
+
+    let prior =
+        { handler.Init with
+            Debt =
+                { handler.Init.Debt with
+                    RecoveryOutstanding = true
+                    RuntimeObligations = obligations } }
+
+    let launch =
+        { fullSuiteLaunch [ "ProjA" ] with
+            ModelGeneration = Some 1L
+            RuntimeProjectsByFile = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 1L ] ] }
+
+    let model =
+        FsHotWatch.ProjectModel.ofCompleted
+            (if modelChanged then 2L else 1L)
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 1
+              Registered = 1 }
+
+    let ctx =
+        { recordingCtx with
+            ProjectGraph =
+                { recordingCtx.ProjectGraph with
+                    ObserveModel = fun () -> model } }
+
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    test <@ candidate.Debt.RuntimeObligations = obligations @>
+    test <@ candidate.Debt.RecoveryOutstanding = modelChanged @>
+
+    if modelChanged then
+        // A run selected under a replaced model proves nothing about the current one.
+        test <@ candidate.Debt.Baseline = prior.Debt.Baseline @>
+        test <@ candidate.EvidenceReceipt.IsNone @>
+    else
+        test <@ candidate.Debt.Baseline.IsSome @>

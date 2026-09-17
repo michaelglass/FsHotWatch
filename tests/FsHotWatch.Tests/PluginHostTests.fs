@@ -155,6 +155,45 @@ let ``EmitBuildCompleted reaches plugins`` () =
     test <@ receivedBuild = Some BuildSucceeded @>
 
 [<Fact(Timeout = 20000)>]
+let ``plugins observe the model the host publishes whoever installed the graph`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let observed =
+        System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.ProjectModel.Observation>()
+
+    // An installed graph cannot answer for the model: only the host's publication can.
+    host.SetProjectGraph
+        { ProjectGraphAccessor.none with
+            ObserveModel = fun () -> FsHotWatch.ProjectModel.Observation.Rediscovering 99L }
+
+    let handler =
+        { Name = PluginName.create "model-observer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted _ -> observed.Enqueue(ctx.ProjectGraph.ObserveModel())
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitBuildCompleted(BuildSucceeded)
+    waitUntil (fun () -> observed.Count = 1) 12000
+    host.WorkStore.PublishProjectModel fixtureModel
+    host.EmitBuildCompleted(BuildSucceeded)
+    waitUntil (fun () -> observed.Count = 2) 12000
+
+    test <@ List.ofSeq observed = [ FsHotWatch.ProjectModel.Observation.Unobserved; fixtureModel ] @>
+
+[<Fact(Timeout = 20000)>]
 let ``EmitBuildCompleted with failure reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
@@ -540,7 +579,8 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+          Version = 0L
+          ModelGeneration = None }
 
     host.EmitFileChecked(dummyResult)
 
@@ -561,7 +601,8 @@ let private fullCheckResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = FullCheck(Unchecked.defaultof<_>)
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 let private parseOnlyResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
@@ -569,7 +610,8 @@ let private parseOnlyResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 [<Fact(Timeout = 15000)>]
 let ``EmitFileChecked with FullCheck marks the file checked`` () =

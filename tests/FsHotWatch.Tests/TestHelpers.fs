@@ -18,6 +18,31 @@ let sharedChecker =
 let dummyParseResults () : FSharpParseFileResults =
     RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
 
+/// The project-model generation fixture results are captured against.
+let fixtureModelGeneration = 1L
+
+/// The available model a fixture host publishes, as a daemon does after discovery.
+let fixtureModel =
+    FsHotWatch.ProjectModel.ofCompleted
+        fixtureModelGeneration
+        { Discovered = 1
+          Loaded = 1
+          OptionsMapped = 1
+          Registered = 1 }
+
+/// Mark a fixture result as captured against the fixture model, as the daemon stamps
+/// a result it publishes.
+let stampFixture (result: FileCheckResult) : FileCheckResult =
+    { result with
+        ModelGeneration = Some fixtureModelGeneration }
+
+/// A plugin host that publishes the fixture model, so a plugin observing the host's
+/// model sees the one fixture results are stamped with.
+let createModelHost (checker: FSharpChecker) (repoRoot: string) =
+    let host = FsHotWatch.PluginHost.PluginHost.create checker repoRoot
+    host.WorkStore.PublishProjectModel fixtureModel
+    host
+
 /// Build a FileCheckResult with safe-uninitialized FCS parts. Lets plugin tests
 /// fire FileChecked events without spinning up real FCS.
 let fakeFileCheckResult (file: string) : FileCheckResult =
@@ -26,7 +51,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ParseResults = dummyParseResults ()
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = Some fixtureModelGeneration }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
@@ -36,6 +62,7 @@ let fakeBatchChecked (files: string list) : BatchChecked =
     { Trigger = BootScan
       Files = files |> List.map AbsFilePath.create
       Generation = 1L
+      ModelGeneration = Some fixtureModelGeneration
       StartedAt = now
       CompletedAt = now }
 
@@ -539,7 +566,7 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
         let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
         pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
 
-        let host = FsHotWatch.PluginHost.PluginHost.create checker tmpDir
+        let host = createModelHost checker tmpDir
 
         let handler =
             FsHotWatch.TestPrune.TestPrunePlugin.create dbPath tmpDir None None None None None []

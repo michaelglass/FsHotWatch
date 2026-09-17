@@ -88,7 +88,7 @@ let ``all plugins receive events when checking a file`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let pipeline = CheckPipeline(checker)
-    let host = PluginHost.create checker repoRoot
+    let host = createModelHost checker repoRoot
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
@@ -119,7 +119,7 @@ let ``all plugins receive events when checking a file`` () =
         pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
     match result with
-    | Some checkResult -> host.EmitFileChecked(checkResult)
+    | Some checkResult -> host.EmitFileChecked(stampFixture checkResult)
     | None -> failwith "Failed to check file"
 
     test <@ host.GetStatus("lint").IsSome @>

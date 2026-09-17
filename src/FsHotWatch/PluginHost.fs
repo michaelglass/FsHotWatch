@@ -272,7 +272,9 @@ type PluginHost
               // Each closure re-reads the mutable holder per call, so a plugin
               // registered before the daemon installed the live graph still sees it.
               ProjectGraph =
-                { GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
+                // Plugins observe the model this host publishes, whoever supplied the graph.
+                { ObserveModel = fun () -> workStore.Snapshot.ProjectModel
+                  GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
                   GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- (breaking) Analysis and runs are bound to the project model. A `FileChecked` or
+  `BatchChecked` is ignored unless it is stamped with the host's current available model;
+  a host that publishes no model gets no analysis. Pending analysis accepted under
+  a replaced model is retired before any flush (`TestPruneState.AnalysisModelGeneration`),
+  and every configured project is forced to run. `TestRunLaunch.ModelGeneration` records
+  the model a run was launched under. A completion observed under another model
+  discharges no debt, recovers nothing, earns no baseline and revokes its receipt.
+  Fixed: recovering unknown debt no longer drops runtime coverage obligations raised
+  during the recovering run.
+
 - (breaking) Decisions read committed owner state. `TestPruneState` gains `Debt`
   (`VerificationDebt`: pending queue, symbol revisions, unknown-debt recovery, baseline,
   runtime obligations), `FullSuiteRequested`, `CompletedRuns`, `CheckReach` and `Replies`,

@@ -180,6 +180,30 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core, testprune: check results carry the project model they were captured against
+
+A scan or change batch could publish results against a project model that a rediscovery
+had already replaced, and TestPrune folded those results into the newer model.
+
+- **A scan waits for discovery.** A scan admitted while another rediscovery is running
+  waits for it instead of completing at once over an empty model.
+- **A replaced model refuses stale publication.** A scan whose model is replaced before it
+  publishes fails ("invalidated before scan publication") and keeps its `scan` fault until
+  the next scan. A change batch reruns against the current model and keeps the source it
+  admitted. After 5 superseded attempts it fails ("the project model kept changing during
+  the batch"), and its changes run with the next batch.
+- **Results name their model.** `FileCheckResult` and `BatchChecked` carry
+  `ModelGeneration`, and plugins read the host's model through
+  `ProjectGraphAccessor.ObserveModel`.
+- **TestPrune ignores results from any other model.** It ignores results and seals from
+  another model, and results that name no model. It retires pending analysis a rediscovery replaced, and those symbols stay owed
+  with every configured project forced to run. A test run that completes after a
+  rediscovery discharges nothing and earns no receipt or baseline.
+- **Fixed:** a full-suite recovery from unknown debt dropped runtime coverage obligations
+  raised while it ran.
+
+See `docs/adr-032-check-results-carry-their-project-model-generation.md`.
+
 ### testprune, build: decisions read committed owner state, and command replies follow publication
 
 TestPrune and Build used to decide from closure-local copies of their state. A

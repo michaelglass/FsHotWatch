@@ -423,7 +423,8 @@ let ``registered plugin skips unsubscribed events`` () =
               ParseResults = Unchecked.defaultof<_>
               CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+              Version = 0L
+              ModelGeneration = None }
     )
 
     reg.Dispatch(DispatchBuildCompleted BuildSucceeded)
@@ -1305,6 +1306,7 @@ let ``plugin subscribing to BatchChecked receives event`` () =
         { Trigger = BootScan
           Files = [ AbsFilePath.create "/tmp/repo/Foo.fs" ]
           Generation = 7L
+          ModelGeneration = None
           StartedAt = now
           CompletedAt = now.AddMilliseconds(50.0) }
 
@@ -1354,6 +1356,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
             { Trigger = BootScan
               Files = []
               Generation = 1L
+              ModelGeneration = None
               StartedAt = now
               CompletedAt = now }
     )

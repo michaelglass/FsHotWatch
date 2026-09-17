@@ -211,6 +211,18 @@ let internal isTotalDiscoveryFailureMessage (message: string) : bool =
     not (isNull message)
     && message.Contains("PROJECT LOADING FAILED:", StringComparison.Ordinal)
 
+/// A captured cohort cannot publish after discovery admits a newer model.
+type internal ModelSupersededException(generation: int64) =
+    inherit
+        InvalidOperationException(
+            $"The captured project model generation {generation} was invalidated before scan publication."
+        )
+
+/// The generation a captured epoch stamps on its results: `Some` only when a
+/// completed model was captured.
+let internal modelGenerationOf ((epoch, snapshot): int64 * ProjectModel.Counts option) : int64 option =
+    snapshot |> Option.map (fun _ -> epoch)
+
 /// The verdict-wait admission decision. Kept separate from the RPC closure so
 /// both branches are deterministic unit-testable: a known total loader failure
 /// must never enter the potentially hour-long host wait.
@@ -276,6 +288,23 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     let mutable pendingAttempts = 0
     let mutable quiescence: TaskCompletionSource<unit> option = None
 
+    // Announcements are published outside `stateGate`, so two of them can race. Each
+    // takes its place in line under `stateGate`; one that arrives after a later
+    // announcement was published is dropped rather than overwriting the newer answer.
+    let announcementGate = obj ()
+    let mutable announcementsIssued = 0L
+    let mutable announcementPublished = 0L
+
+    let issueAnnouncement () =
+        announcementsIssued <- announcementsIssued + 1L
+        announcementsIssued
+
+    let publishInOrder (place: int64) (observation: ProjectModel.Observation) =
+        lock announcementGate (fun () ->
+            if place > announcementPublished then
+                announcementPublished <- place
+                announce observation)
+
     let waitForStableAdmission () : Task<int64 * DiscoverySnapshot option> =
         task {
             let mutable searching = true
@@ -300,6 +329,13 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
             return stable
         }
+
+    // The epoch a cohort captures: the completed attempt and its counts, or the
+    // requested generation with no completed model.
+    let currentEpoch () =
+        match completed with
+        | Some(attempt, snapshot) -> attempt, Some snapshot
+        | None -> generation, None
 
     member _.Completed =
         lock stateGate (fun () ->
@@ -332,9 +368,46 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
     member _.WaitForStableAdmission() = waitForStableAdmission ()
 
+    /// Capture the model a cohort will publish against. Waits until no attempt is
+    /// pending, then reads under the admission lease so no writer is between clear and
+    /// completion while `read` copies state. `read` must only copy: an attempt admitted
+    /// while it runs is found by `WithCurrent` at publication. A pending attempt that
+    /// fails fails the capture with its error, as it fails verdict admission.
+    member _.Capture<'T>(read: int64 * DiscoverySnapshot option -> 'T) : Async<'T> =
+        let rec attempt () =
+            async {
+                let! _ = waitForStableAdmission () |> Async.AwaitTask
+                let! ct = Async.CancellationToken
+                do! admission.WaitAsync(ct) |> Async.AwaitTask
+
+                let captured =
+                    try
+                        lock stateGate (fun () -> if pendingAttempts = 0 then Some(currentEpoch ()) else None)
+                        |> Option.map read
+                    finally
+                        admission.Release() |> ignore
+
+                match captured with
+                | Some value -> return value
+                | None -> return! attempt ()
+            }
+
+        attempt ()
+
+    /// Publish only while the captured epoch is still the completed model and no
+    /// attempt is pending. Validation and `write` share `stateGate`, so no attempt can
+    /// begin between them. `write` must be a short publication that never waits on this
+    /// coordinator.
+    member _.WithCurrent<'T>(captured: int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
+        lock stateGate (fun () ->
+            if pendingAttempts <> 0 || currentEpoch () <> captured then
+                raise (ModelSupersededException(fst captured))
+
+            write ())
+
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
-            let attempt =
+            let attempt, place =
                 lock stateGate (fun () ->
                     generation <- generation + 1L
                     pendingAttempts <- pendingAttempts + 1
@@ -343,12 +416,12 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                         quiescence <-
                             Some(TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously))
 
-                    generation)
+                    generation, issueAnnouncement ())
 
             // Announced OUTSIDE `stateGate`: a subscriber that reads the
             // coordinator back would deadlock against the lock it was published
             // under.
-            announce (ProjectModel.Observation.Rediscovering attempt)
+            publishInOrder place (ProjectModel.Observation.Rediscovering attempt)
 
             do! admission.WaitAsync() |> Async.AwaitTask
 
@@ -364,17 +437,20 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                             if pendingAttempts = 0 then
                                 let completion = quiescence
                                 quiescence <- None
-                                completion
+                                Some(completion, issueAnnouncement ())
                             else
                                 None)
-
-                    completion |> Option.iter (fun pending -> pending.TrySetResult() |> ignore)
 
                     // Only the attempt that quiesced the coordinator announces a
                     // settled model. While others are still pending the honest
                     // answer is still `Rediscovering`, which `Observation` reports.
-                    if completion.IsSome then
-                        announce (ProjectModel.ofCompleted attempt snapshot)
+                    // The announcement is made while this attempt still holds admission,
+                    // so no cohort can capture the model before it is published.
+                    match completion with
+                    | Some(waiters, place) ->
+                        waiters |> Option.iter (fun pending -> pending.TrySetResult() |> ignore)
+                        publishInOrder place (ProjectModel.ofCompleted attempt snapshot)
+                    | None -> ()
 
                     return result
                 with ex ->
@@ -386,17 +462,18 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                                 completed <- None
                                 let completion = quiescence
                                 quiescence <- None
-                                completion
+                                Some(completion, issueAnnouncement ())
                             else
                                 None)
-
-                    completion |> Option.iter (fun pending -> pending.TrySetException(ex) |> ignore)
 
                     // A failed attempt that quiesced the coordinator clears the
                     // completed outcome, so the honest published answer is that
                     // nothing has been observed — never a stale success.
-                    if completion.IsSome then
-                        announce ProjectModel.Observation.Unobserved
+                    match completion with
+                    | Some(waiters, place) ->
+                        waiters |> Option.iter (fun pending -> pending.TrySetException(ex) |> ignore)
+                        publishInOrder place ProjectModel.Observation.Unobserved
+                    | None -> ()
 
                     return raise ex
             finally
@@ -1009,13 +1086,28 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
         $"format refused — %s{reasons}"
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
-/// run preprocessors, emit events, and check files.
-let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
+/// run preprocessors, emit events, and check files. Raises `ModelSupersededException`
+/// when a publication meets a model newer than the one the attempt captured.
+let private processBatchAttempt
+    (ctx: BatchContext)
+    (changes: FileChangeKind list)
+    (suppressed: Set<string>)
+    (hasContentChanged: string -> bool)
+    =
     async {
         // An incremental batch — the FCS re-check a file
         // change provokes while a check is already waiting — is daemon wall time no
         // plugin owns. One record per batch, on every exit.
         use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
+        // The cohort reads the live graph, and publishes only while the model it
+        // captured is still current. An in-batch rediscovery captures its own result.
+        let captureModel () = ctx.Discovery.Capture id
+        let! initialModel = captureModel ()
+        let mutable batchModel = initialModel
+
+        let publishCurrent write =
+            ctx.Discovery.WithCurrent(batchModel, write)
+
         let mutable sourceFiles = []
         let mutable projFiles = []
         let mutable hasSolution = false
@@ -1053,7 +1145,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
-                let changed = ctx.ContentTracker.HasContentChanged f
+                let changed = hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -1064,7 +1156,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             projFiles
             |> List.distinct
             |> List.filter (fun f ->
-                let changed = ctx.ContentTracker.HasContentChanged f
+                let changed = hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -1072,7 +1164,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 changed)
 
         if hasSolution then
-            ctx.Host.EmitFileChanged(SolutionChanged)
+            publishCurrent (fun () -> ctx.Host.EmitFileChanged(SolutionChanged))
 
         if not projFilesChanged.IsEmpty || hasSolution then
             // Generated obj/ files (MSBuild's AssemblyInfo / AssemblyAttributes)
@@ -1140,8 +1232,11 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         false // keep unrelated projects' check cache
 
+                let! refreshedModel = captureModel ()
+                batchModel <- refreshedModel
+
                 if not projFilesChanged.IsEmpty then
-                    ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+                    publishCurrent (fun () -> ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged))
 
                 // Re-derive source files from the refreshed graph (membership
                 // may have shifted) for the same project set.
@@ -1169,12 +1264,15 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         true
 
+                let! refreshedModel = captureModel ()
+                batchModel <- refreshedModel
+
                 Logging.info
                     "daemon"
                     $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
 
                 if not projFilesChanged.IsEmpty then
-                    ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+                    publishCurrent (fun () -> ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged))
 
                 allSourceFiles <-
                     (allSourceFiles @ checkableFilesOf (ctx.Graph.GetAllProjects()))
@@ -1211,7 +1309,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
-            ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value))
+            publishCurrent (fun () ->
+                ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
@@ -1226,9 +1325,14 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                             "daemon"
                             $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
-                        dispatchedFiles.Add(checkResult.File)
-                        ctx.Host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGenerationOf batchModel }
+
+                            dispatchedFiles.Add(checkResult.File)
+                            ctx.Host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
                     // Unlike the cold scan (see `runChecksWithRetry`), the batch
                     // path does NOT retry a cancelled (`None`) check. Batch
                     // cancellations are self-healing: `CancelPreviousCheck` only
@@ -1277,20 +1381,94 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             // results from the pipeline) skip the emit — there's nothing to
             // "flush and decide" against.
             if dispatchedFiles.Count > 0 then
-                let nextGen =
-                    System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+                publishCurrent (fun () ->
+                    let nextGen =
+                        System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
 
-                ctx.Host.EmitBatchChecked
-                    { Trigger = InSessionBatch changes
-                      Files = dispatchedFiles |> List.ofSeq
-                      Generation = nextGen
-                      StartedAt = batchStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+                    ctx.Host.EmitBatchChecked
+                        { Trigger = InSessionBatch changes
+                          Files = dispatchedFiles |> List.ofSeq
+                          Generation = nextGen
+                          ModelGeneration = modelGenerationOf batchModel
+                          StartedAt = batchStartedAt
+                          CompletedAt = System.DateTime.UtcNow })
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
         else
             return remainingSuppressed
+    }
+
+/// How many attempts a change cohort makes before a model that keeps changing fails it.
+let internal changeBatchAttemptLimit = 5
+
+/// Changes a failed cohort still owes, with the paths whose content it already admitted.
+/// The content tracker answers "changed" once per content, so these paths would
+/// otherwise be dropped as unchanged when the same bytes arrive again.
+type internal OwedChanges =
+    { Changes: FileChangeKind list
+      Admitted: Set<string> }
+
+/// A cohort whose model was replaced on every attempt. Its changes stay owed.
+type internal ModelKeptChangingException(attempts: int, owed: OwedChanges) =
+    inherit
+        InvalidOperationException(
+            $"The project model kept changing during the batch: it was replaced during each of %d{attempts} attempts. Its changes stay owed to the next batch."
+        )
+
+    member _.Owed = owed
+
+/// The change worker's state: paths whose watcher echo is suppressed, and the changes a
+/// failed batch still owes.
+[<NoComparison; NoEquality>]
+type private ChangeWorkerState =
+    { Suppressed: Set<string>
+      Owed: OwedChanges option }
+
+/// Run a change cohort against the current model. A superseded attempt may have published
+/// some results, but never its seal; the next attempt runs the same changes against the
+/// model that replaced it, inside the same owned request. After
+/// `changeBatchAttemptLimit` superseded attempts the cohort fails with
+/// `ModelKeptChangingException`, which carries what it owes.
+let internal processBatch
+    (ctx: BatchContext)
+    (changes: FileChangeKind list)
+    (suppressed: Set<string>)
+    (alreadyAdmitted: Set<string>)
+    =
+    // Asking the tracker again on a retry would drop exactly the inputs this cohort admitted.
+    let admitted =
+        System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.Ordinal)
+
+    for path in alreadyAdmitted do
+        admitted[path] <- true
+
+    let hasContentChanged path =
+        admitted.GetOrAdd(path, ctx.ContentTracker.HasContentChanged)
+
+    let rec completeCurrent attempt =
+        async {
+            ctx.DaemonCt.Value.ThrowIfCancellationRequested()
+
+            try
+                return! processBatchAttempt ctx changes suppressed hasContentChanged
+            with :? ModelSupersededException when attempt < changeBatchAttemptLimit ->
+                Logging.debug "changes" "model superseded; running the cohort against the current model"
+                return! completeCurrent (attempt + 1)
+        }
+
+    async {
+        try
+            return! completeCurrent 1
+        with :? ModelSupersededException ->
+            let owed =
+                { Changes = changes
+                  Admitted =
+                    admitted
+                    |> Seq.choose (fun entry -> if entry.Value then Some entry.Key else None)
+                    |> Set.ofSeq }
+
+            return raise (ModelKeptChangingException(changeBatchAttemptLimit, owed))
     }
 
 /// Format elapsed as human-readable "5m 3s" / "45s" / "1h 12m". Public so
@@ -1758,7 +1936,8 @@ type Daemon
     // the accessor's contract ("dependents, excluding self") holds.
     do
         host.SetProjectGraph
-            { GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
+            { ObserveModel = fun () -> host.WorkSnapshot.ProjectModel
+              GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
                     let self = AbsProjectPath.create fsproj
@@ -2435,7 +2614,30 @@ let private performScan
                 if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
                     lastFingerprint <- currentFingerprint
 
-            let registeredProjects = pipeline.GetRegisteredProjects()
+            // A fingerprint hit skips OUR discovery, not a concurrent writer's. Capture
+            // membership, dependency tiers and options together once no writer is
+            // between clear and completion; every publication below is refused if a
+            // later attempt replaced this model.
+            let! capturedModel, registeredProjects, registeredFiles, scanTiers =
+                ctx.Discovery.Capture(fun epoch ->
+                    let tiers =
+                        graph.GetParallelTiers()
+                        |> List.map (
+                            List.map (fun project ->
+                                project,
+                                graph.GetSourceFiles(project) |> List.map AbsFilePath.value,
+                                pipeline.GetProjectOptions(AbsProjectPath.value project))
+                        )
+
+                    epoch,
+                    pipeline.GetRegisteredProjects(),
+                    pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value,
+                    tiers)
+
+            let modelGeneration = modelGenerationOf capturedModel
+
+            let publishCurrent write =
+                ctx.Discovery.WithCurrent(capturedModel, write)
 
             // PRUNE VANISHED PATHS BEFORE SCANNING.
             //
@@ -2452,8 +2654,6 @@ let private performScan
             // `.fsproj` byte-identical — a glob-matched file — never reaches it.
             // Checking existence here is the backstop that does not depend on how the
             // rename happened to touch the project files.
-            let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
             let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
             if not vanished.IsEmpty then
@@ -2497,7 +2697,7 @@ let private performScan
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-                host.EmitFileChanged(SourceChanged files)
+                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
                 // read the obj/ refs it rewrites. See
@@ -2512,7 +2712,7 @@ let private performScan
                 let filesToCheckSet = Set.ofList files
 
                 // Check files in parallel tiers based on project dependency graph
-                let tiers = graph.GetParallelTiers()
+                let tiers = scanTiers
 
                 // Bounded retry budget for cancelled/aborted/failed scan checks.
                 // The common case (a single processBatch race per file) converges
@@ -2528,19 +2728,14 @@ let private performScan
                     let tierThunks =
                         System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-                    for proj in tier do
+                    for proj, projectFiles, projectOptions in tier do
                         let projPath = AbsProjectPath.value proj
-
-                        let projFiles =
-                            graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+                        let projFiles = projectFiles |> List.filter filesToCheckSet.Contains
+                        skippedCount <- skippedCount + (projectFiles.Length - projFiles.Length)
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
-                            match pipeline.GetProjectOptions(projPath) with
+                            match projectOptions with
                             | Some options ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
@@ -2555,15 +2750,20 @@ let private performScan
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
                     let emitChecked (checkResult: FileCheckResult) =
-                        checkedCount <- checkedCount + 1
-                        dispatchedFiles.Add(checkResult.File)
-                        host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                        completed <- completed + 1
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration }
 
-                        publish
-                            { state with
-                                ScanState = Scanning(total, completed, System.DateTime.UtcNow) }
+                            checkedCount <- checkedCount + 1
+                            dispatchedFiles.Add(checkResult.File)
+                            host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                            completed <- completed + 1
+
+                            publish
+                                { state with
+                                    ScanState = Scanning(total, completed, System.DateTime.UtcNow) })
 
                     let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
@@ -2608,13 +2808,17 @@ let private performScan
             // WaitForScanGeneration callers (IPC) can assume BatchChecked has already
             // been dispatched by the time `fshw scan --wait` returns. Empty cohorts (no
             // registered files) skip — there's nothing to "flush and decide" against.
-            if dispatchedFiles.Count > 0 then
-                host.EmitBatchChecked
-                    { Trigger = BootScan
-                      Files = dispatchedFiles |> List.ofSeq
-                      Generation = newGeneration
-                      StartedAt = scanStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+            // The seal is guarded even when there is nothing to seal: a scan whose model
+            // was replaced must not complete as though it had checked that model.
+            publishCurrent (fun () ->
+                if dispatchedFiles.Count > 0 then
+                    host.EmitBatchChecked
+                        { Trigger = BootScan
+                          Files = dispatchedFiles |> List.ofSeq
+                          Generation = newGeneration
+                          ModelGeneration = modelGeneration
+                          StartedAt = scanStartedAt
+                          CompletedAt = System.DateTime.UtcNow })
 
             // One measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
@@ -2858,7 +3062,18 @@ module Daemon =
                     let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
                     WorkspaceLoader.Create(toolsPath, [])
 
-            let discovery = DiscoveryCoordinator()
+            // Plugins read the model from the host publication. A settled model is
+            // announced while its attempt still holds discovery admission, so the
+            // registered files it publishes are that attempt's membership.
+            let discovery =
+                DiscoveryCoordinator(
+                    publish =
+                        fun observation ->
+                            host.WorkStore.PublishProjectModelWithFiles(
+                                observation,
+                                pipeline.GetAllRegisteredFiles() |> Set.ofList
+                            )
+                )
 
             let daemonCtRef = ref CancellationToken.None
 
@@ -2917,21 +3132,29 @@ module Daemon =
                                 projPath) }
 
             // Change batches run one at a time under a supervisor. The worker's state is
-            // the set of paths preprocessors wrote, whose watcher echoes are suppressed.
+            // the set of paths preprocessors wrote, whose watcher echoes are suppressed, and
+            // the changes a failed batch still owes, which run ahead of the next request.
             let changeWorker =
                 SupervisedWork.Queue(
                     host.WorkStore,
                     "changes",
-                    Set.empty,
+                    { Suppressed = Set.empty; Owed = None },
                     Ipc.ambientRpcDeadline (),
-                    (fun suppressed (_: ChangeRequest) -> suppressed),
-                    (fun suppressed _ -> suppressed),
+                    (fun state (_: ChangeRequest) -> state),
+                    (fun state failure ->
+                        match failure.GetBaseException() with
+                        | :? ModelKeptChangingException as kept -> { state with Owed = Some kept.Owed }
+                        | _ -> state),
                     ignore,
-                    (fun suppressed request ct _ ->
+                    (fun state request ct _ ->
                         async {
+                            let owed = state.Owed |> Option.defaultValue { Changes = []; Admitted = Set.empty }
+
+                            let changes = owed.Changes @ request.Changes
+
                             let! suppressed =
-                                if List.isEmpty request.Changes then
-                                    async.Return suppressed
+                                if List.isEmpty changes then
+                                    async.Return state.Suppressed
                                 else
                                     async {
                                         // Failure policy lives in `runDaemonStep`.
@@ -2940,15 +3163,16 @@ module Daemon =
                                                 "processChanges"
                                                 (processBatch
                                                     { batchCtx with DaemonCt = ref ct }
-                                                    request.Changes
-                                                    suppressed)
+                                                    changes
+                                                    state.Suppressed
+                                                    owed.Admitted)
                                         with
                                         | Ok next -> return next
                                         | Result.Error failure -> return raise failure
                                     }
 
                             match request.FormatReplies with
-                            | [] -> return suppressed
+                            | [] -> return { Suppressed = suppressed; Owed = None }
                             | replies ->
                                 ct.ThrowIfCancellationRequested()
                                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
@@ -2958,7 +3182,9 @@ module Daemon =
                                 for reply in replies do
                                     reply.TrySetResult(rendered) |> ignore
 
-                                return Set.union suppressed (Set.ofList run.Modified)
+                                return
+                                    { Suppressed = Set.union suppressed (Set.ofList run.Modified)
+                                      Owed = None }
                         })
                 )
 
