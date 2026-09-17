@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Adopts TestPrune.Core 9.0.0. Its only breaking change (`AuditSink.Flush()` now returns a
+  `FlushOutcome` instead of waiting forever) touches no API this plugin calls.
+
 ## 0.13.0-alpha.39 - 2026-09-17
 
 - `run-tests --only-failed` resolves which projects failed inside the plugin, against the
