@@ -42,6 +42,7 @@
     <Compile Include="StructureFilesTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
+    <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />

@@ -210,6 +210,28 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: a vocabulary for owned plugin work (not wired yet)
+
+`PluginWorkOwner` adds the types the plugin framework and host will move onto. It changes
+no behaviour yet: nothing calls it.
+
+- **One publication.** A `Store` is the only writer. It publishes one immutable
+  `HostSnapshot` holding every plugin's row and every named host operation. Rest, busy
+  names, completion counts and faults are read from that snapshot, without a mailbox
+  round-trip.
+- **Owned work.** An `Owner` admits events, claims exclusive keys and queues commands
+  under capabilities only the store can mint. A foreign or already-retired capability is
+  refused and publishes nothing. A key has at most one live worker, and its result fold
+  may launch the next run before it commits.
+- **Receipts after publication.** A receipt settles only after the state it acknowledges
+  is published. A queued command is owned before the receipt of the predecessor that
+  freed its key completes.
+- **Failures keep their provenance.** Only work admitted after a failure can clear it, so
+  a late result from an older run cannot erase a newer failure. An executor failure fails
+  every pending receipt but keeps live workers owned until they actually finish.
+
+See `docs/adr-028-plugin-work-has-one-owner-and-one-host-publication.md`.
+
 ### core: a child process belongs to the operation that spawned it
 
 Four ways a child could outlive the thing that was supposed to reap it are closed:

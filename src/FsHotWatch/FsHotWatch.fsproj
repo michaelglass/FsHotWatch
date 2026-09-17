@@ -79,6 +79,7 @@
     <Compile Include="FileTaskCache.fs" />
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
+    <Compile Include="PluginWorkOwner.fs" />
     <Compile Include="PluginFramework.fs" />
     <Compile Include="DaemonPhases.fs" />
     <Compile Include="PluginActivity.fs" />
