@@ -224,8 +224,8 @@ module ProjectGraphAccessor =
 /// The DELIBERATELY narrow context handed to IPC command handlers
 /// (`PluginHandler.Commands`). Commands run on the IPC thread, outside the
 /// plugin's mailbox and outside its inflight accounting — so work started there
-/// would be invisible to `IsRunning`/`AnyPluginBusy`/the status model
-///Hence no `ReportStatus`, no `RunExclusive`, no `Emit*`:
+/// would be invisible to `IsRunning`/`AnyPluginBusy`/the status model.
+/// Hence no `ReportStatus`, no `RunExclusive`, no `Emit*`:
 /// `Post` is the ONLY way a command can cause work, and the work then runs on
 /// the mailbox, accounted like every other launch.
 [<NoComparison; NoEquality>]
@@ -836,10 +836,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                             match lookupResult with
                             | Some result ->
-                                // clear ONLY what the cached run itself
+                                // Clear ONLY what the cached run itself
                                 // cleared. A replay must be observationally
                                 // indistinguishable from running the handler (the
-                                // invariant the tracked issue stated for the build cache),
+                                // invariant already stated for the build cache),
                                 // and it was not:
                                 //
                                 // this used to call `ClearPlugin` for every non-FileChecked

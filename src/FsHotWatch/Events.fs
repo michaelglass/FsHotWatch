@@ -182,7 +182,7 @@ module RunVerdict =
         if System.String.IsNullOrWhiteSpace summary then
             invalidArg
                 (nameof summary)
-                "a RunVerdict summary must state what the run did — empty/whitespace is the content-free ✓ the tracked issue exists to kill"
+                "a RunVerdict summary must state what the run did — empty/whitespace is the content-free ✓ this type exists to kill"
 
     /// The verdict of a run that verified what its summary says. Throws on a
     /// null/empty/whitespace summary.

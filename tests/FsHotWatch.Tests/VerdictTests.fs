@@ -1369,8 +1369,8 @@ let ``a full-suite check is not nagged, and a confirm never is`` () =
             Baseline = BaselineFixtures.reading }
 
     // A confirm that did NOT reach full-suite scope — the escalation-failure shape, which
-    // now records `ScopeUnreadable` rather than the filtered reading it was left holding
-    //Still never nagged to "use `fshw confirm`": it IS confirm.
+    // now records `ScopeUnreadable` rather than the filtered reading it was left holding.
+    // Still never nagged to "use `fshw confirm`": it IS confirm.
     let confirmed =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Confirm
@@ -2191,7 +2191,7 @@ let ``a confirm that did NOT escalate records the fact POSITIVELY — absence is
         test <@ earned.Divergence = Verdict.Divergence.NoImpactScopedRun @>
 
         // ...and it is a DIFFERENT value from "nothing was recorded here", which is what a
-        // pre-259 verdict reads as. Same field, two distinct facts, neither of them
+        // verdict written before the check-comparison record reads as. Same field, two distinct facts, neither of them
         // agreement — see the round-trip and legacy-file tests below.
         test <@ earned.Divergence <> Verdict.Divergence.NotRecorded @>
         test <@ earned.Divergence <> Verdict.Divergence.Agreed @>
@@ -2227,7 +2227,8 @@ let ``an escalated run that never completed records COULD-NOT-COMPARE, never agr
         | Some pre -> test <@ pre.Scope = ImpactFiltered(5, 6) @>
         | None -> failwith "the impact-scoped reading must survive an incomplete escalation"
 
-        // the rewrite still stands, and its prose no longer restates the counts
+        // `scopeToRecord`'s rewrite of confirm's filtered scope still stands, and its prose no
+        // longer restates the counts
         // — they are typed, one nesting down, in the record above.
         test <@ not (TestScope.isFullSuite stalled.Scope) @>
         test <@ (TestScope.describe stalled.Scope).Contains "5/6" |> not @>
@@ -2284,7 +2285,7 @@ let ``every comparison round-trips through the verdict JSON`` () =
             | other -> failwithf "a verdict carrying %A must read back, got %A" comparison other)
 
 [<Fact>]
-let ``a verdict written before the tracked issue still reads — as NOT RECORDED, never as agreement`` () =
+let ``a verdict written before the check comparison still reads — as NOT RECORDED, never as agreement`` () =
     withTempDir "verdict-259-legacy" (fun root ->
         Directory.CreateDirectory(FsHwPaths.root root) |> ignore
 
@@ -2302,10 +2303,10 @@ let ``a verdict written before the tracked issue still reads — as NOT RECORDED
         | Verdict.Reading.Found v ->
             test <@ v.Divergence = Verdict.Divergence.NotRecorded @>
             test <@ v.ImpactScopedRun = None @>
-            // The fast path still works on it: an old green is still a green, and 259 is
+            // The fast path still works on it: an old green is still a green, and the check-comparison record is
             // not allowed to invalidate evidence that was honestly earned.
             test <@ Verdict.isFullSuiteGreen v @>
-        | other -> failwithf "a pre-259 verdict must still read, got %A" other
+        | other -> failwithf "a verdict without a check-comparison record must still read, got %A" other
 
         // A classification from a LATER build is not "not recorded" either: something WAS
         // written here and this build cannot read it. Neither fact is agreement, and the
@@ -3122,7 +3123,7 @@ let ``a bad entry ANYWHERE in plugins or suites makes the whole verdict unreadab
         | other -> failwith $"expected Unreadable, got %A{other}")
 
 // ---------------------------------------------------------------------------
-// MERGE INTEGRATION (× 147 × 125)
+// MERGE INTEGRATION (verdict file × daemon binary identity and plugin status)
 //
 // The two hard integration points. Each is a place where shipping a SECOND answer to an
 // existing question would have been the easy thing to do.
@@ -3130,9 +3131,9 @@ let ``a bad entry ANYWHERE in plugins or suites makes the whole verdict unreadab
 
 [<Fact>]
 let ``the verdict's producer IS the daemon's BinaryIdentity — not a fourth binary hash`` () =
-    // 147 hashes the binary to decide "restart the daemon?"; the verdict hashes it to
+    // The daemon hashes the binary to decide "restart the daemon?"; the verdict hashes it to
     // decide "does this claim apply?". ONE hash, one sentinel, two conclusions — a second
-    // hasher with a second sentinel policy is what the tracked issue exists to stamp out.
+    // hasher with a second sentinel policy is what the shared `ContentHash` module exists to stamp out.
     let fromVerdict: Verdict.Producer = Verdict.Producer.current ()
     let fromDaemon: DaemonIdentity.BinaryIdentity = DaemonIdentity.currentIdentity ()
 
@@ -3147,18 +3148,18 @@ let ``the two hashers agree on the SENTINEL, and disagree on the CONCLUSION — 
         { Version = "1.0.0"
           ContentHash = ContentHash.UnhashableContent }
 
-    // 147 — "restart the daemon?" Two unhashable binaries MATCH: refusing would restart
+    // Daemon identity — "restart the daemon?" Two unhashable binaries MATCH: refusing would restart
     // the daemon on every command and thrash the warm FCS cache forever. Fail OPEN.
     test <@ DaemonIdentity.compareIdentity (Some unhashable) unhashable = DaemonIdentity.IdentityVerdict.Match @>
 
-    // 129 — "does this claim apply?" The same pair does NOT match: a verdict whose
+    // Verdict — "does this claim apply?" The same pair does NOT match: a verdict whose
     // provenance we could not establish must never read as current. Fail CLOSED.
     test <@ not (Verdict.Producer.same unhashable unhashable) @>
 
 [<Fact>]
 let ``a WEDGED plugin is wedged in the verdict file too — never laundered into "running"`` () =
     // The status line and the verdict file are two renderings of ONE value, so the file
-    // inherits 147's `Wedged` token for free — a consumer polling `.fshw/verdict.json` can
+    // inherits the status line's `Wedged` token for free — a consumer polling `.fshw/verdict.json` can
     // never read an 8h36m wedge as "still running, be patient".
     let now = DateTime.UtcNow
 
@@ -3177,8 +3178,8 @@ let ``a WEDGED plugin is wedged in the verdict file too — never laundered into
     test <@ vs.Head.Outcome = Verdict.PluginOutcome.Wedged @>
 
 [<Fact>]
-let ``a Completed plugin with NO run record is never OK in the verdict — 147's rule, inherited`` () =
-    // The content-free ✓. 147 fixed it on the status line; because there is one
+let ``a Completed plugin with NO run record is never OK in the verdict — the status line's rule, inherited`` () =
+    // The content-free ✓. It was fixed on the status line first; because there is one
     // implementation, the verdict file cannot disagree.
     let noRecord =
         { Status = StatusView.Completed DateTime.UtcNow
@@ -3333,7 +3334,7 @@ let ``an impact-filtered green is NOT the claim confirm makes`` () =
 
 [<Fact>]
 let ``(NoTestsRun NoTestsReason.Unstated) is an absence of evidence, and stays a refusal`` () =
-    // The tracked issue fixed a replayed full-suite pass being MISREPORTED as `(NoTestsRun NoTestsReason.Unstated)`;
+    // The task-cache replay fix stopped a full-suite pass being MISREPORTED as `(NoTestsRun NoTestsReason.Unstated)`;
     // the rule itself does not move: nothing ran ⇒ nothing was verified ⇒ never a green,
     // and never a shortcut past the run either.
     withTempDir "confirm-no-tests" (fun root ->
@@ -3756,8 +3757,8 @@ let ``the stale-output message names EVERY affected project, untruncated`` () =
     test <@ not (message.Contains "more)") @>
 
 /// The other half of AC2, and the ticket's third defect: the message must PRESCRIBE.
-/// It must also rule out the remedies that cannot work — the pattern the tracked issue set
-/// when its stale-state outcome had to say that `fshw scan` does not clear it.
+/// It must also rule out the remedies that cannot work — the pattern the stale-daemon-state
+/// outcome set when it had to say that `fshw scan` does not clear it.
 [<Fact>]
 let ``the stale-output message states the remedy and rules out the ones that cannot work`` () =
     let message =
@@ -4087,7 +4088,7 @@ let ``a declared exclusion round-trips inside scope, project and reason both`` (
 
 [<Fact>]
 let ``"nothing was excluded" and "this verdict does not say" are different bytes`` () =
-    // The whole shape of one level down: an absent gap must not
+    // The whole shape of the undeclared-test-project fix, one level down: an absent gap must not
     // read as no gap. `Some []` is a claim this build establishes by reconciling
     // the config with the solution before any test runs; `None` is what a verdict
     // written before the field existed is entitled to say, and no more.
@@ -4216,7 +4217,7 @@ let ``named selection misses survive the verdict file and render as actionable e
         | other -> failwithf "expected a readable verdict, got %A" other)
 
 // ---------------------------------------------------------------------------
-// rework — the PROJECTED check-scoped reading.
+// Check-vs-confirm comparison rework — the PROJECTED check-scoped reading.
 //
 // The feature shipped and its premise did not close. `confirm` requests full scope
 // BEFORE the scan that provokes the test run, in both transports, so the run is
@@ -4675,7 +4676,7 @@ let private expectStale (root: string) (what: string) =
 let ``lowering a coverage floor makes the verdict STALE — a green earned under the HIGHER floor never certifies the lower one``
     ()
     =
-    // THE defect the tracked issue was filed on, in its cheapest form. Measured in the
+    // THE defect the tree-hash v3 change was filed on, in its cheapest form. Measured in the
     // consuming repo before this fix: floor lowered, `fshw verdict` still exit 0,
     // `applies: true`. The verdict answered a question about a tree that had changed
     // underneath it.
@@ -5256,7 +5257,7 @@ let ``THE omission guard — a mid-run read is NEVER reported as green-and-appli
 
 [<Fact>]
 let ``the benchmark — polling for the whole of an in-flight run observes no green`` () =
-    // the acceptance criterion, as the ticket words it: "a poll loop
+    // The acceptance criterion, as the in-flight ticket words it: "a poll loop
     // running for the duration of a check never observes a green verdict attributable
     // to the previous run".
     //
@@ -5337,7 +5338,7 @@ let ``a verdict that cannot say which run made it is refused while any run is in
 
 [<Fact>]
 let ``a run in flight does not disturb the STALE answer — 4 is still 4`` () =
-    // the third acceptance criterion. The in-flight question is asked only
+    // The in-flight ticket's third acceptance criterion. The in-flight question is asked only
     // where the verdict would otherwise APPLY, so every pre-existing staleness answer
     // and its exit code are reached exactly as before.
     withTempDir "verdict-inflight-stale" (fun root ->
@@ -5472,7 +5473,7 @@ let ``exit 6 is in-flight, and no other report reaches it`` () =
     test <@ Verdict.reportExitCode (Verdict.Report.InFlight(v, "because")) = 6 @>
 
 // ---------------------------------------------------------------------------
-// rework. Completeness is DERIVED from the spans against the
+// Wall-time attribution rework. Completeness is DERIVED from the spans against the
 // observed wall time — never asserted by a producer. QA failed the first landing on
 // exactly this: eight real verdicts attributed 6–48% of their wall time and six of
 // them carried an EMPTY `timingIncompleteReasons`, printing `timing evidence complete`
@@ -5881,7 +5882,7 @@ let private notReported =
     ProjectModelReading.NotReported "the daemon did not report its project model"
 
 let private modelUnavailableSpec (model: ProjectModelReading) : Spec =
-    { greenVerdict "sha256:the tracked issue" 1 with
+    { greenVerdict "sha256:model" 1 with
         Command = Verdict.Check
         Outcome = Verdict.ModelUnavailable "NO VERDICT — PROJECT MODEL UNAVAILABLE"
         ExitCode = 2
@@ -5911,7 +5912,7 @@ let ``create REFUSES a green graded against a project model that was not availab
     let ex =
         Assert.Throws<ArgumentException>(fun () ->
             build
-                { greenVerdict "sha256:the tracked issue" 1 with
+                { greenVerdict "sha256:model" 1 with
                     ProjectModel = reading }
             |> ignore)
 

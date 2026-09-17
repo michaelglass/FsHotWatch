@@ -30,7 +30,7 @@ description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (ho
 # (DaemonConfig.analyzerPathFailures) — an unloaded analyzer and a clean one are
 # indistinguishable from the outside, so it fails loud rather than running green
 # without the house rules. That makes this the prerequisite of every daemon-backed
-# task, not just `check`: the tracked issue was `mise run format` in a clean workspace
+# task, not just `check`: the failure that exposed it was `mise run format` in a clean workspace
 # dying on the missing shim bin, and "passing" only on a workspace where some earlier
 # `dotnet build` had happened to populate it. An array, not a multi-line script: mise
 # runs the entries in order and stops at the first non-zero exit, so a shim that cannot
@@ -69,8 +69,8 @@ depends = ["build", "lint-project", "coverage-ratchet"]
 
 [tasks.cache-clear]
 description = "Clear the check result cache (BOTH the workspace store and the box-wide shared one)"
-# Not `rm -rf .fshw/cache/` alone: since the tracked issue the pure-content plugins'
-# entries live in a box-wide store OUTSIDE the checkout, and deleting only the
+# Not `rm -rf .fshw/cache/` alone: since the cross-workspace shared cache, the pure-content
+# plugins' entries live in a box-wide store OUTSIDE the checkout, and deleting only the
 # workspace half leaves those replaying.
 #
 # The second path takes every repository's shared entries, not just this one's. That
@@ -264,8 +264,8 @@ dotnet pack src/FsHotWatch.Build/FsHotWatch.Build.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj -c Release -o artifacts
 """
 # The packages this produces are what `release.yml` pushes to NuGet, so the
-# app-local MSBuild assemblies are checked BEFORE anything is packed
-#The check reads a BUILT `FsHotWatch.Cli.deps.json`, and package
+# app-local MSBuild assemblies are checked BEFORE anything is packed.
+# The check reads a BUILT `FsHotWatch.Cli.deps.json`, and package
 # versions are resolved per project rather than per configuration, so the `compile`
 # output it depends on is evidence about this pack too.
 depends = ["restore", "check-msbuild-deps"]

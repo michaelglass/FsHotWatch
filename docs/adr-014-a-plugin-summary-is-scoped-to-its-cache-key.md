@@ -2,12 +2,12 @@
 
 Status: Accepted (2026-08-14)
 
-Completes `docs/adr-013`-era work on cache honesty and, the
-`File = None` half.
+Completes `docs/adr-013`-era work on cache honesty: the `File = None` half of the
+cache-summary scope rule.
 
 ## Context
 
-The tracked issue established the scope rule: **a cache entry may only assert facts
+The per-file cache-summary fix (0.10.0-alpha.4) established the scope rule: **a cache entry may only assert facts
 derivable from its key's scope.** It enforced the rule for per-file entries
 (`CachedFile*`) by making the stale state unrepresentable — those entries carry no
 summary at all, and the replay derives one from the live error ledger.
@@ -34,7 +34,7 @@ per unformatted file, which `fshw status` lists and the verdict gates on) and th
 `unformatted` IPC command.
 
 A run that compared nothing reports `"no files to check"`, not `"format OK"` — the
-same refusal as the zero-match rule.
+same refusal as test-prune's zero-match rule.
 
 ## Roads not taken
 
@@ -58,7 +58,7 @@ mechanisms for teaching the framework to *re-derive* a stale summary at replay:
 Both repair a wrong assertion at replay time. Scoping the summary means the wrong
 assertion is never made, needs no declaration, no API surface and no serialization
 change, and leaves the rule stated exactly as it was. It is also
-where the tracked issue put their fixes: in the plugin's own cache
+where the same-family fixes listed below put theirs: in the plugin's own cache
 contract, using framework contracts that already existed.
 
 ## Consequences
@@ -76,9 +76,9 @@ contract, using framework contracts that already existed.
 
 ## Related
 
-- Completes: (`src/FsHotWatch/CHANGELOG.md`, 0.10.0-alpha.4).
-- Same family: (a cache hit re-verifies artifacts)
-  (a structural change must miss the key).
+- Completes: the per-file cache-summary fix (`src/FsHotWatch/CHANGELOG.md`, 0.10.0-alpha.4).
+- Same family: a build cache hit re-verifies artifacts; a structural change must miss
+  the key.
 - Source: `src/FsHotWatch.Fantomas/FormatCheckPlugin.fs`.
 - Regression tests: `tests/FsHotWatch.Tests/FormatCheckPluginTests.fs`
   ("a replayed format-check verdict cannot claim files its cache key never

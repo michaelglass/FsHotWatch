@@ -692,7 +692,7 @@ let phaseBTest () = ()
         let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         // Exactly this one file. `Contains` alone would also pass a fix that escalated
-        // to "everything changed" — the over-widening the positive control
+        // to "everything changed" — the over-widening the original fix's positive control
         // forbids — so the whole list is pinned: the widening is per FILE.
         test <@ changedFiles.Value = $"[\"%s{relPath}\"]" @>
 

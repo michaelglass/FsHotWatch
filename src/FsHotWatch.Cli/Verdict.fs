@@ -124,7 +124,7 @@ module PluginOutcome =
 ///   * a `Completed` carrying NO run record can never token as `ok` — a ✓ with no
 ///     `elapsed:` is not evidence. No record ⇒ no green;
 ///   * a `Completed` whose run record says the run VERIFIED NOTHING can never token as
-///     `ok` either — a run that executed no test is an absence of evidence, not a pass
+///     `ok` either — a run that executed no test is an absence of evidence, not a pass.
 ///     `Warn`, not `Fail`: nothing broke, so this must not redden a
 ///     verdict that the scope layer is already refusing with its own exit 3.
 let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : PluginOutcome option =
@@ -261,7 +261,7 @@ module TimingSpan =
         else
             Error $"%s{scope} timing is outside this invocation and was not attributed"
 
-    /// rework. Place a wall-clock interval the daemon measured on
+    /// Wall-time attribution rework: place a wall-clock interval the daemon measured on
     /// the invocation's timeline, CLIPPED to `[0, observed)`: the part that fell
     /// inside the invocation is wall time the invocation spent waiting on it, whether
     /// or not the interval began before the origin (a plugin run already in flight
@@ -387,7 +387,7 @@ module TimingSpan =
 /// above the per-plugin `elapsedMs`. Grouped so a producer attaches it in one move and
 /// cannot stamp an invocation id without the evidence that goes with it.
 ///
-/// (rework) There is NO field a producer sets to say "my timing is complete". The
+/// (wall-time attribution rework) There is NO field a producer sets to say "my timing is complete". The
 /// first landing had one (`TimingIncompleteReasons`), producers filled it only with
 /// the evidence they had REFUSED, and a verdict whose spans explained 10% of its wall
 /// time went out reading `timing evidence complete`. Completeness is now derived by
@@ -506,7 +506,7 @@ module RunSuites =
 
 /// One diagnostic that CONTRIBUTED to a red, as the verdict records it.
 ///
-/// case 3. A `confirm` returned exit 1 with all four plugins `ok` and
+/// Case 3 of the stale-verdict report. A `confirm` returned exit 1 with all four plugins `ok` and
 /// 9,064 passed / 0 failed. The red was real — ~51 FCS diagnostics in the ledger — but
 /// FCS is not a plugin: the daemon reports its diagnostics under the pseudo-source
 /// `fcs` (`PluginActivity.FcsPluginName`), which has no `PluginStatus` and therefore no
@@ -563,7 +563,7 @@ type RedCause =
 
 /// IS THIS RED A CLAIM ABOUT THIS TREE?
 ///
-/// the second failure direction, and the one its own fix left open. The
+/// The stale-verdict report's second failure direction, and the one its own fix left open. The
 /// ticket's premise is that a green must be earned; a RED must be earned in exactly the
 /// same sense, and two of the four incidents it records were reds that no longer
 /// described the tree they were reported against. A daemon that keeps asserting a
@@ -707,8 +707,8 @@ module Outcome =
 ///
 /// They lived as three hand-synced copies, and the `waiting on build` text is the
 /// reason that mattered: it is the message a WEDGED caller reads, so it is the one
-/// message that must never be the stale copy. The tracked issue had to edit all three to
-/// add the same two sentences, and a grep for the prose found only two of them.
+/// message that must never be the stale copy. The change that named `fshw confirm` as the
+/// escape had to edit all three to add the same two sentences, and a grep for the prose found only two of them.
 ///
 /// Cause and remedy are separate bindings because the surfaces join them differently —
 /// the terminals put the remedy on its own line, the structured payload keeps one
@@ -978,7 +978,7 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     | CheckVerdict.CheckOutcome.ModelUnavailable reading -> ModelUnavailable(CheckProse.modelUnavailable reading)
 
 // ---------------------------------------------------------------------------
-// the check-vs-confirm sample every `confirm` already had
+// The check-vs-confirm sample every `confirm` already had
 // ---------------------------------------------------------------------------
 
 /// HOW the impact-scoped reading was obtained. On the wire, and required to read the
@@ -1095,7 +1095,7 @@ type Divergence =
     /// point: same tree, same daemon, same instant.
     | Agreed
     /// The impact-scoped run was GREEN and the full suite was RED: the selector did not
-    /// choose a test that fails. Per this is an fshw DEFECT, not a merge
+    /// choose a test that fails. This is an fshw DEFECT, not a merge
     /// saved — `check` told someone their change was fine and it was not. The case this
     /// whole record exists to surface.
     | CheckMissedFailures
@@ -1122,8 +1122,8 @@ type Divergence =
     /// compile errors produces no full-suite result, and "could not compare" may never
     /// collapse into "agreed".
     | Incomparable of reason: string
-    /// NO comparison is on record: the verdict predates the tracked issue, or it is a `check`,
-    /// which never escalates and so never makes one.
+    /// NO comparison is on record: the verdict predates the check-comparison record, or it is a
+    /// `check`, which never escalates and so never makes one.
     ///
     /// This is what an ABSENT field reads as. It is deliberately distinct from every case
     /// above, so "nobody recorded anything" can never be read as "they agreed".
@@ -1170,7 +1170,7 @@ module Divergence =
         | Divergence.CheckOnlyFailures
         | Divergence.Incomparable _ -> false
 
-/// The sample as ONE value: the classification, and the reading it
+/// The check-vs-confirm comparison sample as ONE value: the classification, and the reading it
 /// classified. They are only meaningful together, so they travel together and `validate`
 /// refuses the two pairs that are self-contradictory (see `divergenceAgreesWithRecord`).
 type CheckComparison =
@@ -1179,7 +1179,8 @@ type CheckComparison =
       FailureRecall: FailureRecall option }
 
 module CheckComparison =
-    /// What a `check` records, and what a verdict written before the tracked issue reads as.
+    /// What a `check` records, and what a verdict written before the check-comparison record
+    /// reads as.
     let notRecorded: CheckComparison =
         { Divergence = Divergence.NotRecorded
           ImpactScoped = None
@@ -1624,7 +1625,7 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 /// Only `confirm`'s filtered scope is rewritten. `check` KEEPS its `ImpactFiltered`: an
 /// impact-filtered green is the answer the inner loop wants, and a `check` that hid its own
 /// scope would be the same lie pointed the other way.
-/// The tracked issue took the COUNTS out of this string. They were the one thing here a
+/// The check-comparison record took the COUNTS out of this string. They were the one thing here a
 /// machine wanted, they had to be re-derived by parsing prose, and they now live in
 /// `checkComparison.impactScopedRun.scope` as a typed `ImpactFiltered` — the same filtered
 /// reading, in the one place where being filtered is correct rather than a lie. Restating
@@ -1809,7 +1810,7 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
            excluded = gaps |}
         :> obj
 
-/// on the wire. Tagged with `kind` like every other sum in this file.
+/// The full-suite baseline, on the wire. Tagged with `kind` like every other sum in this file.
 let private baselineJson (baseline: CheckVerdict.Baseline) : obj =
     match baseline with
     | CheckVerdict.Baseline.FullSuiteRun r ->
@@ -1836,7 +1837,7 @@ let private outcomeJson (outcome: Outcome) : obj =
            reason = reason |}
         :> obj
 
-/// on the wire. An observation is written in the daemon's own versioned
+/// The project-model reading, on the wire. An observation is written in the daemon's own versioned
 /// `fshw-project-model-v1` payload, byte-for-byte what the daemon served — no second
 /// encoding of the same fact. A reading with no observation says so with its own
 /// `status` and reason, and carries no `schema`: it is not a daemon payload, and a
@@ -1849,7 +1850,7 @@ let private projectModelJson (reading: IpcParsing.ProjectModelReading) : obj =
            reason = reason |}
         :> obj
 
-/// on the wire. Tagged with `kind` like every other sum in this file, so a
+/// The check-comparison divergence, on the wire. Tagged with `kind` like every other sum in this file, so a
 /// consumer reads ONE field and never has to parse prose to learn what happened. `reason`
 /// appears only where there is one.
 let private divergenceJson (d: Divergence) : obj =
@@ -2535,7 +2536,7 @@ let private parseScope (el: JsonElement) : TestScope =
             |> Option.defaultValue "the recorded scope is not a shape this build recognizes"
         )
 
-/// read back from inside `scope`.
+/// The solution-scope exclusions, read back from inside `scope`.
 ///
 /// An ABSENT or `null` field is `None` — the verdict does not answer the
 /// question — and only an ARRAY becomes `Some`. An entry with no `project` is
@@ -2557,7 +2558,7 @@ let private parseExcluded (scopeEl: JsonElement) : SolutionScope.Exclusion list 
         |> Some
     | _ -> None
 
-/// read back. A green whose baseline is missing or unreadable is NOT a
+/// The full-suite baseline, read back. A green whose baseline is missing or unreadable is NOT a
 /// green — it is the verdict shape this ticket retired, and `None` makes the file
 /// `Unreadable`, which every consumer treats as "earn it again".
 let private parseBaseline (el: JsonElement) : CheckVerdict.Baseline option =
@@ -2598,7 +2599,7 @@ let private parseOutcome (el: JsonElement) : Outcome option =
         Some(ModelUnavailable(tryString el "reason" |> Option.defaultValue "no reason recorded"))
     | _ -> None
 
-/// read back. `None` for anything this build cannot read — including an
+/// The project-model reading, read back. `None` for anything this build cannot read — including an
 /// ABSENT field — which `read` refuses outright: a v2 verdict that does not say what model
 /// it was graded against has not recorded a verdict.
 let private parseProjectModel (el: JsonElement) : IpcParsing.ProjectModelReading option =
@@ -2607,7 +2608,7 @@ let private parseProjectModel (el: JsonElement) : IpcParsing.ProjectModelReading
     | None, Some "not-reported", Some reason -> Some(IpcParsing.ProjectModelReading.NotReported reason)
     | None, _, _ -> None
 
-/// read back. Every way of not getting a classification lands on a case
+/// The check-comparison divergence, read back. Every way of not getting a classification lands on a case
 /// that is NOT `Agreed` — an unreadable comparison is not an agreement, exactly as an
 /// unreadable plugin outcome is not a pass.
 let private parseDivergence (el: JsonElement) : Divergence =
@@ -2687,7 +2688,7 @@ let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
               Missed = missed }
 
 /// The whole `checkComparison` block. An ABSENT block is `NotRecorded` — the verdict
-/// predates the tracked issue, which is not corruption and is not agreement.
+/// predates the check-comparison record, which is not corruption and is not agreement.
 let private parseCheckComparison (root: JsonElement) : CheckComparison =
     match tryProp root "checkComparison" with
     | Some el when el.ValueKind = JsonValueKind.Object ->
@@ -3126,8 +3127,8 @@ let applicability
         // already written. Its own answer is current, and refusing it would make every
         // run unable to read what it just produced.
         //
-        // A verdict with NO invocation id — written before attribution existed
-        //or by a path that could not record one — matches no claim
+        // A verdict with NO invocation id — written before attribution existed,
+        // or by a path that could not record one — matches no claim
         // and is therefore refused while any run is in flight. That is the
         // conservative reading and the right one: a verdict that cannot say which run
         // made it has not established that it is this one.
@@ -3323,7 +3324,7 @@ let describeStillApplies (v: Verdict) : string =
 /// It carries `applies` — it never prints a bare verdict that a reader could
 /// mistake for a current one. A stale green must not LOOK like a green.
 ///
-/// The tracked issue adds `inFlight` beside it, ADDITIVELY: the schema string is
+/// The in-flight-run refusal adds `inFlight` beside it, ADDITIVELY: the schema string is
 /// unchanged, `applies` keeps its exact meaning, and every existing consumer that reads
 /// only `applies` gets `false` mid-run — the safe answer — without being taught anything.
 /// `inFlight` is what tells the consumers that WANT to distinguish the two reasons for a
@@ -3479,7 +3480,7 @@ let impactScopedRun (repoRoot: string) (runReport: TestRunReport) (inputs: Check
       Missed = MissedFailures.NotEnumerable }
 
 // ---------------------------------------------------------------------------
-// rework — the PROJECTED reading.
+// Check-comparison rework — the PROJECTED reading.
 // ---------------------------------------------------------------------------
 
 /// What the run's red is made of once the TESTS are set aside.
@@ -3530,7 +3531,7 @@ module NonTestRed =
         else
             OnlyUnattributableBeyondTheTests
 
-/// reworked. The check-scoped reading for the `confirm` that did NOT have
+/// Added by the check-comparison rework. The check-scoped reading for the `confirm` that did NOT have
 /// to escalate.
 ///
 /// THE CASE THAT PRODUCED NO DATA. `confirm` sends `set-scope full` BEFORE the scan that

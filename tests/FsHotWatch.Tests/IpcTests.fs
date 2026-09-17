@@ -1240,7 +1240,7 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
 // `IpcServer.acceptOne` must dispose just that connection and let the outer accept
 // loop spawn a replacement listener, keeping subsequent well-formed RPC calls
 // working. A server wedged after one bad message makes every later CLI invocation
-// surface the same error — what the Intelligence Phase D stress test reported.
+// surface the same error — what a downstream repository's stress test reported.
 
 /// Connect raw to the named pipe, write garbage, close. Returns true if the raw
 /// connect/write/close succeeded — the *server's* response is whatever the rpc layer

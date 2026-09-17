@@ -101,7 +101,8 @@ let ``already fired never fires again`` () =
 [<Fact>]
 let ``inside the window reports the window, not the work in flight`` () =
     // Ordering matters for the log: `Inhibited` is reserved for "would have
-    // exited right now but for this work", which is the event.
+    // exited right now but for this work", which is the event the idle-exit audit trail
+    // exists to record.
     let inhibitors = [ IdleInhibitor.PluginBusy ]
 
     test

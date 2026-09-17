@@ -18,7 +18,7 @@ used `PluginStatus.isQuiescent` — and `isQuiescent` treats **`Idle` as termina
 `Idle` means "this plugin has never run", so on a daemon that had only just
 started (everything `Idle`), the poll exited immediately and reported clean
 *before build/lint/analyze/test had run at all*. This repeatedly masked real
-breakages during the Intelligence modularization work; `./build.fsx check`
+breakages during the modularization of a large private downstream repository; `./build.fsx check`
 (which has its own gate) caught them, the fshw aggregates did not.
 
 `isQuiescent`-treats-`Idle`-as-done was itself a deliberate earlier fix: without

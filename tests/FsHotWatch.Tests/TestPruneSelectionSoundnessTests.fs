@@ -6,7 +6,7 @@
 ///
 ///   1. RED-TEST QUARANTINE is DURABLE: a test red in the last run that
 ///      executed it is re-selected on every run until it passes — in this session AND
-///      after a daemon restart. The restart is the shape reproduced: a
+///      after a daemon restart. The restart is the never-selected-red shape reproduced: a
 ///      queued symbol makes the restarted daemon's first run impact-filtered, so a red
 ///      the filter does not reach was never selected again.
 ///   2. FULL-SUITE BASELINE: an impact-filtered green is relative to the last run that
@@ -108,7 +108,7 @@ let private baselineOf (tmpDir: string) : FullSuiteBaseline.Baseline option =
     | FullSuiteBaseline.LoadedBaseline.Unreadable reason -> failwith $"baseline unreadable: {reason}"
 
 /// Two projects, each covering one symbol, so a queued `Lib.foo` selects P1 and NOTHING
-/// in P2 — the "unaffected" half of the shape.
+/// in P2 — the "unaffected" half of the never-selected-red shape.
 let private twoProjectDb (tmpDir: string) : string =
     let dbPath = Path.Combine(tmpDir, "tp.db")
     let db = Database.create dbPath
@@ -144,7 +144,7 @@ let ``replay: a red test the next change does not reach is still selected, and t
         test <@ outstandingProjects tmpDir = [ "P2" ] @>
 
         // Run N+1: nothing changed, nothing queued — impact analysis reaches NOTHING.
-        // Before the tracked issue this was the zero-affected green; P2's red was invisible
+        // Before quarantine this was the zero-affected green; P2's red was invisible
         // until someone ran the whole suite by hand (17 tests, for weeks). Quarantine
         // re-selects P2 — and ONLY P2: P1 is not re-run, which is what distinguishes
         // quarantine from a full-suite fallback.
@@ -329,7 +329,7 @@ let ``test-scope says why there is no baseline, then names the run that earned i
         | other -> failwithf "after a full run the daemon must name the baseline, got %A" other)
 
 // ---------------------------------------------------------------------------
-// 3. Owed-but-unrunnable (the candidate cause (c))
+// 3. Owed-but-unrunnable (a reviewer's candidate cause (c) for the never-selected reds)
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 60000)>]

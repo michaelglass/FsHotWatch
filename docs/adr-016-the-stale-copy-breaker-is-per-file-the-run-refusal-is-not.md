@@ -60,7 +60,7 @@ also satisfy the ticket's second acceptance line, and it is the worse one.
 
 A run that executes a subset writes CTRF reports and coverage for a tree the verdict
 cannot call green anyway — which is exactly the "three-minute partial-execution red
-that reads like progress" that created this whole preflight to delete.
+that reads like progress" that this whole preflight was created to delete.
 Turning `outcome: red, scope: none` into `outcome: red, scope: partial` does not give
 the operator a usable signal; it gives them a longer wait before the same refusal, plus
 report artifacts that a later reader can mistake for evidence. The wedge was never that

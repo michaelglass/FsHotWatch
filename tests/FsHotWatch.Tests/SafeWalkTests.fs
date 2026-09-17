@@ -10,7 +10,7 @@ open FsHotWatch.Tests.TestHelpers
 // SafeWalk is the one repo-scale walker (see its doc comment for the 2026-07-13
 // symlink-cycle wedge RCA). These pin its guarantees: no symlinked-dir descent,
 // depth cap, missing-root tolerance, best-effort over unreadable subtrees — and
-//that what it could NOT see is reported rather than deleted.
+// that what it could NOT see is reported rather than deleted.
 
 let private names (files: seq<FileInfo>) =
     files |> Seq.map (fun f -> f.Name) |> Seq.sort |> Seq.toList

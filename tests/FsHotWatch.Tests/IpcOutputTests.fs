@@ -799,7 +799,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 getStatus
                 getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
@@ -860,7 +860,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                     getStatus
                     cleanDiagnostics
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
-                    // no projection on offer. `InnerLoop` never asks, and a
+                    // No projection on offer. `InnerLoop` never asks, and a
                     // `Confirmation` that gets this records "no sample", never an agreement.
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore // forceFullRun: never fires — the scope is already full-suite
@@ -1185,7 +1185,7 @@ let ``run attribution takes every run the daemon completed after the baseline, o
     test <@ IpcOutput.TestRunEvidence.attribute None [] (reading b [ b; a; baselineRun ]) = [ b ] @>
 
 // --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
-// a WaitForComplete that faults because the daemon shut down or the pipe
+// A WaitForComplete that faults because the daemon shut down or the pipe
 // dropped mid-wait must be recognised, so the check yields a diagnostic verdict (exit 2)
 // rather than an opaque crash or a silent connection drop.
 
@@ -1234,7 +1234,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
@@ -1290,7 +1290,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
@@ -1335,7 +1335,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
                 getTestRun
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1) // forceFullRun
@@ -1374,7 +1374,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 (fun () -> BaselineFixtures.reportOf (FullSuite 1))
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1)
@@ -1393,8 +1393,8 @@ let ``the inner loop NEVER forces a full suite`` () =
 
 /// The same drive, but the VERDICT FILE is read before the temp dir goes away.
 ///
-/// lives or dies in the wiring: `publishVerdict` will happily classify a
-/// `None` it was handed, so a transport that captured nothing at the escalation would
+/// The check-vs-confirm sample lives or dies in the wiring: `publishVerdict` will
+/// happily classify a `None` it was handed, so a transport that captured nothing at the escalation would
 /// record `no-impact-scoped-run` on a confirm that plainly escalated — and every
 /// producer-level test would still pass.
 /// The run every `driveConfirmForVerdict` report and projection names.
@@ -1472,10 +1472,10 @@ let ``an escalating confirm records the impact-scoped reading it escalated away 
 
 [<Fact(Timeout = 15000)>]
 let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "nothing compared"`` () =
-    // the rework. `confirm` widens the scope BEFORE the scan, so the run its
-    // own scan provokes is unfiltered and this branch — not the escalating one — is what
-    // CI takes every single time. It used to record `no-impact-scoped-run`: a true
-    // statement that produced, in ten days and seventeen confirms, zero samples.
+    // Rework of the check-vs-confirm sample. `confirm` widens the scope BEFORE the scan,
+    // so the run its own scan provokes is unfiltered and this branch — not the escalating
+    // one — is what CI takes every single time. It used to record `no-impact-scoped-run`:
+    // a true statement that produced, in ten days and seventeen confirms, zero samples.
     let projected =
         driveConfirmForVerdict
             CheckVerdict.Confirmation
@@ -1560,7 +1560,7 @@ let ``renderIpcResult trusts a coverage token that ran, over an empty-looking pa
 
 [<Fact(Timeout = 15000)>]
 let ``the retired bare "ran" token is refused, not read as a pass`` () =
-    // Pre-282 daemons sent `"ran"`: tests executed, breadth unstated. The missing half used
+    // Older daemons sent `"ran"`: tests executed, breadth unstated. The missing half used
     // to arrive as a separate bool that could claim a full suite for a run that executed
     // nothing, so the token is refused rather than having a scope invented for it — a CLI
     // newer than its daemon gets one exit 3 and instructions to restart it.
@@ -1742,7 +1742,7 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
     test <@ List.isEmpty (redCausesOf false clean) @>
 
 // ---------------------------------------------------------------------------
-// a tree that MOVES under the check.
+// A tree that MOVES under the check.
 //
 // The double tree-hash exists to catch exactly one condition: the working tree changing
 // while a verdict is being produced. It catches it only if ONE of the two hashes is
@@ -1797,7 +1797,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 (fun () -> "{}") // getStatus
                 getErrors
                 (fun () -> BaselineFixtures.reportOf (FullSuite 1))
-                // no projection on offer. `InnerLoop` never asks, and a
+                // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
@@ -1863,7 +1863,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
     // green the same binary already earned over this unchanged tree. Otherwise the
     // next `confirm` loses the only evidence it is entitled to reuse.
     //
-    // as REPORTED: the erased verdict carried a run id, seven suite
+    // The incident as REPORTED: the erased verdict carried a run id, seven suite
     // entries and a tree hash, and what the reader lost was exactly those. So the prior
     // here is that verdict — a real run with seven CTRF reports and a green plugin
     // record — and the proof is the FILE read back after the zero-test publish, entry
@@ -2215,7 +2215,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
         | other -> failwithf "expected a published discovery verdict, got %A" other)
 
 // ---------------------------------------------------------------------------
-// a run that FINISHED and could not be received is its own answer.
+// A run that FINISHED and could not be received is its own answer.
 //
 // The shape of the incident, exactly: `WaitForComplete` returns (the daemon has built,
 // run the suite and committed its evidence), and the very next call — the diagnostics

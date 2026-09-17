@@ -1,6 +1,6 @@
 #!/usr/bin/env dotnet fsi
 
-/// the app-local MSBuild support assemblies cannot be silently
+/// Guarantees the app-local MSBuild support assemblies cannot be silently
 /// downgraded.
 ///
 /// WHAT HAPPENED. `Microsoft.NET.StringTools` moved backwards in a published CLI
@@ -13,7 +13,7 @@
 /// projects, no plugin ran, and no test executed — in the consuming repository,
 /// after publish.
 ///
-/// WHY THE OTHER HALF OF 290 IS NOT ENOUGH. `Daemon.totalDiscoveryFailure` now
+/// WHY THE OTHER HALF OF THE FIX IS NOT ENOUGH. `Daemon.totalDiscoveryFailure` now
 /// makes that state loud in seconds instead of an hour, and it is well covered.
 /// But it is a SYMPTOM check: it fires in the consumer, after the bad package
 /// shipped. This is the half that stops it shipping.
@@ -161,7 +161,7 @@ let verdictFor (package: string) (floor: Version) (lookup: Lookup) : Result<stri
     | Lookup.Found(raw, _, _) ->
         Error
             $"%s{package} resolved to %s{raw}, BELOW the known-good %A{floor}. This is the \
-              regression: %s{regressionConsequence}"
+              StringTools downgrade regression: %s{regressionConsequence}"
     // Its own sentence. Reporting an unreadable version as an absent package
     // sends the reader looking for a rename that did not happen.
     | Lookup.Unparseable raw ->

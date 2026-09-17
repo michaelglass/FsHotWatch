@@ -161,8 +161,8 @@ let runProcess config (executable: string) (arguments: string list) (environment
 /// NU1212 is the SDK saying "this package exists and you asked for it in the wrong
 /// shape" — a DotnetToolReference project cannot hold a plain PackageReference. It was
 /// once retried twenty times and then reported as "not published", which is how a
-/// successful release of FsHotWatch.Cli 0.14.0-alpha.30 was called a failure
-///It is a defect in the probe, never evidence about the feed.
+/// successful release of FsHotWatch.Cli 0.14.0-alpha.30 was called a failure.
+/// It is a defect in the probe, never evidence about the feed.
 let private classifyFailure detail =
     if (detail: string).Contains("NU1212", StringComparison.OrdinalIgnoreCase) then
         ProbeShapeInvalid detail

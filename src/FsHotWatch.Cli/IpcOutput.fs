@@ -111,8 +111,8 @@ let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdic
           Verdict.Message = Verdict.RedCauseMessage.ofLedger e.Plugin file e.Message
           Verdict.Kind = Verdict.RedCause.classify e.Plugin file e.Message })
 
-/// How many of the failing entries are NOT claims about the tree on disk
-///From `redCausesOf` — the very list the verdict records — so the
+/// How many of the failing entries are NOT claims about the tree on disk.
+/// From `redCausesOf` — the very list the verdict records — so the
 /// number that can turn a red into NO VERDICT and the reasons printed beside it are the
 /// same entries by construction, BEFORE `MaxRedCauses` truncation.
 let internal unattributableCountOf (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
@@ -292,7 +292,7 @@ let renderIpcResult
                                 name, status)
                             |> List.ofSeq
 
-                        // criterion 3. The per-project TEST counts, from
+                        // Report criterion 3: the per-project TEST counts, from
                         // the CTRF report each project wrote. Rendered for every project on
                         // every outcome, green included: "a missing summary line is the tell
                         // that separates a real pass from a vacuous one", and until now the
@@ -941,7 +941,7 @@ let private publishVerdictWithReason
     // all — which is a FACT the verdict states, not a silence.
     (checkScoped: Verdict.CheckScopedEvidence)
     (statuses: Map<string, ParsedPluginStatus>)
-    // rework. The daemon's phase ledger — where ITS wall time went,
+    // Wall-time attribution rework. The daemon's phase ledger — where ITS wall time went,
     // including the plugin runs this check waited on and a later re-run superseded.
     (daemonEvidence: IpcParsing.DaemonEvidence)
     // The failing ledger diagnostics the exit code was computed from —
@@ -1082,7 +1082,7 @@ let private publishVerdictWithReason
                 ([], [], [])
             |> fun (hooks, spans, reasons) -> List.rev hooks, List.rev spans, List.rev reasons
 
-        // (rework) The daemon's own phases — startup, discovery, the scan `WaitForScan`
+        // (wall-time attribution rework) The daemon's own phases — startup, discovery, the scan `WaitForScan`
         // blocked on, change batches — and EVERY plugin `Running` interval, clipped to
         // this invocation. A served ledger already carries each plugin's runs, the
         // superseded ones included, so the `lastRun` records are the fallback for a
@@ -1362,7 +1362,7 @@ let pollAndRenderForInvocation
     // see a different daemon.
     let finalStatuses = ref Map.empty
 
-    // rework. The daemon's phase ledger, captured from the SAME
+    // Wall-time attribution rework. The daemon's phase ledger, captured from the SAME
     // response as the statuses at every read, so the verdict places the daemon's
     // phases from the reading it was computed from.
     let finalEvidence = ref IpcParsing.DaemonEvidence.NotServed
@@ -1486,7 +1486,7 @@ let pollAndRenderForInvocation
         // because a forced run can fail, and its failures are the answer.
         // The reading `confirm` is about to throw away. Hoisted out of the `else` branch
         // below because BOTH branches need it now: one grades it, the other escalates past
-        // it — and the tracked issue records what it said either way.
+        // it — and the verdict's check-comparison record keeps what it said either way.
         let preEscalation = checkInputs noWarnFail firstRun firstResp
 
         let initialRead =
@@ -1629,7 +1629,7 @@ let pollAndRenderForInvocation
         // most likely wedged. The remote message names the plugin and its elapsed time
         // (e.g. "still running: test-prune (1h 0m)"), so it is surfaced verbatim plus
         // the recovery path.
-        // return the code the verdict FILE records, not a literal.
+        // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
             publishVerdictForInvocation
                 invocation
@@ -1661,7 +1661,7 @@ let pollAndRenderForInvocation
 
         abortExitCode
     | ex when isDaemonShutdownDuringWait ex ->
-        // return the code the verdict FILE records, not a literal.
+        // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
             publishVerdictForInvocation
                 invocation

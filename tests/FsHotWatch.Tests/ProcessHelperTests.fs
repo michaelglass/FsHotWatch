@@ -599,7 +599,7 @@ let ``killTreeWith: a refused kill reports KillFailed, never Killed`` () =
 // ---------------------------------------------------------------------------
 // THE OTHER HALF OF: a kill that never ANSWERS.
 //
-// The tracked issue fixed the kill that says no. This is the kill that says nothing. On 2026-08-21 a
+// `KillFailed` fixed the kill that says no. This is the kill that says nothing. On 2026-08-21 a
 // `check` timed out five test projects at their configured caps, and then TestPrune never
 // emitted `TestRunCompleted` at all: no CTRF, no coverage, no history, no verdict. The
 // plugin stayed Running for another 72 minutes until the daemon's wedge watchdog restarted
@@ -1171,7 +1171,7 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
     )
 
 // ---------------------------------------------------------------------------
-// the regression test: a drain that could not finish must FAIL an output
+// The unfinished-drain regression test: a drain that could not finish must FAIL an output
 // assertion by its true name, never be compared against as if it were the child's output.
 //
 // RED-BEFORE-GREEN: revert `ProcessOutput` to a plain `string` and this test cannot even be

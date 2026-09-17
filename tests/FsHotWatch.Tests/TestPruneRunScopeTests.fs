@@ -47,7 +47,7 @@ let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
 // These drive the plugin's real `Custom(TestsFinished)` handler through a recording
 // `PluginCtx` — the exact seam where the laundering happened. Both directions are pinned:
 // a disjoint filtered green must NOT clear, and a COVERING filtered green MUST, or the
-// fix becomes the permanent stuck-red.
+// fix becomes a permanent stuck-red.
 // =============================================================================
 
 /// Recording ctx over the plugin: captures terminal statuses and models the shared error
@@ -2124,8 +2124,8 @@ let ``the structure hash sees EVERY MSBuild implicit import, not just Directory.
 
 [<Fact(Timeout = 20000)>]
 let ``an unanalysable file that was DELETED stops blocking the verdict`` () =
-    // `UnanalyzableFiles` entries leave only when the file analyses CLEANLY
-    //and a deleted file never analyses again — no `FileChecked`
+    // `UnanalyzableFiles` entries leave only when the file analyses CLEANLY,
+    // and a deleted file never analyses again — no `FileChecked`
     // will ever arrive for a path that is gone. So its warning was re-reported after
     // every test run for the rest of the daemon's life, and under the default
     // warn-fail policy it denied every check its green while ALSO widening every run to
@@ -2532,8 +2532,8 @@ let ``a cached test-prune replay clears the whole ledger, exactly as its real ru
         test <@ cached = cold @>)
 
 // ---------------------------------------------------------------------------
-// rework — retaining the selection `confirm` widens past, and asking
-// whether it would have reached a failure.
+// Check-vs-confirm comparison rework — retaining the selection `confirm` widens past,
+// and asking whether it would have reached a failure.
 //
 // `confirm` sends `set-scope full` BEFORE the scan that provokes the run, so the impact
 // selection is computed at the launch chokepoint and thrown away in the same breath.
@@ -2946,7 +2946,7 @@ let private runIdOf (event: PluginEvent<TestPruneMsg>) =
     | Custom(TestsFinished(_, completed, _)) -> completed.RunId
     | _ -> failwith "expected TestsFinished"
 
-/// The completion that reproduces the tracked issue: zero tests selected because the change
+/// The completion that used to discard an earned receipt: zero tests selected because the change
 /// was already verified, and a launch whose `InputTreeHash` is `None` — the receipt-tree
 /// read skipped or could not read an entry, so the launch never bound the tree it ran
 /// on. Before the fix this wrote an unbound receipt over the earned one.

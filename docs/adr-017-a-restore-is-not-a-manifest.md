@@ -109,7 +109,7 @@ now requires it.
 
 ## What was falsified
 
-The tracked issue reported the mirror failure — a content-identical touch of
+A separate report described the mirror failure — a content-identical touch of
 `Directory.Build.props` wedging the gate with no way out — and attributed it to
 `dotnet restore` "exiting with a hard failure" because it "refuses to rewrite an
 assets file it considers already up to date".
@@ -126,13 +126,13 @@ So the false-STALE verdict is real and its documented consequence is not. What
 remains of it is a COST, not a wedge: one spurious restore chain per project on the
 first sighting after such a touch (`dotnet restore`, plus a `paket restore` per lock
 group, plus `tool restore`), which under contention can reach the 5-minute per-step
-timeout and only then produce the red 538 describes. That is worth fixing, but it is
+timeout and only then produce the red that report describes. That is worth fixing, but it is
 a latency problem with a different shape, and building a durable on-disk baseline for
 it was deliberately NOT done here — see below.
 
 ## Deliberately not done
 
-**A durable, cross-process fresh-signature baseline.** 538's own suggested shape,
+**A durable, cross-process fresh-signature baseline.** That report's own suggested shape,
 and it would remove the spurious restore. Rejected for now for a reason that only
 appears when both directions are held at once: that spurious restore is currently
 LOAD-BEARING for the compile half of direction A. Merging into a long-lived
@@ -156,8 +156,8 @@ accident.
 
 Fixing it is a strictly larger change than this one (a `ProjectReference` resolver
 in core, with property expansion, matching the one `ArtifactFreshness` already has
-in `FsHotWatch.TestPrune`), and the approval comment explicitly scoped
-this work to detection. Recorded here so it is not re-derived: it is the precondition
+in `FsHotWatch.TestPrune`), and the review that approved this work explicitly scoped
+it to detection. Recorded here so it is not re-derived: it is the precondition
 for the durable baseline above.
 
 ## Consequences

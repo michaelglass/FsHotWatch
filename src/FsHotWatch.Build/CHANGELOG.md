@@ -26,8 +26,8 @@
   build success is never replayed over a missing DLL, an authored source newer than
   its DLL, or a dependency copy that the producer has moved past. A nominally
   successful build that leaves any of those attributable findings now becomes
-  `BuildArtifactsStale` instead of minting a success for the same cache key. The
-  observation flag remains accepted by `createWith` for source
+  `BuildArtifactsStale` instead of minting a success for the same cache key. The old
+  report-only observation flag remains accepted by `createWith` for source
   compatibility but no longer disables the invariant; the daemon uses `create`.
 - A pending dependency copy is content-checked after the real build. Byte-identical
   output with metadata drift remains green; different or unreadable bytes fail closed.

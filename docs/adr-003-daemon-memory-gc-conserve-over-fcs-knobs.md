@@ -30,7 +30,7 @@ both `keep*` retention flags looked like pure waste, and FCS docs describe
 
 We benchmarked instead of trusting the static analysis. Three rounds, 27
 measured daemon sessions, one variant binary per jj workspace, strictly
-sequential runs against a dedicated intelligence workspace, diagnostics-parity
+sequential runs against a dedicated workspace of that repository, diagnostics-parity
 gate on every session. That benchmarking is why this ADR's decision is the
 opposite of the static analysis's prediction.
 

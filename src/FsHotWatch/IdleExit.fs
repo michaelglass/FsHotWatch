@@ -154,10 +154,10 @@ module IdleInhibitor =
 
 /// Everything that currently forbids an idle exit. Empty means genuinely idle.
 ///
-/// The scan leg is the fix: a cold `fshw check` spends minutes in
-/// `performScan` where no plugin mailbox is in flight and the client's verdict
-/// wait has not yet been bracketed, so the first two legs alone read a working
-/// daemon as idle. Pure; the daemon injects the three live signals.
+/// The scan leg is the fix for a daemon that shut itself down mid-scan: a cold
+/// `fshw check` spends minutes in `performScan` where no plugin mailbox is in flight
+/// and the client's verdict wait has not yet been bracketed, so the first two legs
+/// alone read a working daemon as idle. Pure; the daemon injects the three live signals.
 let idleInhibitors
     (anyPluginBusy: bool)
     (activeVerdictWaits: int)
@@ -173,7 +173,7 @@ let idleInhibitors
 /// What one scheduler tick decided. Returned (rather than a bare bool) so the
 /// deferral REASON is available to the caller and to tests: "deferred because a
 /// cold scan is in flight" and "deferred because the window has not elapsed" are
-/// different facts, and the tracked issue was a bug in exactly that distinction.
+/// different facts, and the mid-scan self-shutdown was a bug in exactly that distinction.
 [<RequireQualifiedAccess>]
 type TickOutcome =
     /// The latch was claimed and `Shutdown` was invoked (exactly one tick ever).
@@ -192,7 +192,7 @@ type TickOutcome =
 /// irrelevant), then the window, then live work. Checking the window BEFORE the
 /// inhibitors means `Inhibited` carries the strong statement "this daemon would
 /// have exited right now had it not been working" — the exact event
-/// The tracked issue needed in the log and could not find.
+/// the mid-scan shutdown investigation needed in the log and could not find.
 let decide
     (idleThreshold: TimeSpan)
     (idleFor: TimeSpan)
@@ -251,8 +251,8 @@ type IdleExitDeps =
 /// callback. Returns what the tick decided.
 ///
 /// An `Inhibited` tick LOGS: the window had elapsed and the daemon stayed up
-/// only because work was in flight. That line is the audit trail the tracked issue
-/// wanted — a cold scan that outlives the (pressure-shortened) window says so
+/// only because work was in flight. That line is the audit trail the mid-scan
+/// shutdown incident could not produce — a cold scan that outlives the (pressure-shortened) window says so
 /// every 30s instead of being terminated in silence.
 let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
     try

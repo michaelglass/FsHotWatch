@@ -20,7 +20,7 @@
 ///
 /// A declared input that resolves to NO file is an ENTRY of its own, not a silent
 /// zero — see `VerdictInputs.AbsentDeclaration`. A declaration nobody honours is
-/// the fail-open the tracked issue was filed on, and a declaration honoured only when
+/// the fail-open this rule was introduced to close, and a declaration honoured only when
 /// the file happens to be there is the same bug wearing a fix.
 ///
 /// The hash is over CONTENT, never mtimes: a checkout, a `touch`, or a filesystem with

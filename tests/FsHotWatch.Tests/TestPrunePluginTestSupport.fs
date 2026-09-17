@@ -155,7 +155,7 @@ let writeAt (path: string) (contents: string) (mtime: DateTime) =
 
 let p (parts: string list) = Path.Combine(List.toArray parts)
 
-/// A repo root no other test shares. The tracked issue made two more TestPrune ledgers
+/// A repo root no other test shares. The full-suite-baseline change made two more TestPrune ledgers
 /// durable (`outstanding-failures.json`, `full-suite-baseline.json`) beside the pending
 /// queue that already was, and a plugin created over a SHARED root (`"/tmp"`) loads
 /// whatever the previous test left there — a red from one test quarantined into the
@@ -254,7 +254,7 @@ module PendingQueueHelpers =
 
     /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
     /// test failure, not an empty queue: these tests assert on what is owed, and reading
-    /// an unreadable ledger as `empty` is the bug the tracked issue closes. The tests that
+    /// an unreadable ledger as `empty` is the bug `LoadedQueue.Unreadable` exists to close. The tests that
     /// WANT the unreadable case match on `LoadedQueue` themselves.
     let loadQueue (tmpDir: string) : Set<string> =
         match PendingVerification.load tmpDir with

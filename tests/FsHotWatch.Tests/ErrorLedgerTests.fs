@@ -11,7 +11,7 @@ open FsHotWatch.Tests.TestHelpers
 let private entry msg sev line = { errorEntry msg sev with Line = line }
 
 /// Every `DiagnosticSeverity` case, enumerated BY REFLECTION rather than by hand.
-/// A hand-written list is the exact thing the tracked issue found already broken: a case
+/// A hand-written list is exactly what an earlier change found already broken: a case
 /// added later was simply absent from it, so a test that claimed to walk "every
 /// severity" had quietly stopped doing so. Reflection makes the list impossible to
 /// forget to update.
@@ -486,7 +486,7 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
 /// verdict read to decide "completed with issues", and it tallies only `Error` and
 /// `Warning`. A severity whose whole meaning is "this DID NOT RUN" — `Deferred`,
 /// `HostAborted` — must therefore tally as NEITHER: counted as an error it would render
-/// a killed test host as a defect, which is precisely the confusion the tracked issue
+/// a killed test host as a defect, which is precisely the confusion the killed-test-host fix
 /// removed from the verdict, re-introduced one layer up in the renderer.
 ///
 /// Enumerated by reflection (`allSeverities`) for the same reason the wire-name

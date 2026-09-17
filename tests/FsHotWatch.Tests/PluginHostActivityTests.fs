@@ -80,8 +80,8 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Completed verdict summary is captured in history`` () =
-    // The status IS the summary channel — CompleteWithSummary is gone
-    //so no side-channel is left to disagree with it.
+    // The status IS the summary channel — CompleteWithSummary is gone,
+    // so no side-channel is left to disagree with it.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =

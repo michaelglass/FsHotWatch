@@ -8,9 +8,9 @@
 /// project's output still holds the previous tree's bytes.
 ///
 /// This lived only in `FsHotWatch.TestPrune.ArtifactFreshness`, which `FsHotWatch.Build`
-/// cannot see — they are siblings over core, and the tracked issue named that as the reason
-/// its own acceptance could not be met. Hoisting the RULE (not TestPrune's `RunnerTarget`,
-/// not its `.fsproj` closure walk) is what makes it reachable from both, with ONE
+/// cannot see — they are siblings over core, which is why the build plugin could not ask
+/// the same question. Hoisting the RULE (not TestPrune's `RunnerTarget`, not its
+/// `.fsproj` closure walk) is what makes it reachable from both, with ONE
 /// implementation rather than two that have to agree.
 ///
 /// TWO QUESTIONS, NOT ONE, and the difference decides what a caller may do about it:

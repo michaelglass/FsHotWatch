@@ -23,7 +23,7 @@ type StaleReason =
     /// the next real build will re-emit it and a stored `built N projects` that never
     /// ran is a claim about work still outstanding.
     ///
-    /// The class the wedge is actually made of, and the one the plugin
+    /// The class the stale-copy wedge is actually made of, and the one the plugin
     /// could not see: the compile checks above ask about a project's OWN assembly, and
     /// a working-copy flip refreshes `src/**` outputs while every test project's COPY of
     /// them is left behind. Reachable from here since the rule moved into core's
@@ -437,12 +437,12 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 /// THE FLOOR: a freshness pass that examined nothing is not a fresh tree.
 ///
 /// `verifyArtifactsFresh` reports the projects it found STALE, and drives both the
-/// post-build demotion and — — the cache-REPLAY gate. An empty
+/// post-build demotion and the cache-REPLAY gate. An empty
 /// result is "every artifact is current". It is also, value for value, "no artifact
 /// could be examined". The two are indistinguishable to every caller, so a graph that
 /// stopped yielding build outputs would switch the whole guard off while every run
-/// stayed green: the silent-degradation shape the tracked issue removed
-/// elsewhere, and that preflight names for its own gate.
+/// stayed green: the silent-degradation shape this repo has removed elsewhere, and that
+/// the test-prune stale-artifact preflight names for its own gate.
 ///
 /// The door is not hypothetical, and it is not narrow. It stood wide open for two
 /// releases: `GetCanonicalDllPath` answered `None` without a registered TargetFramework,
@@ -450,11 +450,11 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 /// `src/` called it — so every live daemon examined nothing while every test stayed
 /// green. Discovery now records MSBuild's `TargetPath`, but the gap still opens for a
 /// project whose evaluation FAILED (no `TargetPath` reported) that also centralises
-/// `<TargetFramework>` in a `Directory.Build.props` — the exact file class
-/// The tracked issue established is an invisible build input — and for any host that
+/// `<TargetFramework>` in a `Directory.Build.props` — the exact file class the
+/// `VerdictInputs` tree-hash rule established is an invisible build input — and for any host that
 /// populates the graph without recording an output.
 ///
-/// It REPORTS rather than refuses, for the reason the floor gives: a graph
+/// It REPORTS rather than refuses, for the reason the stale-artifact preflight's floor gives: a graph
 /// with no derivable outputs is a legitimate configuration, and bypassing the cache on
 /// every lookup there would trade one wedge class for the rebuild-every-time regression
 /// this ticket's own acceptance forbids. Naming the gap costs nothing and makes a total
@@ -562,7 +562,7 @@ let createWith
     /// daemon for two releases and stayed green in every test, because the fixtures
     /// registered projects by a path production does not take. A count is the one
     /// reading that tells those apart from the outside, and it is what the last QA pass
-    /// on the tracked issue had to reconstruct from `grep -c` over a daemon log. Zero pairs
+    /// on the copy gate had to reconstruct from `grep -c` over a daemon log. Zero pairs
     /// is legitimate (a single-project repo, or nothing built yet) — which is exactly why
     /// it must be reported rather than assumed.
     let copyCoverageReported = ref false
@@ -1304,7 +1304,7 @@ let createWith
             // build is launched by the `CommandCompleted` that satisfies the last one —
             // so for exactly the repos that use `dependsOn`, the event that starts the
             // build fell through to an ungated `merkleKey()`. `confirm`'s force-rebuild
-            //and the artifact re-verification below were both bypassed
+            // and the artifact re-verification below were both bypassed
             // on the only lookup that could have applied them.
             //
             // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
@@ -1392,7 +1392,7 @@ let createWith
       Teardown = None }
 
 /// The ordinary enforcing constructor. `createWith` retains its former boolean only
-/// for source compatibility; the tracked issue removed the unsafe report-only behavior.
+/// for source compatibility; promoting the corrected detector removed the unsafe report-only behavior.
 let create
     (command: string)
     (args: string)

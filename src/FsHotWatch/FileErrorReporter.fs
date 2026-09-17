@@ -12,8 +12,8 @@ let private errorFileName (plugin: string) (file: string) =
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
 /// The per-field cap, re-exported from `ErrorLedger.Transport` — where it moved so the
-/// IPC mirror is bound by the SAME number rather than by nothing at all
-///Kept as a name here because this file's own readers and tests ask
+/// IPC mirror is bound by the SAME number rather than by nothing at all.
+/// Kept as a name here because this file's own readers and tests ask
 /// "what does the on-disk ledger cap a field at?" and the answer must not require
 /// knowing which module owns it.
 let maxFieldChars = ErrorLedger.Transport.MaxFieldChars

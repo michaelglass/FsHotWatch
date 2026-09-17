@@ -116,7 +116,7 @@ let isTimedOut =
 /// EVIDENCE: 0 means the suite passed, Microsoft.Testing.Platform's small codes say
 /// which way it failed. For a SIGNALLED child it is evidence of nothing about the
 /// tests — whatever the runner had written when the signal landed is a partial
-/// transcript, not a result. `the tracked issue`: a saturated box that gets its test
+/// transcript, not a result. The bug this fixes: a saturated box that gets its test
 /// host killed used to report the transcript's half-written per-test rows as a mass
 /// regression, which is a non-result rendered as a definite negative.
 type TerminatingSignal =
@@ -382,7 +382,7 @@ let internal classifyKill (call: KillCall) : KillOutcome =
 /// not account for is registered with `ProcessRegistry` so shutdown can name it, and
 /// a pid buried in prose cannot be registered.
 ///
-/// Instrumented at both ends. The begin line is what the evidence was
+/// Instrumented at both ends. The begin line is what the original report's evidence was
 /// missing: with only "the project timed out" retained, a run that stopped inside the
 /// teardown is indistinguishable from one that stopped before reaching it, and the
 /// blocked project cannot be named from the log after the fact.

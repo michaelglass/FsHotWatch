@@ -7,7 +7,7 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.DaemonPhases
 
-// rework. The ledger is what lets a verdict cover the wall time a
+// Wall-time attribution rework. The ledger is what lets a verdict cover the wall time a
 // check spent waiting on the DAEMON — the scan, discovery, superseded plugin runs —
 // so its two promises are: every phase that began is recorded on every exit, and a
 // reader taking a snapshot mid-phase sees that time rather than a hole.

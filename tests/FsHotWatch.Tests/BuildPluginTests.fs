@@ -1754,7 +1754,7 @@ let private runVerifyHarness
 
         // `true` succeeds with empty output — the "MSBuild silently skipped" condition that
         // mtime verification has to disambiguate.
-        // Production used to pass `false` here while the tracked issue observed the
+        // Production used to pass `false` here while the report-only window observed the
         // detector. Case 1 promotes that exact path: a build that did no work may not
         // mint success over an authored source newer than its output.
         let handler = BuildPlugin.createWith false "true" "" [] graph [] None [] None
@@ -1806,7 +1806,7 @@ let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`
 
 [<Fact(Timeout = 15000)>]
 let ``a discovery-regenerated obj compile item does not redden a fresh build`` () =
-    // THE reason the gate could not be promoted, as a test.
+    // THE reason the report-only freshness gate could not be promoted, as a test.
     //
     // `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs` is a compile item of every SDK
     // project, and every design-time MSBuild evaluation rewrites it. Project DISCOVERY
@@ -2484,7 +2484,7 @@ let ``a dependency-gated lookup re-verifies the artifacts too, not just a FileCh
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild reaches a dependency-gated lookup`` () =
-    // the escape hatch had the same hole: `confirm` sets the flag, and in a
+    // The force-rebuild escape hatch had the same hole: `confirm` sets the flag, and in a
     // `dependsOn` repo the lookup that decides whether a build runs never read it.
     withOneProjectGraph "replay-dep-force" (fun (graph, _, _) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None

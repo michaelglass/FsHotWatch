@@ -75,7 +75,7 @@ All notable changes to FsHotWatch packages are documented here.
 > compiler telling you where you were guessing.
 
 - **a run that verified nothing is a run-outcome CASE, not a summary
-  string.** the tracked issue stopped a zero-project test run from rendering `✓`, but did it
+  string.** An earlier fix stopped a zero-project test run from rendering `✓`, but did it
   with a `NOTHING VERIFIED: ` prefix on the summary that three surfaces parsed back. The
   fact now travels as a value: `RunVerdict.verifiedNothing detail elapsed` builds the
   verdict, the host records the run as `RunOutcome.VerifiedNothing detail`, the status
@@ -111,11 +111,11 @@ All notable changes to FsHotWatch packages are documented here.
     reds are quarantined.
   - **Owed-but-unrunnable coverage is reported, not written off.** A changed symbol whose
     only covering tests live in a test project `tests.projects` does not list is still
-    dropped from the queue (— nothing here can discharge it), but the
+    dropped from the queue (nothing here can discharge it), but the
     write-off names the project: a warning in the log, `unrunnableProjects` on the
     `test-scope` reply, and the `changes-uncovered` reason in the verdict and terminal.
-    This was the reviewer's candidate cause (c); the intelligence
-    repository lists every test project, so it was not the cause there — the 17 reached
+    This was the reviewer's candidate cause (c); the large private downstream
+    repository where the 17 sat lists every test project, so it was not the cause there — the 17 reached
     the changed code over HTTP, an edge no AST analysis has, which is why quarantine (not
     a better selector) is the mechanism that makes sustained rot impossible.
 
@@ -142,19 +142,19 @@ All notable changes to FsHotWatch packages are documented here.
     reds are quarantined.
   - **Owed-but-unrunnable coverage is reported, not written off.** A changed symbol whose
     only covering tests live in a test project `tests.projects` does not list is still
-    dropped from the queue (— nothing here can discharge it), but the
+    dropped from the queue (nothing here can discharge it), but the
     write-off names the project: a warning in the log, `unrunnableProjects` on the
     `test-scope` reply, and the `changes-uncovered` reason in the verdict and terminal.
-    This was the reviewer's candidate cause (c); the intelligence
-    repository lists every test project, so it was not the cause there — the 17 reached
+    This was the reviewer's candidate cause (c); the large private downstream
+    repository where the 17 sat lists every test project, so it was not the cause there — the 17 reached
     the changed code over HTTP, an edge no AST analysis has, which is why quarantine (not
     a better selector) is the mechanism that makes sustained rot impossible.
-- rework: **a verdict's timing now covers the wall time the check spent
+- rework of verdict wall-time attribution: **a verdict's timing now covers the wall time the check spent
   waiting on the DAEMON, and `timing evidence complete` is derived from the spans, never
   asserted.** QA failed the first landing on the load-bearing criterion: on nine real
   gates the spans attributed 6–48% of the observed wall time, and six of the seven
   low-attribution verdicts carried an EMPTY `timingIncompleteReasons`. A 32-minute
-  `check` on the intelligence repository printed `195680ms attributed / 1943457ms
+  `check` on the downstream repository printed `195680ms attributed / 1943457ms
   observed (10.1%)` and then `timing evidence complete`. Reconstructed from that run's
   `daemon.log`, the 1,748 s hole was: the cold scan `WaitForScan` blocked on (MSBuild
   discovery 8 s + FCS check tiers, 711 s), a re-discovery a project-file change provoked
@@ -181,7 +181,7 @@ All notable changes to FsHotWatch packages are documented here.
     711000ms: cold scan: checked 1704 of 1704 registered file(s), unchecked 0`) ahead of
     the percentage line.
 
-- rework: **a persistent FSEvents refusal now fails `fshw start`
+- rework of the FSEvents stream-refusal retry: **a persistent FSEvents refusal now fails `fshw start`
   closed instead of silently demoting the daemon to polling.** The first landing retried
   a transiently refused `FSEventStreamStart`/`FSEventStreamCreate` (100/300/900 ms) and
   typed `FileWatcher.Mode`, but a refusal past that budget fell into the pre-existing
@@ -266,7 +266,7 @@ host resolves assemblies through that manifest, never through the directory.
   is correct when one file IS the other's bytes (a build-output copy). Neither default was
   wrong — they answer different questions.
 
-Also recorded there: the mirror report — a content-identical touch of a
+Also recorded there: a mirror-image report — a content-identical touch of a
 build-properties file wedging the gate — was measured and its causal story falsified.
 The false `Stale` verdict is real, but `dotnet restore` then exits **0**
 (`All projects are up-to-date for restore`) and the gate proceeds via `RecoveredOk`. What
@@ -975,8 +975,8 @@ keep re-running it.
 (`verifyAndDemote`) before it will serve a cached result. Stale or missing outputs
 suppress the LOOKUP only — the store still happens, so a recovered build is cached
 again immediately and the inner loop keeps its cache. Cache-hit and real-build are now
-indistinguishable to downstream plugins, which is what the tracked issue asked for and
-only gave `confirm`.
+indistinguishable to downstream plugins, which is what the wedge report asked for and
+what the earlier fix had given only `confirm`.
 
 Cost is a stat per project, ordered BEFORE the merkle, so the bypass path skips the
 SHA-256 of every source file — the wedge path is now cheaper than the warm path, not
@@ -1091,7 +1091,7 @@ change and is deliberately not bundled here.
 
 ### format-check: a cached verdict can no longer claim files its key never covered
 
-the `File = None` half. Format-check subscribes to
+This is the `File = None` (whole-run entry) half of the cache scope rule. Format-check subscribes to
 `FileChanged`, which the framework keys as a **whole-run** entry, so its stored verdict
 replays **verbatim** — the derive-from-ledger path only ever reached
 per-file entries. Verbatim replay is honest only when the summary is a function of the
@@ -1106,7 +1106,7 @@ bytes says `"format OK"`.
 
 The summary now states what the run it is keyed on actually checked — `3 of 12 files need
 formatting`, `format OK (12 checked)` — so a cache hit says exactly what running it says,
-the invariant the tracked issue stated for the build cache. the scope rule (*a
+the invariant already stated for the build cache. The scope rule (*a
 cache entry may only assert facts derivable from its key's scope*) is enforced rather than
 weakened, and no framework, plugin-API or cache-format change was needed. The two
 mechanisms the ticket proposed — a general per-plugin "summary is ledger-derived"
@@ -1937,7 +1937,7 @@ TestPrune prunes the test suite in two phases: **Phase A** runs during the initi
 ### Drop hardcoded FS1182 default suppression
 
 #### Changed
-- **BREAKING (behavior):** `Daemon.DaemonOptions.FcsSuppressedCodes = None` now resolves to an empty `Set<int>` instead of `Set.ofList [ 1182 ]`. The daemon no longer ships a built-in suppression for FS1182 ("unused binding"), which embedded a project-level policy (originally a workaround for SqlHydra-generated code) at the wrong layer. Projects that need FS1182 silenced should declare it explicitly via `<NoWarn>FS1182</NoWarn>` in the fsproj (e.g. `Directory.Build.props`, as Intelligence already does) or `#nowarn "1182"` in source — both paths report at the correct scope.
+- **BREAKING (behavior):** `Daemon.DaemonOptions.FcsSuppressedCodes = None` now resolves to an empty `Set<int>` instead of `Set.ofList [ 1182 ]`. The daemon no longer ships a built-in suppression for FS1182 ("unused binding"), which embedded a project-level policy (originally a workaround for SqlHydra-generated code) at the wrong layer. Projects that need FS1182 silenced should declare it explicitly via `<NoWarn>FS1182</NoWarn>` in the fsproj (e.g. `Directory.Build.props`) or `#nowarn "1182"` in source — both paths report at the correct scope.
 
 #### Added
 - `Daemon.resolveFcsSuppressedCodes : int list option -> Set<int>` — public helper exposing the option→Set resolution so it's directly testable.

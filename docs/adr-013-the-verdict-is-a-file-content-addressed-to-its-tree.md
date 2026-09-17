@@ -54,7 +54,7 @@ is a convenience over the same file — it too contacts nothing.
 
 **Stale is detectable, not merely avoidable.** The hash covers sources *and
 content/fixture files* and `.fshw.json`, by content, never mtime (ADR-008). The
-fixture is now inside the thing the verdict is addressed by: change it
+un-copied JSON fixture from defect 3 is now inside the thing the verdict is addressed by: change it
 and the previous green stops applying. Nothing to remember; no MSBuild involved.
 
 **The pointer is in the output you are already reading.** In non-TTY output, every
