@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.53 - 2026-09-17
+
 - A test run where one project passed and another selected project errored, deferred or
   reported a status this build does not recognise no longer prints "Tests passed" and
   exits 0. It names the projects and exits 3 (nothing verified for them). A sibling that
