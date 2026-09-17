@@ -199,7 +199,7 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
 
         File.WriteAllText(
             cannedReport,
-            """{"results":{"summary":{"tests":2,"passed":2,"failed":0,"pending":0,"skipped":0,"other":0}}}"""
+            """{"results":{"summary":{"tests":2,"passed":2,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Lib.Tests.T.one","status":"passed"},{"name":"Lib.Tests.T.two","status":"passed"}]}}"""
         )
 
         let capturedArgs = Path.Combine(tmp, "captured-args")

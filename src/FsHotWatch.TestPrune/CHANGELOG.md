@@ -7,6 +7,29 @@
   posting. Commands migrate to `PluginCommand.Observe` / `PluginCommand.Request`, and the
   cache key takes the committed state.
 
+- (breaking) A project's verdict is decided only by a coherent report
+  (`Ctrf.tryVerdictReport`). `ReportEvidence.ReportRequested` now carries
+  `Result<Ctrf.VerdictReport, string>`. When a report was requested from the runner and
+  none is usable (absent, unreadable, or incoherent), the project is `TestsErrored` on any
+  exit; a clean exit used to make it `TestsPassed`. A coherent report counting zero tests
+  after a clean exit is also `TestsErrored`; after a non-zero exit it stays `TestsFailed`.
+  The per-project counts `run-tests` replies with come from the same strict reader.
+  `Flakiness.TestReport`, `Flakiness.TestReport.allClear` and `Flakiness.tryParseReport`,
+  the former verdict reader, are removed.
+
+- A symbol whose covering tests live in a project this daemon does not run now stays in
+  the verification queue, and the terminal status names that project. Previously such a
+  symbol was dropped. New `createWithScope` takes a resolver of declared exclusions
+  (indexed project name -> reason); only an unconfigured project declared with a non-blank
+  reason stops holding debt. `create` declares none. Symbols dropped under a declaration
+  are still reported as `changes-uncovered`.
+- The per-project ratchet looks up symbol ids and writes their coverage in one IMMEDIATE
+  transaction, so a concurrent graph rebuild can no longer fail the write with SQLite
+  error 19.
+- A BootScan cohort attached to an in-flight full run retires a symbol only while the
+  symbol is at the revision captured at the seal and the run's launch and completion input
+  trees match. `TestPruneState.BootScanDebtDuringFullRun` is now `Map<string, int64>`.
+
 ## 0.13.0-alpha.38 - 2026-09-16
 
 - a file that no longer exists is GONE, not a file that failed

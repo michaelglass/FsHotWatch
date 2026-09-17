@@ -46,8 +46,15 @@ let private ctrfJson (tests: int) (passed: int) (failed: int) (stop: DateTime) =
                start = ms - 1000L
                stop = ms |}
 
+    // Rows for every counted test: a clean summary its rows do not account for is not
+    // verdict evidence, and the suites are read as verdict evidence.
+    let rows =
+        List.init passed (fun i -> $"""{{"name":"Lib.Tests.T.passes%d{i}","status":"passed"}}""")
+        @ List.init failed (fun i -> $"""{{"name":"Lib.Tests.T.fails%d{i}","status":"failed"}}""")
+        |> String.concat ","
+
     let results =
-        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[]}}"""
+        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[%s{rows}]}}"""
 
     $"""{{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"%s{Guid.NewGuid().ToString()}","results":%s{results}}}"""
 
@@ -727,6 +734,30 @@ let ``console zero-test refusal does not misidentify check as confirm`` () =
     test <@ text.Contains "NO VERDICT" @>
     test <@ not (text.Contains("Confirm:", StringComparison.OrdinalIgnoreCase)) @>
     test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+
+[<Fact>]
+let ``console zero-test refusal is its own sentence and says what the verdict file says`` () =
+    let reasons =
+        [ NoTestsReason.AlreadyVerified
+          NoTestsReason.ChangesUncovered([ "M.f" ], 1, UnrunnableCoverage.none)
+          NoTestsReason.Unstated
+          NoTestsReason.UnknownReason "later-token" ]
+
+    for reason in reasons do
+        let outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason)
+        let text = Verdict.CheckProse.explainOutcome None outcome |> Option.get
+
+        // The generic narrow-scope template interpolated the scope's description, which
+        // for this case already begins "no tests ran", so the terminal printed
+        // "the tests that ran were no tests ran".
+        test <@ not (text.Contains "the tests that ran were") @>
+        test <@ text.StartsWith("NO VERDICT — ", StringComparison.Ordinal) @>
+        test <@ text.Contains(NoTestsReason.describe reason) @>
+
+        // The terminal and `.fshw/verdict.json` describe the same value in the same words.
+        match Verdict.outcomeOfCheck outcome with
+        | Verdict.Incomplete recorded -> test <@ text.Contains recorded @>
+        | other -> failwith $"a zero-test run must be recorded incomplete, got %A{other}"
 
 [<Fact>]
 let ``every check outcome maps to a file outcome — and only Clean is green`` () =
@@ -6054,3 +6085,20 @@ let ``a check-vs-confirm comparison never reads a model-unavailable run as an an
         test <@ earned.Contains "model gone" @>
         test <@ check.Contains "model gone" @>
     | other -> failwith $"a model-unavailable run is no answer to compare, got %A{other}"
+
+[<Fact>]
+let ``durable suite verdicts refuse a partial clean report`` () =
+    // The verdict copies counts INLINE, so a summary claiming seven passes beside one row
+    // would outlive the file as seven passes nobody observed.
+    withTempDir "ctrf-durable-partial" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = Ctrf.runDir root runId
+        Directory.CreateDirectory dir |> ignore
+
+        File.WriteAllText(
+            Path.Combine(dir, "Lib.Tests" + Ctrf.ReportSuffix),
+            """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+        )
+
+        test <@ List.isEmpty (Verdict.suiteVerdicts root (Some runId)) @>)

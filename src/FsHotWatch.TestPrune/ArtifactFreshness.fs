@@ -147,11 +147,12 @@ let describe (stale: StaleInput) : string =
 /// managed DLL both live under a `<tfm>/` subdir whose name we cannot know
 /// without the project graph, so both the presence probe (`tryApphostPresent`)
 /// and this gate scan across these.
-let tfmOutputDirs (binDir: string) : string[] =
-    if Directory.Exists binDir then
-        Directory.GetDirectories binDir
-    else
-        [||]
+///
+/// `Error` when `bin/Debug` could not be listed. It used to be a bare
+/// `Directory.GetDirectories`, which THREW on a mode-000 `bin` — and an empty list
+/// would have been worse, since every caller reads "no TFM dirs" as "nothing built,
+/// nothing to judge". A hole is neither: callers say what it means for their question.
+let tfmOutputDirs (binDir: string) : Result<string[], SafeWalk.SkippedDir> = SafeWalk.subdirectories binDir
 
 /// A project's own `bin/Debug`, derived the same way `RunnerTarget.BinDir` is.
 let private binDirOf (projectDir: string) =
@@ -183,8 +184,7 @@ type internal OnceMemo<'K, 'V when 'K: equality>() =
 type Cache() =
     let closures = OnceMemo<string, Result<string list, string>>()
     let files = OnceMemo<string, Result<(string * DateTime) list, string>>()
-    let assemblies = OnceMemo<string, (string * DateTime) option>()
-    let outputs = OnceMemo<string, string list>()
+    let outputs = OnceMemo<string, Result<(string * DateTime) list, string>>()
     let hashes = OnceMemo<string, string>()
 
     /// Direct `ProjectReference` includes of a project file, absolute and
@@ -335,42 +335,33 @@ type Cache() =
         )
 
     /// EVERY `<assemblyName>.dll` this project has built, one per per-TFM output
-    /// dir — the full set of outputs a consumer's copy could have come from, since
-    /// which one MSBuild chose is not knowable here (see `copyVerdict`).
+    /// dir, with its mtime — the full set of outputs a consumer's copy could have come
+    /// from, since which one MSBuild chose is not knowable here (see `copyVerdict`).
     ///
     /// Empty when the project has not been built yet. That is NOT staleness: a
     /// missing artifact is the presence probe's business (a build in flight may
     /// still land it), and this gate only judges artifacts that exist.
-    member _.OwnAssemblyOutputs(projectDir: string, assemblyName: string) : string list =
+    ///
+    /// `Error` when the project's `bin/Debug` could not be listed — NOT empty, which
+    /// would read as "not built yet" and exempt every output in it from judgement.
+    /// ONE listing answers both the compile and the copy check, so there is one place
+    /// for that to fail rather than a second `Error` arm no tree can reach.
+    member _.OwnAssemblyOutputs(projectDir: string, assemblyName: string) : Result<(string * DateTime) list, string> =
         outputs.GetOrAdd(
             Path.Combine(projectDir, assemblyName),
             fun _ ->
                 tfmOutputDirs (binDirOf projectDir)
-                |> Array.choose (fun tfmDir ->
-                    let dll = Path.Combine(tfmDir, assemblyName + ".dll")
+                |> Result.map (
+                    Array.choose (fun tfmDir ->
+                        let dll = Path.Combine(tfmDir, assemblyName + ".dll")
 
-                    if File.Exists dll then Some dll else None)
-                |> Array.toList
-        )
-
-    /// The project's own most recently built `<assemblyName>.dll` — its path and
-    /// mtime — across its per-TFM output dirs, or `None` when the project has not
-    /// been built yet. `None` is NOT staleness (see `OwnAssemblyOutputs`).
-    ///
-    /// Used ONLY by the compile check, where the comparison is against the project's
-    /// OWN sources and the NEWEST output is the conservative-against-false-stale
-    /// choice: if any framework was compiled after the edit, the compile ran. It must
-    /// never be used as the ORIGIN of a copy — across TFMs, "newest" and "the one
-    /// that was copied" are different files.
-    member this.OwnAssembly(projectDir: string, assemblyName: string) : (string * DateTime) option =
-        assemblies.GetOrAdd(
-            Path.Combine(projectDir, assemblyName),
-            fun _ ->
-                this.OwnAssemblyOutputs(projectDir, assemblyName)
-                |> List.map (fun dll -> dll, File.GetLastWriteTimeUtc dll)
-                |> function
-                    | [] -> None
-                    | built -> Some(built |> List.maxBy snd)
+                        if File.Exists dll then
+                            Some(dll, File.GetLastWriteTimeUtc dll)
+                        else
+                            None)
+                    >> Array.toList
+                )
+                |> Result.mapError SafeWalk.describeSkip
         )
 
     /// The content hash of a file, memoised — the gate hashes a dependency
@@ -466,9 +457,12 @@ let private staleContribution
     // produced no source, no source was newer, and the gate said FRESH about bits it
     // had never looked at. "I could not look" is the same answer as
     // an unreadable project file: refuse, and let the build report the real error.
-    match cache.FilesUnder projectDir with
-    | Error reason -> Some(InputsUndeterminable(project, reason))
-    | Ok sources ->
+    //
+    // The project's own output dir likewise: an unlistable `bin/Debug` is not "not built".
+    match cache.FilesUnder projectDir, cache.OwnAssemblyOutputs(projectDir, assemblyName) with
+    | Error reason, _
+    | _, Error reason -> Some(InputsUndeterminable(project, reason))
+    | Ok sources, Ok built ->
 
         /// Every file in the CLOSURE that the build could have copied to `rel` — this
         /// project's returned separately as the primary, so a stale message names the
@@ -495,10 +489,16 @@ let private staleContribution
         //     consumers (that is what reference assemblies are for), so comparing a
         //     dependency's source against the TEST project's DLL would be an
         //     accusation no build can answer.
+        //
+        //     Against the NEWEST output, the conservative-against-false-stale choice: if
+        //     any framework was compiled after the edit, the compile ran. Never the ORIGIN
+        //     of a copy — across TFMs, "newest" and "the one that was copied" differ.
         let staleCompile =
-            match cache.OwnAssembly(projectDir, assemblyName) with
-            | None -> None // not built yet — the presence probe's business, not ours
-            | Some(_, assemblyMtime) ->
+            match built with
+            | [] -> None // not built yet — the presence probe's business, not ours
+            | _ ->
+                let _, assemblyMtime = built |> List.maxBy snd
+
                 sources
                 |> List.filter (fun (rel, _) -> compileExtensions.Contains(Path.GetExtension(rel).ToLowerInvariant()))
                 |> List.tryFind (fun (_, mtime) -> mtime > assemblyMtime)
@@ -527,7 +527,7 @@ let private staleContribution
             if not (File.Exists copy) then
                 None // not copied yet — the presence probe's business, not ours
             else
-                match cache.OwnAssemblyOutputs(projectDir, assemblyName) with
+                match built |> List.map fst with
                 | [] -> None // not built yet — likewise
                 | first :: rest ->
                     let primary, others = consumerTfmFirst tfmDir first rest
@@ -643,14 +643,18 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
 
     let candidateTfmDirs =
         tfmOutputDirs target.BinDir
-        |> Array.filter (fun tfmDir -> File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".dll")))
+        |> Result.map (Array.filter (fun tfmDir -> File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".dll"))))
 
     let verdict =
-        match ordered with
+        match ordered, candidateTfmDirs with
         // FAIL CLOSED: inputs unknown, so we cannot certify.
-        | Error reason -> Some(InputsUndeterminable(target.AssemblyName, reason))
-        | Ok _ when Array.isEmpty candidateTfmDirs -> None // nothing built to be stale — presence probe's business
-        | Ok ordered ->
+        | Error reason, _ -> Some(InputsUndeterminable(target.AssemblyName, reason))
+        // FAIL CLOSED: the outputs could not be listed. Read as "no candidates" this
+        // would be the presence probe's "nothing built", and the gate would wave a run
+        // through over artifacts it never looked at.
+        | Ok _, Error hole -> Some(InputsUndeterminable(target.AssemblyName, SafeWalk.describeSkip hole))
+        | Ok _, Ok built when Array.isEmpty built -> None // nothing built to be stale — presence probe's business
+        | Ok ordered, Ok built ->
             // Stale iff NO output dir is fresh (see the multi-TFM note above).
             //
             // The manifest check runs FIRST per dir: it is two `stat`s against the walk's
@@ -661,7 +665,7 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
                 | Some _ as manifestStale -> manifestStale
                 | None -> staleInTfmDir cache target.AssemblyName ordered tfmDir
 
-            let perTfm = candidateTfmDirs |> Array.map judgeTfmDir
+            let perTfm = built |> Array.map judgeTfmDir
 
             // …except that IGNORANCE does not get the multi-TFM benefit of the doubt.
             // "Some other TFM is fresh, so there is a fresh way to run" is only sound

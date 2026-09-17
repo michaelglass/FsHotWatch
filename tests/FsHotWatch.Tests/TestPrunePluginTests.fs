@@ -2802,7 +2802,7 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
 
         File.WriteAllText(
             reportPath,
-            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0}}}"""
+            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0},"tests":[{"name":"Lib.Tests.T.passes1","status":"passed"},{"name":"Lib.Tests.T.passes2","status":"passed"},{"name":"Lib.Tests.T.passes3","status":"passed"},{"name":"Lib.Tests.T.passes4","status":"passed"},{"name":"Lib.Tests.T.passes5","status":"passed"},{"name":"Lib.Tests.T.passes6","status":"passed"},{"name":"Lib.Tests.T.skips","status":"skipped"}]}}"""
         )
 
         let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")

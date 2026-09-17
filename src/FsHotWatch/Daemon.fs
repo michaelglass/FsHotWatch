@@ -2083,7 +2083,16 @@ type Daemon
                 // the initial scan unblocks RunWithIpc immediately rather than waiting for the
                 // scan to complete. This prevents test-process hangs when cts is cancelled while
                 // the scan is still running (e.g. under thread-pool contention in test suites).
-                let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
+                //
+                // Continuations run asynchronously: `cts.Cancel()` is called from inside
+                // RPC handlers (`Shutdown`), and an inline continuation would run this
+                // whole teardown — including the wait for the IPC server, which waits for
+                // that very handler's connection — before the handler could reply.
+                let tcs =
+                    System.Threading.Tasks.TaskCompletionSource<unit>(
+                        System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                    )
+
                 use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
                 // Race against cancellation so a slow scan doesn't block shutdown.
@@ -2098,10 +2107,20 @@ type Daemon
 
                 do! tcs.Task |> Async.AwaitTask
 
-                try
-                    ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
-                with ex ->
-                    Logging.debug "daemon" $"IPC shutdown: %s{ex.Message}"
+                // The server drains its connections, then waits for its pipe name to
+                // be released; a daemon disposed before that could hand a CLI a pipe
+                // that still accepts connections but has no daemon behind it.
+                let serverBound =
+                    IpcServer.ConnectionDrainBound
+                    + IpcServer.ReleaseBound
+                    + System.TimeSpan.FromSeconds(1.0)
+
+                let! _ =
+                    System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serverBound)
+                    |> Async.AwaitTask
+
+                if ipcTask.IsFaulted then
+                    Logging.debug "daemon" $"IPC shutdown: %s{ipcTask.Exception.GetBaseException().Message}"
             finally
                 ready.Dispose()
                 (this :> IDisposable).Dispose()

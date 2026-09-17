@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- A test run where one project passed and another selected project errored, deferred or
+  reported a status this build does not recognise no longer prints "Tests passed" and
+  exits 0. It names the projects and exits 3 (nothing verified for them). A sibling that
+  matched nothing under the filter still does not block the pass.
+- `Verdict.suiteVerdicts` copies counts only from coherent reports
+  (`Ctrf.verdictReportsForRun`), so `.fshw/verdict.json` cannot carry passes a report's
+  rows never accounted for.
+
+- `tests.excluded` now also governs TestPrune verification debt. Registration passes
+  `SolutionScope.createExclusionResolver` to the plugin. It resolves each declaration to the
+  discovered project file name, and refuses ambiguous aliases, blank reasons, undiscovered
+  projects and file-name collisions. `SolutionScope.solutionProjects` keeps `../` and rooted
+  paths, and `reconcile` reads them relative to the solution file, so a solution below the
+  repo root reconciles against the right projects. `resolveExcludedProjectNames` is the
+  pure resolution.
+
+- fix: a `check`/`confirm` that ran no tests no longer prints "NO VERDICT — the tests that
+  ran were no tests ran — …, not the full suite." The terminal now says
+  `NO VERDICT — NO TESTS RAN — nothing was verified. This is not a pass; it is an absence
+  of evidence. (<reason>)`, the same sentence `.fshw/verdict.json` already recorded for
+  this outcome (`CheckProse.noTestsRan`, shared by both). Exit code and verdict file are
+  unchanged.
+- The daemon now outlives the process group of the command that launched it. The old
+  `/bin/sh -c "nohup … &"` launch left the daemon in the caller's process group (a
+  non-interactive shell has no job control), so anything that signalled that group — a
+  closing terminal, a test runner or agent harness tearing down its tree — killed the
+  daemon too. The launch now runs through a short-lived copy of the CLI (the new
+  `DetachedLaunch` module) that calls `setsid` and then `execv`s the launch shell, so the
+  daemon starts in a session and process group of its own, with stdin at `/dev/null`. The
+  helper is bounded and reaped, and a failed `setsid`, `execv` or launch shell is now an
+  error naming the command instead of a silent non-start. The executable and log paths are
+  now shell-quoted, so a path containing a quote no longer breaks the launch.
+- Fixed: the first `check` against a daemon started directly with `fshw start` (a test
+  fixture, a service manager) replaced that daemon, because only the launcher wrote
+  `.fshw/config.hash` and a directly started daemon therefore looked like a config change.
+  The daemon now publishes the identity of the `.fshw.json` text it actually parsed before
+  its pipe listens, and the launcher no longer writes it at all, so it can neither overwrite
+  nor invent that identity. `DaemonConfig.loadConfigWithSource` returns the parsed text
+  alongside the configuration; `Program.configContentHash` hashes it.
+- Breaking (library API): `Program.executeCommand` takes the loaded configuration identity
+  as its new first argument, and `Program.startFreshDaemonWith` no longer takes a config
+  hash.
+
 - breaking: a `check`/`confirm` whose reading was taken without an
   available project model is no longer graded as if the model were healthy. A scan that
   raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously

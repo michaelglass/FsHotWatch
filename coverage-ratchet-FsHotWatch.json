@@ -893,15 +893,15 @@
     ],
     "ArtifactFreshness.fs": [
       {
-        "coveredLines": 219,
-        "coveredBranches": 35,
-        "reason": "Net -2 branches across (528 adds the DepsManifestOlderThanRestore arm; 495\u0027s remedy rework removes more than it adds). Measured 35/36 branches. Lowered on 2026-09-05, eight-change merge batch, one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
+        "coveredLines": 215,
+        "coveredBranches": 33,
+        "reason": "Measured 215 lines, 33/34 branches (line 100 percent) in one full local mise run ci, 3317 tests, 2026-09-16. Lowered from 219/35 because covered code was DELETED: an unlistable bin/Debug became a typed outcome, and the Cache.OwnAssembly member plus its second Error arm were folded into the one OwnAssemblyOutputs listing, so the file lost 2 branches from its denominator and 2 from its covered count with nothing newly uncovered. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
-        "coveredLines": 198,
-        "coveredBranches": 77,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 77/77 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredLines": 192,
+        "coveredBranches": 71,
+        "reason": "ESTIMATE, not a measurement: refresh from the next Linux CI run, never from a dev box. Was 198 lines, 77/77 branches (Linux CI run 33742353641, main b3f11cfc, 2026-09-03). Lowered with the macos entry for the same deletion (Cache.OwnAssembly folded into OwnAssemblyOutputs), which cost 4 covered lines and 2 covered branches on macos. Linux emits about 2.2 times as many branches for this file, so the floor drops 6 branches and 6 lines to stay below the unmeasured value rather than red CI over removed code.",
         "platform": "linux"
       }
     ],
@@ -1257,14 +1257,14 @@
     "Flakiness.fs": [
       {
         "coveredLines": 107,
-        "coveredBranches": 29,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 28,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-17: 29 -> 28 because covered code was deleted, not because a test stopped covering it. `Flakiness.TestReport.allClear` (a short-circuit `&&` the tests drove both ways) and the former verdict reader `tryParseReport` were removed when verdicts moved to `Ctrf.tryVerdictReport`. Measured on the change by a full `mise run ci` (3337 tests): 28/40 branches.",
         "platform": "macos"
       },
       {
         "coveredLines": 107,
-        "coveredBranches": 38,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 37,
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || 2026-09-17: PROVISIONAL 38 -> 37, not measured on Linux: lowered by the macOS delta for the same deleted `allClear` branch. Re-settle from the first CI run, and raise it if Linux measures higher.",
         "platform": "linux"
       }
     ],
@@ -1596,9 +1596,9 @@
     ],
     "Program.fs": [
       {
-        "coveredLines": 833,
+        "coveredLines": 826,
         "coveredBranches": 154,
-        "reason": "(2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {

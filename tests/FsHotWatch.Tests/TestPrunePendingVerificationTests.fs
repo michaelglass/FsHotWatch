@@ -306,7 +306,17 @@ let ``incident: a test child that never becomes a live process drives the run to
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            createWithLaunchDeadline (TimeSpan.FromSeconds 1.0) ":memory:" tmpDir (Some configs) None None None None []
+            createWithLaunchDeadline
+                (TimeSpan.FromSeconds 1.0)
+                (fun () -> Map.empty)
+                ":memory:"
+                tmpDir
+                (Some configs)
+                None
+                None
+                None
+                None
+                []
 
         host.RegisterHandler(handler)
 
@@ -583,7 +593,7 @@ type private ScenarioOutcome =
       Queue: Set<string>
       Status: PluginStatus option }
 
-let private runCohortScenario name trigger testExitCode =
+let private runCohortScenario name trigger testExitCode editAfterSeal restoreAfterEdit =
     withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
@@ -671,6 +681,26 @@ let fooTest () = assert (foo 1 = 2)
         // test assert scheduler speed on loaded Linux runners: the full run could finish
         // before CheckFile, turning BootScan into a real second run.
         test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
+
+        // The cohort is sealed and the full run is still held. Edit the symbol again
+        // (and optionally restore the sealed bytes); each edit waits until test-prune has
+        // committed it, so the edit is observed before the run is released.
+        if editAfterSeal then
+            let sources =
+                [ "module Lib\nlet foo (x: int) = x + 3\n"
+                  if restoreAfterEdit then
+                      libSource2 ]
+
+            for source in sources do
+                File.WriteAllText(libFile, source)
+                let committedBeforeEdit = committedBy host "test-prune"
+
+                match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+                | Some result -> host.EmitFileChecked(result)
+                | None -> failwith "post-seal changed-file check failed"
+
+                test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L 10000 @>
+
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
@@ -685,7 +715,7 @@ let ``boot-scan symbols discovered during a green full run are covered without a
     // when its cohort seal arrives during the full run that a cold confirm launched.
     // The scan is a baseline over the same built tree, so that full run covers its
     // symbols; queueing another run silently doubles CI.
-    let outcome = runCohortScenario "tp-boot-scan" BootScan 0
+    let outcome = runCohortScenario "tp-boot-scan" BootScan 0 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -698,7 +728,7 @@ let ``an in-session cohort discovered during a full run still queues exactly one
     // Mutation caught: matching every BatchChecked as BootScan would disable the real
     // edit queue. The only difference from the regression above is cohort provenance.
     let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
-    let outcome = runCohortScenario "tp-in-session" trigger 0
+    let outcome = runCohortScenario "tp-in-session" trigger 0 false false
     Assert.Equal(2, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
@@ -710,13 +740,26 @@ let ``an in-session cohort discovered during a full run still queues exactly one
 let ``a failing full run cannot discharge boot-scan debt`` () =
     // Mutation caught: absorbing boot debt on the requested scope rather than the
     // completed run's actual green evidence would erase work that no passing test proved.
-    let outcome = runCohortScenario "tp-failed-full" BootScan 1
+    let outcome = runCohortScenario "tp-failed-full" BootScan 1 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ outcome.Queue.Contains "Lib.foo" @>
 
     match outcome.Status with
     | Some(Failed _) -> ()
     | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a source edit after a boot cohort seal cannot borrow the held full run`` restoreAfterEdit =
+    // The full run attached the cohort's debt at the revision the seal captured. A later
+    // edit is a new revision no successor cohort has selected, so the held run cannot
+    // retire it, even when the edit restores the sealed bytes.
+    let outcome =
+        runCohortScenario "tp-boot-seal-edited" BootScan 0 true restoreAfterEdit
+
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Queue.Contains "Lib.foo" @>
 
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
@@ -879,12 +922,36 @@ let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
     FsHotWatch.RunLog.Ref.Unavailable "fixture: no run log"
 
 
-let private rep total passed failed skipped other : Flakiness.TestReport =
-    { Total = total
-      Passed = passed
-      Failed = failed
-      Skipped = skipped
-      Other = other }
+/// A report that passed `Ctrf.tryVerdictReport`, built the only way one can be: from CTRF
+/// whose clean summary is accounted for by its rows. A red summary carries no rows, as a
+/// raw-exception report may not.
+let private rep total passed failed skipped other : Result<FsHotWatch.Ctrf.VerdictReport, string> =
+    let rows =
+        if failed > 0 || other > 0 then
+            ""
+        else
+            List.replicate passed """{"name":"T.passes","status":"passed"}"""
+            @ List.replicate skipped """{"name":"T.skips","status":"skipped"}"""
+            |> String.concat ","
+
+    let report =
+        FsHotWatch.Ctrf.tryVerdictReport (
+            sprintf
+                """{"results":{"summary":{"tests":%d,"passed":%d,"failed":%d,"pending":0,"skipped":%d,"other":%d},"tests":[%s]}}"""
+                total
+                passed
+                failed
+                skipped
+                other
+                rows
+        )
+
+    match report with
+    | Ok _ -> report
+    | Error reason -> failwith $"fixture is not coherent evidence: %s{reason}"
+
+let private missingReport: Result<FsHotWatch.Ctrf.VerdictReport, string> =
+    Error "no readable report"
 
 let private isFailed result =
     match result with
@@ -894,7 +961,7 @@ let private isFailed result =
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
     // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
-    let report = Some(rep 12 12 0 0 0)
+    let report = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -907,7 +974,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
-    let report = Some(rep 3 2 1 0 0)
+    let report = rep 3 2 1 0 0
 
     let result =
         classifyTestOutcome
@@ -920,7 +987,7 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with an other (raw-throw) result is RED`` () =
-    let report = Some(rep 3 2 0 0 1)
+    let report = rep 3 2 0 0 1
 
     let result =
         classifyTestOutcome
@@ -935,7 +1002,7 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
 let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested missingReport)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "aborted"))
@@ -957,19 +1024,43 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: clean exit with no report is PASSED`` () =
+let ``classify: clean exit with a missing requested report verifies nothing`` () =
+    // The report was asked for and never arrived. A clean exit is not a substitute: the
+    // process exit is only the tie-break for a runner nobody asked for a report.
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested missingReport)
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
+    test <@ TestResult.isErrored result @>
+    test <@ not (TestResult.verifiedGreen result) @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: clean exit with no report from an UNKNOWN runner is PASSED`` () =
+    // POSITIVE CONTROL: with no report requested, the exit code is all the evidence there is.
+    let result =
+        classifyTestOutcome NoReportRequested false TimeSpan.Zero (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
+
     test <@ TestResult.verifiedGreen result @>
 
 [<Fact(Timeout = 5000)>]
+let ``classify: clean unfiltered zero-test report verifies nothing`` () =
+    // A coherent report of zero tests proves the runner wrote a file, not that a test ran.
+    let result =
+        classifyTestOutcome
+            (ReportRequested(rep 0 0 0 0 0))
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained "no tests"))
+
+    test <@ TestResult.isErrored result @>
+    test <@ not (TestResult.verifiedGreen result) @>
+
+[<Fact(Timeout = 5000)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
-    let report = Some(rep 0 0 0 0 0)
+    let report = rep 0 0 0 0 0
 
     let result =
         classifyTestOutcome
@@ -982,7 +1073,7 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
 
 [<Fact(Timeout = 5000)>]
 let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
-    let report = Some(rep 5 5 0 0 0)
+    let report = rep 5 5 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1011,7 +1102,7 @@ let ``a SIGKILLed host is an ABORT even though it flushed a report full of failu
     // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
     // Reading that report as the verdict is what minted the phantom mass regression.
-    let phantomMassRegression = Some(rep 2171 2032 139 0 0)
+    let phantomMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1042,7 +1133,7 @@ let ``THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` (
     // instead of being killed. This must stay a red, or the fix has merely inverted the
     // lie: a gate that reported every genuine regression as "the machine was busy" would
     // be worse than the bug it replaced.
-    let realMassRegression = Some(rep 2171 2032 139 0 0)
+    let realMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
@@ -1062,7 +1153,7 @@ let ``a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
     // that never reached its own exit describes the part of the suite it got through, and
     // outcome 2 ("a report showing zero failures beats the exit code") would have called
     // that a pass.
-    let partialButClean = Some(rep 812 812 0 0 0)
+    let partialButClean = rep 812 812 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1080,7 +1171,7 @@ let ``the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
     // swallowed it, every dirty shutdown would stop being a pass.
-    let clean = Some(rep 12 12 0 0 0)
+    let clean = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
@@ -1166,7 +1257,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
 let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (ReportRequested missingReport)
             false
             (TimeSpan.FromSeconds 300.0)
             (ProcessOutcome.TimedOut(
@@ -1396,21 +1487,18 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``a symbol covered only by an unconfigured test project drops instead of wedging the verdict red`` () =
+let ``a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
-    // set of projects fshw is configured to run. A symbol covered only by an unconfigured
-    // project can never be proven green: its covering project never executes, so it never
-    // lands in a run's results and never commits. Live: two full suites passed
-    // back-to-back and `check` still exited 1, because the only covering tests lived in
-    // FsHotWatch.IntegrationTests, which the daemon does not run.
-    //
-    // "Covered" means "covered by a test we can actually run"; anything else is
-    // indistinguishable from having no covering test and drops by the same rule.
+    // set of projects fshw is configured to run. A symbol whose only covering tests live
+    // in such a project was once DROPPED from the queue, so a configured-suite green
+    // discharged somebody else's tests. Nothing ran them; nothing proved them. Unless the
+    // project is declared excluded with a reason, the debt stays owed and the verdict
+    // names the project that owes it.
     withTempDir "tp-unrunnable" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
 
-        // Lib.orphan's ONLY covering test lives in P2 — which is not in `configs`.
+        // Lib.orphan's ONLY covering test lives in P2, which is not in `configs`.
         PendingQueueHelpers.seedCoveredSymbol db "Lib.orphan" "Orphan.fs" "P2" "P2Tests" "orphanTest"
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
@@ -1434,15 +1522,14 @@ let ``a symbol covered only by an unconfigured test project drops instead of wed
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForQuiescent host 20000
 
-        // Unverifiable by construction, so dropped rather than retained forever.
         let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ not (queue.Contains("Lib.orphan")) @>
+        Assert.Contains("Lib.orphan", queue)
 
         match host.GetStatus("test-prune") with
-        | Some(PluginStatus.Failed(msg, _, _)) ->
-            Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
-        | _ -> ())
+        | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
+        | other -> Assert.Fail($"unrunnable debt must deny green and name its project: %A{other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =

@@ -16,6 +16,30 @@
   never sees state); new `PrepareCommit` field for durable preparation before a new state
   counts. `PluginCommand.invoke` runs a command against an explicit state.
 
+- `Ctrf.tryVerdictReport` validates a CTRF report as verdict evidence and returns the
+  opaque `Ctrf.VerdictReport` (read its counts with `VerdictReport.summary`); it is the
+  only way to construct one. All six summary counters (`tests`, `passed`, `failed`,
+  `pending`, `skipped`, `other`) must be present nonnegative integers, and a clean
+  summary (no `failed`, no `other`) must be accounted for by its `tests` rows: one row
+  per counted test, every row `passed`, `pending` or `skipped`, and each of those counts
+  matching. A red summary stays authoritative without its rows, because a test that threw
+  a raw exception is counted but gets none. A clean summary claiming seven tests beside
+  one row was previously read as seven passes. `Ctrf.tryReadVerdictReport` and
+  `Ctrf.verdictReportsForRun` are the strict counterparts of `tryReadReport` and
+  `reportsForRun`, which stay diagnostic.
+
+- Fixed: when `IpcServer.start` returned, its pipe name could still accept connections for
+  a moment, so a client probing just after a daemon stopped found a daemon that was not
+  there (measured: most of 25 consecutive shutdowns). The server no longer replaces an
+  acceptor once shutdown has begun, waits for its acceptors, lets open connections finish
+  for up to `IpcServer.ConnectionDrainBound` before closing them, and then waits up to
+  `IpcServer.ReleaseBound` until a connection to the name is refused — disposing a pipe
+  does not release its listening socket at once.
+- Fixed: a `Shutdown` RPC ran the daemon's whole teardown inline on the RPC handler's
+  thread (the cancellation continuation was synchronous), so its reply waited on the
+  teardown. `RunWithIpc` now continues asynchronously and waits for the IPC server
+  without blocking a thread.
+
 - breaking: the daemon now serves its project model to clients.
   `DaemonRpcConfig` gains the required `GetProjectModel: unit -> ProjectModel.Observation`,
   and the `GetDiagnostics` reply carries it as `projectModel` — the versioned
@@ -25,6 +49,10 @@
   any completed, otherwise the classified completed outcome. This is what lets a client
   tell a model mid-rediscovery from a healthy one that selected nothing; before, both
   reached the CLI as the same empty reply.
+- Fix: the RPC seam's deadline now covers a callback's synchronous prefix. The timer
+  starts before the callback runs, and the callback is scheduled on the thread pool, so
+  an RPC body that blocks before returning its Task (a `task { }` runs inline up to its
+  first real await) faults with `TimeoutException` instead of holding the caller forever.
 
 ## 0.10.0-alpha.35 - 2026-09-16
 

@@ -76,6 +76,8 @@
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
+    <Compile Include="TestPruneRatchetTransactionTests.fs" />
+    <Compile Include="TestPruneDebtScopeTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
@@ -107,6 +109,9 @@
     <Compile Include="CliTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="DetachedLaunchTests.fs" />
+    <Compile Include="LauncherLifetimeTests.fs" />
+    <Compile Include="LoadedConfigIdentityTests.fs" />
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />

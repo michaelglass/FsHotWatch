@@ -14,8 +14,9 @@
 ///      `tests.projects` grown since — the run widens to the full suite to earn one, and
 ///      the verdict names it.
 ///   3. OWED-BUT-UNRUNNABLE: a changed symbol whose only covering tests live in a project
-///      `tests.projects` does not list is dropped from the queue but
-///      REPORTED, naming the project — never silently written off.
+///      `tests.projects` does not list stays owed, and the red names the project. Only a
+///      `tests.excluded` declaration with a reason retires it, and that write-off is
+///      REPORTED on the verdict, naming the project.
 ///
 /// These drive the real BuildCompleted → run → TestsFinished flow with `sh` runners that
 /// leave a receipt per launch, so what was SELECTED is read from disk, not inferred.
@@ -333,35 +334,25 @@ let ``test-scope says why there is no baseline, then names the run that earned i
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 60000)>]
-let ``a symbol covered only by an unlisted test project is REPORTED as owed-but-unrunnable, not silently dropped`` () =
+let ``a symbol covered only by an unlisted test project stays owed and the red names the project`` () =
     withTempDir "unrunnable" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
-        // Covered — but only by a project `tests.projects` does not list.
+        // Covered, but only by a project `tests.projects` does not list and no
+        // `tests.excluded` entry explains.
         PendingQueueHelpers.seedCoveredSymbol db "Lib.orphan" "Orphan.fs" "Unlisted" "UnlistedTests" "orphanTest"
         seedBaseline tmpDir [ "P1" ]
         let configs = [ runner tmpDir "P1" "P1Tests.fooTest" ]
         PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
 
         let host = session tmpDir dbPath configs
-        test <@ isCompleted (buildAndSettle host) @>
+        let outcome = buildAndSettle host
+        Assert.Contains("Lib.orphan", PendingQueueHelpers.loadQueue tmpDir)
 
-        // Nothing runnable was selected, so nothing ran ('s drop stands)...
-        test <@ runsOf tmpDir "P1" = 0 @>
-        test <@ not ((PendingQueueHelpers.loadQueue tmpDir).Contains "Lib.orphan") @>
-
-        // ...and the write-off is on the record, naming the project.
-        let report = testScope host
-
-        match report.Scope with
-        | FsHotWatch.Cli.IpcParsing.NoTestsRun(FsHotWatch.Cli.IpcParsing.NoTestsReason.ChangesUncovered(symbols,
-                                                                                                        total,
-                                                                                                        unrunnable)) ->
-            test <@ symbols = [ "Lib.orphan" ] && total = 1 @>
-            test <@ unrunnable.SymbolCount = 1 @>
-            test <@ unrunnable.Projects = [ "Unlisted" ] @>
-        | other -> failwithf "expected a changes-uncovered scope naming the unlisted project, got %A" other)
+        match outcome with
+        | Failed(message, _, _) -> Assert.Contains("Unlisted", message)
+        | other -> Assert.Fail($"known unrunnable obligations must remain non-green: %A{other}"))
 
 [<Fact(Timeout = 60000)>]
 let ``a symbol with no covering test anywhere is uncovered, and names no unrunnable project`` () =

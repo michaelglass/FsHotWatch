@@ -682,7 +682,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
 
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
-            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[{"name":"A.Tests.T.passes1","status":"passed"},{"name":"A.Tests.T.passes2","status":"passed"},{"name":"A.Tests.T.passes3","status":"passed"}]}}"""
         )
 
         let mutable scopeReads = 0

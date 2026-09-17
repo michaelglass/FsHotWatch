@@ -355,6 +355,12 @@ seven days, widens to the entire configured project with an explicit diagnostic.
 | `project` | `string` | — | The project, by repo-relative directory (`tests/App.Tests`), by `.fsproj` path, or by bare name (`App.Tests`). |
 | `reason` | `string` | — | Why it is not run. **Required and non-blank** — an exclusion without a written reason is refused. |
 
+An exclusion also bounds TestPrune's verification debt. A changed symbol waits for a green
+run of every test project that covers it, except an unconfigured project declared here with
+a reason. A covering project that is neither configured nor declared keeps the symbol owed,
+and `check` stays red naming that project. The declaration must resolve to exactly one
+discovered project file; an ambiguous alias or a file-name collision is refused.
+
 ### What decides the verdict is what is hashed
 
 A verdict is content-addressed to the tree it verified: read `verdict.json`, and if

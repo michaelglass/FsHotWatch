@@ -535,6 +535,20 @@ let renderIpcResult
                             3
                         else
                             match parsedCoverage with
+                            // `Ran` says at least ONE project executed, not that every
+                            // selected project did. A project that errored, deferred or
+                            // reported a status this build cannot read owed a result and
+                            // produced none, and a sibling's pass does not stand in for
+                            // it. `otherCount` excludes zero-match projects, which owed
+                            // nothing the filter asked for.
+                            | Understood(Ran _)
+                            | RanPerCounts when otherCount > 0 ->
+                                UI.fail
+                                    $"%d{otherCount} selected project(s) produced no test result — nothing was verified for them (not a pass)"
+
+                                reportSearch ()
+                                UI.info "  Run `fshw status test-prune` for the full output of each."
+                                3
                             // Scope is irrelevant to the exit code — this asks only
                             // whether anything was verified, so both breadths pass.
                             | Understood(Ran _)

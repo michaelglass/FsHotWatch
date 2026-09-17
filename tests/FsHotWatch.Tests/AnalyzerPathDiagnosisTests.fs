@@ -255,7 +255,7 @@ let ``daemon start with unbuilt analyzers exits 2 with the message and no unhand
 
         let stderr, exitCode =
             captureStderr (fun () ->
-                executeCommand createDaemon (noIpc ()) root "fshw-start" Start defaultGlobalOptions config 5.0)
+                executeCommand "" createDaemon (noIpc ()) root "fshw-start" Start defaultGlobalOptions config 5.0)
 
         // Positive control that fail-loud survives: the refusal is still exit 2.
         test <@ exitCode = 2 @>
@@ -285,6 +285,7 @@ let ``check whose daemon refused to start prints the reason, not only a log poin
         let stderr, exitCode =
             captureStderr (fun () ->
                 executeCommand
+                    ""
                     (fun _ -> Unchecked.defaultof<_>)
                     ipc
                     root
@@ -310,7 +311,7 @@ let ``a launch clears a refusal recorded by an earlier launch`` () =
         DaemonStartupFailure.record root "an old refusal"
 
         let started =
-            startFreshDaemonWith defaultFileOps (noIpc ()) root "fshw-stale" "hash" "" "logs" 0.0
+            startFreshDaemonWith defaultFileOps (noIpc ()) root "fshw-stale" "" "logs" 0.0
 
         test <@ not started @>
         test <@ DaemonStartupFailure.tryRead root = None @>

@@ -79,52 +79,6 @@ let ``parseCtrfTests reads the real nested results.tests shape`` () =
             |> List.exists (fun r -> r.Name = "Mod.assertFails" && r.Outcome = TestOutcome.Failed)
         @>
 
-// --- tryParseReport (summary-authoritative verdict source) ---
-
-[<Fact(Timeout = 5000)>]
-let ``tryParseReport reads summary counts, not the per-test array length`` () =
-    // The summary says 3 tests, the array holds 2 (the raw-throw is omitted): the
-    // totals must come from the summary, never the array.
-    match tryParseReport realCtrf with
-    | None -> failwith "expected Some report"
-    | Some r ->
-        test <@ r.Total = 3 @>
-        test <@ r.Passed = 1 @>
-        test <@ r.Failed = 2 @>
-        test <@ r.Other = 1 @>
-        test <@ not (TestReport.allClear r) @>
-
-[<Fact(Timeout = 5000)>]
-let ``tryParseReport reports allClear for a clean run`` () =
-    let json =
-        """{"results":{"summary":{"tests":15,"passed":15,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1}}}"""
-
-    match tryParseReport json with
-    | None -> failwith "expected Some report"
-    | Some r ->
-        test <@ r.Total = 15 @>
-        test <@ TestReport.allClear r @>
-
-[<Fact(Timeout = 5000)>]
-let ``tryParseReport treats an other-only run as not allClear`` () =
-    let json =
-        """{"results":{"summary":{"tests":1,"passed":0,"failed":0,"pending":0,"skipped":0,"other":1,"suites":1}}}"""
-
-    match tryParseReport json with
-    | Some r -> test <@ not (TestReport.allClear r) @>
-    | None -> failwith "expected Some report"
-
-[<Fact(Timeout = 5000)>]
-let ``tryParseReport returns None when no summary present`` () =
-    // A truncated / never-flushed report (host aborted) has no summary — the
-    // signal the verdict reads as "no usable report" → errored, not green.
-    test <@ (tryParseReport """{"results":{"tool":{"name":"x"}}}""").IsNone @>
-    test <@ (tryParseReport "{}").IsNone @>
-
-[<Fact(Timeout = 5000)>]
-let ``tryParseReport returns None on unparseable JSON`` () =
-    test <@ (tryParseReport "not json at all").IsNone @>
-
 // --- computeFlakiness ---
 
 [<Fact(Timeout = 5000)>]
@@ -342,3 +296,115 @@ let ``appendRecords expires a test that has not run inside the retention window`
         let history = loadHistory path
         test <@ history |> Map.containsKey "Current.Test" @>
         test <@ not (history |> Map.containsKey "Ancient.Test") @>)
+
+// --- Verdict evidence: a report may decide a verdict only when it is coherent ---
+//
+// A clean summary claiming seven tests beside one row used to be accepted, so the counts a
+// verdict carried were whatever the summary said. The strict parser refuses any clean
+// report whose rows do not account for its counters, and any report whose counters are not
+// nonnegative integers. A red summary keeps its authority: raw-exception reports omit rows.
+
+let private parseVerdictSummary (json: string) : Result<FsHotWatch.Ctrf.Summary, string> =
+    FsHotWatch.Ctrf.tryVerdictReport json
+    |> Result.map FsHotWatch.Ctrf.VerdictReport.summary
+
+let private cleanOneRow =
+    """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
+
+[<Fact(Timeout = 5000)>]
+let ``verdict evidence rejects a partial clean report`` () =
+    let json =
+        """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+
+    test <@ Result.isError (parseVerdictSummary json) @>
+
+[<Fact(Timeout = 5000)>]
+let ``verdict evidence requires all counters to be nonnegative integers`` () =
+    for key in [ "tests"; "passed"; "failed"; "pending"; "skipped"; "other" ] do
+        for invalid in [ "null"; "-1"; "1.5"; "2147483648"; "1e100"; "true"; "\"one\"" ] do
+            let root = System.Text.Json.Nodes.JsonNode.Parse cleanOneRow
+            root.["results"].["summary"].[key] <- System.Text.Json.Nodes.JsonNode.Parse invalid
+            let accepted = Result.isOk (parseVerdictSummary (root.ToJsonString()))
+            Assert.False(accepted, $"accepted %s{key}=%s{invalid}")
+
+        let root = System.Text.Json.Nodes.JsonNode.Parse cleanOneRow
+        root.["results"].["summary"].AsObject().Remove key |> ignore
+        let accepted = Result.isOk (parseVerdictSummary (root.ToJsonString()))
+        Assert.False(accepted, $"accepted absent %s{key}")
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("failed")>]
+[<InlineData("other")>]
+[<InlineData("future-status")>]
+[<InlineData("")>]
+let ``verdict evidence rejects rows contradicting a clean summary`` (status: string) =
+    let json =
+        cleanOneRow.Replace("\"status\":\"passed\"", $"\"status\":\"%s{status}\"")
+
+    test <@ Result.isError (parseVerdictSummary json) @>
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("null")>]
+[<InlineData("{}")>]
+[<InlineData("42")>]
+[<InlineData("{\"status\":null}")>]
+[<InlineData("{\"status\":3}")>]
+let ``verdict evidence rejects incomplete clean rows`` (row: string) =
+    let json = cleanOneRow.Replace("""{"name":"One","status":"passed"}""", row)
+    test <@ Result.isError (parseVerdictSummary json) @>
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("tests")>]
+[<InlineData("passed")>]
+[<InlineData("pending")>]
+[<InlineData("skipped")>]
+let ``verdict evidence reconciles each clean counter with actual rows`` (key: string) =
+    let root = System.Text.Json.Nodes.JsonNode.Parse cleanOneRow
+    root.["results"].["summary"].[key] <- System.Text.Json.Nodes.JsonValue.Create(2)
+    test <@ Result.isError (parseVerdictSummary (root.ToJsonString())) @>
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("not json")>]
+[<InlineData("null")>]
+[<InlineData("[]")>]
+[<InlineData("42")>]
+[<InlineData("{}")>]
+[<InlineData("{\"results\":{\"summary\":{}}}")>]
+[<InlineData("{\"results\":{\"summary\":[]}}")>]
+[<InlineData("{\"results\":{\"summary\":{\"tests\":1,\"passed\":1,\"failed\":0,\"pending\":0,\"skipped\":0,\"other\":0}}}")>]
+[<InlineData("{\"results\":{\"summary\":{\"tests\":1,\"passed\":1,\"failed\":0,\"pending\":0,\"skipped\":0,\"other\":0},\"tests\":{}}}")>]
+[<InlineData("{\"results\":\"flattened by mistake\"}")>]
+[<InlineData("{\"results\":{\"summary\":{\"tests\":1,\"passed\":1,\"passed\":7,\"failed\":0,\"pending\":0,\"skipped\":0,\"other\":0},\"tests\":[{\"status\":\"passed\"}]}}")>]
+let ``verdict evidence rejects absent or malformed report structure`` (json: string) =
+    test <@ Result.isError (parseVerdictSummary json) @>
+
+[<Fact(Timeout = 5000)>]
+let ``verdict evidence preserves captured raw exception red summary`` () =
+    // Two rows for a summary of three: the raw throw has no row and is counted in both
+    // `failed` and `other`. The summary is the authority for a red, so it stands.
+    match parseVerdictSummary realCtrf with
+    | Ok summary ->
+        test <@ summary.Total = 3 @>
+        test <@ summary.Failed = 2 @>
+        test <@ summary.Other = 1 @>
+    | Error reason -> failwith reason
+
+[<Theory(Timeout = 5000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``verdict evidence preserves coherent nested and flattened clean reports`` (nested: bool) =
+    let contents =
+        """"summary":{"tests":3,"passed":1,"failed":0,"pending":1,"skipped":1,"other":0},"tests":[{"name":"Pass","status":"passed"},{"name":"Pending","status":"pending"},{"name":"Skip","status":"skipped"}]"""
+
+    let json =
+        if nested then
+            "{\"results\":{" + contents + "}}"
+        else
+            "{" + contents + "}"
+
+    match parseVerdictSummary json with
+    | Ok summary ->
+        test <@ summary.Total = 3 @>
+        test <@ summary.Passed = 1 @>
+        test <@ summary.Skipped = 1 @>
+    | Error reason -> failwith reason

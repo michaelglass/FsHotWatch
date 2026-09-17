@@ -42,6 +42,148 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       GetUncheckedCount = fun () -> 0
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved }
 
+/// A CLI that sees the pipe listening decides a daemon is there. So once the server's
+/// own task has returned, nothing may still accept a connection on its name: the probe
+/// must follow the server from listening, through shutdown, to gone. Repeated, because
+/// a pipe still being torn down after the server returned is only visible in a narrow
+/// window (before the fix, most iterations saw it).
+[<Fact(Timeout = 60000)>]
+let ``daemon probe follows a listening server through shutdown`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    try
+        let leaked =
+            [ 1..10 ]
+            |> List.filter (fun _ ->
+                let pipeName = $"fp-{Guid.NewGuid():N}"
+                use cts = new CancellationTokenSource()
+                test <@ not (IpcClient.isRunning pipeName) @>
+                let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+                try
+                    // A served RPC witnesses readiness before the lightweight probe is trusted.
+                    waitForServer pipeName
+                    test <@ IpcClient.isRunning pipeName @>
+                    cts.Cancel()
+                    test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+                    IpcClient.isRunning pipeName
+                finally
+                    cts.Cancel())
+
+        test <@ List.isEmpty leaked @>
+    finally
+        host.Teardown()
+
+[<Fact(Timeout = 15000)>]
+let ``server shutdown closes a connection that never finishes`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+
+    let server =
+        Async.StartAsTask(IpcServer.startWithin (TimeSpan.FromMilliseconds 100.0) pipeName (defaultRpcConfig host) cts)
+
+    try
+        waitForServer pipeName
+        // Connected, and silent: its RPC never completes on its own.
+        use idle =
+            new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
+
+        idle.Connect(5000)
+        cts.Cancel()
+        test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ not (IpcClient.isRunning pipeName) @>
+        // The server end was closed under the client: a read sees end of stream.
+        let read = idle.ReadAsync(Array.zeroCreate<byte> 1, 0, 1)
+        test <@ read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 0 @>
+    finally
+        cts.Cancel()
+        host.Teardown()
+
+[<Fact(Timeout = 15000)>]
+let ``a single connection attempt tells a listening pipe from an absent one`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    test <@ not (IpcServer.acceptsConnection pipeName) @>
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        waitForServer pipeName
+        test <@ IpcServer.acceptsConnection pipeName @>
+    finally
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
+
+[<Fact>]
+let ``waiting for a refused connection polls until refusal and gives up at its bound`` () =
+    let mutable answers = [ true; true; false ]
+
+    let accepts () =
+        let answer = List.head answers
+        answers <- List.tail answers
+        answer
+
+    test
+        <@
+            IpcServer.waitUntilRefused accepts (TimeSpan.FromSeconds 5.0)
+            |> Async.RunSynchronously
+        @>
+
+    test <@ List.isEmpty answers @>
+
+    test
+        <@
+            not (
+                IpcServer.waitUntilRefused (fun () -> true) (TimeSpan.FromMilliseconds 20.0)
+                |> Async.RunSynchronously
+            )
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a stopping server gives up waiting on a name another live server still serves`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use stopping = new CancellationTokenSource()
+    use staying = new CancellationTokenSource()
+
+    let first =
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) stopping)
+
+    let second =
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) staying)
+
+    try
+        waitForServer pipeName
+        stopping.Cancel()
+        // Bounded by the release wait, not held forever by the other server.
+        test <@ first.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ IpcClient.isRunning pipeName @>
+    finally
+        stopping.Cancel()
+        staying.Cancel()
+        second.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
+
+[<Fact(Timeout = 15000)>]
+let ``server shutdown completes when an acceptor could not create its pipe`` () =
+    // Longer than any Unix socket path allows, so every acceptor faults at construction.
+    let pipeName = String('p', 300)
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    try
+        // No wait first: every acceptor faults at construction either way, and shutdown
+        // must still await them all and complete.
+        cts.Cancel()
+        test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ server.Status = TaskStatus.RanToCompletion @>
+    finally
+        cts.Cancel()
+        host.Teardown()
+
 [<Fact(Timeout = 15000)>]
 let ``server responds to GetStatus`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
@@ -1471,6 +1613,52 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     test <@ inner.Message.Contains("WaitForScan") @>
     // The wedge report's inline recovery rides along, so the client knows what to do.
     test <@ inner.Message.Contains("fshw stop") @>
+
+[<Fact(Timeout = 15000)>]
+let ``RPC deadline includes a synchronous callback before its task is returned`` () =
+    // A callback can wedge BEFORE it hands back a Task: a `task { }` body runs inline
+    // up to its first real await, so a blocking call there never yields. If the seam
+    // starts its clock only after the callback returns, that wedge has no deadline.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let config =
+        { defaultRpcConfig host with
+            InvalidateCache =
+                fun () ->
+                    entered.TrySetResult() |> ignore
+                    // Blocks the calling thread; no Task exists yet.
+                    release.Task.Wait()
+                    Task.FromResult(()) }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 300.0)
+
+    // Off the test thread, so a seam that runs the callback inline cannot hang the test.
+    let call = Task.Run<string>(Func<Task<string>>(fun () -> target.Invalidate()))
+
+    try
+        test <@ entered.Task.Wait(TimeSpan.FromSeconds 5.0) @>
+
+        let settledInTime =
+            obj.ReferenceEquals(Task.WhenAny(call :> Task, Task.Delay(TimeSpan.FromSeconds 5.0)).Result, call)
+
+        test <@ settledInTime @>
+        let ex = Assert.Throws<AggregateException>(fun () -> call.Wait())
+        Assert.IsType<TimeoutException>(ex.InnerException) |> ignore
+        test <@ ex.InnerException.Message.Contains("Invalidate") @>
+    finally
+        // Always unblock the callback and drain the call, whichever way it went.
+        release.TrySetResult() |> ignore
+
+        try
+            call.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        with _ ->
+            ()
 
 [<Fact(Timeout = 15000)>]
 let ``an RPC that completes inside the deadline returns normally`` () =

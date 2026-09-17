@@ -309,6 +309,62 @@ Teardown is bounded: children are killed side by side under one budget. Not cove
 a descendant that outlives its already-exited parent with its streams redirected away.
 See `docs/adr-027-child-processes-are-owned-by-the-operation-that-spawned-them.md`.
 
+### test-prune/cli: verification debt no longer vanishes without a run — BREAKING for repos with undeclared indexed test projects
+
+- **A symbol covered by a test project the daemon does not run stays owed.** It used to be
+  dropped from the queue with a warning (the "owed-but-unrunnable" write-off above), so a
+  green from the configured suite discharged tests that never ran. Now it keeps the check
+  red, and the status names the project: `N symbol(s) still owed to tests in X, which this
+  daemon does not run`. Only a `tests.excluded` entry with a reason removes an unconfigured
+  project from the claim; a configured project is always required. A symbol dropped because
+  of such a declaration is still reported as `changes-uncovered`, naming the project.
+- **Exclusions resolve to the project identity the symbol index uses**, the project file's
+  name, against the solution and the currently discovered projects. An alias matching two
+  solution projects, a declared project discovery has not seen, or a second discovered
+  project with the same file name is refused rather than guessed. A refusal leaves the debt
+  owed.
+- **Solutions below the repo root reconcile correctly.** Project paths are read relative to
+  the solution file, so a nested solution's test projects are found and governed.
+- **The per-project coverage ratchet no longer fails with SQLite error 19.** It looked up
+  symbol ids and wrote them in separate transactions, so a concurrent graph rebuild could
+  delete a symbol in between. Both steps now share one write transaction.
+- **An edit made after a BootScan cohort seals is not retired by the full run already in
+  flight**, even if the edit restores the sealed bytes. Late cohort symbols retire only at
+  the revision they were captured at, over matching input trees.
+- **This repository** lists `tests/Fixtures/Xunit4RunnerFixture` in `FsHotWatch.slnx` and
+  declares it in `tests.excluded`, because discovery indexes its tests.
+
+See `docs/adr-026-test-debt-waits-on-every-covering-project-a-declaration-can-remove.md`.
+
+### core/test-prune: the last three walks stop reading an unreadable directory as an absent one — BREAKING (API)
+
+`SafeWalk` already reported the directories it could not see, but three paths still
+turned "I could not look" into "there is nothing there", or threw:
+
+- **`projectStructureHash` did not move over an unreadable directory.** It was built on
+  the best-effort walk, so a directory it could not list contributed nothing and the
+  scan-skip guard replayed a project graph built from a tree it never fully saw. A hole
+  is now an entry under its own path plus `/`, hashed to `ContentHash.UnhashableContent`
+  — the rule `TreeHash.compute` already follows. A fully readable tree hashes exactly as
+  before.
+- **`ArtifactFreshness.tfmOutputDirs` threw on a mode-000 `bin/Debug`.** It was a bare
+  `Directory.GetDirectories`. It now returns `Result<string[], SafeWalk.SkippedDir>`
+  through the new `SafeWalk.subdirectories`. The freshness gate answers
+  `InputsUndeterminable` for an unlistable `bin/Debug`, the test project's or a
+  dependency's, rather than faulting or reading it as "nothing built".
+  `tryApphostPresent` answers `None` ("the filesystem cannot answer", which falls back
+  to the output sniff), not `Some false`, which would defer the run as "waiting on build".
+- **An unreachable walk root read as a missing one.** `DirectoryInfo.Exists` is `false`
+  both for a path that is not there and for one whose parent cannot be traversed. When a
+  root does not exist, the walk now looks it up and yields a `Skipped` with
+  `Unreadable` for a permission refusal. A root that is genuinely missing, or is a
+  file, is still empty with nothing skipped.
+
+API: `tfmOutputDirs` changes type as above. `Cache.OwnAssemblyOutputs` now returns
+`Result<(string * DateTime) list, string>` (each built assembly with its mtime), and
+`Cache.OwnAssembly` is removed. Its one caller now takes the newest from that list, so
+one listing has one place to fail. `SafeWalk.subdirectories` is new.
+
 ### core: a deleted working directory is named once, not reported as 130 missing files
 
 `AbsFilePath.create` and `AbsProjectPath.create` resolved relative input against the

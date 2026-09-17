@@ -149,8 +149,8 @@ module RunSummary =
 /// A run can finish without failing and still prove nothing — no test project was
 /// selected, so no test binary was invoked. The STATUS for that is `Completed`:
 /// nothing FAILED, and reporting `Failed` would both claim a failure that did not
-/// happen and turn `check`'s honest exit 3 ("NO VERDICT — the tests that ran were no
-/// tests ran") into an exit 1 ("failures found"). But no surface may render it as a
+/// happen and turn `check`'s honest exit 3 ("NO VERDICT — NO TESTS RAN — nothing was
+/// verified") into an exit 1 ("failures found"). But no surface may render it as a
 /// bare `✓` either: a reader scanning plugin glyphs would see success for a run that
 /// executed nothing. `NothingVerified` is that fact, as a value: the
 /// host records it on the run as `RunOutcome.VerifiedNothing`, and every renderer
