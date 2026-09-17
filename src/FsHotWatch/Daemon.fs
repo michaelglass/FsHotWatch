@@ -674,21 +674,43 @@ let private rediscoverAndClearRemoved
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
+    /// A scan request was admitted. Waiters registered from now on belong to it.
+    | ObserveScan of Task<unit>
+    /// That request's receipt settled: its completed generation, or its failure.
+    | ScanSettled of Task<unit> * Result<int64, exn>
+    /// Test seam: resolves once every message posted before it has been handled.
+    | Drained of TaskCompletionSource<unit>
     /// Test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
     /// for the rationale. Production messages don't have a natural failure
     /// mode, so this is the only realistic way to verify the agent surfaces
     /// programming bugs instead of swallowing them.
     | RaiseFaultForTest of exn
 
+/// Wakes `WaitForScan` callers. A waiter resolves when the scan generation passes the one
+/// it asked about, and only once the scan request it is bound to has settled. A waiter
+/// bound to a request that fails receives that failure instead of hanging on a
+/// generation that request will never produce.
 type ScanSignal(?cancellationToken: CancellationToken) =
+    let satisfied afterGeneration generation =
+        if afterGeneration >= 0L then
+            generation > afterGeneration
+        else
+            generation > 0L
+
     let agent =
         MailboxProcessor.Start(
             (fun inbox ->
                 // latestGeneration latches the most recent SignalGeneration so a
                 // WaitFor that arrives after the signal can resolve immediately.
-                // Without this, a race between performScan signalling completion
-                // and the client posting WaitFor leaves the waiter hanging.
-                let rec loop (latestGeneration: int64) (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                // Without this, a race between a scan signalling completion and the
+                // client posting WaitFor leaves the waiter hanging. latestReceipt is
+                // the most recently admitted scan request, kept after it fails so a
+                // waiter that registers late still learns why.
+                let rec loop
+                    (latestGeneration: int64)
+                    (latestReceipt: Task<unit> option)
+                    (waiters: (int64 * Task<unit> option * TaskCompletionSource<unit>) list)
+                    =
                     async {
                         let! msg = inbox.Receive()
 
@@ -698,41 +720,79 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                         // rather than silently looping in the original state.
                         match msg with
                         | WaitFor(afterGeneration, tcs) ->
-                            let alreadySatisfied =
-                                if afterGeneration >= 0L then
-                                    latestGeneration > afterGeneration
-                                else
-                                    latestGeneration > 0L
+                            let pending =
+                                latestReceipt
+                                |> Option.filter (fun receipt -> not receipt.IsCompletedSuccessfully)
 
-                            if alreadySatisfied then
+                            match pending with
+                            | _ when satisfied afterGeneration latestGeneration ->
                                 Logging.debug
                                     "scan-signal"
                                     $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
 
                                 tcs.TrySetResult(()) |> ignore
-                                return! loop latestGeneration waiters
-                            else
+                                return! loop latestGeneration latestReceipt waiters
+                            | Some receipt when receipt.IsCompleted ->
+                                // Receipts settle only by result or exception, never by
+                                // cancellation, so a completed unsuccessful one carries it.
+                                tcs.TrySetException(receipt.Exception.GetBaseException()) |> ignore
+                                return! loop latestGeneration latestReceipt waiters
+                            | _ ->
                                 Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
-                                return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
 
+                                return!
+                                    loop latestGeneration latestReceipt ((afterGeneration, pending, tcs) :: waiters)
+
+                        | ObserveScan receipt ->
+                            // A waiter already bound to an unsettled request keeps it: a
+                            // recovery queued behind a failing scan cannot turn that
+                            // failure green.
+                            let bound =
+                                waiters
+                                |> List.map (fun (afterGeneration, previous, tcs) ->
+                                    match previous with
+                                    | Some earlier when not earlier.IsCompletedSuccessfully ->
+                                        afterGeneration, previous, tcs
+                                    | _ -> afterGeneration, Some receipt, tcs)
+
+                            return! loop latestGeneration (Some receipt) bound
+
+                        | ScanSettled(receipt, Result.Error failure) ->
+                            let failed, remaining =
+                                waiters
+                                |> List.partition (fun (_, bound, _) ->
+                                    bound |> Option.exists (fun task -> obj.ReferenceEquals(task, receipt)))
+
+                            for _, _, tcs in failed do
+                                tcs.TrySetException(failure) |> ignore
+
+                            return! loop latestGeneration latestReceipt remaining
+
+                        | ScanSettled(_, Ok newGeneration)
                         | Signal newGeneration ->
                             let toSignal, remaining =
                                 waiters
-                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+                                |> List.partition (fun (afterGen, bound, _) ->
+                                    satisfied afterGen newGeneration
+                                    && (bound |> Option.forall (fun receipt -> receipt.IsCompletedSuccessfully)))
 
                             Logging.debug
                                 "scan-signal"
                                 $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
 
-                            for _, tcs in toSignal do
+                            for _, _, tcs in toSignal do
                                 tcs.TrySetResult(()) |> ignore
 
-                            return! loop (max latestGeneration newGeneration) remaining
+                            return! loop (max latestGeneration newGeneration) latestReceipt remaining
+
+                        | Drained tcs ->
+                            tcs.TrySetResult(()) |> ignore
+                            return! loop latestGeneration latestReceipt waiters
 
                         | RaiseFaultForTest ex -> raise ex
                     }
 
-                loop 0L []),
+                loop 0L None []),
             ?cancellationToken = cancellationToken
         )
 
@@ -745,15 +805,10 @@ type ScanSignal(?cancellationToken: CancellationToken) =
             Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
-    /// If afterGeneration < 0, resolves on the next generation increment.
+    /// If afterGeneration < 0, resolves on the next generation increment. A waiter bound
+    /// to a scan request that fails receives that failure.
     member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
-        let alreadySatisfied =
-            if afterGeneration >= 0L then
-                currentGeneration > afterGeneration
-            else
-                currentGeneration > 0L
-
-        if alreadySatisfied then
+        if satisfied afterGeneration currentGeneration then
             Logging.debug
                 "scan-signal"
                 $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — already satisfied, returning immediately"
@@ -766,6 +821,26 @@ type ScanSignal(?cancellationToken: CancellationToken) =
             agent.Post(WaitFor(afterGeneration, tcs))
             tcs.Task
 
+    /// Bind later waiters to an admitted scan request, and settle them with its outcome
+    /// once `receipt` settles, whether or not the requesting caller is still waiting.
+    member _.ObserveScan(receipt: Task<unit>, generation: unit -> int64) =
+        agent.Post(ObserveScan receipt)
+
+        receipt.ContinueWith(
+            (fun (settled: Task<unit>) ->
+                let outcome =
+                    if settled.IsCompletedSuccessfully then
+                        Ok(generation ())
+                    else
+                        Result.Error(settled.Exception.GetBaseException())
+
+                agent.Post(ScanSettled(receipt, outcome))),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        )
+        |> ignore
+
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
 
@@ -777,38 +852,65 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     /// `ErrorLedger.RaiseFaultForTest` for rationale.
     member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
 
-/// Messages handled by the scan agent. The agent owns ScanState + Generation
-/// in its loop's recursion — readers round-trip via PostAndReply so they never
-/// see a stale snapshot.
-[<NoComparison; NoEquality>]
-type private ScanMsg =
-    | RequestScan of CancellationToken * AsyncReplyChannel<unit>
-    | GetState of AsyncReplyChannel<ScanState>
-    | GetGeneration of AsyncReplyChannel<int64>
-    | SetState of ScanState * AsyncReplyChannel<unit>
+    /// Test seam: completes once every message posted before this call has been handled,
+    /// so a test can order a scan's outcome after its waiters are bound.
+    member internal _.Drained() : Task<unit> =
+        let tcs =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-/// Internal state managed by the scan agent.
+        agent.Post(Drained tcs)
+        tcs.Task
+
+/// The scan's published state. Discovery and checks never run in its writer.
 type private ScanAgentState =
     { ScanState: ScanState
       Generation: int64
       LastFingerprint: Set<string * int64> }
 
-/// Opaque handle to the scan MailboxProcessor. State (ScanState, Generation)
-/// lives inside the loop body; reads are sub-microsecond mailbox round-trips.
 [<NoComparison; NoEquality>]
-type ScanAgent = private ScanAgent of MailboxProcessor<ScanMsg>
+type private ScanRequest =
+    | RunScan
+    /// Test seam: replace the published scan state.
+    | SetScanState of ScanState
 
-let private requestScan (ScanAgent agent) ct =
-    agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
+/// The scan supervisor and the signal its waiters use. Reads come from the published row
+/// and never wait for a scan.
+[<NoComparison; NoEquality>]
+type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanRequest> * ScanSignal
 
-let private getScanGeneration (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetGeneration ch)
+/// Admit a scan request and bind later `WaitForScan` waiters to it. Returns the request's
+/// receipt once the admission is published.
+let private admitScan (ScanAgent(owner, signal)) ct : Async<Task<unit>> =
+    async {
+        match! owner.SubmitAsync(RunScan, ct) |> Async.AwaitTask with
+        | Ok receipt ->
+            signal.ObserveScan(receipt, fun () -> owner.State.Generation)
+            return receipt
+        | Result.Error failure -> return raise failure
+    }
 
-let private getScanStatus (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetState ch)
+/// Admit a scan and wait for its receipt, raising the scan's own failure.
+let private requestScan scanAgent ct =
+    async {
+        let! receipt = admitScan scanAgent ct
+        let! settled = receipt.ContinueWith(fun (settled: Task<unit>) -> settled) |> Async.AwaitTask
 
-let private setScanStatus (ScanAgent agent) state =
-    agent.PostAndReply(fun ch -> SetState(state, ch))
+        if not settled.IsCompletedSuccessfully then
+            raise (settled.Exception.GetBaseException())
+    }
+
+let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
+
+let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
+
+let private setScanStatus (ScanAgent(owner, _)) state =
+    owner
+        .Submit(SetScanState state, CancellationToken.None)
+        .WaitAsync(SupervisedWork.AdmissionBound)
+        .GetAwaiter()
+        .GetResult()
+
+let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
 /// Centralized failure handler for daemon batch/scan steps. `processBatch` and
 /// `performScan` transitively call FCS, MSBuild, and arbitrary plugin Update
@@ -868,7 +970,7 @@ type internal BatchContext =
         /// Monotonic counter bumped per `InSessionBatch` `BatchChecked` emitted
         /// from `processBatch`. Per-trigger generation lets subscribers dedup
         /// "latest in-session cohort" without colliding with scan generations
-        /// (which use the scan agent's own counter). Boxed `ref` so the
+        /// (which use the scan supervisor's own counter). Boxed `ref` so the
         /// long-lived BatchContext shares state across batches.
         InSessionBatchGen: int64 ref
         /// Deps-freshness gate: given a project's `.fsproj` path, decides
@@ -878,6 +980,12 @@ type internal BatchContext =
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
     }
+
+/// One cohort of watcher changes, and the `fshw format` requests flushed with it.
+[<NoComparison; NoEquality>]
+type private ChangeRequest =
+    { Changes: FileChangeKind list
+      FormatReplies: TaskCompletionSource<string> list }
 
 /// The reply `fshw format` prints. It names the set that was offered, and the formatter
 /// that ran over it — or the reason none did. `formatted 0 files` on its own was the
@@ -1623,7 +1731,7 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
-        // Live scan-activity leases, shared with the scan agent that takes them.
+        // Live scan-activity leases, shared with the scan supervisor that takes them.
         // Read by the idle-exit scheduler and the heartbeat so
         // a cold or forced scan is never mistaken for idleness.
         scanLeases: ScanActivity.ScanLeases,
@@ -1635,7 +1743,9 @@ type Daemon
         // Taken as a PARAMETER, never constructed here: `createWith` must install
         // it before anything captures an ExecutionContext (see the comment there),
         // and a parameter makes that ordering the only constructible one.
-        processRegistry: ProcessRegistry.Registry
+        processRegistry: ProcessRegistry.Registry,
+        // Closes watcher input and the change-batch worker.
+        closeChanges: unit -> unit
     ) =
 
     let mutable disposed = false
@@ -1740,6 +1850,16 @@ type Daemon
         member this.Dispose() =
             if not disposed then
                 disposed <- true
+
+                // Close admission first. Queued requests settle and live work is asked to
+                // cancel, so nothing can launch a child after the registry reaps. Live
+                // callbacks stay owned until they actually return.
+                for close in [ closeChanges; (fun () -> closeScan scanAgent) ] do
+                    try
+                        close ()
+                    with failure ->
+                        Logging.error "daemon" $"closing supervised work failed: %O{failure}"
+
                 // Call directly on the daemon's own registry rather than the
                 // AsyncLocal current one — Dispose may run from a different
                 // async context than the one that installed it.
@@ -1759,7 +1879,7 @@ type Daemon
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         pipeline.RegisterProject(projectPath, options)
 
-    /// Get current scan state.
+    /// Get current scan state. Read from the published scan row; never waits for a scan.
     member _.GetScanState() = getScanStatus scanAgent
 
     /// Get current scan generation (incremented after each completed scan).
@@ -1769,13 +1889,20 @@ type Daemon
     member internal _.SetScanState(state: ScanState) = setScanStatus scanAgent state
 
     /// Scan all registered files — check each one and emit events to plugins.
-    /// Blocks until complete. If a scan is already running, waits for it to finish.
+    /// Completes when this request's scan has settled; a scan already running finishes
+    /// first. Raises the scan's failure, or `ObjectDisposedException` once the daemon is
+    /// disposed. Cancelling the caller cancels this request's scan.
     member _.ScanAll() =
         async {
             let! ct = Async.CancellationToken
 
             do! requestScan scanAgent ct
         }
+
+    /// Admit a scan without waiting for it. The result resolves once the request is
+    /// published and bound to later `WaitForScan` waiters, and carries its receipt.
+    member internal _.AdmitScan() : Task<Task<unit>> =
+        Async.StartAsTask(admitScan scanAgent CancellationToken.None)
 
     /// Run a single full scan in-process without watcher or IPC.
     /// Discovers projects, scans all files, waits for plugins to complete, returns statuses.
@@ -1839,7 +1966,7 @@ type Daemon
     /// Format scan state as a human-readable string. Completeness is read LIVE
     /// from the host's coverage set (registered minus currently-checked) so the
     /// rendered numbers agree with `fshw check` and never rot after incremental
-    /// edits — only the `ScanComplete` marker comes from the scan agent.
+    /// edits — only the scan marker comes from the scan supervisor's published row.
     member _.FormatScanStatus() =
         let (registered, unchecked) = liveCoverage ()
         formatScanStatusWith registered unchecked (getScanStatus scanAgent)
@@ -1849,8 +1976,12 @@ type Daemon
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             try
+                // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
+                // sends next is bound to this request rather than to an earlier one
+                // that failed. The scan itself runs on without the caller.
                 let onScan () =
-                    Async.StartAsTask(this.ScanAll()) |> ignore
+                    this.AdmitScan().WaitAsync(SupervisedWork.AdmissionBound).GetAwaiter().GetResult()
+                    |> ignore
 
                 let triggerBuild () =
                     async {
@@ -1919,7 +2050,8 @@ type Daemon
                                     raise (System.OperationCanceledException(daemonShuttingDownMessage, cts.Token))
 
                                 linked.Cancel()
-                                return ()
+                                // The waiter may have settled with its scan's failure.
+                                do! waiter
                             }
                       // requireVerdict=true: this is the WaitForComplete RPC
                       // path — it must not report a vacuous clean on a cold /
@@ -2254,9 +2386,10 @@ let private scanKindFor (state: ScanAgentState) =
 let private performScan
     (ctx: BatchContext)
     (scanLeases: ScanActivity.ScanLeases)
-    (scanSignal: ScanSignal)
     (state: ScanAgentState)
     (ct: CancellationToken)
+    // Publishes the scan's progress into its supervisor row while the scan runs.
+    (publish: ScanAgentState -> unit)
     =
     let scanBody =
         async {
@@ -2337,7 +2470,11 @@ let private performScan
             Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
             let sw = System.Diagnostics.Stopwatch.StartNew()
             let scanStartedAt = System.DateTime.UtcNow
-            let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
+
+            publish
+                { state with
+                    ScanState = Scanning(total, 0, scanStartedAt) }
+
             let dispatchedFiles = ResizeArray<AbsFilePath>()
             // Files whose check never returned Some, even after the bounded
             // scan-retry budget (the silent-truncation race: a scan-side check
@@ -2423,7 +2560,10 @@ let private performScan
                         host.EmitFileChecked(checkResult)
                         reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                         completed <- completed + 1
-                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+
+                        publish
+                            { state with
+                                ScanState = Scanning(total, completed, System.DateTime.UtcNow) }
 
                     let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
@@ -2463,10 +2603,11 @@ let private performScan
 
             let newGeneration = state.Generation + 1L
 
-            // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
-            // callers (IPC) safely assume BatchChecked has already been dispatched
-            // by the time `fshw scan --wait` returns. Empty cohorts (no registered
-            // files) skip — there's nothing to "flush and decide" against.
+            // Emit BatchChecked before the scan returns: the generation is signalled
+            // only after the supervisor publishes this scan's completed state, so
+            // WaitForScanGeneration callers (IPC) can assume BatchChecked has already
+            // been dispatched by the time `fshw scan --wait` returns. Empty cohorts (no
+            // registered files) skip — there's nothing to "flush and decide" against.
             if dispatchedFiles.Count > 0 then
                 host.EmitBatchChecked
                     { Trigger = BootScan
@@ -2474,8 +2615,6 @@ let private performScan
                       Generation = newGeneration
                       StartedAt = scanStartedAt
                       CompletedAt = System.DateTime.UtcNow }
-
-            scanSignal.SignalGeneration(newGeneration)
 
             // One measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
@@ -2528,7 +2667,7 @@ module Daemon =
     [<RequireQualifiedAccess>]
     type RunMode =
         /// Persistent daemon: a `FileWatcher` (native events, or the polling
-        /// fallback) feeds edits into the change agent for the daemon's lifetime.
+        /// fallback) feeds edits into the change-batch supervisor for the daemon's lifetime.
         | Watching
         /// One shot (`--run-once`): a single scan settles the verdict and the host
         /// is disposed. No native FSEvents stream, `FileSystemWatcher`, or polling
@@ -2617,7 +2756,7 @@ module Daemon =
         // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
         // value is only visible to ExecutionContexts captured AFTER it is set.
         // Everything below captures a context: the PluginHost's agents, the
-        // change/scan mailboxes, the plugin handlers registered later. Whichever
+        // change/scan supervisors, the plugin handlers registered later. Whichever
         // of them eventually DISPATCHES to a plugin decides the context that
         // plugin's `runProcess` runs in, so installing the registry any later
         // means a plugin's spawned child resolves NO registry,
@@ -2777,70 +2916,89 @@ module Daemon =
                                 tracker
                                 projPath) }
 
-            let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
-                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
-                let run = host.RunPreprocessors(files)
-                let newSuppressed = Set.union suppressed (Set.ofList run.Modified)
-                replyChannel.Reply(renderFormatAll files run)
-                newSuppressed
-
-            let changeAgent =
-                MailboxProcessor<Choice<FileChangeKind, AsyncReplyChannel<string>>>
-                    .Start(
-                        (fun inbox ->
-                            let rec idle (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.Receive()
-
-                                    match msg with
-                                    | Choice2Of2 replyChannel ->
-                                        let newSuppressed = formatAllAndSuppress suppressed replyChannel
-                                        return! idle newSuppressed
-                                    | Choice1Of2 change ->
-                                        let delayMs = delayForChange change
-                                        return! debouncing [ change ] delayMs suppressed
-                                }
-
-                            and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.TryReceive(delayMs)
-
-                                    match msg with
-                                    | Some(Choice1Of2 change) ->
-                                        let newDelay = max delayMs (delayForChange change)
-                                        return! debouncing (change :: pending) newDelay suppressed
-                                    | Some(Choice2Of2 replyChannel) ->
+            // Change batches run one at a time under a supervisor. The worker's state is
+            // the set of paths preprocessors wrote, whose watcher echoes are suppressed.
+            let changeWorker =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    Set.empty,
+                    Ipc.ambientRpcDeadline (),
+                    (fun suppressed (_: ChangeRequest) -> suppressed),
+                    (fun suppressed _ -> suppressed),
+                    ignore,
+                    (fun suppressed request ct _ ->
+                        async {
+                            let! suppressed =
+                                if List.isEmpty request.Changes then
+                                    async.Return suppressed
+                                else
+                                    async {
                                         // Failure policy lives in `runDaemonStep`.
                                         match!
                                             runDaemonStep
-                                                "processChanges (with replyChannel)"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
-                                        with
-                                        | Ok newSuppressed ->
-                                            let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
-                                            return! idle finalSuppressed
-                                        | Result.Error _ ->
-                                            replyChannel.Reply("format failed")
-                                            return! idle suppressed
-                                    | None ->
-                                        // Debounce expired — process the batch.
-                                        match!
-                                            runDaemonStep
                                                 "processChanges"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
+                                                (processBatch
+                                                    { batchCtx with DaemonCt = ref ct }
+                                                    request.Changes
+                                                    suppressed)
                                         with
-                                        | Ok newSuppressed -> return! idle newSuppressed
-                                        | Result.Error _ -> return! idle suppressed
-                                }
+                                        | Ok next -> return next
+                                        | Result.Error failure -> return raise failure
+                                    }
 
-                            idle Set.empty),
-                        cancellationToken = lifetime.Token
-                    )
+                            match request.FormatReplies with
+                            | [] -> return suppressed
+                            | replies ->
+                                ct.ThrowIfCancellationRequested()
+                                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+                                let run = host.RunPreprocessors(files)
+                                let rendered = renderFormatAll files run
+
+                                for reply in replies do
+                                    reply.TrySetResult(rendered) |> ignore
+
+                                return Set.union suppressed (Set.ofList run.Modified)
+                        })
+                )
+
+            // Watcher input is owned from the callback onward: while it debounces, while
+            // it waits for the worker, and while the worker runs it.
+            let changeInput =
+                DebouncedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    changeWorker,
+                    (fun earlier later ->
+                        { Changes = earlier.Changes @ later.Changes
+                          FormatReplies = earlier.FormatReplies @ later.FormatReplies })
+                )
 
             let onChange change =
                 Logging.debug "watcher" $"%O{change}"
-                changeAgent.Post(Choice1Of2 change)
+
+                try
+                    let receipt =
+                        changeInput.Post(
+                            { Changes = [ change ]
+                              FormatReplies = [] },
+                            TimeSpan.FromMilliseconds(float (delayForChange change))
+                        )
+
+                    // The batch logged its own failure; a receipt nobody else awaits is
+                    // observed here so it is never an unobserved task exception.
+                    receipt.ContinueWith(
+                        (fun (failed: Task<unit>) ->
+                            Logging.debug
+                                "watcher"
+                                $"change batch settled with %s{failed.Exception.GetBaseException().Message}"),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted,
+                        TaskScheduler.Default
+                    )
+                    |> ignore
+                with failure ->
+                    Logging.warn "watcher" $"change not admitted (%O{change}): %s{failure.Message}"
 
             // The ONLY place a watcher can come from. A `OneShot` host never reaches
             // the factory, so its verdict cannot depend on native watcher startup.
@@ -2859,53 +3017,64 @@ module Daemon =
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
-            // One lease set per daemon: the scan agent takes a lease for the span
-            // of every scan, the idle-exit scheduler and heartbeat read it.
+            // One lease set per daemon: every scan takes a lease for its span, the
+            // idle-exit scheduler and heartbeat read it.
             let scanLeases = ScanActivity.ScanLeases.create ()
 
-            let scanMailbox =
-                MailboxProcessor.Start(
-                    (fun inbox ->
-                        let rec loop (state: ScanAgentState) =
-                            async {
-                                let! msg = inbox.Receive()
-
-                                match msg with
-                                | RequestScan(ct, reply) ->
-                                    // Failure policy lives in `runDaemonStep`.
-                                    match!
-                                        runDaemonStep
-                                            "performScan"
-                                            (performScan batchCtx scanLeases scanSignal state ct)
-                                    with
-                                    | Ok newState ->
-                                        reply.Reply(())
-                                        return! loop newState
-                                    | Result.Error _ ->
-                                        reply.Reply(())
-                                        return! loop state
-                                | GetState reply ->
-                                    reply.Reply(state.ScanState)
-                                    return! loop state
-                                | GetGeneration reply ->
-                                    reply.Reply(state.Generation)
-                                    return! loop state
-                                | SetState(newScanState, reply) ->
-                                    reply.Reply(())
-                                    return! loop { state with ScanState = newScanState }
-                            }
-
-                        loop
-                            { ScanState = ScanIdle
-                              Generation = 0L
-                              LastFingerprint = Set.empty }),
-                    cancellationToken = lifetime.Token
+            // Scans run one at a time under a supervisor. `scan-status` and the
+            // generation read its published row, so they never wait for discovery.
+            let scanOwner =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "scan",
+                    { ScanState = ScanIdle
+                      Generation = 0L
+                      LastFingerprint = Set.empty },
+                    Ipc.ambientRpcDeadline (),
+                    (fun state request ->
+                        match request with
+                        | RunScan ->
+                            { state with
+                                ScanState = Scanning(0, 0, DateTime.UtcNow) }
+                        | SetScanState _ -> state),
+                    (fun state _ -> { state with ScanState = ScanIdle }),
+                    // Waiters wake only after the completed generation is published.
+                    (fun state -> scanSignal.SignalGeneration state.Generation),
+                    (fun state request ct publish ->
+                        async {
+                            match request with
+                            | SetScanState value -> return { state with ScanState = value }
+                            | RunScan ->
+                                // Failure policy lives in `runDaemonStep`.
+                                match!
+                                    runDaemonStep "performScan" (performScan batchCtx scanLeases state ct publish)
+                                with
+                                | Ok next -> return next
+                                | Result.Error failure -> return raise failure
+                        })
                 )
 
-            let scanAgentWrapper = ScanAgent scanMailbox
-
             let formatAllViaAgent () =
-                changeAgent.PostAndAsyncReply(Choice2Of2)
+                async {
+                    let reply =
+                        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+                    try
+                        // A zero delay flushes pending watcher input first, so formatting
+                        // runs after the changes that preceded it.
+                        let receipt =
+                            changeInput.Post(
+                                { Changes = []
+                                  FormatReplies = [ reply ] },
+                                TimeSpan.Zero
+                            )
+
+                        do! receipt |> Async.AwaitTask
+                        return! reply.Task |> Async.AwaitTask
+                    with failure ->
+                        Logging.error "daemon" $"format request failed: %O{failure}"
+                        return "format failed"
+                }
 
             new Daemon(
                 host,
@@ -2916,7 +3085,7 @@ module Daemon =
                 loader,
                 mapProjectOptions,
                 discovery,
-                scanAgentWrapper,
+                ScanAgent(scanOwner, scanSignal),
                 daemonCtRef,
                 new ManualResetEventSlim(false),
                 scanSignal,
@@ -2927,7 +3096,8 @@ module Daemon =
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
                 scanLeases,
-                processRegistry
+                processRegistry,
+                changeInput.Close
             )
         with _ ->
             lifetime.Dispose()
@@ -2982,6 +3152,18 @@ module Daemon =
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
         createWithCore checker repoRoot opts (Some loader) mapProjectOptions None FileWatcher.create
+
+    /// Loader and watcher seam: a test holds discovery and delivers watcher changes
+    /// itself, with no native watcher behind them.
+    let internal createWithWorkspaceLoaderAndWatcher
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (loader: IWorkspaceLoader)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherFactory: WatcherFactory)
+        =
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None watcherFactory
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

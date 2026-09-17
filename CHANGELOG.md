@@ -210,6 +210,40 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: scans and change batches run under a bounded supervisor, and `scan-status` never waits for a scan
+
+The daemon's scan and its watcher change batches used to run inside two mailboxes. A
+status read waited for the whole scan, a hung project rediscovery looked idle and stopped
+every later change, and a daemon disposed during a scan never answered `ScanAll`.
+
+- **Status reads are immediate.** `GetScanState`, `GetScanGeneration` and `scan-status`
+  read the scan's published state, so they answer while discovery is still running, and
+  `scanning: n/m files` now actually appears during a scan.
+- **Scans and change batches are owned host work** from the moment they are requested or
+  the watcher reports a change, through debounce, rediscovery and checking.
+  `PluginHost.AnyPluginBusy` and `BusyPluginNames` (`scan`, `changes`) report them, so
+  idle exit, the heartbeat and `WaitForComplete` no longer read them as rest.
+- **They have a deadline.** Each scan and change batch is bounded by
+  `FSHW_VERDICT_DEADLINE_SEC` (default 60 minutes). Past it, the failure is recorded in
+  `PluginHost.FailedOperations` and the work is cancelled; it stays owned until it
+  actually returns.
+- **Their child processes are theirs.** Each scan and change batch runs in its own
+  child-process scope, so a child a preprocessor leaves running is reaped before that
+  scan or batch retires, not at daemon shutdown.
+- **Failures reach waiters.** A failed or cancelled scan fails the `ScanAll` that requested
+  it, and `WaitForScan` callers bound to it receive the failure, even when they register
+  after it, instead of waiting for a generation that will never come. A later scan
+  recovers. Cancelling a `ScanAll` caller cancels that scan.
+- **Shutdown settles what it refuses.** `Dispose` closes change input and both supervisors
+  before reaping processes. `ScanAll` on a disposed daemon raises
+  `ObjectDisposedException`.
+- **Behaviour change:** after a failed or cancelled scan the scan state is `idle`, where it
+  used to keep the previous scan's state.
+- Idle exit claims its shutdown latch once per eligible tick, so the losing claim no
+  longer depends on thread timing.
+
+See `docs/adr-030-scans-and-change-batches-run-under-a-bounded-supervisor.md`.
+
 ### core: plugin work is owned from admission to commit, and the host answers "at rest" from one publication
 
 The plugin framework and host now run on the work owner added below. Nothing about a

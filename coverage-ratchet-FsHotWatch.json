@@ -1,5 +1,21 @@
 {
   "overrides": {
+    "SupervisedWork.fs": [
+      {
+        "line": 97,
+        "branch": 92,
+        "reason": "provisional Linux floor (2026-09-17): new file, not yet measured on Linux. macOS measures 100 percent line and 100 percent branch (269 lines, 46/46 branches) with SupervisedWorkTests, DebouncedWorkTests, DaemonTests, IpcTests and IdleExitTests, so it has no macOS entry. Linux instruments more compiler-generated branches for the same source; set a few points below the macOS measurement, to be settled from CI.",
+        "platform": "linux"
+      }
+    ],
+    "DebouncedWork.fs": [
+      {
+        "line": 97,
+        "branch": 92,
+        "reason": "provisional Linux floor (2026-09-17): new file, not yet measured on Linux. macOS measures 100 percent line and 100 percent branch (132 lines, 28/28 branches) with DebouncedWorkTests and DaemonTests, so it has no macOS entry. Linux instruments more compiler-generated branches for the same source; set a few points below the macOS measurement, to be settled from CI.",
+        "platform": "linux"
+      }
+    ],
     "DetachedLaunch.fs": [
       {
         "line": 100,

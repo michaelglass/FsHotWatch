@@ -557,6 +557,10 @@ type PluginHost
     /// questions about the same instant.
     member internal _.WorkSnapshot: PluginWorkOwner.HostSnapshot = workStore.Snapshot
 
+    /// The store behind `WorkSnapshot`. The daemon's scan and change-batch supervisors
+    /// publish their rows into it, so one publication answers for them and the plugins.
+    member internal _.WorkStore: PluginWorkOwner.Store = workStore
+
     /// True if the publication holds any owned work: an admitted event not yet
     /// committed, a queued command, an exclusive run from claim until its result is
     /// committed, or a host operation (dispatch fan-out, preprocessor pass).

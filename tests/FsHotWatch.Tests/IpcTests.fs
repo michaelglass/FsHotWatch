@@ -1695,3 +1695,31 @@ let ``the seam refuses an infinite deadline rather than obeying it`` () =
 
     // Healthy work still returns — the fallback deadline is finite but ample, not zero.
     test <@ target.WaitForScan(-1L).Result = "idle" @>
+
+[<Fact(Timeout = 10000)>]
+let ``scan waiters retain their request when recovery is queued before failure settles`` () =
+    let signal = ScanSignal()
+
+    let first =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let recovery =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    signal.ObserveScan(first.Task, fun () -> 0L)
+    let originalWaiter = signal.WaitForGeneration(0L, 0L)
+    signal.ObserveScan(recovery.Task, fun () -> 1L)
+    let recoveryWaiter = signal.WaitForGeneration(0L, 0L)
+    // Both waiters are registered and bound before the first scan fails.
+    signal.Drained().WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()
+    test <@ not originalWaiter.IsCompleted @>
+    first.SetException(InvalidOperationException("first scan failed"))
+
+    let failure =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            originalWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult())
+
+    test <@ failure.Message = "first scan failed" @>
+    test <@ not recoveryWaiter.IsCompleted @>
+    recovery.SetResult(())
+    recoveryWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()

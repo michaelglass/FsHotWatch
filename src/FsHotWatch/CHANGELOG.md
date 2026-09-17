@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Scans and watcher change batches run under a bounded supervisor (`SupervisedWork`,
+  `DebouncedWork`) that publishes into the host work store. `GetScanState`,
+  `GetScanGeneration` and `FormatScanStatus` never wait for a scan; in-flight scans and
+  batches count as host work (`scan`, `changes`), carry the ambient verdict deadline, run
+  in their own child-process scope, and fail their receipts instead of abandoning them.
+  `ScanAll` raises the scan's failure, and `ObjectDisposedException` after `Dispose`.
+  `ScanSignal.ObserveScan` delivers a failed scan to its `WaitForScan` waiters.
+
 ## 0.10.0-alpha.36 - 2026-09-17
 
 - Plugins run on the work owner. An event is outstanding until its state is committed

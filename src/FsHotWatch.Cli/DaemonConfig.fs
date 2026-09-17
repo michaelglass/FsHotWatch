@@ -1518,7 +1518,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" "Registering FormatPreprocessor"
         logFormatPin ()
 
-        // A preprocessor runs inside the change agent AND inside the scan, so an
+        // A preprocessor runs inside a change batch AND inside the scan, so an
         // unbounded one is the worse of the two to leave uncapped.
         daemon.RegisterPreprocessor(
             match config.TimeoutSec with

@@ -206,8 +206,8 @@ type CheckPipeline
     /// If a caller token is provided, the returned CTS is linked to it so that daemon-level
     /// cancellation also cancels the per-file check.
     ///
-    /// Required for correctness, not a hot-path optimization: scanMailbox and
-    /// changeAgent in Daemon.fs can issue concurrent CheckFile calls for the same file.
+    /// Required for correctness, not a hot-path optimization: the scan and change-batch
+    /// supervisors in Daemon.fs can issue concurrent CheckFile calls for the same file.
     /// Without cancellation a slow scan-side check can emit a stale FileChecked AFTER
     /// the batch-side check emitted the fresh one, and plugins would observe
     /// newer-then-older ordering and re-publish stale errors.
