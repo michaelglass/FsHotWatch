@@ -2,26 +2,30 @@
 
 ## Unreleased
 
+- (breaking) `force-rebuild` is owner state. `BuildState` gains `ForceRebuild`, set by the
+  new `ForceRebuildRequested` message and spent by a build that actually ran; the command
+  replies once that state is committed. The cache key reads `ForceRebuild` and
+  `ActiveTestRuns` from the state it is given instead of closure copies.
+- Fix: a change whose build claim meets a finished build that has not yet folded its result
+  is kept and built by that result, instead of being dropped ("Skipping: build already in
+  progress").
+
 ## 0.7.0-alpha.36 - 2026-09-17
 
 - docs: reword comments and docs left ungrammatical by removing private references
 - Plugin handlers state what they read and what they commit (breaking plugin API)
 
-
 ## 0.7.0-alpha.35 - 2026-09-15
 
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure
-
 
 ## 0.7.0-alpha.34 - 2026-09-06
 
 - Fix: stop the CLI prescribing a merge policy it does not own
 
-
 ## 0.7.0-alpha.33 - 2026-09-01
 
 - Fix: fairly serialize builds and test hosts
-
 
 ## 0.7.0-alpha.32 - 2026-09-01
 
@@ -131,7 +135,6 @@
 
 - give the artifact gate a real path, and keep it report-only
 
-
 ## 0.7.0-alpha.24 - 2026-08-18
 
 - refactor: **artifact freshness is decided by ONE walk over the project graph**, not
@@ -198,17 +201,14 @@
 
 - Comment audit: cut AI thinking-out-loud from comments
 
-
 ## 0.7.0-alpha.19 - 2026-08-06
 
 - confirm: force a REAL build — a cache hit must not assert freshness it never verified
-
 
 ## 0.7.0-alpha.18 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
 - chore: trim stale/historical comments to minimal current-state context
-
 
 ## 0.7.0-alpha.17 - 2026-07-15
 

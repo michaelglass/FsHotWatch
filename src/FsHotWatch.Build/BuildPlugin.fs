@@ -59,6 +59,9 @@ type BuildState =
         /// owed, but MSBuild must not rewrite those outputs until every active run
         /// has emitted its matching completion boundary.
         ActiveTestRuns: Set<Guid>
+        /// The next build must run for real, not replay. Set by the `force-rebuild`
+        /// intent and spent only by a build that actually completed.
+        ForceRebuild: bool
     }
 
 /// Internal message posted from the async build runner back to the plugin's
@@ -69,7 +72,20 @@ type BuildState =
 /// status. The summary is deliberately NOT carried: the handler derives it from
 /// the outcome via `buildSummary`, the same pure helper the worker logs with, so
 /// the two can never disagree.
-type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
+type BuildMsg =
+    | BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
+    /// The `force-rebuild` command's intent. The command acknowledges once the state
+    /// this message folds into is committed.
+    | ForceRebuildRequested
+
+/// Whether a build worker's result leaves the shared artifacts usable. A worker only
+/// returns `BuildDone`; any other message says nothing about artifacts, so it cannot
+/// vouch for them.
+let internal classifyBuildMsg (summary: BuildOutcome -> ErrorEntry list -> string) (message: BuildMsg) =
+    match message with
+    | BuildDone(BuildPassed _, _, _) -> Ready
+    | BuildDone(outcome, entries, _) -> Invalid(summary outcome entries)
+    | ForceRebuildRequested -> Invalid "a build worker returned a command instead of a build outcome"
 
 /// Diagnostic for the "MSBuild exited non-zero but produced no parseable
 /// diagnostics" failure mode (typically a bail during evaluation/restore).
@@ -482,27 +498,6 @@ let createWith
     let buildCommand = command
     let buildArgs = args
 
-    /// Force the NEXT build to be real instead of a cache replay.
-    ///
-    /// The cache key below is a content merkle over SOURCE files only, so a hit
-    /// asserts the OUTPUTS are current on evidence that never looked at them. That
-    /// holds right up until `bin/` is changed out from under a tree whose sources
-    /// are unchanged — a working-copy flip is the common way. Then the build
-    /// replays "built N projects (cached)" without running, TestPrune's freshness
-    /// gate correctly finds the output stale and defers ("waiting on build"), and
-    /// nothing ever rebuilds: a deadlock that blocked a production deploy 3x.
-    ///
-    /// Set by the `force-rebuild` command, which `confirm` issues. Consumed by
-    /// `cacheKey` on the LOOKUP (a `FileChanged`) and cleared once a build has
-    /// actually completed, so the fresh result still gets stored normally.
-    let forceRebuild = ref false
-
-    // Cache lookup happens before Update and receives the event but not BuildState.
-    // Mirror only the active-run set so a FileChanged observed while a test host owns
-    // the output DLLs cannot bypass Update by replaying a cached BuildCompleted.
-    // Both reads and writes happen on this plugin's serialized mailbox.
-    let activeTestRunsForCache: Set<Guid> ref = ref Set.empty
-
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -775,14 +770,27 @@ let createWith
             | stale -> BuildArtifactsStale(stale, out)
         | _ -> outcome
 
-    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
+    /// What a launch leaves owed. A claim the framework accepted owns the input. A
+    /// refused one means "build" is held — by a finished build's result fold whenever
+    /// `IsRunning "build"` read false — and that fold runs `launchPending` when it is
+    /// folded, so the input is kept for it to build rather than dropped.
+    let retainedOn (claim: SharedRunClaim) (owed: FileChangeKind list) =
+        match claim with
+        | SharedClaimed
+        | SharedQueued -> []
+        | LocalSlotBusy ->
+            info "build" "Build slot held by a finished build — keeping this change for its result to build"
+            owed
+
+    /// `owed` is the input this build is for. A refused claim keeps it owed: see
+    /// `retainedOn`.
+    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) (owed: FileChangeKind list) =
         let buildStarted = DateTime.UtcNow
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
         // RunExclusive "build": the framework guarantees only one build runs at a
-        // time (and reports Running at the claim). Concurrent
-        // FileChanged-while-building triggers land on SlotBusy and are safe to
-        // skip — the next FileChanged re-triggers.
+        // time (and reports Running at the claim). A trigger whose claim is refused
+        // keeps its input owed (`retainedOn`).
         let claim =
             ctx.RunExclusiveShared
                 "build"
@@ -849,9 +857,7 @@ let createWith
                                         DateTime.UtcNow - buildStarted
                                     )
                         }))
-                (function
-                | BuildDone(BuildPassed _, _, _) -> Ready
-                | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                (classifyBuildMsg buildSummary)
                 (fun ex ->
                     BuildDone(
                         BuildOutputFailed [ ex.Message ],
@@ -859,28 +865,22 @@ let createWith
                         DateTime.UtcNow - buildStarted
                     ))
 
-        match claim with
-        | SharedClaimed
-        | SharedQueued -> ()
-        | LocalSlotBusy ->
-            // The FileChanged guard normally catches this earlier; this is the
-            // race-free backstop.
-            info "build" "Skipping: build already in progress"
-
         // State carries the prior idle lifecycle. The synchronous BuildDone
         // handler advances Lifecycle.start ▸ complete when the framework posts
         // the completion message back. "is the build running" is owned by
         // ctx.IsRunning "build".
         { LastBuild = idle
-          PendingFiles = []
+          PendingFiles = retainedOn claim owed
           SatisfiedDeps = Set.empty
-          ActiveTestRuns = Set.empty }
+          ActiveTestRuns = Set.empty
+          ForceRebuild = false }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (template: string)
         (files: AbsFilePath list)
+        (owed: FileChangeKind list)
         =
         let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
 
@@ -889,7 +889,7 @@ let createWith
         let buildable = affected |> List.filter (fun p -> not (isTestProject p))
 
         if buildable.IsEmpty then
-            startBuild ctx idle
+            startBuild ctx idle owed
         else
             let buildableSet = buildable |> Set.ofList
 
@@ -982,9 +982,7 @@ let createWith
                                             DateTime.UtcNow - buildStarted
                                         )
                             }))
-                    (function
-                    | BuildDone(BuildPassed _, _, _) -> Ready
-                    | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                    (classifyBuildMsg buildSummary)
                     (fun ex ->
                         BuildDone(
                             BuildOutputFailed [ ex.Message ],
@@ -992,23 +990,18 @@ let createWith
                             DateTime.UtcNow - buildStarted
                         ))
 
-            match claim with
-            | SharedClaimed
-            | SharedQueued -> ()
-            | LocalSlotBusy ->
-                // Race-free backstop; the FileChanged guard normally catches this.
-                info "build" "Skipping: build already in progress"
-
             { LastBuild = idle
-              PendingFiles = []
+              PendingFiles = retainedOn claim owed
               SatisfiedDeps = Set.empty
-              ActiveTestRuns = Set.empty }
+              ActiveTestRuns = Set.empty
+              ForceRebuild = false }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
         (state: BuildState)
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: AbsFilePath list)
+        (owed: FileChangeKind list)
         =
         // A test-file-only change is NOT a build no-op: the changed test project is
         // run by test-prune via `dotnet run --no-build`, which executes the on-disk
@@ -1017,22 +1010,26 @@ let createWith
         // change leaves a stale DLL for `--no-build` to run → false green (ADR-012).
         match buildTemplate with
         | Some template ->
-            { (startTemplateBuild ctx idle template files) with
+            { (startTemplateBuild ctx idle template files owed) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns }
+                ActiveTestRuns = state.ActiveTestRuns
+                ForceRebuild = state.ForceRebuild }
         | None ->
-            { (startBuild ctx idle) with
+            { (startBuild ctx idle owed) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns }
+                ActiveTestRuns = state.ActiveTestRuns
+                ForceRebuild = state.ForceRebuild }
 
     let handleProjectChanged
         (ctx: PluginCtx<BuildMsg>)
         (state: BuildState)
         (idle: Lifecycle<Idle, BuildOutcome option>)
+        (owed: FileChangeKind list)
         =
-        { (startBuild ctx idle) with
+        { (startBuild ctx idle owed) with
             SatisfiedDeps = state.SatisfiedDeps
-            ActiveTestRuns = state.ActiveTestRuns }
+            ActiveTestRuns = state.ActiveTestRuns
+            ForceRebuild = state.ForceRebuild }
 
     let launchPending (ctx: PluginCtx<BuildMsg>) (state: BuildState) =
         if
@@ -1057,8 +1054,8 @@ let createWith
                 |> List.distinct
 
             match hasProjectChange, sourceFiles with
-            | true, _ -> handleProjectChanged ctx state state.LastBuild
-            | _, _ :: _ -> handleSourceChanged ctx state state.LastBuild sourceFiles
+            | true, _ -> handleProjectChanged ctx state state.LastBuild state.PendingFiles
+            | _, _ :: _ -> handleSourceChanged ctx state state.LastBuild sourceFiles state.PendingFiles
             | _ -> state
 
     { Name = PluginName.create "build"
@@ -1066,14 +1063,14 @@ let createWith
         { LastBuild = Lifecycle.create None
           PendingFiles = []
           SatisfiedDeps = Set.empty
-          ActiveTestRuns = Set.empty }
+          ActiveTestRuns = Set.empty
+          ForceRebuild = false }
       Update =
         fun ctx state event ->
             async {
                 match event with
                 | TestRunStarted started ->
                     let activeTestRuns = Set.add started.RunId state.ActiveTestRuns
-                    activeTestRunsForCache.Value <- activeTestRuns
 
                     return
                         { state with
@@ -1081,7 +1078,6 @@ let createWith
 
                 | TestRunCompleted completed ->
                     let activeTestRuns = Set.remove completed.RunId state.ActiveTestRuns
-                    activeTestRunsForCache.Value <- activeTestRuns
 
                     let updated =
                         { state with
@@ -1140,17 +1136,18 @@ let createWith
                             PendingFiles = state.PendingFiles @ [ change ] }
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
-                | FileChanged(SourceChanged files) ->
-                    return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
-                | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
+                | FileChanged(SourceChanged files as change) ->
+                    return
+                        handleSourceChanged
+                            ctx
+                            state
+                            state.LastBuild
+                            (files |> List.map AbsFilePath.create)
+                            (state.PendingFiles @ [ change ])
+                | FileChanged(ProjectChanged _ as change) ->
+                    return handleProjectChanged ctx state state.LastBuild (state.PendingFiles @ [ change ])
+                | Custom ForceRebuildRequested -> return { state with ForceRebuild = true }
                 | Custom(BuildDone(outcome, entries, elapsed)) ->
-                    // A build has now actually run, which is what `force-rebuild`
-                    // asked for. Cleared HERE rather than where `cacheKey` consumed
-                    // it, so a lookup that never reached a build (a suppressed or
-                    // superseded dispatch) cannot silently spend the request and
-                    // leave the artifacts stale anyway.
-                    forceRebuild.Value <- false
-
                     // The completion message arrives carrying the pre-build idle
                     // lifecycle; advance it through Running ▸ Completed for
                     // activity-log bookkeeping.
@@ -1213,7 +1210,13 @@ let createWith
                                     Set.empty
                                 else
                                     state.SatisfiedDeps
-                            ActiveTestRuns = state.ActiveTestRuns }
+                            ActiveTestRuns = state.ActiveTestRuns
+                            // A build has now actually run, which is what `force-rebuild`
+                            // asked for. Spent HERE rather than where the cache key read
+                            // it, so a lookup that never reached a build (a suppressed or
+                            // superseded dispatch) cannot spend the request and leave the
+                            // artifacts stale anyway.
+                            ForceRebuild = false }
 
                     return launchPending ctx completedState
 
@@ -1221,19 +1224,27 @@ let createWith
             }
       PrepareCommit = None
       Commands =
-        [ // Idempotent and cheap: it sets a flag, it does not build. The next cache
-          // LOOKUP misses, so the build runs for real and re-emits the artifacts
-          // TestPrune gates on. `confirm` calls it because the unfiltered verb does not
-          // get to trust a cache when its job is to be the thing you trust.
+        [ // Idempotent and cheap: it sets a flag in owner state, it does not build. The
+          // next cache LOOKUP folded after it misses, so the build runs for real and
+          // re-emits the artifacts TestPrune gates on. `confirm` calls it because the
+          // unfiltered verb does not get to trust a cache when its job is to be the thing
+          // you trust. The reply waits for the intent's committed state: until then a
+          // lookup could still replay.
+          //
+          // Its own intent key, not "build": a request queued behind a running build
+          // would hold the caller for the length of that build.
           //
           // The literal, not a shared constant: plugins live BELOW the CLI, so
           // `IpcParsing.ForceRebuildCommand` is not visible here. Same split as
           // "set-scope"/"run-tests" in TestPrunePlugin. The CLI-side constant
           // carries the contract doc; a test pins the two spellings together.
           "force-rebuild",
-          PluginCommand.Request(fun _ctx _args ->
+          PluginCommand.Request(fun ctx _args ->
               async {
-                  forceRebuild.Value <- true
+                  do!
+                      ctx.EnqueueExclusiveIntent "force-rebuild" (Some "force-rebuild") ForceRebuildRequested
+                      |> Async.AwaitTask
+
                   return JsonSerializer.Serialize({| status = "ok"; forced = true |})
               })
           "build-status",
@@ -1284,7 +1295,7 @@ let createWith
         let merkleKey () =
             Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
-        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
+        let cacheKey (state: BuildState) (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
             // THE STORE, and the only event that is one. A `Custom BuildDone` is this
             // plugin's own post — the delivery of a build that HAS run — and the
@@ -1308,14 +1319,14 @@ let createWith
             // and the artifact re-verification below were both bypassed
             // on the only lookup that could have applied them.
             //
-            // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
+            // While the supplied state asks for a forced rebuild the LOOKUP must miss so a
+            // real build runs.
             // `None` is the framework's documented "outputs missing" bypass — skip the
             // cache, run Update.
-            | FileChanged _ when not activeTestRunsForCache.Value.IsEmpty -> None
-            | CommandCompleted result when depNames.Contains result.Name && not activeTestRunsForCache.Value.IsEmpty ->
-                None
-            | FileChanged _ when forceRebuild.Value -> None
-            | CommandCompleted result when depNames.Contains result.Name && forceRebuild.Value -> None
+            | FileChanged _ when not state.ActiveTestRuns.IsEmpty -> None
+            | CommandCompleted result when depNames.Contains result.Name && not state.ActiveTestRuns.IsEmpty -> None
+            | FileChanged _ when state.ForceRebuild -> None
+            | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild -> None
 
             // Re-verify the ARTIFACTS at cache-replay time, not only after a real
             // build.
@@ -1382,7 +1393,7 @@ let createWith
             // CommandCompleted events likewise cannot trigger a build.
             | _ -> None
 
-        Some(fun _state event -> cacheKey event)
+        Some cacheKey
       // There is NO cold-start gate in the framework — a comment here used to claim
       // one ("replay is suppressed until this plugin completes once in-session"), and
       // nothing in `PluginFramework`/`PluginHost` implements it. The task cache is

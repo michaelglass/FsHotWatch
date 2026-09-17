@@ -1033,7 +1033,7 @@ let ``RerunQueued path records previous run outcome to history before starting r
 
         test <@ firstFailed @>)
 
-// ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering
+// ``rerun storm: plugin reaches terminal state after BuildCompleted hammering
 // subsides`` lives in FsHotWatch.IntegrationTests/TestPruneStormTests.fs: it asserts
 // EVENTUAL settling under load, which is scheduler-dependent and flaked here.
 
@@ -4499,14 +4499,16 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
-        host.RegisterHandler(handler)
+        let committed = registerWithStateObserver host handler
 
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 10000
+        waitForQuiescent host 10000
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
-        let cacheKeyFn = handler.CacheKey.Value handler.Init
+        // The next lookup is computed from the state the run committed.
+        let cacheKeyFn = handler.CacheKey.Value(committed ())
         let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
         test <@ computedKey.IsSome @>
 
@@ -4666,7 +4668,7 @@ let ``a project-scoped rerun cannot satisfy the next whole-suite check`` () =
                 None
                 []
 
-        host.RegisterHandler(handler)
+        let committed = registerWithStateObserver host handler
 
         let partialTerminal = beginAwaitNextTerminal host "test-prune"
 
@@ -4675,11 +4677,12 @@ let ``a project-scoped rerun cannot satisfy the next whole-suite check`` () =
         |> ignore
 
         partialTerminal.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        waitForQuiescent host 10000
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
         let wholeTreeKey =
-            (handler.CacheKey.Value handler.Init) (BuildCompleted BuildSucceeded)
+            (handler.CacheKey.Value(committed ())) (BuildCompleted BuildSucceeded)
 
         test <@ wholeTreeKey.IsSome @>
         test <@ (cacheIface.TryGet key wholeTreeKey.Value).IsNone @>

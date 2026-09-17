@@ -17,10 +17,10 @@ open FsHotWatch.Tests.TestHelpers
 // sleep instead.
 
 [<Fact(Timeout = 30000)>]
-let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
+let ``rerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
     withTempDir "tp-rerun-storm" (fun tmpDir ->
-        // Reproduces the reported "stuck Running": if any path leaves PendingRerun
-        // set without scheduling a rerun, or schedules one whose TestsFinished never
+        // Reproduces the reported "stuck Running": if any path leaves a rerun owed
+        // without scheduling it, or schedules one whose TestsFinished never
         // fires terminal, the plugin sits in Running forever.
         let configs =
             [ { Project = "FastTests"
@@ -38,7 +38,7 @@ let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted ham
         host.RegisterHandler(handler)
 
         // The first BuildCompleted transitions Idle → Running and starts the test
-        // run; later ones land mid-run and (idempotently) set PendingRerun.
+        // run; later ones land mid-run and queue one coalesced rerun.
         for _ in 1..6 do
             host.EmitBuildCompleted(BuildSucceeded)
             // Tiny sleep so they don't all coalesce into the inbox before the

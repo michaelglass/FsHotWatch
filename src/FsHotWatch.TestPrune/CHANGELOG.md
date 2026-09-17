@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- (breaking) Decisions read committed owner state. `TestPruneState` gains `Debt`
+  (`VerificationDebt`: pending queue, symbol revisions, unknown-debt recovery, baseline,
+  runtime obligations), `FullSuiteRequested`, `CompletedRuns`, `CheckReach` and `Replies`,
+  and loses `PendingRerun` and `QueuedCommandRuns`. `CacheKey`, `test-scope` and
+  `check-reach` read only the state they are given. Durable debt is written by
+  `PrepareCommit` behind a publication marker; a restart that finds the marker runs the
+  full suite once. `TestRunLaunch` gains `SymbolRevisions` and `ChangedFiles`: a completion
+  retires only symbols still at their launched revision and clears only the files it
+  launched against. Owed runs and `run-tests` are intents on the "tests" key
+  (`ImpactRunRequested`, coalesced). `set-scope` replies after its `ScopeRequested` fold
+  is committed. `run-tests` replies after its `CommandTestsFinished` completion is
+  published. `ArtifactsUnavailable` and `TestHostUnavailable` carry the fanout their
+  launch consumed, keep it owed, and no longer queue a rerun; a scan's build no longer
+  replays a cached green while dependency fanout is owed. `RuntimeCoverageFailed`
+  makes debt unknown in state.
+
 ## 0.13.0-alpha.40 - 2026-09-17
 
 - Adopts TestPrune.Core 9.0.0. Its only breaking change (`AuditSink.Flush()` now returns a
@@ -251,7 +267,6 @@
 - Fix: satisfy analyzer in quarantine regression
 - Finish: preserve literal selections and quarantine prior reds
 
-
 ## 0.13.0-alpha.23 - 2026-08-29
 
 - fix: consume the existing parse and full-check results carried by each
@@ -368,7 +383,6 @@
 - fix: rows this run wrote are not a baseline — give the index a clock
 - Case 3: instrument CopyDiffersFromOrigin, do not build the capability
 
-
 ## 0.13.0-alpha.15 - 2026-08-18
 
 - refactor: `StaleArtifactPreflight.coverageReport` builds its project list with
@@ -480,14 +494,12 @@
 
 - test-prune report: name the CHANGE that triggered the prior run
 
-
 ## 0.13.0-alpha.11 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
 - Comment audit: cut AI thinking-out-loud from comments
 
 - Comment audit: cut AI thinking-out-loud from comments
-
 
 ## 0.13.0-alpha.9 - 2026-08-12
 
@@ -696,7 +708,6 @@
 
 - chore(deps): update dev-tools + external dependencies
 - chore: trim stale/historical comments to minimal current-state context
-
 
 ## 0.13.0-alpha.5 - 2026-07-20
 
@@ -1289,7 +1300,6 @@
   matching event); fully-passing runs still cache for the green fast-path. The
   BuildCompleted merkle salt is bumped `v1`→`v2` so entries written by the prior
   failure-caching code are orphaned without a manual cache wipe.
-
 
 ## 0.7.0-alpha.20 - 2026-06-07
 
