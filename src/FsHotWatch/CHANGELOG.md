@@ -126,7 +126,7 @@
 
 ## 0.10.0-alpha.29 - 2026-09-06
 
-- rework: **the daemon records every phase it spends wall time in.**
+- rework of verdict wall-time attribution: **the daemon records every phase it spends wall time in.**
   New `DaemonPhases` module: a bounded, thread-safe `Ledger` of `PhaseRecord`s
   (`Scope`, `StartedAt`, `Elapsed`, `Detail`), reachable as `PluginHost.Phases`.
   - `Phase.Startup` (process start → IPC pipe listening), `Phase.Discover` (MSBuild
@@ -145,7 +145,7 @@
   - `GetDiagnostics` serves the ledger as `daemonPhases[]` (`scope`, `startedAt` in
     round-trip UTC, `elapsedMs`, `detail`) beside `statuses`.
 
-- rework: **a native FSEvents stream macOS refuses on EVERY attempt of
+- rework of the FSEvents stream-refusal retry: **a native FSEvents stream macOS refuses on EVERY attempt of
   the retry budget fails the watcher closed instead of demoting it to polling.** The
   first landing retried transient refusals (100/300/900 ms) but let a refusal past the
   budget fall into the same `with ex ->` catch-all as any other setup fault, and that
@@ -266,7 +266,7 @@
 - Case 1: the daemon now registers the enforcing BuildPlugin path.
   Cached and freshly produced build success cannot outlive missing, older, or
   byte-divergent graph artifacts; generated `bin/`/`obj/` compile items remain excluded
-  from the authored-source clock by the fix.
+  from the authored-source clock by the "a compile item is not an edit" fix (ADR-015).
 
 - expose bounded daemon cache invalidation over IPC. The live
   task-cache instance clears persisted and in-memory entries without restarting FCS.
@@ -798,8 +798,8 @@
   silently talk to an old daemon.** On startup the daemon writes
   `.fshw/daemon.identity` — its assembly version **and a content hash of its binary** —
   before the IPC pipe starts listening. A hash, not just a semver: a locally-repacked
-  build can share a version string and differ in content, which is the tracked issue
-  reincarnated as a *process* rather than a package. `DaemonIdentity.compareIdentity`
+  build can share a version string and differ in content, which is the stale-package problem
+  (same version, different bytes) reincarnated as a *process* rather than a package. `DaemonIdentity.compareIdentity`
   is the whole contract, and it fails CLOSED: a daemon whose recorded identity differs
   is stale, and a daemon with **no recorded identity at all** (any build predating this
   handshake) is stale too. The check is therefore **unilateral** — an old daemon needs
@@ -815,7 +815,7 @@
   bound it names the wedge, leaves a breadcrumb the next `fshw` command prints, and
   gracefully restarts the daemon down the same `cts.Cancel()` path as `fshw stop`.
   A silent log during a wedge is indistinguishable from a healthy idle daemon; the
-  hang was silent for 8h36m.
+  wedge that prompted this was silent for 8h36m.
   - The bound sits **above** the verdict deadline plus grace, so a client blocked on
     `WaitForComplete` still gets its own, more specific `TimeoutException` first, and a
     long-but-live run is never restarted out from under its warm FCS cache.
@@ -865,7 +865,7 @@
     nothing leaves an EMPTY DIRECTORY — a stated fact — while a run that never happened
     leaves none at all. **Absence stops being something the reader has to decode.**
   - `reportsForRun` replaces any mtime-window heuristic: membership is DECLARED.
-  - `tidyRunsDir` rotates whole RUN DIRECTORIES (newest 10) and purges the pre-129 flat
+  - `tidyRunsDir` rotates whole RUN DIRECTORIES (newest 10) and purges the older flat
     layout. History is evidence — old runs are rotated, never wiped on start.
 
 - feat: **`FsHotWatch.TreeHash` — the content address of the tree fshw verifies.**

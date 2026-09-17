@@ -1,6 +1,6 @@
 /// The pending-verification queue: its sidecar, the drain rules that make "0 affected
-/// tests" mean "test-equivalent to the last green run", the convergence guarantee
-///the unreadable-ledger boundary and outcome
+/// tests" mean "test-equivalent to the last green run", the convergence guarantee,
+/// the unreadable-ledger boundary and outcome
 /// classification.
 ///
 /// Split out of `TestPrunePluginTests`; shared harness in `TestPrunePluginTestSupport`.
@@ -60,7 +60,7 @@ module private LedgerHelpers =
         | PendingVerification.LoadedQueue.Unreadable reason -> reason
         | PendingVerification.LoadedQueue.Loaded queue ->
             failwith
-                $"expected Unreadable, got Loaded %A{queue} — an unreadable ledger read as an empty queue is itself"
+                $"expected Unreadable, got Loaded %A{queue} — an unreadable ledger read as an empty queue is itself the bug under test"
 
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: load on a MISSING file is Loaded empty, never Unreadable`` () =
@@ -850,15 +850,15 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed (queue drained, not wedged), got %A{other}"))
 
-// the FIFTH aggregator, and the one that survived the first fix.
+// The FIFTH aggregator, and the one that survived the first fix.
 //
 // The per-symbol green-commit folded `TestResult.isPassed` over the covering projects.
 // `isPassed` was TRUE for `TestsNoMatch`, so a symbol whose covering project ran under an
 // impact-derived class filter that matched ZERO tests had its test debt DISCHARGED and
 // left `pending-verification.json` — verified by a project that executed nothing. That is
-// the harm the tracked issue exists to prevent ("widen, never wipe"), one fold over, and the
-// repo-local FSHW-VERDICT-001 analyzer cannot see it: the predicate sits behind a
-// `match` in a lookup lambda.
+// the harm `PendingVerification.fs`'s rule exists to prevent ("widen, never wipe"), one fold
+// over, and the repo-local FSHW-VERDICT-001 analyzer cannot see it: the predicate sits
+// behind a `match` in a lookup lambda.
 //
 // End to end rather than a unit fold, because the bug was in the WIRING: the fold looked
 // correct in isolation and was wrong about which results it was folding over.
@@ -1085,7 +1085,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
     test <@ TestResult.isTimedOut result @>
 
 // ---------------------------------------------------------------------------
-// a KILLED host is an abort, and a real red is still a red.
+// A KILLED host is an abort, and a real red is still a red.
 //
 // Under CPU load the gate reported large numbers of 0ms "failures". A 0ms failure is a
 // test that never ran: the host was killed and everything it had not reached was written
@@ -1248,7 +1248,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
                 && not (FsHotWatch.ErrorLedger.ErrorEntry.isRunnerAbort f.Entry))
         @>
 
-// the teardown boundary, seen from the plugin that consumes it.
+// The teardown boundary, seen from the plugin that consumes it.
 //
 // A per-project timeout whose TEARDOWN also failed still has to become a terminal project
 // result, and it has to stay distinguishable from the two things it is not: a suite whose
@@ -1280,7 +1280,7 @@ let ``classify: a timeout whose teardown never answered is still terminal, and s
     | other -> failwith $"expected TestsTimedOut, got %A{other}"
 
 // =============================================================================
-// the check must CONVERGE, never rest on a verdict
+// The check must CONVERGE, never rest on a verdict
 // nobody earned. One defect, two polarities.
 //
 // The pending-verification queue had exactly ONE drain trigger, the `BuildCompleted`
@@ -1343,7 +1343,7 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
         | other -> Assert.Fail($"expected an EARNED Completed after the drain, got %A{other}"))
 
 // =============================================================================
-// an unreadable ledger is not an empty one.
+// An unreadable ledger is not an empty one.
 //
 // The queue file records what is still OWED, so when it cannot be READ the debt is
 // UNKNOWN — and "unknown" is not "nothing". `load` swallowed a corrupt/truncated sidecar
@@ -1460,7 +1460,7 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
     // The other half of the boundary. Misclassify `[]` as unreadable and every idle daemon
     // grinds a full suite forever.
     withTempDir "tp-ledger-empty" (fun tmpDir ->
-        // a baseline, so the only rule under test is the ledger's.
+        // Seed a baseline, so the only rule under test is the ledger's.
         seedBaseline tmpDir [ "P1"; "P2" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
@@ -1710,7 +1710,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
 let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
     // Determinism of the key is not equivalence of the world. Reading this as "a second
     // `confirm` over an unchanged tree may replay a run that genuinely WAS full-suite" is
-    // the belief that produced the tracked issue: the key does not pin the TREE, because on a
+    // the belief behind the no-evidence replay bug: the key does not pin the TREE, because on a
     // cold scan BuildCompleted is dispatched before the FCS pass and `changed-symbols` is
     // empty whatever the tree holds.
     //

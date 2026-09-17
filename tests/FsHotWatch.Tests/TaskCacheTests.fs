@@ -12,8 +12,8 @@ open FsHotWatch.TaskCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.FileTaskCache
 
-/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE
-///so an entry survives being read in another checkout. A test that
+/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE,
+/// so an entry survives being read in another checkout. A test that
 /// stores under the absolute path stores under a key the framework will never look up.
 let private compositeFileKey (repoRoot: string) (file: string) =
     FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
@@ -537,7 +537,7 @@ let ``plugin runs Update when cache key changes`` () =
 // --- FileTaskCache tests ---
 
 // ---------------------------------------------------------------------------
-// finding 5 — the task cache grew without bound.
+// Finding 5 — the task cache grew without bound.
 // ---------------------------------------------------------------------------
 //
 // Entries are named `{plugin--file}@{contentHash}.json` "so multiple versions coexist", but
@@ -829,7 +829,7 @@ let ``FileTaskCache roundtrips all CachedStatus variants`` () =
 let ``a replayed verified-nothing verdict is still a verified-nothing verdict`` () =
     // The cache stores the VERDICT, and a replay rebuilds a `Completed` from it. If the
     // fact did not survive the round trip as a value, the replayed run would be recorded
-    // `CompletedRun` and render `✓` — the defect, reopened by the cache.
+    // `CompletedRun` and render `✓` — the zero-test `✓` defect, reopened by the cache.
     withTempDir "ftc-verified-nothing" (fun tmpDir ->
         let c = FileTaskCache(tmpDir) :> ITaskCache
 
@@ -935,7 +935,7 @@ let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
-    // the case must survive serialization AS ITSELF. Coming back as a plain
+    // The case must survive serialization AS ITSELF. Coming back as a plain
     // `TestsPassed`, a replayed entry would claim a project's tests passed when the filter
     // had matched none of them.
     withTempDir "ftc-nomatch" (fun tmpDir ->
@@ -976,10 +976,10 @@ let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
         test <@ TestResult.elapsed evt.Value.Results.["p1"] = TimeSpan.FromSeconds 2.0 @>)
 
 [<Fact(Timeout = 15000)>]
-let ``FileTaskCache reads a PRE-272 zero-match entry back as TestsNoMatch, not a pass`` () =
+let ``FileTaskCache reads a LEGACY zero-match entry back as TestsNoMatch, not a pass`` () =
     // Entries already on disk encode a zero match as `"passed"` with a magic marker in the
     // output, so reading one back as a plain pass replays a run that executed no test as a
-    // genuine green — the bug resurrected from a warm cache.
+    // genuine green — the zero-match-as-pass bug resurrected from a warm cache.
     //
     // Writing `TestsPassed(marker + output)` through the CURRENT serializer reproduces the
     // legacy on-disk shape exactly: that value is what the old code constructed, and this
@@ -1472,7 +1472,7 @@ let ``FileTaskCache TryGet on missing file returns None`` () =
 
 // ---------------------------------------------------------------------------
 // A cache replay must NEVER claim the plugin is at rest while an exclusive run
-// is in flight (— "a verdict nobody earned").
+// is in flight ("a verdict nobody earned").
 // ---------------------------------------------------------------------------
 //
 // On a warm scan EVERY FileChecked is a cache hit, and each hit re-reported its cached
@@ -1709,7 +1709,7 @@ let ``cache replay does not stack the cached marker on an already-marked verdict
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache reads an old-format entry as a miss, counted as a parse failure`` () =
-    // format-1 entries (no "format" field) stored a status summary a
+    // Format-1 entries (no "format" field) stored a status summary a
     // per-file key cannot back. They must deterministically read as a MISS — invalidating
     // the whole pre-fix cache — never half-parse into a result carrying the stale claim.
     withTempDir "ftc-old-format" (fun tmpDir ->

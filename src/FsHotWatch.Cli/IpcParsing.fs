@@ -839,7 +839,7 @@ type CheckReach =
     /// would have executed it, and would have been red for the same reason.
     | ReachedAFailure of failingSuites: string list
     /// The run saw tests fail; the retained selection reaches NONE of them. `check` would
-    /// have gone green over a tree with a real failure in it — the defect,
+    /// have gone green over a tree with a real failure in it — the missed-failure defect,
     /// caught on the same tree that produced it.
     | ReachedNoFailure of missed: MissedFailure list
     /// No test failed, so there was no failure for a selection to reach. Distinct from
@@ -1043,7 +1043,7 @@ let isAllTerminal (statuses: Map<string, StatusView>) : bool =
     && statuses |> Map.forall (fun _ s -> StatusView.isQuiescent s)
 
 // ---------------------------------------------------------------------------
-// rework. The daemon's OWN account of where its wall time went.
+// Wall-time attribution rework. The daemon's OWN account of where its wall time went.
 // ---------------------------------------------------------------------------
 
 /// The phase ledger a daemon serves beside its plugin statuses (`daemonPhases` on the

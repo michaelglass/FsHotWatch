@@ -124,7 +124,7 @@ let internal createFormatCheckWith
                     // summary drawn from session state would be re-asserted, unchanged,
                     // in a later session over a different tree: "1 files need
                     // formatting (cached)" beside an empty ledger and a green verdict
-                    // (the `File = None` half of).
+                    // (the `File = None` half of the cache scope rule).
                     // Counting only what this run touched keeps the summary a function
                     // of the cache key — the same bytes the merkle covers — so the
                     // replay says exactly what a cold run over those bytes says.

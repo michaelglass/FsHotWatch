@@ -10,7 +10,7 @@ not execute.
 ## Context
 
 `fshw check` runs the tests impact analysis selects. A green from it was read as "the
-suite is green", and for weeks it was not: the tracked issue found 17 tests red on `main`
+suite is green", and for weeks it was not: 17 tests turned out to be red on `main`
 that no `check` had selected, because nothing they covered had changed. The design
 review named the hole exactly — impact selection is sound only if the unselected set was
 green, and nothing recorded that. The pending-verification queue accounts for changed
@@ -24,7 +24,7 @@ Three mechanisms existed by the time this was addressed, and none closed it:
   pending queue is empty at restart. After a red run it is not empty — a failing project
   blocks the commit of every symbol it covers — so the restarted daemon's first run is
   impact-filtered, `hasCachedResults` is then true, and a red the filter does not reach
-  is never selected again. The shape, reproduced by a restart.
+  is never selected again. The same never-selected red, reproduced by a restart.
 - **The session baseline** (`hasCachedResults`): the zero-affected skip requires a run
   to have completed in this session. Any run — a filtered one counts.
 - **`confirm`'s watermark** (`Verdict.priorConfirmation`): a full-suite green over this
@@ -51,11 +51,12 @@ Three mechanisms existed by the time this was addressed, and none closed it:
 
 3. **The reds are durable** — `.fshw/test-prune/outstanding-failures.json`, beside the
    queue, loaded at startup and quarantined into the first run as in-session reds are.
-   An unreadable file is debt of unknown membership and takes the road.
+   An unreadable file is debt of unknown membership and takes the unreadable-ledger road:
+   the run is widened to the full suite.
 
 4. **Owed-but-unrunnable coverage is reported, never written off silently.** A changed
    symbol whose only covering tests live in a project `tests.projects` does not list is
-   still dropped from the queue (: nothing here can discharge it), but the
+   still dropped from the queue (nothing here can discharge it), but the
    write-off names the project — in the log, on the `test-scope` reply, and in the
    verdict's `changes-uncovered` reason.
 
@@ -94,5 +95,6 @@ inner loop.
 - The cache key for the test-prune plugin is salted by the widening, so a filtered run's
   cached verdict cannot replay for a run that would be widened.
 - The candidate cause (c) — the `runnableProjects` drop — was not the
-  cause in the intelligence repository (every test project is listed), and is no longer
+  cause in the large private downstream repository where the 17 reds sat (every test
+  project is listed there), and is no longer
   silent anywhere.

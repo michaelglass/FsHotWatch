@@ -116,7 +116,7 @@ let ``parseTaggedOutcome parses failed with error`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseTaggedOutcome parses verifiedNothing with its detail`` () =
-    // the run that executed nothing is a CASE on the wire.
+    // The run that executed nothing is a CASE on the wire.
     let el = parseEl """{"tag":"verifiedNothing","detail":"no test executed"}"""
     test <@ parseTaggedOutcome el = Some(VerifiedNothing "no test executed") @>
 
@@ -519,7 +519,7 @@ let ``a reply that names no scope for the selection reads as UNREADABLE, never f
     | ReachRecorded r -> test <@ TestScope.isUnreadable r.Scope @>
     | other -> failwithf "expected a recorded projection, got %A" other
 
-// --- rework: the daemon's phase ledger on the diagnostics response ---
+// --- wall-time attribution rework: the daemon's phase ledger on the diagnostics response ---
 
 [<Fact(Timeout = 15000)>]
 let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it cannot place`` () =
@@ -624,7 +624,7 @@ let ``a zero-selection reply names the symbols covered only by unlisted projects
     | other -> failwithf "expected changes-uncovered, got %A" other
 
 // ---------------------------------------------------------------------------
-// the project model in the GetDiagnostics reply, read fail-closed.
+// The project model in the GetDiagnostics reply, read fail-closed.
 // ---------------------------------------------------------------------------
 
 [<Fact>]

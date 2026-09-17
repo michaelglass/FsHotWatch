@@ -1,11 +1,11 @@
-/// the run-level `beforeRun`/`afterRun` hook pair.
+/// Tests for the run-level `beforeRun`/`afterRun` hook pair.
 ///
 /// GOAL of the feature: a consumer can bracket a WHOLE `fshw check`/`confirm` run
 /// with hooks configured by TOP-LEVEL `.fshw.json` keys — a `beforeRun` that runs
 /// BEFORE the daemon is contacted (fail-closed) and an `afterRun` that is a
 /// `finally`, GUARANTEED to fire on success, failure, AND abort (including signal),
-/// never cache-replayed. The first consumer (intelligence) needs it to RELEASE a
-/// box-wide gate-lock so two concurrent runs serialize with zero manual lock
+/// never cache-replayed. The first consumer (a large private downstream repository) needs it
+/// to RELEASE a box-wide gate-lock so two concurrent runs serialize with zero manual lock
 /// commands. These hooks are DISTINCT from `tests.beforeRun` (TestPrune), which runs
 /// inside the daemon per test run.
 ///

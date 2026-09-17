@@ -37,7 +37,7 @@ let WideSelectionTests = 500
 [<Literal>]
 let MaxSeedsToAttribute = 200
 
-/// how many CONSECUTIVE flush cycles a symbol must sit in the
+/// How many CONSECUTIVE flush cycles a symbol must sit in the
 /// needs-testing queue before its persistence is itself evidence of a problem.
 ///
 /// One cycle is ordinary; two is explicable (an aborted run, a red project mid-fix); by
@@ -835,7 +835,7 @@ type ProjectSelection =
 /// valued by the unlisted projects holding its only covering tests.
 ///
 /// Dropped from the pending queue by the same rule as a symbol with no test at all
-/// (: retaining it wedges the queue forever), but never SILENTLY: the
+/// (retaining it wedges the queue forever), but never SILENTLY: the
 /// obligation is written off here, and the write-off is what the verdict has to say.
 /// A reader who sees "no covering test" for a symbol that has one in an unlisted
 /// project concludes the analyzer is broken; a reader who sees the project name can
@@ -901,7 +901,7 @@ type MissedFailure =
 /// BEFORE the scan that provokes the run, so the run is unfiltered and the impact
 /// selection — still computed, still correct — is discarded at the widening. Retaining
 /// it and asking this one question of the run's OWN failures turns every confirm into a
-/// same-tree, same-daemon, same-instant sample of the thing the tracked issue is about: does
+/// same-tree, same-daemon, same-instant sample of the question impact selection rests on: does
 /// the selector choose the test that fails?
 ///
 /// It answers ONLY about REACH. A test that fails here failed in a full suite; whether it
@@ -965,12 +965,12 @@ type UnanalyzableFile =
 
 /// Drop the unanalysable-file entries whose file is no longer on disk.
 ///
-/// case 4. An entry leaves `UnanalyzableFiles` when the file analyses
+/// An entry leaves `UnanalyzableFiles` when the file analyses
 /// CLEANLY — and a DELETED file never analyses again, because no `FileChecked` will
 /// ever arrive for a path that is gone. So one deleted file left its warning in the
 /// ledger for the rest of the daemon's life, and under the default warn-fail policy
 /// that warning denied every subsequent check its green while ALSO widening every run
-/// to the whole suite ('s coarse fallback). Deleting a file is not a
+/// to the whole suite (the unanalysable-file coarse fallback). Deleting a file is not a
 /// defect in the tree, and there is nothing left to fix.
 ///
 /// This is the ONLY other way out, and it is deliberately narrow: the condition
@@ -1274,7 +1274,7 @@ type internal ZeroAffectedWidening =
     /// `projects` project(s) between them.
     | RuntimeCoverageDebt of files: int * projects: int
     /// The pending-verification ledger could not be read, so what is owed is unknown
-    ///and only a full suite can prove it.
+    /// and only a full suite can prove it.
     | UnreadableLedger
     /// A prior red is outstanding and must be re-executed before anything goes green.
     | OutstandingFailures of count: int
@@ -1979,7 +1979,7 @@ let private structureFilePatterns = FsHotWatch.StructureFiles.allPatterns
 
 /// Content merkle of the files that decide WHAT IS COMPILED.
 ///
-/// case 1. The `BuildCompleted` cache key is a merkle over the CHANGED
+/// The `BuildCompleted` cache key is a merkle over the CHANGED
 /// SYMBOLS, and on a scan `BuildCompleted` is dispatched BEFORE the FCS pass — so that
 /// term is empty whatever the tree holds. A tree that has just GAINED a test file and
 /// its `<Compile Include=…>` therefore computes the SAME key as the tree without it,
@@ -2094,8 +2094,8 @@ let internal allZeroMatch (results: TestResults) : bool = allZeroMatchOf results
 /// there was one. It rides on the wire so a refusal can ECHO IT: "no tests matched the
 /// filter" without saying WHICH filter leaves the reader to guess between a typo, a
 /// renamed class, and a filter aimed at a project that does not contain it — the exact
-/// three-way ambiguity that cost one investigation a wrong conclusion
-///`None` for an unfiltered run, and for the `test-results`
+/// three-way ambiguity that cost one investigation a wrong conclusion.
+/// `None` for an unfiltered run, and for the `test-results`
 /// command, which reads a stored result set that does not remember what launched it.
 ///
 /// `runReports` is the per-project CTRF SUMMARY this run produced, keyed by project.
@@ -2203,7 +2203,7 @@ let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
 /// Used by the two callers that may not trust a selection: `fshw confirm`
 /// (impact filtering is a latency optimization for the inner loop,
 /// never the basis of a correctness claim) and the unanalysable-file fallback
-/// (— a file the analyser cannot read has no symbols to select by).
+/// (a file the analyser cannot read has no symbols to select by).
 let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
     configs |> List.map (fun c -> c.Project) |> Set.ofList
 
@@ -2286,7 +2286,7 @@ module RunCoverage =
     ///   * `wasFiltered = true` otherwise → the `run-tests --filter <raw>` passthrough:
     ///     an arbitrary filter string whose reach the LAUNCH REQUEST cannot express
     ///     (every project goes down as `ProjectInFull`). Ask the run's own evidence
-    ///     instead — the classes its CTRF report shows actually RAN AND PASSED
+    ///     instead — the classes its CTRF report shows actually RAN AND PASSED.
     ///     Otherwise `test-rerun --filter-class X` could re-run X,
     ///     pass, and still leave X's red standing forever. Fail-closed wherever the
     ///     report is absent, unreadable or incomplete (`passedClassesOfReport`).
@@ -2481,7 +2481,7 @@ let internal selectionOf
 ///
 /// The other widenings stay, and that is the whole care in this function. The coarse
 /// fallback for unanalysable files and the unreadable-ledger fallback
-///fire in the inner loop too, so a projection that dropped them would
+/// fire in the inner loop too, so a projection that dropped them would
 /// model a `check` narrower than the one that actually runs — and would then report
 /// misses the selector never made. Only `set-scope full`, which is `confirm`'s own doing,
 /// is removed.
@@ -2569,7 +2569,7 @@ module internal OutstandingFailure =
     ///
     /// `configured` prunes reds for projects the daemon no longer runs (a project
     /// removed from `tests.projects` could otherwise never be covered again, and its
-    /// red would wedge the verdict forever — the stuck-red, rebuilt). Empty
+    /// red would wedge the verdict forever — the unconfigured-project stuck-red, rebuilt). Empty
     /// ⇒ analysis-only, nothing to prune by.
     let carriedOver
         (configured: Set<string>)
@@ -2618,7 +2618,7 @@ module internal OutstandingFailure =
         |> String.concat ", "
 
     // -----------------------------------------------------------------------
-    // the reds are DURABLE.
+    // The reds are DURABLE.
     //
     // They used to be session-scoped, on the argument that a restarted daemon has no
     // `LastResults` and so runs the full suite, which re-finds any red. That argument
@@ -2627,12 +2627,12 @@ module internal OutstandingFailure =
     // commit of every symbol it covers — the restarted daemon's first run is
     // impact-FILTERED, `hasCachedResults` is then true, and a red from the previous
     // session that the filter does not reach is never selected again: the
-    // shape, reproduced by a restart. Quarantine is memory; memory that
+    // never-selected-red shape, reproduced by a restart. Quarantine is memory; memory that
     // does not survive the process is not memory.
     //
     // Same rules as `PendingVerification`: a missing file is an honest empty; a file
     // that exists and cannot be read is `Unreadable`, and the caller treats that as
-    // debt of unknown membership (the recovery: widen to the full suite,
+    // debt of unknown membership (the unreadable-ledger recovery: widen to the full suite,
     // which re-executes every test and rebuilds this list from evidence).
     //
     // `Entry.Detail` is deliberately NOT persisted. It is the captured runner output
@@ -2983,7 +2983,7 @@ let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (out
 ///
 /// `formatFailureReport` counts the `failed ...` lines it can parse and heads them
 /// "N test(s) failed". Run over a KILLED host's transcript that header is the whole
-/// defect the tracked issue records: a runner cut off mid-suite still has per-test rows
+/// defect this report exists to fix: a runner cut off mid-suite still has per-test rows
 /// in its captured output — rows at 0ms, with no assertion message, for tests that
 /// never executed — and printing them under "N test(s) failed" turns a non-result
 /// into a definite negative. Every hour that symptom cost was spent investigating
@@ -3051,7 +3051,7 @@ type ReportEvidence =
 ///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
 ///      A killed host did not finish, so nothing it wrote is a result — including a
 ///      CTRF report it managed to flush on the way down, whose rows for tests that
-///      never executed are exactly the mass 0ms "failures" the tracked issue is about.
+///      never executed are exactly the mass 0ms "failures" seen under CPU load.
 ///      This arm is why the report is not consulted there: outcome 1 would read that
 ///      partial report and call a machine that ran out of CPU a mass regression.
 ///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
@@ -3467,7 +3467,7 @@ let parseFailedTests (output: string) : (string * string * string) list =
     |> Array.toList
 
 /// The classes ONE project's CTRF report proves RAN AND PASSED in this run
-///— the receipt `RunCoverage.ofRun` reads for a raw `--filter`
+/// — the receipt `RunCoverage.ofRun` reads for a raw `--filter`
 /// passthrough, whose launch REQUEST claims nothing.
 ///
 /// A class is claimed only when the report holds at least one PASSED test for it and
@@ -3828,7 +3828,7 @@ let internal failuresOf
             // that do not match its sources — and it is false in the expensive
             // direction, because a build-ordering race settles on its own while stale
             // output does not. A reader told to wait it out re-runs and gets the
-            // identical refusal, which is the defect the tracked issue exists to delete.
+            // identical refusal, which is the defect the stale-artifact preflight exists to delete.
             // So the detail is derived from the reason, not asserted over it.
             let detail =
                 if StaleArtifactPreflight.isStaleOutputDeferral reason then
@@ -3849,7 +3849,7 @@ let internal failuresOf
             // (nothing was verified) — an honest "aborted" diagnostic so the
             // verdict is non-green without the misleading "Tests failed in X".
             //
-            // at `HostAborted` SEVERITY, which is what makes that honesty
+            // It is reported at `HostAborted` SEVERITY, which is what makes that honesty
             // reach the verdict. At `Error` it was counted by `failingDiagnostics`,
             // and every surface downstream — the exit code, `verdict.json`'s outcome,
             // the terminal — then said "failures found" about a run in which nothing
@@ -4104,7 +4104,7 @@ let private executeTests
         // happen to be fresh buys minutes of partial execution for signal the verdict
         // cannot use — which is the "reads like progress" half of the defect.
         //
-        // adr-016 kept this and changed the layer below it: the refusal
+        // ADR-016 kept this and changed the layer below it: the refusal
         // is still run-wide, but the preflight now repairs every copy its breaker did not
         // name, so a refused run leaves a better tree than it found and the refusal set
         // shrinks run over run. `preflight.Healed` above can therefore be non-empty on
@@ -4141,7 +4141,7 @@ let private executeTests
                             | None ->
                                 config.Project,
                                 TestsDeferred
-                                    // the remedy points at the projects
+                                    // The remedy points at the projects
                                     // that carry one rather than restating a generic
                                     // build command. Each named project's own deferral
                                     // holds the remedy for ITS cause, and those causes
@@ -4618,8 +4618,8 @@ let private executeTests
             | :? UnauthorizedAccessException
             | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
 
-        // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format
-        //Runs AFTER this run's reports were written, so the
+        // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
+        // Runs AFTER this run's reports were written, so the
         // evidence the verdict is about to point at is always among the survivors.
         Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns
 
@@ -4804,8 +4804,8 @@ let internal clearFcsCheckCache (repoRoot: string) : int =
 /// Every input is a THUNK, and that is load-bearing. `FileChecked` is the per-FILE,
 /// highest-frequency probe — one event per file on every scan — and it uses NONE of the
 /// three. By value, the `dependsOn` hash (a full-repo `SafeWalk` plus a SHA256 of every
-/// matched file) is computed once per checked file for a value that arm discards
-///"cacheKey runs once per event, not per file" is true of
+/// matched file) is computed once per checked file for a value that arm discards.
+/// "cacheKey runs once per event, not per file" is true of
 /// BuildCompleted and false of FileChecked.
 ///
 /// Lifted out of the `create` closure so the property is STRUCTURAL: an arm cannot pay
@@ -4819,7 +4819,7 @@ let internal cacheKeyFor
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
-    // case 1. The content merkle of the repo's PROJECT FILES — the files
+    // The content merkle of the repo's PROJECT FILES — the files
     // that declare what is compiled (`projectStructureHash`). Not optional and not
     // omittable: every repo has a structure, and an omitted entry is what let a tree
     // that had just gained a `<Compile Include=…>` compute the key of the tree without
@@ -4968,7 +4968,7 @@ let internal cacheKeyFor
             | Aborted _ -> false
             | Normal -> true
 
-        // a run that matched NO tests must not mint a cacheable green.
+        // A run that matched NO tests must not mint a cacheable green.
         // The fold above admits a zero-match project (see its comment), so on its own it
         // would write a replayable entry: a later BuildCompleted on the same tree would
         // hit a green produced by executing zero tests.
@@ -5143,7 +5143,7 @@ let internal createWithLaunchDeadline
 
     /// The reds carried in from the previous session — quarantined into
     /// the first run exactly as in-session reds are. An UNREADABLE file is debt of unknown
-    /// membership and takes the road: widen to the full suite, which
+    /// membership and takes the unreadable-ledger road: widen to the full suite, which
     /// re-executes every test and rebuilds the list from evidence.
     let loadedFailures =
         match OutstandingFailure.load repoRoot with
@@ -5218,14 +5218,14 @@ let internal createWithLaunchDeadline
                 "test-prune"
                 $"failed to durably record unknown runtime coverage debt for %s{failure.Project}: %s{ex.Message}"
 
-    /// how many CONSECUTIVE flush cycles each currently-queued symbol
+    /// How many CONSECUTIVE flush cycles each currently-queued symbol
     /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
     /// (see `isPoisonSuspect`).
     ///
     /// In-memory and per-session on purpose. Persisting it needs either a second sidecar
     /// or a shape change to `pending-verification.json` — and that file's reader treats
-    /// ANY unparseable content as unknown debt that widens every run to the full suite
-    ///so a format change hands every existing checkout one gratuitous
+    /// ANY unparseable content as unknown debt that widens every run to the full suite,
+    /// so a format change hands every existing checkout one gratuitous
     /// full-suite recovery. Forgetting on restart costs three cycles of re-arming.
     ///
     /// Same closure-local + `Volatile` shape as `pendingQueueRef`, for the same reason.
@@ -5274,7 +5274,7 @@ let internal createWithLaunchDeadline
     /// needs-testing queue PROVABLY empty? An unreadable ledger is never `true` here
     /// — an empty queue we could not read is not an empty queue.
     ///
-    /// an absent or stale full-suite baseline is owed work too — the
+    /// An absent or stale full-suite baseline is owed work too — the
     /// tests a filtered run skips have nothing to be equivalent TO until one exists —
     /// so it is folded in here rather than checked beside this at each skip site.
     let nothingOwed () =
@@ -5670,7 +5670,7 @@ let internal createWithLaunchDeadline
                         aloneCounts[seed] <- n
                         n
 
-                // the poisoned-seed guard.
+                // The poisoned-seed guard.
                 //
                 // The per-seed attribution below asks "is one seed dominating THIS run?",
                 // a question about a moment. The failure that happened was about TIME:
@@ -6090,7 +6090,7 @@ let internal createWithLaunchDeadline
             // these symbols and leaves mid-run arrivals queued for the rerun.
             let launchedSymbols = Set.union pendingQueueRef (Set.ofList inputs.ChangedSymbols)
 
-            // advance the poisoned-seed counters HERE, at the launch of
+            // Advance the poisoned-seed counters HERE, at the launch of
             // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
             // claim. `flushAndQueryAffected` runs several times per edit-save cycle.
             Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols))
@@ -6128,7 +6128,7 @@ let internal createWithLaunchDeadline
                     |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
                     |> Map.ofList
 
-                // a prior red is mandatory verification debt. The
+                // A prior red is mandatory verification debt. The
                 // graph for today's edit may not reach yesterday's failing class, but
                 // the next ordinary run must still execute it. Unknown class scope is
                 // conservatively the whole project.
@@ -6150,7 +6150,7 @@ let internal createWithLaunchDeadline
                     forceRunProjects
                     |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
 
-                /// the run's SCOPE, in the same shape `executeTests`
+                /// The run's SCOPE, in the same shape `executeTests`
                 /// will actually honour, captured on the launch so the completion
                 /// handler knows what this run is entitled to clear.
                 ///
@@ -6166,7 +6166,7 @@ let internal createWithLaunchDeadline
                 // The SAME derivation with the full-suite widening taken
                 // back out — what `check` would have launched over this tree, this
                 // instant. Every OTHER widening stays: the coarse fallback
-                //and the unreadable-ledger fallback
+                // for unanalysable files and the unreadable-ledger fallback
                 // apply to the inner loop too, so removing them would project a selection
                 // narrower than the one `check` actually uses and manufacture misses the
                 // selector never made.
@@ -6265,8 +6265,8 @@ let internal createWithLaunchDeadline
                           TotalElapsed = TimeSpan.Zero
                           Outcome = Normal
                           Results = Map.empty
-                          // Impact analysis selected no project, so none was invoked
-                          //Stated rather than inferred, and the
+                          // Impact analysis selected no project, so none was invoked.
+                          // Stated rather than inferred, and the
                           // outcome is `Normal`, so it reaches consumers that filter
                           // on `Outcome`.
                           Verification = NoProjectsSelected }
@@ -6321,7 +6321,7 @@ let internal createWithLaunchDeadline
                             // Nothing is owed and a baseline exists, so the zero-affected
                             // skip should have discharged this cycle for free — and did
                             // not. That is a defect in whichever arm consumed the signal,
-                            // and it costs `willRun`. the phantom
+                            // and it costs `willRun`. The phantom
                             // runtime-coverage obligation was exactly this shape and left
                             // no attributable line at all; this one is the alarm that a
                             // DIFFERENT arm has re-opened the same hole.
@@ -6439,8 +6439,8 @@ let internal createWithLaunchDeadline
         // A force-run launches exactly `configs`, each with NO class selection (it
         // passes `Map.empty` to `executeTests`), so each runs IN FULL — a plain
         // `dotnet fshw test-rerun` is therefore the unfiltered run that can clear ANY
-        // outstanding red (the escape hatch, and the reason the rule
-        // cannot wedge into a permanent stuck-red).
+        // outstanding red (the escape hatch that keeps the clear-only-what-it-covered rule
+        // from wedging into a permanent stuck-red).
         //
         // A `--filter` passthrough is a different matter: `RunCoverage.ofRun` sees
         // `wasFiltered = true` on the results and declines to claim coverage for a
@@ -6510,7 +6510,7 @@ let internal createWithLaunchDeadline
                     // skip.
                     return TestsFinished(started, completed, commandLaunch)
                 with ex ->
-                    // a `beforeRun` throw / `executeTests` fault
+                    // A `beforeRun` throw / `executeTests` fault
                     // means the suite it guards NEVER RAN — that must surface
                     // as a failure, never a stale prior green. The Aborted
                     // lifecycle drives the TestsFinished handler to a Failed
@@ -6672,8 +6672,8 @@ let internal createWithLaunchDeadline
                             | None -> null
 
                         // The scope is a PROJECTION of `LastCoverage` — the very value the
-                        // ledger uses to decide what a run is entitled to CLEAR
-                        //See `scopeOf`.
+                        // ledger uses to decide what a run is entitled to CLEAR.
+                        // See `scopeOf`.
                         let projects = allConfigs |> List.map (fun c -> c.Project)
 
                         // The change that selected the last run's tests. Sent so a
@@ -7042,7 +7042,7 @@ let internal createWithLaunchDeadline
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
-                    // the ONE treatment for a file whose symbol analysis
+                    // The ONE treatment for a file whose symbol analysis
                     // failed (an `analyzeSourceFromResults` Error and a handler fault are the same
                     // condition). The file is REMEMBERED as unanalysable, with three
                     // consequences, none silent:
@@ -7220,10 +7220,10 @@ let internal createWithLaunchDeadline
                             // that, `FileFreshness.trustStoredRows` decides, from the
                             // sidecar's verdict plus what the index HOLDS for this file
                             // and SINCE WHEN. Every arm of that pair is load-bearing and
-                            // all are documented there — the
+                            // all are documented there —
                             // `EverySymbolIsNew`, which is what a `Clean` stamp means once
                             // a schema recreate has emptied the index underneath it, and
-                            // the `RowsFromThisRun`, which is what rows mean
+                            // `RowsFromThisRun`, which is what rows mean
                             // when this run is the one that wrote them.
                             let storedTrust = FileFreshness.trustStoredRows storedFreshness storedRows
 
@@ -7242,7 +7242,7 @@ let internal createWithLaunchDeadline
                                     // `EverySymbolIsNew` behave exactly like
                                     // `DiffAgainstStored` — and whenever the rows were
                                     // this run's own, that is the self-comparison
-                                    // The tracked issue introduced the widening to replace.
+                                    // the `RowsFromThisRun` clock was introduced to replace.
                                     // A self-comparison reports zero changes every time.
                                     let priorSymbols = FileFreshness.baselineRows baseline storedSymbols
 
@@ -7351,7 +7351,7 @@ let internal createWithLaunchDeadline
                             // previously-clean entry to dirty.
                             let now = DateTime.UtcNow
 
-                            // a check of a path that has since vanished
+                            // A check of a path that has since vanished
                             // forgets the record rather than re-stamping it — see
                             // `FileFreshness.stamp`.
                             let updatedFreshness =
@@ -7709,7 +7709,7 @@ let internal createWithLaunchDeadline
                         { Results = completed.Results
                           Elapsed = completed.TotalElapsed }
 
-                    // a run may clear ONLY what it COVERED.
+                    // A run may clear ONLY what it COVERED.
                     //
                     // Two properties must hold together: the ledger is REWRITTEN each
                     // cycle (so a superseded red cannot linger), and it is
@@ -7722,8 +7722,8 @@ let internal createWithLaunchDeadline
                     //
                     // The launch selection cannot express the reach of a raw `--filter`
                     // passthrough — it records every project as `ProjectInFull` — so hand
-                    // `ofRun` the classes the run's OWN report shows passing
-                    //Read from THIS run's directory only, and empty
+                    // `ofRun` the classes the run's OWN report shows passing.
+                    // Read from THIS run's directory only, and empty
                     // whenever the report is missing or incomplete.
                     let coverage =
                         RunCoverage.ofRun
@@ -7914,7 +7914,7 @@ let internal createWithLaunchDeadline
                         persistRuntimeObligations (fun current ->
                             retireRuntimeCoverageObligations current launch.RuntimeProjectsByFile projectPassed)
 
-                    // discharge an UNREADABLE ledger's debt.
+                    // Discharge an UNREADABLE ledger's debt.
                     //
                     // The debt is owed in FULL, because its membership is unknown: the only
                     // run that can retire it is one that executed EVERY runnable project,
@@ -7957,7 +7957,7 @@ let internal createWithLaunchDeadline
                             "test-prune"
                             "A full suite passed every configured project — the unreadable pending-verification ledger has been rewritten and its unknown debt discharged. Impact filtering resumes."
 
-                    // the full-suite WATERMARK. Written when a full-suite
+                    // The full-suite WATERMARK. Written when a full-suite
                     // run has ACCOUNTED for every configured project: passed, or red with
                     // the red recorded in the durable outstanding list. Not only for a
                     // green run — a red full suite still proves what every other test did,
@@ -7967,7 +7967,7 @@ let internal createWithLaunchDeadline
                     // that produced no accountable outcome (deferred, errored) is neither,
                     // and `Ran FullSuite` is already false for it.
                     //
-                    // The same `executedFullSuite` the discharge reads: two
+                    // The same `executedFullSuite` the unreadable-ledger discharge reads: two
                     // readings of what a full-suite run is would let one recover a ledger
                     // the other refused to baseline.
                     let accountedFor (proj: string) =
@@ -8096,7 +8096,7 @@ let internal createWithLaunchDeadline
                             // can be honest: deferred is non-green but is "could not run /
                             // waiting on build", NOT "failed".
                             //
-                            // per case, at the site. `not verifiedGreen`
+                            // Written out per case, at the site. `not verifiedGreen`
                             // would sweep the zero matches in here and report them as
                             // failures; matching only `Refuted` would drop the
                             // Deferred/Errored projects, which ARE non-green — they owed
@@ -8637,23 +8637,23 @@ let internal createWithLaunchDeadline
                 | "" -> None
                 | h -> Some h
 
-            // a full-suite run must never REPLAY an impact-filtered run's
+            // A full-suite run must never REPLAY an impact-filtered run's
             // cached verdict. Salting the key with the requested scope makes that
             // impossible rather than merely unlikely.
             let fullSuiteScopeHash () =
-                // a run widened by a missing baseline is a full-suite
+                // A run widened by a missing baseline is a full-suite
                 // run too, and must not replay a filtered run's cached verdict.
                 if Volatile.Read(&fullSuiteScopeRef) || Option.isSome (baselineInvalidReason ()) then
                     Some "full"
                 else
                     None
 
-            // no cache participation while a red no covering run has
+            // No cache participation while a red no covering run has
             // passed is outstanding.
             let hasOutstandingFailures () =
                 not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
 
-            // no cache participation on BuildCompleted until a run in
+            // No cache participation on BuildCompleted until a run in
             // THIS process has covered something.
             //
             // ANALYSIS-ONLY IS EXEMPT. With no runnable test projects this plugin makes no

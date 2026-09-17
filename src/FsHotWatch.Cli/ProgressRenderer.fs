@@ -592,8 +592,8 @@ module AgentHints =
     /// ran" conflates NOTHING WAS VERIFIED with NOTHING NEEDED RE-VERIFYING, and
     /// leaves no way to tell which you got. `TestScope.NoTestsRun` says as much in
     /// its own doc — "No test run has completed, OR the run executed no tests at
-    /// all" — and that `or` is the whole defect. It is the same conflation
-    /// The tracked issue already split apart for `ScopeUnknown`/`ScopeUnreadable`:
+    /// all" — and that `or` is the whole defect. It is the same conflation the
+    /// `ScopeUnknown`/`ScopeUnreadable` split already took apart:
     /// different facts are different values, and a report that merges them turns a
     /// reader against the tool. Observed: an agent read the bare line, concluded it
     /// had no evidence, and spent an afternoon hunting a phantom test-selection bug

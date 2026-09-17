@@ -261,7 +261,7 @@ type ProjectGraph() as this =
     /// None when the project has no such sources or every one of their paths is
     /// missing.
     ///
-    /// sources under the project's own `bin/`/`obj/` are EXCLUDED,
+    /// Sources under the project's own `bin/`/`obj/` are EXCLUDED,
     /// and that exclusion is the whole reason an answer from here can be compared
     /// against a build output at all.
     ///
@@ -279,8 +279,8 @@ type ProjectGraph() as this =
     /// were logged and 91% of them fell within 90s of an `MSBuild evaluation`
     /// pass in the same daemon log. Promoting the gate to reddening with this in
     /// place would have failed essentially every build in every workspace, on the
-    /// first discovery after each one — which is exactly the failure mode
-    /// The tracked issue was filed to avoid.
+    /// first discovery after each one — which is exactly the failure mode the
+    /// report-only rollout was chosen to avoid.
     ///
     /// TestPrune's independent `ArtifactFreshness` never had the bug: it walks the
     /// disk under `SafeWalk.SourceExcludedDirs`, whose own doc comment names this

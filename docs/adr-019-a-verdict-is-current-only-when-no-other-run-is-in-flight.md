@@ -113,8 +113,8 @@ because the re-run would have to produce the same evidence again. The WIRE still
   unknown is WHO is running, never WHETHER anyone is.
 * Consumers that read only `applies` are correct without changing: mid-run it is
   `false`. Consumers that act on the exit code must learn 6, or they will read it as an
-  unrecognized failure. `RecallMiss.applicabilityOfExit`-style mappings in intelligence
-  need the new code adding.
+  unrecognized failure. `RecallMiss.applicabilityOfExit`-style mappings in a large
+  private downstream repository need the new code adding.
 
 ## Alternatives rejected
 

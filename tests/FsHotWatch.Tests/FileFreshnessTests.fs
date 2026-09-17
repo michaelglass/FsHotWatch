@@ -219,12 +219,12 @@ let ``classify: Unknown is distinct from Dirty — the load-bearing polarity spl
     test <@ classify "absent" Map.empty <> Dirty @>
 
 // =============================================================================
-// the sidecar's relationship to `test-impact.db`.
+// The sidecar's relationship to `test-impact.db`.
 //
 // `file-freshness.json` carries no schema version and sits BESIDE a database that
 // deletes and recreates itself on a `SchemaVersion` bump. The sidecar survives that.
-// The tracked issue established that the identically-shaped `pending-verification.json`
-// could then discharge real test debt as a zero-test green.
+// The identically-shaped `pending-verification.json` had already been shown to discharge
+// real test debt as a zero-test green in exactly that situation.
 //
 // Everything below is measured against a REAL recreate, never a simulated one:
 // `PRAGMA user_version` is stamped stale and `Database.create` performs its own
@@ -293,7 +293,7 @@ let ``a schema recreate empties the index but the freshness sidecar survives say
 
 [<Fact(Timeout = 15000)>]
 let ``a Clean stamp over an emptied index must still WIDEN — every current symbol reads as new`` () =
-    // THE ASSERTION the tracked issue EXISTS FOR. The sidecar says "the stored rows for
+    // THE ASSERTION this fix EXISTS FOR. The sidecar says "the stored rows for
     // this file are a complete extraction, safe to diff". After a recreate there are
     // no stored rows for that claim to be about, and the only sound reading is "this
     // index has never seen this file" — so every symbol currently in it is new and
@@ -371,7 +371,7 @@ let ``trustStoredRows: Dirty never diffs, whatever the index holds — it WIDENS
     test <@ trustStoredRows Dirty NoRows = EverySymbolIsNew @>
 
 // -----------------------------------------------------------------------------
-// rows this run wrote are not a baseline.
+// Rows this run wrote are not a baseline.
 //
 // A fresh or recreated index's first scan indexes the CURRENT, already-edited tree and
 // writes it as the baseline. `detectChanges` then diffs current-against-stored, finds
@@ -410,13 +410,13 @@ let ``PositiveControl: PRIOR rows still buy the cheap diff — the fix is not "w
 [<Fact(Timeout = 5000)>]
 let ``a dirty extraction is still never diffed against, whoever wrote the rows`` () =
     // The clock does not outrank the sidecar's explicit "these rows may be PARTIAL" —
-    // the answer is never `DiffAgainstStored`. The tracked issue changed WHICH non-diff
-    // answer it is, not this claim.
+    // the answer is never `DiffAgainstStored`. The transient-FCS-recovery fix changed WHICH
+    // non-diff answer it is (`NoDiff` became `EverySymbolIsNew`), not this claim.
     test <@ trustStoredRows Dirty RowsFromThisRun <> DiffAgainstStored @>
     test <@ trustStoredRows Dirty RowsFromPriorRun <> DiffAgainstStored @>
 
 // -----------------------------------------------------------------------------
-// a recovery that cannot determine a diff must not select NOTHING.
+// A recovery that cannot determine a diff must not select NOTHING.
 //
 // A test file whose symbol analysis hit a transient FCS error is stamped
 // `fcsClean = false`. On the pass that RECOVERS — FCS clean again, extraction
@@ -696,8 +696,9 @@ let ``trustStoredRows: a Clean stamp can never buy the NARROW answer`` () =
     // The polarity guard. `NoDiff` contributes no changed symbols for the file, so
     // routing a Clean stamp there is the UNDER-testing direction — the one
     // `PendingVerification.fs`'s header forbids and the one the sibling
-    // bug actually took. Collapsing `Clean` into `Unknown`'s "only when rows exist"
-    // rule is exactly how that flip would arrive, and it lands here.
+    // `pending-verification.json` bug actually took. Collapsing `Clean` into
+    // `Unknown`'s "only when rows exist" rule is exactly how that flip would arrive, and
+    // it lands here.
     test <@ trustStoredRows Clean RowsFromPriorRun <> NoDiff @>
     test <@ trustStoredRows Clean RowsFromThisRun <> NoDiff @>
     test <@ trustStoredRows Clean NoRows <> NoDiff @>

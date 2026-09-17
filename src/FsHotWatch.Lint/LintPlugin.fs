@@ -122,8 +122,8 @@ let create
                     let fileStr = AbsFilePath.value result.File
 
                     // Skip out-of-repo compile items (NuGet-injected `_content`
-                    // etc.) — not ours to lint, and a latent crash surface
-                    //See PathFilter.isOutsideRepoScoped.
+                    // etc.) — not ours to lint, and a latent crash surface.
+                    // See PathFilter.isOutsideRepoScoped.
                     if FsHotWatch.PathFilter.isOutsideRepoScoped repoRoot fileStr then
                         Logging.debug "lint" $"Skipping out-of-repo compile item %s{fileStr}"
                         return state

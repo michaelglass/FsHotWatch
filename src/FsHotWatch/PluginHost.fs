@@ -47,7 +47,7 @@ type PluginHost
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
-    // rework. Every phase the daemon spends wall time in — its own
+    // Wall-time attribution rework. Every phase the daemon spends wall time in — its own
     // (startup, discovery, scans, change batches) and every plugin's `Running` →
     // terminal interval, superseded runs included — so a verdict can cover what the
     // check observed instead of only each plugin's surviving `lastRun`.
@@ -142,7 +142,7 @@ type PluginHost
                         | Idle
                         | Running _ -> ()
 
-                        // rework. The plugin's WHOLE `Running` interval, not
+                        // Wall-time attribution rework. The plugin's WHOLE `Running` interval, not
                         // the run it measured itself: test-prune is `Running` through symbol
                         // analysis and selection long before `executeTests` starts its
                         // stopwatch, and a check blocked on `WaitForComplete` waits for all
@@ -619,7 +619,7 @@ type PluginHost
 
     member _.GetHistory(pluginName: string) : RunRecord list = activity.GetHistory(pluginName)
 
-    /// rework. The daemon's phase ledger — see `DaemonPhases`.
+    /// The daemon's phase ledger, kept for verdict wall-time attribution — see `DaemonPhases`.
     member _.Phases: DaemonPhases.Ledger = phases
 
     /// Get all errors grouped by file path.

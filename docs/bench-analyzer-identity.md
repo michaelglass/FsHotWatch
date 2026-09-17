@@ -27,7 +27,7 @@ claim.
 - **before** — `c6c0323c` (FsHotWatch.Cli 0.14.0-alpha.47): byte-keyed
   `analyzer-assemblies` slot (`analyzers-merkle-v4`), and the store namespaced per
   checkout name.
-- **after** — the stack: receipt-keyed `analyzer-inputs`
+- **after** — the analyzer-identity stack: receipt-keyed `analyzer-inputs`
   (`analyzers-merkle-v5`), the store namespaced per repository, and the
   `analyzer-paths` slot repo-relative with a trailing separator.
 
@@ -48,7 +48,7 @@ Designs:
 ## Commands
 
 ```
-cd /Users/michaelglass/Developer/opensource/FsHotWatch
+cd <your FsHotWatch checkout>
 jj workspace add --name <name> <dir> -r <rev>
 cd <dir>
 mise exec -- dotnet tool restore

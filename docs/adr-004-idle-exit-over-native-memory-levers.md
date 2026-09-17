@@ -128,7 +128,7 @@ documented here as an option for memory-constrained secondary workspaces.
 2026-06-06/07, same harness lineage as ADR-003 (build-plugin disabled to
 avoid the scan-truncation race fixed on main; `footprint`/`vmmap` +
 `dotnet-gcdump`; load recorded at every checkpoint). 14 sessions, all valid.
-The intelligence solution had grown to 774 checkable files (gate re-discovered
-by the first baseline rather than assumed). One harness artifact (a multiline
+The benchmarked solution (a large private downstream repository) had grown to
+774 checkable files (gate re-discovered by the first baseline rather than assumed). One harness artifact (a multiline
 zero from `grep -c … || echo 0` corrupting two CSV rows) was fixed mid-campaign
 and the affected rows reconstructed from logs.

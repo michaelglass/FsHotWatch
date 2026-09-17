@@ -4,7 +4,7 @@ Status: Accepted (2026-09-09); implementation verification in progress.
 
 ## Context
 
-the real two-project command regression reproduced a successful
+A real two-project command regression reproduced a successful
 filtered execution followed by an empty `already-verified` drain. The drain
 replaced the receipt, and `check` returned exit 3 despite holding the passing
 project report. Full-suite receipts were retained within an episode, but partial

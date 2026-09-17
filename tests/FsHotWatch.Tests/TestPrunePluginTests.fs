@@ -970,8 +970,8 @@ let ``test errors are cleared when all tests pass`` () =
         // Sync on the run's TERMINAL status, not on the ledger going clean: the
         // `TestsFinished` handler rewrites the ledger first and reports the status last,
         // and reading the status inside that window sees `Running` for a run that has
-        // already passed (the tracked issue widened the window by persisting the reds and
-        // the baseline between the two).
+        // already passed (making the reds and the full-suite baseline durable widened the
+        // window by persisting both between the two).
         let await = beginAwaitNextTerminal host "test-prune"
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
         test <@ await.Wait(TimeSpan.FromSeconds 15.0) @>
@@ -1495,7 +1495,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ capturedArgs.Contains("Tests") @>)
 
 // =============================================================================
-// seeded-workspace under-selection.
+// Seeded-workspace under-selection.
 //
 // A fresh jj workspace seeds `test-impact.db` from the default workspace (ADR-010) but
 // NOT the freshness sidecar, which lives under `.fshw/`. Every seeded file therefore
@@ -1787,7 +1787,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 [<Fact(Timeout = 30000)>]
 let ``all changed symbols with no covering test complete green without running`` () =
     withTempDir "tp-nothing-to-verify" (fun tmpDir ->
-        // the nothing-to-verify skip is relative to a full-suite
+        // The nothing-to-verify skip is relative to a full-suite
         // baseline like every other green; without one the run widens to earn it.
         seedBaseline tmpDir [ "TestProject" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -2782,7 +2782,7 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
 
-// the PRODUCER side of the two facts the CLI's refusal now prints.
+// The PRODUCER side of the two facts the CLI's refusal now prints.
 //
 // Deliberately end-to-end through `RunCommand "run-tests"`, not a unit test of the
 // formatter: a consumer test asserting fields the producer never writes vouches for a
@@ -4478,7 +4478,7 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
     // the former, so emitting from the async left cached EmittedEvents empty and cache
     // replay could not re-fire TestRunCompleted to downstream subscribers.
     withTempDir "tp-cache-emit" (fun tmpDir ->
-        // the cache key is salted by whether the run would be widened
+        // The cache key is salted by whether the run would be widened
         // to the full suite, and the FIRST run of a repo with no baseline is. Seeding
         // one keeps the key the write and the read compute the same.
         seedBaseline tmpDir [ "TestProject" ]
@@ -4528,7 +4528,7 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         test <@ hasCompleted @>)
 
 // =============================================================================
-// a FAILED verdict must never be served from the task cache. The merkle
+// A FAILED verdict must never be served from the task cache. The merkle
 // key (changed-symbols + commit) does NOT pin the test OUTCOME, so a failing run and a
 // later passing run on the same tree share a key.
 // Caching the failure let `tryReplayCache` replay a stale red on a now-green tree,
@@ -4903,7 +4903,7 @@ let ``cacheKeyFor: a FileChecked key reads only the cheap outstanding-red guard`
     test <@ fullSuiteScopeCalls = 0 @>
     test <@ outstandingCalls = 1 @>
     test <@ sessionEvidenceCalls = 0 @>
-    // the structure hash is a FULL-REPO WALK plus a SHA-256 of every
+    // The project-structure hash is a FULL-REPO WALK plus a SHA-256 of every
     // project file. Paid once per BuildCompleted it is nothing; paid once per checked
     // file on a cold scan it is quadratic. The POSITIVE CONTROL for this zero is the
     // BuildCompleted test below, which pins the same thunk at 3 calls — an absence over

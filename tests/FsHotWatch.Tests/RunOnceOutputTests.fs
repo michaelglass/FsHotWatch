@@ -1278,7 +1278,7 @@ let ``readTestRun on a THROWING test-scope command is ScopeUnreadable, NOT the t
     | other -> failwithf "expected ScopeUnreadable carrying the fault, got %A" other
 
 // ---------------------------------------------------------------------------
-// A FAULTED READING IS NOT A GOOD READING (the principle, applied to the
+// A FAULTED READING IS NOT A GOOD READING (the unreadable-ledger principle, applied to the
 // TEST SCOPE).
 //
 // `CheckVerdict.verdict` refuses `NoTestsRun` in BOTH modes, but that refusal is only

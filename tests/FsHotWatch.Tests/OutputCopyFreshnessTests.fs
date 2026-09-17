@@ -1,4 +1,4 @@
-/// the COPY half of build-output freshness, in core so both
+/// The COPY half of build-output freshness, in core so both
 /// `FsHotWatch.Build` and `FsHotWatch.TestPrune` can ask it.
 ///
 /// Every absence assertion here is paired with a positive control on the SAME

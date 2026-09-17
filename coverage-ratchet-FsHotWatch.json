@@ -91,7 +91,7 @@
       {
         "line": 100,
         "branch": 88,
-        "reason": "loosened automatically || the tracked issue re-baselined the BRANCH floor 91 -\u003E 86 (measured 88, set ~2pp under per this file\u0027s convention). Not a coverage regression: the absolute number of COVERED branches went UP. \u0060getProjectOptionsHashRelativeTo\u0060 added a \u0060relativizeJoined\u0060 helper whose array enumeration carries a null-argument branch that no honest test can take (FSharpProjectOptions.SourceFiles is never null in any state FCS produces), so the file gained branches faster than it gained covered ones. The pre-existing uncovered branch at \u0060fcsCheckSignature\u0060\u0027s non-null FullCheck arm \u2014 which needs a live FSharpCheckFileResults \u2014 is unchanged. The LINE floor stays at 100%."
+        "reason": "loosened automatically || the switch to a repo-relative project-options hash re-baselined the BRANCH floor 91 -\u003E 86 (measured 88, set ~2pp under per this file\u0027s convention). Not a coverage regression: the absolute number of COVERED branches went UP. \u0060getProjectOptionsHashRelativeTo\u0060 added a \u0060relativizeJoined\u0060 helper whose array enumeration carries a null-argument branch that no honest test can take (FSharpProjectOptions.SourceFiles is never null in any state FCS produces), so the file gained branches faster than it gained covered ones. The pre-existing uncovered branch at \u0060fcsCheckSignature\u0060\u0027s non-null FullCheck arm \u2014 which needs a live FSharpCheckFileResults \u2014 is unchanged. The LINE floor stays at 100%."
       }
     ],
     "CheckPipeline.fs": [
@@ -269,7 +269,7 @@
       {
         "line": 100,
         "branch": 94,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || Branch floor lowered 95 -\u003E 93 on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: the tracked issue\u0027s ErrorLedger.Transport adds branches the current tests do not reach (32/34 = 94.1%).",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || Branch floor lowered 95 -\u003E 93 on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: the new ErrorLedger.Transport adds branches the current tests do not reach (32/34 = 94.1%).",
         "platform": "macos"
       },
       {
@@ -303,7 +303,7 @@
       {
         "line": 100,
         "branch": 92,
-        "reason": "the tracked issue moved editorConfigInputs (4 branches, all covered) to core CacheInputs.fs. The old 93 floor admits at most 42/45 covered here; removing those 4 leaves at most 38/41 = 92.7%, so 93 is structurally unreachable. Lowered by exactly that arithmetic, not measured on Linux - refresh from the first Linux CI run on this change.",
+        "reason": "editorConfigInputs (4 branches, all covered) moved to core CacheInputs.fs. The old 93 floor admits at most 42/45 covered here; removing those 4 leaves at most 38/41 = 92.7%, so 93 is structurally unreachable. Lowered by exactly that arithmetic, not measured on Linux - refresh from the first Linux CI run on this change.",
         "platform": "linux"
       }
     ],
@@ -329,7 +329,7 @@
       {
         "line": 100,
         "branch": 80,
-        "reason": "Lowered from 85 on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: the tracked issue deleted this module\u0027s own truncation branches in favour of ErrorLedger.Transport, leaving 8/10 = 80.0%. Set ~1pp under the measurement. The linux entry still says 85 and will red in CI for the same deletion \u2014 refresh it from the next CI run."
+        "reason": "Lowered from 85 on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: adopting ErrorLedger.Transport deleted this module\u0027s own truncation branches, leaving 8/10 = 80.0%. Set ~1pp under the measurement. The linux entry still says 85 and will red in CI for the same deletion \u2014 refresh it from the next CI run."
       }
     ],
     "FileFreshness.fs": [
@@ -541,13 +541,13 @@
       {
         "line": 97,
         "branch": 100,
-        "reason": "honest floor for the durable pending-verification sidecar. The tracked issue made \u0060load\u0060 return \u0060LoadedQueue = Loaded | Unreadable\u0060, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered \u2014 measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by \u0060mise run coverage-ratchet\u0060 against BOTH platforms\u0027 CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent. NOTE: an automated ratchet pass raised this to line=97/branch=100 from a single run; restored. Per-file coverage is non-deterministic (the collector only emits a source line once its method JIT-compiles, so the denominator wobbles with load), so a 100% branch floor is a trap that fires on a busy box. Do not re-tighten from one lucky run.",
+        "reason": "honest floor for the durable pending-verification sidecar. The unreadable-ledger fix made \u0060load\u0060 return \u0060LoadedQueue = Loaded | Unreadable\u0060, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered \u2014 measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by \u0060mise run coverage-ratchet\u0060 against BOTH platforms\u0027 CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent. NOTE: an automated ratchet pass raised this to line=97/branch=100 from a single run; restored. Per-file coverage is non-deterministic (the collector only emits a source line once its method JIT-compiles, so the denominator wobbles with load), so a 100% branch floor is a trap that fires on a busy box. Do not re-tighten from one lucky run.",
         "platform": "macos"
       },
       {
         "line": 87,
         "branch": 75,
-        "reason": "deterministic pure JSON I/O - same on Linux as macOS. Since the tracked issue the load arms (Loaded vs Unreadable, incl. the null/non-string entry guards) are all pinned by deterministic unit tests, so the previously-uncovered arms are covered (see macos entry). Floor left as-is rather than hand-raised to an unmeasured Linux number.",
+        "reason": "deterministic pure JSON I/O - same on Linux as macOS. Since load started returning LoadedQueue, the load arms (Loaded vs Unreadable, incl. the null/non-string entry guards) are all pinned by deterministic unit tests, so the previously-uncovered arms are covered (see macos entry). Floor left as-is rather than hand-raised to an unmeasured Linux number.",
         "platform": "linux"
       }
     ],
@@ -555,7 +555,7 @@
       {
         "line": 87,
         "branch": 69,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor || the tracked issue (2026-09-06): measured 69 after the runRecordBytes VerifiedNothing arm (covered by the IpcPayload host round trip); wider denominator, same load-dependent wobble as above.",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor || 2026-09-06: measured 69 after the runRecordBytes VerifiedNothing arm (covered by the IpcPayload host round trip); wider denominator, same load-dependent wobble as above.",
         "platform": "macos"
       },
       {
@@ -611,7 +611,7 @@
       {
         "line": 99,
         "branch": 100,
-        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. The tracked issue pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. A later refactor pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -685,7 +685,7 @@
       {
         "line": 83,
         "branch": 54,
-        "reason": "New file from the tracked issue (run claims). First floor, written on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file\u0027s own rule that a floor pinned to one run\u0027s exact number goes red on the next. THIN \u2014 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box.",
+        "reason": "New file from the in-flight run-claim change. First floor, written on 2026-09-05, eight-change merge batch, one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file\u0027s own rule that a floor pinned to one run\u0027s exact number goes red on the next. THIN \u2014 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box.",
         "platform": "macos"
       },
       {
@@ -740,7 +740,7 @@
       {
         "line": 100,
         "branch": 85,
-        "reason": "symlink-safe walker (2026-07-13 wedge fix); 12/14 branches covered on macos \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not). FLOOR LOWERED 87 \u2192 85 on 2026-08-23 WITHOUT a coverage regression: the same two arms are uncovered as when this floor was written, but the branch DENOMINATOR fell from 16 to 14, and 2-of-16 clears an 87% floor while 2-of-14 does not. This is the drift the tracked issue describes and the reason the tracked issue wants covered COUNTS rather than a percentage \u2014 a large private downstream repository already gates on absolute covered lines/branches for exactly this. The linux entry is deliberately untouched: this box is macos and cannot observe the linux branch model, which counts DU arms differently; that floor moves from a CI measurement.",
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 12/14 branches covered on macos \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not). FLOOR LOWERED 87 \u2192 85 on 2026-08-23 WITHOUT a coverage regression: the same two arms are uncovered as when this floor was written, but the branch DENOMINATOR fell from 16 to 14, and 2-of-16 clears an 87% floor while 2-of-14 does not. This is the denominator drift that argues for gating on covered COUNTS rather than a percentage \u2014 a large private downstream repository already gates on absolute covered lines/branches for exactly this. The linux entry is deliberately untouched: this box is macos and cannot observe the linux branch model, which counts DU arms differently; that floor moves from a CI measurement.",
         "platform": "macos"
       },
       {
@@ -829,7 +829,7 @@
       {
         "line": 92,
         "branch": 82,
-        "reason": "2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || the tracked issue (2026-09-06): measured 82 after adding the VerifiedNothing arms (pluginOutcomeOf Idle arm, plugins[] summary fallback); both arms are covered, the pp is the wider denominator.",
+        "reason": "2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || 2026-09-06: measured 82 after adding the VerifiedNothing arms (pluginOutcomeOf Idle arm, plugins[] summary fallback); both arms are covered, the pp is the wider denominator.",
         "platform": "macos"
       },
       {
@@ -1216,13 +1216,13 @@
       {
         "coveredLines": 26,
         "coveredBranches": 8,
-        "reason": "the tracked issue replaced this module\u0027s own cap with ErrorLedger.Transport\u0027s, deleting the local truncation branches. Measured 8/10 branches. Lowered on 2026-09-05, eight-change merge batch, one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
+        "reason": "ErrorLedger.Transport\u0027s shared cap replaced this module\u0027s own cap, deleting the local truncation branches. Measured 8/10 branches. Lowered on 2026-09-05, eight-change merge batch, one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
         "platform": "macos"
       },
       {
         "coveredLines": 26,
         "coveredBranches": 10,
-        "reason": "Linux CI run 34014609735 (main b988a096, 2026-09-06): 26 lines / 10 branches exact from the ratchet check log. Lowered from 27/14 for the same reason as the macos entry: the tracked issue deleted this module\u0027s own truncation branches in favour of ErrorLedger.Transport; covered code was DELETED, no test stopped running. The macos entry\u0027s reason predicted this refresh.",
+        "reason": "Linux CI run 34014609735 (main b988a096, 2026-09-06): 26 lines / 10 branches exact from the ratchet check log. Lowered from 27/14 for the same reason as the macos entry: adopting ErrorLedger.Transport deleted this module\u0027s own truncation branches; covered code was DELETED, no test stopped running. The macos entry\u0027s reason predicted this refresh.",
         "platform": "linux"
       }
     ],
@@ -1278,7 +1278,7 @@
       {
         "coveredLines": 230,
         "coveredBranches": 25,
-        "reason": "re-baselined 2026-09-04 for as a LOWER BOUND, not a measurement: the file lost the in-process formatting branches (linux counted 39/40 before, macOS 26/26 after), so the old linux floor of 39 cannot be met by any version of this file. Set equal to the macOS floor, which every earlier entry shows linux meets or exceeds. Refresh from the first Linux CI run on this change, never from a dev box.",
+        "reason": "re-baselined 2026-09-04 as a LOWER BOUND, not a measurement: the file lost the in-process formatting branches (linux counted 39/40 before, macOS 26/26 after), so the old linux floor of 39 cannot be met by any version of this file. Set equal to the macOS floor, which every earlier entry shows linux meets or exceeds. Refresh from the first Linux CI run on this change, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1318,7 +1318,7 @@
       {
         "coveredLines": 70,
         "coveredBranches": 33,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1360,7 +1360,7 @@
       {
         "coveredLines": 288,
         "coveredBranches": 38,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1374,7 +1374,7 @@
       {
         "coveredLines": 612,
         "coveredBranches": 155,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1458,7 +1458,7 @@
       {
         "coveredLines": 63,
         "coveredBranches": 11,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical \u2014 the watchdog timing path that wobbled 12 -\u003E 11 in covered branches on 2026-09-04 did not wobble today). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical \u2014 the watchdog timing path that wobbled 12 -\u003E 11 in covered branches on 2026-09-04 did not wobble today). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum.",
         "platform": "macos"
       },
       {
@@ -1514,7 +1514,7 @@
       {
         "coveredLines": 182,
         "coveredBranches": 36,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1598,7 +1598,7 @@
       {
         "coveredLines": 826,
         "coveredBranches": 154,
-        "reason": "2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1698,7 +1698,7 @@
       {
         "coveredLines": 81,
         "coveredBranches": 12,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
@@ -1748,7 +1748,7 @@
       {
         "coveredLines": 165,
         "coveredBranches": 20,
-        "reason": "the tracked issue deleted the whole-run short-circuit (\u0060if not (isEmpty unrepairable) || not (isEmpty tripped)\u0060) \u2014 the breaker is per-file now, so those branches no longer exist. Measured 20/20 branches, 100%. Lowered on 2026-09-05, eight-change merge batch, one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
+        "reason": "the per-file breaker change (ADR-016) deleted the whole-run short-circuit (\u0060if not (isEmpty unrepairable) || not (isEmpty tripped)\u0060) \u2014 the breaker is per-file now, so those branches no longer exist. Measured 20/20 branches, 100%. Lowered on 2026-09-05, eight-change merge batch, one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
         "platform": "macos"
       },
       {
@@ -1818,13 +1818,13 @@
       {
         "coveredLines": 1444,
         "coveredBranches": 427,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum. || the tracked issue (2026-09-16): branches 442 -> 428 from IL shape, not lost coverage. `Verdict.Outcome` gained a fourth case (`ModelUnavailable`), and a four-case union match compiles to a `switch` the collector does not instrument, so every `match` on `Outcome` left the branch report entirely (main: lines 686, 1162/1168, 1499, 1752, 3116/3202, 3495 = 27 covered branches) while the new arms added 12 covered. Measured by diffing per-line cobertura of main@origin 38d3f2cc against the change: total branches 534 -> 516 despite added code; no line covered on main is uncovered now. Floor = observed minimum of the two full runs after the change (428, 427): Verdict.fs still wobbles by one branch run to run, as recorded above.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum. || 2026-09-16: branches 442 -> 428 from IL shape, not lost coverage. `Verdict.Outcome` gained a fourth case (`ModelUnavailable`), and a four-case union match compiles to a `switch` the collector does not instrument, so every `match` on `Outcome` left the branch report entirely (main: lines 686, 1162/1168, 1499, 1752, 3116/3202, 3495 = 27 covered branches) while the new arms added 12 covered. Measured by diffing per-line cobertura of main@origin 38d3f2cc against the change: total branches 534 -> 516 despite added code; no line covered on main is uncovered now. Floor = observed minimum of the two full runs after the change (428, 427): Verdict.fs still wobbles by one branch run to run, as recorded above.",
         "platform": "macos"
       },
       {
         "coveredLines": 1173,
         "coveredBranches": 536,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || the tracked issue (2026-09-16): PROVISIONAL 551 -> 536, not measured on Linux. Same four-case `Outcome` switch as the macos entry, which measured -15 branches from IL shape alone; lowered by that delta so the shape change does not red Linux CI. RE-SETTLE FROM THE FIRST CI RUN, and raise it if Linux measures higher.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || 2026-09-16: PROVISIONAL 551 -> 536, not measured on Linux. Same four-case `Outcome` switch as the macos entry, which measured -15 branches from IL shape alone; lowered by that delta so the shape change does not red Linux CI. RE-SETTLE FROM THE FIRST CI RUN, and raise it if Linux measures higher.",
         "platform": "linux"
       }
     ],
@@ -1832,7 +1832,7 @@
       {
         "coveredLines": 153,
         "coveredBranches": 20,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured for after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {

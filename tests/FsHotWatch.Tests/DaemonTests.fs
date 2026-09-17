@@ -960,8 +960,8 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
         runChecksWithRetry 3 check (fun r -> emitted.Add r) files
         |> Async.RunSynchronously
 
-    // a converged scan says so in the type, and reports ZERO
-    // extra rounds — the amplification measure this ticket asks to bound.
+    // A converged scan says so in the type, and reports ZERO
+    // extra rounds — the amplification measure the retry budget exists to bound.
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
     test <@ emitted.Count = 3 @>
 
@@ -1017,7 +1017,7 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
     let outcome =
         runChecksWithRetry 2 check (fun _ -> ()) files |> Async.RunSynchronously
 
-    // reaching the bound is a NAMED outcome carrying the files,
+    // Reaching the bound is a NAMED outcome carrying the files,
     // the rounds spent, and the budget that was exhausted — not an integer
     // folded into a total that reads the same as "nothing to do".
     test <@ outcome = ScanCheckOutcome.BudgetExhausted([ AbsFilePath.create "/b.fs" ], 2, 2) @>
@@ -1915,7 +1915,7 @@ let ``five scan generations emit five parseable, fittable measurement records`` 
             test <@ bound = FsHotWatch.ScanMetrics.DefaultRetentionBound @>
             test <@ Double.IsFinite slope @>)
 
-// --- rework: the scan and discovery are named phases ---
+// --- timing attribution rework: the scan and discovery are named phases ---
 
 /// The cold scan is the largest phase a `check` waits on and no plugin owns it. After
 /// a forced scan the daemon's ledger must carry it — and the startup before it — with

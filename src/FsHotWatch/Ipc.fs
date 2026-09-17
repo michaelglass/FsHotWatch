@@ -389,7 +389,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             config.Host.GetAllStatuses()
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
-        // rework. Every phase the daemon spent wall time in — its own
+        // Wall-time attribution rework. Every phase the daemon spent wall time in — its own
         // and every plugin's `Running` interval, superseded runs included — so the
         // verdict can cover the time the check waited on, by name. Wall-clock stamped:
         // the CLI places each one against its own invocation origin.

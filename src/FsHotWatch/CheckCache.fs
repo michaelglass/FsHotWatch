@@ -93,9 +93,9 @@ let internal relativizeOption (repoRoot: string option) (option: string) =
 ///
 /// With a `repoRoot`, every path inside the repository is named RELATIVELY, so two
 /// checkouts of the same repository at the same revision produce the SAME hash for
-/// byte-identical compiler options. That is the prerequisite the tracked issue records
-/// for a single shared daemon: with absolute paths in here, one daemon serving N
-/// workspaces would hold N disjoint compiler snapshots of identical code.
+/// byte-identical compiler options. That is a prerequisite for a single shared daemon:
+/// with absolute paths in here, one daemon serving N workspaces would hold N disjoint
+/// compiler snapshots of identical code.
 ///
 /// Paths OUTSIDE the repository (the NuGet cache, the SDK) stay absolute. They are
 /// machine-local, and on one machine they are the same for every workspace — so they

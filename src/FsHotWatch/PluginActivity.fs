@@ -10,7 +10,7 @@ let FcsPluginName = "fcs"
 
 /// The test-prune plugin's registered name, and therefore its LEDGER KEY.
 ///
-/// Named here beside `FcsPluginName` because the projection has to ask of a
+/// Named here beside `FcsPluginName` because the verdict's `NonTestRed` projection has to ask of a
 /// red "is this about the TESTS, or about something else this run would have found
 /// either way" — and the only way to ask is by ledger source. The plugin registers with
 /// this literal; a second copy spelled at the asking site is a second copy that can
