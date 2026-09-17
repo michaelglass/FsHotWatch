@@ -1,5 +1,21 @@
 {
   "overrides": {
+    "DetachedLaunch.fs": [
+      {
+        "line": 100,
+        "branch": 96,
+        "reason": "Linux floor from CI run 35204303183 on 4d77ae3f (2026-09-17): line 100 percent, branch 96.2 percent (25/26 branches), rounded down. macOS covers every branch (100/100, no override there); Linux instruments one more compiler-generated branch.",
+        "platform": "linux"
+      }
+    ],
+    "PluginWorkOwner.fs": [
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "Linux floor from CI run 35204303183 on 4d77ae3f (2026-09-17): line 100 percent, branch 98.1 percent (151/154 branches), rounded down. macOS measures 122/122 branches (100/100, no override there); Linux counts 154 branches for the same source.",
+        "platform": "linux"
+      }
+    ],
     "RepoIdentity.fs": [
       {
         "line": 100,
