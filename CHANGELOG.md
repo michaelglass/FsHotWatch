@@ -210,6 +210,37 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### testprune, build: decisions read committed owner state, and command replies follow publication
+
+TestPrune and Build used to decide from closure-local copies of their state. A
+completion whose fold failed could still make a red plugin cacheable or discharge debt
+on disk, and an older snapshot could show a newer run or baseline.
+
+- **Cache keys read the state they are given.** A completion that never returned state
+  cannot change what is cacheable, and a `force-rebuild` affects only the state that
+  applied it.
+- **Verification debt is published before it is written.** The pending queue, revisions,
+  baseline and runtime coverage obligations are plugin state. TestPrune writes their
+  sidecars in `PrepareCommit`, behind an `owner-publication-pending` marker that is removed
+  after publication. A restart that finds the marker treats the debt as unknown and runs
+  the full suite once.
+- **A symbol edited during a run stays owed.** A completion retires a symbol only at the
+  revision its launch captured.
+- **Owed runs are owned.** A build or cohort seal that lands while tests run queues one
+  coalesced run behind them, and it launches only if something is still owed.
+  `run-tests` queues the same way. Queued work now runs in the order it was queued.
+- **Replies follow publication.** `run-tests`, `set-scope` and `force-rebuild` reply once
+  their state is published, so a command sent next sees it. `run-tests` reports a refused
+  request instead of waiting out its bound.
+- **A change is never dropped behind a finished build.** A change or test completion whose
+  build claim met a finished build still folding its result was skipped, and never built.
+  It is now kept, and that build's result builds it.
+- **Behaviour change:** a test run that finds its artifacts or test host unavailable no
+  longer queues a rerun. Its dependency fanout stays owed and runs with the next launch;
+  a scan's build no longer replays a cached green while dependency fanout is owed.
+
+See `docs/adr-031-testprune-and-build-decide-from-committed-owner-state.md`.
+
 ### core: scans and change batches run under a bounded supervisor, and `scan-status` never waits for a scan
 
 The daemon's scan and its watcher change batches used to run inside two mailboxes. A

@@ -34,6 +34,8 @@ open FsHotWatch.Tests.TestHelpers
 let emptyLaunch: TestRunLaunch =
     { InputTreeHash = None
       Symbols = Set.empty
+      SymbolRevisions = Map.empty
+      ChangedFiles = []
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
       Selection = Map.empty
@@ -46,6 +48,8 @@ let emptyLaunch: TestRunLaunch =
 let fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { InputTreeHash = None
       Symbols = Set.empty
+      SymbolRevisions = Map.empty
+      ChangedFiles = []
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
@@ -58,6 +62,8 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
 let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
     { InputTreeHash = None
       Symbols = Set.empty
+      SymbolRevisions = Map.empty
+      ChangedFiles = []
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
       Selection =
@@ -67,6 +73,30 @@ let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
       WouldHaveRun = None
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero }
+
+/// Register `handler` with an observing fixture command, returning a reader for the state
+/// the host's owner has committed. Cache keys and observations are functions of that
+/// state, so a test that asks what the NEXT lookup would compute reads it here.
+let registerWithStateObserver (host: PluginHost) (handler: PluginHandler<TestPruneState, TestPruneMsg>) =
+    let mutable observed = None
+
+    let observe =
+        PluginCommand.Observe(fun _ state _ ->
+            async {
+                observed <- Some state
+                return "observed"
+            })
+
+    host.RegisterHandler
+        { handler with
+            Commands = ("fixture-test-prune-state", observe) :: handler.Commands }
+
+    fun () ->
+        host.RunCommand("fixture-test-prune-state", [||])
+        |> Async.RunSynchronously
+        |> ignore
+
+        observed.Value
 
 let waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))

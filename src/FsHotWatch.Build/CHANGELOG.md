@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- (breaking) `force-rebuild` is owner state. `BuildState` gains `ForceRebuild`, set by the
+  new `ForceRebuildRequested` message and spent by a build that actually ran; the command
+  replies once that state is committed. The cache key reads `ForceRebuild` and
+  `ActiveTestRuns` from the state it is given instead of closure copies.
+- Fix: a change whose build claim meets a finished build that has not yet folded its result
+  is kept and built by that result, instead of being dropped ("Skipping: build already in
+  progress").
+
 ## 0.7.0-alpha.35 - 2026-09-15
 
 - Finish: update SourceLink to fix CVE-2026-62900 restore failure

@@ -401,6 +401,9 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        // The terminal status is reported inside the fold; its debt reaches disk when
+        // the fold is published, so wait for the owner to rest.
+        waitForQuiescent host 15000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -413,7 +416,7 @@ let ``mid-run change: a green run commits only its launch set; a symbol that arr
     =
     // Run 1 launches against {Lib.foo} and sleeps ~1.5s. Mid-flight a real FCS FileChecked
     // changes `bar`, which the plugin enqueues through the genuine write-through path, and
-    // a BuildCompleted sets PendingRerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its
+    // a BuildCompleted queues a rerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its
     // green completion commits only that; `bar` survives and the rerun covers it. No
     // file-rewrite simulation: the snapshot is captured at dispatch and the commit is
     // launch-set-scoped.
@@ -500,7 +503,7 @@ let barTest () = assert (bar 1 = 2)
             5000
 
         // Mid-run, while run 1 is still sleeping: change `bar`'s body, so a real
-        // FileChecked enqueues it, then a BuildCompleted sets PendingRerun.
+        // FileChecked enqueues it, then a BuildCompleted queues a rerun.
         let libSource3 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 99\n"
         File.WriteAllText(libFile, libSource3)
 
@@ -573,7 +576,7 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
 
         // Re-observe the same debt while its covering run is active. The run holds the
         // host busy, so the witness is the BatchChecked's own commit: once it lands,
-        // PendingRerun is set, and releasing the runner cannot race the setup.
+        // the rerun is queued, and releasing the runner cannot race the setup.
         let committedBefore = committedBy host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         test <@ waitForCommitted host "test-prune" committedBefore 1L 10000 @>
@@ -797,6 +800,9 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        // The terminal status is reported inside the fold; its debt reaches disk when
+        // the fold is published, so wait for the owner to rest.
+        waitForQuiescent host 15000
 
         test <@ File.Exists ranMarker @>
 
@@ -837,6 +843,9 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        // The terminal status is reported inside the fold; its debt reaches disk when
+        // the fold is published, so wait for the owner to rest.
+        waitForQuiescent host 15000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -1330,6 +1339,9 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        // The terminal status is reported inside the fold; its debt reaches disk when
+        // the fold is published, so wait for the owner to rest.
+        waitForQuiescent host 15000
 
         // It RAN the covering tests rather than reporting on them ...
         test <@ File.Exists ranMarker @>
@@ -1406,6 +1418,9 @@ let ``an UNREADABLE ledger widens to the FULL suite rather than greening on noth
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        // The terminal status is reported inside the fold; its debt reaches disk when
+        // the fold is published, so wait for the owner to rest.
+        waitForQuiescent host 15000
 
         // It RAN — an unreadable ledger owes MORE testing, never less ...
         test <@ File.Exists p1Ran @>

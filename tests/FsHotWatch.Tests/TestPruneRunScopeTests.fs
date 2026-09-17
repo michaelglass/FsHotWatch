@@ -1647,10 +1647,15 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
             (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree root)
 
     let mutable claims = [ LocalSlotBusy; SharedClaimed ]
+    let intents = ResizeArray<string * TestPruneMsg>()
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let ctx =
         { recordingCtx with
+            EnqueueExclusiveIntent =
+                fun key _ message ->
+                    intents.Add(key, message)
+                    System.Threading.Tasks.Task.FromResult(())
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     match claims with
@@ -1672,15 +1677,20 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
         |> Async.RunSynchronously
 
     test <@ queuedState.EvidenceReceipt.IsSome @>
-    test <@ queuedState.QueuedCommandRuns.Length = 1 @>
+    test <@ intents.Count = 1 && fst intents.[0] = "tests" @>
 
-    // `narrowRun` completes the pre-existing in-flight run. Its terminal handler must
-    // dequeue and LAUNCH the explicit manual filter as a new top-level receipt boundary.
-    let drainedState =
+    // `narrowRun` completes the pre-existing in-flight run. The owner then delivers the
+    // queued intent, which LAUNCHES the explicit manual filter as a new top-level receipt
+    // boundary.
+    let completedState =
         handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
 
+    let drainedState =
+        handler.Update ctx completedState (Custom(snd intents.[0]))
+        |> Async.RunSynchronously
+
     test <@ drainedState.EvidenceReceipt.IsNone @>
-    test <@ drainedState.QueuedCommandRuns.IsEmpty @>
+    test <@ intents.Count = 1 @>
     test <@ claims.IsEmpty @>
 
 [<Fact(Timeout = 15000)>]
@@ -1710,10 +1720,15 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     let finalState =
         handler.Update ctx claimedState (Custom posted.Value) |> Async.RunSynchronously
 
+    // The reply is owed by the failed outcome and resolved once that outcome is published.
+    let prepared =
+        handler.PrepareCommit.Value claimedState finalState |> Async.RunSynchronously
+
+    prepared.Finalize |> Async.RunSynchronously
     test <@ reply.Task.Wait 5000 @>
     test <@ reply.Task.Result.Contains("test host could not start") @>
     test <@ reply.Task.Result.Contains("host start fault") @>
-    test <@ finalState.PendingRerun @>
+    test <@ finalState.EvidenceReceipt.IsNone @>
 
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
@@ -3188,13 +3203,12 @@ let ``unavailable execution revokes a previously earned receipt`` (artifactsUnav
 
         let failure =
             if artifactsUnavailable then
-                ArtifactsUnavailable("new build artifacts are invalid", None)
+                ArtifactsUnavailable("new build artifacts are invalid", Set.empty, None)
             else
-                TestHostUnavailable("new test host could not start", None)
+                TestHostUnavailable("new test host could not start", Set.empty, None)
 
         let final = handler.Update ctx earned (Custom failure) |> Async.RunSynchronously
         test <@ final.EvidenceReceipt.IsNone @>
-        test <@ final.PendingRerun @>
 
         match lastStatus statuses with
         | PluginStatus.Failed _ -> ()
@@ -3239,7 +3253,9 @@ let ``new dependency debt is not retired by unavailable execution after a pass``
             handler.Update ctx launched (Custom unavailable) |> Async.RunSynchronously
 
         test <@ final.EvidenceReceipt.IsNone @>
-        test <@ final.PendingRerun @>
+        // The fanout the unavailable launch consumed is owed again, for the next launch.
+        test <@ launched.PendingForceRunProjects.IsEmpty @>
+        test <@ final.PendingForceRunProjects = Set.singleton "ProjA" @>
 
         match lastStatus statuses with
         | PluginStatus.Failed _ -> ()

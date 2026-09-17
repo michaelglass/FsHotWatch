@@ -702,17 +702,15 @@ let ``queued template build preserves changes for a second project root`` () =
         host.RegisterHandler(build)
 
         let testTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
-        waitUntil (fun () -> testStarted) 5000
+        Assert.True(waitUntilTrue (fun () -> testStarted) 5000, "the test host must start")
 
         host.EmitFileChanged(SourceChanged [ firstSource ])
         host.EmitFileChanged(SourceChanged [ secondSource ])
         testTask.GetAwaiter().GetResult() |> ignore
 
-        waitUntil
-            (fun () ->
-                System.IO.File.Exists buildLog
-                && System.IO.File.ReadAllLines(buildLog).Length = 2)
-            8000
+        // Every build owed by those changes is owned work until its result is folded, so
+        // host rest is the barrier: no build can still be pending once it holds.
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 15000, "the host must come to rest")
 
         let builtRoots = System.IO.File.ReadAllLines(buildLog) |> Set.ofArray
         test <@ builtRoots = Set.ofList [ firstProject; secondProject ] @>)
@@ -2100,6 +2098,31 @@ let private warmedWithKeyFn () =
     let handler = warmedHandler "echo" "ok" []
     handler, handler.CacheKey.Value handler.Init
 
+/// The state the owner commits for a `force-rebuild` intent folded into `Init`.
+let private forceRebuildState (handler: PluginHandler<BuildState, BuildMsg>) =
+    handler.Update Unchecked.defaultof<_> handler.Init (Custom ForceRebuildRequested)
+    |> Async.RunSynchronously
+
+/// Register `handler` with an observing fixture command, returning a reader for the state
+/// the host's owner has committed.
+let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<BuildState, BuildMsg>) =
+    let mutable observed = None
+
+    let observe =
+        PluginCommand.Observe(fun _ state _ ->
+            async {
+                observed <- Some state
+                return "observed"
+            })
+
+    host.RegisterHandler
+        { handler with
+            Commands = ("fixture-build-state", observe) :: handler.Commands }
+
+    fun () ->
+        host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
+        observed.Value
+
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
     // The key used to be unconditional, so a warm cache replayed a BuildPassed whose
@@ -2112,31 +2135,18 @@ let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () 
     let before = cacheKeyFn fileEvt
     test <@ before.IsSome @>
 
-    handler.Commands
-    |> List.find (fun (name, _) -> name = "force-rebuild")
-    |> snd
-    |> fun run ->
-        PluginCommand.invoke run Unchecked.defaultof<_> Unchecked.defaultof<_> [||]
-        |> Async.RunSynchronously
-    |> ignore
+    let forced = forceRebuildState handler
 
     // `None` is the framework's "skip the cache, run Update" bypass — i.e. a REAL build.
-    let after = cacheKeyFn fileEvt
+    let after = handler.CacheKey.Value forced fileEvt
     test <@ after.IsNone @>
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild still lets the fresh build's result be cached`` () =
     // The asymmetry is deliberate: suppressing the STORE too would make every forced build
     // permanently uncacheable, turning a correctness fix into a standing perf regression.
-    let handler, cacheKeyFn = warmedWithKeyFn ()
-
-    handler.Commands
-    |> List.find (fun (name, _) -> name = "force-rebuild")
-    |> snd
-    |> fun run ->
-        PluginCommand.invoke run Unchecked.defaultof<_> Unchecked.defaultof<_> [||]
-        |> Async.RunSynchronously
-    |> ignore
+    let handler, _ = warmedWithKeyFn ()
+    let cacheKeyFn = handler.CacheKey.Value(forceRebuildState handler)
 
     let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
 
@@ -2151,13 +2161,16 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
     // request and leave the artifacts stale — the same deadlock, one run later.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
-    host.RegisterHandler(handler)
+    let committed = registerBuildObserver host handler
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     waitForTerminalStatus host "build" 5000
 
-    let cacheKeyFn = handler.CacheKey.Value handler.Init
+    let cacheKeyFn event =
+        handler.CacheKey.Value (committed ()) event
+
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 
+    // The reply arrives once the intent's state is committed, so the next read sees it.
     host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
     let whileForced = cacheKeyFn fileEvt
     test <@ whileForced.IsNone @>
@@ -2188,6 +2201,288 @@ let ``the build plugin's force-rebuild command matches the name the CLI sends`` 
     let names = handler.Commands |> List.map fst
     let expected = FsHotWatch.Cli.IpcParsing.ForceRebuildCommand
     test <@ names |> List.contains expected @>
+
+[<Fact>]
+let ``only a passing build result vouches for the shared artifacts`` () =
+    let summary (_: BuildOutcome) (_: ErrorEntry list) = "summary"
+
+    let passed =
+        classifyBuildMsg summary (BuildDone(BuildPassed "ok", [], TimeSpan.Zero))
+
+    let failed =
+        classifyBuildMsg summary (BuildDone(BuildOutputFailed [ "x" ], [], TimeSpan.Zero))
+
+    test <@ passed = Ready @>
+    test <@ failed = Invalid "summary" @>
+
+    match classifyBuildMsg summary ForceRebuildRequested with
+    | Invalid _ -> ()
+    | Ready -> Assert.Fail "a command message cannot vouch for artifacts"
+
+// ---------------------------------------------------------------------------
+// Cache decisions read the state the owner supplies. A closure copy of that state is a
+// second truth: it leaks a later request into every older snapshot, and it answers for a
+// state the owner never committed.
+// ---------------------------------------------------------------------------
+
+/// A command context whose intents are recorded and acknowledged only when the test
+/// completes `receipt`, as the owner does once the intent's fold is committed.
+let private intentRecordingCtx () =
+    let posted = ResizeArray<BuildMsg>()
+
+    let receipt =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let ctx: CommandCtx<BuildMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          Post = posted.Add
+          EnqueueExclusiveIntent =
+            fun _ _ message ->
+                posted.Add message
+                receipt.Task
+          IsRunning = fun _ -> false
+          ProjectGraph = ProjectGraphAccessor.none }
+
+    ctx, posted, receipt
+
+/// A plugin context that records nothing. `claim` answers the shared-lease claims.
+let private stubBuildCtx (claim: string * string -> SharedRunClaim) (isRunning: string -> bool) : PluginCtx<BuildMsg> =
+    { ReportStatus = ignore
+      ReportErrors = fun _ _ -> ()
+      ClearErrors = ignore
+      ClearAllErrors = ignore
+      EmitBuildCompleted = ignore
+      EmitTestRunStarted = ignore
+      EmitTestProgress = ignore
+      EmitTestRunCompleted = ignore
+      EmitCommandCompleted = ignore
+      Checker = Unchecked.defaultof<_>
+      RepoRoot = "/tmp"
+      Post = ignore
+      EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+      StartSubtask = fun _ _ -> ()
+      UpdateSubtask = fun _ _ -> ()
+      EndSubtask = ignore
+      Log = ignore
+      CompleteWithTimeout = ignore
+      RunExclusive = fun _ _ -> failwith "build must use the shared artifact lease"
+      RunExclusiveShared = fun key resource _ _ _ -> claim (key, resource)
+      IsRunning = isRunning
+      FcsSuppressedCodes = Set.empty
+      ProjectGraph = ProjectGraphAccessor.none }
+
+let private forceRebuildCommand (handler: PluginHandler<BuildState, BuildMsg>) =
+    handler.Commands |> List.find (fun (name, _) -> name = "force-rebuild") |> snd
+
+[<Fact(Timeout = 15000)>]
+let ``build cache decisions honor the supplied active-test snapshot`` () =
+    let handler, key = warmedWithKeyFn ()
+    let event = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    Assert.True((key event).IsSome, "positive control: an idle warmed build can replay")
+
+    let active =
+        { handler.Init with
+            ActiveTestRuns = Set.singleton (Guid.NewGuid()) }
+
+    Assert.True(
+        (handler.CacheKey.Value active event).IsNone,
+        "a state naming a live test host must not replay a build over its outputs"
+    )
+
+    Assert.True((key event).IsSome, "reading the active state must not change the idle snapshot")
+
+[<Fact(Timeout = 15000)>]
+let ``force rebuild belongs to the returned owner state rather than older snapshots`` () =
+    let handler, key = warmedWithKeyFn ()
+    let event = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let original = key event
+    Assert.True(original.IsSome, "positive control: a warmed build can replay")
+    let ctx, posted, receipt = intentRecordingCtx ()
+
+    let reply =
+        PluginCommand.invoke (forceRebuildCommand handler) ctx handler.Init [||]
+        |> Async.StartImmediateAsTask
+
+    Assert.Equal<ContentHash option>(original, key event)
+    Assert.Equal(1, posted.Count)
+
+    let forced =
+        handler.Update Unchecked.defaultof<_> handler.Init (Custom posted.[0])
+        |> Async.RunSynchronously
+
+    receipt.SetResult(())
+    reply.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+    Assert.True((handler.CacheKey.Value forced event).IsNone, "the forced state bypasses the cache")
+    Assert.Equal<ContentHash option>(original, key event)
+
+    let rebuilt =
+        handler.Update
+            (stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> true))
+            forced
+            (Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero)))
+        |> Async.RunSynchronously
+
+    Assert.True((handler.CacheKey.Value rebuilt event).IsSome, "a completed build spends the request")
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild replies only after the owner applies its intent`` () =
+    task {
+        let handler, _ = warmedWithKeyFn ()
+        let ctx, posted, receipt = intentRecordingCtx ()
+
+        let reply =
+            PluginCommand.invoke (forceRebuildCommand handler) ctx handler.Init [||]
+            |> Async.StartImmediateAsTask
+
+        Assert.Equal(1, posted.Count)
+        Assert.False(reply.IsCompleted, "force-rebuild acknowledged before its owner committed the intent")
+        receipt.SetResult(())
+        let! response = reply.WaitAsync(TimeSpan.FromSeconds 5.0)
+        use json = JsonDocument.Parse response
+        Assert.Equal("ok", json.RootElement.GetProperty("status").GetString())
+        Assert.True(json.RootElement.GetProperty("forced").GetBoolean())
+    }
+
+/// Two independent template roots whose builds append the built root to a log.
+let private twoRootTemplate (tmpDir: string) =
+    let project name =
+        let dir = System.IO.Path.Combine(tmpDir, name)
+        System.IO.Directory.CreateDirectory dir |> ignore
+        System.IO.Path.Combine(dir, $"%s{name}.fsproj"), System.IO.Path.Combine(dir, $"%s{name}.fs")
+
+    let firstProject, firstSource = project "First"
+    let secondProject, secondSource = project "Second"
+    let buildLog = System.IO.Path.Combine(tmpDir, "build-roots")
+    let buildScript = System.IO.Path.Combine(tmpDir, "record-build.sh")
+    System.IO.File.WriteAllText(buildScript, $"printf '%%s\\n' \"$1\" >> '{buildLog}'\n")
+    let graph = ProjectGraph()
+    graph.RegisterProject(AbsProjectPath.create firstProject, [ AbsFilePath.create firstSource ], [])
+    graph.RegisterProject(AbsProjectPath.create secondProject, [ AbsFilePath.create secondSource ], [])
+
+    let handler =
+        BuildPlugin.create "false" "fallback-must-not-run" [] graph [] (Some $"sh {buildScript} {{project}}") [] None
+
+    handler, secondProject, secondSource, buildLog
+
+/// A test host completing while "build" is held by a finished build's result fold: the
+/// run is no longer live, so `IsRunning` is false, yet the claim is refused.
+let private completedTestRun (runId: Guid) =
+    TestRunCompleted
+        { RunId = runId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.empty
+          Verification = RunVerification.ofResults Map.empty }
+
+[<Fact(Timeout = 15000)>]
+let ``input owed while a finished build still holds its slot is retained`` () =
+    withTempDir "build-owed-retained" (fun tmpDir ->
+        let handler, _, secondSource, _ = twoRootTemplate tmpDir
+        let refused = stubBuildCtx (fun _ -> LocalSlotBusy) (fun _ -> false)
+        let second = SourceChanged [ secondSource ]
+        let runId = Guid.NewGuid()
+
+        let deferred =
+            { handler.Init with
+                PendingFiles = [ second ]
+                ActiveTestRuns = Set.singleton runId }
+
+        let afterTests =
+            handler.Update refused deferred (completedTestRun runId)
+            |> Async.RunSynchronously
+
+        Assert.Equal<FileChangeKind list>([ second ], afterTests.PendingFiles)
+
+        let afterChange =
+            handler.Update refused handler.Init (FileChanged second)
+            |> Async.RunSynchronously
+
+        Assert.Equal<FileChangeKind list>([ second ], afterChange.PendingFiles))
+
+[<Fact(Timeout = 15000)>]
+let ``input retained behind a finished build is built by that build's result fold`` () =
+    withTempDir "build-owed-drained" (fun tmpDir ->
+        let handler, secondProject, secondSource, buildLog = twoRootTemplate tmpDir
+        let runId = Guid.NewGuid()
+
+        let deferred =
+            { handler.Init with
+                PendingFiles = [ SourceChanged [ secondSource ] ]
+                ActiveTestRuns = Set.singleton runId }
+
+        let retained =
+            handler.Update (stubBuildCtx (fun _ -> LocalSlotBusy) (fun _ -> false)) deferred (completedTestRun runId)
+            |> Async.RunSynchronously
+
+        let mutable scheduled: (SharedResourceState -> Async<BuildMsg>) option = None
+
+        let holderFold =
+            { stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false) with
+                RunExclusiveShared =
+                    fun key _ work _ _ ->
+                        Assert.Equal("build", key)
+                        scheduled <- Some work
+                        SharedClaimed }
+
+        // The finished build's own result fold holds the slot, so its claim succeeds.
+        let drained =
+            handler.Update holderFold retained (Custom(BuildDone(BuildPassed "first", [], TimeSpan.Zero)))
+            |> Async.RunSynchronously
+
+        Assert.Empty drained.PendingFiles
+        Assert.True(scheduled.IsSome, "the retained input must reach a build")
+        scheduled.Value Ready |> Async.RunSynchronously |> ignore
+        let builtRoots = System.IO.File.ReadAllLines buildLog |> Set.ofArray
+        Assert.Equal<Set<string>>(Set.singleton secondProject, builtRoots))
+
+[<Fact(Timeout = 15000)>]
+let ``dependency success preserves queued input while the build slot is held`` () =
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None
+
+    let mutable running = true
+    let claims = ResizeArray<string * string>()
+    let completed = ResizeArray<BuildResult>()
+
+    let ctx =
+        { stubBuildCtx
+              (fun (key, resource) ->
+                  claims.Add(key, resource)
+                  running <- true
+                  SharedClaimed)
+              (fun key -> key = "build" && running) with
+            EmitBuildCompleted = completed.Add }
+
+    let update state event =
+        handler.Update ctx state event |> Async.RunSynchronously
+
+    let change = SourceChanged [ "/tmp/queued.fs" ]
+    let buffered = update handler.Init (FileChanged change)
+    Assert.Equal<FileChangeKind list>([ change ], buffered.PendingFiles)
+    Assert.Empty claims
+
+    let dependency =
+        CommandCompleted
+            { Name = "setup"
+              Outcome = CommandSucceeded "ok" }
+
+    let satisfied = update buffered dependency
+    Assert.Equal<FileChangeKind list>([ change ], satisfied.PendingFiles)
+    Assert.Equal<Set<string>>(Set.singleton "setup", satisfied.SatisfiedDeps)
+    Assert.Empty claims
+
+    // The slot is released before its result folds; only that fold drains the input.
+    running <- false
+
+    let drained =
+        update satisfied (Custom(BuildDone(BuildPassed "original", [], TimeSpan.Zero)))
+
+    Assert.Empty drained.PendingFiles
+    Assert.Equal<(string * string) list>([ "build", "build-artifacts" ], Seq.toList claims)
+    Assert.Equal<BuildResult list>([ BuildSucceeded ], Seq.toList completed)
 
 // ---------------------------------------------------------------------------
 // re-verify the ARTIFACTS at cache-REPLAY time, not only on the
@@ -2512,15 +2807,7 @@ let ``force-rebuild reaches a dependency-gated lookup`` () =
         let before = cacheKeyFn depEvt
         test <@ before.IsSome @>
 
-        handler.Commands
-        |> List.find (fun (name, _) -> name = "force-rebuild")
-        |> snd
-        |> fun run ->
-            PluginCommand.invoke run Unchecked.defaultof<_> Unchecked.defaultof<_> [||]
-            |> Async.RunSynchronously
-        |> ignore
-
-        let after = cacheKeyFn depEvt
+        let after = handler.CacheKey.Value (forceRebuildState handler) depEvt
         test <@ after.IsNone @>)
 
 [<Fact(Timeout = 15000)>]

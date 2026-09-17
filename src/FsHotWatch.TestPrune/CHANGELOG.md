@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- (breaking) Decisions read committed owner state. `TestPruneState` gains `Debt`
+  (`VerificationDebt`: pending queue, symbol revisions, unknown-debt recovery, baseline,
+  runtime obligations), `FullSuiteRequested`, `CompletedRuns`, `CheckReach` and `Replies`,
+  and loses `PendingRerun` and `QueuedCommandRuns`. `CacheKey`, `test-scope` and
+  `check-reach` read only the state they are given. Durable debt is written by
+  `PrepareCommit` behind a publication marker; a restart that finds the marker runs the
+  full suite once. `TestRunLaunch` gains `SymbolRevisions` and `ChangedFiles`: a completion
+  retires only symbols still at their launched revision and clears only the files it
+  launched against. Owed runs and `run-tests` are intents on the "tests" key
+  (`ImpactRunRequested`, coalesced). `set-scope` replies after its `ScopeRequested` fold
+  is committed. `run-tests` replies after its `CommandTestsFinished` completion is
+  published. `ArtifactsUnavailable` and `TestHostUnavailable` carry the fanout their
+  launch consumed, keep it owed, and no longer queue a rerun; a scan's build no longer
+  replays a cached green while dependency fanout is owed. `RuntimeCoverageFailed`
+  makes debt unknown in state.
+
 - `run-tests --only-failed` resolves which projects failed inside the plugin, against the
   state it folds the request into, rather than from state the IPC command read before
   posting. Commands migrate to `PluginCommand.Observe` / `PluginCommand.Request`, and the
