@@ -210,6 +210,35 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core/test-prune: the last three walks stop reading an unreadable directory as an absent one — BREAKING (API)
+
+`SafeWalk` already reported the directories it could not see, but three paths still
+turned "I could not look" into "there is nothing there", or threw:
+
+- **`projectStructureHash` did not move over an unreadable directory.** It was built on
+  the best-effort walk, so a directory it could not list contributed nothing and the
+  scan-skip guard replayed a project graph built from a tree it never fully saw. A hole
+  is now an entry under its own path plus `/`, hashed to `ContentHash.UnhashableContent`
+  — the rule `TreeHash.compute` already follows. A fully readable tree hashes exactly as
+  before.
+- **`ArtifactFreshness.tfmOutputDirs` threw on a mode-000 `bin/Debug`.** It was a bare
+  `Directory.GetDirectories`. It now returns `Result<string[], SafeWalk.SkippedDir>`
+  through the new `SafeWalk.subdirectories`. The freshness gate answers
+  `InputsUndeterminable` for an unlistable `bin/Debug`, the test project's or a
+  dependency's, rather than faulting or reading it as "nothing built".
+  `tryApphostPresent` answers `None` ("the filesystem cannot answer", which falls back
+  to the output sniff), not `Some false`, which would defer the run as "waiting on build".
+- **An unreachable walk root read as a missing one.** `DirectoryInfo.Exists` is `false`
+  both for a path that is not there and for one whose parent cannot be traversed. When a
+  root does not exist, the walk now looks it up and yields a `Skipped` with
+  `Unreadable` for a permission refusal. A root that is genuinely missing, or is a
+  file, is still empty with nothing skipped.
+
+API: `tfmOutputDirs` changes type as above. `Cache.OwnAssemblyOutputs` now returns
+`Result<(string * DateTime) list, string>` (each built assembly with its mtime), and
+`Cache.OwnAssembly` is removed. Its one caller now takes the newest from that list, so
+one listing has one place to fail. `SafeWalk.subdirectories` is new.
+
 ### core: a deleted working directory is named once, not reported as 130 missing files
 
 `AbsFilePath.create` and `AbsProjectPath.create` resolved relative input against the

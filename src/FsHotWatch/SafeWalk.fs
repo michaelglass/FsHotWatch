@@ -143,10 +143,57 @@ let private attemptRead (read: unit -> 'a[]) : Result<'a[], string> =
     with ex when (ex :? IOException) || (ex :? System.UnauthorizedAccessException) ->
         Error ex.Message
 
+/// Why a directory `DirectoryInfo.Exists` calls absent may not be: `Some` when it could
+/// not be LOOKED UP, `None` when it genuinely is not there (or is not a directory).
+///
+/// `Exists` answers `false` both for a path that is not there and for one whose parent
+/// cannot be traversed, so on its own it turns "I could not look" into "there is nothing
+/// here" at the root — the one place the per-directory skip channel could not reach.
+/// Asked only after `Exists` has said no, so a healthy walk never pays for it. The
+/// lookup's own error tells the two apart: not-found (`FileNotFoundException` for a
+/// missing leaf, `DirectoryNotFoundException` for a missing or non-directory parent) is
+/// absence, a permission refusal is a hole.
+let private unreachable (path: string) : SkippedDir option =
+    try
+        File.GetAttributes path |> ignore
+        // It is there, and it is not a directory: nothing to walk, and nothing unseen.
+        None
+    with
+    | :? FileNotFoundException
+    | :? DirectoryNotFoundException -> None
+    | ex when (ex :? IOException) || (ex :? System.UnauthorizedAccessException) ->
+        Some
+            { Path = path
+              Reason = Unreadable ex.Message }
+
+/// The immediate subdirectories of `dir` — ONE level, not a walk, so none of the
+/// recursion hazards above apply — as full paths, with the same three answers a walk
+/// root gets:
+///
+///   * `Ok` of the subdirectories, EMPTY when `dir` does not exist. Absence is a real
+///     answer ("nothing has been built here yet"), not a hole.
+///   * `Error` when `dir` exists but could not be listed, or could not be looked up at
+///     all. Never an empty `Ok`: a caller reading "no subdirectories" as "nothing
+///     built" would otherwise conclude "nothing to check" about a directory it never saw.
+///
+/// Symlinked subdirectories ARE listed: nothing here descends into them.
+let subdirectories (dir: string) : Result<string[], SkippedDir> =
+    if Directory.Exists dir then
+        attemptRead (fun () -> Directory.GetDirectories dir)
+        |> Result.mapError (fun message ->
+            { Path = dir
+              Reason = Unreadable message })
+    else
+        match unreachable dir with
+        | Some hole -> Error hole
+        | None -> Ok [||]
+
 /// Lazily yields every entry under `root` (recursive, root included): each file matching
 /// `searchPattern`, and each directory the walk could not see. Directories whose LEAF
 /// NAME is in `excludedDirNames` are not walked and are not skips — they were never in
-/// scope. Symlinked directories likewise. Empty for a missing root.
+/// scope. Symlinked directories likewise. Empty for a missing root; a root that could
+/// not be LOOKED UP (its parent is not traversable) is not missing, and is yielded as a
+/// `Skipped` of its own.
 ///
 /// `searchPattern` carries the same glob semantics as `DirectoryInfo.GetFiles` but is
 /// applied per-directory, since we own the recursion. Lazy, so callers that only need
@@ -197,7 +244,13 @@ let enumerateEntries (excludedDirNames: Set<string>) (searchPattern: string) (ro
 
     let rootInfo = DirectoryInfo root
 
-    if rootInfo.Exists then walkDir rootInfo 0 else Seq.empty
+    if rootInfo.Exists then
+        walkDir rootInfo 0
+    else
+        unreachable rootInfo.FullName
+        |> Option.map Skipped
+        |> Option.toList
+        |> Seq.ofList
 
 /// The COMPLETE answer for `root`: every file, and every directory the walk could not
 /// see. For callers whose question is only sound over a tree they fully saw — the

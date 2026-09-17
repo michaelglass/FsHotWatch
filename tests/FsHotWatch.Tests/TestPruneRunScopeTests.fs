@@ -2118,6 +2118,40 @@ let ``the structure hash sees EVERY MSBuild implicit import, not just Directory.
             File.WriteAllText(path, "<Project><ItemGroup><Compile Include=\"Generated.fs\" /></ItemGroup></Project>")
             test <@ projectStructureHash tmpDir <> before @>)
 
+// Built on the best-effort walk, a directory it could not see contributed nothing, so
+// the hash did not move and the scan-skip guard replayed a project graph built from a
+// tree it never fully saw. A hole is now an entry, as it is in `TreeHash`.
+[<Fact(Timeout = 20000)>]
+let ``the structure hash MOVES when a directory beneath it cannot be read`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-structure-unreadable" (fun tmpDir ->
+            let projDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory projDir |> ignore
+            File.WriteAllText(Path.Combine(projDir, "Lib.fsproj"), fsprojWithCompiles [ "A.fs" ])
+
+            let before = projectStructureHash tmpDir
+            // POSITIVE CONTROL: a clean tree hashes identically, walk after walk.
+            test <@ projectStructureHash tmpDir = before @>
+
+            let sealed' = Path.Combine(tmpDir, "src", "Sealed")
+            Directory.CreateDirectory sealed' |> ignore
+            // An EMPTY readable directory is not structure: the hash only moves below
+            // because the directory becomes unreadable, not because it exists.
+            test <@ projectStructureHash tmpDir = before @>
+
+            File.SetUnixFileMode(sealed', UnixFileMode.None)
+
+            try
+                test <@ projectStructureHash tmpDir <> before @>
+            finally
+                File.SetUnixFileMode(
+                    sealed',
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                )
+
+            // Readable again, the same tree hashes as it did: the hole was the only change.
+            test <@ projectStructureHash tmpDir = before @>)
+
 // ---------------------------------------------------------------------------
 // case 4 — a DELETED file must not keep blocking the verdict
 // ---------------------------------------------------------------------------

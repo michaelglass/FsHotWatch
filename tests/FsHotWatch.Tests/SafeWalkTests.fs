@@ -190,6 +190,116 @@ let ``walk REPORTS an unreadable directory instead of dropping it`` () =
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
 
+// ---------------------------------------------------------------------------
+// An unreachable ROOT. `DirectoryInfo.Exists` is `false` both for a root that is not
+// there and for one whose parent cannot be traversed, so the per-directory skip
+// channel above never saw the second: the walk came back empty with nothing skipped,
+// indistinguishable from a missing root.
+// ---------------------------------------------------------------------------
+
+let private ownerOnly =
+    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+
+/// Run `body` with `dir` at mode 000, restoring it however `body` exits so
+/// `withTempDir` can clean up.
+let private whileSealed (dir: string) (body: unit -> unit) =
+    File.SetUnixFileMode(dir, UnixFileMode.None)
+
+    try
+        body ()
+    finally
+        File.SetUnixFileMode(dir, ownerOnly)
+
+let private expectUnreadableAt (path: string) (skipped: SafeWalk.SkippedDir) =
+    test <@ skipped.Path = path @>
+
+    match skipped.Reason with
+    | SafeWalk.Unreadable _ -> ()
+    | other -> failwithf "expected Unreadable, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``walk REPORTS a root it could not look up instead of calling it missing`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-walk-unreachable-root" (fun tmpDir ->
+            let sealedParent = Path.Combine(tmpDir, "sealed")
+            let root = Path.Combine(sealedParent, "src")
+            Directory.CreateDirectory root |> ignore
+            File.WriteAllText(Path.Combine(root, "hidden.fs"), "")
+
+            // POSITIVE CONTROL: the same root, reachable, is walked normally.
+            test <@ names (SafeWalk.walk Set.empty "*" root).Files = [ "hidden.fs" ] @>
+
+            whileSealed sealedParent (fun () ->
+                let result = SafeWalk.walk Set.empty "*" root
+                test <@ List.isEmpty result.Files @>
+
+                match result.Skipped with
+                | [ skipped ] -> expectUnreadableAt root skipped
+                | other -> failwithf "expected the root itself as the one skip, got %A" other))
+
+// Positive controls for the root probe: each way a root is genuinely NOT a directory
+// to walk stays an absence. Without these, a probe that called every non-existent
+// root unreadable would pass the test above.
+[<Fact(Timeout = 15000)>]
+let ``walk over a missing root under a READABLE parent is still an absence`` () =
+    withTempDir "sw-walk-missing-leaf" (fun tmpDir ->
+        let result = SafeWalk.walk Set.empty "*" (Path.Combine(tmpDir, "not-there"))
+        test <@ List.isEmpty result.Files @>
+        test <@ List.isEmpty result.Skipped @>)
+
+[<Fact(Timeout = 15000)>]
+let ``walk over a root that is a FILE is an absence, not a hole`` () =
+    withTempDir "sw-walk-file-root" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "a-file")
+        File.WriteAllText(file, "")
+
+        let result = SafeWalk.walk Set.empty "*" file
+        test <@ List.isEmpty result.Files @>
+        test <@ List.isEmpty result.Skipped @>)
+
+// --- subdirectories: the one-level listing, with the same three answers ---
+
+[<Fact(Timeout = 15000)>]
+let ``subdirectories lists one level of a readable directory`` () =
+    withTempDir "sw-subdirs" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "net10.0", "nested")) |> ignore
+        Directory.CreateDirectory(Path.Combine(tmpDir, "net8.0")) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, "not-a-dir"), "")
+
+        match SafeWalk.subdirectories tmpDir with
+        | Ok dirs -> test <@ dirs |> Array.map Path.GetFileName |> Array.sort = [| "net10.0"; "net8.0" |] @>
+        | Error hole -> failwithf "expected a listing, got %A" hole)
+
+[<Fact(Timeout = 15000)>]
+let ``subdirectories of a missing directory is an empty listing, not a hole`` () =
+    withTempDir "sw-subdirs-missing" (fun tmpDir ->
+        test <@ SafeWalk.subdirectories (Path.Combine(tmpDir, "bin")) = Ok [||] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``subdirectories of an UNREADABLE directory is a hole, never an empty listing`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-subdirs-sealed" (fun tmpDir ->
+            let bin = Path.Combine(tmpDir, "bin")
+            Directory.CreateDirectory(Path.Combine(bin, "net10.0")) |> ignore
+
+            whileSealed bin (fun () ->
+                match SafeWalk.subdirectories bin with
+                | Error hole -> expectUnreadableAt bin hole
+                | Ok dirs -> failwithf "expected a hole, got a listing of %d" dirs.Length))
+
+[<Fact(Timeout = 15000)>]
+let ``subdirectories of an UNREACHABLE directory is a hole, never an empty listing`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-subdirs-unreachable" (fun tmpDir ->
+            let project = Path.Combine(tmpDir, "Proj")
+            let bin = Path.Combine(project, "bin")
+            Directory.CreateDirectory(Path.Combine(bin, "net10.0")) |> ignore
+
+            whileSealed project (fun () ->
+                match SafeWalk.subdirectories bin with
+                | Error hole -> expectUnreadableAt bin hole
+                | Ok dirs -> failwithf "expected a hole, got a listing of %d" dirs.Length))
+
 // "A MaxDepth truncation is reported, not merely logged": a warning in a log is
 // not something a caller can branch on, and the caller is the one deciding
 // whether its claim still holds.

@@ -1941,29 +1941,51 @@ let private structureFilePatterns = FsHotWatch.StructureFiles.allPatterns
 /// than being skipped as if it did not exist. Build output (`bin`/`obj`) is excluded via
 /// `SourceExcludedDirs`, so a restore that regenerates project files under `obj/` cannot
 /// invalidate every entry in the repo.
+///
+/// The same holds one level up, for a DIRECTORY the walk could not see: it is an entry
+/// under its own path plus a trailing `/` (a relative path no file can have), hashed to
+/// the same unreadable sentinel — `TreeHash.compute`'s rule for a hole. Built on the
+/// best-effort walk, an unreadable directory contributed nothing and left this hash
+/// unchanged, so the scan-skip guard replayed a project graph built from a tree it never
+/// fully saw — the exact hazard this hash exists to close.
 let internal projectStructureHash (repoRoot: string) : string =
     let rootFull = Path.GetFullPath repoRoot
 
-    let files =
+    let relativeTo (abs: string) =
+        Path.GetRelativePath(rootFull, abs).Replace('\\', '/')
+
+    let walks =
         structureFilePatterns
-        |> List.collect (fun pattern ->
-            SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs pattern rootFull
-            |> List.ofSeq)
+        |> List.map (fun pattern -> SafeWalk.walk SafeWalk.SourceExcludedDirs pattern rootFull)
+
+    let hashedFiles =
+        walks
+        |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
         |> List.distinct
-        |> List.map (fun abs -> Path.GetRelativePath(rootFull, abs).Replace('\\', '/'), abs)
+        |> List.map (fun abs -> relativeTo abs, ContentHash.ofFile abs)
+
+    // Distinct: every pattern walks the same tree, so each one reports the same hole.
+    let hashedHoles =
+        walks
+        |> List.collect (fun w -> w.Skipped |> List.map (fun s -> relativeTo s.Path + "/"))
+        |> List.distinct
+        |> List.map (fun rel -> rel, ContentHash.UnhashableContent)
+
+    let entries =
+        hashedFiles @ hashedHoles
         // Ordinal, so the merkle is reproducible across machines and locales.
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
 
     let sb = System.Text.StringBuilder()
 
-    for (rel, abs) in files do
+    for (rel, hash) in entries do
         // Length-prefixed, like every other merkle here: a separator that can occur
         // inside a field lets two different trees produce one byte stream.
         sb.Append(rel.Length) |> ignore
         sb.Append(':') |> ignore
         sb.Append(rel) |> ignore
         sb.Append('@') |> ignore
-        sb.Append(ContentHash.ofFile abs) |> ignore
+        sb.Append(hash) |> ignore
         sb.Append('\n') |> ignore
 
     FsHotWatch.CheckCache.sha256Hex (sb.ToString())
@@ -3128,18 +3150,28 @@ let internal deriveProjectBin (args: string) (repoRoot: string) : ArtifactFreshn
 ///   Some true  — project derivable AND apphost present
 ///   Some false — project derivable AND apphost absent (the deferred signal)
 ///   None       — could not derive a project from args (e.g. a non-`dotnet run`
-///                custom command); caller falls back to the output sniff.
+///                custom command), OR its `bin/Debug` could not be listed; caller
+///                falls back to the output sniff.
+///
+/// An unlistable `bin/Debug` is `None`, not `Some false`: `Some false` DEFERS the run as
+/// "waiting on build", which would dress a failure we cannot diagnose from the
+/// filesystem as a build that has not landed yet. `None` is this function's existing
+/// "the filesystem cannot answer" — and the sniff reads the runner's own output instead.
 let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
     deriveProjectBin args repoRoot
-    |> Option.map (fun target ->
+    |> Option.bind (fun target ->
         // The apphost lives at bin/Debug/<tfm>/<assemblyName>(.exe). We don't
         // know the TFM, so scan every TFM output dir for the extension-less
         // binary (Unix) or the `.exe` (Windows); no build output yet ⇒ no TFM
         // dirs ⇒ apphost definitionally absent.
-        ArtifactFreshness.tfmOutputDirs target.BinDir
-        |> Array.exists (fun tfmDir ->
-            File.Exists(Path.Combine(tfmDir, target.AssemblyName))
-            || File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".exe"))))
+        match ArtifactFreshness.tfmOutputDirs target.BinDir with
+        | Error _ -> None
+        | Ok tfmDirs ->
+            tfmDirs
+            |> Array.exists (fun tfmDir ->
+                File.Exists(Path.Combine(tfmDir, target.AssemblyName))
+                || File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".exe")))
+            |> Some)
 
 
 /// The xUnit runner major determines the names of its CTRF report switches.

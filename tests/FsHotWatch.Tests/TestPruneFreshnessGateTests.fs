@@ -1026,6 +1026,32 @@ let ``tryApphostPresent finds a Windows .exe apphost`` () =
         File.WriteAllText(Path.Combine(tfmDir, "Unit.exe"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
 
+// An unlistable `bin/Debug` threw here. Answering `Some false` instead would DEFER the
+// run as "waiting on build" over a directory nobody could look in; `None` is this
+// function's "the filesystem cannot answer", and hands over to the output sniff.
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent cannot answer for an UNREADABLE bin, rather than throwing or saying absent`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-apphost-struct-sealed-bin" (fun tmpDir ->
+            let projDir = Path.Combine(tmpDir, "Unit")
+            let binDebug = Path.Combine(projDir, "bin", "Debug")
+            Directory.CreateDirectory(Path.Combine(binDebug, "net10.0")) |> ignore
+            File.WriteAllText(Path.Combine(binDebug, "net10.0", "Unit"), "")
+            let args = $"run --project {projDir} --no-build --"
+
+            // POSITIVE CONTROL: readable, the same bin resolves its TFM dir and the apphost.
+            test <@ tryApphostPresent args tmpDir = Some true @>
+
+            File.SetUnixFileMode(binDebug, UnixFileMode.None)
+
+            try
+                test <@ tryApphostPresent args tmpDir = None @>
+            finally
+                File.SetUnixFileMode(
+                    binDebug,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
 // `transient` = the apphost-missing failure clears on retry (the cold-start race);
 // otherwise it persists every run. The configs run a bare `sh <script>` with no
 // `--project`, so `tryApphostPresent` returns None and the plugin falls back to the
@@ -1726,6 +1752,56 @@ let ``an UNREADABLE OUTPUT DIRECTORY is REFUSED, not called fresh`` () =
                     test <@ project = "Tests" @>
                     test <@ reason.Contains "runtimes" @>
                 | other -> Assert.Fail($"an unreadable output directory must fail CLOSED, got %A{other}")
+            finally
+                File.SetUnixFileMode(
+                    sealed',
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
+// `tfmOutputDirs` was a bare `Directory.GetDirectories` behind a `Directory.Exists`, so a
+// mode-000 `bin/Debug` THREW out of the gate. An empty listing would have been worse:
+// "no TFM dirs" is read as "nothing built", which this gate waves through. It is ignorance.
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE bin Debug is REFUSED, not a throw and not "nothing built"`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-stale-unreadable-bin" (fun tmpDir ->
+            let s = synth tmpDir
+            // POSITIVE CONTROL: the readable tree resolves its TFM dirs and is FRESH.
+            test <@ synthStale s = None @>
+
+            let sealed' = p [ s.TestsDir; "bin"; "Debug" ]
+            File.SetUnixFileMode(sealed', UnixFileMode.None)
+
+            try
+                match synthStale s with
+                | Some(ArtifactFreshness.InputsUndeterminable(project, reason)) ->
+                    test <@ project = "Tests" @>
+                    test <@ reason.Contains sealed' @>
+                | other -> Assert.Fail($"an unreadable bin/Debug must fail CLOSED, got %A{other}")
+            finally
+                File.SetUnixFileMode(
+                    sealed',
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
+// The same hole in a DEPENDENCY's output. Its assembly is what the compile and copy
+// checks compare against, and an unlistable `bin/Debug` used to throw there too.
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE bin Debug in the closure is REFUSED, naming the dependency`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-stale-unreadable-dep-bin" (fun tmpDir ->
+            let s = synth tmpDir
+            test <@ synthStale s = None @>
+
+            let sealed' = p [ tmpDir; "Common"; "bin"; "Debug" ]
+            File.SetUnixFileMode(sealed', UnixFileMode.None)
+
+            try
+                match synthStale s with
+                | Some(ArtifactFreshness.InputsUndeterminable(project, reason)) ->
+                    test <@ project = "Common" @>
+                    test <@ reason.Contains sealed' @>
+                | other -> Assert.Fail($"an unreadable dependency bin/Debug must fail CLOSED, got %A{other}")
             finally
                 File.SetUnixFileMode(
                     sealed',
