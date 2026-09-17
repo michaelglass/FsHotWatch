@@ -3999,7 +3999,7 @@ let ``first project-attributed ingest invalidates a legacy projectless ratchet``
         let sharedOut = Path.Combine(dir, "coverage", CoberturaName)
         Directory.CreateDirectory(Path.GetDirectoryName sharedOut) |> ignore
 
-        // f311 persisted only the projectless Core high-water mark plus the shared
+        // An earlier version persisted only the projectless Core high-water mark plus the shared
         // consumer file. Deliberately never call the project-attributed ingest here.
         let legacy = mkCobertura "Legacy" absFile [ (10, 3); (11, 7) ]
         ingestCobertura db (Some repoRoot) legacy |> ignore

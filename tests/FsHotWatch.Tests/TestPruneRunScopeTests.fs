@@ -676,8 +676,8 @@ let private testsFinishedEventWithReports
     Custom(TestsFinished(started, completed, launch))
 
 [<Fact(Timeout = 20000)>]
-let ``d223: a quarantined method passing in the exact CTRF receipt retires its red`` () =
-    withTempDir "a67-d223-reconcile" (fun repoRoot ->
+let ``a quarantined method passing in the exact CTRF receipt retires its red`` () =
+    withTempDir "quarantine-receipt-reconcile" (fun repoRoot ->
         let project = "Intelligence.Tests.Integration"
 
         let className =

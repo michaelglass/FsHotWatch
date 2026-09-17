@@ -1,7 +1,7 @@
 /// SELECTION soundness: a green must prove what it SKIPPED was green too.
 ///
-/// Impact selection is sound only if the unselected set was green, and until this
-/// ticket nothing recorded that. Three mechanisms close it, each pinned here beside its
+/// Impact selection is sound only if the unselected set was green, and nothing used to
+/// record that. Three mechanisms close it, each pinned here beside its
 /// negative control:
 ///
 ///   1. RED-TEST QUARANTINE is DURABLE: a test red in the last run that

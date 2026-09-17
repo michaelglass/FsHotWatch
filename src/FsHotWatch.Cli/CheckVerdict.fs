@@ -198,7 +198,7 @@ type CheckOutcome =
     | WaitingOnBuild of staleOutput: string list
     /// No failures — but a test HOST DIED mid-run, so its tests did not finish.
     ///
-    /// The case this whole ticket is about. A killed host used to arrive here as
+    /// The case this outcome exists for. A killed host used to arrive here as
     /// `FailuresFound`: its `TestsErrored` result was counted among the failures, the
     /// exit code said 1, `verdict.json` said `red`, and the console listed the runner's
     /// half-written transcript under "N test(s) failed". Every one of those surfaces
