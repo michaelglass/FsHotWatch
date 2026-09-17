@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.54 - 2026-09-17
+
 - Adopts TestPrune.Core 9.0.0, in lockstep with FsHotWatch.TestPrune.
 
 ## 0.14.0-alpha.53 - 2026-09-17
