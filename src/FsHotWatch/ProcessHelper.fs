@@ -860,6 +860,18 @@ module ProcessBounds =
         { Timeout = timeout
           LaunchDeadline = Threading.Timeout.InfiniteTimeSpan }
 
+/// Everything between admitting a child and the watchdog's decision about it runs
+/// under this guard. A failure there (a pump that cannot start, an observation that
+/// throws) tears the child down before propagating, instead of leaving an admitted
+/// child running with nothing left watching it. After the decision, every arm owns
+/// the child itself.
+let internal killIfUndecided (kill: unit -> 'Killed) (decide: unit -> 'T) : 'T =
+    try
+        decide ()
+    with _ ->
+        kill () |> ignore
+        reraise ()
+
 /// THE spawn. Polls `HasExited` (never a single blocking `WaitForExit(-1)`, which
 /// a machine sleep turns into a permanent wait) and ALWAYS bounds the post-exit
 /// drain (never an unbounded `Task.WaitAll` on the redirected streams, which a
@@ -896,16 +908,23 @@ let runProcessTo
     : ProcessOutcome =
     let timeout = bounds.Timeout
     let launchDeadline = bounds.LaunchDeadline
+
+    // A process scope that has shut down refuses the launch BEFORE the target can have
+    // any side effect. Admission re-checks after the spawn, for a shutdown in between.
+    ProcessRegistry.ensureAdmitting $"`%s{command} %s{args}`"
+
     let psi = makeChildProcessStartInfo command args workDir env
 
     use proc = Process.Start(psi)
-    // Register so a daemon shutdown can tear down in-flight children.
-    ProcessRegistry.track proc
 
     // Read ONCE, while the handle is certainly live: this is what an operator needs
     // to hunt down a tree we failed to kill, and it must still be reportable on the
     // path where everything else about the child has gone wrong.
     let pid = proc.Id
+
+    // Register so shutdown can tear down in-flight children. A scope that shut down
+    // while this child was starting has already reaped it, and refuses it here.
+    ProcessRegistry.admitOrRefuse proc $"`%s{command} %s{args}` (pid %d{pid})"
 
     // Incremental output capture via explicit stream pumps. The event API
     // (`BeginOutputReadLine`) is not usable here: draining it requires the
@@ -949,6 +968,12 @@ let runProcessTo
     //
     // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
     // captured from it is all there ever was. See `pumpReachedEof`.
+    //
+    // The pumps run on `TaskScheduler.Default`, never the CALLER's scheduler. A
+    // parameterless `StartNew` inherits `TaskScheduler.Current`, and a caller running
+    // on a scheduler it is itself blocking — this very call parks it in the watchdog
+    // loop — would never start them: the child's output would go unread and a healthy
+    // run would come back as a drain timeout.
     let pump (reader: IO.StreamReader) : Task<bool> =
         Task.Factory.StartNew(
             (fun () ->
@@ -974,55 +999,60 @@ let runProcessTo
                     failure <- Some ex
 
                 pumpReachedEof failure),
-            TaskCreationOptions.LongRunning
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default
         )
-
-    let stdoutTask = pump proc.StandardOutput
-    let stderrTask = pump proc.StandardError
 
     let drainedOutput () =
         lock outputLock (fun () -> output.ToString().Trim())
 
-    // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
-    // instant it exits (returns in ms); only a grandchild holding the pipe makes
-    // this block, and then only for the window. An expired window rides out on the
-    // value as `DrainTimedOut` so it cannot be mistaken for a child that said
-    // nothing.
-    let drainPumps () : ProcessOutput =
-        let waitReturned =
-            Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
-
-        classifyDrain
-            waitReturned
-            (fun () -> stdoutTask.Result)
-            (fun () -> stderrTask.Result)
-            (drainedOutput ())
-            PostExitDrainWindow
+    // A killed tree still needs draining so partial output is reported. The
+    // kill's OUTCOME is returned, never discarded: a tree we could not tear down
+    // is still running. The policy — including the teardown budget that keeps a
+    // blocked kill from wedging the whole run — lives in `killTreeWith`.
+    let killTree () : KillOutcome =
+        killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
+            proc.Kill(entireProcessTree = true))
 
     let pollMs = 250
 
     try
-        // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
-        // the instant the child exits (so completion is observed promptly) but
-        // caps at `pollMs` so the launch/overall deadlines are still checked
-        // regularly. `observe` reads the independent liveness handle
-        // (`HasExited`) — the poll that closes the machine-sleep hole where a
-        // single blocking wait never returned.
-        let observe () =
-            proc.HasExited, (Volatile.Read &sawOutput = 1)
+        let stdoutTask, stderrTask, outcome =
+            killIfUndecided killTree (fun () ->
+                let stdoutTask = pump proc.StandardOutput
+                let stderrTask = pump proc.StandardError
 
-        let sleep ms = proc.WaitForExit(ms: int) |> ignore
+                // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
+                // the instant the child exits (so completion is observed promptly) but
+                // caps at `pollMs` so the launch/overall deadlines are still checked
+                // regularly. `observe` reads the independent liveness handle
+                // (`HasExited`) — the poll that closes the machine-sleep hole where a
+                // single blocking wait never returned.
+                let observe () =
+                    proc.HasExited, (Volatile.Read &sawOutput = 1)
 
-        let outcome =
-            launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
+                let sleep ms = proc.WaitForExit(ms: int) |> ignore
 
-        // A killed tree still needs draining so partial output is reported. The
-        // kill's OUTCOME is returned, never discarded: a tree we could not tear down
-        // is still running. The policy — including the teardown budget that keeps a
-        // blocked kill from wedging the whole run — lives in `killTreeWith`.
-        let killTree () : KillOutcome =
-            killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
-                proc.Kill(entireProcessTree = true))
+                stdoutTask,
+                stderrTask,
+                launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout)
+
+        // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
+        // instant it exits (returns in ms); only a grandchild holding the pipe makes
+        // this block, and then only for the window. An expired window rides out on the
+        // value as `DrainTimedOut` so it cannot be mistaken for a child that said
+        // nothing.
+        let drainPumps () : ProcessOutput =
+            let waitReturned =
+                Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
+
+            classifyDrain
+                waitReturned
+                (fun () -> stdoutTask.Result)
+                (fun () -> stderrTask.Result)
+                (drainedOutput ())
+                PostExitDrainWindow
 
         match outcome with
         | LaunchOutcome.Exited ->
@@ -1054,6 +1084,7 @@ let runProcessTo
     finally
         ProcessRegistry.untrack proc
 
+
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
 /// caller that only wants the child's verdict and its capture should use.
 let runProcess
@@ -1064,6 +1095,63 @@ let runProcess
     (bounds: ProcessBounds)
     : ProcessOutcome =
     runProcessTo None command args workDir env bounds
+
+/// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait
+/// injected: `awaitWork task` returns true iff the work finished inside the deadline,
+/// and `after` is the budget a timeout reports. Injected so the expiry can be fired at
+/// an exact point in the work rather than raced against a wall clock.
+let internal runWithCancellableDeadline
+    (awaitWork: Task -> bool)
+    (after: TimeSpan)
+    (work: CancellationToken -> 'a)
+    : WorkOutcome<'a> * Task =
+    let cts = new CancellationTokenSource()
+
+    // `TaskScheduler.Default`, never the caller's: a caller about to block on this
+    // task must not be the scheduler it waits for.
+    let task =
+        Task.Factory.StartNew(
+            (fun () -> ProcessRegistry.withChildScope cts.Token (fun () -> work cts.Token)),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default
+        )
+
+    let mutable completionOwnsCts = false
+
+    try
+        if awaitWork task then
+            WorkCompleted task.Result, Task.CompletedTask
+        else
+            // Signal the work to unwind so it stops holding any lock, and tear down
+            // the children its scope owns. We do NOT block on the orphan after
+            // cancelling — a cooperative unit observes the token and exits promptly;
+            // a non-cooperative one would hang us here, which is precisely what we
+            // must avoid. Keep the CTS alive until the work really exits: an Async
+            // may register against the token after the timeout signal, and disposing
+            // it here turns that legitimate late observation into
+            // ObjectDisposedException.
+            cts.Cancel()
+
+            let completion =
+                task.ContinueWith(
+                    (fun (completed: Task<'a>) ->
+                        try
+                            completed.GetAwaiter().GetResult() |> ignore
+                        finally
+                            cts.Dispose()),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
+                )
+
+            completionOwnsCts <- true
+            WorkTimedOut after, completion
+    finally
+        // A synchronously completed or faulted task has no continuation to
+        // own cleanup. A timed-out task transfers ownership before returning.
+        if not completionOwnsCts then
+            cts.Dispose()
 
 /// Run a synchronous unit of work with a wall-clock timeout, threading a
 /// `CancellationToken` into the work so a timed-out unit is ACTUALLY cancelled
@@ -1085,49 +1173,18 @@ let runProcess
 /// analyzers) and the timeout-test path injects a cooperative wait to force
 /// expiry; both starve the default thread pool under parallel test load and
 /// caused 5s xUnit timeouts to fire spuriously on unrelated tests.
+///
+/// The work runs in a process scope of its own (`ProcessRegistry.withChildScope`).
+/// Cancellation cannot stop an OS child, so on expiry the scope tears down the
+/// children THIS work spawned, and refuses any it tries to start afterwards, while
+/// siblings in the caller's scope are left alone. Work that returns while one of its
+/// children's termination could not be established does not complete successfully.
 let runWithCancellableTimeoutTracked (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> * Task =
     if timeout = Threading.Timeout.InfiniteTimeSpan then
-        WorkCompleted(work CancellationToken.None), Task.CompletedTask
+        WorkCompleted(ProcessRegistry.withChildScope CancellationToken.None (fun () -> work CancellationToken.None)),
+        Task.CompletedTask
     else
-        let cts = new CancellationTokenSource()
-
-        let task =
-            Task.Factory.StartNew((fun () -> work cts.Token), TaskCreationOptions.LongRunning)
-
-        let mutable completionOwnsCts = false
-
-        try
-            if task.Wait(timeout) then
-                WorkCompleted task.Result, Task.CompletedTask
-            else
-                // Signal the work to unwind so it stops holding any lock. We do NOT
-                // block on the orphan after cancelling — a cooperative unit observes
-                // the token and exits promptly; a non-cooperative one would hang us
-                // here, which is precisely what we must avoid. Keep the CTS alive until
-                // the work really exits: an Async may register against the token after
-                // the timeout signal, and disposing it here turns that legitimate late
-                // observation into ObjectDisposedException.
-                cts.Cancel()
-
-                let completion =
-                    task.ContinueWith(
-                        (fun (completed: Task<'a>) ->
-                            try
-                                completed.GetAwaiter().GetResult() |> ignore
-                            finally
-                                cts.Dispose()),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default
-                    )
-
-                completionOwnsCts <- true
-                WorkTimedOut timeout, completion
-        finally
-            // A synchronously completed or faulted task has no continuation to
-            // own cleanup. A timed-out task transfers ownership before returning.
-            if not completionOwnsCts then
-                cts.Dispose()
+        runWithCancellableDeadline (fun task -> task.Wait(timeout)) timeout work
 
 let runWithCancellableTimeout (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> =
     runWithCancellableTimeoutTracked timeout work |> fst

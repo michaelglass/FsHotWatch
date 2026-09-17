@@ -210,6 +210,29 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: a child process belongs to the operation that spawned it
+
+Four ways a child could outlive the thing that was supposed to reap it are closed:
+
+- **Shutdown closes admission.** `ProcessRegistry.KillAll` now takes its snapshot and
+  refuses new children in one step. A child that registers afterwards is reaped rather
+  than kept by a registry nobody asks again, and `runProcess` through a shut-down scope
+  raises `OperationCanceledException` before the target runs.
+- **A deadline reaches the child.** `runWithCancellableTimeout` and
+  `runWithCancellableTimeoutTracked` run their work in a process scope of its own. On
+  expiry, that scope kills the children this work started and refuses any it starts
+  later. A callback that ignores its cancellation token can no longer keep a child
+  running, and siblings in the caller's scope are untouched.
+- **A disposed handle is not evidence that its child exited.** Teardown now needs a
+  handle that positively reports exit. Anything else is recorded in the leak ledger, and
+  work whose scope could not establish termination fails instead of completing.
+- **Output pumps no longer depend on the caller's scheduler.** A caller running on a
+  scheduler it blocks used to get `DrainTimedOut` with no output from a healthy child.
+
+Teardown is bounded: children are killed side by side under one budget. Not covered:
+a descendant that outlives its already-exited parent with its streams redirected away.
+See `docs/adr-027-child-processes-are-owned-by-the-operation-that-spawned-them.md`.
+
 ### core: a deleted working directory is named once, not reported as 130 missing files
 
 `AbsFilePath.create` and `AbsProjectPath.create` resolved relative input against the

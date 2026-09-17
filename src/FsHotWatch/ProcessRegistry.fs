@@ -2,8 +2,10 @@ module FsHotWatch.ProcessRegistry
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Diagnostics
 open System.Threading
+open System.Threading.Tasks
 
 /// Exception classes treated as benign when observing or killing a tracked
 /// Process. HasExited and Kill both throw InvalidOperationException (no process
@@ -40,65 +42,212 @@ type LeakedTree =
         At: DateTime
     }
 
+/// How long a teardown waits for one killed child to exit. The kills run side by
+/// side, so ten children cost one budget, not ten.
+let internal TerminationBudget = TimeSpan.FromSeconds 5.0
+
+/// Extra time the whole teardown allows beyond `TerminationBudget`, so a child that
+/// used its full budget can still report what it established.
+let private TeardownGrace = TimeSpan.FromSeconds 1.0
+
+/// What a handle can tell us about its child.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type internal ExitObservation =
+    | Exited
+    | Running
+    /// The handle cannot answer: most often it was disposed while still tracked.
+    | Unobservable of reason: exn
+
+/// What a teardown established about one child.
+[<RequireQualifiedAccess>]
+type internal Termination =
+    | Established
+    | Uncertain of reason: string
+
+/// Only a handle that positively reports exit is evidence that its child is gone. A
+/// disposed handle is NOT: disposing a `Process` releases our view of the child, not
+/// the child, so treating "cannot observe" as "not alive" would let a caller that
+/// disposed a live child claim it was reaped.
+let internal classifyTermination (observation: ExitObservation) (killFailure: exn option) : Termination =
+    match observation, killFailure with
+    | ExitObservation.Exited, _ -> Termination.Established
+    | ExitObservation.Running, Some failure ->
+        Termination.Uncertain
+            $"the kill failed (%s{failure.GetType().Name}: %s{failure.Message}) and the child is still running"
+    | ExitObservation.Running, None ->
+        Termination.Uncertain $"the child was still running %s{string TerminationBudget} after the kill"
+    | ExitObservation.Unobservable reason, _ ->
+        Termination.Uncertain
+            $"its handle can no longer be observed (%s{reason.GetType().Name}: %s{reason.Message}), so nothing \
+              establishes that the child exited; it was probably disposed while still tracked"
+
+let private observe (p: Process) : ExitObservation =
+    try
+        if p.HasExited then
+            ExitObservation.Exited
+        else
+            ExitObservation.Running
+    with ex when isExpectedProcessException ex ->
+        ExitObservation.Unobservable ex
+
+/// Kill one handle's tree and wait, within the budget, for positive evidence of exit.
+let private terminateHandle (p: Process) : Termination =
+    match observe p with
+    | ExitObservation.Running ->
+        let killFailure =
+            try
+                p.Kill(entireProcessTree = true)
+                None
+            with ex when isExpectedProcessException ex ->
+                Some ex
+
+        try
+            p.WaitForExit(int TerminationBudget.TotalMilliseconds) |> ignore
+        with ex when isExpectedProcessException ex ->
+            ()
+
+        classifyTermination (observe p) killFailure
+    | settled -> classifyTermination settled None
+
+/// Tear every child down side by side, all bounded by ONE wait. A kill call that has
+/// not come back by then is reported as uncertain rather than waited on.
+let private terminateAll (children: Process array) : Termination array =
+    let attempts =
+        children
+        |> Array.map (fun child ->
+            Task.Factory.StartNew(
+                (fun () ->
+                    try
+                        terminateHandle child
+                    with ex ->
+                        Termination.Uncertain $"the teardown threw %s{ex.GetType().Name}: %s{ex.Message}"),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default
+            ))
+
+    let allowed = TerminationBudget + TeardownGrace
+
+    if not (Array.isEmpty attempts) then
+        Task.WaitAll(attempts |> Array.map (fun attempt -> attempt :> Task), allowed)
+        |> ignore
+
+    attempts
+    |> Array.map (fun attempt ->
+        if attempt.IsCompletedSuccessfully then
+            attempt.Result
+        else
+            Termination.Uncertain $"the teardown did not return within %s{string allowed}")
+
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
-type Registry() =
-    let live = ConcurrentDictionary<int, Process>()
-    // Track pids alongside Process so Untrack can clean up even if the Process
-    // handle has been disposed and `proc.Id` would throw.
-    let pidByProc = ConcurrentDictionary<Process, int>(HashIdentity.Reference)
+///
+/// A registry may have a PARENT: an operation's own scope (see `withChildScope`). It
+/// forwards every admission, untrack and leak to its parent, so daemon shutdown still
+/// sees an operation's children, while tearing the operation down reaches only its own.
+type Registry internal (parent: Registry option) =
+    // One lock for admission, untrack and the shutdown snapshot, so "closed" and "the
+    // set of children" are never observed out of step. OS calls stay outside it.
+    let gate = obj ()
+    // Keyed by handle identity. The pid is captured at admission, while the caller
+    // certainly holds a live handle, so a later disposal cannot erase it.
+    let live = Dictionary<Process, int>(HashIdentity.Reference)
+    let mutable closed = false
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
 
-    member _.Track(p: Process) =
-        pidByProc.TryAdd(p, p.Id) |> ignore
-        live.TryAdd(p.Id, p) |> ignore
+    let uncertain (pid: int) (reason: string) =
+        { Pid = pid
+          Description = $"tracked child pid %d{pid}"
+          Reason = reason
+          At = DateTime.UtcNow }
+
+    new() = Registry(None)
+
+    /// True once this registry, or any registry it forwards to, has shut down.
+    member internal _.IsClosed: bool =
+        lock gate (fun () -> closed)
+        || (parent |> Option.exists (fun owner -> owner.IsClosed))
+
+    /// Admit `p`, or refuse it: a registry that has begun shutting down reaps a child
+    /// arriving afterwards instead of letting it escape the snapshot it already took.
+    /// The parent is asked first; a refusing parent has already reaped the handle.
+    member internal this.Admit(p: Process) : bool =
+        let pid = p.Id
+
+        let parentAdmitted =
+            match parent with
+            | Some owner -> owner.Admit p
+            | None -> true
+
+        if not parentAdmitted then
+            false
+        else
+            let admitted =
+                lock gate (fun () ->
+                    if not closed then
+                        live[p] <- pid
+
+                    not closed)
+
+            if not admitted then
+                match terminateAll [| p |] with
+                | [| Termination.Uncertain reason |] -> this.ReportLeak(uncertain pid reason)
+                | _ -> ()
+
+                parent |> Option.iter (fun owner -> owner.Untrack p)
+
+            admitted
+
+    member this.Track(p: Process) = this.Admit p |> ignore
 
     member _.Untrack(p: Process) =
-        match pidByProc.TryRemove(p) with
-        | true, pid -> live.TryRemove(pid) |> ignore
-        | false, _ -> ()
+        lock gate (fun () -> live.Remove p) |> ignore
+        parent |> Option.iter (fun owner -> owner.Untrack p)
 
+    /// The observably live tracked children. A handle that cannot be observed is not
+    /// listed; whether its child is GONE is `KillAll`'s question, not this view's.
     member _.Snapshot() : Process list =
-        [ for kv in live do
-              let p = kv.Value
-
-              // A tolerated exception means "can't observe; treat as not alive".
-              let alive =
-                  try
-                      not p.HasExited
-                  with ex when isExpectedProcessException ex ->
-                      false
-
-              if alive then
-                  yield p ]
+        lock gate (fun () -> List.ofSeq live.Keys)
+        |> List.filter (fun p ->
+            match observe p with
+            | ExitObservation.Running -> true
+            | _ -> false)
 
     /// Record a process tree whose termination we could NOT establish. Append-only,
     /// and never cleared by `KillAll` — the point of the record is to outlive the
-    /// live set and be readable at shutdown.
-    member _.ReportLeak(leak: LeakedTree) = leaks.Enqueue leak
+    /// live set and be readable at shutdown. Forwarded, so the parent can name it at
+    /// ITS shutdown too.
+    member _.ReportLeak(leak: LeakedTree) =
+        leaks.Enqueue leak
+        parent |> Option.iter (fun owner -> owner.ReportLeak leak)
 
     /// Every tree we failed to account for, oldest first.
     member _.Leaks: LeakedTree list = List.ofSeq leaks
 
-    /// KillAll is a shutdown-only operation. Tracks added concurrently with
-    /// iteration may be missed and silently dropped from `live` by the final
-    /// Clear — accept that for daemon shutdown; do not call from steady-state.
-    member _.KillAll() : unit =
-        // Tolerating the expected classes (see `isExpectedProcessException`) lets
-        // shutdown proceed across the whole live set.
-        for kv in live do
-            try
-                let p = kv.Value
+    /// Shut down: close admission and take the snapshot in ONE step, so a concurrent
+    /// `Track` either belongs to the snapshot or observes the closure and reaps its own
+    /// child. Then tear the snapshot down, bounded (see `TerminationBudget`).
+    ///
+    /// A child whose termination cannot be established is recorded as a leak, unless
+    /// its owner untracked it while the teardown ran: accounting for it is then the
+    /// owner's job, and `ProcessHelper` reports its own failed kills.
+    member this.KillAll() : unit =
+        let children =
+            lock gate (fun () ->
+                closed <- true
+                live |> Seq.map (fun kv -> kv.Key, kv.Value) |> Array.ofSeq)
 
-                if not p.HasExited then
-                    p.Kill(entireProcessTree = true)
-            with ex when isExpectedProcessException ex ->
-                ()
+        let outcomes = terminateAll (Array.map fst children)
 
-        live.Clear()
-        pidByProc.Clear()
+        for (child, pid), outcome in Array.zip children outcomes do
+            let stillOwned = lock gate (fun () -> live.Remove child)
+            parent |> Option.iter (fun owner -> owner.Untrack child)
+
+            match outcome with
+            | Termination.Uncertain reason when stillOwned -> this.ReportLeak(uncertain pid reason)
+            | _ -> ()
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
@@ -128,16 +277,44 @@ let private currentOpt () =
     let r = currentRegistry.Value
     if isNull (box r) then None else Some r
 
-/// Register `p` with the current scope's registry so daemon shutdown can tear it down.
+/// Refuse a launch BEFORE it has side effects when the current scope has shut down.
+/// Admission checks again after the spawn, which closes the race with a shutdown
+/// landing between this check and the spawn.
+let internal ensureAdmitting (what: string) =
+    match currentOpt () with
+    | Some r when r.IsClosed ->
+        raise (OperationCanceledException($"refusing to launch %s{what}: its process scope has shut down"))
+    | _ -> ()
+
+/// Register `p` with the current scope's registry so shutdown can tear it down.
+/// Returns false when the scope refused it, in which case it has already been reaped.
+///
 /// A child spawned with NO registry in scope can never be reaped — it outlives the
 /// daemon as an init-reparented orphan — so the miss is warned, never swallowed.
-let track (p: Process) =
+let internal admit (p: Process) : bool =
     match currentOpt () with
-    | Some r -> r.Track p
+    | Some r -> r.Admit p
     | None ->
         Logging.warn
             "process-registry"
             $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
+
+        true
+
+/// Register `p` with the current scope's registry so daemon shutdown can tear it down.
+let track (p: Process) = admit p |> ignore
+
+/// Admit a child that was just launched, or raise `OperationCanceledException`. A
+/// scope that shut down while the child was starting has already reaped it, so
+/// whatever it would exit with is not the target's outcome and must not be reported
+/// as one.
+let internal admitOrRefuse (p: Process) (what: string) =
+    if not (admit p) then
+        raise (
+            OperationCanceledException(
+                $"%s{what} was terminated at launch: its process scope shut down while it started"
+            )
+        )
 
 let untrack (p: Process) =
     match currentOpt () with
@@ -180,3 +357,53 @@ let snapshot () : Process list =
     match currentOpt () with
     | Some r -> r.Snapshot()
     | None -> []
+
+/// The refusal a scope raises when its work would otherwise succeed but a child's
+/// termination could not be established. Pure, so the message is tested directly.
+let internal uncertainRetirement (leaks: LeakedTree list) : exn option =
+    if List.isEmpty leaks then
+        None
+    else
+        let reasons =
+            leaks
+            |> List.map (fun leak -> $"pid %d{leak.Pid}: %s{leak.Reason}")
+            |> String.concat "; "
+
+        Some(
+            InvalidOperationException(
+                $"the operation finished, but it could not establish termination of its child processes (%s{reasons})"
+            )
+        )
+
+/// Run one operation with a process scope of its own, nested in the current one.
+///
+/// - Children the work spawns register with the scope AND its parent, so daemon
+///   shutdown still reaches them.
+/// - Cancelling `ct` tears down this scope's children only, never a sibling's, and
+///   refuses any launch the work attempts afterwards. Cancellation alone cannot stop
+///   a child: a callback that ignores its token would otherwise keep one running.
+/// - When the work ends, whatever it left tracked is torn down before it may retire.
+///   If any termination in the scope could not be established, a result that would
+///   otherwise succeed is refused. An exception the work raised itself is preserved
+///   unchanged; the uncertainty is still in the parent's ledger.
+///
+/// Disposing the cancellation registration waits for a teardown the cancellation is
+/// already running, so the ledger is read only after that teardown has finished.
+let internal withChildScope (ct: CancellationToken) (work: unit -> 'T) : 'T =
+    let scope = Registry(currentOpt ())
+    use _ = install scope
+
+    let result =
+        let cancellation = ct.Register(fun () -> scope.KillAll())
+
+        try
+            work ()
+        finally
+            try
+                scope.KillAll()
+            finally
+                cancellation.Dispose()
+
+    match uncertainRetirement scope.Leaks with
+    | None -> result
+    | Some refusal -> raise refusal
