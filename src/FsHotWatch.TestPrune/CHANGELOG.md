@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed: a receipt refused a green over a COLD tree its run had actually covered. The
+  obligations a cold scan queues while the full suite is already executing are absent from
+  the launch snapshot, so they survived the launch-scoped retirement and were counted as
+  pending at minting time — `3 verification obligation(s) remain pending` beside a run in
+  which every project passed. A run that executed every runnable project in full, over the
+  input tree it launched against, and passed, now discharges them. A run that did not (a
+  covering project that never ran, one that failed, or a filtered run) refuses exactly as
+  before, and unanalysable files, outstanding reds and an outstanding recovery refuse
+  regardless of what the run covered.
+
 - (breaking) A completion mints evidence instead of only reporting a status.
   `TestPruneState` gains `Earned` (the run's evidence for the current model, carrying its
   refusals), `AnalysisFiles` and `AnalysisReceipt` (what an analysis-only daemon earned at a

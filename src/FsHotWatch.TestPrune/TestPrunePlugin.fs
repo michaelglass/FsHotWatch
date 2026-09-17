@@ -8270,11 +8270,39 @@ let internal createWithLaunchDeadline
                         else
                             debt
 
-                    // What this completion EARNED. Everything still owed is a refusal it
+                    // What this completion EARNED. What it left OWED is a refusal it
                     // carries: a proof that records a red is still a proof of what ran.
+                    //
+                    // Owed is what THIS run did not cover, not everything the queue holds
+                    // at this instant. A cold tree queues obligations while the run is
+                    // already executing — the build fires the full suite first and the
+                    // scan's file events land during it — so they are absent from the
+                    // launch snapshot and survive the launch-scoped retirement above. A run
+                    // that executed every runnable project IN FULL and passed, over the
+                    // tree it launched against, covered those files whenever they were
+                    // queued; refusing them turned a green check into exit 2 with nothing
+                    // failing anywhere. A run that did not (a project absent, failed, or
+                    // filtered) covers nothing extra, and every one of them still refuses.
+                    let coveredEverythingRunnable =
+                        executedFullSuite
+                        && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
+                        && runnableProjects |> Set.forall projectPassed
+
+                    let owedSymbols =
+                        if coveredEverythingRunnable then
+                            Set.empty
+                        else
+                            debt.PendingQueue
+
+                    let owedRuntimeObligations =
+                        if coveredEverythingRunnable then
+                            0
+                        else
+                            debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count
+
                     let pendingObligations =
-                        Set.count debt.PendingQueue
-                        + (debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count)
+                        Set.count owedSymbols
+                        + owedRuntimeObligations
                         + unanalyzable.Count
                         + outstandingFailures.Length
                         + (if debt.RecoveryOutstanding then 1 else 0)
