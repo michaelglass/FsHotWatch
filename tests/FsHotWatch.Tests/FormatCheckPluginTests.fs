@@ -358,7 +358,7 @@ let ``FormatPreprocessor refuses when the repository pins no fantomas`` () =
 [<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor leaves a file alone when the tool exceeds its timeout`` () =
     // A timed-out format must never write a half-formatted document — and must not
-    // stop the batch: the daemon's change agent runs inside this call.
+    // stop the batch: the daemon's change-batch worker runs inside this call.
     withFakePin "pre-to" "7.0.5" (fun dir ->
         let file = Path.Combine(dir, "Bad.fs")
         let original = "module Bad\nlet   x=1\nlet   y   =   2\n"

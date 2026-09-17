@@ -19,7 +19,7 @@ open FsHotWatch.Tests.TestHelpers
 // reaped nothing.
 //
 // So the child is spawned from a PREPROCESSOR: preprocessors run INSIDE the scan
-// mailbox (`performScan` -> `RunPreprocessors`), the context that was blind to the
+// (`performScan` -> `RunPreprocessors`), on a worker whose context was once blind to the
 // registry. Spawning from the test thread proves nothing — that thread is the one
 // that installed it.
 
@@ -67,7 +67,7 @@ type private ChildSpawningPreprocessor
         member _.Dispose() = ()
 
 /// A daemon over a one-file project, with `preprocessor` registered: a non-empty file
-/// set makes the scan actually run preprocessors — from the scan mailbox's context.
+/// set makes the scan actually run preprocessors — from the scan worker's context.
 let private withSpawningDaemon (preprocessor: ChildSpawningPreprocessor) (body: Daemon -> 'a) =
     withTempDir "reaping" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -105,8 +105,9 @@ let private reapSpawned (preprocessor: ChildSpawningPreprocessor) =
             child.Dispose()
 
 [<Fact(Timeout = 60000)>]
-let ``a child spawned by a daemon-dispatched plugin is tracked and reaped on shutdown`` () =
-    // Released up front: the preprocessor returns at once and the scan runs to the end.
+let ``a child a finished scan left running is reaped before the scan retires`` () =
+    // Released up front: the preprocessor returns at once, leaving its child running,
+    // and the scan runs to the end.
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(true)
     use returned = new ManualResetEventSlim(false)
@@ -117,16 +118,13 @@ let ``a child spawned by a daemon-dispatched plugin is tracked and reaped on shu
             // Dispatch through the daemon's OWN scan machinery — not the test thread.
             Async.RunSynchronously(daemon.ScanAll(), timeout = 40000)
 
+            // The scan runs in a child-process scope of its own. Its receipt settles only
+            // after that scope has established that every child it tracked has exited.
             let child = Assert.Single(preprocessor.Spawned)
-            Assert.False(child.HasExited)
-
-            // The assertion that fails on the old ordering: without a registry in the
-            // spawning context the daemon could not reap the child even in principle.
-            Assert.Contains(child, daemon.ProcessRegistry.Snapshot())
-
-            // Shutdown (the same path `fshw stop` and the wedge self-heal take) reaps it.
-            (daemon :> IDisposable).Dispose()
-            Assert.True(child.WaitForExit(10000), "daemon shutdown must reap the child"))
+            Assert.True(child.HasExited, "the scan's own scope must reap its child before the scan retires")
+            Assert.DoesNotContain(child, daemon.ProcessRegistry.Snapshot())
+            Assert.Empty(daemon.ProcessRegistry.Leaks)
+            (daemon :> IDisposable).Dispose())
     finally
         reapSpawned preprocessor
 
@@ -141,8 +139,8 @@ let ``a child spawned by active daemon work is tracked and reaped on shutdown`` 
         withSpawningDaemon preprocessor (fun daemon ->
             // Dispatch through the daemon's OWN scan machinery — not the test thread.
             //
-            // The scan's own reply is NOT awaited: a daemon disposed mid-scan never answers
-            // it. What must settle is the preprocessor call the test is holding open.
+            // The scan's own receipt is not what this test is about. What must settle is the
+            // preprocessor call the test is holding open.
             Async.StartAsTask(daemon.ScanAll()) |> ignore
 
             try

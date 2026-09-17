@@ -80,6 +80,8 @@
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginWorkOwner.fs" />
+    <Compile Include="SupervisedWork.fs" />
+    <Compile Include="DebouncedWork.fs" />
     <Compile Include="PluginFramework.fs" />
     <Compile Include="DaemonPhases.fs" />
     <Compile Include="PluginActivity.fs" />

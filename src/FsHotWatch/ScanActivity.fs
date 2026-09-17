@@ -38,14 +38,14 @@ module ScanKind =
         | ScanKind.Cold -> "cold"
         | ScanKind.Forced -> "forced"
 
-/// Live counts of in-flight scans, by kind. Mutable and shared: the scan agent
+/// Live counts of in-flight scans, by kind. Mutable and shared: the scan supervisor
 /// writes, the idle-exit timer and the heartbeat read, from other threads.
 /// All mutation goes through `Interlocked`.
 [<NoComparison; NoEquality>]
 type ScanLeases =
     {
-        /// In-flight cold scans. At most one in practice (the scan agent is a
-        /// mailbox, so scans serialize) but counted rather than flagged so a
+        /// In-flight cold scans. At most one in practice (the scan supervisor is a
+        /// serial queue, so scans serialize) but counted rather than flagged so a
         /// double-release can never leave the daemon pinned alive.
         mutable Cold: int
         /// In-flight forced scans.

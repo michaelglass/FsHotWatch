@@ -366,6 +366,20 @@ let ``runTick with floor disabled ignores pressure`` () =
     test <@ runTick deps (FireLatch.create ()) <> TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 0 @>
 
+// Within the window, inhibited past it, and eligible past it: a latch that has
+// already fired wins in every case, and the eligible case loses its atomic claim
+// deterministically instead of only under a thread race.
+[<Theory>]
+[<InlineData(10.0, false)>]
+[<InlineData(31.0, true)>]
+[<InlineData(31.0, false)>]
+let ``runTick preserves an already fired latch for every eligibility state`` (idleMin: float, busy: bool) =
+    let deps, shutdownCalls, _ = makeDeps idleMin busy
+    let latch = FireLatch.create ()
+    test <@ FireLatch.tryFire latch @>
+    test <@ runTick deps latch = TickOutcome.AlreadyFired @>
+    test <@ shutdownCalls.Value = 0 @>
+
 [<Fact>]
 let ``runTick fires shutdown at most once across concurrent ticks`` () =
     let deps, shutdownCalls, _ = makeDeps 31.0 false
