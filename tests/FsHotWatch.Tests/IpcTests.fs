@@ -93,9 +93,19 @@ let ``server shutdown closes a connection that never finishes`` () =
         cts.Cancel()
         test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
         test <@ not (IpcClient.isRunning pipeName) @>
-        // The server end was closed under the client: a read sees end of stream.
+        // The server end was closed under the client. macOS reports that as end of
+        // stream; Linux reports ECONNRESET for a connection the server never read from.
+        // Both mean closed. Only a read still pending at the deadline, or one that
+        // returns data, means the server left the connection open.
         let read = idle.ReadAsync(Array.zeroCreate<byte> 1, 0, 1)
-        test <@ read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 0 @>
+
+        let closed =
+            try
+                read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 0
+            with :? AggregateException as e when (e.InnerException :? System.IO.IOException) ->
+                true
+
+        test <@ closed @>
     finally
         cts.Cancel()
         host.Teardown()
