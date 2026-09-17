@@ -50,8 +50,8 @@ jobs:
       # which today is FsHotWatch.Tests alone. FsHotWatch.IntegrationTests is in the
       # solution and is DECLARED OUT of that scope — `.fshw.json`'s `tests.excluded`
       # carries the project and the reason, the config load prints it, and the verdict
-      # records it under `scope.excluded`. Since the tracked issue the omission cannot be
-      # silent: a solution test project that is neither gated nor excluded-with-a-reason
+      # records it under `scope.excluded`. Since an unlisted test project became a config error, the
+      # omission cannot be silent: a solution test project that is neither gated nor excluded-with-a-reason
       # is a `config error` and this step exits 2 before any suite runs, exactly like the
       # analyzer-path guard below. The integration suite is covered by the solution-wide
       # `dotnet test` in the reusable workflow, and by `mise run test-integration`.
