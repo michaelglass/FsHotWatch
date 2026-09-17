@@ -6,7 +6,7 @@
 ///     A FILE BELONGS IN THE TREE HASH IFF CHANGING IT CAN CHANGE WHAT A CHECK
 ///     CONCLUDES.
 ///
-/// Before the tracked issue the hashed set was `Discovery`'s walk (`src/`, `tests/`)
+/// Before this module the hashed set was `Discovery`'s walk (`src/`, `tests/`)
 /// with `.fshw.json` bolted on — a list inherited from the WATCHER, whose job is a
 /// different one, plus one file someone remembered. Everything that decides an
 /// answer from OUTSIDE those roots was omitted: the coverage floors, the analyzer
@@ -405,7 +405,7 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
 ///
 /// `.fshw.json` is here rather than special-cased at the hashing site. That
 /// special case — `let all = if File.Exists config then config :: walked else walked`
-/// — was the tell the tracked issue was filed on: one file bolted onto a list that
+/// — was the tell that exposed the tree-hash fail-open: one file bolted onto a list that
 /// was otherwise "whatever the watcher happens to watch", with no rule saying what
 /// else belonged. There is a rule now, and this is where it is applied.
 let toolKnownInputs (repoRoot: string) : string list =

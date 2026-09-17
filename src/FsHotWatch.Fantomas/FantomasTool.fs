@@ -234,7 +234,7 @@ let parseOutput (workDir: string) (requested: string list) (output: string) : Ch
 /// is the wrong unit twice over: on a repository of short paths it spends spawns it
 /// does not need, and on one of long paths it could still overflow.
 ///
-/// The tracked issue measured what the count costs. A 1884-file F# tree checked in ONE
+/// What the count costs, measured: a 1884-file F# tree checked in ONE
 /// invocation took 7.7/8.3/8.3s wall (47-51s CPU); the same tree as ten 200-file
 /// chunks took 16.0-18.4s wall (74-91s CPU) — five interleaved, load-matched trials
 /// on the same box. Every chunk re-pays the tool's start-up and its JIT warm-up, and

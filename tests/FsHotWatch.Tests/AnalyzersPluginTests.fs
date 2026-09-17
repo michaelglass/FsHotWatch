@@ -11,8 +11,8 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
-/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE
-///so an entry survives being read in another checkout. A test that
+/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE,
+/// so an entry survives being read in another checkout. A test that
 /// stores under the absolute path stores under a key the framework will never look up.
 let private compositeFileKey (repoRoot: string) (file: string) =
     FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file

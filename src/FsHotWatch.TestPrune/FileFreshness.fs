@@ -236,8 +236,8 @@ let stamp (presence: EntryPresence) (verifiedClean: bool) (now: DateTime) (relPa
 ///   - `Dirty`   — an explicit `fcsClean = false` record. The stored rows were
 ///                 written while FCS reported errors and may be PARTIAL, so they are
 ///                 not a BASELINE. That is a fact about the rows, not about the file:
-///                 see `trustStoredRows`, where the tracked issue turned it from "this
-///                 file contributed nothing" into "this file has no before".
+///                 see `trustStoredRows`, where the `Dirty`-recovery fix turned it from
+///                 "this file contributed nothing" into "this file has no before".
 ///   - `Unknown` — NO record at all. Dominant cause is a seeded `test-impact.db`
 ///                 (ADR-010) whose fshw-owned sidecar did not travel with it into
 ///                 a fresh workspace, so the stored rows are a real prior DB, worth
@@ -292,7 +292,7 @@ type StoredRowTrust =
 /// Neither the selector nor freshness was broken. There was never a "before", and the
 /// predicate could not say so.
 ///
-/// the rule — "ask the index what it HOLDS, never how it came to be that
+/// The emptied-index rule — "ask the index what it HOLDS, never how it came to be that
 /// way" — is kept, and this is the missing half of it: HOLDS needs a clock. Note what
 /// is still NOT an input: `Database.WasRecreated`, a fact about this session's open,
 /// answers neither "does the index hold rows for THIS file" nor "were they there
@@ -318,10 +318,10 @@ type StoredRows =
 /// `file-freshness.json` carries no schema version and lives beside a
 /// `test-impact.db` that DELETES AND RECREATES itself on a `SchemaVersion` bump. The
 /// sidecar survives that, so a `Clean` stamp can outlive the rows it was a statement
-/// about. The tracked issue is the same shape one file over, and there it discharged real
-/// test debt as a green that ran zero tests.
+/// about. `pending-verification.json` had the same shape one file over, and there it
+/// discharged real test debt as a green that ran zero tests.
 ///
-/// The fix follows the landed shape rather than its first draft: ask the
+/// This follows the landed shape of that fix rather than its first draft: ask the
 /// index what it HOLDS, never how it came to be that way. `Database.WasRecreated` is
 /// deliberately NOT an input here —
 ///   * it is also true for a first-ever creation (`TestPrune.Database`:
@@ -342,12 +342,12 @@ type StoredRows =
 /// correctness, not an optimisation; `trustStoredRows: a Clean stamp can never buy the
 /// NARROW answer` is the test that says so.
 ///
-/// `Unknown` keeps the asymmetry on purpose: with PRIOR rows it is a seeded
+/// `Unknown` keeps its seeded-DB asymmetry on purpose: with PRIOR rows it is a seeded
 /// `test-impact.db` (ADR-010) whose sidecar did not travel into a fresh workspace, and
 /// those rows are a real prior extraction worth diffing; with none it is an ordinary
 /// cold scan whose full-suite baseline runs anyway, so widening would buy nothing and
 /// cost a whole-suite selection on every cold start.
-/// `RowsFromThisRun` is the arm. It resolves exactly as `NoRows` does,
+/// `RowsFromThisRun` is the arm the index clock added. It resolves exactly as `NoRows` does,
 /// and for the same reason: in both cases the index knew NOTHING about this file
 /// before this run, so every symbol currently in it is new to the index. Routing it to
 /// `DiffAgainstStored` — which is what a bare `storedRowsExist = true` bought — is a
@@ -397,8 +397,8 @@ let trustStoredRows (freshness: Freshness) (rows: StoredRows) : StoredRowTrust =
 /// and a run that had nothing to skip produce the same green.
 ///
 /// It also carries WHAT to diff against, rather than leaving the call site to work that
-/// out from the `StoredRowTrust` a second time. The tracked issue found that call site
-/// passing the stored rows for BOTH diffable arms, which made `EverySymbolIsNew`
+/// out from the `StoredRowTrust` a second time. The `Dirty`-recovery fix found that call
+/// site passing the stored rows for BOTH diffable arms, which made `EverySymbolIsNew`
 /// behave exactly like `DiffAgainstStored` — so the widening existed in
 /// the type and in this module's tests, and nowhere in the running daemon. Whenever the
 /// rows were this run's own, that "widening" was the self-comparison it was introduced
@@ -423,7 +423,7 @@ type LookOutcome =
     /// extracted may be PARTIAL — widening from them would enqueue names that may not
     /// exist in the tree. Nothing about this file was verified by this look.
     ///
-    /// Transient by construction, and only: the rows are still
+    /// Transient by construction, and only since the `Dirty`-recovery fix: the rows are still
     /// persisted and the sidecar records `fcsClean = false`, so the next look classifies
     /// `Dirty` and `trustStoredRows` widens it. Before that fix the next look was
     /// `Dirty -> NoDiff` and the drop became permanent for the session — which is the
@@ -444,7 +444,7 @@ let planLook (currentClean: bool) (trust: StoredRowTrust) : LookOutcome =
 /// The rows to diff the current extraction against, given the baseline the plan chose.
 ///
 /// A function rather than a `match` at the call site, because that match is where
-/// the second half went wrong: the plugin passed the stored rows for BOTH
+/// the `Dirty`-recovery widening first went wrong: the plugin passed the stored rows for BOTH
 /// diffable arms, so `AgainstNothing` — the widening — silently became a diff against
 /// whatever the index held, including rows this very run had written. Generic in the row
 /// type so it lives here, beside the decision, instead of in the consumer that already

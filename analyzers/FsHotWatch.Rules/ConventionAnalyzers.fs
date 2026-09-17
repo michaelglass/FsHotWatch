@@ -661,7 +661,7 @@ let runClaimDiscardedAnalyzer: Analyzer<CliContext> =
                 |> List.map (fun range ->
                     { Type = "RunClaim discarded"
                       Message =
-                        "RunExclusive's RunClaim is discarded. Match it: SlotBusy means the work was NOT started — skip it with a stated reason or queue it, never drop it silently (that is the bug)."
+                        "RunExclusive's RunClaim is discarded. Match it: SlotBusy means the work was NOT started — skip it with a stated reason or queue it, never drop it silently (a dropped claim reports success having executed nothing)."
                       Code = "FSHW-CLAIM-001"
                       Severity = Severity.Error
                       Range = range

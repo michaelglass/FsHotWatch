@@ -184,7 +184,7 @@
 
 ## 0.14.0-alpha.43 - 2026-09-06
 
-- rework: **timing completeness is derived from the spans, and the
+- rework of the timing attribution: **timing completeness is derived from the spans, and the
   spans cover the daemon's own phases.** The first landing attributed only each plugin's
   `lastRun` and the hook steps, and its `timingIncompleteReasons` was a list producers
   filled only with evidence they had refused — so a verdict whose spans explained 10% of
@@ -211,7 +211,7 @@
   - The agent summary gains a `phases` block listing the `daemon.*` spans in timeline
     order with their offsets, durations and details.
 
-- rework: **`fshw start` fails closed when macOS refuses the native
+- rework of the FSEvents refusal fix: **`fshw start` fails closed when macOS refuses the native
   FSEvents stream past the retry budget.** Exit 2 (the fail-closed code every other
   startup refusal uses), one diagnosis line on stderr naming the refusal, the attempts
   and backoff spent, and what to do, and every partial resource released: the partial
@@ -220,7 +220,7 @@
   starts cleanly. The pidfile is now reaped on every way out of `start` (a clean stop,
   the refusal, an unexpected exception), not only after a clean stop.
 
-- **the verdict accounts for every test run the check produced, not
+- **The verdict accounts for every test run the check produced, not
   only the last one.** A check runs the tests in batches — the impact-selected run,
   the rerun a mid-run change queues behind it, `confirm`'s forced full suite, the
   drain of a queued `run-tests` — and each writes its own
@@ -376,7 +376,7 @@
 
 ## 0.14.0-alpha.31 - 2026-08-29
 
-- Fix: satisfy analyzer in quarantine regression
+- Fix: satisfy analyzer in the prior-red quarantine regression test
 - Finish: preserve literal selections and quarantine prior reds
 
 
@@ -429,7 +429,7 @@
 
 ## 0.14.0-alpha.28 - 2026-08-26
 
-- **a verdict from a different tree-hashing SCHEME no longer validates.**
+- **A verdict from a different tree-hashing SCHEME no longer validates.**
   `verdict.json` has always recorded `treeHashAlgorithm` and `applicability` never read it;
   the producer check masked that, which is exactly why it was easy to leave wrong. A
   mismatch is now `Applicability.StaleAlgorithm` — `applies: false`, exit 4, reported as a
@@ -587,8 +587,8 @@
   instead of two copies of the same six-arm match.** `Verdict.CheckProse.explainOutcome`
   is the dispatch; `IpcOutput` (daemon) and `RunOnceCheck` (`--run-once`) each call it.
   The *words* were already shared — `CheckProse` exists for that — but the arm-by-arm
-  selection between them was not, so the tracked issue each had to add
-  their arms twice, and each copy carried a comment promising the other that they said
+  selection between them was not, so the stale-output deferral and the `fshw stop` remedy each
+  had to add their arms twice, and each copy carried a comment promising the other that they said
   the same thing. Whether a daemon served the check may not change what the answer
   means, and now it cannot: the only difference the function admits is the re-scan count,
   which the converging daemon path has and `--run-once` does not. No message text
@@ -604,7 +604,7 @@
 ## 0.14.0-alpha.18 - 2026-08-18
 
 - fix!: **a stale build output no longer borrows the build-ordering defer's words — or
-  its remedy** (QA rework). Both landed on one `waiting on build`
+  its remedy** (stale-artifact preflight, QA rework). Both landed on one `waiting on build`
   message, and for a stale output every clause of it was wrong: the artifact WAS
   produced, the build already ran (the field report has `✓ build` in the same run as the
   refusal), and the two escapes it named — "re-run once the build settles" and `fshw
@@ -617,7 +617,7 @@
   (still 2); **the `reason` string in the verdict file changes shape for this cause**,
   so a consumer matching its exact prose stops matching.
 - fix: **agent mode no longer truncates a plugin summary at 80 characters**
-  (QA rework). The reported symptom was a status line reading `4 waiting
+  (stale-artifact preflight, QA rework). The reported symptom was a status line reading `4 waiting
   on build (tests did not run): Intelligence.Build.Dev.Tests, Intelli…` — a list of
   affected projects severed mid-name. The budget belongs to the caller that REDRAWS:
   compact/verbose are erased by counting the lines printed, so a wrapping line smears
@@ -646,8 +646,8 @@
   chases phantoms for an hour. The `REDDENED` lines now mark each unattributable cause
   `[NOT-THIS-TREE: …]` and print the remedy, naming the one that does NOT work.
 - fix: **a compile item added through `Directory.Build.props`/`.targets` or
-  `Directory.Packages.props` no longer replays a cached build or a cached test result**
-  (case 2). MSBuild's implicit imports can add a `<Compile Include=…>` to
+  `Directory.Packages.props` no longer replays a cached build or a cached test result**.
+  MSBuild's implicit imports can add a `<Compile Include=…>` to
   every project in a repo, and they were in neither list the build merkle hashed — not
   compile items, not projects — so the key stayed byte-identical while the tree gained a
   file. The build replayed `built N projects (cached)`, nothing compiled it, and the FCS
@@ -1009,7 +1009,7 @@
   `Verdict.create`, that REJECTS a `Green` carrying a failing plugin.** `outcome` and
   `plugins` were assembled side by side from independent sources, so nothing forbade
   `{"outcome":"green","plugins":[{"outcome":"fail"}]}` — and the bug above is exactly how
-  you produced one. The same move the tracked issue made for `RunVerdict`: if a state is a
+  you produced one. The same move already made for `RunVerdict`: if a state is a
   lie, do not document that it must not be constructed — make it unconstructible.
   `Verdict.read` enforces the same invariant on the way IN, so a hand-edited or
   future-schema file cannot have a green lifted out of it either (it reads `Unreadable`).
@@ -1174,7 +1174,7 @@
 
 - fix!: **a missing number is not zero.** The verdict READER defaulted a
   missing `elapsedMs` to `0L` and every missing suite count to `0` — which is the
-  signature (`started:` with no `elapsed:`) rebuilt inside the very file
+  unfinished-run signature (`started:` with no `elapsed:`) rebuilt inside the very file
   that exists to prevent it, and worse: `total: 0, failed: 0` conjured from a truncated
   file reads as *"this suite ran cleanly"*. A vacuous green out of thin air.
   - `PluginVerdict.ElapsedMs` is now `int64 option` — `0` is a MEASUREMENT

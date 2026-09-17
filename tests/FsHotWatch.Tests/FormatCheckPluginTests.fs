@@ -115,8 +115,8 @@ let private summaryOf (host: PluginHost) : string =
 let private unformattedCount (host: PluginHost) : string =
     (host.RunCommand("unformatted", [||]) |> Async.RunSynchronously).Value
 
-/// The shape from the report: a fully-applied call split one argument
-/// per line although it fits in 120 columns. Pinned Fantomas joins it back onto one
+/// The shape from the local-vs-CI formatter mismatch report: a fully-applied call split
+/// one argument per line although it fits in 120 columns. Pinned Fantomas joins it back onto one
 /// line; anything that leaves it alone is not the pinned Fantomas.
 let private reflowFixture =
     String.concat
@@ -678,8 +678,8 @@ let ``format-check cacheKey is None when the repository pins no fantomas`` () =
 [<Fact(Timeout = 15000)>]
 let ``format-check cacheKey changes with the pinned version and with the editorconfig`` () =
     // Same bytes, different formatter or different settings = a different answer, so
-    // a replayed `format OK` across either edit would be the defect in
-    // cached form.
+    // a replayed `format OK` across either edit would be the local-vs-CI formatter
+    // mismatch in cached form.
     withFakePin "key-inputs" "7.0.5" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
         File.WriteAllText(file, "module A\n")
@@ -707,7 +707,7 @@ let ``format-check cacheKey changes with the pinned version and with the editorc
 // derive-from-ledger path only ever reached per-file entries.
 // A verbatim replay is only honest if the summary is a function of the key, and
 // the key is a content merkle of THIS event's files. So the invariant pinned
-// here is the one the tracked issue stated for the build cache: a cache hit must be
+// here is the one the build cache's artifact-freshness fix stated: a cache hit must be
 // indistinguishable from having run.
 //
 // Both tests below compare a REPLAYED summary against the summary a cold-cache

@@ -4,7 +4,7 @@ Status: Accepted (2026-09-15)
 
 ## Context
 
-states the organizing model behind the gate-latency work: tests are
+The originating ticket states the organizing model behind the gate-latency work: tests are
 not a gate but a continuously maintained signal that is observed and acted on.
 Verification stops being an event and becomes a state — the daemon is running, tests
 are running, test state is observable, and nothing blocks on a suite. Gating survives
@@ -43,8 +43,8 @@ architectural cost whose named benefit has already been measured at zero.
 
 ## New evidence: the binding constraint is one daemon, not N
 
-Measured 2026-09-15 against thellma/intelligence (~1,890 F# files — roughly 2.4x the
-~775-file solution ADR-003 and ADR-004 benchmarked), using `footprint <pid>`:
+Measured 2026-09-15 against a large private downstream repository (~1,890 F# files —
+roughly 2.4x the ~775-file solution ADR-003 and ADR-004 benchmarked), using `footprint <pid>`:
 
 | observation | figure |
 |---|---|
@@ -86,8 +86,8 @@ exactly that, parking a run in its 30-minute WAITING loop.
 3. **Always-on is a per-solution admission decision, measured, not a global property.**
    A daemon is admissible as always-on when its settled footprint plus the gate's
    memory bar fits the box it runs on. For small solutions this already holds. For a
-   solution the size of intelligence it does not, and the honest answer is that
-   always-on does not apply there yet rather than that the daemon should be shared.
+   solution as large as the downstream repository's it does not, and the honest answer is
+   that always-on does not apply there yet rather than that the daemon should be shared.
 
 4. **Idle-exit stays exactly as ADR-004 shipped it**, including the default
    workspace's exemption from auto-quit. Note the consequence that exemption now

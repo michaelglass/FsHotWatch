@@ -1577,7 +1577,7 @@ let ``RerunFilter.render quotes patterns containing whitespace`` () =
 let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced class name`` () =
     // `fshw check` (TestPrune's impact filter) and `fshw test-rerun --filter-class` must
     // hand the runner the SAME argument for the same class — one quoting function, two
-    // callers. Before the tracked issue the check path emitted the name bare and it
+    // callers. Before that quoting was shared, the check path emitted the name bare and it
     // word-split into five arguments.
     let spaced = "Ns.Type+Every background job declares its idempotence"
     let rerun = RerunFilter.render [ FilterClass spaced ]
@@ -1981,7 +1981,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
 
 [<Fact(Timeout = 15000)>]
 let ``check against a daemon built from a DIFFERENT binary replaces it and runs on the NEW daemon`` () =
-    // Same-version, different-content is the repack: the version label
+    // Same-version, different-content is a local repack: the version label
     // matches and the daemon is still the wrong code, so only the content hash catches it.
     withTempDir "cli-identity-different" (fun tmpDir ->
         stageStateDir tmpDir

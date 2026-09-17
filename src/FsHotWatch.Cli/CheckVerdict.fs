@@ -218,7 +218,7 @@ type CheckOutcome =
     /// owed work it did not discharge. Unreachable in `InnerLoop`, by construction.
     | UnearnedScope of TestScope
     /// EVERY failing diagnostic was one the daemon cannot attribute to the tree on
-    /// disk, and no plugin failed. Second direction.
+    /// disk, and no plugin failed — stale daemon state failing in the RED direction.
     ///
     /// A red is a claim: "something in THIS tree is wrong." A ledger full of FCS
     /// internal errors (the checker crashed) or of diagnostics against files that are

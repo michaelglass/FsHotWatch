@@ -10,8 +10,8 @@
 /// the host resolves assemblies through (`DepsManifestOlderThanRestore`). Nothing
 /// outside the closure is asserted about, and all three checks are about work a
 /// BUILD does. Which command an operator should run to make it happen is
-/// `StaleArtifactPreflight.remedyFor`'s single answer, and since the tracked issue it is
-/// deliberately not a raw `dotnet build` — see that function.
+/// `StaleArtifactPreflight.remedyFor`'s single answer, and since the remedies became `fshw`
+/// verbs it is deliberately not a raw `dotnet build` — see that function.
 ///
 /// A copy is judged by CONTENT, never by an mtime — current iff its bytes are the
 /// bytes of one of the outputs the build could have copied it from — so a
@@ -58,8 +58,8 @@ type RunnerTarget =
 
 /// Why a test project's build output cannot be trusted for a `--no-build` run.
 /// Every case names the exact pair of files that prove the build did not run, so the
-/// gate's message is actionable. The remedy per case — never `-t:Rebuild`, and since
-/// The tracked issue never a raw `dotnet build` — is spelled in exactly one place,
+/// gate's message is actionable. The remedy per case — never `-t:Rebuild`, and since the
+/// remedies became `fshw` verbs never a raw `dotnet build` — is spelled in exactly one place,
 /// `StaleArtifactPreflight.remedyFor`.
 type StaleInput =
     /// A compile input is newer than the assembly compiled from it: the compile

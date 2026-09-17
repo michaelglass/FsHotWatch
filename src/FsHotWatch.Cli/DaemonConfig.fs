@@ -242,8 +242,8 @@ type DaemonConfiguration =
         /// FAIL-CLOSED preflight: a non-zero exit aborts the run with exit 2 and
         /// runs no plugin work. DISTINCT from `tests.beforeRun`, which the daemon
         /// runs per test run inside the tests slot; this one brackets the WHOLE
-        /// run. The first consumer (intelligence) uses it to acquire a box-wide
-        /// gate-lock. Absent / `false` → None.
+        /// run. The first consumer, a large private downstream repository, uses it to
+        /// acquire a box-wide gate-lock. Absent / `false` → None.
         BeforeRun: string option
         /// Run-level `afterRun` hook, from the top-level
         /// `afterRun` key. A shell command run ONCE at the END of a
@@ -1500,8 +1500,8 @@ let internal buildTestExtensions
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
-    // Format plugin. Both shapes run the repository's PINNED `dotnet fantomas`
-    //say which one at registration so the daemon log carries the
+    // Format plugin. Both shapes run the repository's PINNED `dotnet fantomas`;
+    // say which one at registration so the daemon log carries the
     // version before any file is touched, and say loudly when there is none — the
     // plugin will refuse every run until the pin exists, and that must not read as
     // a formatter that found nothing to do.

@@ -1161,7 +1161,7 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
 
 [<Fact(Timeout = 30000)>]
 let ``RunExclusive forces a terminal Failed status when work raises (no strand)`` () =
-    // the fresh-workspace daemon wedge. On the fault path the completion message
+    // Regression test for the fresh-workspace daemon wedge. On the fault path the completion message
     // that normally drives the plugin to terminal is never posted, and plugins routinely
     // report Running just before launching the work (test-prune does, immediately before
     // `RunExclusive "tests"`). Without the framework forcing a terminal the plugin sits
@@ -1371,7 +1371,8 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
     // The forced-Failed net exists for "threw before any terminal report, and nothing else
     // will ever report one". While an exclusive run is in flight that premise is false — the
     // run's completion path will deliver a terminal — so stomping Failed over the live
-    // Running is exactly the manufactured terminal. The crash is still logged.
+    // Running is exactly the manufactured terminal: a status stamped over a live run. The crash is
+    // still logged.
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     use runGate = new System.Threading.SemaphoreSlim(0, 1)
 
@@ -2420,7 +2421,7 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
 
                 // Poll for the handler's own effect rather than sleeping a fixed
                 // 150ms. The sleep passed in isolation and FAILED under full-suite
-                // load — a flake I shipped in and hit the same day.
+                // load — a flake I shipped and hit the same day.
                 // A fixed wait encodes an assumption about the machine, which is
                 // exactly the assumption a loaded CI box breaks.
                 let deadline = System.DateTime.UtcNow.AddSeconds 10.0

@@ -1,4 +1,4 @@
-/// a fresh workspace must start warm.
+/// A fresh workspace must start warm.
 ///
 /// Every test here asks one question in two checkouts of the same repository: does
 /// byte-identical content produce the same cache key, and does anything that really

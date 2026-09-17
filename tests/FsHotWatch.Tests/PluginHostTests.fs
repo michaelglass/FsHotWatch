@@ -287,7 +287,7 @@ let ``preprocessor modified files are returned`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a preprocessor that cannot run is a Failed status and a refusal, never "none rewritten"`` () =
-    // the formatter's pin was missing and the pass returned an empty
+    // The formatter's pin was missing and the pass returned an empty
     // list, which the host summarised as "12 file(s) checked, none rewritten" — the
     // same words as a clean tree. A pass that did not run must say so on every surface.
     let host = PluginHost.create nullChecker "/tmp/test"
@@ -1749,7 +1749,7 @@ let ``ClearTaskCache variants forward to the cache when the host has one`` () =
 
     let repoRoot = "/tmp/test"
 
-    // entries are keyed by the REPO-RELATIVE identity, so a caller
+    // Entries are keyed by the REPO-RELATIVE identity, so a caller
     // naming a file by its absolute path must be translated before it can clear
     // anything. Storing under the same spelling the framework writes is what makes
     // these assertions test the translation instead of assuming it away.
@@ -1807,7 +1807,7 @@ let ``RerunPlugin fails with a named reason when the plugin has no pattern`` () 
     test <@ (host.GetFileCommandPattern "no-such-plugin").IsNone @>
 
 // ---------------------------------------------------------------------------
-// a vanished path's findings must clear from EVERY plugin
+// A vanished path's findings must clear from EVERY plugin
 // ---------------------------------------------------------------------------
 //
 // Renaming a file left the daemon analyzing the OLD path from memory. The
@@ -1903,7 +1903,7 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
         test <@ remaining |> Map.containsKey outside @>
         test <@ remaining |> Map.containsKey pseudo @>)
 
-// --- rework: every plugin run lands on the phase ledger ---
+// --- wall-time attribution rework: every plugin run lands on the phase ledger ---
 
 /// The ledger records the plugin's WHOLE `Running` interval, not the elapsed the
 /// plugin measured for itself: test-prune is `Running` through minutes of symbol

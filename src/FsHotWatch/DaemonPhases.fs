@@ -1,4 +1,4 @@
-/// rework. WHERE the daemon's own wall time goes, as named,
+/// The phase-attribution rework. WHERE the daemon's own wall time goes, as named,
 /// timed phases — the evidence a `check`/`confirm` verdict needs to account for the
 /// time it spent WAITING on the daemon rather than on a plugin's final run.
 ///

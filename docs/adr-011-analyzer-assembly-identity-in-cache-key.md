@@ -100,7 +100,7 @@ stale verdict.
 The `analyzer-assemblies` slot above hashed the DLL **bytes**. That is the right
 oracle for the failure this ADR was written against (a rebuilt rule replaying a
 stale verdict on one long-lived daemon), and the wrong one for the property
-ADR-010 and the tracked issue need: an entry written in one checkout hitting in
+ADR-010 and cross-workspace cache sharing need: an entry written in one checkout hitting in
 another. fsc writes the absolute path of the portable PDB into the PE's CodeView
 debug entry (`<checkout>/analyzers/FsHotWatch.Rules/obj/Debug/net10.0/…pdb`), so
 a first-party analyzer built from identical source in two jj workspaces differs
@@ -164,8 +164,8 @@ reload).
 ### Two more things stood between "fresh workspace" and "hit"
 
 The benchmark below found that the receipt alone could not make a fresh
-workspace hit, because two older defects sat in front of it. Both are fixed under
-each as its own change.
+workspace hit, because two older defects sat in front of it. Both are fixed
+alongside it, each as its own change.
 
 **The shared store was namespaced per checkout NAME.** `RepoIdentity.namespaceOf`
 returned `<checkout directory name>-<digest>` and `Daemon.fs` used that whole

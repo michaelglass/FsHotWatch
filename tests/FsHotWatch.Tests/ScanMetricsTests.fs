@@ -8,7 +8,7 @@ open FsHotWatch
 open FsHotWatch.ScanMetrics
 open FsHotWatch.Tests.TestHelpers
 
-// The tracked issue asks for measurement that a LATER RUN CAN COMPARE. That makes
+// The scan metrics exist as measurement that a LATER RUN CAN COMPARE. That makes
 // the record's round-trip — emitted, re-read, and fitted — the property under
 // test, not the fact that some number was logged.
 

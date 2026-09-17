@@ -205,8 +205,8 @@ let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
 /// opposite remedies. The build-ordering race — a project's artifact was not produced
 /// yet — settles by itself, so "re-run once the build settles" is right for it. THIS
 /// one does not settle: the artifact exists and holds the wrong bytes, so re-running
-/// returns the identical refusal, which is the exact defect the tracked issue exists to
-/// delete. A reader given the wrong half of that pair loses a gate cycle to it.
+/// returns the identical refusal — a red that re-running cannot move, the exact wedge this
+/// preflight exists to delete. A reader given the wrong half of that pair loses a gate cycle to it.
 ///
 /// Prose, not a bracketed tag, so the marker is also the sentence the operator reads;
 /// and one `[<Literal>]` shared by the producers below and `isStaleOutputDeferral`,
@@ -240,8 +240,8 @@ type Outcome =
     {
         /// Copies repaired this run, absolute paths. Always reported — on success,
         /// because a repair that fires every run is itself the finding, and on a
-        /// refusal, because since the tracked issue a refused run still repairs every
-        /// copy the breaker did not name.
+        /// refusal, because since the per-file breaker fix (see `adr-016`) a refused run still
+        /// repairs every copy the breaker did not name.
         Healed: string list
         /// EMPTY means every target is certified fresh and the suite may launch.
         /// Non-empty means nothing launches.
@@ -257,8 +257,8 @@ type Outcome =
 /// refusals is byte-for-byte the same value as one over a tree that was actually
 /// checked. So a derivation that regressed — a renamed flag, an args-shape change —
 /// would switch this entire gate off while every run stayed green. That is the shape of
-/// bug this repo spent removing, and the preflight
-/// added by the tracked issue reintroduced a door to it.
+/// bug this repo spent removing, and the preflight added to catch stale build output
+/// before any suite launches reintroduced a door to it.
 ///
 /// It REPORTS rather than refuses, deliberately. Refusing would wedge every repo whose
 /// runners legitimately take no `--project`, and this ticket's approval comment forbids
@@ -414,8 +414,8 @@ let runWithBudget
 
             // Case 3 — INSTRUMENT, do not build the capability.
             //
-            // `CopyDiffersFromOrigin` is the one artifact-staleness wedge
-            // The tracked issue left open, and only TestPrune can see it. Whether the
+            // `CopyDiffersFromOrigin` is the one artifact-staleness wedge the earlier
+            // staleness fixes left open, and only TestPrune can see it. Whether the
             // framework needs a capability for it was decided the honest way: ONE
             // observed occurrence does not justify one, so count it and let the
             // answer come from data. If this line never appears in a working week's

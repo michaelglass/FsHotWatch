@@ -2,7 +2,7 @@
 
 ## Reported symptom
 
-During Intelligence Phase D first-edit attempt of stress test
+During a first-edit attempt in a large private downstream repository, on stress test
 `fshw 0.10.0-stresstest4`, after the format preprocessor rewrote 3 files
 (`BriefRefinement` / `FixtureLoader` / `BriefPipelineRunner`), the daemon
 stopped accepting new RPC connections. The CLI surfaced:
@@ -37,7 +37,7 @@ unreliable. Two concrete failure modes that produce
 Both paths share a common upstream cause: **runaway daemon memory growth**.
 After the format preprocessor rewrote 3 files, the resulting cohort of
 `FileChecked` / `BatchChecked` events likely re-checked transitive dependents
-across the entire Intelligence repo, producing huge in-memory check-result
+across the entire downstream repository, producing huge in-memory check-result
 objects that FCS retained (the daemon is configured with
 `keepAssemblyContents = true`, `keepAllBackgroundResolutions = true`,
 `projectCacheSize = 200`).
@@ -124,7 +124,7 @@ The actual leak fix (whichever combination of FCS retention tuning,
 `ErrorLedger.Detail` capping, or per-batch GC pressure mitigation
 turns out to dominate) requires:
 
-- **A reliable repro.** The Intelligence stress test reproduces it after
+- **A reliable repro.** The downstream repository's stress test reproduces it after
   several minutes of full-pipeline cycling. That's not a unit-testable
   signal. We'd need a long-running `dotnet-counters monitor` /
   `dotnet-dump` session against a daemon driven by the stress harness.
@@ -132,8 +132,8 @@ turns out to dominate) requires:
   LOH retention. If FCS dominates, the fix is upstream (or downstream
   in our `FSharpChecker.Create` config). If `ErrorLedger.Detail` strings
   dominate, the fix is a per-entry cap.
-- **A dedicated stress-harness that drives the daemon without a real
-  Intelligence repo** would let us close the loop without coupling fshw
+- **A dedicated stress-harness that drives the daemon without the real
+  downstream repository** would let us close the loop without coupling fshw
   CI to that consumer.
 
 None of those tools (dotnet-counters / dotnet-dump) are in the current
@@ -154,7 +154,7 @@ devenv `mise.toml` `[tools]` block. Adding them is a separate change
 3. **Audit `FSharpChecker.Create` config.** `projectCacheSize = 200`
    plus `keepAssemblyContents = true` plus `keepAllBackgroundResolutions
    = true` is the most aggressive retention possible. For large
-   downstream repos (Intelligence has ≥ 30 projects), a smaller cache
+   downstream repos (the one that hit this has ≥ 30 projects), a smaller cache
    size or selective `keepAssemblyContents` would dramatically reduce
    ceiling RSS at the cost of warm-cache hit rate.
 4. **Add `dotnet-counters` and `dotnet-dump` to `mise.toml`.** So the

@@ -105,10 +105,11 @@
 ## 0.13.0-alpha.32 - 2026-09-06
 - prior reds are DURABLE — `.fshw/test-prune/outstanding-failures.json`,
   loaded at construction and quarantined into the first run of a session as in-session
-  reds are (an unreadable file takes the road: widen to the full suite).
+  reds are (an unreadable file takes the unreadable-ledger road: widen to the full suite).
   The session-scoped design was unsound whenever the durable queue was non-empty at
   restart, which made the restarted daemon's first run impact-filtered and dropped every
-  red the filter did not reach — the shape, reproduced by a restart.
+  red the filter did not reach — the never-selected-red shape (17 tests red on `main` for
+  weeks), reproduced by a restart.
 - a FULL-SUITE BASELINE (`.fshw/test-prune/full-suite-baseline.json`) —
   the last run that executed every configured project and left each one accounted for
   (passed, or red and recorded). `nothingOwed` now includes its validity: with none, or
@@ -460,8 +461,8 @@
   with no test failing. The three-way `Freshness` verdict plus one structural fact — does
   the index still hold rows for this file — now resolves through
   `FileFreshness.trustStoredRows` to a named `StoredRowTrust`, and `EverySymbolIsNew` is
-  the arm a recreate lands on. Follows the landed shape rather than its
-  first draft: ask the index what it HOLDS, never how it came to be that way.
+  the arm a recreate lands on. Follows the landed shape of the `pending-verification.json`
+  fix rather than its first draft: ask the index what it HOLDS, never how it came to be that way.
   `Database.WasRecreated` is deliberately not an input — it is also true for a first-ever
   creation, so it cannot tell a schema bump from a fresh clone, and it says nothing about
   an individual file. A mutation test pins the polarity: flipping the `Clean`-over-nothing
@@ -715,8 +716,8 @@
   refused to run**; verdict red.
   - **No `dotnet build` could answer it.** A correct rebuild re-copies net10.0, so the copy
     keeps the net10.0 stamp and the gate compares it against net8.0 again. That is the
-    unanswerable accusation the tracked issue was written to kill, back through a different
-    door: not the wrong project — the wrong **framework**.
+    unanswerable accusation the closure-scoped freshness gate was written to kill, back
+    through a different door: not the wrong project — the wrong **framework**.
   - Different TFMs of one project **build at different times**, so an mtime comparison
     *across* TFMs is not a bad heuristic, it is a **category error**. Correcting the
     resolution would leave the error expressible, so the mtimes are **gone from the copy
@@ -732,7 +733,7 @@
   - **Strictly stronger, not weaker.** Content also catches what mtimes never could: a stale
     copy whose mtime *equals* its origin's — a `jj`/`git` working-copy restamp, a coarse
     filesystem timestamp, a rebuild inside one timestamp tick. Verified against the real
-    consumer: the fake green (a changed fixture the build did not re-copy) is
+    consumer: the original fake green (a changed fixture the build did not re-copy) is
     still caught **even with the mtime left untouched**, which the old rule called *fresh*.
   - Uses core's one hasher, `ContentHash`, and inherits its fail-closed sentinel: a file the
     gate **cannot read** is `InputsUndeterminable`, never "fresh" — in BOTH directions, an
@@ -749,8 +750,8 @@
     current if it matches any. Fixing the TFM bug without this would have opened a new door
     for the same wolf.
   - This settles the standing disagreement between two sibling modules: `TreeHash` already
-    held that *"the hash is over CONTENT, never mtimes — mtime is precisely what lied in
-    The tracked issue."* `ArtifactFreshness` now agrees.
+    held that *"the hash is over CONTENT, never mtimes"* — mtime is precisely what MSBuild's
+    up-to-date check trusts. `ArtifactFreshness` now agrees.
 
 - fix!: **a PROCESS may not assert a test result it has no record of running.**
   On a warm task cache the first `BuildCompleted` of a new process was a
@@ -891,8 +892,8 @@
     a change touching only `Intelligence.Build.Dev` wedged `Intelligence.Tests.Integration`.)
   - **It let a red main through.** It looked at `.fs`/`.cs` only, so a changed test
     FIXTURE copied in from a shared project was invisible: the run read the OLD copy
-    still sitting in `bin/` and PASSED (intelligence, `dsa-scope-4.json` — a fake green
-    that merged and left main red for hours).
+    still sitting in `bin/` and PASSED (a large private downstream repository,
+    `dsa-scope-4.json` — a fake green that merged and left main red for hours).
 
   Freshness is now decided over the test project's **own transitive `ProjectReference`
   closure**, in terms of the only two things a build does to an output tree: it
@@ -934,7 +935,7 @@
   the handler replied `busy` and ran nothing — and the CLI mapped that to exit 0. A
   force-run is owed work, so it now joins `QueuedCommandRuns` and is drained (FIFO) when
   the in-flight run finishes. The command's wait on the reply is BOUNDED by the existing
-  `--wait-sec` budget (: bound every seam), and a run that outlives it
+  `--wait-sec` budget (bound every seam), and a run that outlives it
   reports `busy` — which the CLI now exits non-zero on.
 
 - fix: the `FileChecked` handler's duplicated unanalysable-file treatment (an

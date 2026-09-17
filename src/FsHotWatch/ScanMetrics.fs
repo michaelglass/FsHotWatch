@@ -1,10 +1,10 @@
 /// Per-scan resource and orchestration measurements, appended as JSON Lines to
 /// `<repoRoot>/.fshw/scan-metrics.jsonl`.
 ///
-/// The tracked issue asks for MEASUREMENT, not a knob: "does FCS retain memory
-/// across scan generations?" is unanswerable from a log that prints durations.
-/// One record per completed scan carries the generation, the orchestration
-/// counts that ticket enumerates (attempts, retries, unchecked files), and the
+/// The memory-retention ticket behind this module asks for MEASUREMENT, not a knob:
+/// "does FCS retain memory across scan generations?" is unanswerable from a log that
+/// prints durations. One record per completed scan carries the generation, the
+/// orchestration counts that ticket enumerates (attempts, retries, unchecked files), and the
 /// process/heap footprint sampled at the same instant — so a later run compares
 /// against an earlier one by reading the same file, and a fitted slope over the
 /// generations is a number rather than an impression.
@@ -69,7 +69,7 @@ type ResourceReading =
 
 /// Sample this process now. `forceGc = true` runs a blocking, compacting
 /// collection first, so `ManagedBytes` is what the scan RETAINED rather than
-/// what it had not yet collected — the figure the slope needs. It
+/// what it had not yet collected — the figure a fitted retention slope needs. It
 /// costs a full GC, which is why it is a parameter and not the default: the
 /// daemon forces one only when `FSHW_SCAN_METRICS_GC` asks (see `forceGcEnabled`).
 let readResources (forceGc: bool) : ResourceReading =

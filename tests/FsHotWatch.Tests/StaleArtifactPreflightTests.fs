@@ -161,7 +161,7 @@ let ``a superseded restore refuses, names both files, and rules out the wrong fi
         test <@ StaleArtifactPreflight.isStaleOutputDeferral reason @>
         test <@ reason.Contains "Tests.deps.json" @>
         test <@ reason.Contains "project.assets.json" @>
-        // The tracked issue landed alongside this one: no remedy in this module may name a
+        // The `fshw`-verb remedy change landed alongside this one: no remedy in this module may name a
         // raw `dotnet build`, because a consuming repository can refuse that command
         // outright. The manifest arm names the same `fshw` verb as the other three, and
         // the sibling test above holds that rule for every arm at once.
@@ -236,7 +236,7 @@ let ``a stale copy names the consumer whose copy target did not run`` () =
         StaleArtifactPreflight.Reason.breakerTripped "/repo" "/consumer/copy.dll" 10
 
     test <@ remedy.Contains "consumer" @>
-    // The tracked issue replaced the `--no-incremental` escalation with the step that
+    // The copy remedy no longer escalates to `--no-incremental`; it names the step that
     // needs no build flag at all: with the destination gone, the copy target runs.
     test <@ remedy.Contains "delete the named copy" @>
     test <@ breaker.Contains "origins without their consumers" @>

@@ -272,7 +272,7 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             ReportVerificationFormat = AutoDetect } ]
 
     // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's
-    // `.fshw/test-prune/` ledgers — and since the tracked issue made the full-suite baseline
+    // `.fshw/test-prune/` ledgers — and since the full-suite baseline became
     // durable, that stamped the real daemon's baseline with `Xunit4RunnerFixture` as the
     // only project, which it then (correctly) refused and re-earned with a full run.
     // Only the fixture project path needs the real repository.

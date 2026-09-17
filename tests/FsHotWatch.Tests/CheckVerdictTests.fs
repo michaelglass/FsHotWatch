@@ -104,7 +104,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
     test <@ verdict Confirmation healthy = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 // ----------------------------------------------------------------------------
-// 224 — "waiting on build" is INCOMPLETE (exit 2), never a red (exit 1). A test
+// "waiting on build" is INCOMPLETE (exit 2), never a red (exit 1). A test
 // project deferred because its build artifact wasn't produced did not run: nothing
 // was verified (non-green), nothing failed (not a red). It must route to exit 2 so
 // a deploy preflight retries rather than reading a test failure.
@@ -343,7 +343,7 @@ let ``Confirmation: an impact-filtered run cannot yield Clean`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: a run that executed no tests at all cannot yield Clean`` () =
-    // the shape: the daemon skipped the run (cached/baseline-equivalent)
+    // The no-tests-ran green: the daemon skipped the run (cached/baseline-equivalent)
     // and nothing ran. 35 tests were red on `main` throughout. "No tests ran" is not
     // evidence of a green suite.
     let outcome =
@@ -499,7 +499,7 @@ let ``parseTestRunReport: the session's run ledger comes through, newest first``
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a reply with no run ledger still parses its scope`` () =
-    // the half of the same compatibility guarantee the seeds fields carry:
+    // The run-ledger half of the same compatibility guarantee the seeds fields carry:
     // a daemon older than `runIds` sends none, and the check must degrade to naming the
     // one run it was told about — today's behaviour — never to a refusal.
     let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""

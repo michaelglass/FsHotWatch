@@ -15,7 +15,7 @@ $ ps eww $(pgrep -nf 'FsHotWatch.Cli') | tr ' ' '\n' | grep '^NIX_PROFILES='
 NIX_PROFILES=/nix/var/nix/profiles/default     # ← truncated
 ```
 
-Downstream consequences seen in `intelligence`:
+Downstream consequences seen in a large private downstream repository:
 
 - `dotnet build` from inside fshw fails with `apphost_version=10.0.X not found`
   because the wrapped `dotnet`'s apphost lookup needs the full `NIX_PROFILES`
@@ -34,7 +34,7 @@ psi.UseShellExecute <- false
 Process.Start(psi)
 ```
 
-That's not the source. Inside the `intelligence` devenv we measured every layer:
+That's not the source. Inside that repository's devenv we measured every layer:
 
 | Invocation | Child's `NIX_PROFILES` |
 |---|---|
@@ -90,6 +90,6 @@ the mangling lives inside `dotnet`'s tool-launching path on nix-wrapped SDKs.
 
 ## Tested with
 
-- `dotnet-sdk-10.0.202` (nix-wrapped, `intelligence` repo, 2026-04-29)
+- `dotnet-sdk-10.0.202` (nix-wrapped, the downstream repository, 2026-04-29)
 - macOS 26.0 (Darwin 25.5.0)
 - fshw `0.9.0-alpha.0-local101`

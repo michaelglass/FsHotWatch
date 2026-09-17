@@ -248,7 +248,7 @@ let internal waitForVerdictUnlessDiscoveryFailed
 /// The four distinct facts at the project-discovery boundary. `Loaded` is the
 /// number returned by Ionide/MSBuild into the project graph; `Registered` is the
 /// later FCS pipeline count. Keeping both prevents a registration defect from
-/// being mislabeled as the loader failure.
+/// being mislabeled as a loader failure.
 /// The same four counts `ProjectModel` classifies, so a coordinator outcome and
 /// a published observation can never disagree about what was discovered.
 type internal DiscoverySnapshot = ProjectModel.Counts
@@ -258,7 +258,7 @@ type internal DiscoverySnapshot = ProjectModel.Counts
 /// outcome: a check arriving while a repair discovery is running must wait for
 /// that attempt, not fail from either transient empty stores or stale failure.
 type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
-    // a scan reading project state while rediscovery is clearing
+    // A scan reading project state while rediscovery is clearing
     // it sees an empty model and reports NO TESTS RAN, which a consumer can read
     // as a pass. `Completed` already hides the preceding outcome while an attempt
     // is pending, but hiding it makes IN-FLIGHT and NOTHING-DISCOVERED the same
@@ -310,7 +310,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
-    /// what a reader should believe about the project model right
+    /// What a reader should believe about the project model right
     /// now, as a value rather than an absence. `Completed` returns `None` both
     /// when an attempt is in flight and when nothing was ever observed; this
     /// distinguishes them, so a scan can wait for `Rediscovering` instead of
@@ -417,7 +417,7 @@ let private discoverAndRegisterProjects
     (clearCheckCache: bool)
     : Async<DiscoverySnapshot> =
     async {
-        // rework. Discovery is wall time a `check` blocks on — 8 s
+        // Discovery is wall time a `check` blocks on — 8 s
         // cold, 47 s when a project-file change provokes it mid-run — and no plugin
         // owns it. Recorded on every exit, with the evaluation's own summary line.
         use phase = phases.Begin DaemonPhases.Phase.Discover
@@ -501,7 +501,7 @@ let private discoverAndRegisterProjects
 
                     graph.RegisterProject(absProject, sourceFiles, references)
 
-                    // record MSBuild's OWN output path. Without it
+                    // Record MSBuild's OWN output path. Without it
                     // `GetCanonicalDllPath` returns None for every project in a live
                     // daemon — the TFM it needs arrives only via `RegisterFromFsproj`,
                     // which nothing in `src/` calls — so artifact examination has never
@@ -904,7 +904,7 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 /// run preprocessors, emit events, and check files.
 let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
     async {
-        // rework. An incremental batch — the FCS re-check a file
+        // An incremental batch — the FCS re-check a file
         // change provokes while a check is already waiting — is daemon wall time no
         // plugin owns. One record per batch, on every exit.
         use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
@@ -1623,8 +1623,8 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
-        // Live scan-activity leases, shared with the scan agent that takes them
-        //Read by the idle-exit scheduler and the heartbeat so
+        // Live scan-activity leases, shared with the scan agent that takes them.
+        // Read by the idle-exit scheduler and the heartbeat so
         // a cold or forced scan is never mistaken for idleness.
         scanLeases: ScanActivity.ScanLeases,
         // Per-daemon process registry. Plugin-spawned children (test runners,
@@ -1951,7 +1951,7 @@ type Daemon
                       GetUncheckedCount = getUncheckedCount
                       GetProjectModel = this.ProjectModel }
 
-                // rework. Everything before the pipe listens — runtime
+                // Everything before the pipe listens — runtime
                 // boot, config and analyzer loading, the singleton lock — is wall time
                 // a cold `check` waits on. Measured from the process start, which is
                 // the earliest instant this process can vouch for.
@@ -2128,7 +2128,7 @@ type Daemon
 
 /// What one tier's bounded check/retry loop settled on (`runChecksWithRetry`).
 ///
-/// the bound existed; the OUTCOME of reaching it did not. A
+/// The bound existed; the OUTCOME of reaching it did not. A
 /// scan that gave up is a different event from a scan that converged, and the
 /// difference belongs in the type so the log line and the scan-completeness
 /// count cannot disagree about which happened.
@@ -2173,7 +2173,7 @@ module ScanCheckOutcome =
 /// content, so a NEWER user edit that legitimately superseded the in-flight check is
 /// observed on retry rather than duplicated. Each file is emitted at most once.
 ///
-/// the outcome is TYPED. The budget was always bounded, but
+/// The outcome is TYPED. The budget was always bounded, but
 /// exhausting it produced a bare `int` that the caller folded into a running
 /// total, so "this tier gave up on 4 files after 3 extra rounds" was
 /// indistinguishable in the code from "4 files happened to be unchecked". A
@@ -2244,7 +2244,7 @@ let internal partitionVanished (exists: string -> bool) (registered: string list
 
 /// Which kind of scan this is, for the activity lease and the metrics record.
 /// Generation 0 means nothing has completed yet, so this is the daemon's cold
-/// scan — the phase the idle-exit terminated.
+/// scan — the phase the idle exit used to terminate.
 let private scanKindFor (state: ScanAgentState) =
     if state.Generation = 0L then
         ScanActivity.ScanKind.Cold
@@ -2264,7 +2264,7 @@ let private performScan
             let pipeline = ctx.Pipeline
             let graph = ctx.Graph
 
-            // rework. The scan is the single largest phase a cold
+            // The scan is the single largest phase a cold
             // `check` waits on (12 min of FCS tiers on a 22-project repository) and
             // the one `WaitForScan` blocks on without any plugin owning it. One
             // record for the WHOLE scan — discovery admission, build settlement and
@@ -2346,7 +2346,7 @@ let private performScan
             // never read as clean. See `runChecksWithRetry`.
             let mutable uncheckedCount = 0
             // Extra retry rounds beyond each tier's first pass, summed. The direct
-            // measure of the cold-scan cancellation amplification the tracked issue
+            // measure of the cold-scan cancellation amplification the retry budget
             // bounds; recorded in the per-scan metrics below.
             let mutable retryRounds = 0
             // Files that produced a result and were emitted, hoisted out of the
@@ -2430,7 +2430,7 @@ let private performScan
                     match tierOutcome with
                     | ScanCheckOutcome.AllChecked _ -> ()
                     | ScanCheckOutcome.BudgetExhausted(unchecked, rounds, budget) ->
-                        // say it once, explicitly, naming the bound
+                        // Say it once, explicitly, naming the bound
                         // that was reached. The alternative this replaces was adding
                         // a number to a total and moving on, which is how repeated
                         // self-cancellation stayed invisible for a whole gate run.
@@ -2477,7 +2477,7 @@ let private performScan
 
             scanSignal.SignalGeneration(newGeneration)
 
-            // one measurement record per completed scan generation,
+            // One measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
             // and compares; `ScanMetrics.fitRetention` turns the RSS series into a
             // slope. A write failure is logged, never fatal.
@@ -2508,7 +2508,7 @@ let private performScan
                   LastFingerprint = lastFingerprint }
         }
 
-    // hold an activity lease for the WHOLE scan, released by
+    // Hold an activity lease for the WHOLE scan, released by
     // `withLease`'s finally on completion, exception, and cancellation alike.
     // Everything in `scanBody` (re-discovery, preprocessors, build settlement,
     // the FCS tiers, verdict signalling) runs inside it, so none of it can be

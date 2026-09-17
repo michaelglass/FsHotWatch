@@ -406,8 +406,8 @@ let x = 5
 
 // The format tests below run the REAL pinned tool (`dotnet tool run fantomas`,
 // resolved from this checkout's `.config/dotnet-tools.json`) with the checkout as the
-// repository root — the same resolution CI's `dotnet fantomas --check` uses
-//A cold `dotnet tool run` costs a few hundred milliseconds, hence
+// repository root — the same resolution CI's `dotnet fantomas --check` uses.
+// A cold `dotnet tool run` costs a few hundred milliseconds, hence
 // the budgets.
 
 /// The pinned version this checkout runs, for the evidence lines.
@@ -976,7 +976,7 @@ let ``convention rules stay silent on conforming code`` () =
 /// Stand-in for the real `TestResult` seam. The rule is name-based, so a structurally
 /// identical local reproduces it.
 ///
-/// `isPassed` is present here even though the tracked issue DELETED it from the real
+/// `isPassed` is present here even though the zero-match false-green fix DELETED it from the real
 /// `TestResult`: the rule still names it, so that re-introducing the predicate whose
 /// TRUE-for-zero-match answer was the original defect is caught the moment someone folds
 /// it. `verifiedGreen` is the live predicate and the one the fixtures lead with.
@@ -1059,7 +1059,7 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of the pass predicate
                     // A forall whose predicate is a LOOKUP, not the pass predicate —
                     // the per-project green-commit fold.
                     //
-                    // READ THIS ONE CAREFULLY. Until the tracked issue this exact shape,
+                    // READ THIS ONE CAREFULLY. Until `isPassed` was deleted, this exact shape,
                     // with `isPassed` in the lookup, WAS the live pending-verification
                     // false-green: a symbol's test debt discharged by a project that
                     // executed zero tests. The rule was silent on it then and is silent
@@ -3016,7 +3016,7 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                 Assert.Fail(
                     "DAEMON WEDGED: a concurrent `status` over the pipe did not return within budget while a \
                      multi-file rebuild was in flight. Cancellation did NOT cure the race — this needs a \
-                     dedicated fix (do not paper over). See 26."
+                     dedicated fix (do not paper over)."
                 )
 
             // Responsive is not enough — the daemon must still drive work to completion.

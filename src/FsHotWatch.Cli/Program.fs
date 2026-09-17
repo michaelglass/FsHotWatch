@@ -1849,8 +1849,8 @@ let executeCommand
                     with :? IOException ->
                         None
 
-                // Which process is which, when two exist for one repo root
-                //`ps` could not answer that after the fact:
+                // Which process is which, when two exist for one repo root?
+                // `ps` could not answer that after the fact:
                 // `confirm` is the same binary in the same cwd as a daemon and runs
                 // for 20+ minutes, so "two FsHotWatch.Cli processes" may be one
                 // daemon plus a client. argv settles it.
@@ -1927,7 +1927,7 @@ let executeCommand
                             0
                         with
                         | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
-                            // case 2: macOS refused the native FSEvents
+                            // The persistent-refusal case: macOS refused the native FSEvents
                             // stream on every attempt of the retry budget. Persistent, so
                             // fail closed — `Daemon.create` already disposed the partial
                             // daemon, no watcher exists, and the finally + `_lock` release
@@ -1938,7 +1938,7 @@ let executeCommand
 
                             2
                         | ConfigError message ->
-                            // an expected, user-correctable refusal (e.g.
+                            // An expected, user-correctable refusal (e.g.
                             // analyzers.paths that have not been built) — never an unhandled
                             // exception with a stack trace. Exit 2, the fail-closed startup
                             // code: nothing ran, so nothing may read as green. Recorded so the
