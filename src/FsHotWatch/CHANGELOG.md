@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.36 - 2026-09-17
+
 - Plugins run on the work owner. An event is outstanding until its state is committed
   (publish, `Finalize`, cache write, receipt); `RegisteredPlugin.DispatchTracked` returns its
   receipt. `PluginCommand.Observe` reads the committed snapshot without waiting. Exclusive
