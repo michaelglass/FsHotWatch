@@ -11,6 +11,10 @@
   any completed, otherwise the classified completed outcome. This is what lets a client
   tell a model mid-rediscovery from a healthy one that selected nothing; before, both
   reached the CLI as the same empty reply.
+- Fix: the RPC seam's deadline now covers a callback's synchronous prefix. The timer
+  starts before the callback runs, and the callback is scheduled on the thread pool, so
+  an RPC body that blocks before returning its Task (a `task { }` runs inline up to its
+  first real await) faults with `TimeoutException` instead of holding the caller forever.
 
 ## 0.10.0-alpha.35 - 2026-09-16
 

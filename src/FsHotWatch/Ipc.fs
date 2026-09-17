@@ -224,16 +224,21 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// `status`/`scanStatus`/`cache-clear` are intentionally NOT bracketed — they must
     /// stay cheap and readable even while another op is wedged, and reading the wedge
     /// report is how a consumer learns about the wedge.
+    ///
+    /// The clock starts BEFORE the callback runs, and the callback runs on the pool:
+    /// a callback can block before it ever returns its Task (a `task { }` body runs
+    /// inline up to its first real await), and calling it inline would leave that
+    /// synchronous prefix outside the deadline.
     let trackedTask (name: string) (f: unit -> Task<'a>) : Task<'a> =
         let token = watchdog |> Option.map (fun w -> w.Begin name)
 
         task {
             try
-                let work = f ()
                 let d = seamDeadline ()
 
                 use timeoutCts = new CancellationTokenSource()
                 let expiry = Task.Delay(d, timeoutCts.Token)
+                let work = Task.Run<'a>(Func<Task<'a>>(f))
                 let! winner = Task.WhenAny(work :> Task, expiry)
 
                 if obj.ReferenceEquals(winner, expiry) then

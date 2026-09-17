@@ -1432,6 +1432,52 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     test <@ inner.Message.Contains("fshw stop") @>
 
 [<Fact(Timeout = 15000)>]
+let ``RPC deadline includes a synchronous callback before its task is returned`` () =
+    // A callback can wedge BEFORE it hands back a Task: a `task { }` body runs inline
+    // up to its first real await, so a blocking call there never yields. If the seam
+    // starts its clock only after the callback returns, that wedge has no deadline.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let config =
+        { defaultRpcConfig host with
+            InvalidateCache =
+                fun () ->
+                    entered.TrySetResult() |> ignore
+                    // Blocks the calling thread; no Task exists yet.
+                    release.Task.Wait()
+                    Task.FromResult(()) }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 300.0)
+
+    // Off the test thread, so a seam that runs the callback inline cannot hang the test.
+    let call = Task.Run<string>(Func<Task<string>>(fun () -> target.Invalidate()))
+
+    try
+        test <@ entered.Task.Wait(TimeSpan.FromSeconds 5.0) @>
+
+        let settledInTime =
+            obj.ReferenceEquals(Task.WhenAny(call :> Task, Task.Delay(TimeSpan.FromSeconds 5.0)).Result, call)
+
+        test <@ settledInTime @>
+        let ex = Assert.Throws<AggregateException>(fun () -> call.Wait())
+        Assert.IsType<TimeoutException>(ex.InnerException) |> ignore
+        test <@ ex.InnerException.Message.Contains("Invalidate") @>
+    finally
+        // Always unblock the callback and drain the call, whichever way it went.
+        release.TrySetResult() |> ignore
+
+        try
+            call.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
 let ``an RPC that completes inside the deadline returns normally`` () =
     // The seam must not fire on healthy work — the deadline is a backstop, not a
     // budget.
