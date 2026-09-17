@@ -68,8 +68,11 @@ let myPlugin: PluginHandler<MyState, unit> =
                             FilesChecked = state.FilesChecked + 1 }
                 | _ -> return state
             }
-      Commands = [ "my-status", fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" } ]
+      Commands =
+        [ "my-status",
+          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 ```
@@ -88,10 +91,44 @@ daemon.RegisterHandler(myPlugin)
 | `Name` | `PluginName.create "..."` — display name, shown in `fshw check` / `fshw status`. |
 | `Init` | The plugin's starting state. |
 | `Update` | `ctx -> state -> event -> Async<state>`. Pattern-match the event, do your work, return the next state. |
-| `Commands` | IPC commands, `(name, fun ctx state args -> Async<string>)`. Invoked by tools over the pipe; the string you return is the reply. |
+| `PrepareCommit` | `Some (fun committed candidate -> async { ... })` for durable work that must succeed before the new state counts, or `None`. See [Committing state](#committing-state). |
+| `Commands` | IPC commands, `(name, PluginCommand.Observe ...)` or `(name, PluginCommand.Request ...)`. Invoked by tools over the pipe; the string you return is the reply. See [Commands](#commands). |
 | `Subscriptions` | A `Set` of the events you want delivered. Use `PluginSubscriptions.none` (empty) if you only handle custom messages. |
-| `CacheKey` | `Some (fun event -> hash)` to replay a cached result on an unchanged input, or `None` to always run. |
+| `CacheKey` | `Some (fun state event -> hash)` to replay a cached result on an unchanged input, or `None` to always run. `state` is the committed state the event's `Update` will receive. |
 | `Teardown` | `Some (fun () -> ...)` to clean up when the host shuts down, or `None`. |
+
+## Commands
+
+A command is one of two contracts, and the case you pick says which.
+
+- **`PluginCommand.Observe (fun ctx state args -> ...)`** reads state. Its context has no
+  `Post`, so an observation cannot start work.
+- **`PluginCommand.Request (fun ctx args -> ...)`** asks the plugin to do something. It
+  gets `ctx.Post` and never sees state. A choice that depends on state, such as "re-run
+  the tests that failed", belongs in `Update`: post a message that names the request and
+  let `Update` decide against the state it is folding the message into. A request that
+  read state first and then posted could act on a result that was already stale.
+
+`PluginCommand.invoke command ctx state args` runs either case against an explicit
+state, which is how a plugin's own tests drive a command without a host.
+
+## Committing state
+
+`Update` returns a candidate state. Most plugins stop there. A plugin that also has to
+make something durable, such as writing a ledger to disk, supplies `PrepareCommit`:
+
+```fsharp
+PrepareCommit =
+    Some(fun committed candidate ->
+        async {
+            // Stage the durable write. Throwing here keeps `committed`.
+            let staged = stage candidate
+            return { Finalize = async { do! publish staged } }
+        })
+```
+
+If preparation throws, the candidate is discarded and the event fails. `Finalize` runs
+after the candidate is visible; if it throws, the candidate stays and the event fails.
 
 ## Events
 
@@ -230,6 +267,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 ```

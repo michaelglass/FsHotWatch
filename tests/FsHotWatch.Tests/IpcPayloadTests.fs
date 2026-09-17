@@ -50,6 +50,7 @@ let private completedHandlerWith (name: string) (summary: string) (action: Plugi
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -70,6 +71,7 @@ let private failingHandler (name: string) (err: string) =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -125,6 +127,7 @@ let private verifiedNothingHandler (name: string) (detail: string) =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 

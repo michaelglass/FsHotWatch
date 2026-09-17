@@ -36,6 +36,7 @@ let private stuckHandler (name: string) (release: ManualResetEventSlim) =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -97,7 +98,8 @@ let private throwingCacheKeyHandler (name: string) =
       Update = fun _ctx state _event -> async { return state }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-      CacheKey = Some(fun _event -> failwith "cache-key computation failed")
+      PrepareCommit = None
+      CacheKey = Some(fun _ _ -> failwith "cache-key computation failed")
       Teardown = None }
 
 [<Fact(Timeout = 60_000)>]
@@ -179,9 +181,10 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted; SubscribeFileChanged ]
+          PrepareCommit = None
           // Throws for FileChanged only, so the run can be established first.
           CacheKey =
-            Some(fun event ->
+            Some(fun _ event ->
                 match event with
                 | FileChanged _ -> failwith "cache-key computation failed"
                 | _ -> None)
@@ -253,6 +256,7 @@ let private slowDrainingHandler (name: string) =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 

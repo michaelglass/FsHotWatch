@@ -208,6 +208,7 @@ let buildRecorder () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -232,6 +233,7 @@ let commandRecorder () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -257,6 +259,7 @@ let commandCounter (pluginName: string) =
                 }
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -282,6 +285,7 @@ let testProgressRecorder () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestProgress ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -307,6 +311,7 @@ let testRunCompletedRecorder () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestRunCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

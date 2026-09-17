@@ -979,7 +979,7 @@ let ``afterTests events are never cacheable across runs, whether filtered or ful
             "/tmp"
             None
 
-    let key = handler.CacheKey.Value
+    let key = handler.CacheKey.Value handler.Init
 
     let completed (verification: RunVerification) (results: (string * TestResult) list) : PluginEvent<unit> =
         TestRunCompleted
@@ -1034,7 +1034,7 @@ let private cacheKeyFnFor (command: string) (args: string) =
         5000
     |> ignore
 
-    handler.CacheKey.Value
+    handler.CacheKey.Value handler.Init
 
 [<Fact(Timeout = 20000)>]
 let ``cache key is independent of commit_id`` () =
@@ -1063,7 +1063,7 @@ let ``cache key is independent of commit_id`` () =
             5000
         |> ignore
 
-        handler.CacheKey.Value
+        handler.CacheKey.Value handler.Init
 
     let keyFnA = buildKeyFn ()
     let keyFnB = buildKeyFn ()

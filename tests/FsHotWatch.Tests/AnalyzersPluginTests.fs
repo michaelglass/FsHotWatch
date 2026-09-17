@@ -163,7 +163,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
         { parseOnlyResult with
             CheckResults = FullCheck(Unchecked.defaultof<_>) }
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
 
     let parseOnlyKey = cacheKeyFn (FileChecked parseOnlyResult)
     let fullCheckKey = cacheKeyFn (FileChecked fullCheckResult)
@@ -243,7 +243,7 @@ let ``cache key is provided regardless of getCommitId`` () =
 [<Fact(Timeout = 15000)>]
 let ``cache key reflects file content when getCommitId is unavailable`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
 
     let r1 =
         { fakeResult "/tmp/X.fs" with
@@ -385,7 +385,7 @@ let ``a refused analyzer identity means no cache key, no cache entry, and the an
             host.RegisterHandler(handler)
 
             let file = System.IO.Path.Combine(repoRoot, "src", "Probe.fs")
-            test <@ (handler.CacheKey.Value) (FileChecked(fakeResult file)) = None @>
+            test <@ (handler.CacheKey.Value handler.Init) (FileChecked(fakeResult file)) = None @>
 
             host.EmitFileChecked(fakeResult file)
             waitForTerminalStatus host "analyzers" 20000
@@ -403,13 +403,13 @@ let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)
     try
         let h1 = create None [ dir ] None DiagnosticSeverity.Hint
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
-        let key1 = (h1.CacheKey.Value) event
+        let key1 = (h1.CacheKey.Value h1.Init) event
 
         // The rebuild: same path, new content.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "RuleChanged.dll"), [| 9uy; 9uy; 9uy; 9uy |])
 
         let h2 = create None [ dir ] None DiagnosticSeverity.Hint
-        let key2 = (h2.CacheKey.Value) event
+        let key2 = (h2.CacheKey.Value h2.Init) event
 
         test <@ key1.IsSome @>
         test <@ key2.IsSome @>
@@ -479,11 +479,11 @@ let ``one live handler follows a rebuilt DLL: the set is reloaded and the key mo
     try
         let handler = create None [ dir ] None DiagnosticSeverity.Hint
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
-        let before = (handler.CacheKey.Value) event
+        let before = (handler.CacheKey.Value handler.Init) event
 
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Live.dll"), [| 9uy; 9uy; 9uy |])
-        let after = (handler.CacheKey.Value) event
-        let again = (handler.CacheKey.Value) event
+        let after = (handler.CacheKey.Value handler.Init) event
+        let again = (handler.CacheKey.Value handler.Init) event
 
         test <@ before.IsSome && after.IsSome @>
         test <@ before <> after @>
@@ -509,7 +509,7 @@ let ``a refusal that changes cause is re-noticed; the key stays absent throughou
             FileChecked(fakeResult (System.IO.Path.Combine(repoRoot, "src", "Probe.fs")))
 
         // MissingPdb: no receipt beside a first-party build.
-        test <@ (handler.CacheKey.Value) event = None @>
+        test <@ (handler.CacheKey.Value handler.Init) event = None @>
 
         // PdbMismatch: a sidecar that is not this build's. The snapshot is retaken
         // every event while refused, so the new cause is seen without a byte moving.
@@ -518,17 +518,17 @@ let ``a refusal that changes cause is re-noticed; the key stays absent throughou
             System.IO.Path.ChangeExtension(dll, ".pdb")
         )
 
-        test <@ (handler.CacheKey.Value) event = None @>
+        test <@ (handler.CacheKey.Value handler.Init) event = None @>
 
         // The right PDB: the refusal clears, again without the DLL changing.
         System.IO.File.Copy(AnalyzerFixtures.rulesPdb, System.IO.Path.ChangeExtension(dll, ".pdb"), true)
         // ...but a DLL in a temp dir has no producer project above it in the repo.
-        test <@ (handler.CacheKey.Value) event = None @>)
+        test <@ (handler.CacheKey.Value handler.Init) event = None @>)
 
 [<Fact(Timeout = 15000)>]
 let ``cache key for Custom event returns None`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
 
     let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
     test <@ customKey.IsNone @>
@@ -536,7 +536,7 @@ let ``cache key for Custom event returns None`` () =
 [<Fact(Timeout = 15000)>]
 let ``cache key for non-FileChecked event returns None`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
 
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
     test <@ buildKey.IsNone @>
@@ -560,7 +560,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
         { Plugin = "analyzers"
           File = Some(compositeFileKey "/tmp" "/tmp/test/Replay.fs") }
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
     let event = FileChecked(fakeResult "/tmp/test/Replay.fs")
     let computedKey = cacheKeyFn event
     // `runAndCache` writes the entry AFTER the plugin reports terminal status, so what
@@ -596,7 +596,9 @@ let ``regression: cache replay must not resurrect a stale global findings summar
 
     let cleanFile = "/tmp/test/StaleSummary.fs"
     let checkResult = fakeResult cleanFile
-    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let cacheKey =
+        ((handler.CacheKey.Value handler.Init) (FileChecked checkResult)).Value
 
     let cleanEntry: FsHotWatch.TaskCache.TaskCacheResult =
         { CacheKey = cacheKey
@@ -659,7 +661,9 @@ let ``per-file replay WITH findings derives EXACTLY those findings, not a hardco
 
     let dirtyFile = "/tmp/test/WithFindings.fs"
     let checkResult = fakeResult dirtyFile
-    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let cacheKey =
+        ((handler.CacheKey.Value handler.Init) (FileChecked checkResult)).Value
 
     let findings = [ for i in 1..5 -> ErrorEntry.error $"finding %d{i}" ]
 
@@ -723,7 +727,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
         { Plugin = "analyzers"
           File = Some(compositeFileKey "/tmp" "/tmp/test/CacheRegression.fs") }
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = handler.CacheKey.Value handler.Init
     let event = FileChecked(fakeResult "/tmp/test/CacheRegression.fs")
     let computedKey = cacheKeyFn event
 
@@ -1150,7 +1154,9 @@ let ``diagnostics command sums findings across files in a populated state`` () =
     let (_, diagnosticsCmd) =
         handler.Commands |> List.find (fun (name, _) -> name = "diagnostics")
 
-    let json = diagnosticsCmd nullCommandCtx populated [||] |> Async.RunSynchronously
+    let json =
+        FsHotWatch.PluginFramework.PluginCommand.invoke diagnosticsCmd nullCommandCtx populated [||]
+        |> Async.RunSynchronously
 
     test <@ json.Contains("\"diagnostics\":2") @>
     test <@ json.Contains("\"files\":1") @>

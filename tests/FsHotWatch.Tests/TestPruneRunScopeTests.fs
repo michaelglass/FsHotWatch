@@ -908,7 +908,8 @@ let ``completion publishes real CTRF recall through check-reach IPC`` () =
               IsRunning = fun _ -> false
               ProjectGraph = pluginCtx.ProjectGraph }
 
-        let json = command commandCtx state [||] |> Async.RunSynchronously
+        let json =
+            PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
 
         match FsHotWatch.Cli.IpcParsing.parseCheckReach json with
         | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
@@ -1557,7 +1558,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
         let report =
-            scopeCommand commandCtx final [||]
+            PluginCommand.invoke scopeCommand commandCtx final [||]
             |> Async.RunSynchronously
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -1613,7 +1614,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
         let report =
-            scopeCommand commandCtx final [||]
+            PluginCommand.invoke scopeCommand commandCtx final [||]
             |> Async.RunSynchronously
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -2035,7 +2036,7 @@ let ``adding a compile item moves the BuildCompleted cache key`` () =
             create (Path.Combine(tmpDir, "tp.db")) tmpDir None None None None None []
 
         let keyOf () =
-            handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+            (handler.CacheKey.Value handler.Init) (BuildCompleted BuildSucceeded)
 
         let before = keyOf ()
         test <@ before.IsSome @>
@@ -2837,7 +2838,7 @@ let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPr
           IsRunning = fun _ -> false
           ProjectGraph = ProjectGraphAccessor.none }
 
-    command ctx state [||]
+    PluginCommand.invoke command ctx state [||]
     |> Async.RunSynchronously
     |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -3114,7 +3115,7 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
               ProjectGraph = ProjectGraphAccessor.none }
 
         let report =
-            scopeCommand commandCtx settled [||]
+            PluginCommand.invoke scopeCommand commandCtx settled [||]
             |> Async.RunSynchronously
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 

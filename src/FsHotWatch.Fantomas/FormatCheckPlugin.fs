@@ -237,13 +237,14 @@ let internal createFormatCheckWith
                         return { Unformatted = newUnformatted }
                 | _ -> return state
             }
+      PrepareCommit = None
       Commands =
         [ "unformatted",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   let files = state.Unformatted |> Set.toList |> String.concat ", "
                   return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
-              } ]
+              }) ]
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey =
         // Content key: merkle of (file path, file source) for each file in the
@@ -307,7 +308,7 @@ let internal createFormatCheckWith
                 | _ -> None
             | _ -> None
 
-        Some(cacheKey repoRoot)
+        Some(fun _state event -> cacheKey repoRoot event)
       Teardown = None }
 
 /// Read-only format check plugin (reports unformatted files without modifying them).

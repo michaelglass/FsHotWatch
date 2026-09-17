@@ -365,6 +365,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -402,6 +403,7 @@ let ``daemon dispatches file change events to plugins`` () =
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -451,6 +453,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -522,6 +525,7 @@ let ``daemon handles ProjectChanged events`` () =
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -581,6 +585,7 @@ let ``daemon handles SolutionChanged events`` () =
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -770,6 +775,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
               Update = fun _ctx state _event -> async { return state }
               Commands = []
               Subscriptions = PluginSubscriptions.none
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1101,6 +1107,7 @@ let ``RunOnce completes and returns plugin statuses`` () =
               Update = fun _ctx state _event -> async { return state }
               Commands = []
               Subscriptions = PluginSubscriptions.none
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 

@@ -210,6 +210,27 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: plugin handlers state what they read and what they commit — BREAKING (plugin API)
+
+Every `PluginHandler` must change. A plugin written against the previous release does
+not compile.
+
+- **`CacheKey` receives the committed state.** It is now
+  `('State -> PluginEvent<'Msg> -> ContentHash option) option`. The state is the one the
+  event's `Update` will receive, so a key no longer has to mirror plugin state in a
+  closure. Migrate a stateless key with `Some(fun _state event -> key event)`.
+- **`Commands` are `PluginCommand` values.** `PluginCommand.Observe` reads state and
+  cannot post work. `PluginCommand.Request` posts work and never sees state. Wrap a
+  reading command as `PluginCommand.Observe(fun ctx state args -> ...)` and a posting one
+  as `PluginCommand.Request(fun ctx args -> ...)`. A request whose choice depends on state
+  now posts a message and lets `Update` decide. `PluginCommand.invoke` runs either case
+  against an explicit state in a plugin's own tests.
+- **New `PrepareCommit` field.** Set it to `None` unless the plugin has durable work that
+  must succeed before its new state counts. See `docs/writing-plugins.md`.
+
+`test-prune`: `run-tests --only-failed` now picks its projects inside the plugin, from the
+state it folds the request into, instead of from state the command read before posting.
+
 ### core: a vocabulary for owned plugin work (not wired yet)
 
 `PluginWorkOwner` adds the types the plugin framework and host will move onto. It changes

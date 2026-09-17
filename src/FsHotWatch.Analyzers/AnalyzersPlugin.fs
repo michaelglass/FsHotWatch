@@ -624,9 +624,10 @@ let internal createWithSlowHook
                     return state
                 | _ -> return state
             }
+      PrepareCommit = None
       Commands =
         [ "diagnostics",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   let totalDiags =
                       state.DiagnosticsByFile
@@ -639,7 +640,7 @@ let internal createWithSlowHook
                              files = state.DiagnosticsByFile.Count
                              diagnostics = totalDiags |}
                       )
-              } ]
+              }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key: the analyzer set's identity and failure threshold, the
@@ -705,7 +706,7 @@ let internal createWithSlowHook
                     )
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state event -> cacheKey event)
       Teardown =
         Some(fun () ->
             // Cancellation is cooperative. Do not dispose tokens/semaphores while

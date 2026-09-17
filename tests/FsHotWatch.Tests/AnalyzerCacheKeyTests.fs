@@ -18,7 +18,8 @@ open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
 let private keyFor (repoRoot: string option) (threshold: DiagnosticSeverity) (result: FileCheckResult) =
-    (create repoRoot [] None threshold).CacheKey.Value(FileChecked result)
+    let handler = create repoRoot [] None threshold
+    handler.CacheKey.Value handler.Init (FileChecked result)
 
 /// A file under `root/src` whose project lists only it.
 let private resultIn (root: string) =

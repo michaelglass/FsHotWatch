@@ -32,6 +32,7 @@ let private makeCtxAwareHandlerWithVerdict
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -146,6 +147,7 @@ let private failWithoutRunning (name: string) (error: string) (verdict: RunVerdi
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 

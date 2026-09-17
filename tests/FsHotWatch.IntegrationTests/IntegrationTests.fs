@@ -1230,6 +1230,7 @@ let ``BuildPlugin succeeds with echo command`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1275,6 +1276,7 @@ let ``BuildPlugin fails with false command`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1685,6 +1687,7 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -2063,6 +2066,7 @@ let ``concurrent FileChanged events run two builds sequentially`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -2165,6 +2169,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -2248,6 +2253,7 @@ let private makeControllablePlugin (name: string) =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -2421,6 +2427,7 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -2508,6 +2515,7 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -2709,6 +2717,7 @@ let private fileCheckCounter (name: string) (targetCanonical: string) =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

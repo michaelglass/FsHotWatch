@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `run-tests --only-failed` resolves which projects failed inside the plugin, against the
+  state it folds the request into, rather than from state the IPC command read before
+  posting. Commands migrate to `PluginCommand.Observe` / `PluginCommand.Request`, and the
+  cache key takes the committed state.
+
 ## 0.13.0-alpha.38 - 2026-09-16
 
 - a file that no longer exists is GONE, not a file that failed

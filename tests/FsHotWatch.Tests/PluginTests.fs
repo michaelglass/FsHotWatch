@@ -12,6 +12,7 @@ let ``plugin has a name`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

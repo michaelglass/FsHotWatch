@@ -614,6 +614,7 @@ let ``CLI status query works against running daemon`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -660,6 +661,7 @@ let ``CLI plugin status query works against running daemon`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -709,12 +711,13 @@ let ``CLI command proxying works against running daemon`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "greet",
-              fun _ctx _state args ->
+              PluginCommand.Request(fun _ctx args ->
                   async {
                       let name = if args.Length > 0 then args.[0] else "world"
                       return $"hello {name}"
-                  } ]
+                  }) ]
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

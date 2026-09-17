@@ -415,15 +415,16 @@ let create
 
                 | _ -> return state
             }
+      PrepareCommit = None
       Commands =
         [ $"%s{nameStr}-status",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   match state.LastResult with
                   | Succeeded _ -> return JsonSerializer.Serialize({| passed = true |})
                   | CommandFailed _ -> return JsonSerializer.Serialize({| passed = false |})
                   | NeverRun -> return JsonSerializer.Serialize({| status = "not run" |})
-              } ]
+              }) ]
       Subscriptions = CommandTrigger.subscriptions trigger
       CacheKey =
         // Pure-content cache key: merkle of (command, args, content of every
@@ -443,5 +444,5 @@ let create
             | FileChanged _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state event -> cacheKey event)
       Teardown = None }

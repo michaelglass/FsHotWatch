@@ -55,6 +55,7 @@ let ``server responds to GetStatus`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -86,8 +87,9 @@ let ``server responds to RunCommand`` () =
         { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
+          Commands = [ "greet", PluginCommand.Observe(fun _ctx _state _args -> async { return "hello world" }) ]
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -121,6 +123,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -183,12 +186,13 @@ let ``RunCommand with plugin that returns a result`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "echo",
-              fun _ctx _state args ->
+              PluginCommand.Request(fun _ctx args ->
                   async {
                       let msg = if args.Length > 0 then args.[0] else "empty"
                       return $"echoed: {msg}"
-                  } ]
+                  }) ]
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -258,6 +262,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -434,6 +439,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
     )
@@ -500,12 +506,13 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "hello",
-              fun _ctx _state args ->
+              PluginCommand.Request(fun _ctx args ->
                   async {
                       let arg = if args.Length > 0 then args.[0] else "world"
                       return $"hello {arg}"
-                  } ]
+                  }) ]
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -544,6 +551,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -966,6 +974,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1010,6 +1019,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1061,6 +1071,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1269,6 +1280,7 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

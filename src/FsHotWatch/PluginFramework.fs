@@ -244,6 +244,47 @@ type CommandCtx<'Msg> =
         ProjectGraph: ProjectGraphAccessor
     }
 
+/// The context an observing command receives. It has no route for posting work: an
+/// observation reads committed state and nothing else.
+[<NoComparison; NoEquality>]
+type CommandReadCtx =
+    {
+        /// The repository root directory.
+        RepoRoot: string
+        /// Append an activity log line. Also routes to Logging.info.
+        Log: string -> unit
+        /// Whether `key` is currently running under `RunExclusive`.
+        IsRunning: string -> bool
+        /// Read-only project-graph accessor.
+        ProjectGraph: ProjectGraphAccessor
+    }
+
+/// A named IPC command. The two cases are two different contracts.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type PluginCommand<'State, 'Msg> =
+    /// Read committed state. An observation cannot post work, so it never has to wait
+    /// behind work that is running.
+    | Observe of (CommandReadCtx -> 'State -> string array -> Async<string>)
+    /// Ask the plugin to do something. A request never sees state: any choice that
+    /// depends on state belongs to the plugin's own `Update`, which folds the message
+    /// against the state it actually commits.
+    | Request of (CommandCtx<'Msg> -> string array -> Async<string>)
+
+module PluginCommand =
+    /// The observing half of a command context.
+    let readContext (ctx: CommandCtx<'Msg>) : CommandReadCtx =
+        { RepoRoot = ctx.RepoRoot
+          Log = ctx.Log
+          IsRunning = ctx.IsRunning
+          ProjectGraph = ctx.ProjectGraph }
+
+    /// Run a command against an explicit state. Plugin tests use this to drive a
+    /// command without a host.
+    let invoke (command: PluginCommand<'State, 'Msg>) (ctx: CommandCtx<'Msg>) (state: 'State) (args: string array) =
+        match command with
+        | PluginCommand.Observe read -> read (readContext ctx) state args
+        | PluginCommand.Request request -> request ctx args
+
 /// Tags for events a plugin can subscribe to.
 type SubscribedEvent =
     | SubscribeFileChanged
@@ -263,6 +304,12 @@ module PluginSubscriptions =
     /// No subscriptions — the plugin only handles Custom messages.
     let none: PluginSubscriptions = Set.empty
 
+/// What a plugin's `PrepareCommit` hands back once its durable preparation succeeded.
+/// `Finalize` runs after the candidate state is published and before the event is
+/// acknowledged.
+[<NoComparison; NoEquality>]
+type PreparedCommit = { Finalize: Async<unit> }
+
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
@@ -273,17 +320,20 @@ type PluginHandler<'State, 'Msg> =
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
         Update: PluginCtx<'Msg> -> 'State -> PluginEvent<'Msg> -> Async<'State>
-        /// Named commands that can be invoked via IPC. Each command receives a
-        /// deliberately narrow `CommandCtx` (see its doc — commands observe and
-        /// `Post`, they never launch work on the IPC thread), a state snapshot,
-        /// and args. `ctx` is typically `_ctx` for commands that don't need it.
-        Commands: (string * (CommandCtx<'Msg> -> 'State -> string array -> Async<string>)) list
+        /// Optional durable preparation for a successful update, given the committed
+        /// state and the candidate `Update` returned. Nothing is published if it fails.
+        /// A failing `Finalize` leaves the candidate published and the event failed.
+        PrepareCommit: ('State -> 'State -> Async<PreparedCommit>) option
+        /// Named commands that can be invoked via IPC. An `Observe` reads committed
+        /// state; a `Request` posts work and never sees state (see `PluginCommand`).
+        Commands: (string * PluginCommand<'State, 'Msg>) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
-        /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
+        /// Optional cache key function, given the committed state `Update` will receive.
+        /// `Some hash` → look up the cache and replay on hit.
         /// `None` → skip cache and run Update — overloaded across "uncacheable event",
         /// "cold-start bypass", and "outputs missing"; plugins document which at the call site.
-        CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
+        CacheKey: ('State -> PluginEvent<'Msg> -> ContentHash option) option
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
     }
@@ -1032,10 +1082,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             let handlerStarted = DateTime.UtcNow
 
                             try
-                                return! handler.Update pluginCtx state event
+                                let! candidate = handler.Update pluginCtx state event
+                                return Result.Ok candidate
                             with ex ->
                                 reportForcedFailure "Plugin handler" handlerStarted ex
-                                return state
+                                return Result.Error ex
                         }
 
                     /// Run Update with a capturing context that records side effects, then store in cache if terminal.
@@ -1138,7 +1189,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
 
-                                let! nextState = safeUpdate capturingCtx state event
+                                let! attempted = safeUpdate capturingCtx state event
 
                                 // Only cache when the status reached a terminal state AND
                                 // the handler did not launch a new run in the same window
@@ -1161,8 +1212,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | Some(Failed(err, _, v)), None -> Some(TaskCache.CachedRunFailed(err, v))
                                     | (Some(Idle | Running _) | None), _ -> None
 
-                                match cachedStatus with
-                                | Some status when not launchedRunInWindow ->
+                                match attempted, cachedStatus with
+                                | Result.Ok _, Some status when not launchedRunInWindow ->
                                     let result: TaskCache.TaskCacheResult =
                                         { CacheKey = cacheKey
                                           Errors = capturedErrors |> Seq.toList
@@ -1172,8 +1223,31 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     cache.Set compKey cacheKey result
                                 | _ -> ()
 
-                                return nextState
+                                return attempted
                             | _ -> return! safeUpdate ctx state event
+                        }
+
+                    /// Durable preparation for a successful update. A failed preparation
+                    /// keeps the committed state; a failed finalization keeps the candidate.
+                    let commitCandidate (state: 'State) (candidate: 'State) =
+                        async {
+                            match handler.PrepareCommit with
+                            | None -> return candidate
+                            | Some prepare ->
+                                let started = DateTime.UtcNow
+
+                                try
+                                    let! prepared = prepare state candidate
+
+                                    try
+                                        do! prepared.Finalize
+                                        return candidate
+                                    with ex ->
+                                        reportForcedFailure "Plugin commit" started ex
+                                        return candidate
+                                with ex ->
+                                    reportForcedFailure "Plugin commit" started ex
+                                    return state
                         }
 
                     let rec loop state =
@@ -1218,7 +1292,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 // Computed ONCE per dispatched event — see `tryReplayCache`.
                                                 let cacheKeyOpt =
                                                     match handler.CacheKey with
-                                                    | Some cacheKeyFn -> cacheKeyFn event
+                                                    | Some cacheKeyFn -> cacheKeyFn state event
                                                     | None -> None
 
                                                 // A `Custom` message is a cache WRITER, never a cache READER.
@@ -1244,7 +1318,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 if tryReplayCache event replayKeyOpt then
                                                     return state
                                                 else
-                                                    return! runAndCache event state cacheKeyOpt
+                                                    match! runAndCache event state cacheKeyOpt with
+                                                    | Result.Ok candidate -> return! commitCandidate state candidate
+                                                    | Result.Error _ -> return state
                                             with ex ->
                                                 // Not `safeUpdate`'s net: that one wraps
                                                 // `handler.Update` alone, while this catches the
@@ -1302,8 +1378,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             cmdName,
             fun args ->
                 async {
-                    let! state = agent.PostAndAsyncReply(Choice2Of2)
-                    return! cmdHandler commandCtx state args
+                    match cmdHandler with
+                    | PluginCommand.Request request -> return! request commandCtx args
+                    | PluginCommand.Observe read ->
+                        let! state = agent.PostAndAsyncReply(Choice2Of2)
+                        return! read (PluginCommand.readContext commandCtx) state args
                 }
         )
 

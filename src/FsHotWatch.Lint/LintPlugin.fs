@@ -207,14 +207,15 @@ let create
                                 })
                 | _ -> return state
             }
+      PrepareCommit = None
       Commands =
         [ "warnings",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   let current = state.WarningsByFile
                   let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
                   return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
-              } ]
+              }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
-      CacheKey = Some cacheKey
+      CacheKey = Some(fun _state event -> cacheKey event)
       Teardown = None }

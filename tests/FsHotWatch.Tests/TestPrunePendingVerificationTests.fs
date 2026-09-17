@@ -201,6 +201,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 

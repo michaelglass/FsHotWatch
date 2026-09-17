@@ -167,6 +167,7 @@ let private sharedWakeHandlerWithClassifier
             }
       Commands = []
       Subscriptions = Set.singleton SubscribeFileChanged
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -360,8 +361,9 @@ let ``registered plugin dispatches FileChanged`` () =
                     | FileChanged _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", PluginCommand.Observe(fun _ctx state _args -> async { return $"%b{state}" }) ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -383,8 +385,9 @@ let ``registered plugin skips unsubscribed events`` () =
         { Name = PluginName.create "test-skip"
           Init = 0
           Update = fun _ctx state _event -> async { return state + 1 }
-          Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
+          Commands = [ "get-count", PluginCommand.Observe(fun _ctx state _args -> async { return $"%d{state}" }) ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -429,8 +432,9 @@ let ``commands query agent state`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-count", PluginCommand.Observe(fun _ctx state _args -> async { return $"%d{state}" }) ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -467,8 +471,9 @@ let ``Custom messages work for self-posting`` () =
                             return true
                         | _ -> return state
                     }
-              Commands = [ "got-custom", fun _ctx state _args -> async { return $"%b{state}" } ]
+              Commands = [ "got-custom", PluginCommand.Observe(fun _ctx state _args -> async { return $"%b{state}" }) ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -507,8 +512,9 @@ let ``handler errors are recovered`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-state", fun _ctx state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-state", PluginCommand.Observe(fun _ctx state _args -> async { return $"%d{state}" }) ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -543,8 +549,9 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
                     | CommandCompleted _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", PluginCommand.Observe(fun _ctx state _args -> async { return $"%b{state}" }) ]
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -583,8 +590,9 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                         return state
                     | _ -> return state
                 }
-          Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
+          Commands = [ "noop", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -648,8 +656,9 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
                     | FileChanged _ -> raise (System.InvalidOperationException("kaboom-distinctive-msg"))
                     | _ -> return state
                 }
-          Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
+          Commands = [ "noop", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -722,9 +731,10 @@ let ``pre-populated cache replays on the very first dispatch`` () =
 
                         return state
                     }
-              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+              Commands = [ "drain", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              PrepareCommit = None
+              CacheKey = Some(fun _ _ -> Some cacheKey)
               Teardown = None }
 
         let reg =
@@ -763,10 +773,11 @@ let ``cache key is computed exactly once per dispatched event on a cache miss`` 
 
                         return state
                     }
-              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+              Commands = [ "drain", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey =
-                Some(fun _ ->
+                Some(fun _ _ ->
                     System.Threading.Interlocked.Increment(keyCalls) |> ignore
                     Some cacheKey)
               Teardown = None }
@@ -805,10 +816,11 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
             { Name = PluginName.create pluginNameStr
               Init = ()
               Update = fun _ctx state _event -> async { return state }
-              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+              Commands = [ "drain", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey =
-                Some(fun _ ->
+                Some(fun _ _ ->
                     System.Threading.Interlocked.Increment(keyCalls) |> ignore
                     Some cacheKey)
               Teardown = None }
@@ -866,8 +878,9 @@ let ``RunExclusive does not start a second run while the first holds the slot`` 
                             return state + n
                         | _ -> return state
                     }
-              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
+              Commands = [ "get", PluginCommand.Observe(fun _ctx s _ -> async { return string s }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -980,9 +993,10 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                         System.Threading.Interlocked.Increment(updateCalls) |> ignore
                         return state
                     }
-              Commands = [ "drain", fun _ _ _ -> async { return "ok" } ]
+              Commands = [ "drain", PluginCommand.Observe(fun _ _ _ -> async { return "ok" }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              PrepareCommit = None
+              CacheKey = Some(fun _ _ -> Some cacheKey)
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -1043,9 +1057,10 @@ let ``cache replay synthesizes a matching start for a completion captured after 
             { Name = PluginName.create pluginNameStr
               Init = ()
               Update = fun _ state _ -> async { return state }
-              Commands = [ "drain", fun _ _ _ -> async { return "ok" } ]
+              Commands = [ "drain", PluginCommand.Observe(fun _ _ _ -> async { return "ok" }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              PrepareCommit = None
+              CacheKey = Some(fun _ _ -> Some cacheKey)
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -1106,8 +1121,9 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
                             return state + n
                         | _ -> return state
                     }
-              Commands = [ "get", fun _ s _ -> async { return string s } ]
+              Commands = [ "get", PluginCommand.Observe(fun _ s _ -> async { return string s }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1175,8 +1191,9 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
                             return state
                         | _ -> return state
                     }
-              Commands = [ "get", fun _ s _ -> async { return string s } ]
+              Commands = [ "get", PluginCommand.Observe(fun _ s _ -> async { return string s }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1223,8 +1240,9 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
                         | Custom(RxDone _) -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
+              Commands = [ "get", PluginCommand.Observe(fun _ctx s _ -> async { return string s }) ]
               Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1263,8 +1281,9 @@ let ``plugin subscribing to BatchChecked receives event`` () =
                         return state
                     | _ -> return state
                 }
-          Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+          Commands = [ "drain", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
           Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1310,9 +1329,10 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
                         return state
                     | _ -> return state
                 }
-          Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+          Commands = [ "drain", PluginCommand.Observe(fun _ctx _state _args -> async { return "ok" }) ]
           // Subscribed to FileChanged only — must NOT see BatchChecked.
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1378,6 +1398,7 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1492,6 +1513,7 @@ let ``RunExclusive reports Running at the claim — the framework owns the start
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1554,6 +1576,7 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1614,6 +1637,7 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1713,7 +1737,8 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
           Teardown = None }
 
     let reg =
@@ -1794,7 +1819,8 @@ let ``cache path: a handler that LAUNCHES a run does not cache the terminal it r
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
           Teardown = None }
 
     let reg =
@@ -1843,7 +1869,8 @@ let ``cache path: RunExclusive still refuses a second claim and says so`` () =
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
           Teardown = None }
 
     let reg =
@@ -1888,7 +1915,8 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
           Teardown = None }
 
     let reg =
@@ -1961,7 +1989,8 @@ let ``cache path: only an EARNED terminal is written — every other shape is sk
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some keyFor
+          PrepareCommit = None
+          CacheKey = Some(fun _ event -> keyFor event)
           Teardown = None }
 
     let reg =
@@ -2089,8 +2118,9 @@ let private runRig (raceTheClaim: PluginCtx<RigMsg> -> RegisteredPlugin -> Async
                         return state
                     | _ -> return state
                 }
-          Commands = [ "get", fun _ctx s _ -> async { return string s } ]
+          Commands = [ "get", PluginCommand.Observe(fun _ctx s _ -> async { return string s }) ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -2228,13 +2258,14 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
                     }
               Commands =
                 [ "post-result",
-                  (fun ctx _state _args ->
+                  PluginCommand.Request(fun ctx _args ->
                       async {
                           ctx.Post "run-finished"
                           return "ok"
                       }) ]
               Subscriptions = Set.empty
-              CacheKey = Some(fun _ -> Some cacheKey)
+              PrepareCommit = None
+              CacheKey = Some(fun _ _ -> Some cacheKey)
               Teardown = None }
 
         let reg =
@@ -2358,7 +2389,8 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
                     }
               Commands = []
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              PrepareCommit = None
+              CacheKey = Some(fun _ _ -> Some cacheKey)
               Teardown = None }
 
         let run (useCache: TaskCache.ITaskCache) =

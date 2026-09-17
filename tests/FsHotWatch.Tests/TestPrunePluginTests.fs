@@ -4500,7 +4500,7 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = handler.CacheKey.Value handler.Init
         let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
         test <@ computedKey.IsSome @>
 
@@ -4671,7 +4671,10 @@ let ``a project-scoped rerun cannot satisfy the next whole-suite check`` () =
         partialTerminal.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
-        let wholeTreeKey = handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+
+        let wholeTreeKey =
+            (handler.CacheKey.Value handler.Init) (BuildCompleted BuildSucceeded)
+
         test <@ wholeTreeKey.IsSome @>
         test <@ (cacheIface.TryGet key wholeTreeKey.Value).IsNone @>
 
@@ -4745,7 +4748,7 @@ let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` 
         File.WriteAllText(migration, "CREATE TABLE a (id int);")
 
         let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = handler.CacheKey.Value handler.Init
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
 
@@ -4763,7 +4766,7 @@ let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache ke
         File.WriteAllText(Path.Combine(migrationsDir, "001_init.sql"), "CREATE TABLE a (id int);")
 
         let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = handler.CacheKey.Value handler.Init
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
         File.WriteAllText(Path.Combine(migrationsDir, "002_more.sql"), "ALTER TABLE a ADD COLUMN x int;")
@@ -4783,8 +4786,11 @@ let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to t
         let salted = create ":memory:" tmpDir None None None None None []
         let unsalted = create ":memory:" tmpDir None None None None None [] // identical: [] dependsOn
 
-        let kSalted = ((salted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
-        let kUnsalted = ((unsalted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+        let kSalted =
+            ((salted.CacheKey.Value salted.Init) (BuildCompleted BuildSucceeded)).Value
+
+        let kUnsalted =
+            ((unsalted.CacheKey.Value unsalted.Init) (BuildCompleted BuildSucceeded)).Value
 
         test <@ kSalted = kUnsalted @>
         // "" means no merkle entry was added at all, not an entry with an empty value.
@@ -4798,10 +4804,11 @@ let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-d
         let handlerNoMatch =
             create ":memory:" tmpDir None None None None None [ "does-not-exist/**" ]
 
-        let kEmpty = ((handlerEmpty.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+        let kEmpty =
+            ((handlerEmpty.CacheKey.Value handlerEmpty.Init) (BuildCompleted BuildSucceeded)).Value
 
         let kNoMatch =
-            ((handlerNoMatch.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+            ((handlerNoMatch.CacheKey.Value handlerNoMatch.Init) (BuildCompleted BuildSucceeded)).Value
 
         test <@ kEmpty = kNoMatch @>
         test <@ externalDependencyHash tmpDir [ "does-not-exist/**" ] = "" @>)

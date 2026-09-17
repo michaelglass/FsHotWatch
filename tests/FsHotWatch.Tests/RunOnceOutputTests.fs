@@ -700,7 +700,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                   Update = fun _ctx state _event -> async { return state }
                   Commands =
                     [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-                      fun _ctx _state _args ->
+                      FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx _args ->
                           async {
                               scopeReads <- scopeReads + 1
 
@@ -709,8 +709,9 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                                       $"""{{"scope":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"{BaselineFixtures.replyFragment}}}"""
                                   else
                                       """{"scope":"none","noTestsReason":"already-verified"}"""
-                          } ]
+                          }) ]
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+                  PrepareCommit = None
                   CacheKey = None
                   Teardown = None }
 
@@ -979,16 +980,18 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                   Init = ()
                   Update = fun _ctx state _event -> async { return state }
                   Commands =
-                    [ FsHotWatch.Cli.IpcParsing.SetScopeCommand, fun _ctx _state _args -> async { return "" }
+                    [ FsHotWatch.Cli.IpcParsing.SetScopeCommand,
+                      FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx _args -> async { return "" })
                       FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-                      fun _ctx _state _args ->
+                      FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx _args ->
                           async {
                               return
                                   """{"scope":"full","ranProjects":1,"totalProjects":1"""
                                   + BaselineFixtures.replyFragment
                                   + "}"
-                          } ]
+                          }) ]
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+                  PrepareCommit = None
                   CacheKey = None
                   Teardown = None }
 
@@ -1052,8 +1055,10 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
               Update = fun _ctx state _event -> async { return state }
               Commands =
                 [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-                  fun _ctx _state (_args: string array) -> async { return failwith "SQLITE_BUSY: database is locked" } ]
+                  FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx (_args: string array) ->
+                      async { return failwith "SQLITE_BUSY: database is locked" }) ]
               Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1134,6 +1139,7 @@ let private crashingHandler () : FsHotWatch.PluginFramework.PluginHandler<unit, 
       Update = fun _ctx _state _event -> async { return failwith "plugin exploded mid-handler" }
       Commands = []
       Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 
@@ -1210,8 +1216,12 @@ let private hostWith (commands: (string * (string array -> string)) list) : FsHo
           Update = fun _ctx state _event -> async { return state }
           Commands =
             commands
-            |> List.map (fun (name, f) -> name, (fun _ctx _state (args: string array) -> async { return f args }))
+            |> List.map (fun (name, f) ->
+                name,
+                FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx (args: string array) ->
+                    async { return f args }))
           Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

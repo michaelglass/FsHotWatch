@@ -1219,6 +1219,7 @@ let createWith
 
                 | _ -> return state
             }
+      PrepareCommit = None
       Commands =
         [ // Idempotent and cheap: it sets a flag, it does not build. The next cache
           // LOOKUP misses, so the build runs for real and re-emits the artifacts
@@ -1230,13 +1231,13 @@ let createWith
           // "set-scope"/"run-tests" in TestPrunePlugin. The CLI-side constant
           // carries the contract doc; a test pins the two spellings together.
           "force-rebuild",
-          fun _ctx _state _args ->
+          PluginCommand.Request(fun _ctx _args ->
               async {
                   forceRebuild.Value <- true
                   return JsonSerializer.Serialize({| status = "ok"; forced = true |})
-              }
+              })
           "build-status",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   let lastResult = Lifecycle.value state.LastBuild
 
@@ -1260,7 +1261,7 @@ let createWith
                                  output = outputs |> String.concat "\n" |> truncateOutput 200 |}
                           )
                   | None -> return JsonSerializer.Serialize({| status = "not run" |})
-              } ]
+              }) ]
       Subscriptions =
         // Deliberately NOT `BatchChecked`: every source change drives a real
         // MSBuild build, so there is no test-only-skip phase to wait on the FCS
@@ -1381,7 +1382,7 @@ let createWith
             // CommandCompleted events likewise cannot trigger a build.
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state event -> cacheKey event)
       // There is NO cold-start gate in the framework — a comment here used to claim
       // one ("replay is suppressed until this plugin completes once in-session"), and
       // nothing in `PluginFramework`/`PluginHost` implements it. The task cache is

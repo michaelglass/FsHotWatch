@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Breaking plugin API: `PluginHandler.CacheKey` receives the committed state
+  (`'State -> PluginEvent<'Msg> -> ContentHash option`); `Commands` are
+  `PluginCommand.Observe` (reads state, cannot post) or `PluginCommand.Request` (posts,
+  never sees state); new `PrepareCommit` field for durable preparation before a new state
+  counts. `PluginCommand.invoke` runs a command against an explicit state.
+
 - breaking: the daemon now serves its project model to clients.
   `DaemonRpcConfig` gains the required `GetProjectModel: unit -> ProjectModel.Observation`,
   and the `GetDiagnostics` reply carries it as `projectModel` — the versioned

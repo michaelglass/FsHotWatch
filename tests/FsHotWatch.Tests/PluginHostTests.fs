@@ -36,6 +36,7 @@ let ``plugin receives file change events`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -52,8 +53,9 @@ let ``plugin registers command`` () =
         { Name = PluginName.create "cmd-test"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello" } ]
+          Commands = [ "greet", PluginCommand.Observe(fun _ctx _state _args -> async { return "hello" }) ]
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -85,6 +87,7 @@ let ``plugin reports status`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -112,6 +115,7 @@ let ``GetAllStatuses returns all plugin statuses`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -141,6 +145,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -168,6 +173,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -317,6 +323,7 @@ let ``multiple plugins receive the same event`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -356,6 +363,7 @@ let ``plugin can report and query errors via host`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -402,6 +410,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -469,6 +478,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -717,6 +727,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -768,6 +779,7 @@ let ``work-cycle generation bumps once across consecutive Running reports`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -806,6 +818,7 @@ let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing v
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -860,6 +873,7 @@ let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not de
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -894,6 +908,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -945,6 +960,7 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1003,6 +1019,7 @@ let ``a throwing OnStatusChanged subscriber is logged and does not kill status n
                     }
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
               CacheKey = None
               Teardown = None }
 
@@ -1043,6 +1060,7 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1084,6 +1102,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1109,6 +1128,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1171,6 +1191,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1201,6 +1222,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1249,6 +1271,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1278,6 +1301,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1302,6 +1326,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1340,6 +1365,7 @@ let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1374,6 +1400,7 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1416,6 +1443,7 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1553,6 +1581,7 @@ let private fileChangedRecorder (name: string) =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
@@ -1636,6 +1665,7 @@ let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
           Update = fun _ _ _ -> async { return () }
           Commands = []
           Subscriptions = Set.empty
+          PrepareCommit = None
           CacheKey = None
           Teardown = Some(fun () -> raise (System.InvalidOperationException("teardown boom"))) }
 
@@ -1860,6 +1890,7 @@ let ``a plugin's Running to Completed interval is recorded on the host's phase l
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          PrepareCommit = None
           CacheKey = None
           Teardown = None }
 

@@ -82,9 +82,10 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
       Subscriptions = Set.singleton SubscribeTestRunCompleted
       CacheKey = None
       Teardown = None
+      PrepareCommit = None
       Commands =
         [ "coverage-ratchet",
-          fun ctx _state args ->
+          PluginCommand.Request(fun ctx args ->
               async {
                   // The rewrite must NOT run here on the IPC thread: a
                   // concurrent `RunExclusive "coverage-check"` run reads the
@@ -117,17 +118,17 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                   else
                       return
                           "coverage-ratchet: did not complete within 5 minutes (a coverage check may be holding the slot); retry"
-              }
+              })
 
           "coverage-status",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   return
                       match state with
                       | None -> "coverage: no check run yet"
                       | Some true -> "coverage: OK"
                       | Some false -> "coverage: FAILED (run `fshw errors` for details)"
-              } ]
+              }) ]
       Update =
         fun ctx state event ->
             match event with

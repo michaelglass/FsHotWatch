@@ -316,7 +316,9 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
 
     let file = "/tmp/test/LintReplay.fs"
     let checkResult = fakeFileCheckResult file
-    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let cacheKey =
+        ((handler.CacheKey.Value handler.Init) (FileChecked checkResult)).Value
 
     // Three live warnings for this file replay into the ledger.
     let findings =

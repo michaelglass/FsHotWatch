@@ -57,8 +57,11 @@ let myPlugin: PluginHandler<MyState, unit> =
                             FilesChecked = state.FilesChecked + 1 }
                 | _ -> return state
             }
-      Commands = [ "my-status", fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" } ]
+      Commands =
+        [ "my-status",
+          PluginCommand.Observe(fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 // sync:plugin-example:end
@@ -150,6 +153,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
             }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
+      PrepareCommit = None
       CacheKey = None
       Teardown = None }
 // sync:test-verdict-example:end
