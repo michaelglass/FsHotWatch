@@ -729,6 +729,30 @@ let ``console zero-test refusal does not misidentify check as confirm`` () =
     test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
 
 [<Fact>]
+let ``console zero-test refusal is its own sentence and says what the verdict file says`` () =
+    let reasons =
+        [ NoTestsReason.AlreadyVerified
+          NoTestsReason.ChangesUncovered([ "M.f" ], 1, UnrunnableCoverage.none)
+          NoTestsReason.Unstated
+          NoTestsReason.UnknownReason "later-token" ]
+
+    for reason in reasons do
+        let outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason)
+        let text = Verdict.CheckProse.explainOutcome None outcome |> Option.get
+
+        // The generic narrow-scope template interpolated the scope's description, which
+        // for this case already begins "no tests ran", so the terminal printed
+        // "the tests that ran were no tests ran".
+        test <@ not (text.Contains "the tests that ran were") @>
+        test <@ text.StartsWith("NO VERDICT — ", StringComparison.Ordinal) @>
+        test <@ text.Contains(NoTestsReason.describe reason) @>
+
+        // The terminal and `.fshw/verdict.json` describe the same value in the same words.
+        match Verdict.outcomeOfCheck outcome with
+        | Verdict.Incomplete recorded -> test <@ text.Contains recorded @>
+        | other -> failwith $"a zero-test run must be recorded incomplete, got %A{other}"
+
+[<Fact>]
 let ``every check outcome maps to a file outcome — and only Clean is green`` () =
     test
         <@ BaselineFixtures.isGreen (Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)) @>

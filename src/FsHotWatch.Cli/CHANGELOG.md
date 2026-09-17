@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a `check`/`confirm` that ran no tests no longer prints "NO VERDICT — the tests that
+  ran were no tests ran — …, not the full suite." The terminal now says
+  `NO VERDICT — NO TESTS RAN — nothing was verified. This is not a pass; it is an absence
+  of evidence. (<reason>)`, the same sentence `.fshw/verdict.json` already recorded for
+  this outcome (`CheckProse.noTestsRan`, shared by both). Exit code and verdict file are
+  unchanged.
 - breaking: a `check`/`confirm` whose reading was taken without an
   available project model is no longer graded as if the model were healthy. A scan that
   raced a re-discovery analysed a graph with zero projects, which makes coverage vacuously

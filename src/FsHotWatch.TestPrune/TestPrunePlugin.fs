@@ -4836,9 +4836,8 @@ let internal cacheKeyFor
         // still queued is not a "safe to skip" verdict. And the outcome must be
         // non-Aborted: an aborted run has empty Results, which the all-passed fold treats
         // as trivially passing.
-        // Written out PER CASE, at the site, because the honest answer
-        // differs per case and there is deliberately no `TestResult` boolean that spans
-        // them:
+        // Written out PER CASE, at the site, because the JUSTIFICATION
+        // differs per case:
         //   * `Verified`        — ran and green. The only positive evidence there is.
         //   * `Refuted`         — a real red. Never cacheable, for the reason above.
         //   * `NothingVerified` — a zero MATCH is admitted here ONLY because the
@@ -4847,6 +4846,17 @@ let internal cacheKeyFor
         //     did verify something. A Deferred/Errored project is refused outright:
         //     a build-ordering race or a host crash must never be replayable as a
         //     green.
+        //
+        // The per-result VALUES, unlike the reasons, are not independent: this match is
+        // the exact negation of the `nonGreen` match in the `TestsFinished` handler's
+        // status ladder (a result admitted here is one that match excludes, and the
+        // reverse). Nothing enforces that — the two are kept in agreement BY HAND, so a
+        // case changed at one site must be changed at the other. A shared helper would
+        // not make them provably agree either, because what surrounds them differs: here
+        // the fold is ANDed with `Ran FullSuite`, `notAborted`, `not allZeroMatchRun`, an
+        // empty pending queue and no outstanding failures, and it decides a cache key;
+        // there it runs only once the aborted, zero-projects-with-queued-symbols and
+        // all-zero-match arms have been ruled out, and it decides a status line.
         let noProjectRefutedOrUnrun =
             completed.Results
             |> Map.forall (fun _ r ->
@@ -7893,6 +7903,11 @@ let internal createWithLaunchDeadline
                             // failures; matching only `Refuted` would drop the
                             // Deferred/Errored projects, which ARE non-green — they owed
                             // a result and produced none.
+                            //
+                            // Per result, this match is the exact negation of
+                            // `noProjectRefutedOrUnrun` in `cacheKeyFor`, kept in agreement
+                            // BY HAND — see that site for why a shared helper would not
+                            // enforce it (the conditions around the two differ).
                             let nonGreen =
                                 results.Results
                                 |> Map.toList

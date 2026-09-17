@@ -835,6 +835,13 @@ module CheckProse =
            needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
            may never mean. Nothing is reported broken, and nothing is reported sound either."
 
+    /// A run that executed no tests, and why. The verdict file records exactly this; the
+    /// terminal prefixes `NO VERDICT — `. Never `scopeTooNarrow`'s template: that one
+    /// interpolates the scope's description, which for this case is itself a sentence
+    /// ("no tests ran — …"), so it would print "the tests that ran were no tests ran".
+    let noTestsRan (reason: NoTestsReason) =
+        $"NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence. (%s{NoTestsReason.describe reason})"
+
     /// A scope that was read but cannot support the requested evidence claim.
     let scopeTooNarrow (scope: TestScope) =
         $"NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
@@ -891,6 +898,9 @@ module CheckProse =
         // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
         // "the run was too narrow", it is "we could not see what the run was".
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) -> Some(scopeUnreadable reason)
+        // Refused in BOTH modes too, and not "too narrow" either: nothing ran at all. The
+        // same words `outcomeOfCheck` records, so the terminal and the file agree.
+        | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason) -> Some $"NO VERDICT — %s{noTestsRan reason}"
         // Nothing failed, and that is precisely the point: `confirm` was asked for a
         // claim about the whole suite and the tests that ran do not support one, so it
         // has no verdict to give. Say so; never launder it into a green.
@@ -948,8 +958,7 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason) ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.
-        Incomplete
-            $"NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence. (%s{NoTestsReason.describe reason})"
+        Incomplete(CheckProse.noTestsRan reason)
     | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
         // Not "the scope was too narrow" — the scope is UNKNOWN because reading it
         // failed, so this run cannot say whether anything ran at all. Its own reason,
