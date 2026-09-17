@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `index`, `run`, `status` and `dead-code` flush the audit sink before
+  exiting, so the last queued audit events reach `.test-prune.db` instead of being
+  lost when the process exits. A flush that times out prints a warning; the
+  command's exit code is unchanged.
+
 ## 8.2.0 - 2026-09-15
 
 - Docs: de-identify comments that named a private tracker or downstream repo

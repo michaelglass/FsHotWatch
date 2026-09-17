@@ -2279,3 +2279,47 @@ module ``runBoundedDiff`` =
             | Ok o -> failwithf "a wedged drain must surface as Error, not a silent Ok %A" o
         finally
             File.Delete script
+
+[<Collection("Console")>]
+module ``runWithAuditSink`` =
+    open System.Threading.Tasks
+    open TestPrune.Tests.TestHelpers
+
+    // The CLI returns straight after the command, and the process exits with it. Before the
+    // flush, events still queued in the sink's mailbox at that point were lost. Every insert
+    // opens its own SQLite connection, so 200 events are still queued when an unflushed
+    // command returns.
+    [<Fact>]
+    let ``events queued by the command are persisted before it returns`` () =
+        withDb (fun db ->
+            let sink = createSqliteSink db.InsertEvent "cli-run"
+
+            let exitCode =
+                runWithAuditSink (fun s -> s.Flush()) sink (fun s ->
+                    for i in 1..200 do
+                        s.Post(timestamp (IndexStartedEvent i))
+
+                    3)
+
+            test <@ exitCode = 3 @>
+            test <@ (db.GetEvents "cli-run").Length = 200 @>)
+
+    [<Fact>]
+    let ``a flush timeout is reported and keeps the command's exit code`` () =
+        let release = TaskCompletionSource()
+        let sink = createAuditSink (fun _ -> Async.AwaitTask release.Task)
+        let stderr = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(stderr)
+
+        try
+            let exitCode =
+                runWithAuditSink (fun s -> s.FlushWithin 50) sink (fun s ->
+                    s.Post(timestamp (IndexStartedEvent 1))
+                    0)
+
+            test <@ exitCode = 0 @>
+            test <@ stderr.ToString().Contains("audit events for this run may be missing") @>
+        finally
+            Console.SetError(oldErr)
+            release.SetResult()

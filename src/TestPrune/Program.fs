@@ -158,14 +158,31 @@ let private createAuditSinkForRepo (repoRoot: string) =
     else
         createNoopSink ()
 
+/// Run `command` with `sink`, then flush the sink so the events the command queued are
+/// persisted before the process exits. A flush that times out is reported on stderr; the
+/// command's exit code stands, because a missing audit record does not change what the
+/// command did. The flush is a parameter so tests can use a short bound.
+let runWithAuditSink (flush: AuditSink -> FlushOutcome) (sink: AuditSink) (command: AuditSink -> int) : int =
+    let exitCode = command sink
+
+    match flush sink with
+    | Flushed -> ()
+    | FlushTimedOut _ ->
+        eprintfn "Warning: the audit sink did not finish writing; audit events for this run may be missing"
+
+    exitCode
+
+/// Run `command` with the repo's audit sink, flushed within the sink's production bound.
+let private withRepoAuditSink (repoRoot: string) (command: AuditSink -> int) : int =
+    runWithAuditSink (fun sink -> sink.Flush()) (createAuditSinkForRepo repoRoot) command
+
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) (parallelism: int) : int =
     withIndexLease repoRoot (fun () ->
         // The lease covers Database.create in the audit sink too: on first upgrade that
         // call may recreate the entire v12 cache before runOwnedIndexWith opens it.
         let checker = createChecker ()
-        let auditSink = createAuditSinkForRepo repoRoot
-        runOwnedIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink)
+        withRepoAuditSink repoRoot (runOwnedIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism))
 
 /// Run a `jj diff`-style command, capturing stdout, bounded by a hang-detector `timeoutMs`.
 ///
@@ -225,13 +242,11 @@ let jjDiffProvider: DiffProvider =
 
 /// Run the status command: show what would run without executing.
 let runStatus (repoRoot: string) : int =
-    let auditSink = createAuditSinkForRepo repoRoot
-    runStatusWith jjDiffProvider repoRoot auditSink
+    withRepoAuditSink repoRoot (runStatusWith jjDiffProvider repoRoot)
 
 /// Run the run command: determine and execute affected tests.
 let runRun (repoRoot: string) : int =
-    let auditSink = createAuditSinkForRepo repoRoot
-    runRunWith jjDiffProvider repoRoot auditSink
+    withRepoAuditSink repoRoot (runRunWith jjDiffProvider repoRoot)
 
 let runCommand (parsed: ParsedCommand) : int =
     let repoRoot =
@@ -250,8 +265,7 @@ let runCommand (parsed: ParsedCommand) : int =
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
     | DeadCodeCmd(patterns, includeTests, verbose) ->
-        let auditSink = createAuditSinkForRepo repoRoot
-        runDeadCode repoRoot patterns includeTests verbose auditSink
+        withRepoAuditSink repoRoot (runDeadCode repoRoot patterns includeTests verbose)
     | Help ->
         showHelp ()
         0
