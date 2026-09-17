@@ -5,9 +5,12 @@
 - fix: `AuditSink.Flush()` no longer waits forever. The wait is bounded by
   `flushTimeoutMs` (120s) and returns a `FlushOutcome`: `Flushed`, or
   `FlushTimedOut` with the bound, reported on stderr. Before this, a sink whose
-  agent had stopped (a persist function that threw ends its loop) hung the caller
-  with no diagnostic. BREAKING CHANGE: `Flush()` returns `FlushOutcome` instead of
+  agent never replied (stopped, or wedged in a persist that never returns) hung the
+  caller with no diagnostic. BREAKING CHANGE: `Flush()` returns `FlushOutcome` instead of
   `unit`, so callers must handle the timeout rather than read it as a completed flush.
+- fix: a persist function that throws no longer stops an audit sink. The failure is
+  reported on stderr, that event is dropped, and later events are still persisted.
+  Before this, one failing event silently discarded every event after it.
 
 ## 8.2.0 - 2026-09-15
 

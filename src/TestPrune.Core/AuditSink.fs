@@ -7,8 +7,8 @@ open TestPrune.Domain
 ///
 /// This is a WEDGE DETECTOR, not a perf knob. The sink's agent replies to a flush only after
 /// persisting every event queued ahead of it, so a healthy flush normally returns as soon as
-/// that backlog is written. It never replies when the agent is dead (its persist function threw
-/// and ended the loop) or wedged, and an unbounded wait there hangs the caller silently.
+/// that backlog is written. It never replies when the agent is wedged (a persist that never
+/// returns) or has stopped, and an unbounded wait there hangs the caller silently.
 [<Literal>]
 let flushTimeoutMs = 120_000
 
@@ -37,6 +37,10 @@ type private SinkMessage =
     | Flush of AsyncReplyChannel<unit>
 
 /// Create an audit sink that persists events using the given function.
+///
+/// A persist that throws is reported on stderr and that event is dropped; the sink keeps
+/// processing later events. An exception escaping the agent's loop would end it silently,
+/// losing every later event and timing out every later flush.
 let createAuditSink (persist: Timestamped<AnalysisEvent> -> Async<unit>) : AuditSink =
     let mbp =
         MailboxProcessor.Start(fun inbox ->
@@ -45,7 +49,11 @@ let createAuditSink (persist: Timestamped<AnalysisEvent> -> Async<unit>) : Audit
                     let! msg = inbox.Receive()
 
                     match msg with
-                    | Event event -> do! persist event
+                    | Event event ->
+                        try
+                            do! persist event
+                        with ex ->
+                            eprintfn $"AuditSink: failed to persist event: %s{ex.Message}"
                     | Flush reply -> reply.Reply()
 
                     return! loop ()
@@ -98,12 +106,9 @@ let private serializeEvent (event: AnalysisEvent) : string * string =
 let createSqliteSink (insertEvent: string * string * string * string -> unit) (runId: string) : AuditSink =
     createAuditSink (fun event ->
         async {
-            try
-                let ts = event.Timestamp.ToString("o")
-                let eventType, eventData = serializeEvent event.Event
-                insertEvent (runId, ts, eventType, eventData)
-            with ex ->
-                eprintfn $"AuditSink: failed to persist event: %s{ex.Message}"
+            let ts = event.Timestamp.ToString("o")
+            let eventType, eventData = serializeEvent event.Event
+            insertEvent (runId, ts, eventType, eventData)
         })
 
 /// Wrap an event with the current timestamp.

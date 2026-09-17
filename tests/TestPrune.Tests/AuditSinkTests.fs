@@ -36,19 +36,45 @@ module ``bounded flush`` =
 
     open System.Threading.Tasks
 
-    // A persist that throws ends the agent's loop, so the flush reply never comes: before the
-    // bound, this flush waited forever with no diagnostic. It runs off-thread and the test
-    // waits far longer (10s) than the flush's own 50ms bound, so a bounded flush finishes
-    // inside that window and an unbounded one does not.
+    // A persist that never completes keeps the agent from ever reaching the flush message, so
+    // the reply never comes: before the bound, this flush waited forever with no diagnostic.
+    // It runs off-thread and the test waits far longer (10s) than the flush's own 50ms bound,
+    // so a bounded flush finishes inside that window and an unbounded one does not.
     [<Fact>]
-    let ``flush on a faulted agent ends within its bound as FlushTimedOut`` () =
-        let sink = createAuditSink (fun _ -> async { return failwith "persist failed" })
+    let ``flush on a wedged agent ends within its bound as FlushTimedOut`` () =
+        let release = TaskCompletionSource()
+        let sink = createAuditSink (fun _ -> Async.AwaitTask release.Task)
         sink.Post(timestamp (IndexStartedEvent 1))
 
-        let flushTask = Task.Run(fun () -> sink.FlushWithin 50)
+        try
+            let flushTask = Task.Run(fun () -> sink.FlushWithin 50)
 
-        test <@ flushTask.Wait(10_000) @>
-        test <@ flushTask.Result = FlushTimedOut 50 @>
+            test <@ flushTask.Wait(10_000) @>
+            test <@ flushTask.Result = FlushTimedOut 50 @>
+        finally
+            release.SetResult()
+
+    // A persist that throws used to end the agent's loop silently: every later event was
+    // dropped and every later flush timed out. The failure is now reported and the agent keeps
+    // draining. The 10s bound is far above a healthy flush, and short enough that the old
+    // behaviour fails fast instead of waiting out the production window.
+    [<Fact>]
+    let ``a persist that throws does not stop the agent`` () =
+        let received = System.Collections.Generic.List<AnalysisEvent>()
+
+        let sink =
+            createAuditSink (fun event ->
+                async {
+                    match event.Event with
+                    | IndexStartedEvent _ -> failwith "persist failed"
+                    | other -> received.Add(other)
+                })
+
+        sink.Post(timestamp (IndexStartedEvent 1))
+        sink.Post(timestamp (IndexCompletedEvent(1, 0, 0)))
+
+        test <@ sink.FlushWithin 10_000 = Flushed @>
+        test <@ List.ofSeq received = [ IndexCompletedEvent(1, 0, 0) ] @>
 
     [<Fact>]
     let ``flush on a healthy agent reports Flushed after persisting queued events`` () =
