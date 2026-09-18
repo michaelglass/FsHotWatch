@@ -653,7 +653,7 @@ let ``check run-once prunes a late vanished diagnostic before grading`` () =
         test <@ exitCode = 0 @>)
 
 [<Fact(Timeout = 60000)>]
-let ``run-once command retains executed evidence across a same-tree quiet convergence read`` () =
+let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with no second scan`` () =
     withProjectOnlyRepo "runonce-retained-command" (fun repoRoot ->
         let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
         let pendingPath = System.IO.Path.Combine(repoRoot, "src", "Pending.fs")
@@ -751,14 +751,25 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                 (noTestProjectsConfig ())
                 None
 
-        test <@ exitCode = 0 @>
-        test <@ scanCount = 2 @>
+        // This drive used to prove retention ACROSS a convergence re-scan: the first scan
+        // left `Pending.fs` unchecked, the loop scanned again, and the second scan's
+        // complete coverage turned the reading green. `--run-once` scans ONCE now, so the
+        // unchecked file is the answer: exit 2, "could not complete — retry".
+        //
+        // The retention guarantee itself is unchanged and is pinned where it lives, on
+        // `TestRunEvidence` (`an executed report survives a SEQUENCE of quiet same-tree
+        // reads`, IpcOutputTests) — it is a property of the store, not of a second scan.
+        test <@ exitCode = 2 @>
+        test <@ scanCount = 1 @>
 
         match FsHotWatch.Cli.Verdict.read repoRoot with
         | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            // The executed run is still RECORDED — the incompleteness is about coverage of
+            // the tree, not about forgetting what ran.
             test <@ verdict.RunId = Some runId @>
             test <@ verdict.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(2, 4) @>
             test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
+            test <@ verdict.ExitCode = 2 @>
         | other -> failwithf "expected a published run-once verdict, got %A" other)
 
 [<Fact(Timeout = 60000)>]
@@ -891,78 +902,13 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
 
             daemonInstance |> Option.iter (fun daemon -> (daemon :> IDisposable).Dispose()))
 
-[<Fact(Timeout = 60000)>]
-let ``run-once convergence refuses a zero-load rediscovery`` () =
-    withProjectOnlyRepo "runonce-zero-load-rescan" (fun repoRoot ->
-        let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
-        let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
-        System.IO.File.WriteAllText(sourcePath, "module Library")
-
-        let loader =
-            ControlledWorkspaceLoader([ [ minimalWorkspaceProject projectPath ]; [] ])
-
-        loader.Resume(0)
-        let mutable daemonInstance: Daemon option = None
-
-        let createDaemon (root: string) =
-            let daemon =
-                Daemon.createWithWorkspaceLoader
-                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
-                    root
-                    Daemon.DaemonOptions.defaults
-                    loader
-                    (fun loaded ->
-                        if List.isEmpty loaded then
-                            []
-                        else
-                            [ makeProjectOptions projectPath [ sourcePath ] [] ])
-
-            daemonInstance <- Some daemon
-            daemon
-
-        let runScan (daemon: Daemon) =
-            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
-            daemon.Host.GetAllStatuses()
-
-        let driver =
-            System.Threading.Tasks.Task.Run(fun () ->
-                FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
-                    runScan
-                    (fun _ -> "")
-                    FsHotWatch.Cli.CheckVerdict.InnerLoop
-                    false
-                    createDaemon
-                    repoRoot
-                    (noTestProjectsConfig ())
-                    None)
-
-        try
-            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
-            test <@ not driver.IsCompleted @>
-            loader.Resume(1)
-
-            let ex =
-                Assert.Throws<ConfigError>(fun () -> driver.GetAwaiter().GetResult() |> ignore)
-
-            test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
-
-            match FsHotWatch.Cli.Verdict.read repoRoot with
-            | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
-                test <@ verdict.ExitCode = 2 @>
-
-                match verdict.Outcome with
-                | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains("PROJECT LOADING FAILED") @>
-                | other -> failwithf "expected incomplete discovery verdict, got %A" other
-            | other -> failwithf "expected zero-load rescan to publish an incomplete verdict, got %A" other
-        finally
-            loader.Resume(1)
-
-            try
-                driver.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
-            with _ ->
-                ()
-
-            daemonInstance |> Option.iter (fun daemon -> (daemon :> IDisposable).Dispose()))
+// There was a test here driving a zero-load REDISCOVERY: the convergence re-scan issued a
+// second `DiscoverAndRegisterProjects`, that discovery loaded zero projects, and the guard
+// published `PROJECT LOADING FAILED` as an incomplete verdict. `--run-once` scans once, so
+// there is no second discovery for a loop to provoke — and the guard is unchanged and
+// still covered on the single scan by `run-once overwrites a current green before
+// surfacing total discovery failure` above, which drives an empty loader through the same
+// path and asserts the same refusal.
 
 [<Fact(Timeout = 60000)>]
 let ``confirm one-shot accepts full evidence from its initial scan without a second scan`` () =

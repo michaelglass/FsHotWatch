@@ -656,7 +656,7 @@ module AgentHints =
     /// `prior` is the verdict that was on disk BEFORE this run published its outcome.
     /// It has to be an argument: the caller normally writes the new verdict before
     /// rendering, so by the time this runs the old evidence is already gone; a
-    /// no-test convergence may instead preserve an applicable prior full green.
+    /// a no-test reading may instead preserve an applicable prior full green.
     /// Passing it in keeps this function pure and makes that ordering impossible to
     /// get silently wrong.
     let forVerdict (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
@@ -908,7 +908,7 @@ module AgentHints =
                      if the scope was not earned)" ]
             | Verdict.Check, (NoTestsRun _ | ScopeUnreadable _) ->
                 [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — NO VERDICT. \
-                     Re-run `fshw check` so its convergence loop can earn a verdict; use `confirm` only when \
+                     Re-run `fshw check` once the tests it needs have run; use `confirm` only when \
                      you explicitly need unfiltered full-suite evidence" ]
             | Verdict.Check, ScopeUnknown -> []
             | Verdict.Check, FullSuite _

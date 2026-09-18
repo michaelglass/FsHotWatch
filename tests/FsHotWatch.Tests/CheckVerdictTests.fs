@@ -208,114 +208,53 @@ let ``Unknown coverage with no failures never yields exit 0`` () =
     test <@ code <> 0 @>
 
 // ----------------------------------------------------------------------------
-// Convergence loop. Injected with a scripted sequence of (coverage, hasFailures)
-// responses + a triggerScan stub. When the outcome is Incomplete/Unknown AND no
-// failures, it re-scans and re-reads, bounded to 3 attempts, breaking on
-// no-progress (unchecked count didn't decrease).
+// ONE SETTLED READ IS THE ANSWER.
+//
+// There was a convergence loop here, and a scripted-sequence harness to drive it: an
+// incomplete-but-clean read re-scanned and re-read up to three times, comparing an
+// unchecked magnitude to decide whether the number was shrinking. The tests below are
+// what each of its arms becomes when the read is taken once, after settling — the same
+// answer the loop would have reached, without the passes it spent reaching it.
+//
+// The "no re-scan" half of each old assertion is now STRUCTURAL rather than observed:
+// `verdict` has no scan trigger to call, so no sequence of reads can exist for it to
+// prefer. That is the point of the deletion — the loop's only power was to take a later
+// read, and a later read is a different tree's answer.
 // ----------------------------------------------------------------------------
 
-/// Build a re-read stub that returns scripted (hasFailures, coverage) values in
-/// order, repeating the last one once exhausted. Also counts triggerScan calls.
-let private scripted (responses: (bool * Coverage) list) =
-    let queue = System.Collections.Generic.Queue<bool * Coverage>(responses)
-    let mutable last = List.last responses
-    let scans = ref 0
-
-    let triggerScan () = incr scans
-
-    let reread () =
-        if queue.Count > 0 then
-            last <- queue.Dequeue()
-
-        let (failures, coverage) = last
-        inputs failures coverage anyScope
-
-    (triggerScan, reread, scans)
+[<Fact(Timeout = 15000)>]
+let ``an incomplete read is Incomplete, carrying its own count`` () =
+    // Was: `converge: no progress (5,5,5) -> Incomplete` and `bounded to 3 attempts when
+    // shrinking but never complete`. Both scripted a sequence whose answer was the FIRST
+    // read's; the loop just took longer to say so.
+    test <@ verdict InnerLoop (inputs false (Incomplete 5) anyScope) = CheckOutcome.Incomplete 5 @>
+    test <@ exitCode (verdict InnerLoop (inputs false (Incomplete 5) anyScope)) = 2 @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge: already complete after first re-read -> Clean`` () =
-    let (triggerScan, reread, scans) = scripted [ (false, Complete) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 2) anyScope)
-
-    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
-    test <@ scans.Value >= 1 @>
+let ``a complete clean read is Clean, with no second read to wait for`` () =
+    // Was: `converge: already complete after first re-read -> Clean` and `progress then
+    // complete (5 -> 2 -> 0) -> Clean`. A settled read that says complete IS the green;
+    // one that says incomplete is not a green waiting to happen.
+    test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean BaselineFixtures.baseline @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge: failures appear mid-convergence -> FailuresFound`` () =
-    // attempt 1: still incomplete (shrinking); attempt 2: a failure surfaces.
-    let (triggerScan, reread, _) =
-        scripted [ (false, Incomplete 3); (true, Incomplete 1) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
-
-    test <@ outcome = CheckOutcome.FailuresFound @>
+let ``failures in the settled read are FailuresFound, whatever the coverage says`` () =
+    // Was: `converge: failures appear mid-convergence -> FailuresFound`. Failures
+    // short-circuit ahead of coverage, so they never needed a second read either.
+    test <@ verdict InnerLoop (inputs true (Incomplete 5) anyScope) = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop (inputs true Complete anyScope) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge: no progress (5,5,5) -> Incomplete`` () =
-    let (triggerScan, reread, _) =
-        scripted [ (false, Incomplete 5); (false, Incomplete 5); (false, Incomplete 5) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
-
-    match outcome with
-    | CheckOutcome.Incomplete _ -> ()
-    | other -> failwithf "expected Incomplete, got %A" other
-
-[<Fact(Timeout = 15000)>]
-let ``converge: progress then complete (5 -> 2 -> 0) -> Clean`` () =
-    let (triggerScan, reread, scans) =
-        scripted [ (false, Incomplete 2); (false, Complete) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
-
-    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
-    test <@ scans.Value = 2 @>
-
-[<Fact(Timeout = 15000)>]
-let ``converge: bounded to 3 attempts when shrinking but never complete`` () =
-    // Always reports a smaller-but-nonzero count, so progress never stalls; the
-    // attempt budget must cap it.
-    let (triggerScan, reread, scans) =
-        scripted
-            [ (false, Incomplete 4)
-              (false, Incomplete 3)
-              (false, Incomplete 2)
-              (false, Incomplete 1) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
-
-    match outcome with
-    | CheckOutcome.Incomplete _ -> ()
-    | other -> failwithf "expected Incomplete, got %A" other
-
-    test <@ scans.Value = 3 @>
-
-[<Fact(Timeout = 15000)>]
-let ``converge: Unknown that stays Unknown -> Incomplete (never Clean)`` () =
-    let (triggerScan, reread, _) =
-        scripted [ (false, Unknown); (false, Unknown); (false, Unknown) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false Unknown anyScope)
-
-    match outcome with
-    | CheckOutcome.Incomplete _ -> ()
-    | other -> failwithf "expected Incomplete, got %A" other
-
-[<Fact(Timeout = 15000)>]
-let ``converge: Unknown then complete -> Clean`` () =
-    let (triggerScan, reread, _) = scripted [ (false, Complete) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false Unknown anyScope)
-
-    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
+let ``Unknown coverage is Incomplete and never Clean, with no sentinel to rank it`` () =
+    // Was: `converge: Unknown that stays Unknown -> Incomplete (never Clean)` and
+    // `Unknown then complete -> Clean`. `Unknown` used to be mapped to `Int32.MaxValue`
+    // purely so the loop could call `Unknown → Incomplete` progress. Nothing ranks
+    // coverage any more: `verdict` reads `Unknown` as `Incomplete -1` directly, which is
+    // "the daemon did not report a count", and that is exit 2 rather than a green.
+    let outcome = verdict InnerLoop (inputs false Unknown anyScope)
+    test <@ outcome = CheckOutcome.Incomplete -1 @>
+    test <@ exitCode outcome = 2 @>
+    test <@ outcome <> CheckOutcome.Clean BaselineFixtures.baseline @>
 
 // ----------------------------------------------------------------------------
 // a merge verdict cannot be produced from an impact-filtered run.
@@ -422,18 +361,13 @@ let ``exitCode: UnearnedScope is its own code, distinct from failure and incompl
     test <@ unearned <> exitCode (CheckOutcome.Incomplete 1) @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge: a Confirmation never scans its way out of an unearned scope`` () =
-    // Re-scanning cannot widen the scope of a run that already happened. `confirm`'s
-    // job is to report that it has no verdict — not to keep scanning for a better one.
+let ``a Confirmation cannot scan its way out of an unearned scope`` () =
+    // Re-scanning cannot widen the scope of a run that already happened. `confirm`'s job
+    // is to report that it has no verdict — not to keep scanning for a better one. There
+    // is no longer a loop to refuse: the scope of the settled run is the scope, and this
+    // is the answer it earns.
     let filtered = inputs false Complete (ImpactFiltered(1, 4))
-    let scans = ref 0
-    let triggerScan () = incr scans
-    let reread () = filtered
-
-    let outcome = converge Confirmation 3 triggerScan reread filtered
-
-    test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
-    test <@ scans.Value = 0 @>
+    test <@ verdict Confirmation filtered = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
 
 // --- TestScope parsing: the daemon's answer, and every way it can fail to give one ---
 
@@ -617,16 +551,18 @@ let ``InnerLoop: an ABSENT scope is still Clean — the split may not punish a t
     // ...and `confirm` still refuses it, exactly as before.
     test <@ verdict Confirmation (inputs false Complete ScopeUnknown) = CheckOutcome.UnearnedScope ScopeUnknown @>
 
-// --- uncheckedMagnitude: defensive totality, pinned directly ---------------
-// `converge` structurally never routes `Complete` into the magnitude
-// comparison (a Complete read resolves to a verdict first), so the Complete
-// arm is reachable only through a direct test of the total mapping.
+// --- coverage is read, never ranked ----------------------------------------
+// `uncheckedMagnitude` mapped coverage onto an int so the convergence loop could ask
+// whether one read was "better" than another, with `Unknown` as `Int32.MaxValue` to make
+// `Unknown → Incomplete` count as progress. Nothing ranks coverage now; each case is read
+// for what it says, and these are the three answers.
 
 [<Fact(Timeout = 10000)>]
-let ``uncheckedMagnitude: Complete is zero, Incomplete carries its count, Unknown is maximal`` () =
-    test <@ uncheckedMagnitude Complete = 0 @>
-    test <@ uncheckedMagnitude (Incomplete 7) = 7 @>
-    test <@ uncheckedMagnitude Unknown = System.Int32.MaxValue @>
+let ``each coverage case is read for what it says, not ranked against another read`` () =
+    test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean BaselineFixtures.baseline @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 7) anyScope) = CheckOutcome.Incomplete 7 @>
+    // Not "maximally unchecked" — simply not a count the daemon reported.
+    test <@ verdict InnerLoop (inputs false Unknown anyScope) = CheckOutcome.Incomplete -1 @>
 
 // ----------------------------------------------------------------------------
 // QA rework — a red must be EARNED, exactly as a green must.
@@ -723,10 +659,10 @@ let ``a CLEAN ledger is still Clean, never stale-daemon-state`` () =
     test <@ exitCode (verdict Confirmation clean) = 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge does not re-scan stale daemon state`` () =
+let ``stale daemon state is the answer, not something to re-scan`` () =
     // `fshw scan` is the DOCUMENTED remedy for this class and has never cleared it once.
-    // Convergence would spend three more full passes to arrive at the same answer, and
-    // (worse) each pass looks to the operator like the tool making progress.
+    // Convergence would have spent three more full passes to arrive at the same answer,
+    // and (worse) each pass looked to the operator like the tool making progress.
     let stale =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 7
@@ -738,27 +674,20 @@ let ``converge does not re-scan stale daemon state`` () =
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
-    let mutable scans = 0
+    test <@ verdict Confirmation stale = CheckOutcome.StaleDaemonState 7 @>
 
-    let outcome =
-        converge Confirmation 3 (fun () -> scans <- scans + 1) (fun () -> stale) stale
-
-    test <@ outcome = CheckOutcome.StaleDaemonState 7 @>
-    test <@ scans = 0 @>
-
-    // THE POSITIVE CONTROL for `scans = 0`: the same loop, the same budget, an input that
-    // DOES drive convergence — so the zero above is a property of the outcome and not of
-    // a `triggerScan` that could never be called.
+    // The old positive control proved the loop COULD scan, so that "it did not scan here"
+    // meant something. There is no loop to prove that of; what is worth keeping is that
+    // the neighbouring reading — same statuses, no unattributable diagnostics, incomplete
+    // coverage — gets its own different answer, so `StaleDaemonState` is a fact about this
+    // reading rather than the one answer this fixture can produce.
     let incomplete =
         { stale with
             FailingDiagnostics = 0
             UnattributableDiagnostics = 0
             Coverage = Incomplete 5 }
 
-    converge Confirmation 3 (fun () -> scans <- scans + 1) (fun () -> incomplete) incomplete
-    |> ignore
-
-    test <@ scans > 0 @>
+    test <@ verdict Confirmation incomplete = CheckOutcome.Incomplete 5 @>
 
 // ----------------------------------------------------------------------------
 // "waiting on build" is TWO causes, and they need opposite remedies.
@@ -950,13 +879,12 @@ let ``an abort DOMINATES a concurrent build defer`` () =
     test <@ verdict InnerLoop both = CheckOutcome.RunnerAborted abortMessages @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge does NOT retry an abort — no automatic retry to mask a real crash`` () =
-    // Deliberately terminal. A re-scan cannot un-kill a host, and an automatic retry
-    // cannot tell a host killed by a busy box from one that aborts every time because
-    // something is genuinely broken — so a loop that retried until it got a verdict would
-    // convert a real crash into a slow green. Honest once, rather than survivable wrongly.
-    let mutable scans = 0
-
+let ``an abort is reported once — no automatic retry to mask a real crash`` () =
+    // Deliberately terminal, and now structurally so: there is no retry to build. An
+    // automatic one cannot tell a host killed by a busy box from one that aborts every
+    // time because something is genuinely broken, so a loop that retried until it got a
+    // verdict would convert a real crash into a slow green. Honest once, rather than
+    // survivable wrongly.
     let aborted =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
@@ -968,11 +896,7 @@ let ``converge does NOT retry an abort — no automatic retry to mask a real cra
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
-    let outcome =
-        converge InnerLoop 3 (fun () -> scans <- scans + 1) (fun () -> aborted) aborted
-
-    test <@ outcome = CheckOutcome.RunnerAborted abortMessages @>
-    test <@ scans = 0 @>
+    test <@ verdict InnerLoop aborted = CheckOutcome.RunnerAborted abortMessages @>
 
 // ---------------------------------------------------------------------------
 // "the run finished and its result was lost" has its own code.
@@ -1088,18 +1012,15 @@ let ``failures, aborts and deferrals outrank a missing baseline`` () =
     test <@ verdict InnerLoop nothingRan = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated) @>
 
 [<Fact>]
-let ``a missing baseline is TERMINAL for convergence — a re-scan cannot earn one`` () =
+let ``a missing baseline is the answer — nothing a re-scan could have earned`` () =
+    // Only a full-suite RUN earns a baseline, and the daemon widens its next run to one
+    // on its own. Re-scanning never could, which is why this was terminal in the loop and
+    // is simply the verdict now.
     let absent =
         inputs false Complete (ImpactFiltered(1, 4))
         |> withBaseline (BaselineReading.Absent "none yet")
 
-    let mutable scans = 0
-
-    let outcome =
-        converge InnerLoop 3 (fun () -> scans <- scans + 1) (fun () -> absent) absent
-
-    test <@ outcome = CheckOutcome.NoBaseline "none yet" @>
-    test <@ scans = 0 @>
+    test <@ verdict InnerLoop absent = CheckOutcome.NoBaseline "none yet" @>
 
 [<Fact>]
 let ``Baseline.describe names the run, when it earned and how many projects`` () =
@@ -1165,53 +1086,13 @@ let ``a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — t
 // defect's surface so the fix has something to flip, and so nobody has to rerun a
 // real check to see the shape.
 
-/// Re-reads that vary the SCOPE as well as the coverage — the existing `scripted`
-/// helper holds the scope fixed, and the whole point here is a late scope change.
-let private scriptedScopes (steps: (bool * Coverage * TestScope) list) =
-    let queue = System.Collections.Generic.Queue<bool * Coverage * TestScope>(steps)
-    let scans = ref 0
-    let mutable last = (false, Incomplete 1, anyScope)
-
-    let triggerScan () = scans.Value <- scans.Value + 1
-
-    let reread () =
-        if queue.Count > 0 then
-            last <- queue.Dequeue()
-
-        let (failures, coverage, scope) = last
-        inputs failures coverage scope
-
-    (triggerScan, reread, scans)
-
 [<Fact(Timeout = 15000)>]
-let ``converge: a zero-test final read ends the loop, discarding the progress earlier attempts made`` () =
-    // The sequence from the ticket: impacted runs in flight and making progress,
-    // then a final scan that selected zero tests.
-    let (triggerScan, reread, scans) =
-        scriptedScopes
-            [ (false, Incomplete 2, ImpactFiltered(2, 5))
-              (false, Complete, NoTestsRun NoTestsReason.AlreadyVerified) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) (ImpactFiltered(1, 5)))
-
-    // `converge` is NOT where the evidence lives, and the fix left it alone: it carries
-    // no candidate result between attempts — only `prevMagnitude`, an int — so fed
-    // scopes directly it still returns the zero-test read. The store that keeps the
-    // earlier attempt's run is `IpcOutput.TestRunEvidence` (the fold `observeTestRun`
-    // puts every read through before `converge` sees it); the sibling below feeds
-    // this same sequence through it.
-    test <@ outcome = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
-
-    // It got there by making progress first, which is what makes this the ticket's
-    // sequence rather than a run that simply never tested anything.
-    test <@ scans.Value = 2 @>
-
-[<Fact(Timeout = 15000)>]
-let ``the evidence store keeps the earlier attempt's executed run through the zero-test read converge ends on`` () =
-    // The ticket's sequence through the fold `observeTestRun` applies to every read
-    // BEFORE it reaches `converge`: the executed attempt is retained on the settled
-    // tree, and the zero-test read that ends the loop is graded from it.
+let ``the evidence store keeps an executed run through a later zero-test read`` () =
+    // Where the evidence actually lives, and the reason the deleted convergence loop was
+    // never the fix for losing it: the fold `observeTestRun` puts EVERY read through
+    // `TestRunEvidence`, so an executed attempt is retained on the settled tree and a
+    // later quiet read is graded from it. That is a property of the store, not of how
+    // many times anything was read, and it survives the loop's deletion untouched.
     let tree =
         FsHotWatch.Cli.IpcOutput.VerifiedTree
             { FsHotWatch.TreeHash.Hash = "sha256:same"
@@ -1236,23 +1117,6 @@ let ``the evidence store keeps the earlier attempt's executed run through the ze
     test <@ graded.RunId = executed.RunId @>
     test <@ graded.Scope = ImpactFiltered(2, 5) @>
     test <@ verdict InnerLoop (inputs false Complete graded.Scope) = CheckOutcome.Clean BaselineFixtures.baseline @>
-
-[<Fact(Timeout = 15000)>]
-let ``converge: a clean read wins immediately, so clean-then-zero-test is NOT the losing sequence`` () =
-    // Rules out the obvious hypothesis. `Clean` is terminal too, so if an earlier
-    // attempt had produced a passing complete result, convergence would have
-    // returned it and never reached a later zero-test read. Whatever evidence goes
-    // missing in this ticket is therefore lost BEFORE `converge` can see it — which
-    // is why the fix cannot live in this function alone.
-    let (triggerScan, reread, _) =
-        scriptedScopes
-            [ (false, Complete, FullSuite 5)
-              (false, Complete, NoTestsRun NoTestsReason.AlreadyVerified) ]
-
-    let outcome =
-        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) (ImpactFiltered(1, 5)))
-
-    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 // ----------------------------------------------------------------------------
 // a reading taken without an available PROJECT MODEL.
@@ -1362,18 +1226,15 @@ let ``a real failure still reddens over an unavailable model, and a dead host is
         test <@ verdict InnerLoop aborted = CheckOutcome.RunnerAborted [ "killed" ] @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge treats an unavailable model as terminal — no re-scan is spent on it`` () =
-    let mutable scans = 0
-
+let ``an unavailable model is the answer — no re-scan could have made one available`` () =
+    // A re-scan issued while the model is re-discovering waits for that discovery on the
+    // daemon side anyway; one that reads a FAILED model reads the same failure again.
+    // Either way the honest answer is the one already in hand: nothing was verified.
     let reading =
         inputs false Complete (FullSuite 4)
         |> withModel (ProjectModelReading.Observed(FsHotWatch.ProjectModel.Observation.Rediscovering 9L))
 
-    let outcome =
-        converge Confirmation 3 (fun () -> scans <- scans + 1) (fun () -> reading) reading
-
-    test <@ outcome = CheckOutcome.ModelUnavailable reading.ProjectModel @>
-    test <@ scans = 0 @>
+    test <@ verdict Confirmation reading = CheckOutcome.ModelUnavailable reading.ProjectModel @>
 
 [<Fact(Timeout = 15000)>]
 let ``POSITIVE CONTROL: an empty selection on a HEALTHY model still says nothing needed re-verifying, and does not alarm``
@@ -1394,7 +1255,7 @@ let ``POSITIVE CONTROL: an empty selection on a HEALTHY model still says nothing
         test <@ exitCode outcome = 3 @>
 
         let explanation =
-            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome None outcome
+            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome outcome
             |> Option.defaultValue ""
 
         test <@ not (explanation.Contains "PROJECT MODEL") @>
@@ -1416,7 +1277,7 @@ let ``a model-unavailable outcome is explained in its own words and recorded as 
         let outcome = CheckOutcome.ModelUnavailable model
 
         let explanation =
-            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome None outcome
+            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome outcome
             |> Option.defaultValue ""
 
         test <@ explanation.StartsWith("NO VERDICT — PROJECT ", StringComparison.Ordinal) @>

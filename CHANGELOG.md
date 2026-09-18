@@ -180,6 +180,22 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### cli: one settled read decides a check
+
+`fshw check` used to re-scan an incomplete-but-clean reading up to three times and keep
+whichever read looked best, comparing an "unchecked count" between attempts. The loop had no
+second opinion about what a reading means — every attempt was graded by the same code — so
+its only power was to take a LATER reading, and a later reading describes a later tree.
+
+A reading is now taken once, after the daemon has settled, and it decides. An incomplete
+reading is the answer (exit 2, "could not complete — retry") rather than a cue to look again.
+A check whose coverage is incomplete exits 2 on the first read where it would sometimes have
+turned green; that green was about a tree the check never verified.
+
+See `docs/adr-034-one-settled-read-decides-a-check.md`, which also records what was NOT
+deleted and why: the scan's per-file retry stays, because `None` from a file check has causes
+(a throwing check, a file with no project options) that nothing else reports.
+
 ### core, build: the verdict wait asks what was earned, and the wedge detector learns what a deadline means
 
 `fshw check` blocks on the daemon's `WaitForComplete` until the tree has settled. That wait

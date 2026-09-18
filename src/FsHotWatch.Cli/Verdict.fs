@@ -858,29 +858,27 @@ module CheckProse =
     /// whole argument: whether a daemon served the check may not change what the answer
     /// MEANS, so it must not be expressible for it to.
     ///
-    /// `rescanAttempts` is the one difference that is real. The daemon path CONVERGES, so
-    /// its "incomplete" says how many re-scans it spent getting there; `--run-once` never
-    /// re-scans and would be inventing a number.
+    /// There is no longer any difference to express: neither path re-scans, so neither
+    /// has a number of attempts to report, and the parameter that carried one is gone.
     ///
     /// `None` for `Clean` and `FailuresFound`: those are already explained by what the
     /// reader is looking at — the plugin lines, the red causes — and a sentence here would
     /// only repeat it. Exhaustive with NO wildcard, so a new `CheckOutcome` case has to be
     /// given words rather than silently inheriting "say nothing".
-    let explainOutcome (rescanAttempts: int option) (outcome: CheckVerdict.CheckOutcome) : string option =
+    let explainOutcome (outcome: CheckVerdict.CheckOutcome) : string option =
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
+            // No re-scan count to report any more, and no parameter to carry one: both
+            // paths now decide from ONE settled read, so there is no second attempt whose
+            // number a reader could act on. A parameter only ever passed `None` is a
+            // vocabulary kept alive by nothing.
             let detail =
                 if n > 0 then
                     $"%d{n} file(s) could not be checked"
                 else
                     "coverage could not be confirmed"
 
-            let attempts =
-                match rescanAttempts with
-                | Some attempts -> $" after %d{attempts} re-scan attempt(s)"
-                | None -> ""
-
-            Some $"Check incomplete: %s{detail}%s{attempts}"
+            Some $"Check incomplete: %s{detail}"
         // Non-green, but "could not complete", never a red — see `CheckOutcome`. A
         // distinct exit 2 so an autonomous loop / deploy preflight retries rather than
         // treating it as a test failure.
