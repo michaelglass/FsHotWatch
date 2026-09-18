@@ -258,7 +258,7 @@ let internal createFormatCheckWith
         // the `.editorconfig` files above it — never of which checkout it was read
         // from. The absolute path that used to sit here was the ONLY thing keeping two
         // workspaces of one repository from sharing a `format OK`, and this plugin's
-        // whole-tree scan is the largest cold-start cost the ticket measures.
+        // whole-tree scan is the largest measured cold-start cost.
         let pathKey (f: string) =
             FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) f
 

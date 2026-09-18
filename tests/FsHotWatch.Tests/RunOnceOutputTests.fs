@@ -434,13 +434,13 @@ let ``a partial load is not a TOTAL discovery failure`` () =
 [<Fact(Timeout = 15000)>]
 let ``a tree with no project files at all is not reported as a load failure`` () =
     // Zero found is `failIfNoProjects`' case, and discovery already warns on it.
-    // Claiming a load failure here would invent the very thing this ticket is
+    // Claiming a load failure here would invent the very failure these guards are
     // about: a message pointing away from what actually happened.
     test <@ totalDiscoveryFailure 0 0 = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``the discovery-failure message names the load failure and the log that carries it`` () =
-    // THE POINT OF THE TICKET, and the reason this is asserted rather than left to
+    // THE POINT OF THE MESSAGE, and the reason this is asserted rather than left to
     // review. What made the incident expensive was not the failure, it was an hour
     // of wall clock spent on messages that pointed elsewhere: a wedged plugin, a
     // quiescence timeout, `coverage could not be confirmed`. A reader who sees this

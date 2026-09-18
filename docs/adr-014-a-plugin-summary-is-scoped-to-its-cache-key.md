@@ -38,8 +38,8 @@ same refusal as test-prune's zero-match rule.
 
 ## Roads not taken
 
-The ticket proposed, and the approval asked to compare, two
-mechanisms for teaching the framework to *re-derive* a stale summary at replay:
+Two mechanisms were proposed and compared, both for teaching the framework to
+*re-derive* a stale summary at replay:
 
 - **(a) A general per-plugin "summary is ledger-derived" capability.** Rejected.
   Measured blast radius: as an eighth `PluginHandler` field, ~130 record literals

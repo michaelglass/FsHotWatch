@@ -482,7 +482,7 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 /// It REPORTS rather than refuses, for the reason the stale-artifact preflight's floor gives: a graph
 /// with no derivable outputs is a legitimate configuration, and bypassing the cache on
 /// every lookup there would trade one wedge class for the rebuild-every-time regression
-/// this ticket's own acceptance forbids. Naming the gap costs nothing and makes a total
+/// this gate must not introduce. Naming the gap costs nothing and makes a total
 /// regression loud.
 ///
 /// `None` means every project in the graph was fully examined — there is nothing to say.
@@ -1394,7 +1394,7 @@ let createWith
             // project (canonical DLL) and per graph source (`GetMaxSourceMtime` walks
             // every source of every project), so ~2 × (projects + sources), plus two
             // more per dependency COPY (37 of them in the consuming repo whose wedges
-            // this ticket records). The copy check is stat-only for the same reason the
+            // were observed). The copy check is stat-only for the same reason the
             // rest of the gate is — the byte comparison is 157 MB / ~107 ms there, and
             // it answers a question a rebuild cannot act on. See `replayBlockers`.
             //

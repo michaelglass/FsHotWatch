@@ -745,7 +745,7 @@ module AgentHints =
         // `Divergence.CheckMissedFailures` means the impact-scoped run was GREEN and the
         // full suite was RED: the selector did not choose a test that fails. It has been
         // computed and written to `verdict.json` — and rendered
-        // NOWHERE. That is the exact failure this ticket names: a fact filed in a document
+        // NOWHERE. That is the exact failure: a fact filed in a document
         // you must remember to open is not a safeguard, and the moment it is worth
         // anything is the moment the person is looking at the output.
         //

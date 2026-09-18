@@ -1134,7 +1134,7 @@ let internal persistRuntimeCoverageTransitionWith
         Error(current, ex)
 
 /// An obligation that names NO project is not a debt, and admitting one
-/// is the silent full-suite escalation this ticket closes.
+/// is the silent full-suite escalation this guard closes.
 ///
 /// `selectByRuntimeCoverage` maps EVERY changed file — `Set.union current
 /// widenedProjects` is empty whenever nothing attributes runtime coverage to that file
@@ -1261,7 +1261,7 @@ let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: R
 /// — running all tests") named two causes for five, was printed for runs that were
 /// neither, and claimed "all tests" for runs that were a handful of force-run projects.
 /// A widening nobody can attribute is a widening nobody measures: 404 of 1,221 launches
-/// in the logs this ticket cites took that line, and the line is the only record any of
+/// in one measured log sample took that line, and the line is the only record any of
 /// them left.
 [<RequireQualifiedAccess>]
 type internal ZeroAffectedWidening =
@@ -2207,7 +2207,7 @@ let private formatTestResultsJson
 
             // `null`, not zeros. `total: 0, failed: 0` reads as "this suite ran
             // cleanly", so manufacturing counts from an absent report is the very
-            // vacuous green this ticket is about (the same rule `Verdict.parseSuites`
+            // vacuous green this `null` avoids (the same rule `Verdict.parseSuites`
             // holds for the verdict file).
             let counts: obj =
                 match Map.tryFind name runReports with
@@ -4920,8 +4920,8 @@ let internal cacheKeyFor
     // True while a failure no covering run has passed is outstanding.
     // While it is, this plugin does not participate in the task cache AT ALL:
     //   * no REPLAY — a cached green served on a BuildCompleted would skip the handler,
-    //     skip the run, and hand back exactly the laundered verdict this ticket is
-    //     about (the same reasoning that makes a non-empty pending queue refuse);
+    //     skip the run, and hand back exactly the laundered verdict this flag
+    //     prevents (the same reasoning that makes a non-empty pending queue refuse);
     //   * no WRITE — the terminal status of such a run carries a red the run itself
     //     did not produce, and pinning that to a content merkle would let it replay on
     //     a tree that has since been fixed (in reverse).
@@ -8660,7 +8660,7 @@ let internal createWithLaunchDeadline
                                     // answer and it must LOOK like the third answer: a
                                     // dead host reported as "N failed: X" sends the reader
                                     // hunting a regression that is not there, which is the
-                                    // hours this ticket is an accounting of.
+                                    // hours this arm exists to stop burning.
                                     //
                                     // A NON-failing terminal, exactly like the pure-defer
                                     // arm above: the `HostAborted`-severity ledger entries

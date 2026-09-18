@@ -1,10 +1,10 @@
 /// Per-scan resource and orchestration measurements, appended as JSON Lines to
 /// `<repoRoot>/.fshw/scan-metrics.jsonl`.
 ///
-/// The memory-retention ticket behind this module asks for MEASUREMENT, not a knob:
+/// The memory-retention question behind this module asks for MEASUREMENT, not a knob:
 /// "does FCS retain memory across scan generations?" is unanswerable from a log that
 /// prints durations. One record per completed scan carries the generation, the
-/// orchestration counts that ticket enumerates (attempts, retries, unchecked files), and the
+/// orchestration counts that question needs (attempts, retries, unchecked files), and the
 /// process/heap footprint sampled at the same instant — so a later run compares
 /// against an earlier one by reading the same file, and a fitted slope over the
 /// generations is a number rather than an impression.

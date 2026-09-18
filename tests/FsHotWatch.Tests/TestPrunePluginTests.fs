@@ -3874,7 +3874,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // The alarm, stated as a test. If some future arm re-admits an entry naming nothing,
     // this function must NOT dress it up as runtime-coverage debt — it must return the
     // empty list, which is what makes the daemon warn instead of quietly running a whole
-    // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
+    // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
     test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None) @>

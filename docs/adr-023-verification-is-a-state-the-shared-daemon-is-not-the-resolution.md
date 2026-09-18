@@ -4,13 +4,13 @@ Status: Accepted (2026-09-15)
 
 ## Context
 
-The originating ticket states the organizing model behind the gate-latency work: tests are
+The organizing model behind the gate-latency work is this: tests are
 not a gate but a continuously maintained signal that is observed and acted on.
 Verification stops being an event and becomes a state — the daemon is running, tests
 are running, test state is observable, and nothing blocks on a suite. Gating survives
 in exactly two places: the merge queue's push gate, and the deploy gate.
 
-The ticket also names the one tension that must be *resolved rather than assumed*:
+That model also names the one tension that must be *resolved rather than assumed*:
 always running the daemon conflicts with idle-exit, which exists for a measured
 reason. And it proposes a resolution — **one daemon shared across workspaces instead
 of one per workspace**.
@@ -63,7 +63,7 @@ record, and the peak in particular is partly high-water churn rather than live s
 What they do establish is the shape: one daemon on a solution of this size transits
 the double-digit GB range and settles well above the small-solution steady state.
 
-The consequence for this ticket is the point. **A single daemon on a large solution
+The consequence for the decision here is the point. **A single daemon on a large solution
 already exceeds the budget an always-on model needs.** Sharing N daemons into 1
 cannot fix a constraint that 1 daemon already violates; it removes a multiplier that
 is not the binding term. On this box the gate's own memory pre-flight refuses to
@@ -97,8 +97,8 @@ exactly that, parking a run in its 30-minute WAITING loop.
    the default checkout is the one whose warm cache is most valuable.
 
 5. **Observability without a running daemon is already satisfied — do not build it
-   again.** The ticket asks that test state be observable for a workspace whose
-   daemon is not running, or that the requirement be explicitly rejected. It is met:
+   again.** The requirement is that test state be observable for a workspace whose
+   daemon is not running, or that it be explicitly rejected. It is met:
    ADR-013 made the verdict a file content-addressed to the tree it verified, and the
    `verdict` verb reads `.fshw/verdict.json` and *never contacts the daemon*
    (`src/FsHotWatch.Cli/Program.fs:164`). A dead daemon costs nothing here: the
@@ -122,6 +122,6 @@ exactly that, parking a run in its 30-minute WAITING loop.
   single daemon does not fit the box. That boundary is a measurement, and it moves
   when either the daemon's footprint or the machine changes.
 - Reducing a large solution's scan footprint becomes the lever that would make
-  always-on apply more widely. That is a different ticket from this one, and it is
-  the one worth opening.
+  always-on apply more widely. That is a different piece of work from this one, and
+  it is the one worth doing.
 - Anything reading test state should read the verdict file, not start a daemon to ask.

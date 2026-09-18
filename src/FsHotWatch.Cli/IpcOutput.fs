@@ -1681,7 +1681,7 @@ let pollAndRenderForInvocation
     // completed, and claiming otherwise would be the same lie in the other direction.
     //
     // It publishes, like every other terminal here. Without a publish the verdict on
-    // disk stays whatever the LAST run left — in the incident that produced this ticket,
+    // disk stays whatever the LAST run left — in one observed incident,
     // a refusal stub for a different tree — and seven finished runs in a row read back
     // as that stub.
     | ex when

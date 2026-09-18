@@ -67,13 +67,13 @@ skipped was last executed in the baseline run. Since then, either nothing it cov
 changed (or the change was passed by a covering run and left the queue), and it was not
 red (or its red is in the outstanding list and it will be re-selected until it passes) —
 or it is owed, and the verdict is not green. A skip is discharged by the baseline's
-validity, never by silence. That is why the ticket's third acceptance criterion ("the
+validity, never by silence. That is why the third requirement ("the
 ledger owes work for skipped tests") is met without a per-test ledger: adding one would
 be a second accounting of the same debt.
 
 ### Why the baseline is written for a red full suite too
 
-The ticket asked for the last *known-green* full suite. That is sufficient but costly:
+The original proposal asked for the last *known-green* full suite. That is sufficient but costly:
 a repository with one persistent red would run the whole suite on every check until
 that red was fixed, because no green full suite would ever be earned. A red full suite
 carries the same information about every test that passed, and quarantine carries the

@@ -120,7 +120,7 @@ let ``growth past the bound is reported as exceeding, with the slope`` () =
 
 [<Fact>]
 let ``a single generation cannot be fitted and says so`` () =
-    // The ticket is explicit that a failed threshold must not be relabelled as
+    // The rule is explicit that a failed threshold must not be relabelled as
     // proof of a leak; the same honesty applies to having no data at all.
     test <@ fitRetention DefaultRetentionBound [] = RetentionVerdict.NotEnoughData 0 @>
     test <@ fitRetention DefaultRetentionBound [ sample 1L 100L ] = RetentionVerdict.NotEnoughData 1 @>

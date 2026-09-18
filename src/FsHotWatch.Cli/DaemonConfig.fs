@@ -1008,14 +1008,14 @@ let internal validateTestScope (repoRoot: string) (config: DaemonConfiguration) 
 
 /// `verdictInputs` decides WHICH FILES the verdict is
 /// content-addressed by, so a declaration this build cannot honour AS WRITTEN is a
-/// hard failure. The alternative is the defect that filed the ticket: a repo that
+/// hard failure. The alternative is the defect this validation prevents: a repo that
 /// believes it is gated on its coverage floors and its analyzer rules, is not, and is
 /// told nothing.
 ///
 /// `notInputs` is validated but never filters: it is a STATED DECISION that a file
 /// cannot change an answer, reviewable in the config. A declaration that could REMOVE
 /// files from the hash would be a supported way to weaken the gate silently, which is
-/// the wrong half of this ticket to build.
+/// the wrong half of the feature to build.
 let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
     let declaration = VerdictInputs.parse json
 

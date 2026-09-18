@@ -1856,7 +1856,7 @@ let ``analyzerPathFailures silent when analyzers unconfigured`` () =
 
 // --- loadConfig: the test scope must cover the solution ---
 //
-// THE REGRESSION THE TICKET ASKS FOR, at the boundary that matters: a dummy test
+// THE END-TO-END REGRESSION TEST, at the boundary that matters: a dummy test
 // project staged into the solution and left out of `.fshw.json` must make the
 // config load FAIL. `loadConfig` is what every fshw verb calls, in the CLI
 // process, on every invocation — so a run cannot reach a suite, let alone a
@@ -1904,7 +1904,7 @@ let ``loadConfig REFUSES a config whose test scope omits a solution test project
 [<Fact(Timeout = 30000)>]
 let ``loadConfig ACCEPTS the same repo once the omission is declared with a reason`` () =
     // The other direction of the mutation. Without this, "fail closed" could be
-    // satisfied by a check that never passes, and the escape hatch the ticket
+    // satisfied by a check that never passes, and the escape hatch the design
     // blesses would not exist.
     withTempDir "cfg-scope-declared" (fun tmpDir ->
         let json =

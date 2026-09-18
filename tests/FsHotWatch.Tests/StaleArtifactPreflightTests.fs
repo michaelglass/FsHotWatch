@@ -472,7 +472,7 @@ let ``a tripped breaker ages out of its own window`` () =
 
 /// THE ANTI-WEDGE PROPERTY. The breaker gates the REPAIR, not the run, so a tripped
 /// breaker on a clean tree changes nothing at all. Without this the breaker would be
-/// exactly the new wedge class the ticket's approval comment forbade.
+/// exactly the new wedge class this preflight must not create.
 [<Fact(Timeout = 15000)>]
 let ``a tripped breaker does NOT block a run with nothing stale in it`` () =
     withTempDir "breaker-clean" (fun tmpDir ->

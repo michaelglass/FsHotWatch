@@ -2652,7 +2652,7 @@ let ``fsproj fingerprint applies user exclude patterns like discovery does`` () 
 
 [<Fact>]
 let ``a renamed file leaves the scan set — the old path is vanished, the new one is not`` () =
-    // The ticket's actual trigger. Before the fix a rename left the old path
+    // The actual trigger. Before the fix a rename left the old path
     // registered, FCS was asked to parse a file that cannot be opened, and the
     // resulting finding was keyed to a path nothing would ever check again — so
     // the gate stayed red until the daemon was stopped, which is the one command
@@ -2705,7 +2705,7 @@ let ``a deleted file is pruned the same way a renamed one is`` () =
 
 [<Fact(Timeout = 60000)>]
 let ``five scan generations emit five parseable, fittable measurement records`` () =
-    // The ticket asks for a measurement a LATER RUN CAN COMPARE, over at least
+    // The requirement is a measurement a LATER RUN CAN COMPARE, over at least
     // five generations. This drives the real scan path five times and reads the
     // record back the way a later run would: from
     // `<repoRoot>/.fshw/scan-metrics.jsonl`, through the same parser.

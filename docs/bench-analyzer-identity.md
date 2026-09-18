@@ -37,8 +37,8 @@ Designs:
   `.workspaces/r<n>/bench-<cond>`: same directory NAME and depth, so under
   *before* they share one (per-name) store directory and the analyzer DLL is
   salted with a different absolute path each time. This isolates the identity
-  change from the namespace change; under *before* it is the ticket's original
-  observation.
+  change from the namespace change; under *before* it is the originally observed
+  case.
 - **A (distinct names)** — three workspaces `.workspaces/bench-after-A<n>`: the
   acceptance test. Under *before* a distinct name is a private, empty store
   (`no-entry` for every file — one data point taken on unmodified main:

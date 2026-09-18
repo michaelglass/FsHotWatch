@@ -133,7 +133,7 @@ let private verifiedNothingHandler (name: string) (detail: string) =
 
 [<Fact(Timeout = 15000)>]
 let ``a verified-nothing run reaches the CLI as the VerifiedNothing case, status still Completed`` () =
-    // The whole hop the ticket is about: plugin verdict → host run record → status
+    // The whole hop under test: plugin verdict → host run record → status
     // payload → CLI parser. The status stays `Completed` (so `check` keeps its exit 3
     // rather than an exit 1), and the run record's outcome is the case, not a prefix
     // some reader has to find in the summary.
@@ -227,7 +227,7 @@ let ``GetDiagnostics payload carries nonzero unchecked count -> Incomplete cover
 // ---------------------------------------------------------------------------
 // the diagnostics reply is SIZE-BOUNDED.
 //
-// The gate this ticket came from died at its very last IPC call, six seconds after the
+// The gate this bound came from died at its very last IPC call, six seconds after the
 // daemon had logged `Tests complete: 7 projects, 117.1s` and `WaitForComplete()
 // resolved`. The reply it died building was this one: the test-prune plugin attached the
 // whole captured project output to EVERY parsed per-test failure, so a project with 753

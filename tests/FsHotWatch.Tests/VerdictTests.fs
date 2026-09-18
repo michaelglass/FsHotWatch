@@ -1024,7 +1024,7 @@ let ``failing counts survive into the suites — the verdict answers "how many f
 // never run; in every case that could be checked afterwards, the tests had run and
 // passed.
 
-/// The ticket's own shape, as a fixture: a big impact-selected batch, then a small
+/// The incident's own shape, as a fixture: a big impact-selected batch, then a small
 /// build-tooling batch, then the graded one. Returns them oldest-first.
 let private threeBatches (root: string) =
     let first = Guid.NewGuid()
@@ -1071,7 +1071,7 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
 
 [<Fact>]
 let ``a report that ran ONLY in an early batch is reported as having run — and its absence as absent`` () =
-    // The ticket's acceptance control, in both directions. The SAME check, the same
+    // The acceptance control, in both directions. The SAME check, the same
     // batches, the same graded run: the only thing that moves is whether the early
     // batch actually contains the report. A verdict that answered "ran" either way
     // would be worthless, which is why the negative half is here.
@@ -1958,7 +1958,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
         match red.Scope with
         | ImpactFiltered _ -> failwith "a confirm verdict must never record a filtered scope"
         // The record explains itself without the log beside it — the failure that motivated
-        // the ticket was a reader who had only the file.
+        // this rule was a reader who had only the file.
         | s -> test <@ (TestScope.describe s).Contains "did not complete" @>
 
         // The RED is PRESERVED, deliberately. Downgrading it to `incomplete` would tell a
@@ -3585,7 +3585,7 @@ let ``a GREEN verdict names no causes`` () =
 // QA rework — AC5. IS THIS RED A CLAIM ABOUT THIS TREE?
 //
 // The landed fix made a red NAME its cause. It did not make the red EARNED: two of the
-// four incidents in the ticket were reds that no longer described the tree they were
+// four incidents on record were reds that no longer described the tree they were
 // reported against, and the one thing that cleared them — `fshw stop` — is the one thing
 // the output never said. AC5 asks for exactly that sentence.
 //
@@ -3730,7 +3730,7 @@ let ``AC5: an ordinary red says none of that`` () =
     // THE POSITIVE CONTROL for the three assertions above. A red that IS about this tree
     // must not be decorated with a stale-state remedy — an agent told to restart the
     // daemon over a genuine compile error loses the same cycle in the other direction,
-    // which is the pair of mistakes the ticket was opened on.
+    // which is the pair of mistakes this classifier must avoid.
     let joined =
         String.Join(
             "\n",
@@ -3790,7 +3790,7 @@ let ``the stale-output message names EVERY affected project, untruncated`` () =
     test <@ not (message.Contains "...") @>
     test <@ not (message.Contains "more)") @>
 
-/// The other half of AC2, and the ticket's third defect: the message must PRESCRIBE.
+/// The other half of AC2, and the third defect: the message must PRESCRIBE.
 /// It must also rule out the remedies that cannot work — the pattern the stale-daemon-state
 /// outcome set when it had to say that `fshw scan` does not clear it.
 [<Fact>]
@@ -3803,7 +3803,7 @@ let ``the stale-output message states the remedy and rules out the ones that can
     test <@ message.Contains "--no-incremental" @>
 
     // What NOT to bother with. Re-running is the natural wrong move and it is the one
-    // this ticket exists to stop; `fshw confirm` and a daemon restart are the two the
+    // this message exists to stop; `fshw confirm` and a daemon restart are the two the
     // generic "waiting on build" prose used to recommend for this cause.
     test <@ message.Contains "Re-running the gate does NOT clear this" @>
     test <@ message.Contains "fshw confirm" @>
@@ -3980,7 +3980,7 @@ let ``a timed-out plugin's reason reaches the verdict too`` () =
 // It has been computed and written to `verdict.json` — and
 // rendered NOWHERE.
 //
-// That is the gap this ticket names. A fact filed in a document you must
+// That is the gap these tests pin. A fact filed in a document you must
 // remember to open is not a safeguard; the only moment the hint is worth
 // anything is the moment someone is looking at the output. Without it a recall
 // miss is indistinguishable from an ordinary test failure, so it gets FIXED as
@@ -4098,7 +4098,7 @@ let ``no recall alarm when the two readings agreed`` () =
 
 [<Fact>]
 let ``a declared exclusion round-trips inside scope, project and reason both`` () =
-    // The acceptance criterion the ticket states in so many words: `confirm` runs
+    // The acceptance criterion, in so many words: `confirm` runs
     // the suite, or DECLARES in verdict.json's scope that it did not, "so a
     // consumer of the verdict can SEE the gap". A reason that did not survive the
     // write would leave a consumer with a gap and no way to judge it.
@@ -4943,8 +4943,8 @@ let ``a notInput records a DECISION and removes nothing from the hash — the co
     // `notInputs` exists so "not hashed" can be a stated, reviewable decision rather
     // than an omission nobody noticed. It must not become a supported way to shrink
     // the hashed set: a config key that could delete a source file from the tree hash
-    // would be a one-line, config-only route to exactly the fail-open this ticket is
-    // about, with a `reason` field to make it look considered.
+    // would be a one-line, config-only route to exactly the fail-open this test
+    // rules out, with a `reason` field to make it look considered.
     withTempDir "notinput" (fun root ->
         makeRepo root
 
@@ -5093,7 +5093,7 @@ let ``a verdict from an OLDER hashing scheme is inapplicable by ALGORITHM — no
 
 [<Fact>]
 let ``the verdict RECORDS how many declared inputs it hashed — an ignored declaration is otherwise invisible`` () =
-    // The failure this closes is the one that filed the ticket: a consuming repo
+    // The failure this closes is the one that was reported: a consuming repo
     // declared 29 inputs against a tool that read none of them, and nothing anywhere
     // said so. A count in the artifact is the only place a repo can check that its
     // declaration is being honoured rather than merely written down.
@@ -5291,7 +5291,7 @@ let ``THE omission guard — a mid-run read is NEVER reported as green-and-appli
 
 [<Fact>]
 let ``the benchmark — polling for the whole of an in-flight run observes no green`` () =
-    // The acceptance criterion, as the in-flight ticket words it: "a poll loop
+    // The acceptance criterion for the in-flight rule, in its own words: "a poll loop
     // running for the duration of a check never observes a green verdict attributable
     // to the previous run".
     //
@@ -5372,7 +5372,7 @@ let ``a verdict that cannot say which run made it is refused while any run is in
 
 [<Fact>]
 let ``a run in flight does not disturb the STALE answer — 4 is still 4`` () =
-    // The in-flight ticket's third acceptance criterion. The in-flight question is asked only
+    // The in-flight rule's third acceptance criterion. The in-flight question is asked only
     // where the verdict would otherwise APPLY, so every pre-existing staleness answer
     // and its exit code are reached exactly as before.
     withTempDir "verdict-inflight-stale" (fun root ->
@@ -5739,7 +5739,7 @@ let ``a test-less repo's green round-trips as relative to no test suite`` () =
 
 [<Fact>]
 let ``a green that names NO baseline is not a verdict this build can read`` () =
-    // The shape every verdict file had before this ticket. It is exactly a green with
+    // The shape every verdict file had before a green had to name its baseline. It is exactly a green with
     // nothing vouching for what it skipped, so it reads as UNREADABLE — `confirm` goes
     // and earns the evidence rather than trusting the file.
     withTempDir "verdict-legacy-green" (fun root ->

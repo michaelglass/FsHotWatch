@@ -1511,7 +1511,7 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
 let ``case 2: a compile item added to a PROJECT FILE moves the build merkle`` () =
     // The half that was already closed. A project file is an input to the merkle, so its
     // content moving moves the key by construction — but "by construction" is a claim
-    // about code that can be edited, and this is the case the ticket was opened on.
+    // about code that can be edited, and this is the case that was reported.
     withTempDir "case2-fsproj" (fun root ->
         let proj = System.IO.Path.Combine(root, "Thing.fsproj")
 
@@ -1614,7 +1614,7 @@ let ``case 2: an unrelated file beside the implicit imports does NOT move it`` (
 
         // The control for THAT absence: the same hasher, the same tree, one real implicit
         // import — and it moves. An "it did not move" assertion over a hasher that can
-        // never move is worth nothing, which is the whole bug class this ticket is about.
+        // never move is worth nothing, which is the whole bug class this control guards against.
         System.IO.File.WriteAllText(System.IO.Path.Combine(root, "Directory.Build.props"), "<Project />")
         test <@ hasher.Compute() <> before @>)
 
@@ -2925,8 +2925,8 @@ let ``an output with no source to compare against is named as half-checked`` () 
 let ``a tree the gate cannot examine is reported, not refused`` () =
     // The floor REPORTS. Bypassing the cache on every lookup whose artifacts could not be
     // examined would wedge every repo that centralises its TargetFramework into a
-    // rebuild-every-time loop — trading one wedge class for the regression this ticket's
-    // own acceptance forbids. Pinned as a decision so a later "make it stricter" pass has
+    // rebuild-every-time loop — trading one wedge class for the regression this gate
+    // must not introduce. Pinned as a decision so a later "make it stricter" pass has
     // to argue with a test rather than discover the cost in production.
     withTempDir "coverage-serves" (fun tmpDir ->
         let projDir = System.IO.Path.Combine(tmpDir, "Central")
@@ -2981,7 +2981,7 @@ let ``an empty project graph is reported, not read as a clean tree`` () =
     // The quietest degradation of the lot: with no projects the stale list is empty AND
     // the merkle hashes an empty input, so every such repo shares one constant cache key
     // while looking perfectly healthy. Found by making exactly this mistake in the path
-    // filter of this ticket's own measurement — the count was the only thing that showed.
+    // filter of an earlier measurement — the count was the only thing that showed.
     let gap = artifactCoverageGap (ProjectGraph())
     test <@ gap.IsSome @>
     test <@ gap.Value.Contains "no projects at all" @>
@@ -3042,8 +3042,8 @@ let ``a cached build replay leaves an out-of-batch finding standing`` () =
 // its sources. The refusals that blocked real merges named something else — a
 // dependency assembly that had not been copied into a test project's output directory.
 // That predicate lived only in `FsHotWatch.TestPrune`, which this plugin cannot see
-// (siblings over core), and the ticket named exactly that as the reason its acceptance
-// could not be met. The rule now lives in core's `OutputCopyFreshness`, so the plugin
+// (siblings over core), which is exactly why the rule had to move rather than be
+// restated. The rule now lives in core's `OutputCopyFreshness`, so the plugin
 // that owns the build cache can ask it.
 //
 // What it asks is MSBuild's own incremental-copy predicate — same size AND same mtime

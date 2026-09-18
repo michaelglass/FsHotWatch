@@ -1108,7 +1108,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``a SIGKILLed host is an ABORT even though it flushed a report full of failures`` () =
-    // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
+    // The exact shape recorded in the incident: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
     // Reading that report as the verdict is what minted the phantom mass regression.
     let phantomMassRegression = rep 2171 2032 139 0 0

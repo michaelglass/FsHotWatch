@@ -168,7 +168,7 @@ let ``a disqualifying same-tree read drops prior evidence`` (kind: string) =
     test <@ effective = current @>
     test <@ retainedAfterRefusal = None @>
 
-// Until this ticket the theory above also listed `unstated`, and the
+// The theory above once also listed `unstated`, and the
 // fold's wildcard arm dropped the evidence for it. A same-tree read that ran nothing and
 // gave no reason is a QUIET read, exactly as `already-verified` is: it neither adds to
 // nor contradicts what an earlier read of the same check executed on the same tree.
@@ -1036,7 +1036,7 @@ let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: str
 
 [<Fact(Timeout = 15000)>]
 let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH run directories`` () =
-    // The ticket's own case, driven through the real check loop.
+    // The reported case, driven through the real check loop.
     //
     // The daemon here is a check away from a fresh start: it has already completed a run
     // for a PREVIOUS check (`earlier`), and during this check it completes two more —
@@ -1481,7 +1481,7 @@ let ``a confirm with no projection on offer says nothing was compared, and a che
         driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite 1) offersNothing
 
     // An unavailable projection is a REFUSAL, never an agreement: this is the whole
-    // fail-closed direction of the ticket, asserted end to end through the transport.
+    // fail-closed direction, asserted end to end through the transport.
     match noSample.Divergence with
     | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "offers no projection" @>
     | other -> failwithf "an unavailable projection must be INCOMPARABLE, got %A" other
@@ -1501,7 +1501,7 @@ let ``a confirm with no projection on offer says nothing was compared, and a che
 // the `coverage` token (`RunVerification.verifiedNothing` derives it). It was removed
 // rather than emitted: a fixture asserting a field the wire does not have vouches for a
 // payload that never occurs, and a second serialized source of the same fact is the drift
-// this whole ticket family is about.
+// this whole block guards against.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1732,7 +1732,7 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
 // hash taken at the write. A publisher that takes both hashes itself takes them on the
 // same side of the move and sees a tree that never budged.
 //
-// Both halves are asserted TOGETHER, which is the whole ticket: the process exit and the
+// Both halves are asserted TOGETHER, which is the whole point: the process exit and the
 // verdict FILE are two renderings of one decision, and a deploy preflight authorises on
 // the FILE. A run that exits 0 while the file records `incomplete` tells its two
 // consumers opposite things about the same tree.
@@ -1740,7 +1740,7 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
 
 /// Drive `pollAndRender` over a repo with one tracked file, rewriting that file from
 /// inside `getErrors` when `moveTree` — i.e. after `waitForComplete` has returned and
-/// before the verdict is published, which is precisely the window the ticket describes.
+/// before the verdict is published, which is precisely the window at issue.
 ///
 /// `getErrors` is the seam production already reads its diagnostics through (`Program.fs`
 /// passes the IPC call); nothing was added to `IpcOutput` to make this window reachable

@@ -22,7 +22,7 @@ open FsHotWatch.Tests.TestHelpers
 // ---------------------------------------------------------------------------
 
 /// Run `body` against two temp directories that hold byte-identical trees — the
-/// situation a `jj workspace add` creates and the one this ticket is about.
+/// situation a `jj workspace add` creates and the one these tests are about.
 let private withTwinCheckouts (prefix: string) (populate: string -> unit) (body: string -> string -> 'a) : 'a =
     withTempDir (prefix + "-a") (fun a ->
         withTempDir (prefix + "-b") (fun b ->
@@ -47,7 +47,7 @@ let private formatKeyOf (dir: string) (files: string list) =
     |> fun key -> key handler.Init (FileChanged(SourceChanged files))
 
 // ---------------------------------------------------------------------------
-// format-check — the plugin whose cold-workspace cost the ticket measures
+// format-check — the plugin whose cold-workspace cost was measured
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]

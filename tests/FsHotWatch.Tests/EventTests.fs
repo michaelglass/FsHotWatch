@@ -145,7 +145,7 @@ let ``TestResult.verdict classifies every TestResult case`` () =
 let ``TestResult.verifiedGreen is TRUE only for a project that executed and passed`` () =
     test <@ TestResult.verifiedGreen (TestsPassed("ok", false, TimeSpan.Zero)) @>
     test <@ not (TestResult.verifiedGreen (TestsFailed("bad", false, TimeSpan.Zero))) @>
-    // THE regression this ticket exists for. Its predecessor `TestResult.isPassed`
+    // THE regression `verifiedGreen` exists for. Its predecessor `TestResult.isPassed`
     // answered TRUE here, which is what let a run that executed nothing be summed into
     // a green by any aggregator that forgot to re-derive the fact from a string prefix.
     test <@ not (TestResult.verifiedGreen (TestsNoMatch("Zero tests ran", TimeSpan.Zero))) @>

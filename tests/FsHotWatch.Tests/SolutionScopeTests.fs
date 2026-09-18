@@ -3,7 +3,7 @@ module FsHotWatch.Tests.SolutionScopeTests
 // The contract under test, in one sentence: a test project that
 // is in the solution and in no gated list cannot produce a green.
 //
-// The end-to-end regression the ticket asks for is
+// The end-to-end regression test is
 // ``a dummy test project in the solution and absent from the config makes the
 // config load FAIL`` — a real solution file, a real project file with a real
 // runner marker, and `loadConfig` (the function every fshw verb calls) refusing.
@@ -180,7 +180,7 @@ let ``a solution test project the config does not gate is an UndeclaredTestProje
 
 [<Fact(Timeout = 15000)>]
 let ``the SAME omission, declared with a reason, is clean`` () =
-    // The other direction, and the ticket's own rule: a declared, reasoned
+    // The other direction, and the rule itself: a declared, reasoned
     // exclusion is not the bug — the silence is. If this went red, the escape
     // hatch would be no escape and every repo would be forced to run everything.
     let findings =
