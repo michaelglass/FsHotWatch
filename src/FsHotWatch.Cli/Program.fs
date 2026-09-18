@@ -1388,6 +1388,90 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
             Console.CancelKeyPress.RemoveHandler onCancelKey
             sigterm.Dispose() }
 
+/// The timed-hook plumbing BOTH run brackets share: run ONE hook, measure it against
+/// the invocation's clock, and accumulate the `HookVerdict` + `TimingSpan` pair a
+/// verdict records as its evidence. Locked, because the ordinary path and a signal
+/// finalizer can both reach it.
+type internal RunHookRunner =
+    {
+        /// `scope` (`run.beforeRun` / `run.afterRun`) -> label -> command ->
+        /// (succeeded, captured output).
+        RunTimed: string -> string -> string -> bool * string
+        /// Everything measured so far, in the order it ran.
+        Collected: unit -> Verdict.HookVerdict list * Verdict.TimingSpan list
+    }
+
+let internal makeRunHookRunner
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (invocation: Verdict.Invocation)
+    : RunHookRunner =
+    let timeoutSec = Some(resolveRunHookTimeoutSec config)
+    let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
+
+    { RunTimed =
+        fun scope label cmd ->
+            let startOffsetMs = Verdict.Invocation.elapsedMs invocation
+            let stopwatch = Diagnostics.Stopwatch.StartNew()
+            let success, output = makeShellHookWithResult label timeoutSec repoRoot cmd ()
+            stopwatch.Stop()
+
+            lock hookEvidence (fun () ->
+                hookEvidence.Add(
+                    { Scope = scope
+                      StepIndex = 1
+                      StepCount = 1
+                      Command = cmd
+                      ElapsedMs = stopwatch.ElapsedMilliseconds
+                      Outcome = if success then "ok" else "fail" },
+                    { Scope = scope
+                      StartOffsetMs = startOffsetMs
+                      ElapsedMs = stopwatch.ElapsedMilliseconds
+                      Detail = Some cmd }
+                ))
+
+            success, output
+      Collected = fun () -> lock hookEvidence (fun () -> hookEvidence |> Seq.toList |> List.unzip) }
+
+/// afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
+/// already logs a failure (and its output) at error; the extra line here says
+/// the ONE thing that matters at this layer — the verdict is unchanged.
+let internal makeAfterRunHook (config: DaemonConfiguration) (runner: RunHookRunner) : unit -> unit =
+    makeRunOnce (fun () ->
+        match config.AfterRun with
+        | None -> ()
+        | Some cmd ->
+            let (success, _) = runner.RunTimed "run.afterRun" "afterRun" cmd
+
+            if not success then
+                FsHotWatch.Logging.error
+                    "afterRun"
+                    "afterRun hook exited non-zero (see the failure above) — the run's exit code is \
+                     UNCHANGED; a run-level teardown failure never alters the verdict.")
+
+/// The `beforeRun` preflight both brackets run: timed, its output surfaced on failure
+/// like `tests.beforeRun` does, so a refused preflight shows WHY and not merely that it
+/// refused. `true` means "proceed".
+let internal runBeforeRunHook (config: DaemonConfiguration) (runner: RunHookRunner) : bool =
+    match config.BeforeRun with
+    | None -> true
+    | Some cmd ->
+        let (success, output) = runner.RunTimed "run.beforeRun" "beforeRun" cmd
+
+        if not success then
+            eprintfn
+                "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
+
+            eprintfn "%s" output
+
+        success
+
+/// Which verdict verb a run-hook verb brackets.
+let private verdictCommandOf (verb: RunHookCommand) : Verdict.Command =
+    match verb with
+    | RunHookCommand.Check -> Verdict.Check
+    | RunHookCommand.Confirm -> Verdict.Confirm
+
 /// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun` hooks.
 /// See the section header above for the full contract.
 ///
@@ -1439,49 +1523,9 @@ let internal withRunHooksCommandUsingSignals
         { new IDisposable with
             member _.Dispose() = releaseClaim () }
 
-    let timeoutSec = Some(resolveRunHookTimeoutSec config)
-    let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
-
-    let evidence () =
-        lock hookEvidence (fun () -> hookEvidence |> Seq.toList |> List.unzip)
-
-    let runTimedHook (scope: string) (label: string) (cmd: string) : bool * string =
-        let startOffsetMs = Verdict.Invocation.elapsedMs invocation
-        let stopwatch = Diagnostics.Stopwatch.StartNew()
-        let success, output = makeShellHookWithResult label timeoutSec repoRoot cmd ()
-        stopwatch.Stop()
-
-        lock hookEvidence (fun () ->
-            hookEvidence.Add(
-                { Scope = scope
-                  StepIndex = 1
-                  StepCount = 1
-                  Command = cmd
-                  ElapsedMs = stopwatch.ElapsedMilliseconds
-                  Outcome = if success then "ok" else "fail" },
-                { Scope = scope
-                  StartOffsetMs = startOffsetMs
-                  ElapsedMs = stopwatch.ElapsedMilliseconds
-                  Detail = Some cmd }
-            ))
-
-        success, output
-
-    // afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
-    // already logs a failure (and its output) at error; the extra line here says
-    // the ONE thing that matters at this layer — the verdict is unchanged.
-    let afterRun =
-        makeRunOnce (fun () ->
-            match config.AfterRun with
-            | None -> ()
-            | Some cmd ->
-                let (success, _) = runTimedHook "run.afterRun" "afterRun" cmd
-
-                if not success then
-                    FsHotWatch.Logging.error
-                        "afterRun"
-                        "afterRun hook exited non-zero (see the failure above) — the run's exit code is \
-                         UNCHANGED; a run-level teardown failure never alters the verdict.")
+    let runner = makeRunHookRunner repoRoot config invocation
+    let evidence = runner.Collected
+    let afterRun = makeAfterRunHook config runner
 
     // Attach the wrapper's evidence — hook steps, their spans, the observed wall time
     // — to the verdict THIS invocation produced. Latched: the ordinary finalizer and a
@@ -1541,21 +1585,8 @@ let internal withRunHooksCommandUsingSignals
         installSignals (fun () -> finalize "the run was signalled before the check could finish" true) exit
 
     // beforeRun FIRST — before `action`, hence before the daemon is contacted —
-    // and FAIL-CLOSED. Surface the captured output like `tests.beforeRun` does,
-    // so a refused preflight shows WHY, not just that it refused.
-    let proceed =
-        match config.BeforeRun with
-        | None -> true
-        | Some cmd ->
-            let (success, output) = runTimedHook "run.beforeRun" "beforeRun" cmd
-
-            if not success then
-                eprintfn
-                    "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
-
-                eprintfn "%s" output
-
-            success
+    // and FAIL-CLOSED.
+    let proceed = runBeforeRunHook config runner
 
     if not proceed then
         // Fail-closed: exit 2, NOT 1. afterRun does NOT fire here — beforeRun is
@@ -1633,10 +1664,7 @@ let internal withRunHooksForInvocation
     (config: DaemonConfiguration)
     (action: Verdict.Invocation -> int)
     : int =
-    let command =
-        match verb with
-        | RunHookCommand.Check -> Verdict.Check
-        | RunHookCommand.Confirm -> Verdict.Confirm
+    let command = verdictCommandOf verb
 
     // A verb the config does not select still runs as an invocation
     // (id, clock, signal finalizer) — it just has no hooks to time.
@@ -1657,6 +1685,87 @@ let withRunHooksFor
     (action: unit -> int)
     : int =
     withRunHooksForInvocation verb repoRoot config (fun _ -> action ())
+
+/// The run-level hooks WITHOUT the in-flight claim, the terminal verdict, or any
+/// ownership of `.fshw/verdict.json`.
+///
+/// Run-level hooks do TWO separable jobs. They BRACKET heavy work, so a consumer's
+/// gate-lock has something to guard and a claim can say a run is in flight. And they
+/// CHECK what the verdict's tree hash does NOT cover — an index, a doc set, any file a
+/// consumer deliberately excludes from the verdict's inputs so that editing it does not
+/// invalidate a green. `confirm`'s fast path needs the second job and must not take the
+/// first: it starts no daemon, sets no scope and runs no test, but it DOES certify a
+/// tree.
+///
+/// Fusing the two would be wrong, not merely wasteful. `withRunHooksCommand` CLAIMS the
+/// repo before the action: an on-disk assertion that a check is in flight over this tree
+/// RIGHT NOW, which `fshw verdict` answers with exit 6 — "the answer is being computed;
+/// waiting is what closes this, not another run". A re-check that reads two files and
+/// computes nothing must not make that assertion to every concurrent reader. The same
+/// bracket would also run its terminal-verdict and hook-attach steps against a verdict
+/// owned by an EARLIER invocation, which they can only decline — and say so, on every
+/// fast path.
+///
+/// What is KEPT is the whole of the hook contract: beforeRun fail-closed (exit 2, its
+/// refusal published as the invocation's record so the green it declined to certify
+/// cannot be read back out of `.fshw/verdict.json` as the answer), afterRun as a
+/// `finally`, and the signal finalizer — a Ctrl-C between the two must still release
+/// whatever beforeRun acquired.
+///
+/// `installSignals` is INJECTED for the same reason as in `withRunHooksCommandUsingSignals`.
+let internal withRunHooksUnclaimedUsingSignals
+    (installSignals: (unit -> unit) -> (int -> unit) -> IDisposable)
+    (command: Verdict.Command)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: unit -> int)
+    : int =
+    // An invocation id and a clock, for the same reason every run has them: the hooks
+    // this runs are timed against it, and a refusal has to be attributable. It claims
+    // nothing and publishes nothing UNLESS beforeRun refuses, which is the one outcome
+    // that must leave a record.
+    let invocation = Verdict.Invocation.start ()
+    let runner = makeRunHookRunner repoRoot config invocation
+    let afterRun = makeAfterRunHook config runner
+
+    use _signals = installSignals afterRun exit
+
+    if not (runBeforeRunHook config runner) then
+        // Fail-closed, exit 2 and NOT 1, exactly as the bracketing path fails: afterRun
+        // does not fire (beforeRun is the acquire, and a failed acquire has nothing to
+        // release), and the refusal REPLACES the verdict it declined to certify. Leaving
+        // the green readable would hand the next reader the answer this run refused to
+        // give.
+        let hooks, spans = runner.Collected()
+
+        Verdict.writeHookFailure
+            repoRoot
+            config.Exclude
+            command
+            invocation
+            hooks
+            spans
+            "the top-level beforeRun hook failed before the daemon was contacted"
+
+        2
+    else
+        try
+            action ()
+        finally
+            afterRun ()
+
+/// `withRunHooksUnclaimedUsingSignals` under the SAME verb policy the bracketing path
+/// obeys: a verb the config does not select is a straight `action ()`.
+let internal withRunHooksUnclaimedFor
+    (verb: RunHookCommand)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: unit -> int)
+    : int =
+    if runHooksApplyTo config verb then
+        withRunHooksUnclaimedUsingSignals installRunSignalHandlers (verdictCommandOf verb) repoRoot config action
+    else
+        action ()
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -2159,17 +2268,68 @@ let executeCommand
             // goes and earns one. See `Verdict.priorConfirmation` for why this is the only
             // green in fshw allowed to cross a process boundary.
             match Verdict.priorConfirmation repoRoot config.Exclude with
-            | Verdict.PriorConfirmation.StillApplies v ->
-                // DELIBERATELY UNWRAPPED by the run-level hooks: this fast path starts no
-                // daemon, sets no scope and runs no test — it only reads
-                // `.fshw/verdict.json` and re-checks it against the tree, so there is no
-                // heavy work for a gate-lock to guard. Only the `MustEarn` arm below,
-                // which actually runs the suite, is wrapped.
-                UI.success $"confirm — %s{Verdict.describeStillApplies v}"
-                eprintfn ""
-                eprintfn "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
-                eprintfn $"    verdict  %s{Verdict.RelativePath}   (this verdict, re-checked against the tree on disk)"
-                0
+            | Verdict.PriorConfirmation.StillApplies _ ->
+                // HOOKS YES, CLAIM NO — the two halves of the run-level bracket are
+                // separated here, because this fast path needs exactly one of them.
+                //
+                // NOT the bracketing half: it starts no daemon, sets no scope and runs no
+                // test, so it takes no in-flight claim, publishes no verdict of its own
+                // and leaves `.fshw/verdict.json` byte-identical. A claim held around a
+                // read-only re-check would tell every concurrent reader — `fshw verdict`
+                // answers exit 6 on one — that a run is verifying this tree right now,
+                // when nothing is.
+                //
+                // YES the checking half: `beforeRun` is where a consumer checks what the
+                // tree hash deliberately does NOT cover — an index, a doc set, any file
+                // excluded from the verdict's inputs so that editing it does not
+                // invalidate a green. Certifying a stored verdict without running it would
+                // certify a claim nobody checked, and precisely for the files that were
+                // excluded from the hash BECAUSE a hook covers them. Hence
+                // `withRunHooksUnclaimedFor` and not `withRunHooksForInvocation`; only the
+                // `MustEarn` arm below, which actually runs the suite, takes the full
+                // bracket.
+                withRunHooksUnclaimedFor RunHookCommand.Confirm repoRoot config (fun () ->
+                    // ASK AGAIN, now that the hooks have run. The answer above describes the
+                    // tree as it was hashed BEFORE `beforeRun`, and a preflight worth running
+                    // takes seconds — a write landing inside that window would otherwise be
+                    // certified by a hash taken before it. The slow path closes a window of
+                    // exactly this shape by hashing twice around the work it did
+                    // (`IpcOutput.SettledTree` and `atWrite`), and refusing the pair when
+                    // they differ; this is the same rule at the fast path's scale.
+                    //
+                    // The second hash is what makes this affordable: it re-reads files the
+                    // first hash read seconds ago, so it is always the warm case. Measured
+                    // 17ms over this repo (246 files) and 156ms over 1,884 files / 11MB —
+                    // low single-digit percent of any hook worth running.
+                    match Verdict.priorConfirmation repoRoot config.Exclude with
+                    | Verdict.PriorConfirmation.StillApplies confirmed ->
+                        UI.success $"confirm — %s{Verdict.describeStillApplies confirmed}"
+                        eprintfn ""
+
+                        eprintfn
+                            "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
+
+                        eprintfn
+                            $"    verdict  %s{Verdict.RelativePath}   (this verdict, re-checked against the tree on disk)"
+
+                        0
+                    | Verdict.PriorConfirmation.MustEarn ->
+                        // Exit 2 — "could not complete, retry" — and NOT a fall-through to the
+                        // suite: the heavy path is wrapped in its own hook bracket, so falling
+                        // through would run `beforeRun` a second time with no `afterRun`
+                        // between, which for the gate-lock this feature exists to serve is a
+                        // deadlock against itself.
+                        //
+                        // Nothing is written. The stored verdict now addresses a tree that is
+                        // no longer on disk, so `fshw verdict` already reports it stale (exit
+                        // 4) and it cannot be read as this tree's answer; overwriting it would
+                        // destroy evidence that is still valid for the tree that earned it.
+                        UI.fail "the working tree changed while the run-level hooks ran — nothing is claimed about it"
+
+                        eprintfn
+                            "  The verdict on disk was earned over the PREVIOUS tree. Re-run `fshw confirm` for this one."
+
+                        2)
             | Verdict.PriorConfirmation.MustEarn ->
                 // Same pipeline as `check`, but full-suite scope is set FIRST (so the test
                 // run the scan provokes is unfiltered), the suite is FORCED if the scan

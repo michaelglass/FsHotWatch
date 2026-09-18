@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **`confirm`'s "verdict still applies" fast path now runs the run-level hooks.** It
+  used to skip them entirely, on the rationale that it starts no daemon and runs no
+  test. That covers only half of what the hooks are for: a `beforeRun` is where a
+  consumer checks what the verdict's tree hash deliberately does NOT cover — an index,
+  a doc set, any file excluded from the verdict's inputs so that editing it cannot
+  invalidate a green. Edit only excluded files after a green and `confirm` certified
+  the tree without running the check that was meant to cover them. `beforeRun` and
+  `afterRun` now fire on that path, under the same `runHookCommands` verb policy, and a
+  refusing `beforeRun` fails it closed with exit 2. **A `confirm` that hit the fast path
+  is now as slow as its hooks** (and can now exit 2 where it exited 0). The fast path
+  itself is unchanged: still no daemon, no scope, no test, no in-flight claim, and the
+  stored verdict is left byte-identical unless `beforeRun` refuses.
+
+  The hooks take time, so the tree is re-hashed after them and the verdict re-checked
+  against it — otherwise a write landing while a hook ran would be certified by the hash
+  taken before it. If it moved, `confirm` refuses (exit 2, `the working tree changed
+  while the run-level hooks ran`) instead of falling through to the suite, and writes
+  nothing: the stored verdict still describes the tree that earned it and `fshw verdict`
+  already reports it stale against this one. This is the same rule the slow path applies
+  by hashing at the settle boundary and again at publication. The second hash is the warm
+  case by construction — measured 17ms over this repo (246 files) and 156ms over 1,884
+  files / 11MB.
+
 ## 0.14.0-alpha.56 - 2026-09-18
 
 - core, cli: a superseded scan re-captures its model instead of ending the check

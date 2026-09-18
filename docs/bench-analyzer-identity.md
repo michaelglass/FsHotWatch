@@ -27,6 +27,11 @@ claim.
 - **before** — `c6c0323c` (FsHotWatch.Cli 0.14.0-alpha.47): byte-keyed
   `analyzer-assemblies` slot (`analyzers-merkle-v4`), and the store namespaced per
   checkout name.
+- **interim** — the analyzer-identity stack with the namespace fix but NOT the
+  trailing-separator fix, so `analyzer-paths` is still absolute and
+  checkout-specific. Not a condition under test: it is the build whose stored
+  entries the first *after* run re-keys, and its two runs are in the table
+  because they are what that run read.
 - **after** — the analyzer-identity stack: receipt-keyed `analyzer-inputs`
   (`analyzers-merkle-v5`), the store namespaced per repository, and the
   `analyzer-paths` slot repo-relative with a trailing separator.
@@ -81,12 +86,14 @@ run (the remaining time is the plugin's own scan of 176 files and the 8 uncached
 ones). Whole-check wall time is 340–380 s in every condition and is dominated by
 test-prune running the full suite in a workspace with no baseline (316–356 s) and
 by the scan; it is not a claim of this change. Warm second check in the same
-workspace: 18–29 s. The first `after` run in the shared store re-keyed the 173 v4
-entries the default checkout had written (`inputs-changed:…,plugin-version`), as
-a version bump must.
+workspace: 18–29 s. The first run in the shared store under the new key
+(`B-interim-1` in the table below) re-keyed the 173 v4 entries the default
+checkout had written (`inputs-changed:…,plugin-version`), as a version bump
+must.
 
 Full per-run table. `B-*` = same name, different path; `A-*` = distinct names;
-`*-warm` = second check in the same workspace. Load average (1 min) at run start
+`*-warm` = second check in the same workspace; `B-interim-*` = the interim
+build above, not a condition under test. Load average (1 min) at run start
 ranged 7–125; the box was shared for part of the session.
 
 | run | check wall s | test-prune s | analyzer spans (cached) | analyzer ms | analyzer hits | analyzer misses (reason) |
@@ -96,8 +103,8 @@ ranged 7–125; the box was shared for part of the session.
 | B-before-2 | 358.4 | 334 | 9 (4) | 12102 | 173 | 181 (173× `inputs-changed:analyzer-assemblies,analyzer-paths`; 8× `no-entry`) |
 | B-before-3 | 351.0 | 322 | 9 (3) | 11385 | 173 | 181 (173× `inputs-changed:analyzer-assemblies,analyzer-paths`; 8× `no-entry`) |
 | B-before-3-warm | 29.0 | 12 | 2 (2) | 3028 | 173 | 4 (4× `no-entry`) |
-| B-after-1 | 349.4 | 324 | 9 (3) | 17679 | 176 | 184 (169× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,plugin-version`; 11× `no-entry`; 3× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,fcs-signature,plugin-version,source`; 1× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,plugin-version,source`) |
-| B-after-2 | 372.1 | 350 | 11 (3) | 11914 | 176 | 184 (176× `inputs-changed:analyzer-paths`; 8× `no-entry`) |
+| B-interim-1 | 349.4 | 324 | 9 (3) | 17679 | 176 | 184 (169× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,plugin-version`; 11× `no-entry`; 3× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,fcs-signature,plugin-version,source`; 1× `inputs-changed:analyzer-assemblies,analyzer-inputs,analyzer-paths,plugin-version,source`) |
+| B-interim-2 | 372.1 | 350 | 11 (3) | 11914 | 176 | 184 (176× `inputs-changed:analyzer-paths`; 8× `no-entry`) |
 | B-after-1 | 381.8 | 356 | 15 (8) | 21415 | 176 | 184 (173× `inputs-changed:analyzer-paths`; 8× `no-entry`; 3× `inputs-changed:analyzer-paths,source`) |
 | B-after-2 | 371.7 | 347 | 7 (7) | 7238 | 352 | 8 (8× `no-entry`) |
 | A-after-1 | 344.6 | 320 | 6 (6) | 7866 | 352 | 8 (8× `no-entry`) |
@@ -108,11 +115,15 @@ ranged 7–125; the box was shared for part of the session.
 | B-after-3-warm | 18.3 | 8 | 3 (3) | 2973 | 176 | 4 (4× `no-entry`) |
 
 `A-main-unfixed-1` is the single distinct-name run taken on unmodified main
-before the namespace and trailing-separator fixes. `B-after-1` re-keyed entries
-written by an intermediate run (namespace fix only, absolute `analyzer-paths`) and
-so misses on `analyzer-paths`; `B-after-2` is the first run against entries with
-every fix and hits. One cold run (namespace fix only) went red on
-`ProcessHelperTests.runWithCancellableTimeoutTracked keeps token source alive
-through late registration`, a timing test, at load average 40; it is not in the
-table.
+before the namespace and trailing-separator fixes. `B-interim-1` re-keyed the v4
+entries the default checkout had written, and `B-interim-2` read `B-interim-1`'s
+entries from a second path: it misses on `analyzer-paths` alone, with no `source`
+drift, because it is the same build reading its own predecessor's entries.
+`B-after-1` re-keyed the entries those interim runs wrote (absolute
+`analyzer-paths`) and so misses on `analyzer-paths`, and on `source` for the
+three files whose bytes differ between the two builds; `B-after-2` is the first
+run against entries with every fix and hits. One cold run (namespace fix only)
+went red on `ProcessHelperTests.runWithCancellableTimeoutTracked keeps token
+source alive through late registration`, a timing test, at load average 40; it
+is not in the table.
 

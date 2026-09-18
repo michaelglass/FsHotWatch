@@ -539,7 +539,14 @@ check queue behind someone else's full suite:
 A verb **not** in the set runs completely unwrapped — no latch, no signal handlers,
 no shell-out — the same straight path taken when no hook is configured. The daemon
 and `--run-once` behave identically, so CI cannot silently lose the gate.
-`confirm`'s "verdict still applies" fast path is never bracketed.
+`confirm`'s "verdict still applies" fast path **runs the hooks** — they are how you
+check what the verdict's tree hash deliberately leaves out — but takes nothing else
+from the bracket: no daemon, no test, no in-flight claim, and `.fshw/verdict.json`
+left byte-identical. A `beforeRun` that exits non-zero still fails it closed with
+exit 2. The tree is re-hashed **after** the hooks, so a write that lands while a hook
+runs is never certified by the hash taken before it: the fast path refuses with exit 2
+(`the working tree changed while the run-level hooks ran`) and leaves the stored
+verdict alone, stale against the new tree.
 
 Failure modes lean **safe**, because silently un-gating is the dangerous direction:
 
