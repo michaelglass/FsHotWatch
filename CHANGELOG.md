@@ -204,6 +204,14 @@ everything it leaves owed — and the verdict asks for it.
 
 See `docs/adr-033-a-green-is-minted-from-earned-evidence.md`.
 
+Fixed in the same release, from the first CI run over a cold tree: a receipt refused a green
+whose run had covered the files in question (a cold scan queues obligations while the full
+suite is already running, and they were counted as pending), and the summary's `WHAT FAILED`
+block printed `UNEXPLAINED` beside the refusal it had just reported. A run that executed
+every runnable project in full over the tree it launched against now discharges what it
+covered — a project that never ran, one that failed, or a filtered run still refuses — and
+every downgrade the publisher decides is recorded as a red cause the block can name.
+
 ### core, testprune: check results carry the project model they were captured against
 
 A scan or change batch could publish results against a project model that a rediscovery

@@ -3606,3 +3606,85 @@ let ``a superseded or partial full run cannot turn an earlier red into a baselin
                     $"%s{sequence}/%A{mode}: ProjA failed in the only run that reported it, yet the check is green against baseline %A{report.Baseline}"
                 )
             | _ -> ())
+
+// ---------------------------------------------------------------------------
+// A receipt refuses only what the graded run did NOT cover.
+//
+// The cold-tree shape: the build fires the full-suite run first, and the scan's own file
+// events land while it is running, so obligations for those files are queued AFTER the
+// launch and are absent from its snapshot. The run executed every configured project in
+// full, over an unchanged tree, so it covered them — and a receipt that refuses them
+// turns a green check into exit 2 with nothing failing anywhere.
+// ---------------------------------------------------------------------------
+
+[<Theory(Timeout = 20000)>]
+[<InlineData("covered-by-the-full-suite", true)>]
+[<InlineData("covering-project-never-ran", false)>]
+[<InlineData("covering-project-failed", false)>]
+[<InlineData("filtered-run-covers-nothing", false)>]
+let ``a receipt refuses only the obligations its run did not cover`` (shape: string, expectedClean: bool) =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // Queued while the run was already in flight: the launch snapshot cannot name them.
+        let lateObligations =
+            Map.ofList
+                [ "tests/Late.fs", Map.ofList [ "ProjA", 1L ]
+                  "tests/Later.fs", Map.ofList [ "ProjB", 1L ] ]
+
+        let prior =
+            { handler.Init with
+                Debt =
+                    { handler.Init.Debt with
+                        RuntimeObligations = lateObligations } }
+
+        let results =
+            match shape with
+            | "covering-project-never-ran" -> [ "ProjA", passed false ]
+            | "covering-project-failed" -> [ "ProjA", passed false; "ProjB", failedProjA ]
+            | "filtered-run-covers-nothing" -> [ "ProjA", passed true; "ProjB", passed true ]
+            | _ -> [ "ProjA", passed false; "ProjB", passed false ]
+
+        // The daemon's model, as the host publishes it: evidence is minted only for a
+        // model the run was selected under.
+        let model =
+            FsHotWatch.ProjectModel.ofCompleted
+                4L
+                { Discovered = 1
+                  Loaded = 1
+                  OptionsMapped = 1
+                  Registered = 1 }
+
+        let launch =
+            match shape with
+            | "filtered-run-covers-nothing" -> filteredLaunch [ "ProjA", [ "ProjATests" ]; "ProjB", [ "ProjBTests" ] ]
+            | _ -> fullSuiteLaunch [ "ProjA"; "ProjB" ]
+            |> bindReceiptTree repoRoot
+            |> fun launch ->
+                { launch with
+                    ModelGeneration = Some 4L }
+
+        let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+        let ctx =
+            { recordingCtx with
+                ProjectGraph =
+                    { recordingCtx.ProjectGraph with
+                        ObserveModel = fun () -> model } }
+
+        let candidate =
+            handler.Update ctx prior (testsFinishedEvent results launch)
+            |> Async.RunSynchronously
+
+        let earned =
+            match candidate.Earned with
+            | Some evidence -> evidence
+            | None -> failwith "a completed run under the fixture's model must earn evidence"
+
+        if expectedClean then
+            // Every configured project ran in full and passed, over the tree the run
+            // launched against: those obligations are covered, whenever they were queued.
+            test <@ List.isEmpty earned.FailureReasons @>
+        else
+            test <@ not (List.isEmpty earned.FailureReasons) @>)

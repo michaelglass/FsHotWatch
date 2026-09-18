@@ -2678,3 +2678,65 @@ let ``a refused receipt says why at the terminal, not only in the verdict file``
 
         test <@ greenExit = 0 @>
         test <@ not (quiet.Contains "no evidence receipt") @>)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData("no-receipt")>]
+[<InlineData("refusing-receipt")>]
+let ``a receipt refusal is a recorded cause, so the summary names it instead of UNEXPLAINED`` (kind: string) =
+    withTempDir "ipcoutput-receipt-cause" (fun repoRoot ->
+        // The cold-tree RED on main: the refusal was printed, the exit was 2, and the
+        // WHAT FAILED block said "UNEXPLAINED exit 2 with no failing plugin, no failing
+        // suite and no failing diagnostic — do NOT read this as a pass". The block
+        // collects its causes from the verdict, and nothing put the refusal there.
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let receipts =
+            if kind = "no-receipt" then
+                []
+            else
+                [ { RunId = Some BaselineFixtures.runId
+                    Generation = currentGeneration
+                    Refusals = [ "3 verification obligation(s) remain pending" ] } ]
+
+        test <@ publishWithReceipts repoRoot receipts gradedRun = 2 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            let causes =
+                verdict.RedCauses
+                |> List.map (fun c -> Verdict.RedCauseMessage.value c.Message)
+                |> String.concat "\n"
+
+            let summary =
+                ProgressRenderer.AgentHints.forVerdict None verdict |> String.concat "\n"
+
+            test <@ not (List.isEmpty verdict.RedCauses) @>
+            test <@ causes.Contains "receipt" @>
+            test <@ not (summary.Contains "UNEXPLAINED") @>
+            test <@ summary.Contains "receipt" @>
+        | other -> failwithf "expected a published verdict, got %A" other)
+
+[<Fact(Timeout = 20000)>]
+let ``a clean publication records no cause, so the refusal cause is not furniture`` () =
+    withTempDir "ipcoutput-receipt-cause-control" (fun repoRoot ->
+        // Negative control for the theory above: without it, recording a cause on every
+        // publication would satisfy it while telling every green run something failed.
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let exitCode =
+            publishWithReceipts
+                repoRoot
+                [ { RunId = Some BaselineFixtures.runId
+                    Generation = currentGeneration
+                    Refusals = [] } ]
+                gradedRun
+
+        test <@ exitCode = 0 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict -> test <@ List.isEmpty verdict.RedCauses @>
+        | other -> failwithf "expected a published verdict, got %A" other)

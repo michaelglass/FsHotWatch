@@ -104,3 +104,31 @@ An operator saw exit 2 and silence. Both now print the sentence they record.
   evidence. That is the second half of this slice.
 - A completed build failure mints no evidence yet, so an evidence wait on a red build still
   rests on the status.
+
+## Amendment: what a receipt refuses, and how the summary names it
+
+The first CI run of this rule over a COLD tree was RED with nothing failing: every plugin
+`ok`, every suite green, and `the evidence receipt for the graded run … refuses a green: 3
+verification obligation(s) remain pending` beside `UNEXPLAINED exit 2 with no failing
+plugin, no failing suite and no failing diagnostic — do NOT read this as a pass`. Two
+separate defects, both fixed here.
+
+- **A receipt refuses the obligations its run did not cover, not every obligation the queue
+  holds at the instant it is minted.** On a cold tree the build fires the full suite first
+  and the scan's file events land while it is still executing, so those obligations are
+  absent from the launch snapshot and survive the launch-scoped retirement. A run that
+  executed every runnable project IN FULL, over the input tree it launched against, and
+  passed, covered those files whenever they were queued. This is not "pass when obligations
+  exist": a run with a covering project that never ran, one whose covering project failed,
+  and a filtered run all still refuse, and unanalyzable files, outstanding failures and an
+  outstanding recovery refuse unconditionally regardless of what the run covered.
+- **A downgrade the publisher decides is a recorded cause.** The `WHAT FAILED` block
+  collects its causes from the verdict's plugins, suites and `redCauses`; a downgrade that
+  reached none of the three rendered as `UNEXPLAINED`, telling the reader the report had no
+  answer while the answer stood a screen above it. The receipt refusal and the tree-moved
+  downgrade are now recorded as red causes (source `receipt` / `tree`, file `<evidence>`),
+  so the block names them. A terminal infrastructure reason handed in by the caller is not
+  one of these, and the asymmetry is deliberate rather than an oversight: that reason
+  arrives with its own diagnosis already reported, so a second cause here would
+  double-report one failure as two. This publisher adds no cause it did not find. A clean publication records no cause, which is what keeps this from becoming
+  furniture on every green.

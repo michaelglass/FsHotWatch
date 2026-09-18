@@ -15,6 +15,12 @@
   produced recorded its reason in `verdict.json` but printed nothing, so an operator saw
   exit 2 with no explanation. It now says the same sentence at the terminal.
 
+- Fixed: a downgrade decided by the publisher — a refusing or missing evidence receipt, or
+  a working tree that moved while the verdict was produced — is recorded as a red cause, so
+  the summary's `WHAT FAILED` block names it. It previously reached neither the plugins, the
+  suites nor `redCauses`, and the block printed `UNEXPLAINED exit 2 with no failing plugin,
+  no failing suite and no failing diagnostic` a screen below the reason it had just given.
+
 ## 0.14.0-alpha.54 - 2026-09-17
 
 - Adopts TestPrune.Core 9.0.0, in lockstep with FsHotWatch.TestPrune.

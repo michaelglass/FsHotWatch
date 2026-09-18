@@ -1027,7 +1027,26 @@ let private publishVerdictWithReason
                             + String.concat "; " (List.distinct refusals)
                         )
 
-        let verdictOutcome, exitCode =
+        // A downgrade decided HERE is the whole reason for the exit code, and the WHAT
+        // FAILED block collects its causes from the verdict — the plugins, the suites and
+        // `redCauses`. A downgrade that reaches none of the three renders as `UNEXPLAINED
+        // exit 2 with no failing plugin, no failing suite and no failing diagnostic — do
+        // NOT read this as a pass`, which is what the cold-tree CI run printed a screen
+        // below the refusal it had just named. The sentence is worse than useless there:
+        // it tells the reader the report has no answer while the answer is on the screen.
+        // Recorded as a cause, the block names it.
+        //
+        // `<evidence>` is a source, not a path — the same shape as the `<build>` the
+        // ledger already carries — so `RedCauseKind` classifies it `AboutThisTree` and the
+        // stale-daemon advice stays off it: a refusal IS about this tree.
+        let downgradeCause (source: string) (reason: string) : Verdict.RedCause =
+            { Source = source
+              File = "<evidence>"
+              Severity = "error"
+              Message = Verdict.RedCauseMessage.ofLedger source "<evidence>" reason
+              Kind = Verdict.AboutThisTree }
+
+        let verdictOutcome, exitCode, downgradeCauses =
             match terminalIncompleteReason, settledTree with
             // A terminal infrastructure failure is already the answer. Preserve its
             // exact diagnosis in the machine-readable verdict instead of rounding it
@@ -1042,9 +1061,15 @@ let private publishVerdictWithReason
                 // clean, so an operator otherwise saw exit 2 and no sentence anywhere but
                 // in the file.
                 UI.fail reason
-                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+
+                Verdict.Incomplete reason,
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                [ downgradeCause "tree" reason ]
+            // Handed in, not decided here: a terminal infrastructure failure arrives with
+            // its own diagnosis and its caller's reporting. This function does not add a
+            // cause it did not find.
             | Some reason, _ ->
-                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1), []
             // A tree that held still — and, on the abort paths, a check that never
             // settled at all. `NeverSettled` cannot be what makes a verdict incomplete:
             // the abort already did, and both callers that reach here hand in an
@@ -1058,8 +1083,11 @@ let private publishVerdictWithReason
                 // printing nothing, so without this an operator sees exit 2 and no reason.
                 | CheckVerdict.CheckOutcome.Clean _, Some reason ->
                     UI.fail reason
-                    Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
-                | _ -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+
+                    Verdict.Incomplete reason,
+                    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                    [ downgradeCause "receipt" reason ]
+                | _ -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome, []
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -1191,7 +1219,11 @@ let private publishVerdictWithReason
                 plugins
                 runs
                 comparison
-                redCauses
+                // The ledger's failing diagnostics AND the downgrade this function
+                // decided. `comparison` above deliberately keeps the ledger's list alone:
+                // it classifies what the two RUNS found, and a refusal is a fact about the
+                // evidence, not a finding either run made.
+                (redCauses @ downgradeCauses)
                 projectModel
             |> Verdict.withAttribution attribution
 
