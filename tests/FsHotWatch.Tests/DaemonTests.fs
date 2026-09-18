@@ -79,6 +79,27 @@ type private SequencedWorkspaceLoader(resultsByAttempt: Types.ProjectOptions lis
         [<CLIEvent>]
         member _.Notifications = notifications.Publish
 
+/// Counts how many times the daemon actually evaluated the workspace. Used where the
+/// question is "did a rediscovery happen at all", which no other seam answers.
+type private CountingWorkspaceLoader(results: Types.ProjectOptions list) =
+    let notifications = Event<Types.WorkspaceProjectState>()
+    let loads = ref 0
+
+    member _.Loads = Threading.Volatile.Read(&loads.contents)
+
+    member private _.Load() =
+        Threading.Interlocked.Increment(&loads.contents) |> ignore
+        results :> seq<_>
+
+    interface IWorkspaceLoader with
+        member this.LoadProjects(_projectPaths) = this.Load()
+        member this.LoadProjects(_projectPaths, _customProperties, _binaryLog) = this.Load()
+        member this.LoadSln(_solutionPath) = this.Load()
+        member this.LoadSln(_solutionPath, _customProperties, _binaryLog) = this.Load()
+
+        [<CLIEvent>]
+        member _.Notifications = notifications.Publish
+
 let private minimalLoadedProject (projectPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
@@ -1283,7 +1304,7 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
 [<InlineData(false, false)>]
 [<InlineData(true, false)>]
 [<InlineData(true, true)>]
-let ``scan waits for discovery and refuses a model invalidated after capture``
+let ``scan waits for discovery and re-scans when its captured model is invalidated``
     (hasSource: bool, rediscoverAfterCapture: bool)
     =
     withTempDir "daemon-scan-discovery-race" (fun tmpDir ->
@@ -1345,6 +1366,29 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
         // Establish both a healthy registry and the scan's unchanged fingerprint.
         daemon.ScanAll() |> Async.RunSynchronously
         test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
+
+        // Every seal published from here on. A scan that recovers must stamp its
+        // cohort with the model it actually checked, never the superseded one.
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "race-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
         let originalProject = File.ReadAllBytes(projectPath)
         let originalWriteTime = File.GetLastWriteTimeUtc(projectPath)
         use preprocessorEntered = new Threading.ManualResetEventSlim(false)
@@ -1383,49 +1427,51 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
 
             let runningScan = scan.Value
             preprocessorResume.Set()
-            let bound = if rediscoverAfterCapture then 10000 else 1000
 
             let first =
                 System.Threading.Tasks.Task
-                    .WhenAny(runningScan, System.Threading.Tasks.Task.Delay(bound))
+                    .WhenAny(runningScan, System.Threading.Tasks.Task.Delay(1000))
                     .GetAwaiter()
                     .GetResult()
 
             let completedWhileCleared = obj.ReferenceEquals(first, runningScan)
             loader.Resume(1)
             rediscovery.Value.GetAwaiter().GetResult()
+            runningScan.GetAwaiter().GetResult()
 
-            if rediscoverAfterCapture then
-                let failure =
-                    Assert.ThrowsAny<Exception>(fun () -> runningScan.GetAwaiter().GetResult())
-
-                let cause =
-                    match failure with
-                    | :? AggregateException as aggregate -> aggregate.Flatten().InnerExceptions |> Seq.exactlyOne
-                    | other -> other
-
-                let refused = Assert.IsType<FsHotWatch.Daemon.ModelSupersededException>(cause)
-                test <@ refused.Message.Contains("invalidated before scan publication") @>
-
-                test
-                    <@
-                        daemon.Host.WorkSnapshot.OperationFaults
-                        |> List.exists (fun (name, _) -> name = "scan")
-                    @>
-            else
-                runningScan.GetAwaiter().GetResult()
+            // A mid-scan rediscovery is a legitimate event, not a reason to abandon
+            // the caller's scan. The refusal to publish stale results stands; the
+            // recovery from it is to capture the model that replaced it and scan again.
+            test
+                <@
+                    daemon.Host.WorkSnapshot.OperationFaults
+                    |> List.forall (fun (name, _) -> name <> "scan")
+                @>
 
             test <@ File.ReadAllBytes(projectPath) = originalProject @>
             test <@ File.GetLastWriteTimeUtc(projectPath) = originalWriteTime @>
             test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
-            // A scan issued during the clear must wait; one whose immutable plan
-            // was captured beforehand must refuse stale publication without retaining the writer lease.
-            test <@ completedWhileCleared = rediscoverAfterCapture @>
+            // Neither shape completes while the model is cleared: one waits for the
+            // attempt in flight before capturing, the other waits for it before
+            // re-capturing. A scan that finished here would have published against a
+            // model no plugin can still see.
+            test <@ not completedWhileCleared @>
+
+            // The whole point of the refusal, stated positively: the cohort the scan
+            // sealed is stamped with the generation the rediscovery installed (2),
+            // not the one it originally captured.
+            Assert.True(
+                SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 10.0),
+                "the completed scan must seal its cohort"
+            )
+
+            let sealed' = seals.ToArray() |> Array.last
+            test <@ sealed'.ModelGeneration = Some 2L @>
 
             let scans =
                 FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
 
-            test <@ scans.Length = (if rediscoverAfterCapture then 1 else 2) @>
+            test <@ scans.Length = 2 @>
 
             for sample in scans do
                 test <@ sample.FilesRegistered = sources.Length @>
@@ -1436,18 +1482,269 @@ let ``scan waits for discovery and refuses a model invalidated after capture``
             loader.Resume(1)
             rediscovery |> Option.iter (fun running -> running.GetAwaiter().GetResult())
 
-            scan
-            |> Option.iter (fun running ->
-                try
-                    running.GetAwaiter().GetResult()
-                with
-                | :? InvalidOperationException when rediscoverAfterCapture -> ()
-                | :? AggregateException as failure when
-                    rediscoverAfterCapture
-                    && (failure.Flatten().InnerExceptions
-                        |> Seq.forall (fun cause -> cause :? InvalidOperationException))
-                    ->
-                    ()))
+            scan |> Option.iter (fun running -> running.GetAwaiter().GetResult()))
+
+[<Fact(Timeout = 30000)>]
+let ``observing project content answers the next echo of the same bytes as unchanged`` () =
+    withTempDir "content-observe-projects" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let kept = Path.Combine(directory, "Kept.fsproj")
+        let edited = Path.Combine(directory, "Edited.fsproj")
+        File.WriteAllText(kept, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(edited, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let tracker = FsHotWatch.ContentDedup.Tracker()
+
+        // An UNSEEDED tracker calls both of them changed — correct for a file it has
+        // no prior for, and the false positive that re-discovered a cold workspace.
+        let unseeded = FsHotWatch.ContentDedup.Tracker()
+        test <@ unseeded.HasContentChanged kept @>
+
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+
+        test <@ not (tracker.HasContentChanged kept) @>
+        test <@ not (tracker.HasContentChanged edited) @>
+
+        // Content, not identity: a real edit is still a change.
+        File.WriteAllText(edited, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        test <@ tracker.HasContentChanged edited @>
+        test <@ not (tracker.HasContentChanged kept) @>
+
+        // A project file an exclude pattern hides is not observed, so nothing about it
+        // is claimed: it keeps the no-prior answer.
+        let excluded = FsHotWatch.ContentDedup.Tracker()
+        FsHotWatch.Daemon.observeProjectContent root [ "src" ] excluded
+        test <@ excluded.HasContentChanged kept @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a cold daemon does not re-discover on a watcher echo of an unchanged project file`` () =
+    withTempDir "daemon-cold-project-echo" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Echo.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Echo.fs")
+        File.WriteAllText(sourcePath, "module Echo\nlet value = 1\n")
+
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ sourcePath ] }
+
+        let loader = CountingWorkspaceLoader([ loaded ])
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                watcher
+
+        // IN-SESSION cohorts only. The cold scan seals too, and counting that one would
+        // let every wait below return before the watcher's batch had even been admitted.
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "echo-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch ->
+                            match batch.Trigger with
+                            | InSessionBatch _ -> seals.Enqueue batch
+                            | BootScan -> ()
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        // The cold scan — the daemon's first and only evaluation of this workspace.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 1 @>
+        let deliver = callback.Value |> Option.get
+
+        // The echo a cold `check` provokes on itself: the watcher reports the project
+        // file, whose bytes are exactly the ones discovery has just read. The source
+        // change behind it is genuinely new, so its cohort seals — and the queue is
+        // FIFO, so that seal proves the project echo has already been dealt with.
+        deliver (ProjectChanged [ projectPath ])
+        deliver (SourceChanged [ sourcePath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 20.0),
+            "the source change must produce a sealed cohort"
+        )
+
+        test <@ loader.Loads = 1 @>
+
+        // And the suppression is about CONTENT, not about project files: the same path
+        // with different bytes still re-discovers.
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        deliver (ProjectChanged [ projectPath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> loader.Loads > 1), TimeSpan.FromSeconds 20.0),
+            "a project file whose content really changed must re-discover"
+        )
+
+        test <@ loader.Loads = 2 @>)
+
+[<Fact(Timeout = 90000)>]
+let ``a scan whose model changes on every attempt fails by name instead of looping`` () =
+    withTempDir "daemon-scan-model-storm" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Storm.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Storm.fs")
+        File.WriteAllText(sourcePath, "module Storm\nlet value = 1\n")
+
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ sourcePath ] }
+
+        // One outcome, repeated: the storm needs an unbounded number of successful
+        // rediscoveries, and every one of them installs a NEW generation.
+        let loader = SequencedWorkspaceLoader([ [ loaded ] ])
+        loader.Resume(0)
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        let options =
+            { Daemon.DaemonOptions.defaults with
+                RunMode = Daemon.RunMode.OneShot }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                options
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "the scan storm must not construct an ambient watcher")
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
+
+        let attempts = ref 0
+
+        // The preprocessor runs inside every scan attempt, AFTER that attempt captured
+        // its model — exactly where a concurrent rediscovery lands in production. This
+        // one replaces the model on every single attempt, so no attempt can ever publish.
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "scan-model-storm"
+
+                member _.Process files _ =
+                    Interlocked.Increment(&attempts.contents) |> ignore
+                    daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "storm barrier" }
+
+                member _.Dispose() = () }
+        )
+
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "storm-seal-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let failure =
+            Assert.ThrowsAny<Exception>(fun () -> daemon.ScanAll() |> Async.RunSynchronously)
+
+        let cause =
+            match failure with
+            | :? AggregateException as aggregate -> aggregate.Flatten().InnerExceptions |> Seq.head
+            | other -> other
+
+        // The recovery TERMINATES, and says why in words an operator can act on. The
+        // alternative it replaces is `Could not connect to daemon`, which sends the
+        // reader to a pipe that was working the whole time.
+        test <@ FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage cause.Message @>
+        test <@ cause.Message.Contains("replaced during each of 5 scan attempts") @>
+        test <@ not (cause.Message.Contains("connect to daemon")) @>
+
+        // Bounded: it retried, and it stopped at the bound rather than spinning.
+        test <@ attempts.Value = FsHotWatch.Daemon.scanAttemptLimit @>
+
+        // Nothing was published about any of the models it captured.
+        Assert.Empty(seals.ToArray())
+
+        test
+            <@
+                daemon.Host.WorkSnapshot.OperationFaults
+                |> List.exists (fun (name, fault) ->
+                    name = "scan"
+                    && FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage fault.Message)
+            @>)
 
 [<Fact(Timeout = 45000)>]
 let ``superseded owned change retries its admitted source against the current model`` () =

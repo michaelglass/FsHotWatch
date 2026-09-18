@@ -126,6 +126,36 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
+/// Record the discovered project files' current content in `tracker`, so a watcher
+/// echo carrying the SAME bytes the model was just built from is not admitted as a
+/// change.
+///
+/// `ContentDedup.Tracker` answers "changed" for a path it has never seen. For a source
+/// file that is the only honest answer — there is no prior. For a project file the
+/// daemon is about to load its model from, a prior exists, and not supplying it costs a
+/// full rediscovery: on a COLD daemon the tracker is empty, so the first `ProjectChanged`
+/// for every `.fsproj` re-discovered the workspace and advanced the model generation,
+/// whatever the file actually said. A cold `check` provokes exactly those echoes itself
+/// — its `beforeRun` restore/build touches project state before the first scan — and the
+/// generation that advanced underneath that scan is what superseded it.
+///
+/// TAKEN BEFORE THE LOADER READS, never after, and the ordering is the entire safety
+/// argument. A write landing between this read and the loader's leaves the tracker
+/// holding the OLDER bytes, so the echo still reports a change and the model is
+/// re-discovered: that race costs a redundant rediscovery, never a missed one. Seeding
+/// AFTER the load would invert it — the tracker would hold bytes the model was not built
+/// from, and the one event that would have repaired it would be swallowed.
+let internal observeProjectContent
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (tracker: ContentDedup.Tracker)
+    : unit =
+    let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
+
+    Discovery.findFsprojFiles repoRoot
+    |> List.filter (fun f -> not (isExcluded f))
+    |> List.iter tracker.Observe
+
 [<Literal>]
 let internal projInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"
 
@@ -713,11 +743,15 @@ let private rediscoverAndClearRemoved
     (host: PluginHost)
     (logTag: string)
     (excludePatterns: string list)
+    (contentTracker: ContentDedup.Tracker)
     (clearCheckCache: bool)
     =
     discovery.Run(fun () ->
         async {
             let oldFiles = graph.GetAllFiles() |> Set.ofList
+
+            // Before the loader reads them — see `observeProjectContent`.
+            observeProjectContent repoRoot excludePatterns contentTracker
 
             let! completed =
                 discoverAndRegisterProjects
@@ -1230,6 +1264,7 @@ let private processBatchAttempt
                         ctx.Host
                         "daemon"
                         ctx.ExcludePatterns
+                        ctx.ContentTracker
                         false // keep unrelated projects' check cache
 
                 let! refreshedModel = captureModel ()
@@ -1262,6 +1297,7 @@ let private processBatchAttempt
                         ctx.Host
                         "daemon"
                         ctx.ExcludePatterns
+                        ctx.ContentTracker
                         true
 
                 let! refreshedModel = captureModel ()
@@ -2594,6 +2630,34 @@ let private scanKindFor (state: ScanAgentState) =
     else
         ScanActivity.ScanKind.Forced
 
+/// How many times a scan re-captures the project model before a model that keeps
+/// being replaced fails it. The same bound, for the same reason, as
+/// `changeBatchAttemptLimit`: a mid-scan rediscovery is a normal event and one
+/// retry almost always settles it, but "capture the current model" is not a
+/// convergent loop on a repository something is rewriting continuously, and an
+/// unbounded scan is a check that never returns.
+let internal scanAttemptLimit = 5
+
+/// A scan whose captured model was replaced on every attempt. Named, because the
+/// alternative an operator saw was `Could not connect to daemon` — the daemon was
+/// answering perfectly well and the fault is in the tree, not the pipe.
+type internal ModelKeptChangingDuringScanException(attempts: int) =
+    inherit
+        InvalidOperationException(
+            $"SCAN MODEL KEPT CHANGING: the project model was replaced during each of %d{attempts} scan attempts, \
+              so no scan could publish results about the model it had checked. Nothing was published and no \
+              results are being withheld. Something rewrote project files throughout the scan — a build, \
+              restore or code generator running alongside the check is the usual cause; the `Rediscovering` \
+              lines in `logs/daemon.log` name each replacement and what triggered it."
+        )
+
+/// Recognize the terminal across the JSON-RPC exception boundary, which does not
+/// preserve the concrete type. Same stable-prefix technique as
+/// `isTotalDiscoveryFailureMessage`, for the same reason.
+let internal isModelKeptChangingDuringScanMessage (message: string) : bool =
+    not (isNull message)
+    && message.Contains("SCAN MODEL KEPT CHANGING:", StringComparison.Ordinal)
+
 let private performScan
     (ctx: BatchContext)
     (scanLeases: ScanActivity.ScanLeases)
@@ -2602,7 +2666,13 @@ let private performScan
     // Publishes the scan's progress into its supervisor row while the scan runs.
     (publish: ScanAgentState -> unit)
     =
-    let scanBody =
+    // Survives a re-capture. An attempt that already re-discovered and memoized the
+    // project fingerprint must not pay a second MSBuild evaluation on the next one:
+    // a supersession whose cause was a real `.fsproj` edit moves the timestamps too,
+    // so the next attempt still re-discovers when — and only when — it must.
+    let fingerprintMemo = ref state.LastFingerprint
+
+    let scanAttempt =
         async {
             let host = ctx.Host
             let pipeline = ctx.Pipeline
@@ -2624,9 +2694,9 @@ let private performScan
             // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
             // when no project files have changed.
             let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
-            let mutable lastFingerprint = state.LastFingerprint
+            let mutable lastFingerprint = fingerprintMemo.Value
 
-            if currentFingerprint <> state.LastFingerprint then
+            if currentFingerprint <> lastFingerprint then
                 let! completed, _ =
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
@@ -2638,6 +2708,7 @@ let private performScan
                         host
                         "scan"
                         ctx.ExcludePatterns
+                        ctx.ContentTracker
                         true
 
                 // A total loader failure is retryable even when no .fsproj bytes
@@ -2645,6 +2716,7 @@ let private performScan
                 // not memoize the failed fingerprint and suppress the next attempt.
                 if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
                     lastFingerprint <- currentFingerprint
+                    fingerprintMemo.Value <- currentFingerprint
 
             // A fingerprint hit skips OUR discovery, not a concurrent writer's. Capture
             // membership, dependency tiers and options together once no writer is
@@ -2888,11 +2960,41 @@ let private performScan
                   LastFingerprint = lastFingerprint }
         }
 
+    // A rediscovery that lands mid-scan is a NORMAL event — on a cold `check` the
+    // run's own beforeRun build is usually what causes it — and `WithCurrent` is
+    // right to refuse the stale publication. What it must not do is end the
+    // caller's scan: the recovery is to capture the model that replaced this one
+    // and scan it, which is the same shape `processBatch` gives a change cohort.
+    // Every attempt publishes only under the epoch it captured, so the refusal's
+    // guarantee is untouched: no results about a superseded model ever escape.
+    let rec completeCurrent attempt =
+        async {
+            ct.ThrowIfCancellationRequested()
+
+            try
+                return! scanAttempt
+            with :? ModelSupersededException when attempt < scanAttemptLimit ->
+                Logging.info
+                    "scan"
+                    $"Project model replaced mid-scan; re-capturing and scanning it (attempt %d{attempt + 1} of %d{scanAttemptLimit})"
+
+                return! completeCurrent (attempt + 1)
+        }
+
+    let scanBody =
+        async {
+            try
+                return! completeCurrent 1
+            with :? ModelSupersededException ->
+                return raise (ModelKeptChangingDuringScanException scanAttemptLimit)
+        }
+
     // Hold an activity lease for the WHOLE scan, released by
     // `withLease`'s finally on completion, exception, and cancellation alike.
     // Everything in `scanBody` (re-discovery, preprocessors, build settlement,
-    // the FCS tiers, verdict signalling) runs inside it, so none of it can be
-    // mistaken for idleness by the idle-exit scheduler or the heartbeat.
+    // the FCS tiers, verdict signalling) runs inside it — every attempt of it, so
+    // a scan recovering from a superseded model is not mistaken for idleness
+    // between attempts by the idle-exit scheduler or the heartbeat.
     ScanActivity.withLease scanLeases (scanKindFor state) scanBody
 
 /// Functions for creating and managing daemons.

@@ -533,7 +533,13 @@ let ipcErrorHint (inner: exn) : string option =
 /// the generic daemon-connection headline there sends operators toward the healthy
 /// process and contradicts the no-restart recovery policy below.
 let ipcErrorHeadline (inner: exn) : string =
+    // A daemon that ANSWERED and named its own terminal has already written the
+    // headline; wrapping it in a connection failure contradicts it. The scan
+    // supersession terminal travels as a message across the RPC boundary (the
+    // concrete type does not survive), which is why it is recognized by prefix
+    // here rather than classified as a fault.
     match classifyIpcFault inner with
+    | _ when FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage inner.Message -> inner.Message
     | IpcFault.ClientOutOfMemory _ -> $"The fshw CLI ran out of memory while handling daemon IPC: %s{inner.Message}"
     | IpcFault.DaemonOutOfMemory _ -> $"The fshw DAEMON ran out of memory serving this IPC call: %s{inner.Message}"
     | IpcFault.CorruptedFrame _

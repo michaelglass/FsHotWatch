@@ -39,6 +39,16 @@ type Tracker() =
     /// new/deleted files.
     member _.HasContentChanged(path: string) = evaluate fileHashes path
 
+    /// Record `path`'s current content as already seen, WITHOUT reporting a verdict.
+    ///
+    /// `HasContentChanged` answers "changed" for a path it has never seen, which is the
+    /// only honest answer for a source file: there is no prior to compare against. For a
+    /// file the caller has just READ — a project file the daemon has this moment loaded
+    /// its model from — a prior does exist, and the caller can supply it. Observing it
+    /// here is how the next watcher echo of those same bytes is answered "unchanged"
+    /// instead of provoking work the caller has already done.
+    member _.Observe(path: string) = evaluate fileHashes path |> ignore
+
 /// Process-global fallback tracker backing the module-level `hasContentChanged`.
 let private defaultTracker = Tracker()
 

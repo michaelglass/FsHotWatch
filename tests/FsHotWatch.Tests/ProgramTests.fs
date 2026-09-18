@@ -996,6 +996,23 @@ let ``a local OOM is still this CLI's — the fix does not move the blame the ot
     test <@ (ipcErrorHeadline oom).Contains "fshw CLI ran out of memory" @>
 
 [<Fact(Timeout = 15000)>]
+let ``a daemon that named its own scan terminal is not headlined as a failure to connect`` () =
+    // The regression this pins: a scan whose project model kept being replaced reached
+    // the operator as `Could not connect to daemon: ...`, and the daemon had connected,
+    // answered, and said exactly what was wrong. The reader went to the pipe; the fault
+    // was a build rewriting project files underneath the scan.
+    let terminal =
+        remoteFault
+            "System.InvalidOperationException"
+            (FsHotWatch.Daemon.ModelKeptChangingDuringScanException(FsHotWatch.Daemon.scanAttemptLimit).Message)
+            "at FsHotWatch.Daemon.performScan"
+
+    let headline = ipcErrorHeadline terminal
+    test <@ not (headline.Contains "Could not connect to daemon") @>
+    test <@ FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage headline @>
+    test <@ headline.Contains "scan attempts" @>
+
+[<Fact(Timeout = 15000)>]
 let ``a daemon OOM never restarts the daemon — that would discard the run it just finished`` () =
     let remote =
         remoteFault

@@ -1643,10 +1643,20 @@ let pollAndRenderForInvocation
 
         publishedExitCode
     with
-    | ex when FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message ->
+    | ex when
+        FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message
+        || FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage ex.Message
+        ->
         // StreamJsonRpc preserves the message but not the concrete ConfigError
         // type. This is the daemon-backed twin of RunOnceCheck's early terminal:
         // no forced suite, and no stale green left on disk.
+        //
+        // The scan-supersession terminal is here for a second reason as well as that
+        // one. Falling through instead put it in `withCheckIpc`, whose headline is
+        // `Could not connect to daemon` — and the daemon had connected, answered, and
+        // said precisely what was wrong. An operator reading that went looking at the
+        // pipe and the daemon's health; the fault was a build rewriting project files
+        // underneath the scan. The daemon's own words reach the operator instead.
         let reason = ex.Message
 
         let exitCode =

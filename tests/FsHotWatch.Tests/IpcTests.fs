@@ -158,14 +158,38 @@ let ``a stopping server gives up waiting on a name another live server still ser
     use stopping = new CancellationTokenSource()
     use staying = new CancellationTokenSource()
 
-    let first =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) stopping)
+    // `ScanStatus` answers straight out of the config it was served from, so each
+    // server can name itself and a served call says WHICH of the two answered it.
+    let named (marker: string) =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> marker }
 
-    let second =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) staying)
+    let first = Async.StartAsTask(IpcServer.start pipeName (named "stopping") stopping)
+
+    let second = Async.StartAsTask(IpcServer.start pipeName (named "staying") staying)
 
     try
         waitForServer pipeName
+
+        // The survivor must be ACCEPTING before the other one starts letting the name
+        // go, and only a call it answered itself proves that. Unix keeps ONE listening
+        // socket per pipe name, held open until the last server stream on it is
+        // disposed: a survivor that has not bound yet leaves the name free the instant
+        // the stopping server finishes draining, its release wait then succeeds on its
+        // first probe, and the give-up this test is named for never happens. Waiting on
+        // a reply from the survivor settles that order instead of racing it — under a
+        // loaded suite the race was going the other way.
+        test
+            <@
+                waitUntilTrue
+                    (fun () ->
+                        try
+                            IpcClient.scanStatus pipeName |> Async.RunSynchronously = "staying"
+                        with _ ->
+                            false)
+                    5000
+            @>
+
         stopping.Cancel()
         // Bounded by the release wait, not held forever by the other server.
         test <@ first.Wait(TimeSpan.FromSeconds 5.0) @>
