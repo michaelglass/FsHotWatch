@@ -1663,6 +1663,10 @@ let ``refusing unknown tokens is NOT a blanket — a known ran token is still a 
 
 // --- the verdict's causes come from the SAME entries as its count ---
 
+/// Where a cause with nothing of its own to say sends the reader. Production resolves it
+/// from the repo's configured `logDir`; these tests are about which entries become causes.
+let private daemonLog = DaemonConfig.DaemonLog.under DaemonConfig.DefaultLogDir
+
 [<Fact(Timeout = 15000)>]
 let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invisible`` () =
     // FCS is not a plugin: the daemon reports its diagnostics under the pseudo-source
@@ -1690,7 +1694,7 @@ let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invi
           Coverage = Complete
           ProjectModel = ProjectModelFixtures.available }
 
-    let causes = redCausesOf false resp
+    let causes = redCausesOf daemonLog false resp
 
     // The count that decides the exit code and the causes the verdict records come from
     // ONE traversal, so they agree by construction — asserted, not assumed.
@@ -1705,7 +1709,7 @@ let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invi
 
     // `--no-warn-fail` drops the warning from BOTH — the causes may never name something
     // the exit code did not count, or the file would explain a red it does not have.
-    let errorsOnly = redCausesOf true resp
+    let errorsOnly = redCausesOf daemonLog true resp
     test <@ List.length errorsOnly = 1 @>
     test <@ errorsOnly |> List.forall (fun c -> c.Severity = "error") @>
 
@@ -1720,7 +1724,7 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
           Coverage = Complete
           ProjectModel = ProjectModelFixtures.available }
 
-    test <@ List.isEmpty (redCausesOf false clean) @>
+    test <@ List.isEmpty (redCausesOf daemonLog false clean) @>
 
 // ---------------------------------------------------------------------------
 // A tree that MOVES under the check.

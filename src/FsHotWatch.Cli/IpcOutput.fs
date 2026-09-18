@@ -99,24 +99,38 @@ let internal failingDiagnosticEntries (noWarnFail: bool) (resp: DiagnosticsRespo
 let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     failingDiagnosticEntries noWarnFail resp |> List.length
 
+/// The failing ledger entries with the KIND each one classifies as. One traversal and
+/// one classifier, so the causes the verdict records and the count that can turn a red
+/// into NO VERDICT are the same entries, classified the same way, by construction.
+let private failingEntriesWithKind
+    (noWarnFail: bool)
+    (resp: DiagnosticsResponse)
+    : (string * DiagnosticEntry * Verdict.RedCauseKind) list =
+    failingDiagnosticEntries noWarnFail resp
+    |> List.map (fun (file, e) -> file, e, Verdict.RedCause.classify e.Plugin file e.Message)
+
 /// The failing ledger entries as the verdict records them. `Plugin` is the LEDGER KEY,
 /// so an FCS diagnostic — which belongs to no plugin — names `fcs` and stops being
-/// invisible.
-let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdict.RedCause list =
-    failingDiagnosticEntries noWarnFail resp
-    |> List.map (fun (file, e) ->
+/// invisible. `daemonLog` is where a cause that carries no message of its own sends the
+/// reader — this repo's log, never a literal; see `Verdict.RedCauseMessage`.
+let internal redCausesOf (daemonLog: string) (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdict.RedCause list =
+    failingEntriesWithKind noWarnFail resp
+    |> List.map (fun (file, e, kind) ->
         { Verdict.Source = e.Plugin
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = Verdict.RedCauseMessage.ofLedger e.Plugin file e.Message
-          Verdict.Kind = Verdict.RedCause.classify e.Plugin file e.Message })
+          Verdict.Message = Verdict.RedCauseMessage.ofLedger daemonLog e.Plugin file e.Message
+          Verdict.Kind = kind })
 
-/// How many of the failing entries are NOT claims about the tree on disk.
-/// From `redCausesOf` — the very list the verdict records — so the
-/// number that can turn a red into NO VERDICT and the reasons printed beside it are the
-/// same entries by construction, BEFORE `MaxRedCauses` truncation.
+/// How many of the failing entries are NOT claims about the tree on disk. Off the same
+/// traversal and the same classifier as `redCausesOf`, so the number that can turn a red
+/// into NO VERDICT and the reasons printed beside it cannot disagree — BEFORE
+/// `MaxRedCauses` truncation. It asks only about the KIND, so it needs no log pointer:
+/// `RedCause.classify` reads the LEDGER's message, not the rendered one.
 let internal unattributableCountOf (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
-    redCausesOf noWarnFail resp |> Verdict.RedCause.unattributable |> List.length
+    failingEntriesWithKind noWarnFail resp
+    |> List.filter (fun (_, _, kind) -> not (Verdict.RedCauseKind.isAboutThisTree kind))
+    |> List.length
 
 /// Any "waiting on build" deferral in the ledger — and WHY? A `Deferred`-severity entry
 /// means a test project's tests DID NOT run: non-green (nothing verified) but not a
@@ -1036,7 +1050,8 @@ let private publishVerdictWithReason
             { Source = source
               File = "<evidence>"
               Severity = "error"
-              Message = Verdict.RedCauseMessage.ofLedger source "<evidence>" reason
+              Message =
+                Verdict.RedCauseMessage.ofLedger (DaemonConfig.DaemonLog.forRepo repoRoot) source "<evidence>" reason
               Kind = Verdict.AboutThisTree }
 
         let verdictOutcome, exitCode, downgradeCauses =
@@ -1495,6 +1510,11 @@ let pollAndRenderForInvocation
             // the whole point of the verdict file is that it exists on the bad paths too.
             None
 
+    // Where a cause that carries no message of its own sends the reader. Resolved once,
+    // from THIS repo's configuration, so the sentence names the directory its daemon
+    // actually logs to.
+    let daemonLog = DaemonConfig.DaemonLog.forRepo repoRoot
+
     // Every run this check has provoked so far, oldest first. Folded at every reading
     // rather than derived at the end: a check that aborts still publishes a verdict, and
     // it must name the batches it had already run by then.
@@ -1535,7 +1555,7 @@ let pollAndRenderForInvocation
         eprintfn "%s" firstOutput
         finalStatuses.Value <- firstResp.Statuses
         finalEvidence.Value <- IpcParsing.DaemonEvidence.parse firstRaw
-        finalCauses.Value <- redCausesOf noWarnFail firstResp
+        finalCauses.Value <- redCausesOf daemonLog noWarnFail firstResp
         finalModel.Value <- firstResp.ProjectModel
 
         // Re-read diagnostics + coverage + test scope and render. Called ONLY after
@@ -1551,7 +1571,7 @@ let pollAndRenderForInvocation
             let run = getTestRun () |> observeTestRun
             finalStatuses.Value <- resp.Statuses
             finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
-            finalCauses.Value <- redCausesOf noWarnFail resp
+            finalCauses.Value <- redCausesOf daemonLog noWarnFail resp
             finalModel.Value <- resp.ProjectModel
             checkInputs noWarnFail run resp
 

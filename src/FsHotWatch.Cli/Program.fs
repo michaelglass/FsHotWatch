@@ -972,7 +972,7 @@ let startFreshDaemonWith
             Path.Combine(repoRoot, logDirName)
 
     fileOps.CreateDirectory logDir
-    let logFile = Path.Combine(logDir, "daemon.log")
+    let logFile = Path.Combine(logDir, DaemonConfig.DaemonLog.FileName)
     // A refusal recorded by an EARLIER launch must never be read back as this one's.
     let startupFailure = DaemonStartupFailure.path repoRoot
 

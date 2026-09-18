@@ -18,6 +18,11 @@ open FsHotWatch.Tests.TestHelpers
 
 /// A repo with one source file and one CONTENT/fixture file, laid out the way
 /// the daemon's discovery expects (`src/`, `tests/`).
+/// Where a cause with nothing to say sends the reader, for fixtures that are not about
+/// the pointer itself. Production takes this from the repo's `logDir`; see
+/// `the pointer sentence names the repo's CONFIGURED log directory`.
+let private daemonLog = DaemonConfig.DaemonLog.under DaemonConfig.DefaultLogDir
+
 let private makeRepo (root: string) =
     Directory.CreateDirectory(Path.Combine(root, "src", "Lib")) |> ignore
 
@@ -168,7 +173,8 @@ let private structuralRedCause: Verdict.RedCause =
     { Source = "test-fixture"
       File = "src/Lib/Thing.fs"
       Severity = "error"
-      Message = Verdict.RedCauseMessage.ofLedger "test-fixture" "src/Lib/Thing.fs" "the fixture's structural failure"
+      Message =
+        Verdict.RedCauseMessage.ofLedger daemonLog "test-fixture" "src/Lib/Thing.fs" "the fixture's structural failure"
       Kind = Verdict.AboutThisTree }
 
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
@@ -3490,7 +3496,7 @@ let private fcsCause (message: string) : Verdict.RedCause =
     { Source = "fcs"
       File = "src/Lib/Thing.fs"
       Severity = "error"
-      Message = Verdict.RedCauseMessage.ofLedger "fcs" "src/Lib/Thing.fs" message
+      Message = Verdict.RedCauseMessage.ofLedger daemonLog "fcs" "src/Lib/Thing.fs" message
       // Classified by PRODUCTION, not stamped: a fixture that hand-picked the kind
       // would keep passing if `classify` stopped working, and these causes are the
       // exact shape (`fcs` + `internal error:`) the classifier exists to recognise.
@@ -4402,7 +4408,7 @@ let private aboutThisTree (source: string) : Verdict.RedCause =
     { Source = source
       File = "<build>"
       Severity = "error"
-      Message = Verdict.RedCauseMessage.ofLedger source "<build>" "boom"
+      Message = Verdict.RedCauseMessage.ofLedger daemonLog source "<build>" "boom"
       Kind = Verdict.AboutThisTree }
 
 let private failedPlugin (name: string) : string * ParsedPluginStatus =
@@ -4495,7 +4501,7 @@ let ``a red made only of causes fshw cannot attribute is INCOMPARABLE, never agr
         { Source = "fcs"
           File = "/gone/Vanished.fs"
           Severity = "error"
-          Message = Verdict.RedCauseMessage.ofLedger "fcs" "/gone/Vanished.fs" "internal error: boom"
+          Message = Verdict.RedCauseMessage.ofLedger daemonLog "fcs" "/gone/Vanished.fs" "internal error: boom"
           Kind = Verdict.CheckerFault }
 
     let c =
@@ -5838,12 +5844,14 @@ let ``the projected check reading is green RELATIVE TO the daemon's baseline, an
 [<Fact(Timeout = 15000)>]
 let ``RedCauseMessage: a known message is kept, a blank one becomes the pointer sentence`` () =
     let known =
-        Verdict.RedCauseMessage.ofLedger "test-prune" "<tests/P>" "Some.Test FAILED"
+        Verdict.RedCauseMessage.ofLedger daemonLog "test-prune" "<tests/P>" "Some.Test FAILED"
 
     test <@ Verdict.RedCauseMessage.value known = "Some.Test FAILED" @>
 
     for blank in [ ""; "   "; "\n\t" ] do
-        let unknown = Verdict.RedCauseMessage.ofLedger "test-prune" "<tests/P>" blank
+        let unknown =
+            Verdict.RedCauseMessage.ofLedger daemonLog "test-prune" "<tests/P>" blank
+
         let text = Verdict.RedCauseMessage.value unknown
         test <@ not (String.IsNullOrWhiteSpace text) @>
         test <@ text.Contains("no cause captured") @>
@@ -5851,13 +5859,15 @@ let ``RedCauseMessage: a known message is kept, a blank one becomes the pointer 
         test <@ text.Contains("logs/daemon.log") @>
         test <@ text.Contains("test-prune") @>
 
-    let pointer = Verdict.RedCauseMessage.unknownPointing "fcs" "src/Lib/Thing.fs"
+    let pointer =
+        Verdict.RedCauseMessage.unknownPointing daemonLog "fcs" "src/Lib/Thing.fs"
+
     test <@ (Verdict.RedCauseMessage.value pointer).Contains("no cause captured") @>
     test <@ (Verdict.RedCauseMessage.value pointer).Contains("src/Lib/Thing.fs") @>
 
 [<Fact(Timeout = 15000)>]
 let ``reddenedBy never serializes an empty message, and never reads one back as empty`` () =
-    withTempDir "verdict-409-no-empty-message" (fun root ->
+    withTempDir "verdict-red-cause-no-empty-message" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
 
@@ -5867,7 +5877,7 @@ let ``reddenedBy never serializes an empty message, and never reads one back as 
             { Source = "test-prune"
               File = "src/Lib/Thing.fs"
               Severity = "error"
-              Message = Verdict.RedCauseMessage.ofLedger "test-prune" "src/Lib/Thing.fs" ""
+              Message = Verdict.RedCauseMessage.ofLedger daemonLog "test-prune" "src/Lib/Thing.fs" ""
               Kind = Verdict.AboutThisTree }
 
         let spec =
@@ -5903,6 +5913,73 @@ let ``reddenedBy never serializes an empty message, and never reads one back as 
             let readBack = Verdict.RedCauseMessage.value (List.exactlyOne v.RedCauses).Message
             test <@ readBack.Contains("no cause captured") @>
         | other -> failwithf "expected a readable verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// A pointer exists to be FOLLOWED. The sentence above says where the cause was
+// logged, and the daemon writes `daemon.log` into the CONFIGURED log directory — the
+// `logDir` key of `.fshw.json`, default `logs`. A fixed string in the message is a guess
+// about someone else's configuration, and the guess that shipped named a directory fshw
+// never writes a daemon log into at all. It survived because the tests only asked whether
+// the message contained "no cause captured": the sentence was checked, the PATH in it was
+// not. So this test sets a log directory nothing would guess and asks for it by name.
+
+[<Fact(Timeout = 15000)>]
+let ``the pointer sentence names the repo's CONFIGURED log directory`` () =
+    withTempDir "verdict-red-cause-log-dir" (fun root ->
+        makeRepo root
+        File.WriteAllText(Path.Combine(root, ".fshw.json"), """{ "logDir": "var/log/fshw" }""")
+
+        let tree = TreeHash.compute root []
+
+        let blankCause: Verdict.RedCause =
+            { Source = "test-prune"
+              File = "src/Lib/Thing.fs"
+              Severity = "error"
+              Message =
+                Verdict.RedCauseMessage.ofLedger
+                    (DaemonConfig.DaemonLog.forRepo root)
+                    "test-prune"
+                    "src/Lib/Thing.fs"
+                    ""
+              Kind = Verdict.AboutThisTree }
+
+        let spec =
+            { greenVerdict tree.Hash tree.FileCount with
+                Command = Verdict.Check
+                Outcome = Verdict.Red
+                ExitCode = 1
+                RedCauses = [ blankCause ] }
+
+        let path = Path.Combine(root, Verdict.RelativePath)
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, serializeSpec spec)
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            let message = Verdict.RedCauseMessage.value (List.exactlyOne v.RedCauses).Message
+            test <@ message.Contains("no cause captured") @>
+            // The directory this repo actually configured...
+            test <@ message.Contains("var/log/fshw/daemon.log") @>
+            // ...and not the one nothing writes to.
+            test <@ not (message.Contains(".fshw/logs")) @>
+        | other -> failwithf "expected a readable verdict, got %A" other)
+
+[<Fact(Timeout = 15000)>]
+let ``the pointer sentence names the DEFAULT log directory when the repo configures none`` () =
+    // The positive control for the test above: a repo that says nothing about `logDir`
+    // gets `logs/daemon.log`, which is where the daemon writes. Without this, "names the
+    // configured directory" could be satisfied by a message that echoes any string it was
+    // handed, including a wrong default.
+    withTempDir "verdict-red-cause-default-log-dir" (fun root ->
+        makeRepo root
+
+        let message =
+            Verdict.RedCauseMessage.value (
+                Verdict.RedCauseMessage.unknownPointing (DaemonConfig.DaemonLog.forRepo root) "fcs" "src/Lib/Thing.fs"
+            )
+
+        test <@ message.Contains("logs/daemon.log") @>
+        test <@ not (message.Contains(".fshw/logs")) @>)
 
 // ---------------------------------------------------------------------------
 // The project model a verdict was graded against is ON the record,

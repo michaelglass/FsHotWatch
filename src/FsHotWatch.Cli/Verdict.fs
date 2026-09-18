@@ -536,16 +536,24 @@ module RedCauseMessage =
     /// file so the reader knows WHOSE silence this is, and points at the daemon log,
     /// which is the one surface every reporter writes to. Carries nothing JSON would
     /// escape, so a verdict consumer can grep for it verbatim.
-    let unknownPointing (source: string) (file: string) : RedCauseMessage =
+    ///
+    /// `daemonLog` is that repo's log file — `DaemonConfig.DaemonLog.forRepo` or
+    /// `.under` a configuration in hand — never a literal here. A pointer is only worth
+    /// printing if it can be FOLLOWED, and this one shipped naming `.fshw/logs/daemon.log`,
+    /// which is not where any repo's daemon log is: `logDir` is configurable and its
+    /// default is `logs`. The reader this sentence exists for is the one who has nothing
+    /// else, so sending them to an empty directory costs exactly the incident the
+    /// sentence was written to prevent.
+    let unknownPointing (daemonLog: string) (source: string) (file: string) : RedCauseMessage =
         RedCauseMessage
-            $"no cause captured: %s{source} reported a failing diagnostic against %s{file} with no message; see .fshw/logs/daemon.log"
+            $"no cause captured: %s{source} reported a failing diagnostic against %s{file} with no message; see %s{daemonLog}"
 
     /// The message for a ledger entry. The entry's own text when it has any; the pointer
     /// sentence when it is blank. THE only door from a raw string, so no writer can put
     /// an empty message on the wire.
-    let ofLedger (source: string) (file: string) (raw: string) : RedCauseMessage =
+    let ofLedger (daemonLog: string) (source: string) (file: string) (raw: string) : RedCauseMessage =
         if System.String.IsNullOrWhiteSpace raw then
-            unknownPointing source file
+            unknownPointing daemonLog source file
         else
             RedCauseMessage raw
 
@@ -2892,6 +2900,10 @@ let read (repoRoot: string) : Reading =
             use doc = JsonDocument.Parse(File.ReadAllText p)
             let root = doc.RootElement
 
+            // Only a cause the file left BLANK needs it, and most verdicts have none —
+            // so the config is read at most once per verdict, and usually not at all.
+            let daemonLog = lazy (DaemonConfig.DaemonLog.forRepo repoRoot)
+
             let schema = tryString root "schema" |> Option.defaultValue "(none)"
 
             if schema <> Schema then
@@ -2993,6 +3005,7 @@ let read (repoRoot: string) : Reading =
                                        // is written.
                                        Message =
                                          RedCauseMessage.ofLedger
+                                             daemonLog.Value
                                              source
                                              file
                                              (tryString el "message" |> Option.defaultValue "")
