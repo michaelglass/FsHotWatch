@@ -284,7 +284,7 @@ let private afterFaithfulRecreate (tmpDir: string) : Database * Store =
 
 [<Fact(Timeout = 15000)>]
 let ``a schema recreate empties the index but the freshness sidecar survives saying Clean`` () =
-    // The premise of the whole ticket, measured rather than assumed: the two files
+    // The premise of the whole fix, measured rather than assumed: the two files
     // DO drift apart, and the surviving sidecar keeps making a claim about rows the
     // index no longer holds.
     withTempDir "ff-recreate-survives" (fun tmpDir ->
@@ -563,7 +563,7 @@ let ``NoDiff is reachable from exactly ONE pair — the detector-went-blind guar
 
 [<Fact(Timeout = 5000)>]
 let ``PositiveControl: an ordinary run still PRUNES — the fix is not "select everything"`` () =
-    // Required by the ticket, and the reason the guard above is not satisfied by
+    // The other half of the requirement, and the reason the guard above is not satisfied by
     // deleting impact filtering. A warm daemon with a clean sidecar and real prior
     // rows must still take the narrow answer, and an unchanged file must still select
     // NOTHING — that is the entire value of the feature.

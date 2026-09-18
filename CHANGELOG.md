@@ -74,6 +74,18 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **a red cause with nothing to say now points at the log directory the repo actually
+  configured.** When a failing diagnostic reaches the verdict carrying no message of its
+  own, `reddenedBy[].message` says so and names where the cause was logged — and it named
+  `.fshw/logs/daemon.log`, a path fshw writes no daemon log into under any configuration.
+  The log lives in `logDir` (default `logs`), which repos may set. The pointer is now
+  derived from that key through the same parser the daemon loads with (`DaemonLog.forRepo`
+  / `.under`), so a repo with `"logDir": "var/log/fshw"` is sent to
+  `var/log/fshw/daemon.log`. The sentence was covered by tests all along; the PATH inside
+  it was not, which is how a wrong directory survived — the new tests ask for the
+  configured directory by name. `DaemonConfig.DefaultLogDir` and `DaemonLog.FileName` are
+  now the single definition the daemon's own log path is built from.
+
 - **a run that verified nothing is a run-outcome CASE, not a summary
   string.** An earlier fix stopped a zero-project test run from rendering `✓`, but did it
   with a `NOTHING VERIFIED: ` prefix on the summary that three surfaces parsed back. The

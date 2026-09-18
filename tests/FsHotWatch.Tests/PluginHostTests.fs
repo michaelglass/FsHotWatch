@@ -1701,7 +1701,7 @@ let ``RerunPlugin re-fires a FileChanged subscriber over the registered source s
 [<Fact(Timeout = 15000)>]
 let ``RerunPlugin refuses a FileChanged subscriber while no source files are registered`` () =
     // An empty re-fire would land a `no files to check` and read as a refresh that found
-    // nothing — the same shape as the "formatted 0 files" this ticket exists to end.
+    // nothing — the same shape as the "formatted 0 files" this refusal exists to end.
     let host = PluginHost.create nullChecker "/tmp"
     let handler, batches = fileChangedRecorder "fmt-like"
     host.RegisterHandler(handler)

@@ -102,6 +102,13 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
 [<Literal>]
 let DefaultGlobalTimeoutSec = 600
 
+/// Where the daemon writes `daemon.log` when `.fshw.json` says nothing. Relative to the
+/// repo root; `logDir` overrides it, and may be absolute. ONE definition, because every
+/// message that points a reader at the log has to name the same place the daemon writes
+/// it — see `DaemonLog`.
+[<Literal>]
+let DefaultLogDir = "logs"
+
 /// Configuration for a single test project.
 ///
 /// `CoverageArgsTemplate` is the command-line template the daemon appends
@@ -293,7 +300,7 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       Exclude = []
       IncludeOutsideRepo = false
-      LogDir = "logs"
+      LogDir = DefaultLogDir
       TimeoutSec = Some DefaultGlobalTimeoutSec
       IdleExitMin = IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
@@ -954,6 +961,45 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       RunHookTimeoutSec = runHookTimeoutSec
       RunHookCommands = runHookCommands }
 
+/// WHERE THE DAEMON LOG IS — one answer, taken from the configuration.
+///
+/// The daemon's log is `daemon.log` inside `logDir` (see `DefaultLogDir`), and every
+/// sentence that sends a reader there has to agree with that. A sentence that hard-codes
+/// a directory is a guess about someone else's configuration, and the guess loses
+/// silently: the red-cause pointer shipped naming `.fshw/logs/daemon.log` — a directory
+/// fshw writes no daemon log into under ANY configuration — so a reader with nothing else
+/// to go on was sent to a file that was never there.
+module DaemonLog =
+    [<Literal>]
+    let FileName = "daemon.log"
+
+    /// The log file under `logDir`, as a message SHOWS it: forward slashes, relative
+    /// left relative. A pointer for a human to follow, not a path to open — `ensureDaemon`
+    /// resolves the real one against the repo root.
+    let under (logDir: string) : string =
+        let dir = (if isNull logDir then "" else logDir).Replace('\\', '/').TrimEnd('/')
+
+        if dir = "" then FileName else $"%s{dir}/%s{FileName}"
+
+    /// The log file of one repo, read from that repo's own `.fshw.json` — through
+    /// `parseConfig`, the same parser the daemon loads with, so there is no second reading
+    /// of the key to drift.
+    ///
+    /// Deliberately NOT `loadConfig`: naming a log file must not validate a configuration,
+    /// log a line, or throw. A repo whose config cannot be read gets the default, because
+    /// this is a courtesy inside an error message and may never become the reason a
+    /// verdict cannot be read.
+    let forRepo (repoRoot: string) : string =
+        try
+            let configPath = Path.Combine(repoRoot, ".fshw.json")
+
+            if File.Exists configPath then
+                under (parseConfig (File.ReadAllText configPath) (defaultConfigFor repoRoot)).LogDir
+            else
+                under DefaultLogDir
+        with _ ->
+            under DefaultLogDir
+
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
 ///
@@ -1008,14 +1054,14 @@ let internal validateTestScope (repoRoot: string) (config: DaemonConfiguration) 
 
 /// `verdictInputs` decides WHICH FILES the verdict is
 /// content-addressed by, so a declaration this build cannot honour AS WRITTEN is a
-/// hard failure. The alternative is the defect that filed the ticket: a repo that
+/// hard failure. The alternative is the defect this validation prevents: a repo that
 /// believes it is gated on its coverage floors and its analyzer rules, is not, and is
 /// told nothing.
 ///
 /// `notInputs` is validated but never filters: it is a STATED DECISION that a file
 /// cannot change an answer, reviewable in the config. A declaration that could REMOVE
 /// files from the hash would be a supported way to weaken the gate silently, which is
-/// the wrong half of this ticket to build.
+/// the wrong half of the feature to build.
 let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
     let declaration = VerdictInputs.parse json
 

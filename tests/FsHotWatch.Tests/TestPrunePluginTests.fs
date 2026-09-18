@@ -2593,6 +2593,24 @@ let ``failuresOf: a run with no per-test failure carries the HEAD of its output,
     test <@ entry.Severity = FsHotWatch.ErrorLedger.Error @>
 
 [<Fact(Timeout = 15000)>]
+let ``failuresOf: a run whose projects PASSED carries the excerpt NOWHERE`` () =
+    // THE POSITIVE CONTROL for the two tests above, and the one the head-excerpt work
+    // shipped without. Both of them assert a string from the run's output is PRESENT in a
+    // ledger entry — and an implementation that pasted every run's output into every entry
+    // would satisfy both. This one fails on such an implementation: the SAME output, from
+    // a run that passed, must produce no entry at all, so the refusal text cannot reach a
+    // green run's verdict. ("A green verdict names no causes" in `VerdictTests` closes the
+    // other end of the same chain.)
+    let passed: TestResults =
+        { Results = Map.ofList [ "Intelligence.Tests.Integration", TestsPassed(headTailOutput, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let causes =
+        failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/abc123/P.output.log") Map.empty passed
+
+    test <@ List.isEmpty causes @>
+
+[<Fact(Timeout = 15000)>]
 let ``failuresOf: the head excerpt is bounded in bytes, not only in lines`` () =
     // Twenty lines of 1 KB each is 20 KB; the excerpt must stop well short of that so a
     // verbose runner cannot turn the verdict file into the run log.
@@ -3874,7 +3892,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // The alarm, stated as a test. If some future arm re-admits an entry naming nothing,
     // this function must NOT dress it up as runtime-coverage debt — it must return the
     // empty list, which is what makes the daemon warn instead of quietly running a whole
-    // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
+    // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
     test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None) @>

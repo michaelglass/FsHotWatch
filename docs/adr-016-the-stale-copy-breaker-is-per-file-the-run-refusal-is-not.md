@@ -43,8 +43,8 @@ repairs every under-threshold copy regardless — including in a round that is g
 refuse. Each repair is written, logged by name, and recorded to the ledger.
 
 **The RUN still refuses while any file is uncertifiable.** `Outcome.Refusals` non-empty
-still means nothing launches; `TestPrunePlugin` is unchanged. The ticket says this half
-is correct and it is: an uncovered earlier failure must stay red until a run that
+still means nothing launches; `TestPrunePlugin` is unchanged. That half of the behaviour
+is correct: an uncovered earlier failure must stay red until a run that
 executes it passes.
 
 Convergence comes from the repairs happening, not from launching a subset. A run that
@@ -56,7 +56,7 @@ to root-cause remains — which is a finding with a name, not a wedge.
 
 **Per-file EXECUTION: let the projects whose copies are fresh launch, and report the
 tripped file's project as unverified.** This is the reading of "per-file" that would
-also satisfy the ticket's second acceptance line, and it is the worse one.
+also satisfy the second acceptance line, and it is the worse one.
 
 A run that executes a subset writes CTRF reports and coverage for a tree the verdict
 cannot call green anyway — which is exactly the "three-minute partial-execution red

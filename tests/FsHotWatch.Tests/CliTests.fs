@@ -2686,7 +2686,7 @@ let private captureBothStreams (f: unit -> 'a) : string * 'a =
 // These live here rather than in IpcOutputTests because they capture `Console.Error`,
 // a process-global, and this module is already in the serialized log-global collection.
 //
-// The acceptance clause both tickets were failed on: "exits non-zero with a message
+// The acceptance clause two attempts were failed on: "exits non-zero with a message
 // naming the filter and the projects it searched". What shipped named a project COUNT
 // and pointed at `fshw status test-prune` — so the reader was left to distinguish a
 // typo, a renamed class, and a filter aimed at a project that does not contain it, which
@@ -2845,7 +2845,7 @@ let ``a project with NO test report says so, rather than printing zeros`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a zero-match project reports its real total of zero, beside the refusal`` () =
-    // The whole ticket in one line of output: the run said "matched nothing", and the
+    // The whole fix in one line of output: the run said "matched nothing", and the
     // counts agree rather than being absent. A reader does not have to trust the status
     // word — the number is there.
     let json =

@@ -1538,7 +1538,7 @@ let ``tryOfExitCode: the signal-death codes a killed test host actually produces
     let name code =
         TerminatingSignal.tryOfExitCode code |> Option.map (fun s -> s.Name)
 
-    // 134 is the code comment #6 of the ticket recorded from a real gate run (an
+    // 134 is the code observed on a real gate run (an
     // unhandled TimeoutException → the runtime calls abort()); 137 is the OOM killer,
     // `kill -9`, and fshw's own `KillAll`.
     Assert.Equal(Some "SIGABRT", name 134)

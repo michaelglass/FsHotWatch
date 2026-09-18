@@ -2515,7 +2515,7 @@ type Daemon
 type ScanCheckOutcome =
     /// Every file produced a result. Carries how many EXTRA rounds beyond the
     /// first pass were needed — 0 on a clean scan, and the direct measure of
-    /// the cancellation amplification this ticket bounds.
+    /// the cancellation amplification this retry loop bounds.
     | AllChecked of extraRounds: int
     /// The retry budget ran out with files still unchecked. Carries the files,
     /// the extra rounds spent, and the budget that was exhausted.
@@ -2615,7 +2615,7 @@ let internal runChecksWithRetry
 /// The property worth pinning is the SECOND element never reaching the scan.
 /// `performScan` clears the vanished paths before scanning, and the ordering is
 /// load-bearing: clearing afterwards would leave a finding keyed to a path
-/// nothing will look at again, which is the wedge this ticket exists to close.
+/// nothing will look at again, which is the wedge this ordering exists to close.
 /// A test asserting the scan list excludes a vanished path catches a reordering,
 /// because a scan that saw the path is a scan the clear did not precede.
 let internal partitionVanished (exists: string -> bool) (registered: string list) : string list * string list =

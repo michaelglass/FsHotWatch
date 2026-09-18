@@ -33,7 +33,7 @@ type Residency =
 ///   key names the PINNED tool version, every `.editorconfig` above the file, the
 ///   file's repo-relative path and its full source. Formatting is a pure function of
 ///   exactly those, and the verdict is diagnostics only: nothing on disk has to exist
-///   for a replay to be true. This is also the plugin the ticket's timing data
+///   for a replay to be true. This is also the plugin the measured timing data
 ///   indicts — a 34.9 s median against a 566 s maximum, the maximum being the
 ///   whole-tree scan a fresh workspace pays.
 ///

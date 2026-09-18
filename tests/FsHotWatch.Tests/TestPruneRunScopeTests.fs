@@ -424,7 +424,7 @@ let ``a run whose test HOST DIED completes as an ABORT, never as "N failed"`` ()
     match lastStatus statuses with
     | PluginStatus.Completed(_, verdict) ->
         // `Completed`, exactly like the pure-defer case: nothing FAILED, and a `Failed`
-        // here would turn the honest exit 2 back into the exit 1 this ticket is about.
+        // here would turn the honest exit 2 back into the misleading exit 1.
         // The VERDICT carries the fact (`RunOutcome.VerifiedNothing` on the run record),
         // so no renderer can glyph this run with a bare tick either.
         test <@ verdict.NothingVerified.IsSome @>
@@ -1505,7 +1505,7 @@ let ``the last run's coverage is readable from state (a verdict writer's receipt
     let _ctx, _statuses, _ledger, final = driveRuns handler [ filteredRun ]
 
     // Every project produced a "passed" result, and yet the run covered only ProjB's one
-    // class. That gap is the whole ticket, and it must be legible from state.
+    // class. That gap is the whole point, and it must be legible from state.
     test <@ final.LastResults.IsSome @>
     test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
@@ -2817,7 +2817,7 @@ let ``failure recall requires every observed failure to be decidable`` () =
 // a red project's ledger slice is a SUM, not a PRODUCT.
 //
 // `failuresOf` used to attach `output` — the whole captured project run — to every
-// parsed per-test failure. In the incident this ticket records that made one project's
+// parsed per-test failure. In one observed incident that made one project's
 // ledger slice 753 × 48 MB: ~36 GB, from a plugin holding a single string. It is
 // invisible in the daemon's own heap (every entry is the same reference) and fatal the
 // moment any mirror of the ledger writes each entry's copy out — which is exactly where
@@ -3028,7 +3028,7 @@ let ``an unbound quiet completion on an unchanged tree keeps the earned receipt`
         let earnedRunId = runIdOf ran
 
         // Positive control: the bound impacted pass alone IS served. If this fails the
-        // receipt was never earned and the ticket is about binding, not retention.
+        // receipt was never earned and the property under test is binding, not retention.
         let _, _, _, afterRan = driveRuns handler [ ran ]
         test <@ (receiptScope repoRoot handler afterRan).RunId = Some earnedRunId @>
 

@@ -63,8 +63,8 @@ let ``the packed CLI uses the exact restore and build checked by the dependency 
 // THE list of files that decide what is compiled — the input every
 // "did the tree's SHAPE change?" cache key reads.
 //
-// It existed twice and the copies disagreed, which is the failure mode the ticket is
-// about wearing a different hat: two caches with two ideas of "structural" means one of
+// It existed twice and the copies disagreed, which is the same failure mode
+// wearing a different hat: two caches with two ideas of "structural" means one of
 // them misses while the other replays, and the replaying one wins because it is the
 // optimistic one.
 // ---------------------------------------------------------------------------

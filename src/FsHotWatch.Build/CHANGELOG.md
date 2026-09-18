@@ -89,7 +89,7 @@
   that differs in BYTES at equal size and mtime is skipped by that same build and left
   exactly as it was. Gating a cache on the second class would buy a rebuild that provably
   cannot fix it, on every lookup, for ever — the rebuild-every-time regression this
-  ticket's own acceptance forbids, reached from the opposite direction.
+  gate must not introduce, reached from the opposite direction.
 
   Like the missing-output arm, refusing a replay reddens nothing (it returns `None` from
   the cache key, the same bypass `force-rebuild` uses), so this blocks in BOTH modes —

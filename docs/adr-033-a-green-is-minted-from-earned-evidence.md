@@ -45,7 +45,7 @@ missing is the other half: the thing a green is read from. Before this change:
   returns the available model's files with their generation, from the host's own store
   (ADR-032). A membership that does not belong to the current generation is not used.
 - **A green requires the graded run's receipt for the current model.** The daemon serves
-  `modelReceipts` on `GetDiagnostics` (additive on `fshw-verdict-v2`, per the ticket's Q6):
+  `modelReceipts` on `GetDiagnostics` (additive on `fshw-verdict-v2`):
   `runId` (null for the analysis-only receipt), `modelGeneration`, `refusals`. A `Clean`
   outcome is downgraded to incomplete (exit 2), with the reason recorded in the verdict,
   unless a receipt exists for the graded run at the current generation with no refusals.
@@ -67,7 +67,7 @@ missing is the other half: the thing a green is read from. Before this change:
 
 ## Rejected
 
-- **Gating on `PluginStatus`.** A status is a report. The whole ticket is that a report is
+- **Gating on `PluginStatus`.** A status is a report. The whole point is that a report is
   not evidence.
 - **Dropping a receipt that refuses.** Then a red run would leave no trace, and the next
   reading could not tell "refused" from "never ran".

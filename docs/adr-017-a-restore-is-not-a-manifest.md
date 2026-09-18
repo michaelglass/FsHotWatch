@@ -59,7 +59,7 @@ manifest content" to hash against, so a content check is not merely more expensi
 here — it is not expressible. Whereas a build-output COPY *is* its origin's bytes,
 which is why `OutputCopyFreshness` is content-only and must stay that way.
 
-So the two defaults the ticket asks about are not in conflict and neither is wrong:
+So the two defaults in question are not in conflict and neither is wrong:
 they answer different questions. The rule that decides between them is *do the two
 files share bytes?*, not *which subsystem is this?*.
 

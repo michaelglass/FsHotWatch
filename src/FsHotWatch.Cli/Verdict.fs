@@ -536,16 +536,24 @@ module RedCauseMessage =
     /// file so the reader knows WHOSE silence this is, and points at the daemon log,
     /// which is the one surface every reporter writes to. Carries nothing JSON would
     /// escape, so a verdict consumer can grep for it verbatim.
-    let unknownPointing (source: string) (file: string) : RedCauseMessage =
+    ///
+    /// `daemonLog` is that repo's log file — `DaemonConfig.DaemonLog.forRepo` or
+    /// `.under` a configuration in hand — never a literal here. A pointer is only worth
+    /// printing if it can be FOLLOWED, and this one shipped naming `.fshw/logs/daemon.log`,
+    /// which is not where any repo's daemon log is: `logDir` is configurable and its
+    /// default is `logs`. The reader this sentence exists for is the one who has nothing
+    /// else, so sending them to an empty directory costs exactly the incident the
+    /// sentence was written to prevent.
+    let unknownPointing (daemonLog: string) (source: string) (file: string) : RedCauseMessage =
         RedCauseMessage
-            $"no cause captured: %s{source} reported a failing diagnostic against %s{file} with no message; see .fshw/logs/daemon.log"
+            $"no cause captured: %s{source} reported a failing diagnostic against %s{file} with no message; see %s{daemonLog}"
 
     /// The message for a ledger entry. The entry's own text when it has any; the pointer
     /// sentence when it is blank. THE only door from a raw string, so no writer can put
     /// an empty message on the wire.
-    let ofLedger (source: string) (file: string) (raw: string) : RedCauseMessage =
+    let ofLedger (daemonLog: string) (source: string) (file: string) (raw: string) : RedCauseMessage =
         if System.String.IsNullOrWhiteSpace raw then
-            unknownPointing source file
+            unknownPointing daemonLog source file
         else
             RedCauseMessage raw
 
@@ -564,8 +572,8 @@ type RedCause =
 /// IS THIS RED A CLAIM ABOUT THIS TREE?
 ///
 /// The stale-verdict report's second failure direction, and the one its own fix left open. The
-/// ticket's premise is that a green must be earned; a RED must be earned in exactly the
-/// same sense, and two of the four incidents it records were reds that no longer
+/// premise is that a green must be earned; a RED must be earned in exactly the
+/// same sense, and two of the four incidents on record were reds that no longer
 /// described the tree they were reported against. A daemon that keeps asserting a
 /// diagnostic after the tree it came from is gone is making the same error as a cache
 /// that replays a green after the tree it ran on is gone — with the sign flipped, and
@@ -735,12 +743,12 @@ module CheckProse =
 
     /// The OTHER cause of "waiting on build", and the reason the pair
     /// above could not stay the only answer: for a stale-artifact refusal every clause
-    /// of it is wrong. The artifact WAS produced. The build already ran — the ticket
-    /// records `✓ build` in the same run as the refusal — so "the build is serving a
+    /// of it is wrong. The artifact WAS produced. The build already ran — an observed
+    /// gate printed `✓ build` in the same run as the refusal — so "the build is serving a
     /// cached result" misnames the mechanism, which is MSBuild's incremental `Copy`
     /// skipping a file whose timestamps compared equal. And both remedies it names cost
     /// a full gate cycle to arrive back at the identical refusal, which is precisely the
-    /// "re-run the identical command, get the identical failure" defect this ticket
+    /// "re-run the identical command, get the identical failure" defect this message
     /// exists to delete.
     ///
     /// So this one states the cause it actually has, names every affected project by
@@ -779,7 +787,7 @@ module CheckProse =
         $"NO VERDICT — %d{List.length aborts} test host(s) were KILLED mid-run, so their tests did not            finish.%s{listed}\nNOTHING WAS VERIFIED: nothing is reported broken — do NOT go looking for a            regression — and nothing is reported sound either. Any per-test lines in the run output are a            TRANSCRIPT of a killed run, not findings: a test the host never reached is written out the same way as            one that ran, which is why they are not counted here.\nRemedy: re-run on a machine with headroom            (`dotnet fshw test-rerun`, or the whole gate). Re-running under the same load will abort again, and a            host that keeps dying on an IDLE machine is a real defect — that one is worth chasing."
 
     /// AC5. The gate's own answer to "is `fshw stop` still needed?" —
-    /// stated by the tool, at the moment it is needed, instead of left in a ticket.
+    /// stated by the tool, at the moment it is needed, instead of left in a document nobody opens.
     ///
     /// It names the remedy AND rules out the wrong one. `fshw scan` is what the docs
     /// advised for this class and it has never cleared it: the FCS internal-error storm
@@ -909,7 +917,7 @@ module CheckProse =
         | CheckVerdict.CheckOutcome.NoBaseline reason -> Some(noBaseline reason)
         // AC5. Every failing diagnostic was unattributable to this tree,
         // so the run has no verdict — and the remedy is named HERE, where the person who
-        // needs it is looking, rather than left in a ticket they have not read.
+        // needs it is looking, rather than left in a document they have not read.
         | CheckVerdict.CheckOutcome.StaleDaemonState n -> Some(staleDaemonState n)
         // Its own words for the same reason `RunnerAborted` has its own:
         // the reader is about to draw the usual conclusion from a non-zero exit, and the
@@ -2566,7 +2574,7 @@ let private parseExcluded (scopeEl: JsonElement) : SolutionScope.Exclusion list 
     | _ -> None
 
 /// The full-suite baseline, read back. A green whose baseline is missing or unreadable is NOT a
-/// green — it is the verdict shape this ticket retired, and `None` makes the file
+/// green — it is the verdict shape retired here, and `None` makes the file
 /// `Unreadable`, which every consumer treats as "earn it again".
 let private parseBaseline (el: JsonElement) : CheckVerdict.Baseline option =
     match tryString el "kind" with
@@ -2892,6 +2900,10 @@ let read (repoRoot: string) : Reading =
             use doc = JsonDocument.Parse(File.ReadAllText p)
             let root = doc.RootElement
 
+            // Only a cause the file left BLANK needs it, and most verdicts have none —
+            // so the config is read at most once per verdict, and usually not at all.
+            let daemonLog = lazy (DaemonConfig.DaemonLog.forRepo repoRoot)
+
             let schema = tryString root "schema" |> Option.defaultValue "(none)"
 
             if schema <> Schema then
@@ -2993,6 +3005,7 @@ let read (repoRoot: string) : Reading =
                                        // is written.
                                        Message =
                                          RedCauseMessage.ofLedger
+                                             daemonLog.Value
                                              source
                                              file
                                              (tryString el "message" |> Option.defaultValue "")

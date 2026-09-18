@@ -384,7 +384,7 @@ let private projectLabel (projectDir: string) =
 ///
 /// It moved to core: `FsHotWatch.Build` and `FsHotWatch.TestPrune`
 /// are siblings over core, so the plugin that owns the build cache could not see this
-/// rule at all, and the ticket named that as the reason its acceptance was unmet.
+/// rule at all, which is precisely why the rule had to move.
 /// Restating it there would have been two implementations of a rule that has to agree,
 /// which is how a gate degrades without anyone noticing — so there is one, here
 /// through it.

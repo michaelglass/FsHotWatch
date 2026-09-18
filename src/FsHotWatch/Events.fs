@@ -357,8 +357,8 @@ type TestResult =
 /// A DU rather than a bool, so the compiler ENUMERATES the decision at every fold
 /// instead of leaving `NothingVerified` to be silently swept into whichever side the
 /// author had in mind. Adding a `TestResult` case breaks `TestResult.verdict`, and
-/// adding a `ProjectVerdict` case breaks every fold — which is the list this ticket
-/// was buying.
+/// adding a `ProjectVerdict` case breaks every fold — which is the list this DU
+/// buys.
 type ProjectVerdict =
     /// The runner executed AT LEAST ONE test and every one passed. The ONLY case
     /// that discharges anything: a cacheable green, a symbol's test debt, a green run

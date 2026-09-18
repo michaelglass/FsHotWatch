@@ -168,26 +168,40 @@ let private failingEntries
 let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
     failingEntries daemon noWarnFail pluginName |> List.length
 
+/// The failing ledger entries with the KIND each classifies as — the in-process twin of
+/// `IpcOutput.failingEntriesWithKind`. One traversal and one classifier feeding both the
+/// causes the verdict records and the count of the ones that are not about this tree.
+let private failingEntriesWithKind
+    (daemon: Daemon.Daemon)
+    (noWarnFail: bool)
+    (pluginName: string option)
+    : (string * string * ErrorEntry * Verdict.RedCauseKind) list =
+    failingEntries daemon noWarnFail pluginName
+    |> List.map (fun (file, (source, e)) -> file, source, e, Verdict.RedCause.classify source file e.Message)
+
 /// The in-process twin of `IpcOutput.redCausesOf`: the failing ledger
 /// entries the exit code was computed from, as the verdict records them. Derived from
 /// the SAME traversal as the count, so the two transports — and the file and the exit
 /// code — cannot disagree about what reddened the run.
-let private redCauses (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) =
-    failingEntries daemon noWarnFail pluginName
-    |> List.map (fun (file, (source, e)) ->
+let private redCauses (daemonLog: string) (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) =
+    failingEntriesWithKind daemon noWarnFail pluginName
+    |> List.map (fun (file, source, e, kind) ->
         { Verdict.Source = source
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = Verdict.RedCauseMessage.ofLedger source file e.Message
-          Verdict.Kind = Verdict.RedCause.classify source file e.Message })
+          Verdict.Message = Verdict.RedCauseMessage.ofLedger daemonLog source file e.Message
+          Verdict.Kind = kind })
 
 /// How many failing entries are NOT claims about the tree on disk — the
 /// in-process twin of `IpcOutput.unattributableCountOf`, off the same traversal as
-/// `redCauses` AND through the same `RedCause.unattributable` selection, so the two
-/// transports classify identically.
+/// `redCauses` AND through the same `RedCause.classify` / `RedCauseKind.isAboutThisTree`
+/// selection, so the two transports classify identically.
 let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
-    redCauses daemon noWarnFail pluginName
-    |> Verdict.RedCause.unattributable
+    // Off the same traversal and the same classifier as `redCauses`. It asks only about
+    // the KIND, so it needs no log pointer: `RedCause.classify` reads the LEDGER's
+    // message, not the rendered one.
+    failingEntriesWithKind daemon noWarnFail pluginName
+    |> List.filter (fun (_, _, _, kind) -> not (Verdict.RedCauseKind.isAboutThisTree kind))
     |> List.length
 
 /// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry (its tests
@@ -481,7 +495,7 @@ let private runOnceAndVerdictIn
                 checkScoped
                 finalStatuses.Value
                 (IpcParsing.DaemonEvidence.ofHost daemon.Host)
-                (redCauses daemon noWarnFail pluginName)
+                (redCauses (DaemonConfig.DaemonLog.under config.LogDir) daemon noWarnFail pluginName)
                 finalModel.Value
                 settledTree.Value
                 outcome

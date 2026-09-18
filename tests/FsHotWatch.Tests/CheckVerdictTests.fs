@@ -567,7 +567,7 @@ let ``each coverage case is read for what it says, not ranked against another re
 // ----------------------------------------------------------------------------
 // QA rework — a red must be EARNED, exactly as a green must.
 //
-// The ticket's premise applied to the other sign. A ledger whose every failing entry is
+// The same premise applied to the other sign. A ledger whose every failing entry is
 // an FCS `internal error:` (the checker crashed) or a diagnostic against a file that is
 // no longer on disk supports no claim that THIS tree is broken — and reporting exit 1
 // sends the reader hunting a defect that is not there. It cost one agent ~40 minutes,
@@ -773,7 +773,7 @@ let private abortMessages =
 
 [<Fact(Timeout = 15000)>]
 let ``a killed test host is RunnerAborted — exit 2, never the exit 1 it used to return`` () =
-    // The whole ticket in one assertion. A `TestsErrored` project used to reach here as a
+    // The whole fix in one assertion. A `TestsErrored` project used to reach here as a
     // failing diagnostic, so the exit code said 1, `verdict.json` said `red`, and the
     // console listed the killed runner's half-written transcript under "N test(s) failed".
     // Nothing failed. Nothing passed either — which is why this may never be green.
@@ -1067,7 +1067,7 @@ let ``a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — t
     test <@ exitCode outcome = 3 @>
 
     // Control: the same inputs with a FAILED plugin are exit 1 — the distinction this
-    // ticket refuses to collapse.
+    // verdict refuses to collapse.
     let failed =
         { verifiedNothing with
             Status = StatusView.Failed("boom", DateTime.UtcNow) }
@@ -1078,7 +1078,7 @@ let ``a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — t
 
     test <@ exitCode (verdict InnerLoop failedPlugin) = 1 @>
 
-// The reproduction the ticket asks for, as a deterministic unit
+// The reproduction, as a deterministic unit
 // test rather than a harness: `converge` is pure, so the losing sequence can be
 // scripted exactly.
 //
@@ -1240,7 +1240,7 @@ let ``an unavailable model is the answer — no re-scan could have made one avai
 let ``POSITIVE CONTROL: an empty selection on a HEALTHY model still says nothing needed re-verifying, and does not alarm``
     ()
     =
-    // The ticket's required control. Without it, "never report an empty model as green"
+    // The required control. Without it, "never report an empty model as green"
     // passes by refusing every empty selection — a worse outcome than the bug, because a
     // warm daemon over an unchanged tree selects nothing on EVERY run.
     let emptySelection =

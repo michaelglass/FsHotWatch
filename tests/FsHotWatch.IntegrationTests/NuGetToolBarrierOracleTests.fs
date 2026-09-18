@@ -228,6 +228,6 @@ let ``a tool package missing its entry assembly is refused as a defect, not as u
 
     test <@ result.ExitCode = 1 @>
     test <@ result.Stderr.Contains("tool package defect") @>
-    // The distinction the ticket turns on: the package is THERE and broken. Reporting it
+    // The distinction that matters: the package is THERE and broken. Reporting it
     // as "still not restorable after N attempts" is the false negative being fixed.
     test <@ not (result.Stderr.Contains("still not restorable")) @>

@@ -89,7 +89,7 @@ let ledgerPath (repoRoot: string) : string =
 /// could not read it" must widen to a full suite or tests get skipped. This one
 /// records repair HISTORY, and the only thing a lost history can do is delay a
 /// breaker trip. Failing closed here would mean a corrupt diagnostic file refuses
-/// every run — a brand-new wedge class, in the ticket that exists to delete one.
+/// every run — a brand-new wedge class, in the preflight that exists to delete one.
 /// Nothing unsafe rides on it either way: every launch is still gated by the
 /// post-repair re-verification, which reads the actual bytes.
 let loadLedger (repoRoot: string) : HealRecord list =
@@ -261,8 +261,8 @@ type Outcome =
 /// before any suite launches reintroduced a door to it.
 ///
 /// It REPORTS rather than refuses, deliberately. Refusing would wedge every repo whose
-/// runners legitimately take no `--project`, and this ticket's approval comment forbids
-/// trading one wedge class for another. Naming the gap costs nothing and makes a total
+/// runners legitimately take no `--project`, and this preflight must not trade one
+/// wedge class for another. Naming the gap costs nothing and makes a total
 /// regression loud.
 ///
 /// `None` means every runnable project was examined — there is nothing to say.
@@ -319,8 +319,8 @@ module Reason =
 
     /// The breaker's refusal: what tripped, how often, and — required, not optional —
     /// how to get moving again. A hard fail with no stated way out would re-create the
-    /// "re-run the identical command, get the identical failure" defect this ticket is
-    /// about.
+    /// "re-run the identical command, get the identical failure" defect this gate
+    /// exists to delete.
     let breakerTripped (repoRoot: string) (file: string) (count: int) : string =
         $"%s{StaleOutputMarker}auto-repair has already fired %d{count} times for %s{file} within the last \
           %.0f{Window.TotalDays} days, so this run REFUSES to repair it again. Something upstream keeps rebuilding \
