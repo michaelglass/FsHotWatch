@@ -31,7 +31,7 @@
     "notInputs": [
       {
         "path": "CHANGELOG.md",
-        "reason": "Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
+        "reason": "Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. This declaration RECORDS that decision; it does not perform it. `notInputs` is parsed and validated but read by neither TreeHash nor Discovery, so nothing here subtracts a file from the hash \u2014 deliberately, since a config able to do that would be a supported way to weaken the gate. What actually keeps this file out is that the walk covers src/ and tests/ only, and the repo root is not in it. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
       },
       {
         "path": "semantic-tagger.json",
