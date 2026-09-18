@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-09-18
+
+- One settled read decides a check: the convergence loop is deleted
+
+
 ## 0.7.0-alpha.23 - 2026-09-17
 
 - Plugin handlers state what they read and what they commit (breaking plugin API)

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.37 - 2026-09-18
+
 - A build that FAILED mints `CompletedBuildFailure` for the model it failed under, so a
   daemon whose build is red can answer a verdict wait instead of blocking on a run that
   will never happen. A build that passed mints none: the runs it enables earn that. A

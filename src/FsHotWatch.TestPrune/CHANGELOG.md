@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.41 - 2026-09-18
+
 - Fixed: a receipt refused a green over a COLD tree its run had actually covered. The
   obligations a cold scan queues while the full suite is already executing are absent from
   the launch snapshot, so they survived the launch-scoped retirement and were counted as
