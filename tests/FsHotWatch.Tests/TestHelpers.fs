@@ -21,6 +21,16 @@ let dummyParseResults () : FSharpParseFileResults =
 /// The project-model generation fixture results are captured against.
 let fixtureModelGeneration = 1L
 
+/// The available model of a given generation, for a fixture that needs to tell two
+/// generations apart.
+let fixtureModelOf (generation: int64) =
+    FsHotWatch.ProjectModel.ofCompleted
+        generation
+        { Discovered = 1
+          Loaded = 1
+          OptionsMapped = 1
+          Registered = 1 }
+
 /// The available model a fixture host publishes, as a daemon does after discovery.
 let fixtureModel =
     FsHotWatch.ProjectModel.ofCompleted

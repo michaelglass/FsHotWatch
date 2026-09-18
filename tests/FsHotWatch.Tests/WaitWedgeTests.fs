@@ -64,7 +64,6 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
                 Daemon.waitForAllTerminalCore
                     host
                     (TimeSpan.FromSeconds 30.0)
-                    false
                     (TimeSpan.FromMilliseconds 300.0)
                     CancellationToken.None
                 |> fun t -> t.GetAwaiter().GetResult())
@@ -237,7 +236,6 @@ let ``a host with no busy plugins resolves instead of reporting a wedge`` () =
     Daemon.waitForAllTerminalCore
         host
         (TimeSpan.FromSeconds 30.0)
-        false
         (TimeSpan.FromMilliseconds 300.0)
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
@@ -287,12 +285,7 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
     test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > 0L) 10_000 @>
 
     // Must RESOLVE, not raise.
-    Daemon.waitForAllTerminalCore
-        host
-        (TimeSpan.FromSeconds 30.0)
-        false
-        (TimeSpan.FromSeconds 5.0)
-        CancellationToken.None
+    Daemon.waitForAllTerminalCore host (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 5.0) CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
 
 [<Fact(Timeout = 60_000)>]

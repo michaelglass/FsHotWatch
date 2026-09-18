@@ -3688,3 +3688,66 @@ let ``a receipt refuses only the obligations its run did not cover`` (shape: str
             test <@ List.isEmpty earned.FailureReasons @>
         else
             test <@ not (List.isEmpty earned.FailureReasons) @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a retained receipt beside an outstanding failure earns a refusal, never a green`` () =
+    withReceiptSource (fun repoRoot _ ->
+        // ADR-022's written rule says a quiet already-verified drain may retain its receipt
+        // "when it executes nothing and no failure remains outstanding".
+        // `ReceiptTransition.classify` does not consult the failure ledger for that second
+        // clause, and deliberately so: the ledger is where the RED comes from, and the
+        // receipt is only a record of what ran. What must never happen is the pair — a
+        // retained receipt AND an outstanding failure producing a green. This is the test
+        // that pins it, so the ledger-independence stays a choice rather than a hole.
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let model =
+            FsHotWatch.ProjectModel.ofCompleted
+                4L
+                { Discovered = 1
+                  Loaded = 1
+                  OptionsMapped = 1
+                  Registered = 1 }
+
+        let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+        let ctx =
+            { recordingCtx with
+                ProjectGraph =
+                    { recordingCtx.ProjectGraph with
+                        ObserveModel = fun () -> model } }
+
+        // A red that is still owed when the quiet drain arrives.
+        let owed =
+            { Project = "ProjB"
+              Class = Some "ProjBTests"
+              Method = None
+              File = "<tests/ProjB>"
+              Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "ProjB failed" }
+
+        let prior =
+            { handler.Init with
+                OutstandingFailures = [ owed ] }
+
+        let quietDrain =
+            { emptyLaunch with
+                ZeroSelection = ZeroSelection.AlreadyVerified
+                ModelGeneration = Some 4L }
+            |> bindReceiptTree repoRoot
+
+        let candidate =
+            handler.Update ctx prior (testsFinishedEvent [] quietDrain)
+            |> Async.RunSynchronously
+
+        // The failure is still owed — the drain cleared nothing.
+        test <@ candidate.OutstandingFailures |> List.exists (fun f -> f.Project = "ProjB") @>
+
+        // And the evidence this completion earned REFUSES, naming the count it still owes.
+        // Whatever the receipt retains, nothing here can vouch for a green.
+        match candidate.Earned with
+        | Some earned -> test <@ not (List.isEmpty earned.FailureReasons) @>
+        | None ->
+            // Kept strict rather than tolerant: were this arm allowed, the assertion above
+            // would pass for a completion that minted nothing at all and prove nothing.
+            failwith "the drain must earn evidence under the fixture's model, so that its refusal is provable")

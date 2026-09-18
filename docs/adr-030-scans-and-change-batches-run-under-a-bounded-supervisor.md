@@ -113,3 +113,43 @@ Each of these was reproduced as a failing daemon test before this change.
 - Scan and batch results are not yet bound to the project-model generation they were
   captured against.
 - TestPrune and Build still keep closure-local mirrors of their state.
+
+## Amendment: the wait belts come off, and the stall detector learns what a deadline means
+
+This record's "Not in this change" listed `requireVerdict`, the quiescence window and
+`activeVerdictWaits` as surviving; its Consequences admitted that a scan spending more than
+the stall threshold in discovery "now meets the description" of a wedge. All four are
+resolved here, and the last one was a live defect: a cold discovery owns work for minutes
+while no plugin event completes anywhere, which is byte-for-byte the signature the detector
+fires on.
+
+- **The 200 ms quiescence window is deleted.** It covered work the daemon had not yet handed
+  to the host. Nothing needs covering: `EmitFileChanged` opens the owner's dispatch
+  operation and returns only once every plugin has admitted the event, so a hand-off cannot
+  be read as rest between two snapshots. One publication answers rest.
+- **`requireVerdict` is deleted; the wait asks for evidence.** It required that some plugin
+  had reached a terminal state, which is a report, not a verification. `WaitForComplete`
+  now rests when the host owns no work AND something has earned evidence for the model it
+  would be answering about (ADR-033): a test receipt, an analysis receipt, or a completed
+  build failure. A host that observes no model resolves rather than blocking — nothing can
+  ever earn evidence for a model that does not exist, and a green over one is refused by
+  `CheckVerdict` (`ModelUnavailable`, exit 2) and by `Verdict.create`. The wait stopped
+  carrying a duty two other guards hold.
+- **A completed build failure is evidence.** A red build runs no tests and analyses nothing,
+  so it minted neither receipt and an evidence wait had nothing to end on over a tree whose
+  answer was already printed. `BuildPlugin` mints `CompletedBuildFailure` in the fold that
+  records the outcome. A build that PASSED mints none: a green build is not evidence of
+  itself, and the runs it enables earn that.
+- **`activeVerdictWaits` is replaced by a client-observation lease.** The counter lived
+  beside the publication: the daemon incremented it around the RPC while idle-exit read the
+  host's work from somewhere else, and two readings of one fact can disagree. An in-flight
+  verdict wait now takes a lease published WITH the work it waits on, so "a client is
+  waiting" and "the host owns nothing" come from one snapshot. A watcher is not work: the
+  lease inhibits idle exit and never makes the host busy. Taken inside the wait, so every
+  exit releases it — verdict, timeout and shutdown cancellation alike.
+- **The stall detector is bounded by the deadline, not by the silence.** Live work whose row
+  is `Supervised` — run under a finite deadline, which `SupervisedWork` sets and nothing
+  else does — counts as progress while it is inside that deadline. Past it, the deadline
+  records its own failure, the row stops counting, and the wedge fires exactly as before.
+  An ordinary event fold is never `Supervised`: nothing will ever time it out, so a handler
+  that never returns is still named, which is the case this detector exists for.

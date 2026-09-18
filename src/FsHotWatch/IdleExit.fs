@@ -160,13 +160,13 @@ module IdleInhibitor =
 /// alone read a working daemon as idle. Pure; the daemon injects the three live signals.
 let idleInhibitors
     (anyPluginBusy: bool)
-    (activeVerdictWaits: int)
+    (observingClients: int)
     (scansInFlight: ScanActivity.ScanKind list)
     : IdleInhibitor list =
     [ if anyPluginBusy then
           yield IdleInhibitor.PluginBusy
-      if activeVerdictWaits > 0 then
-          yield IdleInhibitor.VerdictWait activeVerdictWaits
+      if observingClients > 0 then
+          yield IdleInhibitor.VerdictWait observingClients
       for kind in scansInFlight do
           yield IdleInhibitor.ScanInFlight kind ]
 

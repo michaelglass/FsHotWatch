@@ -881,16 +881,25 @@ let ``repeated Running reports do not create owned work`` () =
 
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //
-// On a cold daemon every registered plugin is Idle and nothing has run, yet the quiescence
-// leg of `allPluginsAtRest` ("no plugin Running + quiet window") resolved the wait
-// immediately — so the `WaitForComplete` behind a foreground `check`/`errors --wait`
-// rendered an empty ledger as a vacuous exit-0 "No errors". The verdict guard now requires
-// at least one plugin to have reached Completed/Failed, so with nothing ever running the
-// verdict wait must TIME OUT rather than resolve. The Idle-tolerant scan-settling path
-// (`waitForAllTerminal`, requireVerdict=false) keeps the original behaviour and is covered
-// by `waitForAllTerminal returns within quiescence window ...`.
+// On a cold daemon every registered plugin is Idle and nothing has run, yet the wait
+// resolved immediately — so the `WaitForComplete` behind a foreground `check`/`errors
+// --wait` rendered an empty ledger as a vacuous exit-0 "No errors".
+//
+// What holds that line has MOVED, deliberately. The wait no longer asks whether some
+// plugin reached a terminal state — a status is a report, and reporting one was never
+// evidence that anything was verified (`a reported terminal status cannot mint evidence
+// after its event drains`, VerdictEvidenceTests). It asks whether anything EARNED an
+// answer about the model it would be answering for, which is the host-level case in
+// `a verdict wait ends on the analysis receipt its cohort seal earned`.
+//
+// This host observes NO model at all, and that is the case below: nothing can ever earn
+// evidence for a model that does not exist, so blocking would spend the client's whole
+// deadline on an answer already determined. It resolves, and the vacuous green is refused
+// one layer up instead — `CheckVerdict` grades a host with no available model as
+// `ModelUnavailable` (exit 2), and `Verdict.create` refuses a green over a model nobody
+// observed as available. The wait stopped carrying a duty two other guards now hold.
 [<Fact(Timeout = 20000)>]
-let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing verified)`` () =
+let ``a verdict wait resolves on a host with no model, which cannot earn evidence`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     // Registered, never run, nothing verified — the exact cold-start shape.
@@ -906,21 +915,22 @@ let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing v
 
     host.RegisterHandler(handler)
     test <@ host.GetAllStatuses() |> Map.forall (fun _ s -> s = Idle) @>
+    // The premise: no model was ever observed, so there is no generation to earn evidence
+    // for, and no registered plugin here mints any.
+    test <@ host.WorkSnapshot.ProjectModel = FsHotWatch.ProjectModel.Observation.Unobserved @>
+    test <@ not host.WorkSnapshot.OffersEvidence @>
 
-    // A short timeout: with the bug this resolves almost immediately via the quiescence leg;
-    // with no terminal plugin the only exit is the timeout, so the task must fault.
     let waitTask =
         waitForVerdict host (TimeSpan.FromSeconds(1.0)) System.Threading.CancellationToken.None
 
-    let faultedWithTimeout =
+    let resolvedCleanly =
         try
             waitTask.Wait(TimeSpan.FromSeconds(6.0)) |> ignore
-            // Resolved cleanly == the vacuous-green bug is still present.
+            true
+        with :? AggregateException ->
             false
-        with :? AggregateException as ex ->
-            ex.InnerExceptions |> Seq.exists (fun e -> e :? TimeoutException)
 
-    test <@ faultedWithTimeout @>
+    test <@ resolvedCleanly @>
 
 [<Fact(Timeout = 20000)>]
 let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not deadlock`` () =
@@ -1533,12 +1543,17 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
 
     use cts = new System.Threading.CancellationTokenSource()
 
-    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
-
+    // Emit BEFORE waiting, which is the order every production caller uses: `EmitFileChanged`
+    // opens the owner's dispatch operation and returns only once every plugin has admitted
+    // the event, so the work is OWNED by the time the wait takes its first snapshot. The
+    // reverse order used to be covered by a 200ms quiescence window that has been deleted:
+    // with the window gone, a wait started before any work exists correctly sees a host that
+    // owns nothing and resolves — which is the point of the deletion, not a regression.
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Give the wait a moment to enter its loop, then trip the shutdown token.
-    Threading.Thread.Sleep(200)
+    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
+
+    // The plugin is Running for 60s, so the wait is blocked on owned work; trip the token.
     cts.Cancel()
 
     // Async.StartAsTask wraps OperationCanceledException as AggregateException

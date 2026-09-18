@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A build that FAILED mints `CompletedBuildFailure` for the model it failed under, so a
+  daemon whose build is red can answer a verdict wait instead of blocking on a run that
+  will never happen. A build that passed mints none: the runs it enables earn that. A
+  failure under no observed model earns nothing — it says nothing about the graded model.
+
 - (breaking) `force-rebuild` is owner state. `BuildState` gains `ForceRebuild`, set by the
   new `ForceRebuildRequested` message and spent by a build that actually ran; the command
   replies once that state is committed. The cache key reads `ForceRebuild` and
