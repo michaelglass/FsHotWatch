@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.39 - 2026-09-18
+
+- core, cli: a superseded scan re-captures its model instead of ending the check
+
+
 ## 0.10.0-alpha.38 - 2026-09-18
 
 - (breaking) `WaitForComplete` waits for EVIDENCE, not for a reported status. The
