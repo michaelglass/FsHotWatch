@@ -180,6 +180,38 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core, cli: a scan whose project model is replaced re-scans it instead of ending the check
+
+A rediscovery that lands while a scan is running used to kill the scan, and with it the
+whole `check`. The check usually caused the event itself: on a COLD workspace its own
+`beforeRun` restore and build rewrite project state before the first scan finishes, the
+watcher reports it, the model generation advances, and the scan — which must not publish
+results about a model that has been replaced — refused and aborted. What the operator saw
+was `Could not connect to daemon: The captured project model generation 3 was invalidated
+before scan publication`, exit 2, no verdict, on a daemon that had connected and answered
+perfectly well.
+
+A scan now captures the model that replaced its own and scans again, up to five attempts,
+inside the same activity lease. Each attempt publishes only under the epoch it captured, so
+the guarantee the refusal exists for is unchanged: results about a superseded model still
+never escape. A model replaced on every one of the five attempts fails by name — it says the
+model kept changing during the scan, that nothing was published, and where to read which
+replacements happened — and that reason reaches the operator instead of a connection error
+that blames the pipe.
+
+Underneath it, a false positive is gone. A cold daemon's content tracker had no prior for any
+project file, so the FIRST `ProjectChanged` the watcher delivered for every `.fsproj`
+re-discovered the whole workspace whatever the file actually said. Discovery now records each
+project file's content before the loader reads it, so an echo carrying the same bytes the
+model was built from is answered "unchanged". A project file whose content really changed
+still re-discovers.
+
+See `docs/adr-035-a-superseded-scan-re-captures-it-does-not-abandon-the-check.md`, which
+records why deduplication alone was not enough (a real edit during a twelve-minute cold scan
+is legitimate and must not abort a check), and why the observation is taken BEFORE the load
+rather than after — the ordering is what makes a lost race cost a redundant rediscovery
+rather than a missed one.
+
 ### cli: one settled read decides a check
 
 `fshw check` used to re-scan an incomplete-but-clean reading up to three times and keep
