@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **cli: `confirm`'s "verdict still applies" fast path runs the run-level hooks.** It
+  skipped them on the rationale that it starts no daemon and runs no test — true, and
+  only half of what the hooks do. The other half is `beforeRun`, which is where a
+  consumer checks what the verdict's tree hash deliberately excludes; certifying a
+  stored green without it certified exactly the files nothing had checked. The hooks
+  now fire there, under the same `runHookCommands` verb policy, and a refusing
+  `beforeRun` fails the fast path closed with exit 2. The fast path is otherwise
+  unchanged — no daemon, no test, no in-flight claim — except that the tree is now
+  re-hashed after the hooks, so a write that lands while a hook runs is refused (exit 2)
+  rather than certified by the hash taken before it.
+
 - **a run that verified nothing is a run-outcome CASE, not a summary
   string.** An earlier fix stopped a zero-project test run from rendering `✓`, but did it
   with a `NOTHING VERIFIED: ` prefix on the summary that three surfaces parsed back. The

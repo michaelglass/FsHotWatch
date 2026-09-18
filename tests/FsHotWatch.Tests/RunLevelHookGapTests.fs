@@ -11,7 +11,10 @@
 ///
 /// This file exercises `Program.withRunHooks` and its helpers directly — the
 /// transport-agnostic bracket that both `check` arms and `confirm`'s `MustEarn` arm
-/// wrap the action in.
+/// wrap the action in — plus `withRunHooksUnclaimedFor`, the hooks-only half that
+/// `confirm`'s "verdict still applies" fast path takes instead: the same hooks under
+/// the same verb policy, without the in-flight claim or the terminal verdict that
+/// belong to a run doing heavy work.
 module FsHotWatch.Tests.RunLevelHookGapTests
 
 open System
@@ -846,92 +849,219 @@ let ``signal downgrade still wins after ordinary finalization already won the te
         | other -> failwith $"late signal did not downgrade the same-owner verdict: %A{other}")
 
 // ---------------------------------------------------------------------------
-// `confirm` StillApplies fast-path is DELIBERATELY unwrapped (no hooks fire)
+// `confirm` StillApplies fast-path: hooks YES, claim NO
 // ---------------------------------------------------------------------------
 
-/// The `confirm` fast path — a full-suite green that still applies to the tree —
-/// starts no daemon, runs no test, and MUST NOT fire the run-level hooks: there is
-/// no heavy work to serialize, so nothing for a gate-lock to guard. Driven through
-/// the real `executeCommand` `Confirm` arm.
+/// Seed `root` with the exact precondition for the fast path: a full-suite-green
+/// `confirm` verdict for THIS tree, from THIS binary. Asserts the precondition holds,
+/// so a test that reaches the slow path fails as a setup error rather than as a
+/// silently-passing negative.
+let private seedStillApplyingGreen (root: string) =
+    Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+    File.WriteAllText(Path.Combine(root, "src", "Lib.fs"), "module Lib\nlet x = 1\n")
+    let tree = TreeHash.compute root []
+
+    let verdict =
+        FsHotWatch.Cli.Verdict.create
+            FsHotWatch.Cli.Verdict.Confirm
+            (BaselineFixtures.reportOf (FullSuite 1))
+            ({ Hash = tree.Hash
+               FileCount = tree.FileCount
+               SkippedCount = tree.SkippedCount
+               DeclaredCount = tree.DeclaredCount
+               AbsentDeclarationCount = tree.AbsentDeclarationCount }
+            : TreeHash.Tree)
+            (Some [])
+            (FsHotWatch.Cli.Verdict.Green BaselineFixtures.baseline)
+            0
+            ([ { Name = "test-prune"
+                 Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+                 ElapsedMs = Some 1000L
+                 Summary = Some "ok" } ]
+            : FsHotWatch.Cli.Verdict.PluginVerdict list)
+            []
+            FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
+            []
+            ProjectModelFixtures.available
+
+    FsHotWatch.Cli.Verdict.write root verdict
+
+    match FsHotWatch.Cli.Verdict.priorConfirmation root [] with
+    | FsHotWatch.Cli.Verdict.PriorConfirmation.StillApplies _ -> ()
+    | FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn ->
+        failwith "setup: expected the StillApplies fast path to be taken"
+
+/// A config whose only load-bearing content is the run-level hook pair and the verbs
+/// they apply to.
+let private fastPathConfig (verbs: Set<RunHookCommand>) (before: string option) (after: string option) =
+    { defaultTestConfig () with
+        Build = None
+        Format = Off
+        Lint = false
+        BeforeRun = before
+        AfterRun = after
+        RunHookCommands = verbs
+        RunHookTimeoutSec = Some 30 }
+
+/// `IsRunning=true` skips the zero-projects precheck; the fast path then answers
+/// before any daemon contact, so a daemon factory that throws is the assertion that
+/// none was started.
+let private runConfirm (root: string) (config: DaemonConfiguration) =
+    executeCommand
+        ""
+        (fun _ -> failwith "the confirm fast path must not create a daemon")
+        (dummyIpc (fun _ -> true))
+        root
+        "pipe"
+        (Confirm [])
+        defaultGlobalOptions
+        config
+        30.0
+
+/// THE DEFECT. `beforeRun` exists to check what the verdict's tree hash does NOT
+/// cover — an index, a doc set, anything deliberately excluded from the verdict's
+/// inputs. A fast path that certifies a stored green without running it certifies a
+/// claim nobody checked: edit only excluded files after a green, and `confirm`
+/// answers 0 having verified nothing about them.
 [<Fact(Timeout = 30000)>]
-let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
-    withTempDir "confirm-fastpath-nohooks" (fun root ->
-        // A minimal tree with a full-suite-green verdict for THIS tree, THIS binary.
-        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
-        File.WriteAllText(Path.Combine(root, "src", "Lib.fs"), "module Lib\nlet x = 1\n")
-        let tree = TreeHash.compute root []
+let ``confirm StillApplies fast-path fires the run-level hooks`` () =
+    withTempDir "confirm-fastpath-hooks" (fun root ->
+        seedStillApplyingGreen root
 
-        let verdict =
-            FsHotWatch.Cli.Verdict.create
-                FsHotWatch.Cli.Verdict.Confirm
-                (BaselineFixtures.reportOf (FullSuite 1))
-                ({ Hash = tree.Hash
-                   FileCount = tree.FileCount
-                   SkippedCount = tree.SkippedCount
-                   DeclaredCount = tree.DeclaredCount
-                   AbsentDeclarationCount = tree.AbsentDeclarationCount }
-                : TreeHash.Tree)
-                (Some [])
-                (FsHotWatch.Cli.Verdict.Green BaselineFixtures.baseline)
-                0
-                ([ { Name = "test-prune"
-                     Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
-                     ElapsedMs = Some 1000L
-                     Summary = Some "ok" } ]
-                : FsHotWatch.Cli.Verdict.PluginVerdict list)
-                []
-                FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
-                []
-                ProjectModelFixtures.available
-
-        FsHotWatch.Cli.Verdict.write root verdict
-
-        // Sanity: the fast path is actually the one taken.
-        match FsHotWatch.Cli.Verdict.priorConfirmation root [] with
-        | FsHotWatch.Cli.Verdict.PriorConfirmation.StillApplies _ -> ()
-        | FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn ->
-            failwith "expected the StillApplies fast path to be taken"
-
-        // Unwrapped REGARDLESS of `runHookCommands` — including under `["confirm"]`,
-        // where the verb IS selected and this arm must STILL not fire. Both settings
-        // are exercised so a narrowed verb set can never be mistaken for the reason
-        // the hooks stayed quiet.
+        // Fires under the default verb set AND under an explicit `["confirm"]`, so
+        // neither can be mistaken for the reason the hooks ran.
         for verbs in [ DefaultRunHookCommands; Set.singleton RunHookCommand.Confirm ] do
             let beforeSentinel = freshSentinel ()
             let afterSentinel = freshSentinel ()
 
-            let config =
-                { defaultTestConfig () with
-                    Build = None
-                    Format = Off
-                    Lint = false
-                    BeforeRun = Some(touch beforeSentinel)
-                    AfterRun = Some(touch afterSentinel)
-                    RunHookCommands = verbs }
-
-            // IsRunning=true so the zero-projects precheck is skipped; the StillApplies
-            // arm then returns before any daemon contact or hook.
-            let ipc = dummyIpc (fun _ -> true)
-
             try
                 let code =
-                    executeCommand
-                        ""
-                        (fun _ -> Unchecked.defaultof<_>)
-                        ipc
-                        root
-                        "pipe"
-                        (Confirm [])
-                        defaultGlobalOptions
-                        config
-                        30.0
+                    runConfirm root (fastPathConfig verbs (Some(touch beforeSentinel)) (Some(touch afterSentinel)))
 
                 test <@ code = 0 @>
-                test <@ not (File.Exists beforeSentinel) @>
-                test <@ not (File.Exists afterSentinel) @>
+                test <@ File.Exists beforeSentinel @>
+                test <@ File.Exists afterSentinel @>
             finally
                 tryDelete beforeSentinel
                 tryDelete afterSentinel)
+
+/// The verb policy is the SAME one the slow path obeys: a consumer that brackets only
+/// `check` gets no `confirm` hooks here either.
+[<Fact(Timeout = 30000)>]
+let ``confirm StillApplies fast-path obeys runHookCommands`` () =
+    withTempDir "confirm-fastpath-verb" (fun root ->
+        seedStillApplyingGreen root
+        let beforeSentinel = freshSentinel ()
+        let afterSentinel = freshSentinel ()
+
+        try
+            let config =
+                fastPathConfig
+                    (Set.singleton RunHookCommand.Check)
+                    (Some(touch beforeSentinel))
+                    (Some(touch afterSentinel))
+
+            test <@ runConfirm root config = 0 @>
+            test <@ not (File.Exists beforeSentinel) @>
+            test <@ not (File.Exists afterSentinel) @>
+        finally
+            tryDelete beforeSentinel
+            tryDelete afterSentinel)
+
+/// THE HALF THAT WAS ALREADY RIGHT, pinned so a later change cannot fix the defect
+/// above by making the fast path heavy. The fast path runs no test, starts no daemon
+/// — and takes NO run claim: a claim says "a check is in flight over this tree RIGHT
+/// NOW", which would make a concurrent `fshw verdict` withhold an answer for a run
+/// that runs nothing. The `beforeRun` hook reports the claim directory AS IT RAN, so
+/// this observes the window rather than the tidy-up after it.
+[<Fact(Timeout = 30000)>]
+let ``confirm StillApplies fast-path claims nothing and rewrites nothing`` () =
+    withTempDir "confirm-fastpath-unclaimed" (fun root ->
+        seedStillApplyingGreen root
+        let before = File.ReadAllText(FsHotWatch.Cli.Verdict.path root)
+        let claimProbe = freshSentinel ()
+
+        try
+            let config =
+                fastPathConfig
+                    DefaultRunHookCommands
+                    (Some $"ls '%s{root}/.fshw/in-flight' 2>/dev/null > '%s{claimProbe}'; true")
+                    None
+
+            test <@ runConfirm root config = 0 @>
+
+            // The hook ran (the probe exists) and saw no claim held.
+            test <@ File.Exists claimProbe @>
+            test <@ File.ReadAllText(claimProbe).Trim() = "" @>
+
+            // No terminal verdict, no augmentation: the stored green is byte-identical.
+            test <@ File.ReadAllText(FsHotWatch.Cli.Verdict.path root) = before @>
+        finally
+            tryDelete claimProbe)
+
+/// The window the hooks OPEN is closed by re-asking after them. `priorConfirmation`
+/// hashes the tree BEFORE `beforeRun` runs, so a write landing while the hook runs
+/// would otherwise be certified by a hash taken before it existed. Here the hook itself
+/// writes into the tree — the tightest possible version of that race — and `confirm`
+/// must refuse rather than certify the pre-write hash. The stored verdict is left
+/// alone: it still describes the tree that earned it, and `fshw verdict` already
+/// reports it stale against this one.
+[<Fact(Timeout = 30000)>]
+let ``confirm StillApplies fast-path refuses a tree that moved while the hooks ran`` () =
+    withTempDir "confirm-fastpath-moved" (fun root ->
+        seedStillApplyingGreen root
+        let before = File.ReadAllText(FsHotWatch.Cli.Verdict.path root)
+        let afterSentinel = freshSentinel ()
+
+        try
+            let config =
+                fastPathConfig
+                    DefaultRunHookCommands
+                    (Some $"printf 'module Added\nlet y = 2\n' > '%s{root}/src/Added.fs'")
+                    (Some(touch afterSentinel))
+
+            test <@ runConfirm root config = 2 @>
+
+            // afterRun is still a `finally` on the refusal path — whatever beforeRun
+            // acquired is released.
+            test <@ File.Exists afterSentinel @>
+
+            // Nothing written: the green that described the PREVIOUS tree survives, and
+            // is stale rather than reusable.
+            test <@ File.ReadAllText(FsHotWatch.Cli.Verdict.path root) = before @>
+
+            match FsHotWatch.Cli.Verdict.priorConfirmation root [] with
+            | FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn -> ()
+            | FsHotWatch.Cli.Verdict.PriorConfirmation.StillApplies _ ->
+                failwith "the moved tree still reads as confirmed"
+        finally
+            tryDelete afterSentinel)
+
+/// Fail-closed, exactly as the slow path fails: a refused `beforeRun` exits 2 and
+/// leaves an invocation-owned `incomplete` behind, so the green it declined to
+/// certify cannot be read back out of `.fshw/verdict.json` as the answer. `afterRun`
+/// does NOT fire — a failed acquire has nothing to release.
+[<Fact(Timeout = 30000)>]
+let ``confirm StillApplies fast-path fails closed when beforeRun refuses`` () =
+    withTempDir "confirm-fastpath-refused" (fun root ->
+        seedStillApplyingGreen root
+        let afterSentinel = freshSentinel ()
+
+        try
+            let config =
+                fastPathConfig DefaultRunHookCommands (Some "exit 7") (Some(touch afterSentinel))
+
+            test <@ runConfirm root config = 2 @>
+            test <@ not (File.Exists afterSentinel) @>
+
+            match FsHotWatch.Cli.Verdict.read root with
+            | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+                test <@ isIncomplete verdict.Outcome @>
+                test <@ verdict.InvocationId.IsSome @>
+                test <@ verdict.Hooks |> List.map _.Scope = [ "run.beforeRun" ] @>
+            | other -> failwith $"a refused beforeRun left no record: %A{other}"
+        finally
+            tryDelete afterSentinel)
 
 // ---------------------------------------------------------------------------
 // Signal-handler installation.
