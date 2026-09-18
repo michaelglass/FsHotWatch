@@ -415,6 +415,11 @@ module CheckInputs =
 /// NOT ignore the two evidence questions: `NoTestsRun` ("we tested nothing") and
 /// `ScopeUnreadable` ("we could not find out whether we tested anything") are refused in
 /// both modes.
+///
+/// ONE SETTLED READ IS THE ANSWER: there is no convergence loop around this function. The
+/// caller reads after settling, and settling means the host owns no work and holds evidence
+/// for the current project model, so a later read that differs describes a different tree,
+/// not a better view of this one. `Incomplete` is the answer, not a cue to read again.
 let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
     let coverage = inputs.Coverage
     let testScope = inputs.Scope
@@ -534,26 +539,3 @@ let confirmNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
     match mode with
     | InnerLoop -> false
     | Confirmation -> not (TestScope.isFullSuite scope)
-
-/// ONE SETTLED READ IS THE ANSWER.
-///
-/// A bounded re-scan-and-compare loop is deliberately absent. Such a loop would take an
-/// incomplete-but-clean read, re-scan, re-read, compare an "unchecked magnitude" — with
-/// `Unknown` counted as the largest possible value, so that `Unknown → Incomplete` reads
-/// as progress — and keep whichever later read looked better.
-///
-/// It held no second opinion about what a read MEANS: every attempt went through the same
-/// `verdict` below. All it added was the hope that the next answer would differ. It cannot
-/// now: the caller reads AFTER settling, and settling means the host owns no work and holds
-/// evidence for the current project model. A later read that differs is a different tree's
-/// answer, not a better one about this tree — and taking it is how a check reported green
-/// about a state it never verified.
-///
-/// Every arm the loop treated as terminal said the same thing in its own words: a re-scan
-/// does not earn a baseline, un-kill a host, un-defer a test, clear stale daemon state, or
-/// widen the scope of a run that already happened. `Incomplete` is now read the same way:
-/// exit 2, "could not complete — retry", which is the answer rather than a cue to spend
-/// three more full passes reaching it again.
-/// three more full passes reaching it again.
-/// three more full passes reaching it again.
-/// three more full passes reaching it again.
