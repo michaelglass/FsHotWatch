@@ -437,7 +437,7 @@ let create
         // filtered run a newer coverage.partial marker) which need not be named in
         // the command's args. Replaying a prior full run's cached RED skips the
         // command that would observe the newer partial marker, so the obsolete RED
-        // survives a later converged check. Per-RunId state dedupe, not cross-run
+        // survives a later check. Per-RunId state dedupe, not cross-run
         // task caching, provides the side-effect-at-most-once rule for afterTests.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with

@@ -716,7 +716,7 @@ let ``an unearned full-suite verdict reports missing evidence without prescribin
 [<Fact>]
 let ``console scope refusal describes evidence without prescribing merge policy`` () =
     let text =
-        Verdict.CheckProse.explainOutcome None (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        Verdict.CheckProse.explainOutcome (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
         |> Option.get
 
     test <@ text.Contains "NO VERDICT" @>
@@ -726,9 +726,9 @@ let ``console scope refusal describes evidence without prescribing merge policy`
 [<Fact>]
 let ``console zero-test refusal does not misidentify check as confirm`` () =
     let text =
-        Verdict.CheckProse.explainOutcome
-            None
-            (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
+        Verdict.CheckProse.explainOutcome (
+            CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified)
+        )
         |> Option.get
 
     test <@ text.Contains "NO VERDICT" @>
@@ -745,7 +745,7 @@ let ``console zero-test refusal is its own sentence and says what the verdict fi
 
     for reason in reasons do
         let outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason)
-        let text = Verdict.CheckProse.explainOutcome None outcome |> Option.get
+        let text = Verdict.CheckProse.explainOutcome outcome |> Option.get
 
         // The generic narrow-scope template interpolated the scope's description, which
         // for this case already begins "no tests ran", so the terminal printed
@@ -1365,7 +1365,7 @@ let ``an impact-scoped check is told what its green covers, not which verb to me
     test <@ not (text.Contains "MERGE verdict") @>
 
 [<Fact>]
-let ``a check that ran no tests is told to converge check rather than redirect its workflow`` () =
+let ``a check that ran no tests is told to re-run check rather than redirect its workflow`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -1374,12 +1374,15 @@ let ``a check that ran no tests is told to converge check rather than redirect i
 
     let text = hintsFor v |> String.concat "\n"
     test <@ text.Contains "Re-run `fshw check`" @>
-    test <@ text.Contains "convergence loop can earn a verdict" @>
+    // The advice used to name a convergence loop, which no longer exists — a re-run earns
+    // a verdict when the tests it needs have actually run, not because the tool loops.
+    test <@ not (text.Contains "convergence") @>
+    test <@ text.Contains "once the tests it needs have run" @>
     test <@ text.Contains "explicitly need unfiltered full-suite evidence" @>
     test <@ not (text.Contains "for a MERGE verdict use `fshw confirm`") @>
 
 [<Fact>]
-let ``a check whose scope reply was unreadable is told to converge check rather than redirect its workflow`` () =
+let ``a check whose scope reply was unreadable is told to re-run check rather than redirect its workflow`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -5789,7 +5792,7 @@ let ``a missing baseline reaches the verdict file as INCOMPLETE naming the basel
 
     test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.NoBaseline "x") = 3 @>
 
-    match Verdict.CheckProse.explainOutcome None (CheckVerdict.CheckOutcome.NoBaseline "none earned yet") with
+    match Verdict.CheckProse.explainOutcome (CheckVerdict.CheckOutcome.NoBaseline "none earned yet") with
     | Some text -> test <@ text.Contains "fshw confirm" @>
     | None -> failwith "a missing baseline must be explained at the terminal"
 

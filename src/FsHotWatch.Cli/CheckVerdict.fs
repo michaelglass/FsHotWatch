@@ -4,7 +4,7 @@ open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 
 // ----------------------------------------------------------------------------
-// Converge-then-verdict completeness guarantee for `fshw check`.
+// The completeness guarantee for `fshw check`.
 //
 // The exit code reflects not just "were failures found" but "did the daemon
 // actually check every file it's responsible for". A scan that left files
@@ -14,7 +14,7 @@ open FsHotWatch.Cli.IpcParsing
 //     could swallow a new case.
 //  2. Coverage is a REQUIRED input to `verdict`, and `Unknown` (a missing or
 //     unparseable field) is never mapped to Clean.
-//  3. `failures found` short-circuits BEFORE any convergence.
+//  3. `failures found` short-circuits BEFORE coverage is considered at all.
 // ----------------------------------------------------------------------------
 
 /// WHY the check is running — and therefore what it is allowed to claim.
@@ -535,99 +535,25 @@ let confirmNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
     | InnerLoop -> false
     | Confirmation -> not (TestScope.isFullSuite scope)
 
-/// Comparable "unchecked" magnitude used for progress tracking across convergence
-/// attempts. Complete is 0; Incomplete carries its count; Unknown is the largest
-/// possible value, so Unknown→Incomplete counts as progress while Unknown→Unknown does
-/// not.
+/// ONE SETTLED READ IS THE ANSWER.
 ///
-/// `internal` (not `private`) so the total mapping is unit-testable directly: `converge`
-/// structurally never routes `Complete` here, so that arm is defensive totality only a
-/// direct test can pin.
-let internal uncheckedMagnitude (coverage: Coverage) : int =
-    match coverage with
-    | Complete -> 0
-    | Incomplete n -> n
-    | Unknown -> System.Int32.MaxValue
-
-/// Bounded converge-then-verdict loop.
+/// A bounded re-scan-and-compare loop is deliberately absent. Such a loop would take an
+/// incomplete-but-clean read, re-scan, re-read, compare an "unchecked magnitude" — with
+/// `Unknown` counted as the largest possible value, so that `Unknown → Incomplete` reads
+/// as progress — and keep whichever later read looked better.
 ///
-/// `initial` is the read the caller already made. If it is terminal it is returned
-/// without re-scanning. Otherwise, up to `maxAttempts` times: trigger a re-scan and
-/// re-read, stopping early on any terminal verdict, or when the unchecked magnitude
-/// stops shrinking (no progress → `Incomplete`). An exhausted budget is `Incomplete`.
+/// It held no second opinion about what a read MEANS: every attempt went through the same
+/// `verdict` below. All it added was the hope that the next answer would differ. It cannot
+/// now: the caller reads AFTER settling, and settling means the host owns no work and holds
+/// evidence for the current project model. A later read that differs is a different tree's
+/// answer, not a better one about this tree — and taking it is how a check reported green
+/// about a state it never verified.
 ///
-/// `UnearnedScope` deliberately does NOT drive convergence: re-scanning cannot widen
-/// the scope of a run that already happened. `confirm`'s job there is to report that it
-/// has no verdict, loudly — not to keep scanning in the hope of a different answer.
-let converge
-    (mode: CheckMode)
-    (maxAttempts: int)
-    (triggerScan: unit -> unit)
-    (reread: unit -> CheckInputs)
-    (initial: CheckInputs)
-    : CheckOutcome =
-    let initOutcome = verdict mode initial
-
-    match initOutcome with
-    | CheckOutcome.FailuresFound
-    | CheckOutcome.Clean _
-    // Terminal like `UnearnedScope`: a re-scan does not earn a
-    // baseline — only a full-suite run does, and the daemon widens its next run to
-    // one on its own.
-    | CheckOutcome.NoBaseline _
-    // `WaitingOnBuild` is terminal here for the same reason as `UnearnedScope`:
-    // re-scanning does not retroactively run a test the settled run already
-    // deferred. exit 2 says "could not complete — retry", which is the answer.
-    | CheckOutcome.WaitingOnBuild _
-    // Terminal, and DELIBERATELY not retried. A re-scan cannot un-kill
-    // a host, and re-running the check inside the same convergence loop would re-run it
-    // under the same load that killed it — buying, at best, a slower identical answer.
-    //
-    // It is also the retry that must NOT be built here. An automatic retry cannot tell a
-    // host killed by a busy box from a host that aborts every time because something is
-    // genuinely broken, so a loop that retried until it got a verdict would convert a
-    // real crash into a slow green. Reporting the abort honestly, once, keeps that
-    // distinction in the hands of the reader — who can see whether the machine was busy.
-    | CheckOutcome.RunnerAborted _
-    // Terminal, not converged. A re-scan issued while the model is
-    // re-discovering waits for the discovery on the daemon side anyway; one that reads a
-    // FAILED model reads the same failure again. Either way the honest answer is the one
-    // already in hand: nothing was verified, exit 2, retry.
-    | CheckOutcome.ModelUnavailable _
-    | CheckOutcome.UnearnedScope _
-    // Terminal for the same reason: a re-scan does not clear stale daemon state. That
-    // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault
-    // class and never cleared it once; only `fshw stop` did. Re-scanning here would
-    // spend three more full passes to arrive at the same answer.
-    | CheckOutcome.StaleDaemonState _
-    // Unreachable from `verdict`, which decides from a read this loop already HAS —
-    // this outcome exists precisely for the case where no read came back. Listed as
-    // terminal rather than left to a wildcard so that if a future `verdict` can produce
-    // it, convergence does not respond to "the last answer was lost" by asking again.
-    | CheckOutcome.ResultUnreceived _ -> initOutcome
-    | CheckOutcome.Incomplete _ ->
-        // Enter convergence. `prevMagnitude` is the unchecked magnitude we're
-        // trying to improve on; it starts at the initial read.
-        let rec loop (attempt: int) (prevMagnitude: int) =
-            if attempt > maxAttempts then
-                // Budget exhausted without reaching Complete.
-                CheckOutcome.Incomplete prevMagnitude
-            else
-                triggerScan ()
-                let inputs = reread ()
-
-                // Every re-read goes through the SAME `verdict` as the first one — the
-                // convergence loop holds no second opinion about what a read MEANS.
-                match verdict mode inputs with
-                | CheckOutcome.Incomplete _ as incomplete ->
-                    let magnitude = uncheckedMagnitude inputs.Coverage
-
-                    if magnitude >= prevMagnitude then
-                        // No progress: the re-scan did not reduce the unchecked
-                        // count. Stop — genuinely un-completable.
-                        incomplete
-                    else
-                        loop (attempt + 1) magnitude
-                | terminal -> terminal
-
-        loop 1 (uncheckedMagnitude initial.Coverage)
+/// Every arm the loop treated as terminal said the same thing in its own words: a re-scan
+/// does not earn a baseline, un-kill a host, un-defer a test, clear stale daemon state, or
+/// widen the scope of a run that already happened. `Incomplete` is now read the same way:
+/// exit 2, "could not complete — retry", which is the answer rather than a cue to spend
+/// three more full passes reaching it again.
+/// three more full passes reaching it again.
+/// three more full passes reaching it again.
+/// three more full passes reaching it again.

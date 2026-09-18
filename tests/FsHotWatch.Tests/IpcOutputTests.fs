@@ -42,6 +42,49 @@ let ``same-tree already-verified retains the executed report atomically`` () =
     test <@ effective = executedA @>
     test <@ retainedAfterQuiet = retained @>
 
+[<Theory>]
+[<InlineData("already-verified")>]
+[<InlineData("unstated")>]
+let ``an executed report survives a SEQUENCE of quiet same-tree reads`` (quiet: string) =
+    // Two CLI drives used to script exactly this — an executed run followed by two or
+    // three quiet reads — by riding the convergence loop's re-reads. Those reads are gone
+    // with the loop, and the guarantee is not: it is a property of this store, which every
+    // reading passes through (`observeTestRun`), not of how many times anything was read.
+    // Kept here, where it can be stated without a loop to produce the sequence.
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+
+    let quietRead () =
+        match quiet with
+        | "unstated" -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
+        | _ -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
+
+    let afterFirst, retainedAfterFirst =
+        TestRunEvidence.reconcile tree (quietRead ()) retained
+
+    let afterSecond, retainedAfterSecond =
+        TestRunEvidence.reconcile tree (quietRead ()) retainedAfterFirst
+
+    // Every quiet read is graded on what actually ran, and the retention does not decay
+    // with the number of reads.
+    test <@ afterFirst = executedA @>
+    test <@ afterSecond = executedA @>
+    test <@ retainedAfterSecond = retained @>
+
+[<Fact>]
+let ``an UNREADABLE scope is not a quiet read, and borrows nothing`` () =
+    // The distinction the port above turned up, worth stating rather than smoothing over:
+    // `NoTestsRun` says "nothing needed running on this tree", which retained evidence can
+    // legitimately answer for. `ScopeUnknown` says "I could not read what the run was" —
+    // that is not a quiet read, it is an absent one, and it borrows nothing.
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+    let unreadable = BaselineFixtures.reportOf ScopeUnknown
+    let effective, _ = TestRunEvidence.reconcile tree unreadable retained
+
+    test <@ effective = unreadable @>
+    test <@ effective.RunId <> executedA.RunId @>
+
 [<Fact>]
 let ``a genuinely zero-test command remains no evidence`` () =
     let current = BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
@@ -293,64 +336,6 @@ let private writeEvidenceSuite (repoRoot: string) (runId: System.Guid) =
         System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
         """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[{"name":"A.Tests.T.passes1","status":"passed"},{"name":"A.Tests.T.passes2","status":"passed"},{"name":"A.Tests.T.passes3","status":"passed"}]}}"""
     )
-
-[<Theory(Timeout = 15000)>]
-[<InlineData(false)>]
-[<InlineData(true)>]
-let ``daemon command retains executed evidence across a same-tree quiet convergence read`` (failSecondRead: bool) =
-    TestHelpers.withTempDir "ipcoutput-retained-command" (fun repoRoot ->
-        let runId = executedA.RunId.Value
-        writeEvidenceSuite repoRoot runId
-        let mutable errorReads = 0
-        let mutable scopeReads = 0
-
-        let getErrors () =
-            errorReads <- errorReads + 1
-
-            if errorReads = 1 then
-                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-            elif failSecondRead then
-                """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-            else
-                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-
-        // The FIRST read is the driver's baseline, taken before the scan
-        // so it can tell this check's runs from the ones that preceded it; the executed
-        // run is what the check then settles on, and the third read is the quiet
-        // convergence one this test is about.
-        let getTestRun () =
-            scopeReads <- scopeReads + 1
-
-            if scopeReads <= 2 then
-                executedA
-            else
-                BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
-
-        let exitCode =
-            pollAndRender
-                ProgressRenderer.Agent
-                CheckVerdict.InnerLoop
-                repoRoot
-                []
-                (fun _ -> [])
-                false
-                (fun () -> "idle")
-                (fun () -> "idle")
-                (fun () -> "{}")
-                getErrors
-                getTestRun
-                (fun () -> IpcParsing.ReachUnavailable "not used")
-                ignore
-                (fun () -> "idle")
-
-        test <@ exitCode = (if failSecondRead then 1 else 0) @>
-
-        match Verdict.read repoRoot with
-        | Verdict.Reading.Found verdict ->
-            test <@ verdict.RunId = Some runId @>
-            test <@ verdict.Scope = executedA.Scope @>
-            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
-        | other -> failwithf "expected a published command verdict, got %A" other)
 
 [<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts count`` () =
@@ -802,8 +787,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                ignore // forceFullRun: never fires — the scope is already full-suite
-                triggerScan)
+                ignore) // forceFullRun: never fires — the scope is already full-suite
 
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
@@ -864,7 +848,6 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                     // `Confirmation` that gets this records "no sample", never an agreement.
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore // forceFullRun: never fires — the scope is already full-suite
-                    (fun () -> "idle")
 
             let recorded =
                 match Verdict.read repoRoot with
@@ -940,7 +923,6 @@ let private driveWithModel
                 (fun () -> run)
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore
-                (fun () -> "idle")
 
         let raw = System.IO.File.ReadAllText(Verdict.path repoRoot)
         code, Verdict.read repoRoot, seenFileOf raw)
@@ -1126,7 +1108,6 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
                 getTestRun
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore
-                (fun () -> "idle")
             |> ignore
 
             match Verdict.read repoRoot with
@@ -1242,8 +1223,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                ignore // forceFullRun: never fires — the scope is already full-suite
-                (fun () -> "idle")) // triggerScan
+                ignore) // forceFullRun: never fires — the scope is already full-suite
 
     test <@ exitCode = 2 @>
 
@@ -1298,8 +1278,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                ignore // forceFullRun: never fires — the scope is already full-suite
-                (fun () -> "idle")) // triggerScan
+                ignore) // forceFullRun: never fires — the scope is already full-suite
 
     test <@ exitCode = 2 @>
 
@@ -1343,8 +1322,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                (fun () -> forceCalls <- forceCalls + 1) // forceFullRun
-                (fun () -> "idle")) // triggerScan
+                (fun () -> forceCalls <- forceCalls + 1)) // forceFullRun
 
     exitCode, forceCalls
 
@@ -1382,8 +1360,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                (fun () -> forceCalls <- forceCalls + 1)
-                (fun () -> "idle"))
+                (fun () -> forceCalls <- forceCalls + 1))
 
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
@@ -1439,7 +1416,6 @@ let private driveConfirmForVerdict
             getTestRun
             getCheckReach
             (fun () -> forceCalls <- forceCalls + 1)
-            (fun () -> "idle")
         |> ignore
 
         match Verdict.read repoRoot with
@@ -1806,7 +1782,6 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
-                (fun () -> "idle") // triggerScan
 
         // Read inside the temp dir's lifetime: the verdict dies with it.
         match Verdict.read repoRoot with
@@ -1997,10 +1972,13 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 Scope = NoTestsRun NoTestsReason.AlreadyVerified
                 Baseline = BaselineFixtures.reading }
 
-        let outcome =
-            CheckVerdict.converge CheckVerdict.InnerLoop 1 ignore (fun () -> zeroTestInputs) initialInputs
+        // The reading this test is about is the zero-test one, and it is now read once:
+        // the incomplete reading above is a DIFFERENT reading with its own answer, not an
+        // earlier attempt this one improves on.
+        let outcome = CheckVerdict.verdict CheckVerdict.InnerLoop zeroTestInputs
 
         test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
+        test <@ CheckVerdict.verdict CheckVerdict.InnerLoop initialInputs = CheckVerdict.CheckOutcome.Incomplete 1 @>
 
         let zeroTestExitCode =
             publishVerdict
@@ -2247,9 +2225,6 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun () -> BaselineFixtures.reportOf (ImpactFiltered(1, 3)))
                 (fun () -> IpcParsing.ReachUnavailable "must not be read")
                 (fun () -> forcedRuns <- forcedRuns + 1)
-                (fun () ->
-                    rescans <- rescans + 1
-                    "complete: 0 files checked")
 
         test <@ exitCode = 2 @>
         test <@ diagnosticsReads = 0 @>
@@ -2328,7 +2303,6 @@ let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after t
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
-                    (fun () -> "idle")
 
             code, Verdict.read repoRoot)
 
@@ -2375,7 +2349,6 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
-                    (fun () -> "idle")
             @>
 
         // And nothing was published: there is no finished run to record.
@@ -2383,82 +2356,20 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
         | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
         | _ -> ())
 
-// The losing sequence from the ticket, end to end through the real
-// `observeTestRun` fold: an impact-filtered run executed on this tree, then the daemon's
-// later reads say nothing new — `no tests ran (the daemon did not say why)`, or a
-// mid-run `running` followed by `already-verified`. Before the fix each of those reads
-// wiped the executed evidence, and the verdict graded a run of nothing: exit 3 over a
-// tree this same check had just tested.
-[<Theory(Timeout = 15000)>]
-[<InlineData("unstated")>]
-[<InlineData("running-then-already-verified")>]
-let ``daemon command keeps executed evidence through quiet same-tree re-reads`` (sequence: string) =
-    TestHelpers.withTempDir "quiet-rereads" (fun repoRoot ->
-        let runId = executedA.RunId.Value
-        writeEvidenceSuite repoRoot runId
-        let mutable errorReads = 0
-        let mutable scopeReads = 0
-
-        // Two converge re-scans, so there are two re-reads after the executed one.
-        let getErrors () =
-            errorReads <- errorReads + 1
-
-            match errorReads with
-            | 1 ->
-                """{"count":0,"files":{},"statuses":{},"unchecked":2, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-            | 2 ->
-                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-            | _ ->
-                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-
-        // Read 1 is the baseline, read 2 the settled executed run; the
-        // rest are the convergence re-reads this test is about.
-        let getTestRun () =
-            scopeReads <- scopeReads + 1
-
-            match sequence, scopeReads with
-            | _, 1
-            | _, 2 -> executedA
-            | "unstated", _ -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.Unstated)
-            | _, 3 -> BaselineFixtures.reportOf ScopeUnknown
-            | _ -> BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
-
-        let exitCode =
-            pollAndRender
-                ProgressRenderer.Agent
-                CheckVerdict.InnerLoop
-                repoRoot
-                []
-                (fun _ -> [])
-                false
-                (fun () -> "idle")
-                (fun () -> "idle")
-                (fun () -> "{}")
-                getErrors
-                getTestRun
-                (fun () -> IpcParsing.ReachUnavailable "not used")
-                ignore
-                (fun () -> "idle")
-
-        test <@ scopeReads = 4 @>
-        test <@ exitCode = 0 @>
-
-        match Verdict.read repoRoot with
-        | Verdict.Reading.Found verdict ->
-            test <@ verdict.RunId = Some runId @>
-            test <@ verdict.Scope = executedA.Scope @>
-            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
-        | other -> failwithf "expected a published command verdict, got %A" other)
-
+// A moved tree refuses retained evidence — including a move that touches ONLY a declared
+// verdict input. This rode the convergence re-scan, which was the thing that moved the
+// tree mid-drive; with the loop gone there is no second reading to move it under. The
+// property is the store's, and it is stated here directly: evidence is keyed to the tree
+// it was earned on, so a quiet read taken over a DIFFERENT tree earns nothing.
 [<Theory(Timeout = 15000)>]
 [<InlineData(false, "already-verified")>]
 [<InlineData(true, "already-verified")>]
 [<InlineData(false, "unstated")>]
 [<InlineData(true, "unstated")>]
-let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declaredInput: bool, quietRead: string) =
-    TestHelpers.withTempDir "exact-tree-convergence" (fun repoRoot ->
-        // A same-tree quiet read of either reason keeps evidence; a moved tree refuses
-        // BOTH. `unstated` is the reason that used to be dropped everywhere.
+let ``a moved tree refuses retained evidence, even when only a declared input moved``
+    (declaredInput: bool, quietRead: string)
+    =
+    TestHelpers.withTempDir "exact-tree-refusal" (fun repoRoot ->
         let quietReason =
             match quietRead with
             | "unstated" -> NoTestsReason.Unstated
@@ -2478,68 +2389,63 @@ let ``quiet convergence refuses evidence after an exact-tree-only edit`` (declar
             """{"verdictInputs":{"hashed":[{"path":"coverage-policy.txt","why":"test coverage policy affects the gate"}]}}"""
         )
 
+        // The tree the executed run was earned on.
         let before = FsHotWatch.TreeHash.compute repoRoot []
-        let runId = executedA.RunId.Value
-        writeEvidenceSuite repoRoot runId
-        let mutable errorReads = 0
-        let mutable scopeReads = 0
-        let mutable rescans = 0
 
-        let getErrors () =
-            errorReads <- errorReads + 1
+        let earnedOn =
+            VerifiedTree
+                { FsHotWatch.TreeHash.Hash = before.Hash
+                  FileCount = before.FileCount
+                  SkippedCount = before.SkippedCount
+                  DeclaredCount = before.DeclaredCount
+                  AbsentDeclarationCount = before.AbsentDeclarationCount }
 
-            if errorReads = 1 then
-                """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
-            else
-                """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+        let _, retained = TestRunEvidence.reconcile earnedOn executedA None
+        test <@ retained.IsSome @>
 
-        let getRun () =
-            scopeReads <- scopeReads + 1
-
-            if scopeReads = 1 then
-                BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified)
-            elif scopeReads = 2 then
-                executedA
-            else
-                BaselineFixtures.reportOf (NoTestsRun quietReason)
-
-        let rescan () =
-            rescans <- rescans + 1
-
-            if declaredInput then
-                System.IO.File.WriteAllText(policy, "floor=90\n")
-            else
-                System.IO.File.AppendAllText(source, "// exact tree changed without changing symbol bodies\n")
-
-            "idle"
-
-        let exitCode =
-            pollAndRender
-                ProgressRenderer.Agent
-                CheckVerdict.InnerLoop
-                repoRoot
-                []
-                (fun _ -> [])
-                false
-                (fun () -> "idle")
-                (fun () -> "idle")
-                (fun () -> "{}")
-                getErrors
-                getRun
-                (fun () -> IpcParsing.ReachUnavailable "not used")
-                (fun () -> failwith "inner-loop check must not force confirm")
-                rescan
+        // Now move the tree. `declaredInput` moves ONLY the declared policy file, which
+        // changes no symbol and no source byte — the case that used to slip through.
+        if declaredInput then
+            System.IO.File.WriteAllText(policy, "floor=90\n")
+        else
+            System.IO.File.AppendAllText(source, "// exact tree changed without changing symbol bodies\n")
 
         let after = FsHotWatch.TreeHash.compute repoRoot []
         test <@ before.Hash <> after.Hash @>
-        test <@ rescans = 1 @>
-        test <@ exitCode = 3 @>
 
-        match Verdict.read repoRoot with
-        | Verdict.Reading.Found verdict ->
-            test <@ verdict.RunId <> Some runId @>
-            test <@ verdict.Scope = NoTestsRun quietReason @>
-        | other -> failwithf "expected an explicit non-evidence verdict, got %A" other)
+        let movedTo =
+            VerifiedTree
+                { FsHotWatch.TreeHash.Hash = after.Hash
+                  FileCount = after.FileCount
+                  SkippedCount = after.SkippedCount
+                  DeclaredCount = after.DeclaredCount
+                  AbsentDeclarationCount = after.AbsentDeclarationCount }
+
+        let quiet = BaselineFixtures.reportOf (NoTestsRun quietReason)
+        let effective, retainedAfter = TestRunEvidence.reconcile movedTo quiet retained
+
+        // The quiet read is graded as itself — nothing ran on THIS tree — and the earlier
+        // run is no longer retained, so no later read can borrow it either.
+        test <@ effective = quiet @>
+        test <@ effective.RunId <> executedA.RunId @>
+        test <@ retainedAfter = None @>
+
+        // And the verdict such a reading earns is the explicit non-evidence one: exit 3,
+        // naming the quiet reason rather than the run it could not use.
+        let reading: CheckVerdict.CheckInputs =
+            { PluginStatuses = Map.empty
+              FailingDiagnostics = 0
+              UnattributableDiagnostics = 0
+              WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
+              RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+              Coverage = Complete
+              Scope = effective.Scope
+              Baseline = BaselineFixtures.reading
+              ProjectModel = ProjectModelFixtures.available }
+
+        let outcome = CheckVerdict.verdict CheckVerdict.InnerLoop reading
+        test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun quietReason) @>
+        test <@ CheckVerdict.exitCode outcome = 3 @>)
 
 // ---------------------------------------------------------------------------
 // A green needs the graded run's receipt for the current project model.
@@ -2810,3 +2716,60 @@ let ``a verdict wait that RESOLVES on a no-model host still exits 2 with a named
                 test <@ reason.Contains "not an empty test selection" @>
             | other -> failwithf "a no-model reading must refuse in words, got %A" other
         | other -> failwithf "the refusal must still be a readable verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// ONE SETTLED READ IS THE ANSWER.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``an incomplete read is the answer: one read, no re-scan, even where a later read would differ`` () =
+    withTempDir "ipcoutput-one-settled-read" (fun repoRoot ->
+        // The convergence loop re-scanned an incomplete-but-clean reading up to three
+        // times and took whichever later read looked better. It held no second opinion
+        // about what a read MEANS — every attempt went through the same `verdict` — so all
+        // it did was hope the next answer differed.
+        //
+        // The scripted reads below are the shape that made it look useful: the first says
+        // one file is unchecked, and a second would say none. Only one of those is a
+        // settled reading — `settle()` returns when the host owns no work AND holds
+        // evidence for the current model, so the read taken after it is the answer. A
+        // later read that differs is a DIFFERENT tree's answer, not a better one about
+        // this tree, and taking it is how a check reported green about a state it never
+        // verified.
+        //
+        // This test fails if a re-read can still change the verdict: it scripts a second
+        // read that would convert exit 2 into exit 0, and requires that it is never taken.
+        let mutable errorReads = 0
+        let mutable rescans = 0
+
+        let complete =
+            """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+
+        let incomplete =
+            """{"count":0,"files":{},"statuses":{},"unchecked":1, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
+
+        let getErrors () =
+            errorReads <- errorReads + 1
+            if errorReads = 1 then incomplete else complete
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                getErrors
+                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (fun () -> IpcParsing.ReachUnavailable "not used")
+                (fun () -> failwith "an inner-loop check must not force a full run")
+
+        // Incomplete coverage is the answer, and it is exit 2 — "could not complete, retry".
+        test <@ exitCode = 2 @>
+        // Nothing was re-scanned, and the read that would have flipped it was never taken.
+        test <@ rescans = 0 @>
+        test <@ errorReads = 1 @>)

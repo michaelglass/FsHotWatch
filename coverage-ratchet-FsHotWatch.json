@@ -1013,15 +1013,15 @@
     ],
     "CheckVerdict.fs": [
       {
-        "coveredLines": 98,
-        "coveredBranches": 28,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 83,
+        "coveredBranches": 20,
+        "reason": "2026-09-18, one settled read decides a check: -15 lines / -8 branches, all DELETED code, none a lost test. `converge` and `uncheckedMagnitude` were removed with the convergence loop (ADR-034); the 7 converge-sequence tests became 4 single-read tests over the same arms, and the percent floors (100/87) still pass, so what remains is covered as before. Measured from a full local run after the deletion. Previously: min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
-        "coveredLines": 84,
-        "coveredBranches": 79,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 79/80 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredLines": 69,
+        "coveredBranches": 71,
+        "reason": "2026-09-18: lowered by the SAME delta measured on macOS for the convergence-loop deletion (-15 lines / -8 branches, ADR-034) rather than re-measured here — the deleted code is pure logic with no platform-specific arm, and this entry is CI-only by convention. Refresh from a CI run when one is available. Previously: Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 79/80 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1628,15 +1628,15 @@
     ],
     "Program.fs": [
       {
-        "coveredLines": 826,
+        "coveredLines": 824,
         "coveredBranches": 154,
-        "reason": "2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "2026-09-18, one settled read decides a check: -2 lines, the deleted re-scan thunk `pollAndRender` no longer takes (ADR-034); not a lost test. Previously: 2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
-        "coveredLines": 745,
+        "coveredLines": 743,
         "coveredBranches": 294,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 294/398 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 47 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "2026-09-18: lowered by the same -2 lines measured on macOS for the deleted re-scan thunk (ADR-034); not re-measured here, and CI-only by convention. Previously: Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 294/398 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 47 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],

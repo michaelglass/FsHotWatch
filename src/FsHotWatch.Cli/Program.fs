@@ -768,9 +768,10 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
 /// re-reads every registered file from disk; the `-1L` wait then hands off to the
 /// caller's authoritative `settle`.
 ///
-/// Shared by BOTH the initial pre-verdict scan AND the convergence re-scan, so there is
-/// ONE definition of "make the tree fresh": the watcher is an optimization, never the
-/// source of truth, and `fshw scan` is not a required manual pre-step.
+/// The pre-verdict scan, and the ONE definition of "make the tree fresh": the watcher is
+/// an optimization, never the source of truth, and `fshw scan` is not a required manual
+/// pre-step. It runs once, before the reading the verdict is decided from — nothing
+/// re-scans afterwards to look for a better answer.
 let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
     ipc.Scan pipeName |> Async.RunSynchronously |> ignore
     // No client timeout by design: `-1L` is a scan generation, and the daemon's RPC seam deadline bounds this wait.
@@ -857,10 +858,7 @@ let private ensureAndQueryErrors
                     // confirm did not have to escalate. Read at publish time, not here.
                     (fun () -> readCheckReach ipc pipeName)
                     // `confirm`'s teeth — see `CheckVerdict.confirmNeedsFullRun`.
-                    (fun () -> forceFullSuiteRun ipc pipeName)
-                    // Convergence re-scan: the same helper as the initial scan above, so
-                    // there is ONE definition of "make the tree fresh".
-                    (fun () -> forceScanAndWait ipc pipeName))
+                    (fun () -> forceFullSuiteRun ipc pipeName))
 
 /// The identity of one `.fshw.json` text (`""` for no file): what `.fshw/config.hash`
 /// records. A daemon publishes it for the text it PARSED; a CLI compares it with the

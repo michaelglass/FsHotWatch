@@ -2341,8 +2341,8 @@ type Daemon
                               // or an exclusive background run), a client blocked
                               // on a verdict wait, or a scan in flight. The wait
                               // leg keeps idle-exit from firing out from under a
-                              // connected `fshw check` between convergence
-                              // attempts; the scan leg covers the
+                              // connected `fshw check` that is blocked waiting for
+                              // evidence; the scan leg covers the
                               // cold FCS analysis that raises neither of the other
                               // two and used to be terminated as "idle".
                               Inhibitors =

@@ -177,7 +177,7 @@ let internal checkInputs
 /// True if a DiagnosticsResponse contains failures: any plugin Failed (or in a status
 /// this build cannot read), or any error/warning-severity diagnostic (warnings
 /// respecting noWarnFail). Both terms come from `CheckInputs.foundProblems` — THE
-/// definition — so this and the converge-then-verdict path cannot drift.
+/// definition — so this and the verdict path cannot drift.
 let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
     CheckVerdict.CheckInputs.foundProblems resp.Statuses (failingDiagnosticCount noWarnFail resp)
 
@@ -607,13 +607,6 @@ let renderIpcResult
                                 1
                             else
                                 0
-
-/// Maximum convergence attempts for an incomplete-but-clean check. Each attempt
-/// forces a re-scan and re-reads coverage; the loop stops early on failures,
-/// completion, or no-progress. 3 is enough to clear a transient cancellation
-/// race while staying bounded for a genuinely un-completable check.
-[<Literal>]
-let MaxConvergeAttempts = 3
 
 /// Render live plugin-status progress until `isSettled` reports the host has
 /// reached its authoritative verdict. Pure of the scan trigger — the caller
@@ -1240,10 +1233,10 @@ let private publishVerdictWithReason
             | Verdict.Reading.Missing
             | Verdict.Reading.Unreadable _ -> None
 
-        // A completed re-scan that ran no tests has NO new evidence. It remains an
+        // A settled reading that ran no tests has NO new evidence. It remains an
         // exit-3 refusal for this invocation, but it must not overwrite a full-suite
         // green that this binary already earned over this exact tree: doing so turns a
-        // successful no-op convergence pass into evidence destruction.
+        // check that found nothing to do into evidence destruction.
         //
         // `priorConfirmation` is the one cross-process reuse gate. It checks the tree
         // hash, tree-hash algorithm and producer identity before it returns
@@ -1384,18 +1377,18 @@ let internal publishTerminalIncomplete
         reason
         settledTree
 
-/// Poll daemon status, render live progress, then decide a converge-then-verdict
-/// outcome and return its exit code (0 = complete & clean, 1 = failures found,
+/// Poll daemon status, render live progress, then decide a verdict from the settled
+/// reading and return its exit code (0 = complete & clean, 1 = failures found,
 /// 2 = completeness unachievable, 3 = `confirm` with an unearned scope).
 /// `renderStatuses` is injected so callers choose the progress renderer
-/// (compact/verbose). `triggerScan` forces a fresh scan and is invoked only on
-/// the convergence path (incomplete coverage, no failures).
+/// (compact/verbose). There is no scan trigger: this reads once, after settling, and a
+/// re-scan could only produce a different tree's answer.
 ///
 /// Every terminal path — clean, red, incomplete, wedged plugin, daemon teardown —
 /// publishes a verdict file, so the machine-readable answer exists on the failures
-/// too, not only the greens. The sole exception is an unearned no-test convergence
-/// over a tree already covered by an applicable full-suite green: preserving that
-/// existing evidence is more honest than replacing it with an absence of new evidence.
+/// too, not only the greens. The sole exception is an unearned no-test reading over a
+/// tree already covered by an applicable full-suite green: preserving that existing
+/// evidence is more honest than replacing it with an absence of new evidence.
 let pollAndRenderForInvocation
     // The invocation every verdict this drive publishes belongs to.
     (invocation: Verdict.Invocation)
@@ -1411,8 +1404,8 @@ let pollAndRenderForInvocation
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
     // What `check`'s impact selection WOULD have reached in the run this
-    // `confirm` did not have to escalate. Read ONCE, at publish time, so a convergence
-    // re-scan that provokes another run cannot leave the verdict holding an earlier run's
+    // `confirm` did not have to escalate. Read ONCE, at publish time, so a forced run
+    // provoked after the first reading cannot leave the verdict holding an earlier run's
     // projection — and checked against the run id either way.
     (getCheckReach: unit -> IpcParsing.CheckReachReading)
     // Run EVERY configured test project, now, and don't come back until it is done
@@ -1420,7 +1413,6 @@ let pollAndRenderForInvocation
     // settled scope is not already full-suite — see the "CONFIRM EARNS ITS EVIDENCE"
     // block below.
     (forceFullRun: unit -> unit)
-    (triggerScan: unit -> string)
     : int =
     // Run `fn` under a spinner when interactive, else announce it with a plain
     // console line first. Centralizes the interactive/non-interactive split so
@@ -1433,8 +1425,8 @@ let pollAndRenderForInvocation
             fn ()
 
     // The tree as it was when the daemon last said it had finished.
-    // Re-captured at EVERY settle (the first one, the forced-full-suite one, and each
-    // convergence re-settle), so it always names the tree the verdict below actually
+    // Re-captured at EVERY settle (the first one and the forced-full-suite one), so it
+    // always names the tree the verdict below actually
     // rests on. `NeverSettled` until the first one returns — which is the state the
     // abort handlers publish from, and it is a fact about them, not a missing value.
     let settledTree = ref NeverSettled
@@ -1456,8 +1448,8 @@ let pollAndRenderForInvocation
         // the tree became, not of what the daemon just verified.
         settledTree.Value <- SettledTree.capture repoRoot excludePatterns
 
-    // The LAST state the verdict was computed from. Captured at every read (the first
-    // one and each convergence re-read) so the file records what the final verdict was
+    // The LAST state the verdict was computed from. Captured at every read (the settled
+    // one, and the forced run's) so the file records what the final verdict was
     // actually based on — never an earlier snapshot, and never a second query that could
     // see a different daemon.
     let finalStatuses = ref Map.empty
@@ -1546,19 +1538,11 @@ let pollAndRenderForInvocation
         finalCauses.Value <- redCausesOf noWarnFail firstResp
         finalModel.Value <- firstResp.ProjectModel
 
-        // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
-        // not just report" step). Invoked only when the first read is
-        // incomplete-but-clean.
-        let rescan () : unit =
-            withProgress "Re-scanning (incomplete)" "Re-scanning (incomplete check)..." (fun () ->
-                triggerScan () |> ignore)
-
-            settle ()
-
-        // Re-read diagnostics + coverage + test scope and render. Called after each
-        // rescan. The scope is read from the daemon EVERY time alongside the
-        // diagnostics — never carried over from an earlier read — so the verdict is
-        // always computed against what the latest run actually covered.
+        // Re-read diagnostics + coverage + test scope and render. Called ONLY after
+        // `confirm` forces a full run, to read what that run did — never to give an
+        // already-settled reading a second chance. The scope is read from the daemon
+        // alongside the diagnostics, never carried over from an earlier read, so the
+        // verdict is computed against what the run actually covered.
         let reread () : CheckVerdict.CheckInputs =
             let raw = getErrors ()
             let resp = parseDiagnosticsResponse raw
@@ -1611,8 +1595,10 @@ let pollAndRenderForInvocation
             else
                 preEscalation
 
-        let outcome =
-            CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
+        // ONE read decides. See `CheckVerdict.verdict`'s note where the convergence
+        // loop used to be: this read was taken after settling, so there is no better
+        // answer about this tree to go looking for.
+        let outcome = CheckVerdict.verdict checkMode initialRead
 
         // The sample this run can offer. An escalation produced an
         // EXECUTED reading; the non-escalating `confirm` — the common case in CI, and the
@@ -1647,12 +1633,11 @@ let pollAndRenderForInvocation
 
         // `Verdict.CheckProse.explainOutcome`, not a local match: the daemon-less path
         // (`RunOnceCheck`) prints the very same call, so whether a daemon served the check
-        // is not something the explanation can vary on. `Some` only where there is
-        // something to say — `Clean` and `FailuresFound` are already explained by the
-        // plugin lines and the red causes above. `MaxConvergeAttempts` is what this path
-        // has and `--run-once` does not: it converges, so its "incomplete" can say how
-        // many re-scans it spent.
-        match Verdict.CheckProse.explainOutcome (Some MaxConvergeAttempts) outcome with
+        // is not something the explanation can vary on — and now that neither path
+        // re-scans, they cannot differ in what they have to report either. `Some` only
+        // where there is something to say: `Clean` and `FailuresFound` are already
+        // explained by the plugin lines and the red causes above.
+        match Verdict.CheckProse.explainOutcome outcome with
         | Some explanation -> UI.fail explanation
         | None -> ()
 
@@ -1661,7 +1646,7 @@ let pollAndRenderForInvocation
     | ex when FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message ->
         // StreamJsonRpc preserves the message but not the concrete ConfigError
         // type. This is the daemon-backed twin of RunOnceCheck's early terminal:
-        // no convergence, no forced suite, and no stale green left on disk.
+        // no forced suite, and no stale green left on disk.
         let reason = ex.Message
 
         let exitCode =
@@ -1809,7 +1794,6 @@ let pollAndRender
     (getTestRun: unit -> TestRunReport)
     (getCheckReach: unit -> IpcParsing.CheckReachReading)
     (forceFullRun: unit -> unit)
-    (triggerScan: unit -> string)
     : int =
     pollAndRenderForInvocation
         (Verdict.Invocation.start ())
@@ -1826,4 +1810,3 @@ let pollAndRender
         getTestRun
         getCheckReach
         forceFullRun
-        triggerScan

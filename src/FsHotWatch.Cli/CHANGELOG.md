@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- (breaking) One settled read decides a check. The convergence loop is gone:
+  `CheckVerdict.converge`, `IpcOutput.MaxConvergeAttempts`, `CheckVerdict.uncheckedMagnitude`
+  (and its `Unknown → Int32.MaxValue` sentinel), `pollAndRender`'s `triggerScan` parameter,
+  and `explainOutcome`'s re-scan-count parameter are all deleted. An incomplete-but-clean
+  reading used to be re-scanned up to three times, keeping whichever read looked best; it is
+  now the answer, exit 2 ("could not complete — retry"). A reading taken after settling is a
+  reading of a settled host (it owns no work and holds evidence for the current model), so a
+  later read is a different tree's answer rather than a better one about this tree.
+
+  A `check` whose coverage is incomplete therefore exits 2 on the first read where it
+  sometimes turned green after re-scanning. Three fewer full scans in the worst case, and no
+  "Re-scanning (incomplete)" phase.
+
+- The no-verdict advice no longer promises a convergence loop: it says to re-run `fshw check`
+  once the tests it needs have run.
+
 - A green requires the graded run's evidence receipt for the current project model. `check`
   reads `modelReceipts` from the daemon (or from the in-process host under `--run-once`) and
   downgrades an otherwise-clean reading to incomplete (exit 2) when no receipt exists for

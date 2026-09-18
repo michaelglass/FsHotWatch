@@ -4,8 +4,8 @@
 /// ONE VERDICT, TWO TRANSPORTS. Everything that DECIDES anything here is shared with
 /// the daemon path, not re-implemented beside it: the scope commands and their parser
 /// (`IpcParsing`), the completeness signal (`Daemon.LiveCoverage`, the same computation
-/// the IPC `GetUncheckedCount` closure serves), the verdict (`CheckVerdict.verdict` /
-/// `converge`), and the verdict FILE (`IpcOutput.publishVerdict`).
+/// the IPC `GetUncheckedCount` closure serves), the verdict (`CheckVerdict.verdict`),
+/// and the verdict FILE (`IpcOutput.publishVerdict`).
 ///
 /// Only the transport differs: `PluginHost.RunCommand` in-process instead of a socket.
 /// A second verdict computation would be a second thing that can go green while the
@@ -287,8 +287,8 @@ let private runOnceAndVerdictIn
 
         // The `--run-once` twin of the daemon path's
         // post-`WaitForComplete` capture: the tree as it was when the in-process run
-        // finished. Re-captured at EVERY settle — the first scan, the forced full suite,
-        // each convergence re-scan — and never after the reads, the summary render and
+        // finished. Re-captured at EVERY settle — the first scan and the forced full
+        // suite — and never after the reads, the summary render and
         // the staleness scan below, all of which run against a live working tree.
         let settledTree = ref IpcOutput.NeverSettled
 
@@ -321,8 +321,8 @@ let private runOnceAndVerdictIn
 
         let statuses = scanAndSettle ()
 
-        // What the run produced. Re-read after every step that can change it (a forced
-        // run, a convergence re-scan) — never carried over from an earlier snapshot,
+        // What the run produced. Re-read after every step that can change it (the scan,
+        // and a forced full run) — never carried over from an earlier snapshot,
         // which is how a verdict ends up describing a run that isn't the one it graded.
         let finalStatuses = ref (snapshotHost daemon.Host statuses)
         let finalRun = ref (TestRunReport.ofScopeOnly ScopeUnknown)
@@ -361,7 +361,7 @@ let private runOnceAndVerdictIn
         let reread () : CheckVerdict.CheckInputs =
             // A watcher may begin project rediscovery after the preceding scan/settle.
             // Never grade the transient cleared graph/pipeline as complete: await the
-            // atomic completed discovery outcome at every convergence reading.
+            // atomic completed discovery outcome at every reading.
             awaitDiscovery ()
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             finalModel.Value <- IpcParsing.ProjectModelReading.Observed(daemon.ProjectModel())
@@ -378,10 +378,6 @@ let private runOnceAndVerdictIn
               // In-process there is no wire to fail: the host's own coordinator answers,
               // so the reading is always an observation, never `NotReported`.
               ProjectModel = finalModel.Value }
-
-        /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
-        /// IS the re-scan.
-        let rescan () : unit = scanAndSettle () |> ignore
 
         // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune launch
         // chokepoint (build → BuildCompleted), where full-suite scope has already forced
@@ -417,10 +413,9 @@ let private runOnceAndVerdictIn
                 reread ()
             | None -> preEscalation
 
-        // The SAME convergence the daemon path runs: an incomplete-but-clean read is
-        // re-scanned (up to a budget) before it is called un-completable.
-        let outcome =
-            CheckVerdict.converge checkMode IpcOutput.MaxConvergeAttempts rescan reread initialRead
+        // ONE read decides, the same as the daemon path: this read was taken after the
+        // scan settled, so re-scanning could only produce a different tree's answer.
+        let outcome = CheckVerdict.verdict checkMode initialRead
 
         let summary = renderSummary finalStatuses.Value
 
@@ -492,10 +487,9 @@ let private runOnceAndVerdictIn
                 outcome
 
         // `Verdict.CheckProse.explainOutcome`, the very call the daemon path makes:
-        // `--run-once` differs in HOW the check ran, never in what it means. `None` for
-        // the re-scan count is not a missing number — this path does not converge, so it
-        // has no attempts to report.
-        match Verdict.CheckProse.explainOutcome None outcome with
+        // `--run-once` differs in HOW the check ran, never in what it means. Neither path
+        // re-scans, so neither has attempts to report.
+        match Verdict.CheckProse.explainOutcome outcome with
         | Some explanation -> UI.fail explanation
         | None -> ()
 
