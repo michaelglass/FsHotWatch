@@ -853,6 +853,47 @@ module internal AnalysisEvidence =
         | Some _
         | None -> None
 
+/// A BUILD THAT FAILED IS AN ANSWER.
+///
+/// A red build mints no test receipt and no analysis receipt — the run never happened —
+/// so an evidence wait over a broken tree had nothing to end on and blocked until its
+/// timeout, on the one tree where the answer was already known and already printed. This
+/// is that answer as evidence: the model the build failed under, and what it said.
+///
+/// It carries no input-tree hash, unlike a test receipt. A receipt's hash exists to bind a
+/// RUN to the tree it selected against, because a run can be replayed and a selection can
+/// go stale. A build failure is not replayed: the next change rebuilds and mints a new
+/// answer under the model that change produced, so there is no second reading for a hash
+/// to keep apart.
+type CompletedBuildFailure =
+    private
+        { ModelGeneration: int64
+          Reason: string }
+
+    member this.Generation = this.ModelGeneration
+    /// Never empty — a failure that names nothing is not minted at all.
+    member this.FailureReasons = [ this.Reason ]
+
+module internal CompletedBuildFailure =
+    /// `None` when the build ran under no model, or under one this build cannot name: a
+    /// failure that is not ABOUT the graded model answers nothing about it. `None` too for
+    /// a blank reason — a proof that something failed and cannot say what is a status, and
+    /// the whole point of evidence is that it is not one.
+    let fromFailure (modelGeneration: int64 option) (reason: string) : CompletedBuildFailure option =
+        match modelGeneration with
+        | Some generation when generation >= 0L && not (System.String.IsNullOrWhiteSpace reason) ->
+            Some
+                { ModelGeneration = generation
+                  Reason = reason.Trim() }
+        | Some _
+        | None -> None
+
+/// Implemented by a plugin state that owns a completed build failure. Projected by the
+/// work owner in the same publication as the fold that recorded it, exactly like the two
+/// receipts above.
+type internal ICompletedBuildFailureState =
+    abstract CompletedBuildFailure: CompletedBuildFailure option
+
 /// Implemented by a plugin state that owns analysis-only evidence. Published by the same
 /// owner retirement as the file-analysis fold that minted it.
 type internal IAnalysisEvidenceState =

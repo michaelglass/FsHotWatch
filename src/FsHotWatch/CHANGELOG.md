@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- (breaking) `WaitForComplete` waits for EVIDENCE, not for a reported status. The
+  `requireVerdict` guard, the 200 ms quiescence window and the `activeVerdictWaits` counter
+  are all gone. The wait rests when the host owns no work and something has earned evidence
+  for the model it would answer about — a test receipt, an analysis receipt, or a completed
+  build failure. A host that observes no model resolves instead of blocking: nothing can
+  earn evidence for a model that does not exist, and a green over one is already refused by
+  the verdict. `Events.CompletedBuildFailure` and `ICompletedBuildFailureState` are new;
+  `PluginWorkOwner.HostSnapshot` gains `CompletedFailures`.
+
+- (breaking) An in-flight verdict wait is a client OBSERVATION, published with the work it
+  waits on. `Store.Observe()` takes a lease and `HostSnapshot.ObserverCount` reports it;
+  idle-exit and the heartbeat read that instead of a counter kept beside the publication.
+  A watcher is not work, so the lease never makes the host busy, and it is released on
+  every exit — verdict, timeout, or shutdown cancellation.
+
+- Fixed: the `WaitForComplete` stall detector called a cold discovery WEDGED. Owned work
+  with nothing `Running` and no completed dispatch is the signature of a stuck inflight
+  count, and also of a scan legitimately inside its deadline. A row whose work runs under a
+  finite deadline is now marked `Supervised` (`SupervisedWork` only), and live supervised
+  work counts as progress while it is inside that deadline; past it its own deadline
+  records the failure and the wedge is named as before. An event fold, which nothing will
+  ever time out, is never supervised and is still named.
+
 - Test and analysis evidence are minted by the owner folds and published with the work they
   belong to: `Events.EarnedEvidence` (a completion's run, what it covered in full, and every
   reason it refuses a green), `Events.AnalysisEvidence` for a daemon with no test projects,

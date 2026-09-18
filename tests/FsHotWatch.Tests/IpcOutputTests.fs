@@ -1828,17 +1828,33 @@ let ``a tree that moves mid-check exits 2 AND records incomplete — the file an
     | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other
 
 /// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
-let private captureStderr (f: unit -> 'a) : string * 'a =
-    let original = System.Console.Error
-    use writer = new System.IO.StringWriter()
-    System.Console.SetError(writer)
+///
+/// `Console.SetError` is PROCESS-WIDE, and this suite runs in parallel: every other test
+/// writing to stderr lands in this writer while `f` runs. A bare `StringWriter` is not
+/// thread-safe, so its own `ToString()` threw `ArgumentOutOfRangeException (chunkLength)`
+/// mid-append under a loaded box — a test failing on other tests' output. The synchronized
+/// wrapper makes the capture safe; the foreign lines it may collect are harmless, since
+/// every caller asserts on `Contains`, never on the whole buffer.
+///
+/// Captures are serialized against each other so two of them cannot interleave their
+/// redirections and restore the wrong original.
+let private stderrCaptureGate = obj ()
 
-    try
-        let result = f ()
-        writer.Flush()
-        writer.ToString(), result
-    finally
-        System.Console.SetError(original)
+let private captureStderr (f: unit -> 'a) : string * 'a =
+    lock stderrCaptureGate (fun () ->
+        let original = System.Console.Error
+        use buffer = new System.IO.StringWriter()
+        let writer = System.IO.TextWriter.Synchronized buffer
+        System.Console.SetError(writer)
+
+        try
+            let result = f ()
+            writer.Flush()
+            // Read under the same lock the synchronized writer uses, so a concurrent
+            // write cannot be mid-append while the buffer is materialized.
+            lock writer (fun () -> buffer.ToString()), result
+        finally
+            System.Console.SetError(original))
 
 [<Fact(Timeout = 15000)>]
 let ``a tree that moves mid-check says so at the terminal, not only in the verdict file`` () =
@@ -2740,3 +2756,57 @@ let ``a clean publication records no cause, so the refusal cause is not furnitur
         match Verdict.read repoRoot with
         | Verdict.Reading.Found verdict -> test <@ List.isEmpty verdict.RedCauses @>
         | other -> failwithf "expected a published verdict, got %A" other)
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait that RESOLVES on a no-model host still exits 2 with a named reason`` () =
+    // The guarantee the deleted `requireVerdict` used to hold, re-pinned where a user can
+    // see it. That guard made the daemon-side wait BLOCK on a host that had verified
+    // nothing, so a cold daemon could not render a vacuous exit-0 "No errors". The wait no
+    // longer blocks on a host that observes no project model — nothing can ever earn
+    // evidence for a model that does not exist, so blocking would spend the client's whole
+    // deadline on an answer already determined.
+    //
+    // Resolving fast must therefore never become GREEN fast, and this is the test that
+    // stops a refactor from turning one into the other: the wait resolves, AND the check
+    // over that same no-model reading still exits 2 carrying a sentence that names the
+    // cause. Both halves in one test, deliberately — apart, either could keep passing
+    // while the pair stopped being true.
+    withTempDir "no-model-resolves-then-refuses" (fun repoRoot ->
+        let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+
+        host.RegisterHandler
+            { Name = FsHotWatch.PluginFramework.PluginName.create "never-runs"
+              Init = ()
+              Update = fun _ state _ -> async { return state }
+              Commands = []
+              Subscriptions = Set.singleton FsHotWatch.PluginFramework.SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        // Half one: no model was ever observed, and the wait resolves rather than blocking.
+        test <@ host.WorkSnapshot.ProjectModel = FsHotWatch.ProjectModel.Observation.Unobserved @>
+
+        FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult()
+
+        // Half two: grading that same reading is exit 2 with the cause in words, not a
+        // green and not a bare code.
+        let exitCode, reading, file =
+            driveWithModel
+                CheckVerdict.InnerLoop
+                (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (diagnosticsWithModel (Some FsHotWatch.ProjectModel.Observation.Unobserved))
+
+        test <@ exitCode = 2 @>
+        test <@ file.OutcomeKind = "model-unavailable" @>
+
+        match reading with
+        | Verdict.Reading.Found v ->
+            match v.Outcome with
+            | Verdict.ModelUnavailable reason ->
+                test <@ reason.Contains "NO VERDICT" @>
+                // The sentence that does the work: this is not "nothing needed checking".
+                test <@ reason.Contains "not an empty test selection" @>
+            | other -> failwithf "a no-model reading must refuse in words, got %A" other
+        | other -> failwithf "the refusal must still be a readable verdict, got %A" other)

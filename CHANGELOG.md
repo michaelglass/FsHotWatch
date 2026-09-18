@@ -180,6 +180,29 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core, build: the verdict wait asks what was earned, and the wedge detector learns what a deadline means
+
+`fshw check` blocks on the daemon's `WaitForComplete` until the tree has settled. That wait
+used to rest on three belts — a plugin had reported a terminal status, no plugin had been
+busy for 200ms, and a counter said a client was connected. None of them is evidence, and
+one of them was a defect.
+
+- **The wait asks for evidence.** It rests when the host owns no work and something has
+  earned an answer about the current project model: a test receipt, an analysis receipt, or
+  a completed build failure. Reporting success no longer ends a wait.
+- **A red build is an answer.** A failed build runs no tests and analyses nothing, so it
+  earned neither receipt and a `check` over a broken tree waited out its whole deadline for
+  a run that was never going to happen. It now earns a proof of what failed.
+- **A waiting client is a watcher, not a counter.** The lease that inhibits idle-exit is
+  published with the work being waited on, so the daemon cannot read "nobody is waiting"
+  and "work is owned" from two sources that disagree.
+- **A cold scan is no longer reported as WEDGED.** Work running under a finite deadline
+  counts as progress while it is inside that deadline; past it, the wedge is named exactly
+  as before, and a plugin handler that never returns — which has no deadline at all — is
+  still named immediately.
+
+See `docs/adr-030-scans-and-change-batches-run-under-a-bounded-supervisor.md`.
+
 ### core, testprune, cli: a green is minted from earned evidence
 
 A green used to be read from the last status a plugin reported. Now a completion mints

@@ -60,10 +60,19 @@ type RowStatus =
         Evidence: Events.EarnedEvidence option
         /// The analysis-only evidence this row's state holds, projected the same way.
         Analysis: Events.AnalysisEvidence option
+        /// The completed build failure this row's state holds, projected the same way. A
+        /// red build earns no receipt of either kind, and is still an answer about the
+        /// model it failed under.
+        BuildFailure: Events.CompletedBuildFailure option
         /// Whether this row's state is one that MINTS evidence at all. A host with no such
         /// row offers no receipts, and a reader must not mistake that for a row that owed
         /// one and produced nothing.
         OffersEvidence: bool
+        /// Is this row's work BOUNDED — run under a finite deadline that will fail it if
+        /// it overruns (`SupervisedWork`)? An ordinary event fold is not: nothing will
+        /// ever time it out, so a fold that never returns is indistinguishable from one
+        /// that is merely slow, and the stall detector is the only thing that names it.
+        Supervised: bool
     }
 
 module RowStatus =
@@ -75,7 +84,15 @@ module RowStatus =
           Failure = failure
           Evidence = None
           Analysis = None
-          OffersEvidence = false }
+          BuildFailure = None
+          OffersEvidence = false
+          Supervised = false }
+
+    /// The projection of a row whose work runs under a finite deadline. Live work here is
+    /// WORKING, not stalled: if it overruns, its own deadline records the failure.
+    let ofSupervisedWork (busy: bool) (completed: int64) (failure: OwnerFailure option) : RowStatus =
+        { ofWork busy completed failure with
+            Supervised = true }
 
 [<NoComparison; NoEquality>]
 type private Row =
@@ -102,11 +119,16 @@ type HostSnapshot =
           Rows: Map<WorkId, Row>
           Operations: Map<WorkId, Operation>
           SettledFailures: Map<WorkId, string * exn>
+          Observers: Set<WorkId>
           Model: ProjectModel.Observation
           ModelFiles: (int64 * Set<Events.AbsFilePath>) option }
 
     /// Increases by one with every publication.
     member this.Version = this.Published
+
+    /// How many clients are watching this host right now. A watcher is a reason not to
+    /// exit for idleness; it is NOT work, so it never makes the host busy.
+    member this.ObserverCount = this.Observers.Count
 
     /// The test evidence the rows hold, read from this publication. A row's evidence and its
     /// work are published together, so a reader can never see one without the other.
@@ -116,6 +138,19 @@ type HostSnapshot =
     /// The analysis-only evidence the rows hold, read from this publication.
     member this.AnalysisEvidence: Events.AnalysisEvidence list =
         this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Status.Analysis)
+
+    /// The completed build failures the rows hold, read from this publication.
+    member this.CompletedFailures: Events.CompletedBuildFailure list =
+        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Status.BuildFailure)
+
+    /// Is any BOUNDED operation live and still inside its deadline? Such an operation is
+    /// working, however quiet it looks: a cold discovery can own work for minutes while no
+    /// plugin event completes anywhere. Once it overruns, its own deadline records the
+    /// failure and it stops counting here — so a hung one is still named, and only the
+    /// work nothing will ever time out is left to the stall detector.
+    member this.SupervisedWorkInFlight =
+        this.Rows
+        |> Map.exists (fun _ row -> row.Status.Supervised && row.Status.Busy && row.Status.Failure.IsNone)
 
     /// Does any row mint evidence? A host with none — an embedder that registers no
     /// evidence-minting plugin — offers no receipts, which is not the same as owing one.
@@ -209,6 +244,7 @@ type Store() =
           Rows = Map.empty
           Operations = Map.empty
           SettledFailures = Map.empty
+          Observers = Set.empty
           Model = ProjectModel.Observation.Unobserved
           ModelFiles = None }
 
@@ -318,6 +354,26 @@ type Store() =
 
     member this.Change(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : 'Result =
         this.ChangeAsync(handle, transition).GetAwaiter().GetResult()
+
+    /// Take a client-observation lease: the host is being watched. The lease inhibits
+    /// idle exit and counts as no work at all. Disposing it twice releases it once — a
+    /// caller that disposes in a `finally` after a fault does exactly that.
+    member _.Observe() : IDisposable =
+        let id =
+            change (fun fresh snapshot ->
+                { snapshot with
+                    Observers = Set.add fresh snapshot.Observers },
+                fresh)
+
+        let mutable released = 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(&released, 1) = 0 then
+                    change (fun _ snapshot ->
+                        { snapshot with
+                            Observers = Set.remove id snapshot.Observers },
+                        ()) }
 
     /// Own a named host operation: a preprocessor pass, a dispatch fan-out, a scan.
     /// Starting one clears the retained failures of earlier, finished operations of the
@@ -929,11 +985,18 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     match box snapshot.Domain with
                     | :? Events.IAnalysisEvidenceState as holder -> holder.AnalysisEvidence
                     | _ -> None
+                  BuildFailure =
+                    match box snapshot.Domain with
+                    | :? Events.ICompletedBuildFailureState as holder -> holder.CompletedBuildFailure
+                    | _ -> None
                   OffersEvidence =
                     match box snapshot.Domain with
                     | :? Events.IEarnedEvidenceState
-                    | :? Events.IAnalysisEvidenceState -> true
+                    | :? Events.IAnalysisEvidenceState
+                    | :? Events.ICompletedBuildFailureState -> true
                     | _ -> false
+                  // A plugin's event folds run under no deadline: see `Supervised`.
+                  Supervised = false
                   Completed = snapshot.Committed
                   Failure = snapshot.Failure }
         )

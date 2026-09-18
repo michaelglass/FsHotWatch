@@ -215,7 +215,7 @@ type Queue<'State, 'Request>
               Completed = 0L
               Failure = None },
             fun core ->
-                RowStatus.ofWork
+                RowStatus.ofSupervisedWork
                     (fst (queueOf core.Phase)).IsSome
                     core.Completed
                     (core.Failure |> Option.map OperationFailure)

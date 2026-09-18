@@ -1,8 +1,12 @@
 module FsHotWatch.Tests.VerdictEvidenceTests
 
 open System
+open System.Threading
 open Xunit
+open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.PluginFramework
+open FsHotWatch.Tests.TestHelpers
 
 let private completed runId results =
     { RunId = runId
@@ -198,3 +202,226 @@ let ``evidence and event retirement share the same immutable publication`` () =
     // A pinned publication never learns later evidence.
     Assert.True before.IsBusy
     Assert.Empty before.Evidence
+
+[<Fact>]
+let ``client observation inhibits idle exit without keeping observed work busy`` () =
+    let store = FsHotWatch.PluginWorkOwner.Store()
+    let before = store.Snapshot
+    let lease = store.Observe()
+    let observed = store.Snapshot
+    // A watching client is a reason not to exit, and no reason to call the host busy:
+    // the work it observes is exactly as finished as it was a moment ago.
+    Assert.Equal(0, before.ObserverCount)
+    Assert.Equal(1, observed.ObserverCount)
+    Assert.False observed.IsBusy
+    lease.Dispose()
+    // Releasing twice is the ordinary shape of a `use` inside a task that also faults.
+    lease.Dispose()
+    Assert.Equal(0, store.Snapshot.ObserverCount)
+    // A pinned publication keeps the count it was published with.
+    Assert.Equal(1, observed.ObserverCount)
+
+/// A host that publishes a model and registers the analysis-only TestPrune: it MINTS
+/// evidence, so a verdict wait may ask it for some.
+let private evidenceMintingHost (repoRoot: string) =
+    let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+    host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+
+    host.RegisterHandler(
+        FsHotWatch.TestPrune.TestPrunePlugin.create
+            (System.IO.Path.Combine(repoRoot, "wait.db"))
+            repoRoot
+            None
+            None
+            None
+            None
+            None
+            []
+    )
+
+    host
+
+[<Fact(Timeout = 30000)>]
+let ``a reported terminal status cannot mint evidence after its event drains`` () =
+    withTempDir "verdict-wait-unearned" (fun repoRoot ->
+        let host = evidenceMintingHost repoRoot
+
+        // A plugin that CLAIMS success. The claim carries no run, no coverage and no
+        // discharged obligations — it must remain legal to report progress without
+        // gaining the ability to end a verdict wait.
+        host.RegisterHandler
+            { Name = PluginName.create "claims-success"
+              Init = ()
+              Update =
+                fun ctx state _ ->
+                    async {
+                        ctx.ReportStatus(
+                            Completed(System.DateTime.UtcNow, RunVerdict.create "claimed success" System.TimeSpan.Zero)
+                        )
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.EmitFileChanged(SourceChanged [ "Unverified.fs" ])
+        waitForQuiescent host 10000
+
+        // Positive controls: the claim really was published, and the event really drained.
+        Assert.True(
+            host.GetAllStatuses()
+            |> Map.exists (fun _ status -> PluginStatus.isTerminal status)
+        )
+
+        Assert.False(host.AnyPluginBusy())
+        // Nothing earned it: no receipt exists for the published model.
+        Assert.Empty host.WorkSnapshot.Evidence
+        Assert.Empty host.WorkSnapshot.AnalysisEvidence
+
+        let waiting =
+            FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 1.0) CancellationToken.None
+
+        Assert.Throws<System.TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+        |> ignore)
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait ends on the analysis receipt its cohort seal earned`` () =
+    withTempDir "verdict-wait-earned" (fun repoRoot ->
+        let host = evidenceMintingHost repoRoot
+
+        host.EmitBatchChecked
+            { fakeBatchChecked [] with
+                ModelGeneration = Some fixtureModelGeneration }
+
+        waitForQuiescent host 10000
+        Assert.Single host.WorkSnapshot.AnalysisEvidence |> ignore
+
+        // The control for the test above: with evidence for the current model, the same
+        // wait resolves instead of timing out.
+        FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult())
+
+// ---------------------------------------------------------------------------
+// A build that FAILED is an answer about the model it failed under.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a completed build failure is evidence about the model it failed under`` () =
+    let failure =
+        CompletedBuildFailure.fromFailure (Some 3L) "Build failed: FS0039" |> Option.get
+
+    Assert.Equal(3L, failure.Generation)
+    Assert.NotEmpty failure.FailureReasons
+
+    // Nothing to be evidence ABOUT: a build that ran under no model says nothing about
+    // the model the verdict is graded against.
+    Assert.True((CompletedBuildFailure.fromFailure None "Build failed: FS0039").IsNone)
+    Assert.True((CompletedBuildFailure.fromFailure (Some -1L) "Build failed: FS0039").IsNone)
+    // A failure that names nothing is not a proof that anything failed.
+    Assert.True((CompletedBuildFailure.fromFailure (Some 3L) "   ").IsNone)
+
+/// A plugin state that owns a completed build failure, as `BuildPlugin`'s does. Minting
+/// stays first-party; this is the fixture that proves the OWNER publishes it and the wait
+/// consumes it, without spawning MSBuild.
+type private FailedBuildState =
+    { Failure: CompletedBuildFailure option }
+
+    interface ICompletedBuildFailureState with
+        member this.CompletedBuildFailure = this.Failure
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait ends on a completed build failure, which mints no other receipt`` () =
+    withTempDir "verdict-wait-red-build" (fun repoRoot ->
+        let host = evidenceMintingHost repoRoot
+
+        host.RegisterHandler
+            { Name = PluginName.create "red-build"
+              Init = { Failure = None }
+              Update =
+                fun _ _ _ ->
+                    async {
+                        return
+                            { Failure = CompletedBuildFailure.fromFailure (Some fixtureModelGeneration) "Build failed" }
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.EmitFileChanged(SourceChanged [ "Broken.fs" ])
+        waitForQuiescent host 10000
+
+        // The point of the case: a red build leaves NO test receipt and NO analysis
+        // receipt, so before this the evidence wait had nothing to end on and hung until
+        // its timeout — on the one tree where the answer was already known.
+        Assert.Empty host.WorkSnapshot.Evidence
+        Assert.Empty host.WorkSnapshot.AnalysisEvidence
+        Assert.NotEmpty host.WorkSnapshot.CompletedFailures
+
+        FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult())
+
+[<Fact(Timeout = 30000)>]
+let ``an in-flight verdict wait IS the client observation that inhibits idle exit`` () =
+    withTempDir "verdict-wait-observed" (fun repoRoot ->
+        // The counter this replaces lived beside the publication rather than in it: the
+        // daemon incremented `activeVerdictWaits` around the RPC, and idle-exit read that
+        // integer while reading the host's work from somewhere else. Two readings of one
+        // fact can disagree. The lease is published with the work, so "a client is
+        // waiting" and "the host owns nothing" are answered by the same snapshot.
+        let host = evidenceMintingHost repoRoot
+        Assert.Equal(0, host.WorkSnapshot.ObserverCount)
+
+        let waiting =
+            FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 2.0) CancellationToken.None
+
+        Assert.True(waitUntilTrue (fun () -> host.WorkSnapshot.ObserverCount = 1) 5000)
+        // A watcher is not work: it inhibits the exit and leaves the host at rest.
+        Assert.False host.WorkSnapshot.IsBusy
+
+        Assert.Throws<System.TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+        |> ignore
+
+        // Released on EVERY exit, timeout included — the `finally` the counter needed.
+        Assert.True(waitUntilTrue (fun () -> host.WorkSnapshot.ObserverCount = 0) 5000))
+
+/// A state that owns ONLY analysis evidence — no test receipt, no build failure.
+type private AnalysisOnlyState =
+    { Analysis: AnalysisEvidence option }
+
+    interface IAnalysisEvidenceState with
+        member this.AnalysisEvidence = this.Analysis
+
+[<Fact(Timeout = 30000)>]
+let ``a plugin that mints only analysis evidence still offers receipts`` () =
+    withTempDir "verdict-analysis-only-offer" (fun repoRoot ->
+        // Each of the three evidence interfaces has to be able to answer "this host offers
+        // receipts" ON ITS OWN. TestPrune implements two of them at once, so the
+        // analysis-only arm was never the deciding one, and an embedder registering a
+        // plugin that mints only analysis evidence would have been read as offering none —
+        // which is the one reading that ungates a green without evidence (ADR-033).
+        let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+        host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+
+        host.RegisterHandler
+            { Name = PluginName.create "analysis-only"
+              Init = { Analysis = None }
+              Update = fun _ state _ -> async { return state }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.EmitFileChanged(SourceChanged [ "Analysed.fs" ])
+        waitForQuiescent host 10000
+
+        test <@ host.WorkSnapshot.OffersEvidence @>
+        // It offers them and holds none, which is the refusal, not silence.
+        test <@ List.isEmpty host.WorkSnapshot.AnalysisEvidence @>
+        test <@ List.isEmpty host.WorkSnapshot.Evidence @>
+        test <@ List.isEmpty host.WorkSnapshot.CompletedFailures @>)

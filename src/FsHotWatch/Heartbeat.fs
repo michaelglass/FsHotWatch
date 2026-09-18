@@ -64,8 +64,9 @@ let render (at: DateTime) : string =
 ///     is committed (see `PluginWorkOwner`). So a suite that runs for ten minutes
 ///     emitting nothing keeps this true throughout: the beat tracks "a run is in
 ///     progress", not log output.
-///   * `activeVerdictWaits` covers the instants where no plugin work is in flight but
-///     a `fshw check` client is still connected and waiting.
+///   * `observingClients` covers the instants where no plugin work is in flight but
+///     a `fshw check` client is still connected and waiting — one observation lease per
+///     in-flight verdict wait, read from the host's own publication.
 ///   * `scanInFlight` covers a full-repository scan — cold FCS
 ///     analysis of the whole graph raises NEITHER of the other two, so without it
 ///     the daemon's own liveness signal went silent during its longest phase of
@@ -74,8 +75,8 @@ let render (at: DateTime) : string =
 /// Deliberately separate from `IdleExit.idleInhibitors` despite the overlapping
 /// inputs: they answer different questions (shut myself down? vs. tell the world
 /// I'm working?), and a change to one must not silently redefine the other.
-let runActive (anyPluginBusy: bool) (activeVerdictWaits: int) (scanInFlight: bool) : bool =
-    anyPluginBusy || activeVerdictWaits > 0 || scanInFlight
+let runActive (anyPluginBusy: bool) (observingClients: int) (scanInFlight: bool) : bool =
+    anyPluginBusy || observingClients > 0 || scanInFlight
 
 /// Dependencies a live heartbeat needs, all injectable so the beat/no-beat
 /// decision is unit-tested without a PluginHost, a real clock, a real timer,
@@ -86,7 +87,7 @@ type HeartbeatDeps =
         /// Current UTC time. Also the value written.
         Now: unit -> DateTime
         /// True iff a run is in progress. Production wires `runActive` over the
-        /// host's live busy signal and the active-verdict-wait counter.
+        /// host's live busy signal and its count of observing clients.
         RunActive: unit -> bool
         /// Publish the rendered beat. Production wires an atomic write to
         /// `path repoRoot`; tests capture it.

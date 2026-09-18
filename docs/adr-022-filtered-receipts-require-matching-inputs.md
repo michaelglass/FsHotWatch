@@ -58,3 +58,28 @@ before landing; this decision record is not a verification result.
   behavior instead of repairing its evidence lifecycle.
 - Resolving a user-selected revision baseline is a separate selection contract;
   it neither supplies skipped-test evidence nor repairs this receipt loss.
+
+## Amendment: the receipt layer is deliberately ledger-independent
+
+The Decision above says a same-input `already-verified` drain may retain an applicable
+earlier receipt "when it executes nothing and no failure remains outstanding". The code does
+not read that second clause: `ReceiptTransition.classify` decides `Noop` from the launch's
+zero-selection, the coverage and the input-tree binding, and never consults the failure
+ledger. That is the intended design, not drift, and this paragraph records why.
+
+A receipt answers ONE question — what ran, and over which tree. The red comes from the
+error ledger, which is a different surface with a different lifetime: a failure outstanding
+from an earlier run is not evidence about what this drain executed, and making the receipt
+forget what it legitimately holds would lose the filtered scope the drain was supposed to
+preserve. That is the very loss this record exists to repair.
+
+What must never happen is the PAIR: a retained receipt beside an outstanding failure
+producing a green. Two independent things stop it. The outstanding failure is itself a
+refusal carried by the evidence a completion mints (ADR-033 — `pendingObligations` counts
+outstanding reds, so `EarnedEvidence.FailureReasons` is non-empty and the CLI refuses the
+green), and the ledger's own diagnostics redden the exit code regardless of any receipt.
+Pinned by `a retained receipt beside an outstanding failure earns a refusal, never a green`
+(TestPruneRunScopeTests), which drives a quiet already-verified drain over a state that
+still owes a failing project and asserts both halves: the failure is still owed afterwards,
+and the evidence the drain earned refuses. Retention of the receipt itself stays covered by
+`same-input already-verified drain retains a filtered receipt`.

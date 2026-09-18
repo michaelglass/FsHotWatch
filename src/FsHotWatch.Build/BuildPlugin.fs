@@ -62,7 +62,16 @@ type BuildState =
         /// The next build must run for real, not replay. Set by the `force-rebuild`
         /// intent and spent only by a build that actually completed.
         ForceRebuild: bool
+        /// What the last completed build EARNED, when it failed: a red build runs no
+        /// tests and analyses nothing, so it mints neither receipt, and an evidence wait
+        /// had nothing to end on over a tree whose answer was already on the screen.
+        /// `None` after a build that passed — a green build is not evidence of itself; the
+        /// runs it enables earn that.
+        BuildFailure: FsHotWatch.Events.CompletedBuildFailure option
     }
+
+    interface FsHotWatch.Events.ICompletedBuildFailureState with
+        member this.CompletedBuildFailure = this.BuildFailure
 
 /// Internal message posted from the async build runner back to the plugin's
 /// own mailbox. Carries the outcome AND the parsed diagnostic entries so the
@@ -873,7 +882,10 @@ let createWith
           PendingFiles = retainedOn claim owed
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false }
+          ForceRebuild = false
+          // A build that is starting has not completed, so it has earned nothing yet: the
+          // previous failure stops being the current answer the moment a new build runs.
+          BuildFailure = None }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -994,7 +1006,8 @@ let createWith
               PendingFiles = retainedOn claim owed
               SatisfiedDeps = Set.empty
               ActiveTestRuns = Set.empty
-              ForceRebuild = false }
+              ForceRebuild = false
+              BuildFailure = None }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1064,7 +1077,10 @@ let createWith
           PendingFiles = []
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false }
+          ForceRebuild = false
+          // A build that is starting has not completed, so it has earned nothing yet: the
+          // previous failure stops being the current answer the moment a new build runs.
+          BuildFailure = None }
       Update =
         fun ctx state event ->
             async {
@@ -1155,6 +1171,28 @@ let createWith
 
                     let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
+                    // Minted HERE, in the fold that records the outcome, so the answer is
+                    // published with the work it belongs to and cannot be reported by
+                    // anything that did not run a build. The generation is the host's
+                    // current model: a failure under no model, or one this build cannot
+                    // name, is not an answer about the model the verdict is graded
+                    // against, and `fromFailure` refuses it.
+                    let buildFailure =
+                        match outcome with
+                        | BuildPassed _ -> None
+                        | BuildArtifactsStale _
+                        | BuildOutputFailed _ ->
+                            let generation =
+                                match ctx.ProjectGraph.ObserveModel() with
+                                | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+                                | FsHotWatch.ProjectModel.Observation.Unobserved
+                                | FsHotWatch.ProjectModel.Observation.Rediscovering _
+                                | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
+
+                            FsHotWatch.Events.CompletedBuildFailure.fromFailure
+                                generation
+                                (buildSummary outcome entries)
+
                     // Apply captured operations within this synchronous handler so
                     // the framework's cache-write window records them; replay of
                     // a cached BuildDone re-fires them via EmittedEvents + Errors.
@@ -1216,7 +1254,8 @@ let createWith
                             // it, so a lookup that never reached a build (a suppressed or
                             // superseded dispatch) cannot spend the request and leave the
                             // artifacts stale anyway.
-                            ForceRebuild = false }
+                            ForceRebuild = false
+                            BuildFailure = buildFailure }
 
                     return launchPending ctx completedState
 

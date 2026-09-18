@@ -3235,3 +3235,45 @@ let ``a build that settles the copy restores an ordinary cached replay`` () =
             waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 15000
 
         test <@ replayed @>)
+
+// --- A build that FAILED is an answer about the model it failed under ---
+
+/// A ctx whose project graph publishes `generation` as the available model, so the fold
+/// can stamp what it earned. Everything else is the shared stub.
+let private modelObservingCtx (generation: int64) : PluginCtx<BuildMsg> =
+    { stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false) with
+        ProjectGraph =
+            { ProjectGraphAccessor.none with
+                ObserveModel = fun () -> FsHotWatch.Tests.TestHelpers.fixtureModelOf generation } }
+
+[<Fact(Timeout = 15000)>]
+let ``a failed build mints evidence for the model it failed under; a passing one mints none`` () =
+    let handler = warmedHandler "echo" "ok" []
+
+    let fold outcome =
+        handler.Update (modelObservingCtx 4L) handler.Init (Custom(BuildDone(outcome, [], TimeSpan.Zero)))
+        |> Async.RunSynchronously
+
+    let failedState = fold (BuildOutputFailed [ "error FS0039: not defined" ])
+
+    match (failedState :> ICompletedBuildFailureState).CompletedBuildFailure with
+    | Some failure ->
+        test <@ failure.Generation = 4L @>
+        test <@ not (List.isEmpty failure.FailureReasons) @>
+    | None -> failwith "a failed build must earn the answer it already printed"
+
+    // The control: a green build earns a receipt from the runs it enables, not from
+    // itself. Minting one here would end an evidence wait on a build that verified
+    // nothing — the very vacuous clean this slice removes.
+    let passedState = fold (BuildPassed "ok")
+    test <@ (passedState :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
+
+    // A build that failed under no model answers nothing about the graded one.
+    let unobserved =
+        handler.Update
+            (stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false))
+            handler.Init
+            (Custom(BuildDone(BuildOutputFailed [ "error FS0039: not defined" ], [], TimeSpan.Zero)))
+        |> Async.RunSynchronously
+
+    test <@ (unobserved :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
