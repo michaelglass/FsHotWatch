@@ -403,67 +403,129 @@ let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<Bui
         host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
         observed.Value
 
+/// The wait a gated-host fixture spins on: poll until the test writes `release`, but never
+/// past the guards. `polls` is the iteration cap, at 20ms apiece.
+///
+/// `-d tmpDir` is the guard that carries the failure path, and it is doing more work than it
+/// looks. It reaps the child the moment `withTempDir` removes the tree, and -- unlike the
+/// release file -- a deleted directory STAYS deleted. Writing the release from a `finally`
+/// cannot be relied on to do this job, because it races that same cleanup: the file appears
+/// microseconds before the tree it sits in is deleted, so a child polling every 20ms nearly
+/// always wakes to find it gone again and spins on. That is measured, not theorised -- with
+/// the release as the only mechanism the probe below still leaked a spinner; with `-d` alone
+/// it exits in under half a second.
+///
+/// The cap covers the runs where the tree OUTLIVES them, where `-d` never fires: a hard
+/// `[<Fact(Timeout = ...)>]` expiry abandons the test without unwinding any `finally`, and
+/// `deleteTempDirResilient` deliberately gives up after ten attempts rather than fail a test,
+/// leaving the directory behind. Callers set `polls` to
+/// roughly twice their own xUnit budget, so a slow-but-correct run can never reach the cap --
+/// xUnit fails the test first, which is what assertions like `not runTask.IsCompleted` rest
+/// on -- while an orphan reaps itself inside a minute instead of polling until someone kills
+/// it by hand. A capped-out wait exits non-zero rather than falling through, so the backstop
+/// can never forge the completed work its caller is waiting for.
+///
+/// The guard belongs in the shell, not in the fixture, because every other bound available
+/// here dies with the process that spawned the child. A runner config's `TimeoutSec` and the
+/// 5-minute launch deadline are both enforced by a watchdog running INSIDE the test process,
+/// and `[<Fact(Timeout = ...)>]` is xUnit's own: once the run exits or the test is abandoned,
+/// none of them ever issues the kill. Worse for a wait like this one, which is silent --
+/// `TimeoutSec = None` leaves the launch deadline as the only in-process escape, and it only
+/// fires because a child that has produced no output reads as stalled. So this is not a
+/// second belt over an existing one. It is the first bound that outlives its spawner, and the
+/// only reason a stranded child stops on its own rather than polling until someone finds it.
+let private gatedWait (tmpDir: string) (release: string) (polls: int) =
+    $"n=0; while [ -d '{tmpDir}' ] && [ ! -f '{release}' ] && [ $n -lt {polls} ]; "
+    + "do sleep 0.02; n=$((n+1)); done; "
+    + $"[ -f '{release}' ] || exit 91"
+
+/// Run `body` against the release file that ends a `gatedWait`, writing that file from a
+/// `finally` so a body that throws still lets the child go.
+///
+/// This release is the fast path, NOT the reaper. Whenever the gate's directory is torn down
+/// -- the usual case, under `withTempDir` -- `gatedWait`'s `-d` guard is what actually ends
+/// the wait, because this write races that cleanup and generally loses (see `gatedWait`).
+/// It earns its place in the case where the directory SURVIVES the failure and `-d` never
+/// fires: `deleteTempDirResilient` gives up after ten attempts rather than fail a test, and a
+/// gate rooted anywhere that is not deleted has no `-d` to fall back on. There, this is the
+/// only thing that stops the child short of the cap.
+let private withReleaseGate (tmpDir: string) (name: string) (body: string -> 'a) : 'a =
+    let release = System.IO.Path.Combine(tmpDir, $"release-{name}")
+
+    try
+        body release
+    finally
+        // A release into a directory already gone is moot -- `gatedWait`'s `-d` guard has
+        // ended the wait -- and throwing here would mask the failure that got us here.
+        try
+            System.IO.File.WriteAllText(release, "")
+        with _ ->
+            ()
+
 [<Fact(Timeout = 15000)>]
 let ``file changes observed during a test host defer the build until that run completes`` () =
     withTempDir "build-during-test-host" (fun tmpDir ->
         let marker = System.IO.Path.Combine(tmpDir, "build-ran")
-        let release = System.IO.Path.Combine(tmpDir, "release-test-host")
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        // The host stays live until the test releases it, so the deferral is observed while
-        // the run is provably in flight, however slowly this thread is scheduled.
-        let tests =
-            FsHotWatch.TestPrune.TestPrunePlugin.create
-                ":memory:"
-                tmpDir
-                (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
-                        Command = "sh"
-                        Args = $"-c \"while [ ! -f '%s{release}' ]; do sleep 0.02; done\""
-                        Group = "default"
-                        Environment = []
-                        FilterTemplate = None
-                        ClassJoin = " "
-                        TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
-                None
-                None
-                None
-                None
-                []
+        withReleaseGate tmpDir "test-host" (fun release ->
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
+            // The host stays live until the test releases it, so the deferral is observed while
+            // the run is provably in flight, however slowly this thread is scheduled.
+            let tests =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    ":memory:"
+                    tmpDir
+                    (Some
+                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                            Command = "sh"
+                            // 1500 polls at 20ms is ~30s: twice this test's 15s xUnit budget.
+                            // See `gatedWait` for why the cap is set relative to that budget.
+                            Args = "-c \"" + gatedWait tmpDir release 1500 + "\""
+                            Group = "default"
+                            Environment = []
+                            FilterTemplate = None
+                            ClassJoin = " "
+                            TimeoutSec = None
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                    None
+                    None
+                    None
+                    None
+                    []
 
-        host.RegisterHandler(tests)
-        let committed = registerBuildObserver host build
+            let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
 
-        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            host.RegisterHandler(tests)
+            let committed = registerBuildObserver host build
 
-        // Build's own committed state names the live run: the barrier the deferral reads.
-        Assert.True(
-            waitUntilTrue (fun () -> not (committed ()).ActiveTestRuns.IsEmpty) 10000,
-            "build never observed the live test run"
-        )
+            let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        let change = SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ]
-        host.EmitFileChanged change
+            // Build's own committed state names the live run: the barrier the deferral reads.
+            Assert.True(
+                waitUntilTrue (fun () -> not (committed ()).ActiveTestRuns.IsEmpty) 10000,
+                "build never observed the live test run"
+            )
 
-        Assert.True(
-            waitUntilTrue (fun () -> (committed ()).PendingFiles = [ change ]) 10000,
-            "build never committed the change it received during the run"
-        )
+            let change = SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ]
+            host.EmitFileChanged change
 
-        test <@ not (System.IO.File.Exists marker) @>
-        test <@ not runTask.IsCompleted @>
+            Assert.True(
+                waitUntilTrue (fun () -> (committed ()).PendingFiles = [ change ]) 10000,
+                "build never committed the change it received during the run"
+            )
 
-        System.IO.File.WriteAllText(release, "")
-        runTask.GetAwaiter().GetResult() |> ignore
+            test <@ not (System.IO.File.Exists marker) @>
+            test <@ not runTask.IsCompleted @>
 
-        // The deferred change is owned work until its build is folded, so host rest is the
-        // barrier for it.
-        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
-        test <@ System.IO.File.Exists marker @>
-        test <@ (committed ()).PendingFiles.IsEmpty @>)
+            System.IO.File.WriteAllText(release, "")
+            runTask.GetAwaiter().GetResult() |> ignore
+
+            // The deferred change is owned work until its build is folded, so host rest is the
+            // barrier for it.
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
+            test <@ System.IO.File.Exists marker @>
+            test <@ (committed ()).PendingFiles.IsEmpty @>))
 
 let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
     withTempDir "build-test-overlap" (fun tmpDir ->
@@ -520,84 +582,137 @@ let private manualTestWaitsForBuild () =
     withTempDir "test-waits-for-build" (fun tmpDir ->
         let buildStarted = System.IO.Path.Combine(tmpDir, "build-started")
         let buildCompleted = System.IO.Path.Combine(tmpDir, "build-completed")
-        let release = System.IO.Path.Combine(tmpDir, "release-build")
         let order = System.IO.Path.Combine(tmpDir, "order")
         let testStarted = System.IO.Path.Combine(tmpDir, "test-started")
         let buildScript = System.IO.Path.Combine(tmpDir, "build.sh")
         let testScript = System.IO.Path.Combine(tmpDir, "test.sh")
 
-        // The build holds the artifacts until the test releases it, so the manual host is
-        // observed waiting while the build is provably in flight, however slowly this
-        // thread is scheduled. Both scripts append to `order` as they reach their work.
-        System.IO.File.WriteAllText(
-            buildScript,
-            $"touch '{buildStarted}'\nwhile [ ! -f '{release}' ]; do sleep 0.02; done\nprintf 'build\\n' >> '{order}'\ntouch '{buildCompleted}'\n"
-        )
+        withReleaseGate tmpDir "build" (fun release ->
+            // The build holds the artifacts until the test releases it, so the manual host is
+            // observed waiting while the build is provably in flight, however slowly this
+            // thread is scheduled. Both scripts append to `order` as they reach their work.
+            // 2000 polls at 20ms is ~40s: twice this test's 20s xUnit budget. See `gatedWait`
+            // for why the cap is set relative to that budget and why it exits non-zero.
+            System.IO.File.WriteAllText(
+                buildScript,
+                $"touch '{buildStarted}'\n"
+                + gatedWait tmpDir release 2000
+                + $"\nprintf 'build\\n' >> '{order}'\ntouch '{buildCompleted}'\n"
+            )
 
-        System.IO.File.WriteAllText(
-            testScript,
-            $"printf 'test\\n' >> '{order}'\ntest -f '{buildCompleted}' || exit 42\ntouch '{testStarted}'\n"
-        )
+            System.IO.File.WriteAllText(
+                testScript,
+                $"printf 'test\\n' >> '{order}'\ntest -f '{buildCompleted}' || exit 42\ntouch '{testStarted}'\n"
+            )
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let tests =
-            FsHotWatch.TestPrune.TestPrunePlugin.create
-                ":memory:"
-                tmpDir
-                (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
-                        Command = "sh"
-                        Args = testScript
-                        Group = "default"
-                        Environment = []
-                        FilterTemplate = None
-                        ClassJoin = " "
-                        TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
-                None
-                None
-                None
-                None
-                []
+            let tests =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    ":memory:"
+                    tmpDir
+                    (Some
+                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
+                            Command = "sh"
+                            Args = testScript
+                            Group = "default"
+                            Environment = []
+                            FilterTemplate = None
+                            ClassJoin = " "
+                            TimeoutSec = None
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                    None
+                    None
+                    None
+                    None
+                    []
 
-        // Whether TestPrune's committed owner state holds the "tests" key: the manual run
-        // has claimed it, whether it is still queued for the artifacts or running.
-        let testsHeld =
-            PluginCommand.Observe(fun ctx _ _ -> async { return string (ctx.IsRunning "tests") })
+            // Whether TestPrune's committed owner state holds the "tests" key: the manual run
+            // has claimed it, whether it is still queued for the artifacts or running.
+            let testsHeld =
+                PluginCommand.Observe(fun ctx _ _ -> async { return string (ctx.IsRunning "tests") })
 
-        let build = BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] None
+            let build = BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] None
 
-        host.RegisterHandler
-            { tests with
-                Commands = ("fixture-tests-held", testsHeld) :: tests.Commands }
+            host.RegisterHandler
+                { tests with
+                    Commands = ("fixture-tests-held", testsHeld) :: tests.Commands }
 
-        host.RegisterHandler(build)
+            host.RegisterHandler(build)
 
-        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
-        Assert.True(waitUntilTrue (fun () -> System.IO.File.Exists buildStarted) 10000, "the build must start")
+            host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
+            Assert.True(waitUntilTrue (fun () -> System.IO.File.Exists buildStarted) 10000, "the build must start")
 
-        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        Assert.True(
-            waitUntilTrue
-                (fun () -> host.RunCommand("fixture-tests-held", [||]) |> Async.RunSynchronously = Some(string true))
-                10000,
-            "the manual run never claimed the tests key"
-        )
+            Assert.True(
+                waitUntilTrue
+                    (fun () ->
+                        host.RunCommand("fixture-tests-held", [||]) |> Async.RunSynchronously = Some(string true))
+                    10000,
+                "the manual run never claimed the tests key"
+            )
 
-        test <@ not (System.IO.File.Exists order) @>
-        test <@ not runTask.IsCompleted @>
+            test <@ not (System.IO.File.Exists order) @>
+            test <@ not runTask.IsCompleted @>
 
-        System.IO.File.WriteAllText(release, "")
-        runTask.GetAwaiter().GetResult() |> ignore
-        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
+            System.IO.File.WriteAllText(release, "")
+            runTask.GetAwaiter().GetResult() |> ignore
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
 
-        test <@ System.IO.File.ReadAllLines order = [| "build"; "test" |] @>
-        test <@ System.IO.File.Exists testStarted @>)
+            test <@ System.IO.File.ReadAllLines order = [| "build"; "test" |] @>
+            test <@ System.IO.File.Exists testStarted @>))
 
 [<Fact(Timeout = 20000)>]
 let ``manual test host waits for the active build to release its artifacts`` () = manualTestWaitsForBuild ()
+
+/// A gated fixture whose body fails before releasing: the shape every failing assertion in
+/// the two tests above takes, and the shape a mutation-killed run takes.
+///
+/// This leaked for real. While the wait was unbounded and nothing released it on the failure
+/// path, two such loops outlived their run by ~2h -- polling fifty times a second against a
+/// directory `withTempDir` had already deleted -- until they were killed by hand. An
+/// unbounded wait in a test harness is a defect on the runs that pass, too: the harness only
+/// has to fail once to strand a spinner, and the spinner then starves every later run on the
+/// box into false reds that have nothing to do with the code under test.
+[<Fact(Timeout = 30000)>]
+let ``a gated wait does not outlive a fixture body that fails before releasing`` () =
+    let mutable gate: System.Diagnostics.Process = null
+
+    try
+        let thrown =
+            Record.Exception(fun () ->
+                withTempDir "gated-wait-leak" (fun tmpDir ->
+                    withReleaseGate tmpDir "leak-probe" (fun release ->
+                        let started = System.IO.Path.Combine(tmpDir, "gate-started")
+
+                        // 3000 polls is ~60s, deliberately past this test's own 30s budget, so
+                        // the cap cannot be what ends this wait -- a cap that could expire inside
+                        // the window asserted below would let the fixture look fixed while it was
+                        // still leaking. What ends it is `gatedWait`'s `-d` guard firing when
+                        // `withTempDir` removes the tree.
+                        let psi = System.Diagnostics.ProcessStartInfo("sh")
+                        psi.ArgumentList.Add("-c")
+                        psi.ArgumentList.Add($"touch '{started}'; " + gatedWait tmpDir release 3000)
+                        gate <- System.Diagnostics.Process.Start psi
+
+                        Assert.True(
+                            waitUntilTrue (fun () -> System.IO.File.Exists started) 10000,
+                            "the gated wait never started"
+                        )
+
+                        // Fail the way a broken assertion does: before anything writes `release`.
+                        Assert.Fail "the fixture body failed before releasing the gate")))
+
+        test <@ not (isNull thrown) @>
+
+        Assert.True(
+            waitUntilTrue (fun () -> gate.HasExited) 10000,
+            "a gated wait outlived the fixture body that failed before releasing it"
+        )
+    finally
+        if not (isNull gate) then
+            gate.Dispose()
 
 [<Fact(Timeout = 20000)>]
 let ``failed build rejects queued and later manual hosts until a success drains automatic debt`` () =
