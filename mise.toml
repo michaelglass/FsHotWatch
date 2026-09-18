@@ -172,25 +172,39 @@ description = "Check if docs/ is in sync with READMEs"
 run = "dotnet tool run syncdocs check"
 
 [tasks.release]
-description = "Release dependency packages before the CLI that bundles them"
-# FsHotWatch.Cli has a ProjectReference to core and every plugin below. The tagger's
-# NuGet poll is best-effort (its documented timeout still exits 0), so each scoped
-# dependency level is followed by fail-closed exact-version restore barriers. The CLI tag
-# therefore cannot race publication of the dependency versions its nuspec names. An
-# unchanged lane probes its already-published current version. Keep the CLI last, and
-# do not collapse this to one unscoped invocation: tag workflows are independent.
+description = "Release every package; the tagger orders publication by the dependency graph"
+# This used to hand-order the release: three scoped invocations (core, then the seven
+# plugins, then the CLI) with nine exact-version restore barriers between them. That
+# existed because the tagger pushed every tag at once, in config order — so a CLI tag
+# could be pushed before the dependency versions its nuspec names were published, and
+# the correct order held only when the dependency's workflow happened to finish first.
+#
+# The tagger now derives a publication DAG from the project references and releases in
+# waves, waiting for each wave's exact versions on NuGet before pushing the next, and
+# failing closed when a dependency does not arrive. So the ordering this task performed
+# by hand is now performed by the thing that pushes the tags — which is also the only
+# place that can do it correctly, since config order is WRONG here: the CLI is listed
+# second while it bundles every plugin listed after it. `mise run release-dry-run`
+# prints the order it will use.
+#
+# One barrier is kept, on the CLI and only the CLI. It is not ordering anything — the
+# CLI is last — it is the end-to-end proof that the published tool actually installs and
+# runs, which is a stronger claim than "the feed answers 200" and the one thing the
+# tagger's own poll does not establish. The eight it replaces were asking a question the
+# tagger now asks itself, one wave earlier.
+#
+# `--skip-nuget-wait` because otherwise the LAST wave is confirmed twice. After pushing
+# the final wave's tags the tagger polls nuget.org for those same versions for up to 20
+# minutes and exits 2 if the index has not caught up, and the barrier below then asks the
+# identical question again. That is not a harmless double-check: it fails the release on
+# the WEAKER probe before the stronger one runs, which is how an indexing lag gets
+# reported as a failed publish on a release whose tags are pushed and whose packages
+# arrive minutes later. The flag skips ONLY that final self-confirmation — the inter-wave
+# gates above are correctness, not a timeout, and are not skippable by it. Measured
+# 2026-09-18: the feed served a new CLI version four minutes before a real install of it
+# succeeded, so the index answering is genuinely the weaker claim.
 run = """
-dotnet tool run fssemantictagger release --only FsHotWatch
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch src/FsHotWatch/FsHotWatch.fsproj
-dotnet tool run fssemantictagger release --only FsHotWatch.TestPrune,FsHotWatch.Analyzers,FsHotWatch.Lint,FsHotWatch.Fantomas,FsHotWatch.Build,FsHotWatch.FileCommand,FsHotWatch.Coverage
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.TestPrune src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Analyzers src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Lint src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Fantomas src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Build src/FsHotWatch.Build/FsHotWatch.Build.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.FileCommand src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj
-dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Coverage src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj
-dotnet tool run fssemantictagger release --only FsHotWatch.Cli
+dotnet tool run fssemantictagger release --skip-nuget-wait
 dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Cli src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
 """
 # `check-msbuild-deps` on the RELEASE path, not just the `ci` one.

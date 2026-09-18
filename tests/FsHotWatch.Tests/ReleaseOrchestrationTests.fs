@@ -20,6 +20,14 @@ let private releaseProjects root =
         name, path)
     |> Map.ofSeq
 
+let private declarationOrder root =
+    use config =
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "semantic-tagger.json")))
+
+    config.RootElement.GetProperty("packages").EnumerateArray()
+    |> Seq.map _.GetProperty("name").GetString()
+    |> List.ofSeq
+
 let private dependencyGraph root =
     let projects = releaseProjects root
 
@@ -40,84 +48,67 @@ let private dependencyGraph root =
             Map.tryFind dependencyPath packageByPath)
         |> Set.ofSeq)
 
-let private dependencyLevels (graph: Map<string, Set<string>>) =
-    let rec build released remaining levels =
-        if Set.isEmpty remaining then
-            List.rev levels
-        else
-            let ready =
-                remaining |> Set.filter (fun package -> Set.isSubset graph[package] released)
-
-            test <@ not (Set.isEmpty ready) @>
-            build (Set.union released ready) (Set.difference remaining ready) (ready :: levels)
-
-    build Set.empty (graph |> Map.keys |> Set.ofSeq) []
-
+/// The release used to hand-order itself: one scoped `--only` invocation per dependency
+/// level, with an exact-version barrier after each. It had to, because the tagger pushed
+/// every tag at once in CONFIG order — and config order is wrong here, which the second
+/// half of this test keeps proving. The tagger now derives the publication order from the
+/// project references and waits between waves, so hand-ordering is no longer a safeguard;
+/// it is a second, hand-maintained copy of an order that already exists, free to drift
+/// from the one that actually governs the push.
 [<Fact>]
-let ``release emits every dependency lane before the CLI lane`` () =
+let ``release hands publication order to the tagger and keeps only the end-to-end tool proof`` () =
     let root = repoRoot ()
 
     let release = taskBlock (miseToml root) "release"
 
-    let graph = dependencyGraph root
-    let expectedLevels = dependencyLevels graph
-
-    let releaseLevels =
-        release.Split('\n')
-        |> Array.choose (fun line ->
-            let marker = "fssemantictagger release --only "
-            let markerAt = line.IndexOf(marker, StringComparison.Ordinal)
-
-            if markerAt < 0 then
-                None
-            else
-                line.Substring(markerAt + marker.Length).Split(',', StringSplitOptions.RemoveEmptyEntries)
-                |> Array.map _.Trim()
-                |> Array.toList
-                |> Some)
-        |> Array.toList
-
-    test <@ releaseLevels |> List.map Set.ofList = expectedLevels @>
-    test <@ releaseLevels |> List.concat |> Set.ofList = (graph |> Map.keys |> Set.ofSeq) @>
-    test <@ releaseLevels |> List.concat |> List.countBy id |> List.forall (snd >> (=) 1) @>
-
-    let mutatingReleaseLines =
+    let taggerLines =
         release.Split('\n')
         |> Array.filter _.Contains("fssemantictagger release")
         |> Array.toList
 
-    test <@ mutatingReleaseLines.Length = expectedLevels.Length @>
-    test <@ mutatingReleaseLines |> List.forall _.Contains("release --only ") @>
+    // Exactly one, unscoped: `--only` would be this file deciding the order again.
+    test <@ taggerLines.Length = 1 @>
+    test <@ taggerLines |> List.forall (fun line -> not (line.Contains "--only")) @>
+    // And mutating — a release task that previews is a release task that releases nothing.
+    test <@ taggerLines |> List.forall (fun line -> not (line.Contains "--dry-run")) @>
+    // The tagger must NOT confirm the last wave itself: the barrier below does that, with
+    // a real install rather than a feed lookup. Without this flag the final wave is waited
+    // for twice, and the release fails on the weaker probe before the stronger one runs.
+    test <@ taggerLines |> List.forall _.Contains("--skip-nuget-wait") @>
 
-    test
-        <@
-            mutatingReleaseLines
-            |> List.forall (fun line -> not (line.Contains("--dry-run")))
-        @>
+    let barriers =
+        release.Split('\n')
+        |> Array.filter _.Contains("wait-for-nuget.fsx")
+        |> Array.toList
 
-    let coreRelease =
-        release.IndexOf("release --only FsHotWatch\n", StringComparison.Ordinal)
+    // One barrier, on the CLI, after the tagger. It orders nothing — the CLI is last —
+    // it proves the published tool installs and runs, which a feed presence check does not.
+    test <@ barriers.Length = 1 @>
+    test <@ barriers |> List.forall _.Contains("-- FsHotWatch.Cli ") @>
 
-    let pluginRelease =
-        release.IndexOf("release --only FsHotWatch.TestPrune,", StringComparison.Ordinal)
+    let taggerAt = release.IndexOf("fssemantictagger release", StringComparison.Ordinal)
 
-    let cliRelease =
-        release.IndexOf("release --only FsHotWatch.Cli\n", StringComparison.Ordinal)
+    let barrierAt = release.IndexOf("wait-for-nuget.fsx", StringComparison.Ordinal)
+    test <@ 0 <= taggerAt && taggerAt < barrierAt @>
 
-    test <@ 0 <= coreRelease && coreRelease < pluginRelease && pluginRelease < cliRelease @>
+    // Why none of the above may become "just follow the config order": in this repository
+    // the config order is not a legal publication order. The CLI is declared before every
+    // plugin it bundles, so anything that publishes in declaration order publishes a
+    // dependent before its dependencies.
+    let graph = dependencyGraph root
+    let declared = declarationOrder root
+    let position = declared |> List.mapi (fun index name -> name, index) |> Map.ofList
 
-    for package in graph |> Map.keys do
-        let waitCommand = $"wait-for-nuget.fsx -- %s{package} "
-        let waitAt = release.IndexOf(waitCommand, StringComparison.Ordinal)
-        test <@ waitAt >= 0 @>
-        test <@ release.IndexOf(waitCommand, waitAt + waitCommand.Length, StringComparison.Ordinal) < 0 @>
+    let declaredBeforeItsDependency =
+        declared
+        |> List.collect (fun package ->
+            graph[package]
+            |> Set.toList
+            |> List.filter (fun dependency -> position[package] < position[dependency])
+            |> List.map (fun dependency -> package, dependency))
 
-        if package = "FsHotWatch" then
-            test <@ coreRelease < waitAt && waitAt < pluginRelease @>
-        elif package = "FsHotWatch.Cli" then
-            test <@ cliRelease < waitAt @>
-        else
-            test <@ pluginRelease < waitAt && waitAt < cliRelease @>
+    test <@ not (List.isEmpty declaredBeforeItsDependency) @>
+    test <@ declaredBeforeItsDependency |> List.forall (fst >> (=) "FsHotWatch.Cli") @>
 
 [<Fact>]
 let ``release dry run remains one exact whole-release preview`` () =
