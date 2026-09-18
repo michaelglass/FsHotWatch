@@ -136,7 +136,7 @@ esac
         ||| UnixFileMode.GroupExecute
     )
 
-let private runBarrier root fakeDotnet probeParent project packageId settings =
+let private barrierStart root fakeDotnet probeParent project packageId settings =
     let start = ProcessStartInfo("dotnet")
     start.WorkingDirectory <- root
     start.UseShellExecute <- false
@@ -156,9 +156,20 @@ let private runBarrier root fakeDotnet probeParent project packageId settings =
     start.Environment["FSHW_NUGET_PROBE_DELAY_MS"] <- "1"
     start.Environment["FSHW_NUGET_PROBE_PROCESS_TIMEOUT_MS"] <- "1000"
 
+    // An EMPTY value means "remove the harness's override and let the script's own
+    // default answer". Every default above is set here for speed, which also makes the
+    // real defaults — the ones a release actually runs with — unreachable from a test:
+    // a budget reverted in the script stays green because no test ever sees it.
     for key, value in settings do
-        start.Environment[key] <- value
+        if value = "" then
+            start.Environment.Remove(key: string) |> ignore
+        else
+            start.Environment[key] <- value
 
+    start
+
+let private runBarrier root fakeDotnet probeParent project packageId settings =
+    let start = barrierStart root fakeDotnet probeParent project packageId settings
     let clock = Stopwatch.StartNew()
     use child = Process.Start start
     let stdout = child.StandardOutput.ReadToEndAsync()
@@ -170,6 +181,35 @@ let private runBarrier root fakeDotnet probeParent project packageId settings =
       Stdout = stdout.GetAwaiter().GetResult()
       Stderr = stderr.GetAwaiter().GetResult()
       Elapsed = clock.Elapsed }
+
+/// Reads the barrier's output as it is produced and returns the first line matching
+/// `matching`, killing the child instead of waiting it out.
+///
+/// This exists for one claim that cannot be made any other way: the DEFAULT delay
+/// between attempts. Observing it by running with it means sleeping it, and fifteen
+/// seconds of nothing to read one constant is not a trade this suite should make. The
+/// retry notice is printed BEFORE the delay it announces, so reading that line proves
+/// the value the run was about to sleep without sleeping it.
+let private barrierLineMatching root fakeDotnet probeParent project packageId settings matching =
+    let start = barrierStart root fakeDotnet probeParent project packageId settings
+    use child = Process.Start start
+    // Drained, never read: an undrained stderr pipe can fill and wedge the child before
+    // it reaches the line under test.
+    child.StandardError.ReadToEndAsync() |> ignore
+
+    let rec readUntil () =
+        match child.StandardOutput.ReadLine() with
+        | null -> None
+        | line when matching line -> Some line
+        | _ -> readUntil ()
+
+    let found = readUntil ()
+
+    if not child.HasExited then
+        child.Kill true
+
+    child.WaitForExit()
+    found
 
 let private scratch body =
     withTempDir "fshw-nuget-barrier" (fun temp ->
@@ -295,6 +335,63 @@ let ``restore failures retry to the bound then fail and clean up`` () =
         test <@ result.Stderr.Contains("re-run `mise run release`") @>
         test <@ result.Stderr.Contains("synthetic restore failure") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
+
+[<Fact>]
+let ``the attempt budget defaults to the twenty minutes an index lag needs`` () =
+    scratch (fun _ project fakeDotnet probeParent _ countFile ->
+        writeProject project [ "Example.Package" ] [ "1.0.0" ]
+
+        let result =
+            runBarrier
+                (repoRoot ())
+                fakeDotnet
+                probeParent
+                project
+                "Example.Package"
+                // The one setting this test does NOT supply. Every other test pins the
+                // attempts so it finishes quickly, which left the shipped default — the
+                // only value a release ever runs with — asserted by nothing: shrinking it
+                // back to the five minutes that failed closed on every ordinary release
+                // would have kept the suite green.
+                [ "FAKE_MODE", "failure"
+                  "FAKE_COUNT_FILE", countFile
+                  "FSHW_NUGET_PROBE_ATTEMPTS", "" ]
+
+        test <@ result.ExitCode = 1 @>
+        // 80 attempts at the 15s default is 20 minutes, which is what the observed index
+        // lag after a green Release run costs. The probe count is the claim; the give-up
+        // line is how a human reads it.
+        test <@ File.ReadAllText countFile = "80" @>
+        test <@ result.Stderr.Contains("after 80 attempts") @>
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
+
+[<Fact>]
+let ``the delay between attempts defaults to the fifteen seconds that make that budget`` () =
+    scratch (fun _ project fakeDotnet probeParent _ countFile ->
+        writeProject project [ "Example.Package" ] [ "1.0.0" ]
+
+        let line =
+            barrierLineMatching
+                (repoRoot ())
+                fakeDotnet
+                probeParent
+                project
+                "Example.Package"
+                // The budget is attempts TIMES delay. Pinning the attempts alone would
+                // leave half of the twenty minutes guarded by nothing: a delay quietly
+                // cut to a second keeps 80 attempts and buys 80 seconds. Two attempts is
+                // the fewest that announces a delay at all.
+                [ "FAKE_MODE", "failure"
+                  "FAKE_COUNT_FILE", countFile
+                  "FSHW_NUGET_PROBE_ATTEMPTS", "2"
+                  "FSHW_NUGET_PROBE_DELAY_MS", "" ]
+                (fun line -> line.Contains "retrying in")
+
+        test
+            <@
+                line = Some
+                    "NuGet publication barrier: Example.Package 1.0.0 unavailable (attempt 1/2); retrying in 15000ms"
+            @>)
 
 [<Fact>]
 let ``a transient restore failure retries and can succeed`` () =
