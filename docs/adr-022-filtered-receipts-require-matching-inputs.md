@@ -24,7 +24,9 @@ walk holes cannot authorize reuse. Declared inputs and absent declarations
 participate in the identity.
 
 A same-input `already-verified` drain may retain an applicable earlier receipt
-when it executes nothing and no failure remains outstanding. A real narrower
+when it executes nothing. The retain does not consult the failure ledger — see
+the amendment below, which records why, and what stops a retained receipt beside
+an outstanding failure from ever producing a green. A real narrower
 execution may preserve earlier same-input full coverage, while its newer failure
 still makes the outcome red. Aborted or invalid execution cannot borrow the
 earlier passing receipt. Manual run boundaries retain their explicit reset.
