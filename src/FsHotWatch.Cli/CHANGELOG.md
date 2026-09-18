@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.56 - 2026-09-18
+
+- core, cli: a superseded scan re-captures its model instead of ending the check
+
+
 ## 0.14.0-alpha.55 - 2026-09-18
 
 - (breaking) One settled read decides a check. The convergence loop is gone:
