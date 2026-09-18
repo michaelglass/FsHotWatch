@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.55 - 2026-09-18
+
 - (breaking) One settled read decides a check. The convergence loop is gone:
   `CheckVerdict.converge`, `IpcOutput.MaxConvergeAttempts`, `CheckVerdict.uncheckedMagnitude`
   (and its `Unknown → Int32.MaxValue` sentinel), `pollAndRender`'s `triggerScan` parameter,
