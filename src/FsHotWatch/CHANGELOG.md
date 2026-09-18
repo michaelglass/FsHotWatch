@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.38 - 2026-09-18
+
 - (breaking) `WaitForComplete` waits for EVIDENCE, not for a reported status. The
   `requireVerdict` guard, the 200 ms quiescence window and the `activeVerdictWaits` counter
   are all gone. The wait rests when the host owns no work and something has earned evidence
