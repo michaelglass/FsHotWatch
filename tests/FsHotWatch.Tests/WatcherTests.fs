@@ -914,6 +914,35 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
         use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
         test <@ watcher.Disposables.Length = 1 @>)
 
+// === Unit tests for syntheticPath ===
+
+// A rerun emits a synthetic path so only the target plugin re-fires. Relative
+// paths are resolved against the PROCESS working directory downstream, and that
+// directory can be deleted out from under a long-lived daemon — after which a
+// rerun fails on the vanished cwd rather than on anything to do with the plugin.
+// Rooting removes the daemon's dependence on its own cwd for this path.
+
+[<Fact(Timeout = 15000)>]
+let ``syntheticPath is absolute, so a rerun never resolves against the process cwd`` () =
+    let wildcard =
+        FilePattern.syntheticPath "/repo" (FilePattern.parse "*.ratchet.json")
+
+    let literal =
+        FilePattern.syntheticPath "/repo" (FilePattern.parse "coverage-ratchet.json")
+
+    test <@ Path.IsPathFullyQualified wildcard @>
+    test <@ Path.IsPathFullyQualified literal @>
+
+[<Fact(Timeout = 15000)>]
+let ``syntheticPath still matches the pattern it was built from`` () =
+    // Rooting must not cost the thing the path exists for: a literal compares by
+    // file name and a wildcard by suffix, so both survive an absolute prefix.
+    let wildcard = FilePattern.parse "*.ratchet.json"
+    let literal = FilePattern.parse "coverage-ratchet.json"
+
+    test <@ FilePattern.matches wildcard (FilePattern.syntheticPath "/repo" wildcard) @>
+    test <@ FilePattern.matches literal (FilePattern.syntheticPath "/repo" literal) @>
+
 // === Unit tests for matchesPattern ===
 
 [<Fact(Timeout = 15000)>]

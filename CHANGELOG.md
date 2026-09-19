@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **core: `fshw rerun <plugin>` no longer depends on the daemon's own working directory.**
+  The synthetic path a rerun emits was a bare relative name, resolved downstream against
+  the PROCESS working directory. A daemon outlives the shell that started it, so that
+  directory can be deleted while the daemon is still serving — and a rerun then failed on
+  the vanished cwd rather than on anything to do with the plugin being re-fired. The path
+  is now rooted at the repository root, and `FilePattern.syntheticPath` takes that root as
+  an argument so a caller cannot produce the bare form by omission. Matching is unchanged:
+  a literal still compares by file name and a wildcard by suffix, so both survive the
+  absolute prefix.
+
 - **cli: `confirm`'s "verdict still applies" fast path runs the run-level hooks.** It
   skipped them on the rationale that it starts no daemon and runs no test — true, and
   only half of what the hooks do. The other half is `beforeRun`, which is where a

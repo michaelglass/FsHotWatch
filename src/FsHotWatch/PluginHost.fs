@@ -711,7 +711,7 @@ type PluginHost
         match this.GetFileCommandPattern(name) with
         | Some pattern ->
             this.ClearTaskCachePlugin(name)
-            this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath pattern ])
+            this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath normalizedRepoRoot pattern ])
             Result.Ok()
         | None ->
             let registered =

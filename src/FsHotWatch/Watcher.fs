@@ -135,10 +135,21 @@ module FilePattern =
 
     /// A synthetic path that `matches` this pattern — used by rerun to emit a
     /// fake FileChanged event that triggers only the target plugin.
-    let syntheticPath (pattern: FilePattern) : string =
-        match pattern with
-        | FilePattern.Wildcard suffix -> "_fshw_rerun_" + suffix
-        | FilePattern.Literal name -> name
+    ///
+    /// Rooted at `root`, and takes it as an argument so a caller cannot produce the
+    /// bare relative form by omission. A relative path here is resolved against the
+    /// PROCESS working directory downstream, which is a directory that can be
+    /// deleted out from under a long-lived daemon — and then a rerun fails on the
+    /// vanished cwd rather than on anything to do with the plugin being re-fired.
+    /// Rooting keeps matching intact: a literal still compares by file name, and a
+    /// wildcard still compares by suffix.
+    let syntheticPath (root: string) (pattern: FilePattern) : string =
+        let name =
+            match pattern with
+            | FilePattern.Wildcard suffix -> "_fshw_rerun_" + suffix
+            | FilePattern.Literal name -> name
+
+        Path.Combine(root, name)
 
 /// Like `isRelevantFile`, but also accepts files matching any of the given
 /// FileCommandPlugin patterns (for non-source extensions like `.ratchet.json`).
