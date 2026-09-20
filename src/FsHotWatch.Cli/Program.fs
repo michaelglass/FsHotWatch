@@ -544,7 +544,20 @@ let ipcErrorHeadline (inner: exn) : string =
     | IpcFault.DaemonOutOfMemory _ -> $"The fshw DAEMON ran out of memory serving this IPC call: %s{inner.Message}"
     | IpcFault.CorruptedFrame _
     | IpcFault.TimedOut _
-    | IpcFault.Other _ -> $"Could not connect to daemon: %s{inner.Message}"
+    | IpcFault.Other _ ->
+        // A daemon that has been squeezed out by machine memory pressure presents
+        // here, not as an OOM: it stops answering, or the connect times out, and
+        // the message names the transport rather than the cause. fshw's footprint
+        // is ~85% native FCS and scales with tree size, so on a machine whose RAM
+        // the tree has outgrown this is the SHAPE the failure takes — measured
+        // 2026-09-20 at a 37 GB phys_footprint on a 32 GB box, where the same
+        // session also saw daemons die mid-scan and a supervisor reaped by an
+        // agent harness's low-memory killer. Saying so costs one GC read and
+        // turns four different-looking failures into one named cause.
+        let pressure =
+            FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readGcPressure ())
+
+        $"Could not connect to daemon: %s{inner.Message}%s{pressure}"
 
 /// Render a failed IPC call to stderr: a process-accurate headline plus the
 /// unwrapped error's recovery hint (if any). Shared by every IPC entry point so

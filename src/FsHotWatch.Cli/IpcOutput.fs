@@ -1803,8 +1803,17 @@ let pollAndRenderForInvocation
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
-        UI.fail
+        // A daemon squeezed out by machine memory pressure dies exactly here, and
+        // the message above names the SYMPTOM. Naming the pressure turns "the
+        // daemon shut down" — which reads as an fshw bug and sends the reader to
+        // logs/daemon.log — into the cause, which is usually that the tree needs
+        // more memory than the machine has. Measured 2026-09-20: a 37 GB
+        // phys_footprint on a 32 GB box, on a tree that has grown from 745 files
+        // (when this was last benchmarked at 3 GB settled) to 2047.
+        UI.fail (
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
+            + FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readGcPressure ())
+        )
 
         abortExitCode
 

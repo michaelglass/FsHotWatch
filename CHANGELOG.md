@@ -213,6 +213,31 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core, cli: a daemon squeezed out by memory pressure says so, instead of reporting a transport fault
+
+A daemon the machine cannot afford does not report an out-of-memory error. It stops
+answering, or dies mid-scan, and what the operator reads is `Could not connect to daemon`
+or `Check aborted: the daemon shut down` — messages that name the TRANSPORT. Both read as
+an fshw bug, and both send the reader to `logs/daemon.log` to look for a fault that is not
+there. The honest reading and the broken one are indistinguishable at the point of reading,
+which is the whole difficulty: the remedy for a transport fault is to re-run, and re-running
+is precisely what cannot work here.
+
+Both messages now carry a second sentence when the GC reports the machine at or above its
+own high-memory-load mark. It names the cause, says fshw's footprint is dominated by native
+FCS allocations and scales with the size of the tree, points at `footprint <daemon pid>` as
+the measurement — `ps` refuses the field on macOS and `top`'s MEM column is a different
+number — and says plainly that a re-run will not help if the tree does not fit.
+
+The sentence is empty when there is no pressure, so a genuine transport fault is never given
+a memory story it does not deserve. `IdleExit.disconnectPressureNote` takes the pressure
+signal as an argument rather than reading the GC itself, so the wording is pinned by tests
+without arranging a real allocation load.
+
+**This is a diagnosis, not a fix.** It does not reduce what a scan costs. A tree that has
+outgrown the machine still will not check on it; the message stops that outcome from
+looking like a defect in the daemon.
+
 ### core, cli: a scan whose project model is replaced re-scans it instead of ending the check
 
 A rediscovery that lands while a scan is running used to kill the scan, and with it the

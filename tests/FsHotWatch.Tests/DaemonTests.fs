@@ -3311,3 +3311,45 @@ let ``supervised work held past its own deadline still reads as wedged`` () =
         test <@ failure.Message.Contains "hung-operation" @>
     finally
         release.Set()
+
+// ---------------------------------------------------------------------------
+// Naming memory pressure when a daemon stops answering
+// ---------------------------------------------------------------------------
+//
+// A daemon squeezed out by MACHINE memory pressure does not raise an
+// out-of-memory error. It stops answering, or dies mid-scan, and the CLI reports
+// the transport — "could not connect", "the daemon shut down" — which reads as an
+// fshw bug and sends the reader to logs/daemon.log. Measured 2026-09-20 on a
+// consumer repository: a 37 GB phys_footprint on a 32 GB box, on a tree grown
+// from 745 files (last benchmarked at ~3 GB settled) to 2047. Four
+// different-looking failures in one session had that single cause.
+
+[<Fact>]
+let ``no memory pressure adds nothing to a daemon-disconnect message`` () =
+    // A genuine transport fault must not be given a memory story it does not
+    // deserve — that would send the next reader chasing RAM for a broken pipe.
+    test <@ IdleExit.disconnectPressureNote false = "" @>
+
+[<Fact>]
+let ``under memory pressure the disconnect message names the cause and the instrument`` () =
+    let note = IdleExit.disconnectPressureNote true
+
+    test <@ note <> "" @>
+
+    // The three things a reader needs and cannot get from "could not connect":
+    // that memory is the suspect, that fshw's footprint scales with the tree, and
+    // which instrument answers (ps refuses the field; top's MEM is a different
+    // number).
+    test <@ note.Contains "memory pressure" @>
+    test <@ note.Contains "scales with the size of the tree" @>
+    test <@ note.Contains "footprint" @>
+
+[<Fact>]
+let ``the pressure note refuses to promise that a re-run helps`` () =
+    // The surrounding message says "re-run `fshw check`". That advice is right for
+    // a transport blip and wrong for a tree that does not fit, and following it is
+    // how an afternoon disappears into identical failures. POSITIVE CONTROL for
+    // the pairing: the no-pressure note must stay silent on re-running, so this
+    // assertion cannot pass by the sentence being present unconditionally.
+    test <@ (IdleExit.disconnectPressureNote true).Contains "a re-run will not help" @>
+    test <@ not ((IdleExit.disconnectPressureNote false).Contains "re-run") @>

@@ -65,6 +65,29 @@ let readGcPressure () : bool =
     info.HighMemoryLoadThresholdBytes > 0L
     && info.MemoryLoadBytes >= info.HighMemoryLoadThresholdBytes
 
+/// Pure: the sentence appended to a daemon-disconnect or aborted-check message
+/// when the MACHINE is under memory pressure.
+///
+/// A daemon squeezed out by memory pressure does not report an out-of-memory
+/// error. It stops answering, or dies mid-scan, and the message names the
+/// transport — "could not connect", "the daemon shut down" — which reads as an
+/// fshw bug and sends the reader to the daemon log. The cause is usually that the
+/// tree needs more memory than the machine has: fshw's footprint is dominated by
+/// native FCS allocations and scales with tree size.
+///
+/// Empty when there is no pressure, so a genuine transport fault is not given a
+/// memory story it does not deserve. Pure and taking the signal as an argument so
+/// the wording is testable without a real GC.
+let disconnectPressureNote (pressure: bool) : string =
+    if not pressure then
+        ""
+    else
+        " The machine is under memory pressure (the GC reports memory load at or above its own high-load mark). \
+          fshw's footprint is dominated by native FCS allocations and scales with the size of the tree, so on a \
+          machine the tree has outgrown this is what running out looks like rather than an out-of-memory error. \
+          Measure with `footprint <daemon pid>` — `ps` refuses the field on macOS and `top`'s MEM column is a \
+          different number — and note that a re-run will not help if the tree does not fit."
+
 /// Pure: shorten an already-eligible idle window (in minutes) under memory pressure.
 /// Eligibility is decided upstream by `resolveThreshold`, so by the time we have a
 /// `baseThreshold: int` the daemon is eligible and pressure here only SHORTENS, never
