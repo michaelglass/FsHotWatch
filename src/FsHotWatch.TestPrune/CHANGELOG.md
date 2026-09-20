@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.42 - 2026-09-20
+
+- Drop private-tracker references from comments and docs
+
+
 ## 0.13.0-alpha.41 - 2026-09-18
 
 - Fixed: a receipt refused a green over a COLD tree its run had actually covered. The

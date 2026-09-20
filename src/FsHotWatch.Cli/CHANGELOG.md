@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.57 - 2026-09-20
+
 - **`confirm`'s "verdict still applies" fast path now runs the run-level hooks.** It
   used to skip them entirely, on the rationale that it starts no daemon and runs no
   test. That covers only half of what the hooks are for: a `beforeRun` is where a

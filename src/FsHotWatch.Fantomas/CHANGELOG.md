@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-09-20
+
+- Drop private-tracker references from comments and docs
+
+
 ## 0.7.0-alpha.26 - 2026-09-17
 
 - docs: reword comments and docs left ungrammatical by removing private references

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.38 - 2026-09-20
+
+- Drop private-tracker references from comments and docs
+
+
 ## 0.7.0-alpha.37 - 2026-09-18
 
 - A build that FAILED mints `CompletedBuildFailure` for the model it failed under, so a

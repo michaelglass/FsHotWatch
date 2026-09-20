@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.40 - 2026-09-20
+
+- core: root the rerun synthetic path so it cannot resolve against a deleted cwd
+- Drop private-tracker references from comments and docs
+
+
 ## 0.10.0-alpha.39 - 2026-09-18
 
 - core, cli: a superseded scan re-captures its model instead of ending the check
