@@ -367,22 +367,79 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
         test <@ receivedArgs = "--verbose --no-cache " @>)
 
 // --- Completions command ---
+//
+// This test used to run the real writer against the real `~/.config/fish/completions/`,
+// so every run of the unit suite overwrote the DEVELOPER's live fish completions — a unit
+// test reaching out and editing the environment it runs in. It now points the write at a
+// temp config dir, and asserts the real path is untouched.
+//
+// `XDG_CONFIG_HOME` is the seam because it is the one fish itself uses, and because the
+// obvious alternative does not work: `SpecialFolder.UserProfile` does NOT follow `HOME` on
+// this runtime — overriding `HOME` makes it return `""` (measured, .NET 10 / macOS), which
+// would have turned the absolute clobber into a relative write into the working directory.
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Completions returns 0`` () =
-    let result =
-        executeCommand
-            ""
-            (fun _ -> Unchecked.defaultof<_>)
-            (fakeIpc ())
-            "/tmp"
-            "pipe"
-            Completions
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+let ``executeCommand Completions returns 0 and writes only under XDG_CONFIG_HOME`` () =
+    withTempDir "prog-completions" (fun configHome ->
+        // The negative control. The real file is the developer's live config and may
+        // legitimately exist, so "absent afterwards" is not the assertion — "byte-identical
+        // to whatever it was before" is, and it holds whether or not it exists.
+        let realPath =
+            Path.Combine(
+                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                ".config",
+                "fish",
+                "completions",
+                $"{cliName}.fish"
+            )
 
-    test <@ result = 0 @>
+        let realBefore =
+            if File.Exists realPath then
+                Some(File.ReadAllBytes realPath, File.GetLastWriteTimeUtc realPath)
+            else
+                None
+
+        withEnv "XDG_CONFIG_HOME" (Some configHome) (fun () ->
+            let result =
+                executeCommand
+                    ""
+                    (fun _ -> Unchecked.defaultof<_>)
+                    (fakeIpc ())
+                    "/tmp"
+                    "pipe"
+                    Completions
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
+
+            test <@ result = 0 @>
+
+            // It wrote — under the temp dir, with real content.
+            let written = Path.Combine(configHome, "fish", "completions", $"{cliName}.fish")
+
+            test <@ File.Exists written @>
+            test <@ (File.ReadAllText written).Contains $"complete -c {cliName}" @>)
+
+        let realAfter =
+            if File.Exists realPath then
+                Some(File.ReadAllBytes realPath, File.GetLastWriteTimeUtc realPath)
+            else
+                None
+
+        test <@ realAfter = realBefore @>)
+
+[<Fact(Timeout = 15000)>]
+let ``fishCompletionsDir prefers XDG_CONFIG_HOME over the home-directory fallback`` () =
+    withEnv "XDG_CONFIG_HOME" (Some "/somewhere/else") (fun () ->
+        // The bug this pins: fish reads $XDG_CONFIG_HOME/fish when it is set, so writing to
+        // ~/.config/fish there produces a file fish never loads — and a success message.
+        test <@ fishCompletionsDir () = Ok(Path.Combine("/somewhere/else", "fish", "completions")) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``fishCompletionsDir falls back to the home directory when XDG_CONFIG_HOME is unset`` () =
+    withEnv "XDG_CONFIG_HOME" None (fun () ->
+        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+        test <@ fishCompletionsDir () = Ok(Path.Combine(home, ".config", "fish", "completions")) @>)
 
 // --- Start command singleton guarantee ---
 

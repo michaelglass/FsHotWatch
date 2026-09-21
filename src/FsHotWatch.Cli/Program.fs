@@ -387,6 +387,50 @@ let defaultIpcOps: IpcOps =
             let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
             launchDaemonProcess exe toolPrefix repoRoot extraArgs logFile }
 
+/// Where `fshw completions` writes its fish completion script.
+///
+/// Resolved HERE rather than left to `CommandTree.FishCompletions.writeToFile`, which
+/// hardcodes `~/.config/fish/completions`. Two measurements (.NET 10, macOS) say that is
+/// the wrong destination often enough to own the decision locally:
+///
+///   * **fish reads `$XDG_CONFIG_HOME/fish` when that variable is set**, falling back to
+///     `~/.config/fish` only when it is not. Writing to the fallback unconditionally means
+///     that on a machine which sets `XDG_CONFIG_HOME`, fshw wrote a completions file into a
+///     directory fish never reads — the command reported success and the completions
+///     silently did not work.
+///   * **`Environment.GetFolderPath SpecialFolder.UserProfile` returns `""`** — not the
+///     home directory, and not an exception — when `HOME` is unset. `Path.Combine` then
+///     produces the RELATIVE path `.config/fish/completions`, so the write lands in
+///     whatever the current working directory happens to be. A tool that scatters a
+///     `.config/` tree into the user's repo on a misconfigured shell is worse than one
+///     that refuses, so this returns `Error` instead of a path it cannot justify.
+///
+/// Injectable by construction: `XDG_CONFIG_HOME` is the documented way to move a fish
+/// config tree, so a caller that needs the write to land elsewhere — a test, a sandbox,
+/// a packaging script — sets the same variable a fish user would.
+let fishCompletionsDir () : Result<string, string> =
+    match Environment.GetEnvironmentVariable "XDG_CONFIG_HOME" with
+    | xdg when not (String.IsNullOrWhiteSpace xdg) -> Ok(Path.Combine(xdg, "fish", "completions"))
+    | _ ->
+        match Environment.GetFolderPath Environment.SpecialFolder.UserProfile with
+        | home when String.IsNullOrWhiteSpace home ->
+            Error
+                "could not resolve a home directory (HOME is unset, and SpecialFolder.UserProfile \
+                 resolved to an empty path). Set HOME, or set XDG_CONFIG_HOME to the fish config \
+                 directory you want the completions written under."
+        | home -> Ok(Path.Combine(home, ".config", "fish", "completions"))
+
+/// Write the fish completion script for `cliName` and return where it landed.
+/// Uses `FishCompletions.generateContent` — the pure half of CommandTree's API — so the
+/// destination stays this module's decision rather than the library's.
+let writeFishCompletions (tree: CommandTree<'Cmd>) (cliName: string) : Result<string, string> =
+    fishCompletionsDir ()
+    |> Result.map (fun dir ->
+        Directory.CreateDirectory dir |> ignore
+        let path = Path.Combine(dir, $"%s{cliName}.fish")
+        File.WriteAllText(path, FishCompletions.generateContent tree cliName)
+        path)
+
 /// Unwrap nested AggregateException down to the most informative inner exception
 /// so we don't print "One or more errors occurred. (...)" wrapping the real message.
 let rec unwrapIpcException (ex: exn) : exn =
@@ -2520,10 +2564,17 @@ let executeCommand
 
             FsHotWatch.Cli.DeadCode.runDefault repoRoot opts
         | Completions ->
-            FishCompletions.writeToFile commandTree cliName
-            eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
-            eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
-            0
+            match writeFishCompletions commandTree cliName with
+            | Ok path ->
+                eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
+                // The resolved path, not the assumed one: the two differ whenever
+                // XDG_CONFIG_HOME is set, and printing the assumption is how a write
+                // that went somewhere fish never reads still looked like success.
+                eprintfn "  Wrote %s" path
+                0
+            | Error reason ->
+                eprintfn "Could not install fish completions: %s" reason
+                1
 
 /// Outcome of forwarding a root-level unknown command to the daemon.
 ///   `Handled exitCode` — the daemon recognized and ran the command (a real plugin

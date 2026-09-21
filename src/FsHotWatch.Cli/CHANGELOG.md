@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **`fshw completions` now honours `XDG_CONFIG_HOME`, and says where it actually wrote.**
+  It delegated to `CommandTree.FishCompletions.writeToFile`, which hardcodes
+  `~/.config/fish/completions`. fish reads `$XDG_CONFIG_HOME/fish` when that variable is
+  set, so on a machine which sets it, fshw wrote a completions file into a directory fish
+  never reads — and reported success. The destination is now resolved by
+  `Program.fishCompletionsDir` (XDG first, home directory second) and written here via
+  `FishCompletions.generateContent`, the pure half of CommandTree's API, so no library
+  change or version bump is needed. The success line prints the RESOLVED path rather than
+  the assumed `~/.config/...`, since printing the assumption is precisely how a write that
+  went somewhere fish never reads still looked like it worked.
+
+  It also no longer writes a relative path when it cannot find a home. Measured on .NET 10
+  / macOS: `Environment.GetFolderPath SpecialFolder.UserProfile` returns `""` — not the
+  home directory, and not an exception — when `HOME` is unset, after which `Path.Combine`
+  yields `.config/fish/completions` and the write lands in the current working directory.
+  That case now fails with exit 1 and names both variables, instead of scattering a
+  `.config/` tree into whatever directory the user happened to be in.
+
+  This started as test hygiene: `ProgramTests`' "Completions returns 0" exercised the real
+  writer, so **every run of the unit suite overwrote the developer's live fish
+  completions**. The test now points `XDG_CONFIG_HOME` at a temp dir and asserts the real
+  path is byte-identical before and after. `HOME` would not have worked as the seam —
+  `SpecialFolder.UserProfile` does not follow it (see above), so overriding `HOME` would
+  have converted an absolute clobber into a relative write into the working directory.
+
 - **Every IPC failure now tells you what to do about it.** `ipcErrorHint` returned
   `string option`, and `IpcFault.Other` returned `None` — so any IPC failure that was
   not a timeout printed a bare exception and no guidance at all. It is now `string`:
