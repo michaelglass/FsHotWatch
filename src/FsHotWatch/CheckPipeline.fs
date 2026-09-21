@@ -39,6 +39,13 @@ let tryGetCachedFullCheck (backend: ICheckCacheBackend option) (key: CacheKey op
         | None -> None
     | _ -> None
 
+/// The diagnostic messages a parse+check answer carries. `Aborted` carries none:
+/// a check that did not finish said nothing about any type.
+let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
+    match answer with
+    | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
+    | FSharpCheckFileAnswer.Aborted -> Seq.empty
+
 let private readSourceOrEmpty (absPath: string) : string =
     try
         File.ReadAllText(absPath)
@@ -53,9 +60,20 @@ type CheckPipeline
         ?cacheBackend: ICheckCacheBackend,
         ?cacheKeyProvider: ICacheKeyProvider,
         ?activity: PluginActivity.IActivitySink,
-        ?repoRoot: string
+        ?repoRoot: string,
+        ?recheckCooldown: TimeSpan
     ) =
     let activity = defaultArg activity noopSink
+
+    /// See `FcsDiagnosticFilter.shouldRecheckProject`. Injectable so the
+    /// cooldown can be collapsed in tests without waiting five minutes.
+    let recheckCooldown =
+        defaultArg recheckCooldown FcsDiagnosticFilter.defaultRecheckCooldown
+
+    /// Bounds the cure for stale checker state to one project re-typecheck per
+    /// project per cooldown.
+    let recheckBudget = FcsDiagnosticFilter.RecheckBudget(recheckCooldown)
+
 
     /// Present, the project-options hash names in-repo paths relatively, so the hash
     /// is identical across two checkouts of one repository. See
@@ -249,7 +267,41 @@ type CheckPipeline
                 ct.ThrowIfCancellationRequested()
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+                let! firstParse, firstAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+
+                // A diagnostic that declares a type incompatible with ITSELF is not
+                // code feedback — the compiler renders two types so they can be told
+                // apart, so an identical render means it found no difference to tell.
+                // What produces it is not known (see `FcsDiagnosticFilter`), so
+                // dropping this project's checker state and asking again is a guess
+                // at the class of thing that might clear it: cheap, bounded to ONCE
+                // per project per cooldown so a pathological tree cannot turn every
+                // file into a project re-typecheck, and never trusted to have worked
+                // — a survivor is reported as our fault, not swallowed.
+                let project = options.ProjectFileName
+
+                // Asked on every check rather than behind the staleness test: it
+                // is a dictionary probe and a subtraction, and asking it
+                // unconditionally keeps the budget rule on the path every check
+                // takes instead of only the one nothing can provoke on demand.
+                let budgetAllows = recheckBudget.Allows(project, DateTime.UtcNow)
+
+                let retryLog =
+                    FcsDiagnosticFilter.recheckLogLine (Path.GetFileName project) (Path.GetFileName absPath)
+
+                let onRecheck () =
+                    recheckBudget.Spend(project, DateTime.UtcNow)
+                    Logging.warn "check" retryLog
+                    checker.InvalidateConfiguration(options)
+
+                let! parseResults, checkAnswer =
+                    FcsDiagnosticFilter.recheckIfSelfIncompatible
+                        (snd >> answerMessages)
+                        FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
+                        budgetAllows
+                        onRecheck
+                        (fun () -> checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options))
+                        (firstParse, firstAnswer)
 
                 sw.Stop()
                 ct.ThrowIfCancellationRequested()

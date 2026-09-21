@@ -22,51 +22,106 @@ open FsHotWatch.ProjectGraph
 /// Extract FCS diagnostics from check results and report to the error ledger.
 /// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
 /// suppressed diagnostic codes.
+let internal mapFcsSeverity =
+    function
+    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error -> DiagnosticSeverity.Error
+    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning -> DiagnosticSeverity.Warning
+    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info -> DiagnosticSeverity.Info
+    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
+
+/// The projection that `reportFcsDiagnostics` reports FROM: FCS diagnostics in,
+/// ledger entries plus self-incompatible faults out. Split out of the reporting
+/// function rather than inlined there so the guarantee that matters can be
+/// asserted against REAL `FSharpDiagnostic` values, instead of against a
+/// re-implementation of the same mapping inside a test.
+///
+/// The guarantee: nothing in the returned `ErrorEntry list` was classified
+/// `SelfIncompatible`. No filter here enforces that. It holds because
+/// `FcsDiagnosticClass.SelfIncompatible` carries a `SelfIncompatibleDiagnostic`
+/// and there is no function anywhere that produces an `ErrorEntry` from one.
+let internal classifyFcsDiagnostics
+    (allSuppressed: Set<int>)
+    (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
+    : ErrorEntry list * FcsDiagnosticFilter.SelfIncompatibleDiagnostic list =
+    let classified =
+        diagnostics
+        |> Array.map (fun d ->
+            classifyDiagnostic
+                allSuppressed
+                d.ErrorNumber
+                d.Message
+                (mapFcsSeverity d.Severity)
+                d.StartLine
+                d.StartColumn)
+
+    let reportable =
+        classified
+        |> Array.choose (function
+            | FcsDiagnosticClass.Reportable entry -> Some entry
+            | FcsDiagnosticClass.Suppressed
+            | FcsDiagnosticClass.SelfIncompatible _ -> None)
+        |> Array.toList
+
+    let selfIncompatible =
+        classified
+        |> Array.choose (function
+            | FcsDiagnosticClass.SelfIncompatible d -> Some d
+            | _ -> None)
+        |> Array.toList
+
+    reportable, selfIncompatible
+
 let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
     match checkResult.CheckResults with
     | ParseOnly -> ()
     | FullCheck checkResults ->
-        let mapSeverity =
-            function
-            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error -> DiagnosticSeverity.Error
-            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning -> DiagnosticSeverity.Warning
-            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info -> DiagnosticSeverity.Info
-            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
-
         // Merge global suppressed codes with per-file #nowarn directives.
         // Workaround for https://github.com/dotnet/fsharp/issues/9796.
         // Shared with TestPrunePlugin's `hasFcsErrors` cache-poisoning gate
         // via `FcsDiagnosticFilter.allSuppressedCodes` so the user-visible
         // diagnostic stream and the gate agree on which codes are noise.
+        //
+        // The self-incompatible guard is deliberately NOT shared with that gate.
+        // The gate's job is to REFUSE to trust a check that looks wrong, and a
+        // self-incompatible diagnostic is exactly that signal; teaching the gate
+        // to ignore it would make it flush symbols from the one run it most needs
+        // to distrust. This path's job is the opposite: never tell a reader their
+        // code is wrong on evidence that says nothing about it. The asymmetry
+        // matters more now than when it was written — with the cause unknown,
+        // this guard is the only thing between those diagnostics and a red gate,
+        // so the conservative side must stay conservative.
         let allSuppressed = allSuppressedCodes suppressedCodes checkResult.Source
 
-        let diagnostics =
-            checkResults.Diagnostics
-            |> Array.choose (fun d ->
-                if allSuppressed.Contains(d.ErrorNumber) then
-                    None
-                else
-                    Some
-                        { Message = d.Message
-                          Severity = mapSeverity d.Severity
-                          Line = d.StartLine
-                          Column = d.StartColumn
-                          Detail = None })
-            |> Array.toList
+        let diagnostics, selfIncompatible =
+            classifyFcsDiagnostics allSuppressed checkResults.Diagnostics
 
-        if diagnostics.IsEmpty then
-            host.ClearErrors(
-                PluginActivity.FcsPluginName,
-                AbsFilePath.value checkResult.File,
-                version = checkResult.Version
-            )
-        else
-            host.ReportErrors(
-                PluginActivity.FcsPluginName,
-                AbsFilePath.value checkResult.File,
-                diagnostics,
-                version = checkResult.Version
-            )
+        // Anything the compiler could not tell apart from itself survived a
+        // re-check in `CheckPipeline` and is still here, so it is a fault in THIS
+        // process. Say so, loudly enough to be counted — the point of the guard
+        // is to MEASURE how often this happens, not to make it invisible, and
+        // with the cause unknown (see `FcsDiagnosticFilter`) the count is the
+        // only evidence anyone will have to work from — and at a severity that
+        // cannot redden a run: a self-incompatible diagnostic is not a finding
+        // about the user's code under any policy, `warningsAreFailures`
+        // included.
+        let fileName = AbsFilePath.value checkResult.File
+        let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
+
+        selfIncompatibleLogLines project (Path.GetFileName fileName) selfIncompatible
+        |> List.iter (Logging.warn "fcs")
+
+        // Both ledger keys are written on EVERY check, one of them usually with
+        // an empty list. That is the point: a key left alone keeps whatever the
+        // previous check put there, so a fault that has since been cured would
+        // outlive its cause under `fcs-internal` exactly as a fixed compile error
+        // would under `fcs`.
+        for plugin, entries in
+            [ PluginActivity.FcsPluginName, diagnostics
+              PluginActivity.FcsInternalPluginName, selfIncompatibleLedgerEntries project selfIncompatible ] do
+            if entries.IsEmpty then
+                host.ClearErrors(plugin, fileName, version = checkResult.Version)
+            else
+                host.ReportErrors(plugin, fileName, entries, version = checkResult.Version)
 
 /// Apply the deps-freshness gate to one project before its files are checked.
 /// Returns `true` when FCS analysis should proceed for the project, `false`

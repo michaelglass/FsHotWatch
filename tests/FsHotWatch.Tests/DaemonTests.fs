@@ -3353,3 +3353,386 @@ let ``the pressure note refuses to promise that a re-run helps`` () =
     // assertion cannot pass by the sentence being present unconditionally.
     test <@ (IdleExit.disconnectPressureNote true).Contains "a re-run will not help" @>
     test <@ not ((IdleExit.disconnectPressureNote false).Contains "re-run") @>
+
+// ============================================================================
+// Self-incompatible type diagnostics
+//
+// FCS can report a type mismatch whose two sides render to the SAME string:
+//
+//     This expression was expected to have type
+//         'Intelligence.Domain.BriefEntryEditV3.Edit'
+//     but here has type
+//         'Intelligence.Domain.BriefEntryEditV3.Edit'
+//
+// One full `fshw confirm` produced 335 reddenedBy entries, 334 of this shape;
+// `dotnet build` on the same tree produced 0 errors. Every one was phantom.
+//
+// These tests pin both directions. A self-identical render must never reach the
+// ledger; a GENUINE mismatch ('int' vs 'string') must still redden. The second
+// half is the one that matters most — a guard that swallows real errors is
+// worse than the bug it was written for.
+// ============================================================================
+
+/// The real FS0001 text, with the multi-line layout and padding runs FCS emits.
+let private expectedButHasMessage (expected: string) (actual: string) =
+    $"This expression was expected to have type\n    '%s{expected}'    \nbut here has type\n    '%s{actual}'    "
+
+let private fcsError (message: string) =
+    FSharp.Compiler.Diagnostics.FSharpDiagnostic.Create(
+        FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error,
+        message,
+        1,
+        FSharp.Compiler.Text.Range.range0
+    )
+
+[<Fact(Timeout = 15000)>]
+let ``a self-incompatible type diagnostic never becomes a ledger entry`` () =
+    let diagnostic =
+        fcsError (
+            expectedButHasMessage
+                "Intelligence.Domain.BriefEntryEditV3.Edit"
+                "Intelligence.Domain.BriefEntryEditV3.Edit"
+        )
+
+    let reportable, selfIncompatible =
+        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+
+    test <@ reportable = [] @>
+    test <@ selfIncompatible |> List.map _.RenderedType = [ "Intelligence.Domain.BriefEntryEditV3.Edit" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``NEGATIVE CONTROL - a genuine int-vs-string mismatch still reddens`` () =
+    let diagnostic = fcsError (expectedButHasMessage "int" "string")
+
+    let reportable, selfIncompatible =
+        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+
+    test <@ selfIncompatible = [] @>
+    test <@ reportable |> List.map _.Severity = [ ErrorLedger.DiagnosticSeverity.Error ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``NEGATIVE CONTROL - two same-named types from different assemblies still redden`` () =
+    // Measured against FSharp.Compiler.Service 43.12.401: when two types share a
+    // display name but come from different assemblies, the compiler appends the
+    // assembly identity so a reader can tell them apart. That escalation is the
+    // whole reason an IDENTICAL render is safe to treat as internal — so the
+    // distinguished form must keep reddening.
+    let diagnostic =
+        fcsError (
+            expectedButHasMessage
+                "Dup.T (LibA, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null)"
+                "Dup.T (LibB, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null)"
+        )
+
+    let reportable, selfIncompatible =
+        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+
+    test <@ selfIncompatible = [] @>
+    test <@ reportable |> List.length = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a self-incompatible diagnostic is dropped without taking real errors with it`` () =
+    let phantom = fcsError (expectedButHasMessage "Foo.Bar" "Foo.Bar")
+    let real = fcsError (expectedButHasMessage "int" "string")
+
+    let reportable, selfIncompatible =
+        Daemon.classifyFcsDiagnostics Set.empty [| phantom; real; phantom |]
+
+    test <@ reportable |> List.length = 1 @>
+    test <@ selfIncompatible |> List.length = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``suppression wins over the self-incompatible classification`` () =
+    // A code the operator already silenced must read as silenced, not as an
+    // internal fault — otherwise the self-incompatible count stops being a
+    // measure of how often FCS goes stale.
+    let diagnostic = fcsError (expectedButHasMessage "Foo.Bar" "Foo.Bar")
+
+    let reportable, selfIncompatible =
+        Daemon.classifyFcsDiagnostics (Set.ofList [ 1 ]) [| diagnostic |]
+
+    test <@ reportable = [] @>
+    test <@ selfIncompatible = [] @>
+
+// --- the predicate itself -------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``every two-type message family is recognised when both sides match`` () =
+    let messages =
+        [ "This expression was expected to have type\n    'A.T'    \nbut here has type\n    'A.T'    "
+          "Type mismatch. Expecting a\n    'A.T'    \nbut given a\n    'A.T'    \n"
+          "Type constraint mismatch. The type \n    'A.T'    \nis not compatible with type\n    'A.T'    \n" ]
+
+    test <@ messages |> List.map trySelfIncompatibleType = [ Some "A.T"; Some "A.T"; Some "A.T" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``every two-type message family is left alone when the sides differ`` () =
+    let messages =
+        [ "This expression was expected to have type\n    'int'    \nbut here has type\n    'string'    "
+          "Type mismatch. Expecting a\n    'int'    \nbut given a\n    'string'    \n"
+          "Type constraint mismatch. The type \n    'int'    \nis not compatible with type\n    'string'    \n" ]
+
+    test <@ messages |> List.forall (isSelfIncompatibleTypeMessage >> not) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a trailing constraint explanation defeats the guard`` () =
+    // `{2}` in the templates is where the compiler puts the distinguishing
+    // information when the two rendered names alone do not carry it. If it is
+    // filled, the compiler DID say what differs, so the diagnostic is real and
+    // must be reported.
+    let message =
+        "This expression was expected to have type\n    ''a'    \nbut here has type\n    ''a'    The type ''a' does not match the type ''b'"
+
+    test <@ isSelfIncompatibleTypeMessage message = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``tuple-shaped mismatch families are not treated as two renderings of one question`` () =
+    // `ErrorFromAddingTypeEquation1Tuple` compares a type against a TUPLE of a
+    // type; an identical render there does not mean what it means for the
+    // equation families, so the guard must not claim it.
+    let message =
+        "This expression was expected to have type\n    'int'    \nbut is a tuple of type\n    'int'    "
+
+    test <@ isSelfIncompatibleTypeMessage message = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``unrelated diagnostics are never claimed by the guard`` () =
+    let messages =
+        [ "The value or constructor 'foo' is not defined."
+          "Incomplete pattern matches on this expression."
+          ""
+          "This expression was expected to have type"
+          "Type mismatch. Expecting a\n    'int'    " ]
+
+    test <@ messages |> List.forall (isSelfIncompatibleTypeMessage >> not) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a type name that itself ends in a prime still round-trips`` () =
+    // `type Foo' = ...` is legal F#, so a rendered type can end with the same
+    // character the template quotes with. The split must not mistake that for a
+    // trailing explanation.
+    let message = expectedButHasMessage "Foo'" "Foo'"
+
+    test <@ trySelfIncompatibleType message = Some "Foo'" @>
+
+[<Fact(Timeout = 15000)>]
+let ``the stale-project retry is bounded to one per project per cooldown`` () =
+    let cooldown = TimeSpan.FromMinutes 5.0
+    let t0 = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
+
+    let firstEver = shouldRecheckProject cooldown t0 None
+    let insideCooldown = shouldRecheckProject cooldown (t0.AddMinutes 4.0) (Some t0)
+    let atCooldown = shouldRecheckProject cooldown (t0.AddMinutes 5.0) (Some t0)
+
+    test <@ firstEver @>
+    test <@ insideCooldown = false @>
+    test <@ atCooldown @>
+
+// --- dropping stale checker state -----------------------------------------
+//
+// `recheckIfSelfIncompatible` is generic in the answer so the recovery can be driven
+// without a compiler. FCS goes stale by accident, under load, in a warm
+// long-lived daemon; nothing a test can write makes it happen on demand, so the
+// alternative to a seam here is shipping the recovery path untested.
+
+let private phantom = expectedButHasMessage "Foo.Bar" "Foo.Bar"
+let private realMismatch = expectedButHasMessage "int" "string"
+
+/// Drive `recheckIfSelfIncompatible` over lists of messages, recording whether the budget
+/// was spent. Returns (answer, retries).
+let private runRecheck (budgetAllows: bool) (first: string list) (second: string list) =
+    let retries = ref 0
+
+    let answer =
+        recheckIfSelfIncompatible
+            Seq.ofList
+            isSelfIncompatibleTypeMessage
+            budgetAllows
+            (fun () -> incr retries)
+            (fun () -> async { return second })
+            first
+        |> Async.RunSynchronously
+
+    answer, retries.Value
+
+[<Fact(Timeout = 15000)>]
+let ``a self-incompatible answer is thrown away and the second ask is returned`` () =
+    let answer, retries = runRecheck true [ phantom ] [ realMismatch ]
+
+    test <@ answer = [ realMismatch ] @>
+    test <@ retries = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a clean answer is returned untouched and spends no budget`` () =
+    let answer, retries =
+        runRecheck true [ realMismatch ] [ "should never be asked for" ]
+
+    test <@ answer = [ realMismatch ] @>
+    test <@ retries = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``an answer with no diagnostics at all spends no budget`` () =
+    let answer, retries = runRecheck true [] [ "should never be asked for" ]
+
+    test <@ answer = [] @>
+    test <@ retries = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a spent budget keeps the first answer rather than asking again`` () =
+    // The bound is the point: the incident produced 334 of these in one run, and
+    // one invalidation clears the stale entity for every file in the project.
+    let answer, retries = runRecheck false [ phantom ] [ realMismatch ]
+
+    test <@ answer = [ phantom ] @>
+    test <@ retries = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``one phantom among real errors is enough to drop the checker's state`` () =
+    let answer, retries = runRecheck true [ realMismatch; phantom ] [ realMismatch ]
+
+    test <@ answer = [ realMismatch ] @>
+    test <@ retries = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``the budget is spent before the second ask, so a failing re-check cannot spend it twice`` () =
+    let retries = ref 0
+
+    let attempt () =
+        recheckIfSelfIncompatible
+            Seq.ofList
+            isSelfIncompatibleTypeMessage
+            true
+            (fun () -> incr retries)
+            (fun () -> async { return failwith "re-check exploded" })
+            [ phantom ]
+        |> Async.RunSynchronously
+        |> ignore
+
+    raises<exn> <@ attempt () @>
+    test <@ retries.Value = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a trailing explanation that does not end in a quote is still a real diagnostic`` () =
+    // The `{2}` slot is free text. It may end mid-sentence, which leaves the
+    // second fragment not ending at a closing quote — the unquote must refuse it
+    // rather than swallow the explanation into the type name.
+    let message =
+        "This expression was expected to have type\n    'Foo.Bar'    \nbut here has type\n    'Foo.Bar'    The types have incompatible constraints"
+
+    test <@ tryRenderedTypePair message = None @>
+    test <@ isSelfIncompatibleTypeMessage message = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``a family message whose slots are not quoted at all is refused`` () =
+    // Nothing FCS emits looks like this, which is the point: the parse must
+    // refuse what it does not recognise instead of guessing at the boundaries.
+    let messages =
+        [ "Type mismatch. Expecting a\n    int    \nbut given a\n    int    "
+          "Type mismatch. Expecting a\n        \nbut given a\n        " ]
+
+    test <@ messages |> List.map tryRenderedTypePair = [ None; None ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``the internal fault a self-incompatible diagnostic becomes says whose fault it is, at a severity that cannot redden``
+    ()
+    =
+    let fault: FcsDiagnosticFilter.SelfIncompatibleDiagnostic =
+        { RenderedType = "Foo.Bar"
+          Line = 12
+          Column = 4 }
+
+    let entries = selfIncompatibleLedgerEntries "Widgets.fsproj" [ fault ]
+
+    test <@ entries |> List.map _.Severity = [ ErrorLedger.DiagnosticSeverity.Info ] @>
+    test <@ entries |> List.forall (fun e -> ErrorLedger.ErrorEntry.isFailing true e |> not) @>
+    test <@ entries |> List.map _.Line = [ 12 ] @>
+    test <@ entries.Head.Message.Contains "NOT an error in your code" @>
+    test <@ entries.Head.Message.Contains "Widgets.fsproj" @>
+    test <@ selfIncompatibleLedgerEntries "Widgets.fsproj" [] = [] @>
+
+[<Fact(Timeout = 15000)>]
+let ``the warn lines name the project, the file and the type`` () =
+    let fault: FcsDiagnosticFilter.SelfIncompatibleDiagnostic =
+        { RenderedType = "Foo.Bar"
+          Line = 12
+          Column = 4 }
+
+    let logged =
+        selfIncompatibleLogLines "Widgets.fsproj" "Thing.fs" [ fault ]
+        |> List.exactlyOne
+
+    test <@ selfIncompatibleLogLines "Widgets.fsproj" "Thing.fs" [] = [] @>
+
+    test
+        <@
+            logged.Contains "Widgets.fsproj"
+            && logged.Contains "Thing.fs(12,4)"
+            && logged.Contains "Foo.Bar"
+        @>
+
+    test <@ logged.Contains "not an error in your code" @>
+
+    let retryLine = recheckLogLine "Widgets.fsproj" "Thing.fs"
+
+    test <@ retryLine.Contains "Widgets.fsproj" && retryLine.Contains "Thing.fs" @>
+    test <@ retryLine.Contains "re-checking once" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a fragment too short to be a quoted type is refused`` () =
+    // The unquote must reject a fragment that cannot carry both quotes, not
+    // index past its end.
+    let message = "Type mismatch. Expecting a x but given a 'int'"
+
+    test <@ tryRenderedTypePair message = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``the per-project budget allows one drop, then holds until the cooldown`` () =
+    let t0 = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
+    let budget = FcsDiagnosticFilter.RecheckBudget(TimeSpan.FromMinutes 5.0)
+
+    let beforeAnySpend = budget.Allows("A.fsproj", t0)
+    budget.Spend("A.fsproj", t0)
+
+    let insideCooldown = budget.Allows("A.fsproj", t0.AddMinutes 4.0)
+    let afterCooldown = budget.Allows("A.fsproj", t0.AddMinutes 5.0)
+    // A spend on one project must not spend another's — each is invalidated on
+    // its own, and a shared budget would leave the second one stale.
+    let otherProject = budget.Allows("B.fsproj", t0)
+
+    test <@ beforeAnySpend @>
+    test <@ insideCooldown = false @>
+    test <@ afterCooldown @>
+    test <@ otherProject @>
+
+[<Fact(Timeout = 15000)>]
+let ``the internal fault states the observation and does not claim a cause`` () =
+    // This guard exists because a cause WAS claimed once and retracted: a
+    // `LoadTime`/`Stamp` defect reaching `AreSameForChecking`, measured to be on
+    // a path TransparentCompiler never takes. The predicate never depended on
+    // it — the argument is about what the compiler SAID — and the text a reader
+    // sees must not re-acquire a mechanism nobody has established.
+    let fault: FcsDiagnosticFilter.SelfIncompatibleDiagnostic =
+        { RenderedType = "Foo.Bar"
+          Line = 1
+          Column = 1 }
+
+    let shown =
+        (selfIncompatibleLedgerEntries "W.fsproj" [ fault ] |> List.map _.Message)
+        @ selfIncompatibleLogLines "W.fsproj" "T.fs" [ fault ]
+
+    let claimsACause (text: string) =
+        [ "FSharpEntity"
+          "two entities"
+          "assembly identity"
+          "stale"
+          "LoadTime"
+          "Stamp" ]
+        |> List.exists (fun claim -> text.Contains(claim, StringComparison.OrdinalIgnoreCase))
+
+    test <@ shown |> List.filter claimsACause = [] @>
+    // What it MUST say: not your fault, and that we do not know why.
+    let says (phrase: string) (text: string) =
+        text.Contains(phrase, StringComparison.OrdinalIgnoreCase)
+
+    test <@ shown |> List.forall (says "not an error in your code") @>
+    test <@ shown |> List.exists (says "not yet known") @>

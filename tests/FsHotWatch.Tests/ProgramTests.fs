@@ -387,22 +387,79 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
         test <@ receivedArgs = "--verbose --no-cache " @>)
 
 // --- Completions command ---
+//
+// This test used to run the real writer against the real `~/.config/fish/completions/`,
+// so every run of the unit suite overwrote the DEVELOPER's live fish completions — a unit
+// test reaching out and editing the environment it runs in. It now points the write at a
+// temp config dir, and asserts the real path is untouched.
+//
+// `XDG_CONFIG_HOME` is the seam because it is the one fish itself uses, and because the
+// obvious alternative does not work: `SpecialFolder.UserProfile` does NOT follow `HOME` on
+// this runtime — overriding `HOME` makes it return `""` (measured, .NET 10 / macOS), which
+// would have turned the absolute clobber into a relative write into the working directory.
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Completions returns 0`` () =
-    let result =
-        executeCommand
-            ""
-            (fun _ -> Unchecked.defaultof<_>)
-            (fakeIpc ())
-            "/tmp"
-            "pipe"
-            Completions
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+let ``executeCommand Completions returns 0 and writes only under XDG_CONFIG_HOME`` () =
+    withTempDir "prog-completions" (fun configHome ->
+        // The negative control. The real file is the developer's live config and may
+        // legitimately exist, so "absent afterwards" is not the assertion — "byte-identical
+        // to whatever it was before" is, and it holds whether or not it exists.
+        let realPath =
+            Path.Combine(
+                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                ".config",
+                "fish",
+                "completions",
+                $"{cliName}.fish"
+            )
 
-    test <@ result = 0 @>
+        let realBefore =
+            if File.Exists realPath then
+                Some(File.ReadAllBytes realPath, File.GetLastWriteTimeUtc realPath)
+            else
+                None
+
+        withEnv "XDG_CONFIG_HOME" (Some configHome) (fun () ->
+            let result =
+                executeCommand
+                    ""
+                    (fun _ -> Unchecked.defaultof<_>)
+                    (fakeIpc ())
+                    "/tmp"
+                    "pipe"
+                    Completions
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
+
+            test <@ result = 0 @>
+
+            // It wrote — under the temp dir, with real content.
+            let written = Path.Combine(configHome, "fish", "completions", $"{cliName}.fish")
+
+            test <@ File.Exists written @>
+            test <@ (File.ReadAllText written).Contains $"complete -c {cliName}" @>)
+
+        let realAfter =
+            if File.Exists realPath then
+                Some(File.ReadAllBytes realPath, File.GetLastWriteTimeUtc realPath)
+            else
+                None
+
+        test <@ realAfter = realBefore @>)
+
+[<Fact(Timeout = 15000)>]
+let ``fishCompletionsDir prefers XDG_CONFIG_HOME over the home-directory fallback`` () =
+    withEnv "XDG_CONFIG_HOME" (Some "/somewhere/else") (fun () ->
+        // The bug this pins: fish reads $XDG_CONFIG_HOME/fish when it is set, so writing to
+        // ~/.config/fish there produces a file fish never loads — and a success message.
+        test <@ fishCompletionsDir () = Ok(Path.Combine("/somewhere/else", "fish", "completions")) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``fishCompletionsDir falls back to the home directory when XDG_CONFIG_HOME is unset`` () =
+    withEnv "XDG_CONFIG_HOME" None (fun () ->
+        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+        test <@ fishCompletionsDir () = Ok(Path.Combine(home, ".config", "fish", "completions")) @>)
 
 // --- Start command singleton guarantee ---
 
@@ -807,9 +864,8 @@ let ``OOM without frame-reader evidence is a genuine client OOM`` () =
     | actual -> failwithf "expected ClientOutOfMemory, got %A" actual
 
     let hint = ipcErrorHint oom
-    test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("CLI ran out of memory") @>
-    test <@ hint.Value.Contains("was not restarted") @>
+    test <@ hint.Contains("CLI ran out of memory") @>
+    test <@ hint.Contains("was not restarted") @>
 
 [<Fact(Timeout = 15000)>]
 let ``overflow in StreamJsonRpc frame reader is classified as a corrupted frame`` () =
@@ -829,19 +885,27 @@ let ``overflow without frame-reader evidence is not classified as corruption`` (
     | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, ex) @>
     | actual -> failwithf "expected Other, got %A" actual
 
-    test <@ ipcErrorHint ex = None @>
+    // Unclassified is not silent: the reader still gets the generic recovery steps.
+    test <@ (ipcErrorHint ex).Contains "logs/daemon.log" @>
 
 [<Fact(Timeout = 15000)>]
-let ``ipcErrorHint maps TimeoutException to busy-or-hung hint`` () =
+let ``ipcErrorHint maps TimeoutException to busy-or-hung-or-absent hint`` () =
     let ex = TimeoutException("daemon unresponsive") :> exn
     let hint = ipcErrorHint ex
-    test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("hung") || hint.Value.Contains("busy") @>
+    test <@ hint.Contains("hung") || hint.Contains("busy") @>
+    // A daemon that is not there at all times out identically (ConnectAsync retries every
+    // connect error), so the hint must not send the reader looking only at a live daemon.
+    test <@ hint.Contains("no daemon") @>
 
 [<Fact(Timeout = 15000)>]
-let ``ipcErrorHint returns None for unrecognized exceptions`` () =
+let ``ipcErrorHint answers even for an exception it cannot classify`` () =
+    // The old contract returned None here, and `reportDaemonError` printed a bare
+    // exception with no guidance — the whole point of making the hint total.
     let ex = InvalidOperationException("something else") :> exn
-    test <@ ipcErrorHint ex = None @>
+    let hint = ipcErrorHint ex
+    test <@ hint <> "" @>
+    test <@ hint.Contains "logs/daemon.log" @>
+    test <@ hint.Contains "fshw stop" @>
 
 // --- classifyIpcFault: a fault that happened DAEMON-side arrives wrapped in
 // RemoteInvocationException, never as the daemon's own exception type. ---
@@ -903,17 +967,17 @@ let ``classifyIpcFault leaves an unrecognized RemoteInvocationException as Other
         remoteFault "System.InvalidOperationException" "some real daemon-side bug" ""
 
     match classifyIpcFault remote with
-    | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, remote) @>
-    | actual -> failwithf "expected Other, got %A" actual
+    | IpcFault.DaemonThrew actual -> test <@ obj.ReferenceEquals(actual, remote) @>
+    | actual -> failwithf "expected DaemonThrew, got %A" actual
 
 [<Fact(Timeout = 15000)>]
-let ``classifyIpcFault treats a RemoteInvocationException with no deserialized data as Other`` () =
+let ``classifyIpcFault treats a RemoteInvocationException with no deserialized data as a daemon-side throw`` () =
     let remote =
         StreamJsonRpc.RemoteInvocationException("opaque failure", 0, (null: obj)) :> exn
 
     match classifyIpcFault remote with
-    | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, remote) @>
-    | actual -> failwithf "expected Other, got %A" actual
+    | IpcFault.DaemonThrew actual -> test <@ obj.ReferenceEquals(actual, remote) @>
+    | actual -> failwithf "expected DaemonThrew, got %A" actual
 
 [<Fact(Timeout = 15000)>]
 let ``a daemon-side corrupted-frame OOM reaches the SAME self-heal hint as a local one`` () =
@@ -927,8 +991,7 @@ let ``a daemon-side corrupted-frame OOM reaches the SAME self-heal hint as a loc
             "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
 
     let hint = ipcErrorHint remote
-    test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("corrupted") @>
+    test <@ hint.Contains("corrupted") @>
 
 [<Fact(Timeout = 15000)>]
 let ``tryDeleteForCleanup returns Some on successful delete`` () =
@@ -994,10 +1057,9 @@ let ``a daemon-side OOM outside the frame reader is the DAEMON's, not this CLI's
     test <@ not (headline.Contains "CLI ran out of memory") @>
 
     let hint = ipcErrorHint remote
-    test <@ hint.IsSome @>
-    test <@ hint.Value.Contains "on that side" @>
+    test <@ hint.Contains "on that side" @>
     // The lever that IS available — the run's evidence survives on disk.
-    test <@ hint.Value.Contains ".fshw/test-runs/" @>
+    test <@ hint.Contains ".fshw/test-runs/" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a daemon-side transcoder overflow is the same fact as its OOM, not a client bug`` () =
@@ -1060,7 +1122,6 @@ let ``a daemon OOM never restarts the daemon — that would discard the run it j
 
     test <@ restarts = 0 @>
     test <@ exitCode = 7 @>
-
 // --- `stop` tells the truth about the daemon PROCESS --------------------------
 //
 // The defect these pin: `stop` counted delivered IPC shutdown requests and called
@@ -1309,3 +1370,193 @@ let ``the three stop exit codes are distinct claims`` () =
     test <@ code (StopOutcome.Stopped 1) = 0 @>
     test <@ code (StopOutcome.StillAlive(4242, 1)) = 1 @>
     test <@ code (StopOutcome.Unverified 1) = 2 @>
+
+
+// ---------------------------------------------------------------------------
+// The faults that actually reach `classifyIpcFault` and used to land in `Other`.
+//
+// `Other` printed the raw exception and — because `ipcErrorHint` returned `None` for
+// it — nothing else. The two faults below are the ones with the MOST specific remedies
+// and they both went there, for a reason invisible from the exception message:
+// `RemoteMethodNotFoundException` and `ConnectionLostException` do not derive from
+// `RemoteInvocationException`. All three are siblings under `RemoteRpcException`, so
+// the `:? RemoteInvocationException` pattern that reconstructs daemon-side faults never
+// matched either of them, and the fallthrough classified them client-side as `Other`.
+//
+// These are driven through a REAL StreamJsonRpc connection over a real named pipe
+// rather than a hand-built exception: the claim being pinned is "this type reaches this
+// path", which a constructed exception cannot establish.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``RemoteMethodNotFound and ConnectionLost are NOT RemoteInvocationException`` () =
+    // The whole mechanism of the bug, in one assertion.
+    let isInvocation (t: Type) =
+        typeof<StreamJsonRpc.RemoteInvocationException>.IsAssignableFrom t
+
+    test <@ not (isInvocation typeof<StreamJsonRpc.RemoteMethodNotFoundException>) @>
+    test <@ not (isInvocation typeof<StreamJsonRpc.ConnectionLostException>) @>
+    // …and they are all the same family, which is why they arrive on the same path.
+    test
+        <@ typeof<StreamJsonRpc.RemoteRpcException>.IsAssignableFrom typeof<StreamJsonRpc.RemoteMethodNotFoundException> @>
+
+    test <@ typeof<StreamJsonRpc.RemoteRpcException>.IsAssignableFrom typeof<StreamJsonRpc.ConnectionLostException> @>
+
+/// A daemon serving `pipeName` whose RPC surface is `target` (or, when `target` is
+/// None, one that accepts the connection and then dies without answering). Returns the
+/// server task so the test can await its teardown.
+let private serveRpc (pipeName: string) (target: obj option) =
+    System.Threading.Tasks.Task.Run(fun () ->
+        use server =
+            new System.IO.Pipes.NamedPipeServerStream(
+                pipeName,
+                System.IO.Pipes.PipeDirection.InOut,
+                1,
+                System.IO.Pipes.PipeTransmissionMode.Byte,
+                System.IO.Pipes.PipeOptions.Asynchronous
+            )
+
+        server.WaitForConnection()
+
+        match target with
+        | None ->
+            // The daemon exits mid-call: the client has connected and is waiting on a
+            // reply that will never come because the process serving it is gone. The
+            // blocking read IS the synchronisation — it returns once the client's
+            // request is on the wire, so there is no sleep here betting on that.
+            server.Read(Array.zeroCreate<byte> 1, 0, 1) |> ignore
+            server.Dispose()
+        | Some t ->
+            let handler = new StreamJsonRpc.HeaderDelimitedMessageHandler(server :> Stream)
+
+            use rpc = new StreamJsonRpc.JsonRpc(handler, t)
+            rpc.StartListening()
+            rpc.Completion.Wait())
+
+/// Invoke `methodName` the way `IpcClient.invoke` does, and return whatever it threw.
+let private faultFromCall (pipeName: string) (methodName: string) : exn =
+    use pipeClient =
+        new System.IO.Pipes.NamedPipeClientStream(
+            ".",
+            pipeName,
+            System.IO.Pipes.PipeDirection.InOut,
+            System.IO.Pipes.PipeOptions.Asynchronous
+        )
+
+    pipeClient.Connect(5000)
+
+    let handler = new StreamJsonRpc.HeaderDelimitedMessageHandler(pipeClient :> Stream)
+
+    use rpc = new StreamJsonRpc.JsonRpc(handler)
+    rpc.StartListening()
+
+    try
+        rpc.InvokeAsync<string>(methodName, [||]).GetAwaiter().GetResult() |> ignore
+        failwith "expected the call to fail"
+    with ex ->
+        unwrapIpcException ex
+
+/// An fshw daemon from a DIFFERENT build: it serves RPC, but not the method this CLI calls.
+type private OtherBuildDaemon() =
+    member _.SomeOtherMethod() : System.Threading.Tasks.Task<string> =
+        System.Threading.Tasks.Task.FromResult "ok"
+
+[<Fact(Timeout = 30000)>]
+let ``a version-mismatched daemon is named as one, with the fshw stop remedy`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let server = serveRpc pipeName (Some(OtherBuildDaemon() :> obj))
+
+    try
+        let fault = faultFromCall pipeName "GetStatus"
+        test <@ fault :? StreamJsonRpc.RemoteMethodNotFoundException @>
+
+        match classifyIpcFault fault with
+        | IpcFault.DaemonMethodMissing actual -> test <@ obj.ReferenceEquals(actual, fault) @>
+        | actual -> failwithf "expected DaemonMethodMissing, got %A" actual
+
+        // The daemon ANSWERED, so "could not connect" would send the reader to the pipe.
+        let headline = ipcErrorHeadline fault
+        test <@ not (headline.Contains "Could not connect to daemon") @>
+        test <@ headline.Contains "different fshw build" @>
+
+        let hint = ipcErrorHint fault
+        test <@ hint.Contains "fshw stop" @>
+        test <@ hint.Contains "DIFFERENT fshw build" @>
+    finally
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that dies mid-call is named as one, not left unclassified`` () =
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let server = serveRpc pipeName None
+
+    try
+        let fault = faultFromCall pipeName "GetStatus"
+        test <@ fault :? StreamJsonRpc.ConnectionLostException @>
+
+        match classifyIpcFault fault with
+        | IpcFault.ConnectionLost actual -> test <@ obj.ReferenceEquals(actual, fault) @>
+        | actual -> failwithf "expected ConnectionLost, got %A" actual
+
+        let hint = ipcErrorHint fault
+        test <@ hint.Contains "EXITED" @>
+        test <@ hint.Contains "logs/daemon.log" @>
+    finally
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+
+[<Fact(Timeout = 30000)>]
+let ``neither new fault restarts the daemon`` () =
+    // Self-heal exists for corrupted frames. A build mismatch survives a restart-and-
+    // retry unchanged, and a daemon that has already exited has nothing to restart.
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+    let server = serveRpc pipeName (Some(OtherBuildDaemon() :> obj))
+
+    let faults =
+        try
+            let missing = faultFromCall pipeName "GetStatus"
+            server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+            let deadPipe = $"fp-{Guid.NewGuid():N}"
+            let dead = serveRpc deadPipe None
+            let lost = faultFromCall deadPipe "GetStatus"
+            dead.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+            [ missing; lost ]
+        finally
+            server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+
+    for fault in faults do
+        let mutable restarts = 0
+
+        let exitCode =
+            runIpcWithSelfHeal
+                (fun () ->
+                    restarts <- restarts + 1
+                    true)
+                (fun _ -> 7)
+                (fun () -> raise fault)
+
+        test <@ restarts = 0 @>
+        test <@ exitCode = 7 @>
+
+[<Fact(Timeout = 15000)>]
+let ``every IpcFault case yields a non-empty hint`` () =
+    // The totality guarantee, stated as a test as well as a type: a reader who hits any
+    // classified fault is told what to do about it.
+    let samples: exn list =
+        [ OutOfMemoryException "client oom"
+          remoteFault
+              "System.OutOfMemoryException"
+              "daemon oom"
+              "at System.Text.Json.JsonSerializer.Serialize[TValue](TValue value)"
+          remoteFault
+              "System.OutOfMemoryException"
+              "frame"
+              "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+          TimeoutException "slow"
+          remoteFault "System.InvalidOperationException" "plugin blew up" ""
+          InvalidOperationException "nothing known about this" ]
+
+    for sample in samples do
+        let hint = ipcErrorHint sample
+        test <@ hint.Length > 0 @>
+        test <@ not (hint.Contains "None") @>
+

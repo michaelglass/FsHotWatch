@@ -213,6 +213,64 @@ All notable changes to FsHotWatch packages are documented here.
   test. Making them agree is a change of its own, and probably wants the build command to
   become configurable rather than seven hand-edited strings.
 
+### core: a type reported incompatible with ITSELF is our fault, and never reddens your run
+
+A full `confirm` over a large repository produced 335 `reddenedBy` entries. 334 read like
+this:
+
+```
+error This expression was expected to have type
+  'Intelligence.Domain.BriefEntryEditV3.Edit' but here has type 'Intelligence.Domain.BriefEntryEditV3.Edit'
+```
+
+Both sides are the same string. `dotnet build` over the same tree at the same moment
+reported 0 errors in 84 seconds. All 334 were phantom, and every one of them told a reader
+their code was broken.
+
+An identical render can only ever be our fault, and the compiler is what proves it. Those
+two slots are filled by `NicePrint.minimalStringsOfTwoTypes`, whose whole job is to print
+two types so a reader can tell them apart, escalating until they differ. Measured against
+the FCS version we pin: two same-named types in different modules print as `'A.T'` and
+`'B.T'`; two in different assemblies print as
+`'Dup.T (LibA, Version=1.0.0.0, …)'` and `'Dup.T (LibB, …)'`. So when both sides still
+render the same, the compiler has run out of ways to distinguish them — name, namespace,
+assembly, version, culture, public key token — and there is no edit the reader could make
+in response. Whatever produced it is inside our checking, not inside your code.
+
+**What causes it, we do not know.** The obvious explanation — our checker holding two
+entities for one type — is a guess, and the one concrete version of it that was investigated
+has been measured and retracted. That does not weaken the guard, whose argument is about what
+the compiler SAID rather than why: a diagnostic that names no difference cannot be acted on,
+whatever produced it. It does mean this is the only thing standing between those diagnostics
+and a red gate, rather than a safety net beside a fix.
+
+The daemon already half-knew this. `hasFcsErrors` has long held the prior symbol snapshot
+when it sees this shape, so we distrusted the check enough not to write its symbols and
+trusted it enough to blame the reader. Now:
+
+- **It has no reportable representation.** Classification returns a
+  `SelfIncompatible` case carrying its own type, never an `ErrorEntry`, and nothing converts
+  between them. It is not filtered out at the edge; it never has the shape the edge takes.
+- **The checker's state is dropped and the file re-checked once**, bounded to one retry per
+  project per cooldown, because 334 project re-typechecks would cost more than the bug. With
+  the cause unknown this is a guess at what might clear it, so it is never assumed to have
+  worked.
+- **A survivor is reported under a new `fcs-internal` ledger key at `info`, and logged at
+  `warn`** naming the project and file. Visible and countable, never red: it is not a finding
+  about your code under any policy, `warningsAreFailures` included. The entry says the cause
+  is unknown and asks for a report — that count is the only evidence an investigation will
+  have.
+- **The cache-poisoning gate is deliberately not taught this.** It still trips. Its job is to
+  refuse to trust a poisoned check, and this diagnostic is the signal that one was poisoned.
+
+Everything about the parse fails closed: three message families taken verbatim from the
+compiler's own `FSStrings.resources`, tuple-shaped variants excluded, and a mismatch whose
+trailing constraint slot is filled — the place the compiler puts the difference when the two
+names alone do not carry it — is reported normally. A genuine cross-assembly conflict keeps
+reddening, pinned by a negative-control test built from the real rendered form.
+
+See `docs/adr-036-a-type-incompatible-with-itself-is-our-fault-not-yours.md`.
+
 ### core, cli: a daemon squeezed out by memory pressure says so, instead of reporting a transport fault
 
 A daemon the machine cannot afford does not report an out-of-memory error. It stops

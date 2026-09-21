@@ -8,6 +8,14 @@ open FsHotWatch.Events
 [<Literal>]
 let FcsPluginName = "fcs"
 
+/// Ledger key for faults in fshw's OWN checking process rather than in the code being
+/// checked. Distinct from `FcsPluginName` on purpose: a reader scanning the ledger must
+/// be able to separate "your code is wrong" from "our checker went stale", and a shared
+/// key makes that impossible. Entries under this key are informational — they never
+/// redden a run, because they are not findings about the user's code.
+[<Literal>]
+let FcsInternalPluginName = "fcs-internal"
+
 /// The test-prune plugin's registered name, and therefore its LEDGER KEY.
 ///
 /// Named here beside `FcsPluginName` because the verdict's `NonTestRed` projection has to ask of a

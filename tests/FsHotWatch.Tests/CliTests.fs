@@ -787,16 +787,39 @@ let private fakeIpc () : IpcOps =
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
-/// Run `executeCommand` with the common test defaults. "/tmp" is made to look like a repo
-/// whose stubbed always-running daemon is THIS process's binary with the current config, so
-/// `ensureDaemon` takes the Reuse path — otherwise the identity handshake restarts the fake
-/// daemon on every call, costing a 1s shutdown sleep per test plus a real killStaleDaemon
-/// walk over /tmp/.fshw.
+/// Run `executeCommand` with the common test defaults against a PER-CALL temp repo, which
+/// is made to look like a repo whose stubbed always-running daemon is THIS process's binary
+/// with the current config, so `ensureDaemon` takes the Reuse path — otherwise the identity
+/// handshake restarts the fake daemon on every call, costing a 1s shutdown sleep per test
+/// plus a real killStaleDaemon walk over the state dir.
+///
+/// The repo root used to be the literal `/tmp`, and the three lines below wrote
+/// `/tmp/.fshw/` — a machine-global path shared by every concurrent test class, every
+/// parallel run on the box, and every other tool that happens to use it. Two `exec` calls
+/// in flight at once would overwrite each other's identity record and config hash (the
+/// handshake they exist to satisfy), and whatever won was left on disk afterwards for the
+/// next run to inherit. `withTempDir` is what the rest of this file already uses, and it
+/// deletes what it made.
 let private exec (ipc: IpcOps) (command: Command) : int =
-    Directory.CreateDirectory("/tmp/.fshw") |> ignore
-    FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
-    File.WriteAllText("/tmp/.fshw/config.hash", computeConfigHashWith defaultFileOps "/tmp")
-    executeCommand "" (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
+    withTempDir "cli-exec" (fun repoRoot ->
+        Directory.CreateDirectory(Path.Combine(repoRoot, ".fshw")) |> ignore
+        FsHotWatch.DaemonIdentity.recordCurrent repoRoot
+
+        File.WriteAllText(
+            Path.Combine(repoRoot, ".fshw", "config.hash"),
+            computeConfigHashWith defaultFileOps repoRoot
+        )
+
+        executeCommand
+            ""
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            repoRoot
+            "pipe"
+            command
+            defaultGlobalOptions
+            fakeConfig
+            30.0)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
@@ -897,7 +920,8 @@ let ``executePluginCommand reports NotRecognized when daemon returns unknown-com
 
 [<Fact(Timeout = 15000)>]
 let ``executePluginCommand reports DaemonUnavailable when IPC throws (with hint)`` () =
-    // TimeoutException maps to a known recovery hint — the Some-hint branch.
+    // TimeoutException maps to a known recovery hint. Every fault now has one —
+    // `ipcErrorHint` is total — but this one names the daemon specifically.
     let ipc =
         { fakeIpc () with
             RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }

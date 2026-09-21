@@ -63,6 +63,68 @@
   pass cannot see: a process that was alive when hygiene ran and died without cleanup
   before `stop` finished watching it.
 
+- **`fshw completions` now honours `XDG_CONFIG_HOME`, and says where it actually wrote.**
+  It delegated to `CommandTree.FishCompletions.writeToFile`, which hardcodes
+  `~/.config/fish/completions`. fish reads `$XDG_CONFIG_HOME/fish` when that variable is
+  set, so on a machine which sets it, fshw wrote a completions file into a directory fish
+  never reads — and reported success. The destination is now resolved by
+  `Program.fishCompletionsDir` (XDG first, home directory second) and written here via
+  `FishCompletions.generateContent`, the pure half of CommandTree's API, so no library
+  change or version bump is needed. The success line prints the RESOLVED path rather than
+  the assumed `~/.config/...`, since printing the assumption is precisely how a write that
+  went somewhere fish never reads still looked like it worked.
+
+  It also no longer writes a relative path when it cannot find a home. Measured on .NET 10
+  / macOS: `Environment.GetFolderPath SpecialFolder.UserProfile` returns `""` — not the
+  home directory, and not an exception — when `HOME` is unset, after which `Path.Combine`
+  yields `.config/fish/completions` and the write lands in the current working directory.
+  That case now fails with exit 1 and names both variables, instead of scattering a
+  `.config/` tree into whatever directory the user happened to be in.
+
+  This started as test hygiene: `ProgramTests`' "Completions returns 0" exercised the real
+  writer, so **every run of the unit suite overwrote the developer's live fish
+  completions**. The test now points `XDG_CONFIG_HOME` at a temp dir and asserts the real
+  path is byte-identical before and after. `HOME` would not have worked as the seam —
+  `SpecialFolder.UserProfile` does not follow it (see above), so overriding `HOME` would
+  have converted an absolute clobber into a relative write into the working directory.
+
+- **Every IPC failure now tells you what to do about it.** `ipcErrorHint` returned
+  `string option`, and `IpcFault.Other` returned `None` — so any IPC failure that was
+  not a timeout printed a bare exception and no guidance at all. It is now `string`:
+  the case set is a closed union, so the compiler, not a convention, is what guarantees
+  a fault cannot be classified without an answer to "and what should the reader DO?".
+
+  Three faults that were reaching `Other` are now classified, each with the remedy that
+  actually applies:
+
+  - `IpcFault.DaemonMethodMissing` — `StreamJsonRpc.RemoteMethodNotFoundException`, i.e.
+    a daemon started from a DIFFERENT fshw build, which no longer agrees with this CLI
+    on the RPC surface. Hint: `fshw stop`, then re-run.
+  - `IpcFault.ConnectionLost` — `StreamJsonRpc.ConnectionLostException`: the daemon
+    EXITED mid-call (crash, OOM kill, a `fshw stop` from another shell). Hint: the tail
+    of `logs/daemon.log`, and re-run — the next command starts a fresh daemon.
+  - `IpcFault.DaemonThrew` — a `RemoteInvocationException` outside the reconstructed
+    corrupted-pipe/out-of-memory family: the daemon answered and its own call failed, so
+    no pipe-level remedy applies.
+
+  Neither of the first two is a `RemoteInvocationException` — all three are siblings
+  under `RemoteRpcException` — which is why the `:? RemoteInvocationException` pattern
+  that reconstructs daemon-side faults never matched them and they fell through to the
+  client-side fallthrough as `Other`.
+
+  `ipcErrorHeadline` follows: a daemon that ANSWERED is no longer headlined
+  `Could not connect to daemon`, the same rule the scan-supersession branch already
+  applied. The timeout hint now also names the case it was silently covering — on Unix,
+  `NamedPipeClientStream.ConnectAsync` retries a missing socket, a dead daemon's stale
+  socket, and a socket path this process cannot open, and surfaces all three as the same
+  `TimeoutException`, so "busy or hung" alone sent readers to look at a daemon that was
+  not there. No fault's restart behaviour changed: self-heal still fires only for a
+  proven corrupted frame.
+
+  **BREAKING (internal):** `ipcErrorHint` returns `string`, not `string option`; an
+  unrecognized `RemoteInvocationException` classifies as `IpcFault.DaemonThrew` rather
+  than `IpcFault.Other`.
+
 ## 0.14.0-alpha.57 - 2026-09-20
 
 - **`confirm`'s "verdict still applies" fast path now runs the run-level hooks.** It
