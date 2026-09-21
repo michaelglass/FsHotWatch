@@ -831,6 +831,141 @@ let ``macOS setup creates native first and rolls every partial watcher back`` ()
         test <@ disposed |> Seq.contains "system-1" @>
         test <@ watcher.Disposables.Length = 1 @>)
 
+// === a native notification is not evidence that the bytes changed ===
+// FSEvents is advisory. It fires for a touch, for an open-for-write that wrote
+// nothing, for a rewrite with identical bytes, and for every path named in a
+// coalesced batch. Emitting on the notification alone floods the daemon with
+// changes for untouched files, and each flood invalidates the project model the
+// in-flight test round is producing evidence about.
+
+/// Drives the macOS native path without a real FSEvents stream: runs `body` with
+/// the per-file callback the watcher installed in its native factory, and the list
+/// of changes the watcher has emitted so far.
+let private withNativeNotifications (tmpDir: string) (body: (string -> unit) -> ResizeArray<FileChangeKind> -> unit) =
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let changes = ResizeArray<FileChangeKind>()
+    let mutable captured: (string -> unit) option = None
+
+    let native _dirs onFile _onCoalesced _latency : IDisposable =
+        captured <- Some onFile
+        inert "native"
+
+    use watcher =
+        FileWatcher.createWithFactories
+            tmpDir
+            changes.Add
+            []
+            0.05
+            FileWatcher.NativeStartRetry.none
+            native
+            inertSystem
+            (fun _repo _onChange _extras -> inert "polling")
+
+    test <@ watcher.Mode = WatcherMode.NativeEvents @>
+
+    match captured with
+    | Some handle -> body handle changes
+    | None -> failwith "the macOS watcher never installed a per-file native callback"
+
+[<Fact(Timeout = 15000)>]
+let ``a repeated native notification for unchanged bytes emits nothing`` () =
+    withTempDir "watcher-content-unchanged" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "src", "Lib.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(file, "let x = 1")
+            handle file
+            test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>
+
+            changes.Clear()
+            handle file
+            handle file
+            test <@ changes |> Seq.toList |> List.isEmpty @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a native notification after a real edit emits`` () =
+    withTempDir "watcher-content-edited" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "src", "Lib.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(file, "let x = 1")
+            handle file
+            changes.Clear()
+
+            File.WriteAllText(file, "let x = 2")
+            handle file
+            test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a native notification for a newly created file emits`` () =
+    // Absent-then-present is a real change and must not need a hash to compare against.
+    withTempDir "watcher-content-created" (fun tmpDir ->
+        let seen = Path.Combine(tmpDir, "src", "Lib.fs")
+        let created = Path.Combine(tmpDir, "src", "New.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(seen, "let x = 1")
+            handle seen
+            changes.Clear()
+
+            File.WriteAllText(created, "let y = 2")
+            handle created
+            test <@ changes |> Seq.toList = [ SourceChanged [ created ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a native notification for a deleted file emits`` () =
+    // Present-then-absent is a real change, and there is nothing left to hash.
+    withTempDir "watcher-content-deleted" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "src", "Lib.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(file, "let x = 1")
+            handle file
+            changes.Clear()
+
+            File.Delete(file)
+            handle file
+            test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a native notification for a file that is still gone emits nothing`` () =
+    // A removal is a change exactly once; a later batch naming the same removed
+    // path describes nothing new.
+    withTempDir "watcher-content-still-gone" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "src", "Lib.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(file, "let x = 1")
+            handle file
+            File.Delete(file)
+            handle file
+            changes.Clear()
+
+            handle file
+            test <@ changes |> Seq.toList |> List.isEmpty @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a native notification for an unreadable file always emits`` () =
+    // Fail closed, as `ContentHash` requires: a file nobody could read is never
+    // evidence that nothing happened, so its sentinel must not match itself.
+    withTempDir "watcher-content-unreadable" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "src", "Lib.fs")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(file, "let x = 1")
+            handle file
+            File.SetUnixFileMode(file, UnixFileMode.None)
+
+            try
+                changes.Clear()
+                handle file
+                handle file
+
+                test <@ changes |> Seq.toList = [ SourceChanged [ file ]; SourceChanged [ file ] ] @>
+            finally
+                File.SetUnixFileMode(file, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)))
+
+
 [<Collection(FileWatchCollectionName)>]
 type RealFileWatcherTests() =
 
