@@ -3,6 +3,7 @@ module TestPrune.Database
 open System
 open System.Collections.Generic
 open System.IO
+open System.Text.Json
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
@@ -164,20 +165,46 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
-/// `@<prefix>0, @<prefix>1, ...` for `names`, to interpolate into an `IN (...)` list.
-/// The prefix exists so one command can carry two independent lists without their
-/// parameter names colliding; `bindPlaceholdersNamed` must be called with the same one.
-let private buildPlaceholdersNamed (prefix: string) (names: string list) =
-    let paramNames = names |> List.mapi (fun i _ -> $"@%s{prefix}%d{i}")
-    String.Join(", ", paramNames)
+/// The right-hand side of an `IN (...)` membership test over a caller-supplied set of
+/// names, as a subquery over ONE bound parameter carrying the whole set as a JSON array.
+/// Pair it with `bindNameSetNamed` under the same prefix.
+///
+/// The obvious spelling — `IN (@p0, @p1, ..., @pN)` — spends one SQLite HOST PARAMETER
+/// per name, and SQLite caps those per prepared statement at `SQLITE_MAX_VARIABLE_NUMBER`:
+/// 32766 in the `SQLitePCLRaw.lib.e_sqlite3` build this package pins, which is not a number
+/// to take on faith — `SELECT sqlite_compileoption_get(n)` reports it, and
+/// `SqliteVariableLimitTests` reads it back from the loaded library rather than asserting a
+/// remembered constant. Every such query therefore carried a ceiling set by REPOSITORY SIZE
+/// rather than by anything its caller could see, which is exactly why it survived: the
+/// impact-filtered path passes a handful of changed symbols, and only a full unfiltered
+/// pass passes the whole graph. One over a 64,913-symbol index did, and the flush died with
+/// `SQLite Error 1: 'too many SQL variables'`.
+///
+/// One parameter per SET rather than per name removes the ceiling by construction: no list
+/// length changes the parameter count, so there is no longer a length at which these
+/// queries begin to fail. Chunking would have raised the ceiling without removing it — and
+/// here it would also be WRONG: `QueryAffectedTestsCore` defines its `barriers` CTE by
+/// exclusion from the seed set, so a per-chunk walk treats seeds outside its own chunk as
+/// barriers, stops expanding through them, and silently selects fewer tests.
+///
+/// This is not a performance trade either way; see
+/// `docs/adr/0003-name-sets-travel-as-one-json-parameter.md` for the measurement and for
+/// the per-connection temp table that was the other candidate.
+///
+/// The prefix exists so one command can carry two independent sets without their parameter
+/// names colliding.
+let private nameSetNamed (prefix: string) =
+    $"SELECT value FROM json_each(@%s{prefix})"
 
-let private bindPlaceholdersNamed (prefix: string) (cmd: SqliteCommand) (names: string list) =
-    names
-    |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@%s{prefix}%d{i}", name) |> ignore)
+let private bindNameSetNamed (prefix: string) (cmd: SqliteCommand) (names: string list) =
+    cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize names)
+    |> ignore
 
-let private buildPlaceholders (names: string list) = buildPlaceholdersNamed "p" names
+/// The default-prefix pair. A command needing two independent sets uses
+/// `nameSetNamed`/`bindNameSetNamed` with distinct prefixes instead.
+let private nameSet = nameSetNamed "p"
 
-let private bindPlaceholders (cmd: SqliteCommand) (names: string list) = bindPlaceholdersNamed "p" cmd names
+let private bindNameSet (cmd: SqliteCommand) (names: string list) = bindNameSetNamed "p" cmd names
 
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
@@ -402,7 +429,6 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
             use cmd = conn.CreateCommand()
-            let placeholders = buildPlaceholders changedSymbolNames
 
             cmd.CommandText <-
                 $"""
@@ -411,11 +437,11 @@ type Database(dbPath: string) =
                 JOIN symbols literal ON literal.id = dependency.from_symbol_id
                 JOIN symbols producer ON producer.id = dependency.to_symbol_id
                 WHERE dependency.dep_kind = 'shared_literal'
-                  AND producer.full_name IN (%s{placeholders})
+                  AND producer.full_name IN (%s{nameSet})
                 ORDER BY literal.full_name
                 """
 
-            bindPlaceholders cmd changedSymbolNames
+            bindNameSet cmd changedSymbolNames
 
             use reader = cmd.ExecuteReader()
             let seeds = ResizeArray<string>()
@@ -454,8 +480,6 @@ type Database(dbPath: string) =
             // row ids are preserved by the UPSERT below. Outgoing edges/test_methods/attributes
             // may have changed in the new analysis, so they're re-inserted further down.
             if not sourceFiles.IsEmpty then
-                let placeholders = buildPlaceholders sourceFiles
-
                 for (table, col) in
                     [ ("dependencies", "from_symbol_id")
                       ("test_methods", "symbol_id")
@@ -464,9 +488,9 @@ type Database(dbPath: string) =
                     delCmd.Transaction <- txn
 
                     delCmd.CommandText <-
-                        $"DELETE FROM %s{table} WHERE %s{col} IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))"
+                        $"DELETE FROM %s{table} WHERE %s{col} IN (SELECT id FROM symbols WHERE source_file IN (%s{nameSet}))"
 
-                    bindPlaceholders delCmd sourceFiles
+                    bindNameSet delCmd sourceFiles
                     delCmd.ExecuteNonQuery() |> ignore
 
                 // The production half of a literal bridge is synthetic-node -> producer,
@@ -477,9 +501,9 @@ type Database(dbPath: string) =
                 delSharedLiteralCmd.Transaction <- txn
 
                 delSharedLiteralCmd.CommandText <-
-                    $"DELETE FROM dependencies WHERE dep_kind = 'shared_literal' AND to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))"
+                    $"DELETE FROM dependencies WHERE dep_kind = 'shared_literal' AND to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{nameSet}))"
 
-                bindPlaceholders delSharedLiteralCmd sourceFiles
+                bindNameSet delSharedLiteralCmd sourceFiles
                 delSharedLiteralCmd.ExecuteNonQuery() |> ignore
 
             let now = DateTime.UtcNow.ToString("o")
@@ -593,15 +617,12 @@ type Database(dbPath: string) =
             // symbol in the re-indexed files still carrying an older timestamp wasn't in
             // the new analysis — delete it. CASCADE removes its edges, which is correct.
             if not sourceFiles.IsEmpty then
-                let placeholders = buildPlaceholders sourceFiles
-
                 use delOrphan = conn.CreateCommand()
                 delOrphan.Transaction <- txn
 
-                delOrphan.CommandText <-
-                    $"DELETE FROM symbols WHERE source_file IN (%s{placeholders}) AND indexed_at < @now"
+                delOrphan.CommandText <- $"DELETE FROM symbols WHERE source_file IN (%s{nameSet}) AND indexed_at < @now"
 
-                bindPlaceholders delOrphan sourceFiles
+                bindNameSet delOrphan sourceFiles
                 delOrphan.Parameters.AddWithValue("@now", now) |> ignore
                 delOrphan.ExecuteNonQuery() |> ignore
 
@@ -610,15 +631,13 @@ type Database(dbPath: string) =
             // symbol UPSERT). Clearing first handles the case where a member moved to a
             // different type or out of a type entirely.
             if not sourceFiles.IsEmpty then
-                let placeholders = buildPlaceholders sourceFiles
-
                 use clrParent = conn.CreateCommand()
                 clrParent.Transaction <- txn
 
                 clrParent.CommandText <-
-                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE source_file IN (%s{placeholders})"
+                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE source_file IN (%s{nameSet})"
 
-                bindPlaceholders clrParent sourceFiles
+                bindNameSet clrParent sourceFiles
                 clrParent.ExecuteNonQuery() |> ignore
 
             // Populate parent_symbol_id from analyzer-supplied links. Only members of
@@ -790,8 +809,6 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            let placeholders = buildPlaceholders changedSymbolNames
-
             use cmd = conn.CreateCommand()
 
             // Aggregate-type invalidation: before the transitive walk, expand the set of
@@ -834,21 +851,17 @@ type Database(dbPath: string) =
             // guard in the recursive branch holds for EVERY row — the walk is then exactly
             // the historical one. (Note the CTE is still evaluated in that case; see the
             // deliberately-not-taken optimisation noted on `HasCompositionRoots`.)
-            let markerPlaceholders =
-                if applyBarriers then
-                    buildPlaceholdersNamed "cr" Domain.CompositionRoot.Names
-                else
-                    "NULL"
+            let markerNameSet = if applyBarriers then nameSetNamed "cr" else "NULL"
 
             cmd.CommandText <-
                 $"""
                 WITH after_lift AS (
-                    SELECT id FROM symbols WHERE full_name IN (%s{placeholders})
+                    SELECT id FROM symbols WHERE full_name IN (%s{nameSet})
                     UNION
                     SELECT parent.id
                     FROM symbols child
                     JOIN symbols parent ON child.parent_symbol_id = parent.id
-                    WHERE child.full_name IN (%s{placeholders})
+                    WHERE child.full_name IN (%s{nameSet})
                       AND parent.kind = @typeKind
                 ),
                 expanded AS (
@@ -863,7 +876,7 @@ type Database(dbPath: string) =
                 barriers AS (
                     SELECT sa.symbol_id AS id
                     FROM symbol_attributes sa
-                    WHERE sa.attribute_name IN (%s{markerPlaceholders})
+                    WHERE sa.attribute_name IN (%s{markerNameSet})
                       AND sa.symbol_id NOT IN (SELECT id FROM expanded)
                 ),
                 transitive_deps AS (
@@ -890,11 +903,11 @@ type Database(dbPath: string) =
                 JOIN symbols s ON s.id = tm.symbol_id
                 """
 
-            bindPlaceholders cmd changedSymbolNames
+            bindNameSet cmd changedSymbolNames
             cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
             if applyBarriers then
-                bindPlaceholdersNamed "cr" cmd Domain.CompositionRoot.Names
+                bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names
 
             use reader = cmd.ExecuteReader()
 
@@ -922,12 +935,11 @@ type Database(dbPath: string) =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
-        let markerPlaceholders = buildPlaceholdersNamed "cr" Domain.CompositionRoot.Names
+        let markerNameSet = nameSetNamed "cr"
 
-        cmd.CommandText <-
-            $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerPlaceholders}))"
+        cmd.CommandText <- $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerNameSet}))"
 
-        bindPlaceholdersNamed "cr" cmd Domain.CompositionRoot.Names
+        bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names
 
         match cmd.ExecuteScalar() with
         | :? int64 as n -> n <> 0L
@@ -1030,14 +1042,12 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            let placeholders = buildPlaceholders rootSymbolNames
-
             use cmd = conn.CreateCommand()
 
             cmd.CommandText <-
                 $"""
                 WITH RECURSIVE reachable AS (
-                    SELECT id, full_name FROM symbols WHERE full_name IN (%s{placeholders})
+                    SELECT id, full_name FROM symbols WHERE full_name IN (%s{nameSet})
                     UNION
                     SELECT s.id, s.full_name FROM symbols s
                     JOIN dependencies d ON d.to_symbol_id = s.id
@@ -1046,7 +1056,7 @@ type Database(dbPath: string) =
                 SELECT DISTINCT full_name FROM reachable
                 """
 
-            bindPlaceholders cmd rootSymbolNames
+            bindNameSet cmd rootSymbolNames
 
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
@@ -1142,8 +1152,6 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            let placeholders = buildPlaceholders symbolNames
-
             use cmd = conn.CreateCommand()
 
             cmd.CommandText <-
@@ -1152,10 +1160,10 @@ type Database(dbPath: string) =
                 FROM dependencies d
                 JOIN symbols s_to ON s_to.id = d.to_symbol_id
                 JOIN symbols s_from ON s_from.id = d.from_symbol_id
-                WHERE s_to.full_name IN (%s{placeholders})
+                WHERE s_to.full_name IN (%s{nameSet})
                 """
 
-            bindPlaceholders cmd symbolNames
+            bindNameSet cmd symbolNames
 
             use reader = cmd.ExecuteReader()
 
@@ -1252,8 +1260,6 @@ type Database(dbPath: string) =
             []
         else
             use conn = openConnection dbPath
-            let paramNames = changedSymbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
-            let placeholders = String.Join(", ", paramNames)
             use cmd = conn.CreateCommand()
 
             cmd.CommandText <-
@@ -1262,7 +1268,7 @@ type Database(dbPath: string) =
                     SELECT from_symbol_id, source
                     FROM dependencies
                     WHERE to_symbol_id IN (
-                        SELECT id FROM symbols WHERE full_name IN (%s{placeholders})
+                        SELECT id FROM symbols WHERE full_name IN (%s{nameSet})
                     )
                     UNION
                     SELECT d.from_symbol_id, d.source
@@ -1272,7 +1278,7 @@ type Database(dbPath: string) =
                 SELECT DISTINCT source FROM transitive_path
                 """
 
-            bindPlaceholders cmd changedSymbolNames
+            bindNameSet cmd changedSymbolNames
 
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0))
@@ -1558,12 +1564,11 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
             use cmd = conn.CreateCommand()
-            let placeholders = buildPlaceholders sourceFiles
 
             cmd.CommandText <-
-                $"SELECT DISTINCT test_project FROM runtime_coverage WHERE source_file IN (%s{placeholders}) ORDER BY test_project"
+                $"SELECT DISTINCT test_project FROM runtime_coverage WHERE source_file IN (%s{nameSet}) ORDER BY test_project"
 
-            bindPlaceholders cmd sourceFiles
+            bindNameSet cmd sourceFiles
             use reader = cmd.ExecuteReader()
             readAll reader (fun row -> row.GetString(0))
 
@@ -1576,12 +1581,11 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
             use cmd = conn.CreateCommand()
-            let placeholders = buildPlaceholders sourceFiles
 
             cmd.CommandText <-
-                $"SELECT source_file, test_project FROM runtime_coverage WHERE source_file IN (%s{placeholders}) ORDER BY source_file, test_project"
+                $"SELECT source_file, test_project FROM runtime_coverage WHERE source_file IN (%s{nameSet}) ORDER BY source_file, test_project"
 
-            bindPlaceholders cmd sourceFiles
+            bindNameSet cmd sourceFiles
             use reader = cmd.ExecuteReader()
             readAll reader (fun row -> row.GetString(0), row.GetString(1))
 
@@ -1593,18 +1597,17 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
             use cmd = conn.CreateCommand()
-            let placeholders = buildPlaceholders testProjects
 
             cmd.CommandText <-
                 $"""
                 SELECT s.full_name, tm.test_project, tm.test_class, tm.test_method
                 FROM test_methods tm
                 JOIN symbols s ON s.id = tm.symbol_id
-                WHERE tm.test_project IN (%s{placeholders})
+                WHERE tm.test_project IN (%s{nameSet})
                 ORDER BY tm.test_project, tm.test_class, tm.test_method
                 """
 
-            bindPlaceholders cmd testProjects
+            bindNameSet cmd testProjects
             use reader = cmd.ExecuteReader()
 
             readAll reader (fun row ->
@@ -1647,16 +1650,15 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
             use cmd = conn.CreateCommand()
-            let placeholders = buildPlaceholders expectedProjects
 
             cmd.CommandText <-
                 $"""
                 SELECT test_project, observed_at
                 FROM runtime_coverage_baselines
-                WHERE test_project IN (%s{placeholders})
+                WHERE test_project IN (%s{nameSet})
                 """
 
-            bindPlaceholders cmd expectedProjects
+            bindNameSet cmd expectedProjects
             use reader = cmd.ExecuteReader()
 
             let observedByProject =
