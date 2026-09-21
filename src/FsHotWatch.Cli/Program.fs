@@ -1185,6 +1185,254 @@ let cleanStalePidfileWith (fileOps: FileOps) (repoRoot: string) : bool =
 let private cleanStalePidfile (repoRoot: string) : unit =
     cleanStalePidfileWith defaultFileOps repoRoot |> ignore
 
+// --- `stop`: proving the daemon PROCESS is gone -------------------------------
+//
+// The client and the daemon are separate processes. `stop` puts a shutdown
+// REQUEST on the pipe; the daemon acknowledges it and then unwinds its own work
+// in its own time. So a quiet pipe proves the LISTENER is gone and nothing more
+// — the process can still be scanning files after the last endpoint closed. The
+// code below never conflates the two: only a process proven to have left the
+// process table earns the success line.
+
+/// `kill(2)`. Signal 0 runs the existence and permission checks and delivers
+/// nothing. It is the only liveness probe that holds for this daemon: its argv is
+/// a bare `FsHotWatch.Cli.dll start` carrying neither the tool name nor the
+/// workspace path, so no name- or path-based match can find it, and the `ps` and
+/// `%cpu` readings available here are not dependable either.
+[<DllImport("libc", EntryPoint = "kill", SetLastError = true)>]
+extern int private signalProcess(int pid, int signal)
+
+/// `errno` for "no such process" — 3 on both macOS and Linux.
+[<Literal>]
+let private ESRCH = 3
+
+/// True unless `pid` is PROVABLY gone, as decided by a `kill(pid, 0)` probe:
+///
+/// | result      | meaning                                       | verdict |
+/// |-------------|-----------------------------------------------|---------|
+/// | `0`         | the process exists and we may signal it        | alive   |
+/// | `-1` ESRCH  | no such process — the one answer proving death | dead    |
+/// | `-1` other  | exists but not ours (EPERM), or probe failed   | alive   |
+///
+/// Every unknown leans ALIVE, the same convention `daemonProcessAliveWith` uses:
+/// mis-declaring a live daemon dead is how a pidfile gets deleted out from under a
+/// running process. Probe and `errno` reader are injected so the table above is
+/// testable without a process to kill.
+let internal processAliveByProbe (probe: int -> int) (lastError: unit -> int) (pid: int) : bool =
+    if pid <= 0 then false
+    elif probe pid = 0 then true
+    else lastError () <> ESRCH
+
+/// The production liveness probe. Falls back to the managed process table where
+/// there is no `libc` `kill` — a host that could not have launched this daemon in
+/// the first place, since the detached launch itself calls `setsid`/`execv`.
+let private daemonPidAlive (pid: int) : bool =
+    try
+        processAliveByProbe (fun p -> signalProcess (p, 0)) Marshal.GetLastPInvokeError pid
+    with
+    | :? EntryPointNotFoundException
+    | :? DllNotFoundException ->
+        try
+            not (System.Diagnostics.Process.GetProcessById(pid).HasExited)
+        with
+        | :? ArgumentException -> false
+        | _ -> true
+
+/// The pid `.fshw/daemon.pid` names, or `None` when there is no pidfile or it does
+/// not hold a positive number. `None` means "nothing to watch", never "nothing is
+/// running" — the callers keep those apart.
+let internal readDaemonPidWith (fileOps: FileOps) (repoRoot: string) : int option =
+    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
+
+    if not (fileOps.FileExists pidPath) then
+        None
+    else
+        try
+            match Int32.TryParse((fileOps.ReadAllText pidPath).Trim()) with
+            | true, pid when pid > 0 -> Some pid
+            | _ -> None
+        with _ ->
+            None
+
+/// The process-liveness, clock and sleep boundaries `stop` needs, injected so its
+/// outcome can be decided in a test with no daemon to kill and no real waiting.
+type StopOps =
+    { IsProcessAlive: int -> bool
+      Now: unit -> DateTime
+      SleepMs: int -> unit }
+
+let defaultStopOps: StopOps =
+    { IsProcessAlive = daemonPidAlive
+      Now = fun () -> DateTime.UtcNow
+      SleepMs = fun (ms: int) -> Thread.Sleep ms }
+
+/// How long `stop` keeps asking a live pipe to shut down before giving up.
+[<Literal>]
+let internal StopPipeQuietSeconds = 30.0
+
+/// How long `stop` then waits for the daemon PROCESS to leave the process table
+/// before saying, in as many words, that it is still there.
+[<Literal>]
+let internal StopProcessExitSeconds = 10.0
+
+/// What a `stop` established about the daemon PROCESS — never about the pipe alone.
+[<RequireQualifiedAccess>]
+type StopOutcome =
+    /// Nothing answered the pipe and no recorded process is alive. A no-op.
+    | NothingRunning
+    /// Shutdown was delivered and the recorded process is gone. The only success.
+    | Stopped of daemons: int
+    /// The recorded process was still alive at the deadline — whether or not the
+    /// pipe ever answered. Carries the pid so the operator can check it directly.
+    | StillAlive of pid: int * daemons: int
+    /// Shutdown was delivered and the pipe went quiet, but there was no usable
+    /// `.fshw/daemon.pid` to watch, so the exit is unproven in either direction.
+    | Unverified of daemons: int
+
+/// Ask every daemon on `pipeName` to shut down, then wait — bounded — for the
+/// process `.fshw/daemon.pid` names to actually leave the process table.
+///
+/// What is signalled is unchanged: the shutdown REQUEST over IPC, iterated until
+/// the pipe has been quiet for two consecutive probes (several daemons may share
+/// one pipe, and the OS may still be tearing down the last endpoint). Nothing here
+/// signals a pid. That matters for pid reuse: this code never delivers anything to
+/// the number in the pidfile, so it cannot hit an unrelated process that inherited
+/// it. Reuse can still make a dead daemon LOOK alive, which under-claims — and
+/// under-claiming is the safe direction for a verb whose whole job is not to
+/// over-claim.
+let internal stopDaemonWith
+    (ipc: IpcOps)
+    (fileOps: FileOps)
+    (stopOps: StopOps)
+    (repoRoot: string)
+    (pipeName: string)
+    : StopOutcome =
+    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
+
+    // Read the pid BEFORE asking anything to shut down: a daemon that exits
+    // cleanly deletes its own pidfile on the way out, so afterwards there is
+    // nothing left to watch and every stop would read as unverifiable.
+    let recordedPid = readDaemonPidWith fileOps repoRoot
+    let pipeDeadline = stopOps.Now().AddSeconds StopPipeQuietSeconds
+    let mutable delivered = 0
+    let mutable consecutiveQuiet = 0
+
+    while consecutiveQuiet < 2 && stopOps.Now() < pipeDeadline do
+        if ipc.IsRunning pipeName then
+            consecutiveQuiet <- 0
+
+            // One failed shutdown is tolerated — the OS may be tearing down the
+            // pipe mid-call. Logged at debug so it stays diagnosable.
+            try
+                ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                delivered <- delivered + 1
+            with ex ->
+                FsHotWatch.Logging.debug "cli-stop" $"Shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
+        else
+            consecutiveQuiet <- consecutiveQuiet + 1
+
+        stopOps.SleepMs 100
+
+    match recordedPid with
+    | None ->
+        // No pid to watch. If nothing answered the pipe either, nothing was
+        // running; if something did, the exit is simply unproven — say so.
+        if delivered = 0 then
+            StopOutcome.NothingRunning
+        else
+            StopOutcome.Unverified delivered
+    | Some pid ->
+        // Two independent proofs that the daemon we were watching is gone, because
+        // either alone can be wrong:
+        //   * the pidfile no longer names `pid` — the daemon deletes its own on a
+        //     clean exit, and this still holds if the pid has since been REUSED;
+        //   * `kill(pid, 0)` reports no such process — this holds when the daemon
+        //     was killed hard and never reached its own cleanup.
+        let gone () =
+            readDaemonPidWith fileOps repoRoot <> Some pid
+            || not (stopOps.IsProcessAlive pid)
+
+        let exitDeadline = stopOps.Now().AddSeconds StopProcessExitSeconds
+
+        while not (gone ()) && stopOps.Now() < exitDeadline do
+            stopOps.SleepMs 100
+
+        if not (gone ()) then
+            // The pidfile stays: it names a process that is alive, and stranding a
+            // live daemon beyond the reach of the next `stop` is the worse failure.
+            StopOutcome.StillAlive(pid, delivered)
+        else
+            // Hygiene, in the one case that is safe: the pidfile still names the pid
+            // we just watched leave the process table, which is what a `kill -9` or a
+            // SIGTERM leaves behind. A pidfile naming anything else belongs to some
+            // other daemon and is not ours to delete.
+            if
+                readDaemonPidWith fileOps repoRoot = Some pid
+                && not (stopOps.IsProcessAlive pid)
+            then
+                try
+                    fileOps.DeleteFile pidPath
+                with ex ->
+                    FsHotWatch.Logging.debug
+                        "cli-stop"
+                        $"could not delete daemon.pid: %s{ex.GetType().Name}: %s{ex.Message}"
+
+            if delivered = 0 then
+                StopOutcome.NothingRunning
+            else
+                StopOutcome.Stopped delivered
+
+/// What `stop` prints, and the exit code that goes with it. The exit code is part of
+/// the report, not decoration: a wrapper reads the code and never the prose, so a
+/// message that claims nothing beside an exit 0 that claims everything is the same
+/// lie in a quieter voice. Three codes, and they are the ones this CLI already uses
+/// everywhere else (see `withCheckIpc`):
+///
+///   0 — established: the daemon is gone, or there was never one to stop.
+///   1 — established the opposite: it is still running. `stop` did not stop it.
+///   2 — NOT established either way. The same "completeness unachievable" this tool
+///       gives a check that could not reach a verdict, for the same reason: the run
+///       did not produce the evidence its success would be made of.
+let internal reportStopOutcome (outcome: StopOutcome) : int =
+    match outcome with
+    | StopOutcome.NothingRunning ->
+        UI.info "No daemon running"
+        0
+    | StopOutcome.Stopped 1 ->
+        UI.success "Daemon stopped"
+        0
+    | StopOutcome.Stopped n ->
+        UI.success $"%d{n} daemons stopped"
+        0
+    | StopOutcome.Unverified n ->
+        // Exit 2, not 0. The benign reading — a daemon already on its way out, which
+        // deleted its own pidfile before this `stop` looked — is real but
+        // indistinguishable from a pidfile somebody removed out from under a daemon
+        // that is still very much alive. Nothing here can tell those apart, and
+        // "probably fine" is the claim this whole verb exists to stop making.
+        UI.warn
+            $"Shutdown delivered to %d{n} daemon(s) and the pipe is quiet, but .fshw/daemon.pid names no \
+              process — whether one exited cannot be shown from here."
+
+        UI.dimInfo "Nothing above says a daemon stopped, and nothing says one is running."
+        UI.dimInfo "`fshw status` shows whether one is still answering."
+        2
+    | StopOutcome.StillAlive(pid, delivered) ->
+        let sent =
+            if delivered = 0 then
+                "The pipe did not answer"
+            else
+                $"Shutdown was delivered to %d{delivered} daemon(s)"
+
+        UI.warn
+            $"%s{sent}, but the daemon process (pid %d{pid}) is STILL RUNNING \
+              %.0f{StopProcessExitSeconds}s later. It was NOT stopped."
+
+        UI.dimInfo $"Check it:  kill -0 %d{pid}    (exits 0 while the process is there)"
+        UI.dimInfo $"End it:    kill %d{pid}       (plain SIGTERM)"
+        UI.dimInfo ".fshw/daemon.pid is left in place — it names a process that is alive."
+        1
+
 /// The words `fshw status` prints when the running daemon's binary is not this CLI's:
 /// status output computed by the wrong binary must never be presented silently as
 /// current. Status itself does not restart (it is a read-only observer and a fresh
@@ -2080,40 +2328,8 @@ let executeCommand
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.
             withIpcNoHeal (fun () ->
-                // Multiple daemons may be listening on the same pipe, so iterate Shutdown
-                // until it has been quiet for two consecutive probes: that leaves no
-                // orphans behind and does not misreport "No daemon running" while the OS
-                // is still tearing down the last pipe endpoint.
-                let overallTimeout = TimeSpan.FromSeconds(30.0)
-                let sw = System.Diagnostics.Stopwatch.StartNew()
-                let mutable stopped = 0
-                let mutable consecutiveQuiet = 0
-
-                while consecutiveQuiet < 2 && sw.Elapsed < overallTimeout do
-                    if ipc.IsRunning pipeName then
-                        consecutiveQuiet <- 0
-
-                        // Bulk-stop loop tolerates one shutdown failing (the OS may
-                        // be tearing down the pipe mid-call). Log at debug so failures
-                        // are diagnosable.
-                        try
-                            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                            stopped <- stopped + 1
-                        with ex ->
-                            FsHotWatch.Logging.debug
-                                "cli-stop"
-                                $"Shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
-                    else
-                        consecutiveQuiet <- consecutiveQuiet + 1
-
-                    Thread.Sleep(100)
-
-                match stopped with
-                | 0 -> UI.info "No daemon running"
-                | 1 -> UI.success "Daemon stopped"
-                | n -> UI.success $"{n} daemons stopped"
-
-                0)
+                stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
+                |> reportStopOutcome)
         | Scan ->
             // A scan runs REAL WORK on the daemon — never on a stale-binary
             // one (its results would come from the wrong binary). Same decision as

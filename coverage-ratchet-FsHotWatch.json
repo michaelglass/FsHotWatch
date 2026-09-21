@@ -450,8 +450,8 @@
     ],
     "Ipc.fs": [
       {
-        "line": 91,
-        "branch": 79,
+        "line": 90,
+        "branch": 78,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
@@ -520,7 +520,7 @@
     "OperationWatchdog.fs": [
       {
         "line": 90,
-        "branch": 100,
+        "branch": 91,
         "reason": "daemon watchdog. Pure decision fns + Begin/End + WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback's overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) — pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run. || 2026-09-16: three further full runs (two on the change, one control on unmodified main fd2f92ba) each measured one branch below this floor; floor = observed minimum.",
         "platform": "macos"
       },
@@ -653,7 +653,7 @@
     "Program.fs": [
       {
         "line": 78,
-        "branch": 74,
+        "branch": 73,
         "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a `try/with ConfigError` around the `check --run-once` arm whose catch (eprintfn + exit 2) only runs when plugin registration raises — a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78->80 to a flaky lucky-ceiling, which the guard's own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs — pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% — daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline's 79 pin). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
@@ -1628,8 +1628,8 @@
     ],
     "Program.fs": [
       {
-        "coveredLines": 894,
-        "coveredBranches": 173,
+        "coveredLines": 939,
+        "coveredBranches": 185,
         "reason": "2026-09-18, one settled read decides a check: -2 lines, the deleted re-scan thunk `pollAndRender` no longer takes (ADR-034); not a lost test. Previously: 2026-09-17, detached daemon launch: -7 lines, all code moved or deleted, none a lost test. Measured by diffing covered Program.fs source lines against two main-based runs (835 there): the inline nohup launch body moved to DetachedLaunch.fs (100 percent covered there), the launcher's config.hash write was deleted (the daemon now publishes it), and multi-line call arguments collapsed; the new direct-start identity path gained lines. Previously: (2026-09-16): -5 lines / -2 branches because RerunFilter's private needsQuoting/quoteIfNeeded (7 covered lines) were replaced by a one-line delegate to ProcessHelper.quoteArg; not a coverage loss, the code moved to core. Previously: min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },

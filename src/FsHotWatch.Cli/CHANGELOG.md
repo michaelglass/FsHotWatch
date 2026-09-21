@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+- **`fshw stop` no longer reports success for a daemon that is still running.** It
+  counted delivered IPC shutdown requests and printed `✓ Daemon stopped` for any count
+  above zero. The pipe going quiet proves the LISTENER is gone, not the process: a
+  daemon can acknowledge the request, tear down its endpoint, and carry on checking
+  files with its pidfile intact — observed on two machines, one of them checking three
+  more files a second after the success line, where a plain `SIGTERM` killed it
+  instantly. An operator told it stopped re-runs, and now two daemons share one
+  workspace. The verb the wedge message prescribes was a no-op that reported success in
+  exactly the situation it steers you into.
+
+  `stop` now waits, bounded (10s), for the process `.fshw/daemon.pid` names to leave the
+  process table before claiming anything:
+
+  - gone → `✓ Daemon stopped`, exit 0;
+  - still there → **no success line**, exit 1, and the message names the pid,
+    `kill -0 <pid>` to check and `kill <pid>` to finish it;
+  - nothing running → `ℹ No daemon running`, exit 0, unchanged and still quiet;
+  - shutdown delivered but no usable `.fshw/daemon.pid` to watch → exit 2, claiming
+    neither outcome.
+
+  **BREAKING — `fshw stop` no longer always exits 0.** It now exits 1 when the daemon
+  is still running and 2 when it cannot tell, matching the codes this CLI already uses
+  everywhere else: 1 is "established the bad outcome", 2 is the "completeness
+  unachievable" a `check` gets when it reaches no verdict. The exit code is half of
+  what a success claim is made of — a wrapper reads the code and never the prose — so
+  leaving it at 0 would have half-fixed the lie.
+
+  The caller this changes is a script running `fshw stop` as unconditional cleanup
+  under `set -e`, which will now abort where it used to sail past. That caller is
+  precisely the one who most needs to know a daemon survived, but it should learn it
+  here rather than from a broken pipeline. To keep the old always-succeed behaviour,
+  make the failure explicit at the call site: `fshw stop || true`. To keep going only
+  when the daemon is genuinely gone but not when the answer is unknown, branch on the
+  code — `fshw stop; case $? in 0) ;; 2) echo 'daemon state unknown' ;; *) exit 1 ;; esac`.
+
+  Liveness is a `kill(pid, 0)` probe. Nothing else can find this process: the daemon's
+  argv is a bare `FsHotWatch.Cli.dll start` carrying neither the tool name nor the
+  workspace path, so no name- or path-based match reaches it, and `ps`/`%cpu` readings
+  are not dependable on every host.
+
+  What is signalled is unchanged — the shutdown request over IPC. Nothing signals a pid,
+  so a pid reused by an unrelated process can never be signalled by mistake; at worst it
+  makes a dead daemon read as still running, which under-claims, and that is the safe
+  direction for a verb whose job is not to over-claim. Exit is proven two ways — the
+  pidfile no longer naming the pid (a clean exit deletes its own, which holds even under
+  reuse) or the probe reporting no such process.
+
+- **`stop` removes the pidfile of a daemon it watched die DURING the stop.** A daemon
+  that is alive when the command starts and is then killed hard — a `SIGTERM` or
+  `kill -9` never reaches its own cleanup — would otherwise leave `.fshw/daemon.pid`
+  behind, naming a process that is gone. `stop` now deletes it, and only it: a pidfile
+  naming a live process, or naming some other pid, is left alone.
+
+  This is a narrow window on purpose, and it is worth being precise about what it is
+  NOT. A pidfile that is already stale when a command *starts* has been swept since
+  0.14.0-alpha.4 by the hygiene pass that runs before any verb dispatches, so a
+  leftover from an earlier session is already gone before `stop` looks — this entry
+  does not change or replace that. The window it closes is only the one the hygiene
+  pass cannot see: a process that was alive when hygiene ran and died without cleanup
+  before `stop` finished watching it.
+
 ## 0.14.0-alpha.57 - 2026-09-20
 
 - **`confirm`'s "verdict still applies" fast path now runs the run-level hooks.** It

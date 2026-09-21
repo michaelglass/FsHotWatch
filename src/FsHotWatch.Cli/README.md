@@ -65,7 +65,7 @@ a compatibility alias. Unknown or incomplete entries fail configuration.
 | `verdict` | **Read the last verdict** from `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run — reading cannot perturb. Exits 0/1/2/3 as the verdict itself, plus **4** (STALE: the verdict describes a different tree) and **5** (no usable verdict). |
 | `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
-| `stop` | Gracefully stop the running daemon. |
+| `stop` | Gracefully stop the running daemon, then **wait for its process to actually exit** before reporting anything. Exits 0 (stopped, or nothing was running), 1 (the daemon is still there — it names the pid and what to do about it), or 2 (it could not tell). |
 | `scan` | Re-scan all files. |
 | `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. Exits 0 (tests ran and passed), 1 (failures), or **3** (the run executed **no tests** — see below). |
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
@@ -199,6 +199,39 @@ waiting out something else. If the underlying cause is genuinely stale build **o
 >
 > A CI checkout starts cold, so CI does not hit this. Change any source file and the
 > cache misses, the suite runs, and `confirm` decides normally.
+
+### what `fshw stop` reporting success actually means
+
+The client and the daemon are separate processes. `stop` puts a shutdown **request** on
+the pipe; the daemon acknowledges it and then unwinds its own work in its own time. So a
+quiet pipe proves the **listener** is gone and nothing more — the process can still be
+checking files after the last endpoint closed.
+
+`stop` therefore reports on the **process**, not the pipe. After the pipe goes quiet it
+waits (bounded) for the process `.fshw/daemon.pid` names to leave the process table:
+
+* gone → `✓ Daemon stopped`, exit 0 — and if the daemon was killed hard while `stop`
+  watched it, the `.fshw/daemon.pid` it never got to delete goes with it. (A pidfile that
+  was *already* stale when the command started is swept before any verb dispatches, by a
+  hygiene pass that predates this; `stop` is not where those get cleaned.)
+* still there → **no success line**, exit 1, and the message names the pid, `kill -0 <pid>`
+  to check it yourself and `kill <pid>` to finish it. The pidfile is left in place: it
+  names a live process, and deleting it would strand that daemon beyond the reach of the
+  next `stop`;
+* nothing running → `ℹ No daemon running`, exit 0, quietly;
+* no usable `.fshw/daemon.pid` to watch → **exit 2**, claiming neither outcome. That is
+  the same "completeness unachievable" a `check` reports when it reaches no verdict, and
+  it is here for the same reason: the exit code is half of what a success claim is made
+  of, since a wrapper reads the code and never the prose.
+
+A script running `fshw stop` as unconditional cleanup under `set -e` used to sail past
+this and now aborts. Write `fshw stop || true` if that is what you meant.
+
+Liveness is a `kill(pid, 0)` probe, because nothing else here can find this process:
+the daemon's argv is a bare `FsHotWatch.Cli.dll start`, carrying neither the tool name
+nor the workspace path, and `ps`/`%cpu` readings are not dependable on every host. Note
+that `stop` never *signals* a pid — only the pipe — so a reused pid cannot be signalled
+by mistake; at worst it makes a dead daemon read as still running, which under-claims.
 
 ### a red that is not about your tree — and when `fshw stop` IS the answer
 

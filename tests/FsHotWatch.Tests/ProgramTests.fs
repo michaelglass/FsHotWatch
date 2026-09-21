@@ -22,6 +22,26 @@ let private captureStderr (f: unit -> 'a) : string * 'a =
     finally
         Console.SetError(original)
 
+/// Both streams. `UI.warn`, `dimInfo`, `success` and `info` all write to STDOUT in
+/// CommandTree 0.11.0 (measured, not assumed — only `UI.fail` uses stderr), so the
+/// message assertions below would hold on a stdout-only capture. Both are taken
+/// anyway because the `executeCommand` paths also emit diagnostics on stderr, and a
+/// one-stream capture there reads a message that named nothing.
+let private captureBothStreams (f: unit -> 'a) : string * 'a =
+    let originalOut = Console.Out
+    let originalErr = Console.Error
+    use sw = new StringWriter()
+    Console.SetOut(sw)
+    Console.SetError(sw)
+
+    try
+        let result = f ()
+        sw.Flush()
+        sw.ToString(), result
+    finally
+        Console.SetOut(originalOut)
+        Console.SetError(originalErr)
+
 // --- Helper: shared fake config and IPC ---
 
 let private fakeConfig: DaemonConfiguration =
@@ -499,7 +519,11 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
                 fakeConfig
                 5.0
 
-        test <@ result = 0 @>
+        // Exit 2, not 0: this fake never writes `.fshw/daemon.pid`, so there is no
+        // process for `stop` to watch leave the table and it reports — correctly —
+        // that it could not verify the exit. The subject of this test is the loop
+        // below, which is unchanged.
+        test <@ result = 2 @>
         test <@ shutdownCalls = 3 @>
         test <@ remainingDaemons = 0 @>)
 
@@ -518,20 +542,24 @@ let ``executeCommand Stop reports when no daemon is running`` () =
                             return "shutting down"
                         } }
 
-        let result =
-            executeCommand
-                ""
-                (fun _ -> Unchecked.defaultof<_>)
-                ipc
-                tmpDir
-                "pipe-none"
-                Stop
-                defaultGlobalOptions
-                fakeConfig
-                5.0
+        let out, result =
+            captureBothStreams (fun () ->
+                executeCommand
+                    ""
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    tmpDir
+                    "pipe-none"
+                    Stop
+                    defaultGlobalOptions
+                    fakeConfig
+                    5.0)
 
         test <@ result = 0 @>
-        test <@ shutdownCalls = 0 @>)
+        test <@ shutdownCalls = 0 @>
+        // Quiet: it says nothing ran, and warns about nothing.
+        test <@ out.Contains "No daemon running" @>
+        test <@ not (out.Contains "⚠") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``parse completions returns Completions`` () =
@@ -1032,3 +1060,252 @@ let ``a daemon OOM never restarts the daemon — that would discard the run it j
 
     test <@ restarts = 0 @>
     test <@ exitCode = 7 @>
+
+// --- `stop` tells the truth about the daemon PROCESS --------------------------
+//
+// The defect these pin: `stop` counted delivered IPC shutdown requests and called
+// any count above zero "Daemon stopped". The pipe going quiet proves the LISTENER
+// is gone; the daemon can acknowledge the request, close its endpoint and go on
+// checking files. An operator told it stopped re-runs, and now two daemons share
+// one workspace — and the wedge message steers them down exactly this path.
+
+/// A clock whose ONLY advance is `SleepMs`, so a bounded wait completes instantly
+/// and what is under test is the bound itself, not real time. Returns the ops plus
+/// a reader for how much simulated time the call consumed.
+let private fakeStopOps (alive: int -> bool) : StopOps * (unit -> TimeSpan) =
+    let start = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    let now = ref start
+
+    let ops =
+        { IsProcessAlive = alive
+          Now = fun () -> now.Value
+          SleepMs = fun ms -> now.Value <- now.Value.AddMilliseconds(float ms) }
+
+    ops, (fun () -> now.Value - start)
+
+/// A pipe that answers until `answers` shutdown requests have been delivered and
+/// then goes quiet — the shape of a daemon closing its endpoint. Says nothing
+/// about whether the PROCESS behind it exits, which is the whole point.
+let private quietingIpc (answers: int) : IpcOps =
+    let delivered = ref 0
+
+    { fakeIpc () with
+        IsRunning = fun _ -> delivered.Value < answers
+        Shutdown =
+            fun _ ->
+                async {
+                    delivered.Value <- delivered.Value + 1
+                    return "shutting down"
+                } }
+
+let private pidPathOf (root: string) =
+    Path.Combine(root, ".fshw", "daemon.pid")
+
+let private writePid (root: string) (pid: int) =
+    Directory.CreateDirectory(Path.Combine(root, ".fshw")) |> ignore
+    File.WriteAllText(pidPathOf root, string pid)
+
+// --- the liveness probe: only ESRCH proves death ---
+
+[<Fact(Timeout = 15000)>]
+let ``kill probe returning 0 means the process is alive`` () =
+    test <@ processAliveByProbe (fun _ -> 0) (fun () -> 0) 4242 @>
+
+[<Fact(Timeout = 15000)>]
+let ``kill probe failing with ESRCH is the one answer that proves death`` () =
+    test <@ not (processAliveByProbe (fun _ -> -1) (fun () -> 3) 4242) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a kill probe refused with EPERM means alive, not gone`` () =
+    // The process exists and belongs to somebody else. Reading that as death is how a
+    // live daemon's pidfile gets deleted out from under it.
+    test <@ processAliveByProbe (fun _ -> -1) (fun () -> 1) 4242 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a nonsense pid is never probed`` () =
+    test <@ not (processAliveByProbe (fun _ -> failwith "should not be probed") (fun () -> 0) 0) @>
+
+// --- stopDaemonWith ---
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon that exits cleanly is reported stopped`` () =
+    withTempDir "stop-clean-exit" (fun root ->
+        writePid root 4242
+        // A clean exit deletes its own pidfile on the way out.
+        let delivered = ref 0
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> delivered.Value < 1
+                Shutdown =
+                    fun _ ->
+                        async {
+                            delivered.Value <- delivered.Value + 1
+                            File.Delete(pidPathOf root)
+                            return "shutting down"
+                        } }
+
+        // The pid probe still says ALIVE — the number has been reused by something
+        // unrelated. The vanished pidfile settles it anyway, which is how pid reuse
+        // is kept from turning a real stop into a false "still running".
+        let ops, elapsed = fakeStopOps (fun _ -> true)
+        let outcome = stopDaemonWith ipc defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.Stopped 1 @>
+        test <@ elapsed () < TimeSpan.FromSeconds 1.0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a hard-killed daemon is reported stopped and its leftover pidfile removed`` () =
+    // A SIGTERM or `kill -9` never reaches the daemon's own cleanup, so the pidfile
+    // outlives the process and the next liveness read consults a dead pid.
+    withTempDir "stop-hard-killed" (fun root ->
+        writePid root 4242
+        let ops, _ = fakeStopOps (fun _ -> false)
+        let outcome = stopDaemonWith (quietingIpc 1) defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.Stopped 1 @>
+        test <@ not (File.Exists(pidPathOf root)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon that acknowledges shutdown and keeps running is NOT reported stopped`` () =
+    // The observed defect, in one test: the pipe goes quiet, the process does not.
+    withTempDir "stop-still-alive" (fun root ->
+        writePid root 4242
+        let ops, elapsed = fakeStopOps (fun _ -> true)
+        let outcome = stopDaemonWith (quietingIpc 1) defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.StillAlive(4242, 1) @>
+        // Bounded: it gives up instead of waiting on a daemon that never leaves.
+        test <@ elapsed () < TimeSpan.FromSeconds(StopPipeQuietSeconds + StopProcessExitSeconds + 1.0) @>
+        test <@ elapsed () >= TimeSpan.FromSeconds StopProcessExitSeconds @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a live daemon's pidfile is never deleted by stop`` () =
+    // Deleting it would strand the process beyond the reach of the next `stop`.
+    withTempDir "stop-keeps-live-pidfile" (fun root ->
+        writePid root 4242
+        let ops, _ = fakeStopOps (fun _ -> true)
+        stopDaemonWith (quietingIpc 1) defaultFileOps ops root "pipe" |> ignore
+
+        test <@ File.Exists(pidPathOf root) @>
+        test <@ File.ReadAllText(pidPathOf root).Trim() = "4242" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``stop with no daemon running is a quiet no-op`` () =
+    withTempDir "stop-nothing" (fun root ->
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let ops, elapsed = fakeStopOps (fun _ -> failwith "no pid to probe")
+        let outcome = stopDaemonWith ipc defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.NothingRunning @>
+        test <@ elapsed () < TimeSpan.FromSeconds 1.0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a stale pidfile with no daemon running is cleaned up, still quietly`` () =
+    withTempDir "stop-stale-pid" (fun root ->
+        writePid root 4242
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let ops, _ = fakeStopOps (fun _ -> false)
+        let outcome = stopDaemonWith ipc defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.NothingRunning @>
+        test <@ not (File.Exists(pidPathOf root)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a quiet pipe with no pidfile to watch is reported unverified, not stopped`` () =
+    withTempDir "stop-no-pidfile" (fun root ->
+        let ops, _ = fakeStopOps (fun _ -> failwith "no pid to probe")
+        let outcome = stopDaemonWith (quietingIpc 1) defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.Unverified 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon whose pipe never answered is still reported alive when its pid is`` () =
+    // The wedge shape: the listener is unreachable, the process is right there.
+    withTempDir "stop-wedged-pipe" (fun root ->
+        writePid root 4242
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let ops, _ = fakeStopOps (fun _ -> true)
+        let outcome = stopDaemonWith ipc defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.StillAlive(4242, 0) @>
+        test <@ File.Exists(pidPathOf root) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an unparseable pidfile is left alone rather than deleted or believed`` () =
+    withTempDir "stop-garbage-pid" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, ".fshw")) |> ignore
+        File.WriteAllText(pidPathOf root, "not-a-number")
+        let ops, _ = fakeStopOps (fun _ -> failwith "no pid to probe")
+        let outcome = stopDaemonWith (quietingIpc 1) defaultFileOps ops root "pipe"
+
+        test <@ outcome = StopOutcome.Unverified 1 @>
+        test <@ File.Exists(pidPathOf root) @>)
+
+// --- what the operator actually reads ---
+
+[<Fact(Timeout = 15000)>]
+let ``a still-running daemon never gets a success line`` () =
+    let out, code =
+        captureBothStreams (fun () -> reportStopOutcome (StopOutcome.StillAlive(4242, 1)))
+
+    test <@ code = 1 @>
+    test <@ not (out.Contains "✓") @>
+    test <@ out.Contains "STILL RUNNING" @>
+    test <@ out.Contains "4242" @>
+    // The remedy is named, not left to be guessed.
+    test <@ out.Contains "kill -0 4242" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon proven gone gets the success line and exit 0`` () =
+    let out, code =
+        captureBothStreams (fun () -> reportStopOutcome (StopOutcome.Stopped 1))
+
+    test <@ code = 0 @>
+    test <@ out.Contains "✓" @>
+    test <@ out.Contains "Daemon stopped" @>
+
+[<Fact(Timeout = 15000)>]
+let ``no daemon running says so without warning about anything`` () =
+    let out, code =
+        captureBothStreams (fun () -> reportStopOutcome StopOutcome.NothingRunning)
+
+    test <@ code = 0 @>
+    test <@ out.Contains "No daemon running" @>
+    test <@ not (out.Contains "⚠") @>
+    test <@ not (out.Contains "✓") @>
+
+[<Fact(Timeout = 15000)>]
+let ``an unverified stop claims neither outcome, in the message AND in the exit code`` () =
+    // Exit 2 — "could not establish", the code this CLI already gives a check that
+    // reached no verdict. Exit 0 here would be the defect in a quieter voice: a
+    // wrapper reads the code, not the prose, and would take it for a clean stop.
+    let out, code =
+        captureBothStreams (fun () -> reportStopOutcome (StopOutcome.Unverified 1))
+
+    test <@ code = 2 @>
+    test <@ not (out.Contains "✓") @>
+    test <@ out.Contains "daemon.pid" @>
+
+[<Fact(Timeout = 15000)>]
+let ``the three stop exit codes are distinct claims`` () =
+    // 0 established gone, 1 established still there, 2 established neither. A caller
+    // that only branches on zero/non-zero still gets the safe answer in all three.
+    let code outcome =
+        snd (captureBothStreams (fun () -> reportStopOutcome outcome))
+
+    test <@ code StopOutcome.NothingRunning = 0 @>
+    test <@ code (StopOutcome.Stopped 1) = 0 @>
+    test <@ code (StopOutcome.StillAlive(4242, 1)) = 1 @>
+    test <@ code (StopOutcome.Unverified 1) = 2 @>
