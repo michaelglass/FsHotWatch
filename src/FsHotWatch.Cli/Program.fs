@@ -412,6 +412,28 @@ type IpcFault =
     /// that failed was the other one.
     | DaemonOutOfMemory of exn
     | TimedOut of TimeoutException
+    /// The daemon dropped the connection while the call was in flight —
+    /// `StreamJsonRpc.ConnectionLostException`, raised when the pipe ends mid-request.
+    /// This is the shape a daemon that EXITED takes once the CLI is already talking to
+    /// it (a crash, an OOM killer, a `fshw stop` from another shell); a daemon that was
+    /// already gone before the call presents as `TimedOut` instead, because
+    /// `NamedPipeClientStream.ConnectAsync` retries every connect error it gets.
+    | ConnectionLost of exn
+    /// The daemon answered and does not have the method this CLI called —
+    /// `StreamJsonRpc.RemoteMethodNotFoundException`, raised both for a method the
+    /// remote target lacks entirely and for one whose signature no longer matches.
+    /// That is a VERSION MISMATCH: a daemon started from a different fshw build.
+    /// It is NOT a `RemoteInvocationException` — the two are siblings under
+    /// `RemoteRpcException` — which is why it used to fall through to `Other`.
+    | DaemonMethodMissing of exn
+    /// The daemon's own RPC method raised, and the fault is not one of the
+    /// corrupted-pipe/out-of-memory family reconstructed above: an ordinary daemon-side
+    /// error (a plugin bug, a refused scan). The pipe is healthy and the daemon is
+    /// alive, so nothing here is fixed by restarting it.
+    | DaemonThrew of exn
+    /// No evidence in the fault named a cause. Still carries a hint — see
+    /// `ipcErrorHint`, which is TOTAL: an unclassified fault is the one case where the
+    /// reader has the least to go on and needs the generic recovery steps most.
     | Other of exn
 
 /// Which process an IPC fault was RAISED in. Not derivable from the exception once it
@@ -490,43 +512,86 @@ let private remoteFaultDetails (remote: StreamJsonRpc.RemoteInvocationException)
     | :? StreamJsonRpc.Protocol.CommonErrorData as data -> fromCommonErrorData data
     | _ -> None
 
+/// Classify an unwrapped IPC exception.
+///
+/// `RemoteMethodNotFoundException` and `ConnectionLostException` are matched FIRST and
+/// separately: neither derives from `RemoteInvocationException` (all three are siblings
+/// under `RemoteRpcException`), so neither ever reached the reconstruction below — both
+/// landed in `IpcFault.Other`, which printed the raw exception and no hint at all. They
+/// are also the two faults with the most specific remedies: an fshw build mismatch, and
+/// a daemon that died mid-call.
 let classifyIpcFault (inner: exn) : IpcFault =
     match inner with
+    | :? StreamJsonRpc.RemoteMethodNotFoundException -> IpcFault.DaemonMethodMissing inner
+    | :? StreamJsonRpc.ConnectionLostException -> IpcFault.ConnectionLost inner
     | :? StreamJsonRpc.RemoteInvocationException as remote ->
         match remoteFaultDetails remote with
         | Some(reconstructed, remoteStackTrace) -> classifyIpcFaultAt FaultOrigin.Daemon remoteStackTrace reconstructed
-        | None -> IpcFault.Other inner
+        // The daemon ANSWERED and its method threw. Not `Other`: "the daemon reported an
+        // error" is itself the diagnosis, and it rules out every pipe-level remedy.
+        | None -> IpcFault.DaemonThrew inner
     | _ -> classifyIpcFaultAt FaultOrigin.Client (inner.StackTrace |> Option.ofObj) inner
 
-/// Map an unwrapped IPC exception to a user-actionable hint, or None if the
-/// exception type isn't one we have a known recovery story for. Pure so it can
-/// be unit-tested without round-tripping through a real pipe.
+/// Map an unwrapped IPC exception to a user-actionable hint. Pure so it can be
+/// unit-tested without round-tripping through a real pipe.
+///
+/// TOTAL — `string`, not `string option`. The old signature let a fault be classified
+/// and then silently lose its hint, and `IpcFault.Other` did exactly that: every IPC
+/// failure that was not a timeout printed a bare exception and nothing else. Since the
+/// case set is a closed union, the compiler is the thing that guarantees a new fault
+/// cannot be added without an answer to "and what should the reader DO?" — a guarantee
+/// no `Some`/`None` lookup can make. The unclassifiable case gets the generic recovery
+/// steps rather than silence: the reader who has the least to go on needs them most.
 ///
 /// A corrupted-frame fault only reaches its hint AFTER `runIpcWithSelfHeal`
 /// already tried the automatic restart-and-retry. A client OOM deliberately
 /// takes the no-restart path and says so.
-let ipcErrorHint (inner: exn) : string option =
+let ipcErrorHint (inner: exn) : string =
     match classifyIpcFault inner with
     | IpcFault.CorruptedFrame _ ->
-        Some
-            "The IPC pipe returned a corrupted or oversized frame. fshw already restarted \
-             the daemon and retried; since it recurred, check `logs/daemon.log` for a \
-             second daemon, a crash loop, or runaway memory growth."
+        "The IPC pipe returned a corrupted or oversized frame. fshw already restarted \
+         the daemon and retried; since it recurred, check `logs/daemon.log` for a \
+         second daemon, a crash loop, or runaway memory growth."
     | IpcFault.ClientOutOfMemory _ ->
-        Some
-            "The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
-             restarted because this failure carries no evidence of a corrupted frame; \
-             inspect the client process memory limit and reduce concurrent work."
+        "The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
+         restarted because this failure carries no evidence of a corrupted frame; \
+         inspect the client process memory limit and reduce concurrent work."
     | IpcFault.DaemonOutOfMemory _ ->
-        Some
-            "The DAEMON ran out of memory building this reply — the failure is on that side, so \
-             the client's memory limit and the box's free memory are not the lever. The usual \
-             cause is a reply whose size is a PRODUCT rather than a sum: a broadly red suite \
-             whose per-failure diagnostics each carry the whole run's output. Check the ledger \
-             size in `logs/daemon.log`, and see `.fshw/test-runs/` — the run's own evidence is \
-             written by the daemon and survives this."
-    | IpcFault.TimedOut _ -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
-    | IpcFault.Other _ -> None
+        "The DAEMON ran out of memory building this reply — the failure is on that side, so \
+         the client's memory limit and the box's free memory are not the lever. The usual \
+         cause is a reply whose size is a PRODUCT rather than a sum: a broadly red suite \
+         whose per-failure diagnostics each carry the whole run's output. Check the ledger \
+         size in `logs/daemon.log`, and see `.fshw/test-runs/` — the run's own evidence is \
+         written by the daemon and survives this."
+    | IpcFault.TimedOut _ ->
+        // Every connect failure arrives here too, not just a slow reply: on Unix
+        // `NamedPipeClientStream.ConnectAsync` retries a missing socket, a stale socket
+        // left by a dead daemon, and a socket path this process may not open, and
+        // surfaces all three as the SAME `TimeoutException` once the bound expires
+        // (measured against .NET 10 on macOS). So the hint has to name that whole set —
+        // "busy or hung" alone sends the reader to look at a daemon that is not there.
+        "Daemon did not respond in time — it may be busy or hung, or there may be no daemon \
+         listening at all (a dead daemon's stale socket, or one this user cannot open, fails \
+         the same way). Check `logs/daemon.log` and `fshw status`; `fshw stop` clears a stale \
+         socket, and the next fshw command starts a fresh daemon."
+    | IpcFault.ConnectionLost _ ->
+        "The daemon dropped the connection mid-call, which means it EXITED while serving this \
+         request — a crash, an out-of-memory kill, or a `fshw stop` from another shell. The \
+         last lines of `logs/daemon.log` are from just before it died. Re-run the command: the \
+         next one starts a fresh daemon."
+    | IpcFault.DaemonMethodMissing _ ->
+        "The running daemon does not have the method this CLI called — it was started from a \
+         DIFFERENT fshw build, so the two no longer agree on the RPC surface. Run `fshw stop` \
+         and re-run the command; the next one starts a daemon from this binary."
+    | IpcFault.DaemonThrew _ ->
+        "The daemon answered and its own call failed, so the pipe is healthy and restarting the \
+         daemon will not change the outcome. The daemon-side stack trace is in \
+         `logs/daemon.log`."
+    | IpcFault.Other _ ->
+        "fshw has no recovery story for this fault — it is not a timeout, a lost connection, a \
+         corrupted frame, an out-of-memory, or an error the daemon reported. Check \
+         `logs/daemon.log` for what the daemon was doing; if it is wedged, `fshw stop` and \
+         re-run (the next command starts a fresh one)."
 
 /// The first line of an IPC failure must name the process whose failure is known.
 /// A bare OOM is evidence about this CLI, not about daemon connectivity; retaining
@@ -542,6 +607,13 @@ let ipcErrorHeadline (inner: exn) : string =
     | _ when FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage inner.Message -> inner.Message
     | IpcFault.ClientOutOfMemory _ -> $"The fshw CLI ran out of memory while handling daemon IPC: %s{inner.Message}"
     | IpcFault.DaemonOutOfMemory _ -> $"The fshw DAEMON ran out of memory serving this IPC call: %s{inner.Message}"
+    // The same rule as the scan-supersession branch above, generalized: a daemon that
+    // answered has DISPROVED "could not connect", and saying it anyway sends the reader
+    // to the pipe for a fault that was never in the pipe.
+    | IpcFault.DaemonMethodMissing _ ->
+        $"The daemon did not recognize this call — it is running a different fshw build: %s{inner.Message}"
+    | IpcFault.DaemonThrew _ -> $"The daemon reported an error: %s{inner.Message}"
+    | IpcFault.ConnectionLost _
     | IpcFault.CorruptedFrame _
     | IpcFault.TimedOut _
     | IpcFault.Other _ ->
@@ -565,10 +637,7 @@ let ipcErrorHeadline (inner: exn) : string =
 let reportDaemonError (ex: exn) : unit =
     let inner = unwrapIpcException ex
     eprintfn "%s" (ipcErrorHeadline inner)
-
-    match ipcErrorHint inner with
-    | Some h -> eprintfn "  hint: %s" h
-    | None -> ()
+    eprintfn "  hint: %s" (ipcErrorHint inner)
 
 /// Run one IPC action with corrupted-pipe self-healing.
 /// A corrupted-pipe fault means the daemon (or a rogue sibling sharing the
@@ -607,6 +676,14 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
         // gets thrown away along with its result.
         | IpcFault.DaemonOutOfMemory _
         | IpcFault.TimedOut _
+        // A daemon that is already gone (`ConnectionLost`) has nothing to restart here —
+        // the next command's `ensureDaemon` starts one. A build mismatch
+        // (`DaemonMethodMissing`) and a daemon-side throw (`DaemonThrew`) both come from
+        // a daemon that ANSWERED, and neither is a corrupted frame; retrying the same
+        // call against a restarted daemon would only repeat it.
+        | IpcFault.ConnectionLost _
+        | IpcFault.DaemonMethodMissing _
+        | IpcFault.DaemonThrew _
         | IpcFault.Other _ -> onFailure ex
 
 /// Wrap an IPC call with connection error handling and corrupted-pipe
