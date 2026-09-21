@@ -251,6 +251,7 @@ let internal depRelevantSignature (repoRoot: string) (fsprojPath: string) : stri
 type RecoveryTracker() =
     let attempted = ConcurrentDictionary<string, string>()
     let freshSignatures = ConcurrentDictionary<string, string>()
+    let gates = ConcurrentDictionary<string, obj>()
 
     /// True when a restore should be attempted for this (project, signature) —
     /// i.e. we have not already attempted recovery for this exact stale state.
@@ -293,6 +294,21 @@ type RecoveryTracker() =
     /// future regression is treated freshly. The fresh-content baseline is kept
     /// so subsequent drift remains detectable.
     member _.Clear(proj: string) = attempted.TryRemove proj |> ignore
+
+    /// The per-project gate that serialises RECOVERY ATTEMPTS.
+    ///
+    /// `MarkAttempted` is written before the restore runs and cleared only once it
+    /// succeeds, so for the whole duration of a restore the mark says "already
+    /// attempted". Without this gate a concurrent evaluator — the scan and the
+    /// change-batch supervisor evaluate the same project at the same time, on this
+    /// one shared tracker — read that in-flight mark as a CONCLUDED FAILURE and
+    /// dropped every file of the project from its scan.
+    ///
+    /// MEASURED in the consuming repository's daemon log: of 38 `deps still stale`
+    /// events, 36 had an `auto-restored OK` for the same project 0.0-13.5s LATER
+    /// (median 1.1s) and none had one before. The projects were restoring, not
+    /// unrestorable.
+    member _.AttemptGate(proj: string) : obj = gates.GetOrAdd(proj, (fun _ -> obj ()))
 
 /// Injected restore runner: given a project directory, runs the restore and
 /// returns the outcome. Production shells `dotnet restore` (+ paket / tool
@@ -364,7 +380,7 @@ let evaluateProject
     : GateResult =
     // Shared stale handling: debounce, attempt restore, record the new fresh
     // content baseline on success so subsequent drift is detectable.
-    let handleStale (sig_: string) : GateResult =
+    let attemptRecovery (sig_: string) : GateResult =
         if not (tracker.ShouldAttempt(proj, sig_)) then
             SkipAlreadyAttempted
         else
@@ -384,6 +400,35 @@ let evaluateProject
             | TimedOut _ ->
                 let msg, detail = restoreFailureMessage proj outcome
                 FailFast(msg, detail)
+
+    // Recovery is serialised per project so an IN-FLIGHT restore is never mistaken
+    // for a concluded failure. See `RecoveryTracker.AttemptGate`.
+    let handleStale (sig_: string) : GateResult =
+        let gate = tracker.AttemptGate proj
+
+        if Threading.Monitor.TryEnter(gate, 0) then
+            // Uncontended — nobody else is recovering this project, so this is the
+            // path the gate has always taken, probe count and all.
+            try
+                attemptRecovery sig_
+            finally
+                Threading.Monitor.Exit gate
+        else
+            // Contended: another evaluator holds the gate and is mid-restore. WAIT for
+            // it rather than read its mark, then ask the disk again — the holder has
+            // very likely just fixed this project, and a second restore of what is now
+            // fresh would be waste on top of a wrong answer.
+            Threading.Monitor.Enter gate
+
+            try
+                match probe proj with
+                | Fresh ->
+                    tracker.Clear proj
+                    tracker.RecordFreshSignature(proj, sig_)
+                    Proceed
+                | Stale -> attemptRecovery sig_
+            finally
+                Threading.Monitor.Exit gate
 
     let sig_ = signatureOf proj
 

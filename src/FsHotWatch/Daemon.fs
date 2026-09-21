@@ -93,9 +93,28 @@ let internal applyDepsGate
             host.ClearErrors(DepsFreshness.pluginName, projPath)
             true
         | DepsFreshness.SkipAlreadyAttempted ->
-            Logging.warn
-                "deps"
+            // Skipping is right — a project whose deps will not restore must not be
+            // type-checked against an empty reference set, which produces a phantom
+            // "namespace not found" storm. Skipping SILENTLY is not: this drops every
+            // file of the project from the scan, and the scan still publishes its
+            // generation. The diagnostic used to be assumed — inherited from the
+            // `FailFast` of the first recovery attempt — but nothing keeps that entry
+            // alive across a re-discovery, so the project could leave the scan with
+            // nothing said about it at all.
+            let message =
                 $"%s{Path.GetFileName projPath}: deps still stale (recovery already attempted) — skipping FCS analysis"
+
+            Logging.warn "deps" message
+
+            let detail =
+                "Every file in this project was left unchecked, so this scan did not cover the whole tree. "
+                + "Restore the project's dependencies and re-run; the gate re-arms once its deps are observed fresh."
+
+            host.ReportErrors(
+                DepsFreshness.pluginName,
+                projPath,
+                [ ErrorLedger.ErrorEntry.errorWithDetail message detail ]
+            )
 
             false
         | DepsFreshness.FailFast(message, detail) ->
@@ -2793,6 +2812,16 @@ let private performScan
             // Files that produced a result and were emitted, hoisted out of the
             // `if` so the metrics record can read it on an empty scan too.
             let mutable checkedTotal = 0
+            // Files the scan never attempted, and the subset of those dropped because
+            // the deps-freshness gate refused their project. Hoisted for the same
+            // reason, and recorded because a scan that silently covered a third of the
+            // tree was otherwise indistinguishable in the ledger from a complete one.
+            let mutable skippedTotal = 0
+            let mutable depsGatedTotal = 0
+            // Cohort files that reached no tier at all. The incremental path
+            // reconciles this category (`uncovered`, ~line 1406); the scan path does
+            // not dispatch them, so without this they were invisible in every count.
+            let mutable uncoveredTotal = 0
 
             if not files.IsEmpty then
                 // Run preprocessors (e.g., formatter) before dispatching
@@ -2812,8 +2841,12 @@ let private performScan
 
                 let mutable checkedCount = 0
                 let mutable skippedCount = 0
+                let mutable depsGatedCount = 0
 
                 let filesToCheckSet = Set.ofList files
+                // Every cohort file a tier claimed, whether it was then dispatched or
+                // refused by the deps gate. What remains is the uncovered set.
+                let tierCovered = System.Collections.Generic.HashSet<string>()
 
                 // Check files in parallel tiers based on project dependency graph
                 let tiers = scanTiers
@@ -2837,6 +2870,9 @@ let private performScan
                         let projFiles = projectFiles |> List.filter filesToCheckSet.Contains
                         skippedCount <- skippedCount + (projectFiles.Length - projFiles.Length)
 
+                        for claimed in projFiles do
+                            tierCovered.Add claimed |> ignore
+
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
                             match projectOptions with
@@ -2850,6 +2886,7 @@ let private performScan
                                     tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
                         else
                             skippedCount <- skippedCount + projFiles.Length
+                            depsGatedCount <- depsGatedCount + projFiles.Length
 
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
@@ -2895,7 +2932,23 @@ let private performScan
                     "scan"
                     $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
+                uncoveredTotal <- files |> List.filter (tierCovered.Contains >> not) |> List.length
+
+                if uncoveredTotal > 0 then
+                    // Named rather than folded into a total: these files belong to no
+                    // project the scan walked, so no retry round and no gate decision
+                    // will ever account for them.
+                    Logging.warn
+                        "scan"
+                        $"%d{uncoveredTotal} registered file(s) belonged to no project in this scan's tiers and were never dispatched"
+
                 checkedTotal <- checkedCount
+                // The cohort files the scan did not attempt. `skippedCount` also
+                // counts project files OUTSIDE the cohort, which is right for its log
+                // line and wrong for coverage arithmetic, so the metric is built from
+                // the two cohort reasons instead.
+                depsGatedTotal <- depsGatedCount
+                skippedTotal <- depsGatedCount + uncoveredTotal
 
             sw.Stop()
             let finalScanState = ScanComplete(sw.Elapsed)
@@ -2943,6 +2996,9 @@ let private performScan
                   FilesRegistered = total
                   FilesChecked = checkedTotal
                   FilesUnchecked = uncheckedCount
+                  FilesSkipped = skippedTotal
+                  FilesDepsGated = depsGatedTotal
+                  FilesUncovered = uncoveredTotal
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes
@@ -3530,15 +3586,28 @@ module Daemon =
         =
         createWithCore checker repoRoot opts (Some loader) mapProjectOptions None watcherFactory
 
+    /// The warm checker a daemon runs on.
+    ///
+    /// `keepAssemblyContents = true` is what lets an analyzer walk a TYPED TREE:
+    /// `AnalyzersPlugin` reads `ImplementationFile` off the check results and hands
+    /// it to the SDK as `CliContext.TypedTree`. An analyzer that needs typed
+    /// information and receives `None` returns no findings rather than failing, so
+    /// dropping this flag would not surface as an error — it would silently weaken
+    /// every typed-tree rule. The retention is therefore a capability, and its cost
+    /// is the thing to measure, not the thing to assume.
+    ///
+    /// Named rather than inlined into `create` so that capability has a test: a test
+    /// checks a file through this checker and asserts implementation contents came
+    /// back.
+    let createChecker () =
+        FSharpChecker.Create(
+            keepAssemblyContents = true,
+            keepAllBackgroundResolutions = true,
+            parallelReferenceResolution = true,
+            useTransparentCompiler = true
+        )
+
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.
     let create (repoRoot: string) (opts: DaemonOptions) =
-        let checker =
-            FSharpChecker.Create(
-                keepAssemblyContents = true,
-                keepAllBackgroundResolutions = true,
-                parallelReferenceResolution = true,
-                useTransparentCompiler = true
-            )
-
-        createWith checker repoRoot opts
+        createWith (createChecker ()) repoRoot opts

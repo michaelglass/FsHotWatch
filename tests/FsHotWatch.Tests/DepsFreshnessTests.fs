@@ -698,13 +698,28 @@ let ``applyDepsGate: FailFast reports one error, skips FCS, verdict non-zero`` (
     test <@ host.HasFailingReasons false @>
 
 [<Fact(Timeout = 10000)>]
-let ``applyDepsGate: SkipAlreadyAttempted skips FCS without adding a new diagnostic`` () =
+let ``applyDepsGate: SkipAlreadyAttempted reports its own diagnostic`` () =
+    // This path drops EVERY file of a project from the scan. It used to rely on the
+    // `FailFast` diagnostic from the first recovery attempt still being in the ledger,
+    // which nothing guarantees — a re-discovery or any `ClearErrors` removes it, and
+    // then whole projects leave the scan with no diagnostic at all while the scan
+    // publishes its generation as authoritative. Skipping is correct (a project whose
+    // deps will not restore must not be type-checked against an empty reference set);
+    // skipping SILENTLY is the defect.
     let host = PluginHost.create nullChecker "/tmp/test"
-    let proceed = applyDepsGate (Some(fun _ -> SkipAlreadyAttempted)) host "/r/P.fsproj"
+    let proj = "/r/P.fsproj"
+
+    // A ledger with no prior diagnostic is the case that was silent.
+    let proceed = applyDepsGate (Some(fun _ -> SkipAlreadyAttempted)) host proj
 
     test <@ not proceed @>
-    // No new diagnostic is added on this path (a prior one, if any, is retained).
-    test <@ host.GetErrorsByPlugin pluginName |> Map.isEmpty @>
+
+    let entries =
+        host.GetErrorsByPlugin pluginName |> Map.tryFind proj |> Option.defaultValue []
+
+    test <@ entries.Length = 1 @>
+    // The scan that skipped this project cannot now read as green.
+    test <@ host.HasFailingReasons false @>
 
 [<Fact(Timeout = 10000)>]
 let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
@@ -865,3 +880,59 @@ let ``restoreSteps: full stack (paket groups + tools) orders restore, per-group 
                 steps
                 |> List.forall (fun s -> Path.GetFullPath s.WorkingDir = Path.GetFullPath projDir)
             @>)
+
+// ---- concurrent recovery: the in-flight restore must not read as a failed one ----
+
+[<Fact(Timeout = 30000)>]
+let ``evaluateProject: a concurrent evaluation waits for an in-flight restore instead of skipping`` () =
+    // MEASURED in production before this test existed: of 38 `deps still stale
+    // (recovery already attempted)` events, 36 had an `auto-restored OK` for the SAME
+    // project 0.0-13.5s LATER (median 1.1s), and none had one before. Those projects
+    // were never unrestorable — the scan skipped them WHILE the restore was running.
+    //
+    // The scan and the change-batch supervisor evaluate the gate concurrently on one
+    // shared tracker, and the attempt was marked BEFORE the restore ran and cleared
+    // only after it succeeded. So for the duration of a restore the mark said
+    // "already attempted", and the loser dropped every file of the project from its
+    // scan and published the generation anyway.
+    let restoreEntered = new System.Threading.ManualResetEventSlim(false)
+    let releaseRestore = new System.Threading.ManualResetEventSlim(false)
+
+    let blockingRunner: RestoreRunner =
+        fun _ ->
+            restoreEntered.Set()
+            releaseRestore.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+            Succeeded(ProcessOutput.Drained "restored")
+
+    let tracker = RecoveryTracker()
+
+    // Stale until the restore completes, fresh afterwards — what a real probe sees.
+    let restored = ref false
+
+    let probe _ =
+        if System.Threading.Volatile.Read(&restored.contents) then Fresh else Stale
+
+    let winner =
+        System.Threading.Tasks.Task.Run(fun () ->
+            let r = evaluateProject probe sigZero assetsYes blockingRunner tracker "P.fsproj"
+            System.Threading.Volatile.Write(&restored.contents, true)
+            r)
+
+    Assert.True(restoreEntered.Wait(TimeSpan.FromSeconds 10.0), "the first evaluation never reached the restore")
+
+    // The loser evaluates while the restore is in flight.
+    let loser =
+        System.Threading.Tasks.Task.Run(fun () ->
+            evaluateProject probe sigZero assetsYes blockingRunner tracker "P.fsproj")
+
+    // Give the loser a moment to reach the gate, then let the restore finish.
+    System.Threading.Thread.Sleep 250
+    releaseRestore.Set()
+
+    let winnerResult = winner.Result
+    let loserResult = loser.Result
+
+    test <@ winnerResult = RecoveredOk @>
+    // The project restored successfully, so the concurrent evaluation must not report
+    // it as stale-and-already-attempted — that is the silent whole-project drop.
+    test <@ loserResult <> SkipAlreadyAttempted @>

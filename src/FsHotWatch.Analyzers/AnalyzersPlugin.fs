@@ -222,6 +222,123 @@ let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry
 /// timeout-guarded region before the real analyzer call so tests can force the
 /// timeout branch without a real slow analyzer DLL. The public `create` passes
 /// `None`.
+// Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
+// but the SDK assembly may not be fully loaded at plugin construction time in tests)
+let internal cachedReflection =
+    lazy
+        let ctor = typeof<CliContext>.GetConstructors().[0]
+        let ctorParams = ctor.GetParameters()
+
+        if ctorParams.Length <> 8 then
+            failwith
+                $"CliContext constructor has %d{ctorParams.Length} params (expected 8) — FSharp.Analyzers.SDK may have changed"
+
+        let ignoreRangesType = ctorParams.[7].ParameterType
+        let keyType = ignoreRangesType.GetGenericArguments().[0]
+        let valueType = ignoreRangesType.GetGenericArguments().[1]
+
+        // Get Map.empty from the same FSharp.Core assembly as the SDK uses.
+        // Map<_,_> has no static Empty property — it lives in MapModule.
+        let emptyIgnoreRanges =
+            let mapModuleType =
+                ignoreRangesType.Assembly.GetType("Microsoft.FSharp.Collections.MapModule")
+
+            let emptyMethod =
+                mapModuleType.GetMethods()
+                |> Array.find (fun m -> m.Name = "Empty" && m.IsGenericMethodDefinition)
+
+            emptyMethod.MakeGenericMethod(keyType, valueType).Invoke(null, null)
+
+        let apoCtor = ctorParams.[6].ParameterType.GetConstructors() |> Array.tryHead
+        (ctor, ctorParams, emptyIgnoreRanges, apoCtor)
+
+/// Construct CliContext via reflection to bypass FCS version mismatch.
+/// All params are obj to prevent JIT from binding to wrong FCS assembly version.
+let internal createCliContext
+    (fileName: obj)
+    (sourceText: obj)
+    (parseResults: obj)
+    (checkResults: obj)
+    (typedTree: obj)
+    (projectOptions: obj)
+    : CliContext =
+    let (ctor, _, emptyIgnoreRanges, apoCtor) = cachedReflection.Value
+    let analyzerProjectOptions = buildAnalyzerProjectOptions apoCtor projectOptions
+
+    ctor.Invoke(
+        [| fileName
+           sourceText
+           parseResults
+           checkResults
+           typedTree
+           null // checkProjectResults
+           analyzerProjectOptions
+           emptyIgnoreRanges |]
+    )
+    :?> CliContext
+
+/// The SDK's `CliContext.TypedTree` when no typed tree is being offered.
+let internal noTypedTree: obj =
+    box (None: FSharp.Compiler.Symbols.FSharpImplementationFileContents option)
+
+/// Whether an analyzer failure is the FCS BINARY MISMATCH rather than a fault in the
+/// analyzer or in the file it was given.
+///
+/// An analyzer package is compiled against one FCS and loaded here beside another.
+/// While `CliContext.TypedTree` is `None` an analyzer that walks the typed tree
+/// returns early and never touches the differing types, so the mismatch stays
+/// invisible; hand it a real typed tree and it calls a member that no longer exists
+/// and raises `MissingMethodException` — MEASURED with g-research 0.23.0 against FCS
+/// 43.12.x, where 11 of 13 analyzers raise
+/// `Method not found: FSharp.Compiler.Symbols.FSharpType.get_BasicQualifiedName()`.
+///
+/// `MissingMethodException` derives from `MissingMemberException`, and a type whose
+/// shape moved surfaces as `TypeLoadException`; both mean the same thing here.
+let internal isFcsBinaryMismatch (ex: exn) : bool =
+    match ex with
+    | :? MissingMemberException
+    | :? TypeLoadException -> true
+    | _ -> false
+
+/// The typed implementation contents an analyzer walks, boxed as the SDK's
+/// `CliContext.TypedTree` (an `FSharpImplementationFileContents option`).
+///
+/// Supplying this is what keeps typed-tree rules ALIVE. An analyzer that needs type
+/// information and receives `None` returns no findings rather than failing, so a
+/// host that withholds it does not break — it quietly reports clean, which is a
+/// check that cannot fail.
+///
+/// `ImplementationFile` RAISES when the checker was built without
+/// `keepAssemblyContents`, so the access is guarded: such a host still analyzes,
+/// with typed-tree rules quiet and every other rule running, rather than losing the
+/// whole analyzer stage to an exception it cannot act on.
+/// Set once an analyzer has proved it cannot take a typed tree (see
+/// `isFcsBinaryMismatch`). 0 = offer the typed tree, 1 = withhold it. Latched for the
+/// process because the incompatibility is a property of the LOADED ASSEMBLIES, not of
+/// the file being analyzed, so re-testing it per file would re-break every file.
+let private typedTreeWithheld = ref 0
+
+/// True once the loaded analyzer set has proved it cannot walk a typed tree.
+let internal isTypedTreeWithheld () =
+    Volatile.Read(&typedTreeWithheld.contents) = 1
+
+/// Latch the withholding. Returns true the FIRST time, so the caller logs once rather
+/// than once per file.
+let internal withholdTypedTree () : bool =
+    Threading.Interlocked.Exchange(&typedTreeWithheld.contents, 1) = 0
+
+let internal typedTreeOf (checkResults: FileCheckState) : obj =
+    if isTypedTreeWithheld () then
+        noTypedTree
+    else
+        match checkResults with
+        | ParseOnly -> noTypedTree
+        | FullCheck results ->
+            try
+                box results.ImplementationFile
+            with :? InvalidOperationException ->
+                noTypedTree
+
 let internal createWithSlowHook
     (repoRoot: string option)
     (analyzerPaths: string list)
@@ -244,59 +361,7 @@ let internal createWithSlowHook
     let executionFence = new SemaphoreSlim(1, 1)
     let cts = new CancellationTokenSource()
 
-    // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
-    // but the SDK assembly may not be fully loaded at plugin construction time in tests)
-    let cachedReflection =
-        lazy
-            let ctor = typeof<CliContext>.GetConstructors().[0]
-            let ctorParams = ctor.GetParameters()
 
-            if ctorParams.Length <> 8 then
-                failwith
-                    $"CliContext constructor has %d{ctorParams.Length} params (expected 8) — FSharp.Analyzers.SDK may have changed"
-
-            let ignoreRangesType = ctorParams.[7].ParameterType
-            let keyType = ignoreRangesType.GetGenericArguments().[0]
-            let valueType = ignoreRangesType.GetGenericArguments().[1]
-
-            // Get Map.empty from the same FSharp.Core assembly as the SDK uses.
-            // Map<_,_> has no static Empty property — it lives in MapModule.
-            let emptyIgnoreRanges =
-                let mapModuleType =
-                    ignoreRangesType.Assembly.GetType("Microsoft.FSharp.Collections.MapModule")
-
-                let emptyMethod =
-                    mapModuleType.GetMethods()
-                    |> Array.find (fun m -> m.Name = "Empty" && m.IsGenericMethodDefinition)
-
-                emptyMethod.MakeGenericMethod(keyType, valueType).Invoke(null, null)
-
-            let apoCtor = ctorParams.[6].ParameterType.GetConstructors() |> Array.tryHead
-            (ctor, ctorParams, emptyIgnoreRanges, apoCtor)
-
-    /// Construct CliContext via reflection to bypass FCS version mismatch.
-    /// All params are obj to prevent JIT from binding to wrong FCS assembly version.
-    let createCliContext
-        (fileName: obj)
-        (sourceText: obj)
-        (parseResults: obj)
-        (checkResults: obj)
-        (projectOptions: obj)
-        : CliContext =
-        let (ctor, _, emptyIgnoreRanges, apoCtor) = cachedReflection.Value
-        let analyzerProjectOptions = buildAnalyzerProjectOptions apoCtor projectOptions
-
-        ctor.Invoke(
-            [| fileName
-               sourceText
-               parseResults
-               checkResults
-               box None // typedTree
-               null // checkProjectResults
-               analyzerProjectOptions
-               emptyIgnoreRanges |]
-        )
-        :?> CliContext
 
     // LoadAnalyzers reflects over every DLL in the directory — see
     // `knownNonAnalyzerPrefixes`.
@@ -424,6 +489,8 @@ let internal createWithSlowHook
                                 debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                                 null
 
+                        let typedTreeObj = typedTreeOf result.CheckResults
+
                         // Run analysis inline (awaited) so the framework's per-event
                         // cache-write window sees the final terminal status. Semaphore
                         // still bounds concurrency across plugins; per-plugin events
@@ -455,23 +522,52 @@ let internal createWithSlowHook
 
                                                         let sourceText = result.Source |> SourceText.ofString
 
-                                                        let context =
-                                                            createCliContext
-                                                                (box fileStr)
-                                                                (box sourceText)
-                                                                (box result.ParseResults)
-                                                                checkResultsObj
-                                                                (box result.ProjectOptions)
-
                                                         // Drive the run under the timeout's token so a stuck
                                                         // analyzer is actually cancelled on expiry rather than
                                                         // orphaned holding the semaphore slot.
                                                         let activeClient = Volatile.Read(&client)
 
-                                                        Async.RunSynchronously(
-                                                            activeClient.RunAnalyzersSafely(context),
-                                                            cancellationToken = workCt
-                                                        )
+                                                        let runWith (typedTree: obj) =
+                                                            let context =
+                                                                createCliContext
+                                                                    (box fileStr)
+                                                                    (box sourceText)
+                                                                    (box result.ParseResults)
+                                                                    checkResultsObj
+                                                                    typedTree
+                                                                    (box result.ProjectOptions)
+
+                                                            Async.RunSynchronously(
+                                                                activeClient.RunAnalyzersSafely(context),
+                                                                cancellationToken = workCt
+                                                            )
+
+                                                        let results = runWith typedTreeObj
+
+                                                        // An analyzer compiled against a different FCS raises
+                                                        // only once it WALKS the typed tree. Withhold the tree
+                                                        // and re-run rather than report an assembly mismatch as
+                                                        // a finding about the file: the second run is what the
+                                                        // host did before it offered a typed tree at all, so
+                                                        // these analyzers keep the behaviour they already had
+                                                        // while the rest keep the typed tree. No re-check is
+                                                        // involved — the expensive half is already done.
+                                                        let mismatched =
+                                                            results
+                                                            |> List.exists (fun r ->
+                                                                match r.Output with
+                                                                | Result.Error ex -> isFcsBinaryMismatch ex
+                                                                | Result.Ok _ -> false)
+
+                                                        if not mismatched then
+                                                            results
+                                                        else
+                                                            if withholdTypedTree () then
+                                                                warn
+                                                                    "analyzers"
+                                                                    "An analyzer could not walk the typed tree (compiled against a different FSharp.Compiler.Service). Withholding CliContext.TypedTree for the rest of this session; typed-tree rules will report nothing. Rebuild the analyzer package against this FCS to enable them."
+
+                                                            runWith noTypedTree
 
                                                     let outcome, actualCompletion =
                                                         runWithCancellableTimeoutTracked analyzerTimeout runAnalyzers

@@ -431,6 +431,45 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
 
         test <@ result = None @>)
 
+// --- Daemon checker retention invariant ---
+
+[<Fact(Timeout = 60000)>]
+let ``daemon checker retains assembly contents so analyzers get a typed tree`` () =
+    // AnalyzersPlugin feeds `ImplementationFile` to the SDK as `CliContext.TypedTree`,
+    // and an analyzer that needs typed information and receives `None` returns no
+    // findings rather than failing. So losing this flag would silently disarm every
+    // typed-tree rule instead of breaking loudly, which is why the capability is
+    // pinned here rather than left to the checker's construction site.
+    FsHotWatch.Tests.TestHelpers.withTempDir "checker-assembly-contents" (fun tmpDir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+
+        let sourceFile = Path.Combine(tmpDir, "Retention.fsx")
+        File.WriteAllLines(sourceFile, [| "module Retention"; "let answer = 42" |])
+        let absSource = Path.GetFullPath(sourceFile)
+        let sourceText = SourceText.ofString (File.ReadAllText absSource)
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(absSource, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+
+        let _, checkAnswer =
+            checker.ParseAndCheckFileInProject(absSource, 0, sourceText, options)
+            |> Async.RunSynchronously
+
+        match checkAnswer with
+        | FSharpCheckFileAnswer.Aborted ->
+            Assert.Fail("FCS aborted the check, so the assertion below would prove nothing")
+        | FSharpCheckFileAnswer.Succeeded checkResults ->
+            // Positive control: the check really did produce a typed result, so the
+            // assertion below reflects the retention flag rather than a check that
+            // never happened.
+            test <@ checkResults.HasFullTypeCheckInfo @>
+
+            // The capability itself. Without `keepAssemblyContents` this access
+            // raises, so the assertion distinguishes "retained" from both "absent"
+            // and "refused".
+            test <@ checkResults.ImplementationFile |> Option.isSome @>)
+
 // --- tryGetCachedFullCheck pure-logic tests (no disk, no FCS) ---
 
 let private dummyKey suffix =

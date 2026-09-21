@@ -19,7 +19,7 @@ run = "dotnet tool restore"
 # daemon-backed tasks below have something to run.
 
 [tasks.build]
-description = "Compile the CLI binary (so --no-build daemon tasks can run)"
+description = "Compile ONLY the CLI binary, so --no-build daemon tasks can run. Use `compile` to build the solution: this does NOT compile the tests, and returns 0 when they do not."
 run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
 depends = ["restore", "build-analyzers"]
 

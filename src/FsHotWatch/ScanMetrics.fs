@@ -33,6 +33,20 @@ type ScanSample =
         /// Files still unchecked after the retry budget (see
         /// `Daemon.runChecksWithRetry`): the honest truncation count.
         FilesUnchecked: int
+        /// Files of this scan's cohort that were never attempted — the sum of the
+        /// two reasons below. `FilesChecked + FilesUnchecked + FilesSkipped` against
+        /// `FilesRegistered` is the coverage arithmetic a reader needs to tell a
+        /// complete scan from one that published a third of the tree as authoritative.
+        FilesSkipped: int
+        /// Cohort files dropped because the deps-freshness gate refused their project
+        /// (`DepsFreshness.SkipAlreadyAttempted` / `FailFast`).
+        FilesDepsGated: int
+        /// Cohort files that belonged to NO project in the scan's tiers, so nothing
+        /// ever dispatched them. The incremental change path reconciles this category
+        /// explicitly (its `uncovered` set) and the scan path does not, so these files
+        /// are checked by neither and were counted by nothing — which is how a scan
+        /// reported `unchecked 0` while covering a fraction of what it registered.
+        FilesUncovered: int
         /// Extra rounds `runChecksWithRetry` needed beyond the first pass,
         /// summed over tiers. 0 on a clean scan; the retry amplification
         /// bounds shows up here.
@@ -107,6 +121,9 @@ let toJsonLine (sample: ScanSample) : string =
            filesRegistered = sample.FilesRegistered
            filesChecked = sample.FilesChecked
            filesUnchecked = sample.FilesUnchecked
+           filesSkipped = sample.FilesSkipped
+           filesDepsGated = sample.FilesDepsGated
+           filesUncovered = sample.FilesUncovered
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -131,6 +148,15 @@ let tryParseLine (line: string) : ScanSample option =
             // record is all-or-nothing, so a partial line is not half a sample.
             let field (name: string) = root.GetProperty(name)
 
+            // Fields added after this ledger was already accumulating records. ABSENT
+            // must mean "not recorded", not "unparseable": every line written before
+            // they existed is still evidence, and a series that silently dropped its
+            // own history would be worse than one that never had these counts.
+            let optionalInt (name: string) =
+                match root.TryGetProperty name with
+                | true, value -> value.GetInt32()
+                | false, _ -> 0
+
             Some
                 { Generation = (field "generation").GetInt64()
                   Kind = (field "kind").GetString()
@@ -138,6 +164,9 @@ let tryParseLine (line: string) : ScanSample option =
                   FilesRegistered = (field "filesRegistered").GetInt32()
                   FilesChecked = (field "filesChecked").GetInt32()
                   FilesUnchecked = (field "filesUnchecked").GetInt32()
+                  FilesSkipped = optionalInt "filesSkipped"
+                  FilesDepsGated = optionalInt "filesDepsGated"
+                  FilesUncovered = optionalInt "filesUncovered"
                   RetryRounds = (field "retryRounds").GetInt32()
                   RssBytes = (field "rssBytes").GetInt64()
                   ManagedBytes = (field "managedBytes").GetInt64()

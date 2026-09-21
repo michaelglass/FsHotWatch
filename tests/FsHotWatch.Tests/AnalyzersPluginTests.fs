@@ -1163,3 +1163,171 @@ let ``diagnostics command sums findings across files in a populated state`` () =
 
     test <@ json.Contains("\"diagnostics\":2") @>
     test <@ json.Contains("\"files\":1") @>
+
+// --- CliContext.TypedTree supply ---
+
+/// Type-check `source` through a checker built with the given retention, and hand
+/// back the `FileCheckState` the analyzers plugin would receive for it, together
+/// with the project options that produced it (the SDK's context needs both).
+let private checkResultsWith (keepAssemblyContents: bool) (prefix: string) (source: string) =
+    FsHotWatch.Tests.TestHelpers.withTempDir prefix (fun tmpDir ->
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(keepAssemblyContents = keepAssemblyContents)
+
+        let file = IO.Path.Combine(tmpDir, "Typed.fsx")
+        IO.File.WriteAllText(file, source)
+        let sourceText = FSharp.Compiler.Text.SourceText.ofString source
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(file, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+
+        let parseResults, answer =
+            checker.ParseAndCheckFileInProject(file, 0, sourceText, options)
+            |> Async.RunSynchronously
+
+        match answer with
+        | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted ->
+            failwith "FCS aborted the check, so this fixture would prove nothing"
+        | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results ->
+            FullCheck results, options, parseResults)
+
+let private asTypedTree (boxed: obj) =
+    boxed :?> FSharp.Compiler.Symbols.FSharpImplementationFileContents option
+
+[<Fact(Timeout = 60000)>]
+let ``typedTreeOf supplies the typed tree when the checker retained it`` () =
+    // The capability an analyzer walks. A rule that needs typed information and
+    // receives `None` reports nothing rather than failing, so this is the assertion
+    // standing between a live typed-tree rule and a silently disarmed one.
+    let checkResults, _, _ =
+        checkResultsWith true "typedtree-retained" "module Typed\nlet answer = 42\n"
+
+    test <@ typedTreeOf checkResults |> asTypedTree |> Option.isSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``typedTreeOf yields None for a parse-only result`` () =
+    // No type-check happened, so there is no typed tree to offer.
+    test <@ typedTreeOf ParseOnly |> asTypedTree = None @>
+
+[<Fact(Timeout = 60000)>]
+let ``typedTreeOf yields None rather than raising when the checker kept no contents`` () =
+    // FCS RAISES on `ImplementationFile` when the checker was built without
+    // `keepAssemblyContents`. A host configured that way must still analyze — the
+    // typed-tree rules go quiet, every other rule keeps running — so the access is
+    // guarded rather than allowed to take the analyzer stage down.
+    let checkResults, _, _ =
+        checkResultsWith false "typedtree-not-retained" "module Typed\nlet answer = 42\n"
+
+    test <@ typedTreeOf checkResults |> asTypedTree = None @>
+
+[<Fact(Timeout = 60000)>]
+let ``createCliContext carries a real typed tree through the reflection constructor`` () =
+    // THE positive control for this capability. The CliContext constructor is invoked
+    // by REFLECTION to work around an FCS version mismatch, so a typed tree that
+    // `typedTreeOf` produces correctly could still be rejected at `ctor.Invoke` by an
+    // assembly-identity mismatch. Only driving a genuine
+    // `FSharpImplementationFileContents` all the way through proves analyzers actually
+    // receive one; asserting on `typedTreeOf` alone would not.
+    let checkResults, options, _ =
+        checkResultsWith true "clicontext-typedtree" "module Typed\nlet answer = 42\n"
+
+    let checkResultsObj =
+        match checkResults with
+        | FullCheck cr -> box cr
+        | ParseOnly -> null
+
+    let context =
+        createCliContext
+            (box "Typed.fsx")
+            (box (FSharp.Compiler.Text.SourceText.ofString "module Typed\nlet answer = 42\n"))
+            (box (dummyParseResults ()))
+            checkResultsObj
+            (typedTreeOf checkResults)
+            (box options)
+
+    test <@ context.TypedTree |> Option.isSome @>
+
+/// The g-research analyzer set, from the package this test project references.
+/// Resolved rather than assumed: if it is not there the test FAILS, because a
+/// silently-empty analyzer set would make the comparison below pass for the wrong
+/// reason — the exact shape of defect this whole change is about.
+let private gResearchAnalyzerDir =
+    let root =
+        Environment.GetEnvironmentVariable "NUGET_PACKAGES"
+        |> Option.ofObj
+        |> Option.defaultWith (fun () ->
+            IO.Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages"))
+
+    IO.Path.Combine(root, "g-research.fsharp.analyzers", "0.23.0", "analyzers", "dotnet", "fs")
+
+[<Fact(Timeout = 120000)>]
+let ``the configured analyzer set cannot walk a typed tree from this FCS`` () =
+    // WHY the host withholds the typed tree after a mismatch, measured rather than
+    // assumed. g-research 0.23.0 is compiled against an older FSharp.Compiler.Service;
+    // while `TypedTree` is `None` its analyzers return before touching the differing
+    // types, and handed a real typed tree they raise
+    // `Method not found: FSharp.Compiler.Symbols.FSharpType.get_BasicQualifiedName()`.
+    //
+    // If the analyzer packages are ever rebuilt against this FCS this test FAILS, which
+    // is the intended signal: the degradation in `AnalyzersPlugin` is then dead weight
+    // and typed-tree rules can be armed for real.
+    Assert.True(IO.Directory.Exists gResearchAnalyzerDir, $"analyzer package missing at {gResearchAnalyzerDir}")
+
+    let source = "module Probe\nlet f (s: string) = s.StartsWith(\"a\")\n"
+
+    let checkResults, options, parseResults =
+        checkResultsWith true "typedtree-differential" source
+
+    let checkResultsObj =
+        match checkResults with
+        | FullCheck cr -> box cr
+        | ParseOnly -> null
+
+    // NOT `typedTreeOf`: that consults a process-wide latch another test may already
+    // have set, which would make this assert nothing.
+    let realTypedTree =
+        match checkResults with
+        | FullCheck cr -> box cr.ImplementationFile
+        | ParseOnly -> noTypedTree
+
+    let client =
+        FSharp.Analyzers.SDK.Client<FSharp.Analyzers.SDK.CliAnalyzerAttribute, FSharp.Analyzers.SDK.CliContext>()
+
+    let loaded = client.LoadAnalyzers gResearchAnalyzerDir
+    Assert.True(loaded.Analyzers > 0, "no analyzers loaded — every assertion below would be vacuous")
+
+    let failuresFor (typedTree: obj) =
+        let context =
+            createCliContext
+                (box "Probe.fsx")
+                (box (FSharp.Compiler.Text.SourceText.ofString source))
+                (box parseResults)
+                checkResultsObj
+                typedTree
+                (box options)
+
+        client.RunAnalyzersSafely context
+        |> Async.RunSynchronously
+        |> List.choose (fun r ->
+            match r.Output with
+            | Result.Ok _ -> None
+            | Result.Error ex -> Some ex)
+
+    // Control: withholding the typed tree is the state the host ran in before this
+    // change, and nothing fails there.
+    test <@ failuresFor noTypedTree |> List.isEmpty @>
+
+    let withTypedTree = failuresFor realTypedTree
+    test <@ not (List.isEmpty withTypedTree) @>
+    test <@ withTypedTree |> List.forall isFcsBinaryMismatch @>
+
+[<Fact>]
+let ``isFcsBinaryMismatch names the assembly mismatch and nothing else`` () =
+    // The predicate decides whether a failure is the HOST's problem (an analyzer built
+    // against another FCS) or the analyzer's own bug. Misclassifying the second as the
+    // first would silently withhold typed trees from a set that could use them.
+    test <@ isFcsBinaryMismatch (MissingMethodException "get_BasicQualifiedName") @>
+    test <@ isFcsBinaryMismatch (TypeLoadException "FSharpType") @>
+    test <@ not (isFcsBinaryMismatch (InvalidOperationException "analyzer bug")) @>
+    test <@ not (isFcsBinaryMismatch (exn "boom")) @>

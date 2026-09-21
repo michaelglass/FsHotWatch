@@ -2,17 +2,47 @@
 
 ## Unreleased
 
-- core: the macOS native watcher verifies CONTENT before reporting a change. An
-  FSEvents notification is advisory — it fires for a touch, for an open-for-write
-  that wrote nothing, for a rewrite with identical bytes, and for every path named
-  in a coalesced batch — so the watcher now re-reads the path and emits only when
-  its content hash differs from the last one it recorded. Consumers see far fewer
-  spurious `SourceChanged`/`ProjectChanged` events, and a daemon no longer
-  invalidates its project model (and restarts an in-flight test round) over files
-  nobody wrote. Creation and deletion still emit, an unreadable file still emits
-  (`ContentHash` is fail-closed), and the ledger starts empty, so the first
-  notification for any path emits as before. The polling fallback already diffed
-  by content hash; both watchers now share one predicate.
+- core: recovery attempts are serialised per project, so an in-flight restore is
+  no longer mistaken for a failed one. `MarkAttempted` is written before the
+  restore runs and cleared only once it succeeds, so for the whole duration of a
+  restore the mark read "already attempted" — and the scan and the change-batch
+  supervisor evaluate the gate CONCURRENTLY on one shared tracker. The loser of
+  that race dropped every file of the project from its scan and published the
+  generation anyway. Measured in a consuming repository's daemon log: of 38
+  `deps still stale` events, 36 had an `auto-restored OK` for the SAME project
+  0.0-13.5s later (median 1.1s) and none had one before — the projects were
+  restoring, not unrestorable. A concurrent evaluator now waits for the holder and
+  re-reads the disk instead of trusting the mark; the uncontended path is
+  unchanged.
+
+
+- core: a project the deps-freshness gate skips now reports its own diagnostic.
+  `SkipAlreadyAttempted` drops EVERY file of a project from the scan, and relied on
+  the `FailFast` diagnostic from the first recovery attempt still being in the
+  ledger — which nothing guarantees, since a re-discovery or any `ClearErrors`
+  removes it. Whole projects could therefore leave a scan with nothing said about
+  them while the scan published its generation as authoritative. Skipping stays
+  (a project whose deps will not restore must not be type-checked against an empty
+  reference set); skipping silently does not.
+
+
+- core: the per-scan metrics record now says where a scan's files went.
+  `scan-metrics.jsonl` carried checked, unchecked and registered counts, so a scan
+  that covered a third of the tree and completed successfully was indistinguishable
+  from one that covered all of it — the missing files left through the
+  deps-freshness gate, which drops a whole project's files without touching the
+  unchecked count. Records gain `filesSkipped` and, separately, `filesDepsGated`:
+  the gated count is broken out because it is the reason that hides a partial scan
+  behind a successful one. Records written before these fields still parse, with
+  the new counts reading as 0 — the value of this ledger is its accumulated series,
+  and a field addition that discarded it would look like an empty history rather
+  than an error.
+
+
+- core: the daemon's checker construction moved to a named `Daemon.createChecker`,
+  so the `keepAssemblyContents` capability the analyzers stage depends on is
+  pinned by a test rather than left implicit at the construction site. No
+  behaviour change: the flags are unchanged.
 
 ## 0.10.0-alpha.40 - 2026-09-20
 

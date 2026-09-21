@@ -19,6 +19,9 @@ let private sample generation rss =
       FilesRegistered = 1552
       FilesChecked = 1552
       FilesUnchecked = 0
+      FilesSkipped = 0
+      FilesDepsGated = 0
+      FilesUncovered = 0
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -221,3 +224,45 @@ let ``two identical generations fit a flat slope`` () =
     let series = [ sample 1L 500L; sample 2L 500L ]
 
     test <@ fitRetention DefaultRetentionBound series = RetentionVerdict.WithinBound(0.0, DefaultRetentionBound) @>
+
+// --- Where a scan's files went ---
+
+/// A record written BEFORE `filesSkipped`/`filesDepsGated` existed. Verbatim from
+/// `.fshw/scan-metrics.jsonl` — the format two weeks of real measurements are in.
+let private legacyLine =
+    """{"durationMs":456431.303,"filesChecked":1835,"filesRegistered":1812,"filesUnchecked":0,"forcedGc":false,"gen2Collections":297,"generation":7,"kind":"forced","managedBytes":6343362800,"retryRounds":0,"rssBytes":7049527296,"sampledAt":"2026-09-10T23:15:12.1385310Z"}"""
+
+[<Fact>]
+let ``a record written before the skip fields still parses`` () =
+    // The ledger is the measurement record, and its value is the SERIES. A new field
+    // that made every existing line unparseable would silently discard the history
+    // this file exists to accumulate — `tryParseLine` answers `None` for a malformed
+    // line, so the loss would look like an empty series rather than an error.
+    match tryParseLine legacyLine with
+    | None -> Assert.Fail "a pre-existing record must still parse, or the recorded history is lost"
+    | Some parsed ->
+        test <@ parsed.Generation = 7L @>
+        test <@ parsed.FilesChecked = 1835 @>
+        // Absent means "not recorded", which reads as zero rather than as a guess.
+        test <@ parsed.FilesSkipped = 0 @>
+        test <@ parsed.FilesDepsGated = 0 @>
+        test <@ parsed.FilesUncovered = 0 @>
+
+[<Fact>]
+let ``skipped and deps-gated counts round-trip`` () =
+    // The two reasons are recorded SEPARATELY on purpose. A file outside this scan's
+    // cohort is ordinary; a project the deps-freshness gate refused is a whole
+    // project's files dropped while the scan still reports success, which is the case
+    // the ledger could not previously distinguish from a completed scan.
+    let original =
+        { sample 4L 1_000L with
+            FilesSkipped = 900
+            FilesDepsGated = 512
+            FilesUncovered = 388 }
+
+    match tryParseLine (toJsonLine original) with
+    | None -> Assert.Fail "round-trip failed"
+    | Some parsed ->
+        test <@ parsed.FilesSkipped = 900 @>
+        test <@ parsed.FilesDepsGated = 512 @>
+        test <@ parsed.FilesUncovered = 388 @>

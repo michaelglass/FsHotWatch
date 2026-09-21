@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- analyzers: supply `CliContext.TypedTree` instead of always passing `None`.
+  Every analyzer the host ran received `typedTree = None`, so any rule that
+  reads the typed tree returned no findings — an analyzer that needs type
+  information and gets `None` reports nothing rather than failing, so such a
+  rule was silently disarmed while its own unit tests (which supply a typed
+  tree) kept passing. The typed tree now comes from the check results'
+  `ImplementationFile`. A checker built without `keepAssemblyContents` raises
+  on that access, so it is guarded: such a host still analyzes, with
+  typed-tree rules quiet and every other rule running. `createCliContext` and
+  its cached reflection moved to module level so the reflection constructor —
+  the FCS-version-mismatch workaround, and the part that could plausibly have
+  rejected a real typed tree — is covered by a test that drives a genuine
+  `FSharpImplementationFileContents` through it.
+
+  The typed tree is WITHDRAWN for the rest of the session if an analyzer proves it
+  cannot walk one. An analyzer package compiled against a different
+  FSharp.Compiler.Service returns early while `TypedTree` is `None` and never
+  touches the differing types; handed a real typed tree it raises
+  `MissingMethodException`. MEASURED with g-research 0.23.0 against FCS 43.12.x:
+  11 of 13 analyzers raise `Method not found:
+  FSharp.Compiler.Symbols.FSharpType.get_BasicQualifiedName()`. The host now
+  detects that, warns once naming the cause and the remedy, and re-runs without the
+  typed tree — so a mismatched set keeps exactly the behaviour it had instead of
+  reporting an assembly mismatch as findings about the file, while a set that CAN
+  use a typed tree gets one.
+
 ## 0.7.0-alpha.34 - 2026-09-17
 
 - Plugin handlers state what they read and what they commit (breaking plugin API)
