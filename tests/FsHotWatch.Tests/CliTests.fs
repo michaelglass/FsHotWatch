@@ -799,25 +799,52 @@ let private exec (ipc: IpcOps) (command: Command) : int =
     executeCommand "" (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Stop calls shutdown`` () =
-    let mutable running = true
-    let mutable called = false
+let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
+    // Its own temp dir, NOT the shared `/tmp` the `exec` helper uses: `stop` now reads
+    // `.fshw/daemon.pid` to decide what it may claim, so a pidfile some other run left
+    // in `/tmp/.fshw/` would steer this test's outcome.
+    withTempDir "cli-stop-shutdown" (fun tmpDir ->
+        // A LIVE pid, so the pre-dispatch stale-pidfile hygiene leaves the file alone
+        // and `stop` still has something to watch. A dead pid would be swept before
+        // `stop` ever read it, and this would test the no-pidfile path by accident.
+        let pidPath = Path.Combine(tmpDir, ".fshw", "daemon.pid")
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".fshw")) |> ignore
+        File.WriteAllText(pidPath, string (Diagnostics.Process.GetCurrentProcess().Id))
 
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> running
-            Shutdown =
-                fun _ ->
-                    async {
-                        called <- true
-                        running <- false
-                        return "shutting down"
-                    } }
+        let mutable running = true
+        let mutable called = false
 
-    let result = exec ipc Stop
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> running
+                Shutdown =
+                    fun _ ->
+                        async {
+                            called <- true
+                            running <- false
+                            // What a real daemon does on the way out, and the proof
+                            // `stop` leans on that survives pid reuse.
+                            File.Delete pidPath
+                            return "shutting down"
+                        } }
 
-    test <@ result = 0 @>
-    test <@ called @>
+        let result =
+            executeCommand
+                ""
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe"
+                Stop
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ result = 0 @>
+        test <@ called @>
+        // The daemon removed its own; `stop` left the absence alone rather than
+        // recreating or resurrecting anything.
+        test <@ not (File.Exists pidPath) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Config Check prints OK and returns 0`` () =
