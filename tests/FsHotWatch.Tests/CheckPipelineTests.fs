@@ -568,3 +568,11 @@ let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () 
             Directory.Delete(tempDir, true)
         with _ ->
             ()
+
+[<Fact(Timeout = 15000)>]
+let ``an aborted check reports no diagnostic messages`` () =
+    // A check that did not finish said nothing about any type, so it can never
+    // be the evidence that this checker's state went stale. Without this the
+    // recovery would fire on an interrupted check and re-typecheck a project
+    // for no reason.
+    test <@ answerMessages FSharpCheckFileAnswer.Aborted |> Seq.isEmpty @>
