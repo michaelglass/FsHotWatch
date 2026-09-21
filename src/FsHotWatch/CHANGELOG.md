@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- core: the macOS native watcher verifies CONTENT before reporting a change. An
+  FSEvents notification is advisory — it fires for a touch, for an open-for-write
+  that wrote nothing, for a rewrite with identical bytes, and for every path named
+  in a coalesced batch — so the watcher now re-reads the path and emits only when
+  its content hash differs from the last one it recorded. Consumers see far fewer
+  spurious `SourceChanged`/`ProjectChanged` events, and a daemon no longer
+  invalidates its project model (and restarts an in-flight test round) over files
+  nobody wrote. Creation and deletion still emit, an unreadable file still emits
+  (`ContentHash` is fail-closed), and the ledger starts empty, so the first
+  notification for any path emits as before. The polling fallback already diffed
+  by content hash; both watchers now share one predicate.
+
 ## 0.10.0-alpha.40 - 2026-09-20
 
 - core: root the rerun synthetic path so it cannot resolve against a deleted cwd

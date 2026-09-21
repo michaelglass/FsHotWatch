@@ -176,6 +176,64 @@ let internal classifyChange (path: string) =
     else
         SourceChanged [ path ]
 
+/// The one question both watchers ask of a path: have its BYTES changed since we
+/// last looked at it?
+///
+/// A kernel notification does not answer that. FSEvents and `FileSystemWatcher`
+/// both fire for a touch, for an open-for-write that wrote nothing, for a rewrite
+/// with identical content, and for every path named in a coalesced batch. One
+/// predicate, used by the native watcher and the polling one, is what keeps the two
+/// from disagreeing about what a change is.
+module internal ContentChange =
+    /// True when `current` must be reported as a change against `previous`.
+    /// `None` on either side means the file was not there, so absent-then-present
+    /// and present-then-absent stay real changes instead of collapsing into
+    /// "the hash differs".
+    ///
+    /// An unreadable file differs from everything, itself included: `ContentHash`'s
+    /// sentinel is fail-closed, and a file nobody could read is never evidence that
+    /// nothing happened.
+    let differs (previous: string option) (current: string option) : bool =
+        match previous, current with
+        | None, None -> false
+        | Some prior, Some latest ->
+            not (ContentHash.isReadable latest)
+            || not (String.Equals(prior, latest, StringComparison.Ordinal))
+        | Some _, None
+        | None, Some _ -> true
+
+/// What a watcher last saw at each path it reported on.
+///
+/// Starts empty: the first notification for a path finds nothing recorded, reads as
+/// a creation, and emits. That costs one redundant change per path over a daemon's
+/// lifetime and no startup tree walk, and it errs toward reporting rather than
+/// toward missing an edit made before the watcher existed.
+///
+/// FSEvents callbacks arrive on their own thread, so read-hash-record is one step
+/// under the lock rather than three racing ones.
+type internal ContentLedger() =
+    let syncRoot = obj ()
+    let mutable known: Map<string, string> = Map.empty
+
+    /// Read `path`, record what is there now, and report whether it differs from
+    /// the last recorded observation.
+    member _.Observe(path: string) : bool =
+        lock syncRoot (fun () ->
+            let previous = Map.tryFind path known
+
+            let current =
+                if File.Exists(path) then
+                    Some(ContentHash.ofFile path)
+                else
+                    None
+
+            known <-
+                match current with
+                | Some hash -> Map.add path hash known
+                | None -> Map.remove path known
+
+            ContentChange.differs previous current)
+
 /// One content-addressed view of the files a polling watcher is responsible for.
 type internal PollingSnapshot =
     { Files: Map<string, string>
@@ -294,13 +352,10 @@ type internal PollingFileWatcher
             current.Files
             |> Map.toSeq
             |> Seq.choose (fun (path, hash) ->
-                match Map.tryFind path previous with
-                | Some prior when
-                    ContentHash.isReadable hash
-                    && String.Equals(prior, hash, StringComparison.Ordinal)
-                    ->
-                    None
-                | _ -> Some path)
+                if ContentChange.differs (Map.tryFind path previous) (Some hash) then
+                    Some path
+                else
+                    None)
             |> Set.ofSeq
 
         let deleted =
@@ -491,8 +546,13 @@ module FileWatcher =
         (systemWatcherFactory: SystemWatcherFactory)
         (pollingWatcherFactory: PollingWatcherFactory)
         : FileWatcher =
+        // A notification names a path; it does not establish that the path changed.
+        // The ledger is per-watcher, and every watcher this function builds shares
+        // it, so a coalesced batch and a single-file event agree about a given path.
+        let ledger = ContentLedger()
+
         let handle path =
-            if isRelevantFileOrExtra extraPatterns path then
+            if isRelevantFileOrExtra extraPatterns path && ledger.Observe path then
                 onChange (classifyChange path)
 
         let partial = ResizeArray<IDisposable>()
@@ -560,7 +620,7 @@ module FileWatcher =
                 if Directory.Exists(dirPath) then
                     for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
                         for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
-                            if isRelevantFile file then
+                            if isRelevantFile file && ledger.Observe file then
                                 onChange (classifyChange file)
 
             // Matched OUTSIDE any exception handler: the refusal is a value here, so
