@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: queries that test membership against a caller-supplied list of names no longer
+  fail once the list is large. They spent one SQLite host parameter per name, and SQLite
+  caps those at `SQLITE_MAX_VARIABLE_NUMBER` (32766 in the pinned `e_sqlite3` build), so
+  the ceiling was set by repository size rather than by anything a caller could see: a
+  full unfiltered pass over a 64,913-symbol index died with
+  `SQLite Error 1: 'too many SQL variables'`, taking the whole run with it, while the
+  impact-filtered path never came close. The set now travels as ONE bound JSON array, so
+  no list length changes the parameter count. Chunking was rejected: it raises the ceiling
+  without removing it, and `QueryAffectedTests` defines its composition-root barriers by
+  exclusion from the seed set, so a per-chunk walk would treat seeds outside its chunk as
+  barriers and silently select fewer tests.
+
 ## 9.0.0 - 2026-09-17
 
 - fix: `AuditSink.Flush()` no longer waits forever. The wait is bounded by
