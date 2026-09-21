@@ -39,6 +39,15 @@ let taskNames (mise: string) =
     |> Seq.map (fun m -> m.Groups[1].Value)
     |> Seq.toList
 
+/// The task block with COMMENT LINES removed, so an analysis of what a task RUNS is
+/// never confused by prose about what it used to run. Strips both TOML comments and
+/// the `#` comments inside a `run = """sh -c '...'"""` script — they are comments in
+/// either language, and neither executes.
+let commandLines (mise: string) taskName =
+    (taskBlock mise taskName).Split('\n')
+    |> Array.filter (fun line -> not ((line.TrimStart()).StartsWith("#", StringComparison.Ordinal)))
+    |> String.concat "\n"
+
 /// The direct `depends = [...]` of a task; empty when the task declares none.
 let dependsOf (mise: string) taskName =
     let block = taskBlock mise taskName
@@ -95,3 +104,19 @@ let analyzerProjectFor root (analyzerPath: string) =
     match Directory.GetFiles(Path.Combine(root, projectDir), "*proj") with
     | [| project |] -> $"%s{projectDir}/%s{Path.GetFileName project}"
     | projects -> failwith $"expected exactly one project under %s{projectDir}, found %d{projects.Length}"
+
+/// The repo-relative paths declared in `.fshw.json` `verdictInputs.hashed` — the
+/// gate-deciding files the discovery walk does not reach, which the tree hash a
+/// verdict is addressed by therefore includes. Empty list when the repo declares none.
+let declaredVerdictInputs root =
+    use config = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ".fshw.json")))
+
+    match config.RootElement.TryGetProperty "verdictInputs" with
+    | true, verdictInputs ->
+        match verdictInputs.TryGetProperty "hashed" with
+        | true, hashed ->
+            hashed.EnumerateArray()
+            |> Seq.map (fun entry -> entry.GetProperty("path").GetString())
+            |> Seq.toList
+        | _ -> []
+    | _ -> []

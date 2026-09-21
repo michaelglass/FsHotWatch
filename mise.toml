@@ -55,17 +55,50 @@ depends = ["build"]
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
-depends = ["build", "lint-project", "coverage-ratchet"]
+depends = ["build", "lint-project", "coverage-check"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
-# Uses coverage-ratchet (auto-tighten) on purpose: this is the dev-tool entry
-# point, and like Fantomas auto-fixing format on save, the threshold file is
-# auto-corrected to lock in coverage gains as they happen.
-# This requires coverage to be DETERMINISTIC: if a test in the coverage suite
-# causes coverage to fluctuate run-to-run, that test belongs in the integration
-# suite (tests/FsHotWatch.IntegrationTests, no coverage) instead. Don't paper
-# over instability by loosening thresholds — fix the test placement.
-# CI uses `mise run ci`, which invokes `coverage-check` and fails on regression.
+#
+# `coverage-check`, NOT `coverage-ratchet`, and the difference is the gate itself.
+#
+# A verdict is content-addressed by the tree it judged, and `coverage-ratchet-FsHotWatch.json`
+# is a DECLARED VERDICT INPUT (`.fshw.json` `verdictInputs.hashed`, whose `why` reads:
+# "Lower one and a verdict earned under the higher floor must stop applying; hashing it
+# is the only thing that makes that true"). `coverage-ratchet` REWRITES that file. Hung
+# off `check`, the writer sat inside the reader's own dependency closure: the gate edited
+# the bytes its answer is keyed to, in the run that produced the answer. That is why
+# `fshw verdict` answered `StaleTree` about this repository's own check, and why landing
+# work here needed a recorded exception instead of a green.
+#
+# The second half is worse than the staleness. The old wrapper ran `ratchet`, read exit 2
+# — "a file is BELOW its floor" — and answered it by running `loosen`, which sets the
+# threshold down to current coverage. The inner-loop gate resolved a coverage regression
+# by lowering the bar until it passed: its success was unconditional. A check that
+# repairs its own criterion cannot fail, and this one left its fingerprints in the floors
+# file — seven entries whose entire recorded justification is "loosened automatically",
+# and a 2026-08-07 repair note carried by 32 of the 131 floor entries after an auto-ratchet
+# pass pinned floors to a single run's measurement and "two such floors went red on the
+# next run".
+#
+# So observing and repairing are two commands now. This one OBSERVES: `coverage-check`
+# reads the floors, fails on a regression, and writes nothing — and it is the same task
+# `ci` depends on, so a local green and a CI green are the same claim rather than two that
+# can drift. Repairing is explicit: `mise run coverage-ratchet` tightens,
+# `mise run loosen-from-ci` re-baselines from BOTH platforms' CI artifacts (which is what
+# the floors file's own reasons prescribe — "re-baseline from CI on BOTH platforms, not
+# one local run" — and what an inner-loop auto-tighten on one developer's machine
+# structurally cannot do), and `mise run coverage-loosen` lowers them. Each is a reviewable
+# diff, and because the floors file is hashed, each one invalidates the verdict and forces
+# a re-gate under the floors it just moved.
+#
+# `tests/FsHotWatch.Tests/GatePurityTests.fs` pins the separation: no task in a gate's
+# dependency closure may invoke a `coverageratchet` verb that writes.
+#
+# Coverage must still be DETERMINISTIC here: if a test in the coverage suite causes
+# coverage to fluctuate run-to-run, that test belongs in the integration suite
+# (tests/FsHotWatch.IntegrationTests, no coverage) instead. What used to paper over that
+# instability is the auto-loosen described above; without it a flake is a red gate, which
+# is the honest report and the one that gets the test moved.
 
 [tasks.cache-clear]
 description = "Clear the check result cache (BOTH the workspace store and the box-wide shared one)"
@@ -120,26 +153,27 @@ run = "dotnet tool run coverageratchet check coverage-ratchet-FsHotWatch.json"
 depends = ["test-direct"]
 
 [tasks.coverage-ratchet]
-description = "Auto-correct coverage thresholds: tighten on rise, shrink on drift"
-# Try ratchet (tightens on rising coverage; preferred when coverage actually
-# improves). Fall back to loosen if any file has fallen below threshold so
-# the dev loop continues. Net effect: thresholds always track current
-# coverage, locking in gains, accepting noise.
-# CI uses `mise run ci` → `coverage-check` (no auto-correct) to gate on
-# real regressions. Coverage drift on borderline files is a test-suite bug
-# (move flaky tests to FsHotWatch.IntegrationTests, no coverage); this
-# wrapper exists so dev velocity isn't blocked while flakes get cleaned up.
+description = "Tighten coverage thresholds to current coverage. EXPLICIT — never a gate dependency."
+# TIGHTEN ONLY, and run by a person. This task rewrites a declared verdict input, so it
+# is the kind of thing that belongs in a commit somebody signed for, not in the closure
+# of the command that decides whether the tree is green — see `[tasks.check]`.
+#
+# The loosen fallback that used to live here is gone. It answered "a file is below its
+# floor" — the one finding this whole mechanism exists to produce — by moving the floor
+# down to meet it. Loosening is still available as `mise run coverage-loosen`, where the
+# decision is visible and has to be defended in the diff, and `mise run loosen-from-ci`
+# re-baselines from both platforms' CI artifacts, which is the path the floors file's own
+# reasons ask for.
+#
+# Exit codes: 0 = tightened and 1 = nothing to tighten are both success ("the floors
+# already match what the suite achieves" is not a failure). 2 = a file is BELOW its floor
+# and is REPORTED, not repaired. Anything else is a tool crash and propagates unchanged,
+# so a misbehaving tool never silently rewrites thresholds.
 run = """sh -c '
   dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json
   c=$?
-  # 0 = tightened, 1 = nothing to tighten — both fine.
-  # 2 = below threshold (drift) — fall back to loosen.
-  # Any other code = tool crash; propagate so we do not silently rewrite
-  # thresholds when the tool itself misbehaved.
-  [ $c -eq 0 ] && exit 0
-  [ $c -eq 1 ] && exit 0
-  [ $c -ne 2 ] && exit $c
-  dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json
+  if [ $c -eq 0 ] || [ $c -eq 1 ]; then exit 0; fi
+  exit $c
 '"""
 depends = ["test-direct"]
 
