@@ -3654,10 +3654,28 @@ module Daemon =
     /// Named rather than inlined into `create` so that capability has a test: a test
     /// checks a file through this checker and asserts implementation contents came
     /// back.
+    /// `keepAllBackgroundResolutions = false` because nothing reads them.
+    ///
+    /// That flag retains every symbol-use resolution for a project so that
+    /// `GetAllUsesOfAllSymbolsInFile`, `GetUsesOfSymbolInFile` and the semantic
+    /// classification APIs can be answered later. This daemon calls none of them.
+    /// Audited across `src/`: exactly two things are read off a check result —
+    /// `checkResults.Diagnostics` and `.ImplementationFile` — and the second is fed
+    /// by `keepAssemblyContents`, not by this. The flag appeared nowhere but its own
+    /// construction site.
+    ///
+    /// Retained resolutions are held for the whole project graph, so on a 2000-file
+    /// tree this is retention proportional to the repository for a capability with
+    /// no consumer. Scans on that tree were recorded at a 9.4 GB median RSS and a
+    /// 26.6 GB managed peak.
+    ///
+    /// If a future feature needs symbol uses — a rename, a find-references, a
+    /// semantic highlight — turn this back on WITH that feature, and measure it
+    /// then. It is cheap to restore and expensive to leave on speculatively.
     let createChecker () =
         FSharpChecker.Create(
             keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true,
+            keepAllBackgroundResolutions = false,
             parallelReferenceResolution = true,
             useTransparentCompiler = true
         )
