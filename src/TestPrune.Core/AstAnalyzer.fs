@@ -60,11 +60,6 @@ let SyntheticCollectionPrefix = "TestPrune.__Collection__."
 [<Literal>]
 let internal SyntheticLiteralPrefix = "TestPrune.__Literal__."
 
-/// Signature declarations are separate source occurrences of public symbols.
-/// Keep their hashes independently from implementation bodies in the symbol graph.
-[<Literal>]
-let internal SyntheticSignaturePrefix = "TestPrune.__Signature__."
-
 [<Literal>]
 let private MinSharedLiteralLength = 24
 
