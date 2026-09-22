@@ -136,10 +136,7 @@ let ``no test clears the process-wide SQLite pool`` () =
         |> Array.map fst
         |> List.ofArray
 
-    Assert.True(
-        List.isEmpty offenders,
-        $"these sources clear every pool in the process: %A{offenders}"
-    )
+    Assert.True(List.isEmpty offenders, $"these sources clear every pool in the process: %A{offenders}")
 
 [<Fact(Timeout = 20000)>]
 let ``every source that redirects Console.Error joins the serialized collection`` () =
