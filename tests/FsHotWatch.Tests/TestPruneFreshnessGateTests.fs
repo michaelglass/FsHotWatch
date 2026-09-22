@@ -340,7 +340,7 @@ let badTypeUse : int = "not-an-int"
 
         emitBuildAndWaitTerminal host
 
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        clearSqlitePool dbPath
         let freshDb = Database.create dbPath
         let symbols = freshDb.GetSymbolsInFile "Broken.fsx"
         test <@ not symbols.IsEmpty @>
@@ -398,13 +398,13 @@ let cleanTest () = ()
         emitFileAndQuiesce host result
         emitBatchAndQuiesce host [ cleanFile ]
 
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        clearSqlitePool dbPath
 
         let mutable testMethods: TestMethodInfo list = []
 
         waitUntil
             (fun () ->
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                clearSqlitePool dbPath
                 let freshDb = Database.create dbPath
                 testMethods <- freshDb.GetTestMethodsInFile "Clean.fsx"
                 testMethods.Length >= 1)
@@ -464,13 +464,13 @@ let cleanTest () = ()
         // No BuildCompleted ever fires.
         emitBatchAndQuiesce host [ cleanFile ]
 
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        clearSqlitePool dbPath
 
         let mutable testMethods: TestMethodInfo list = []
 
         waitUntil
             (fun () ->
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                clearSqlitePool dbPath
                 let freshDb = Database.create dbPath
                 testMethods <- freshDb.GetTestMethodsInFile "Clean.fsx"
                 testMethods.Length >= 1)
@@ -538,7 +538,7 @@ let coldBootTest () = ()
 
         waitUntil
             (fun () ->
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                clearSqlitePool dbPath
                 let db = Database.create dbPath
                 phase1Tests <- db.GetTestMethodsInFile "CB.fsx"
                 phase1Tests.Length >= 1)

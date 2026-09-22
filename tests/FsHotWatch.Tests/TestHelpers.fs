@@ -505,6 +505,42 @@ let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) 
     File.WriteAllText(projPath, xml)
 
 // ----------------------------------------------------------------------------
+// SQLite connection pools: clear ONE database's, never the process's.
+//
+// `Microsoft.Data.Sqlite` pools connections per connection string, and a pooled
+// connection outlives the `Database` that opened it — it keeps the file handle, so a
+// later open can be handed a snapshot, or the inode of a deleted file, that the test did
+// not expect. A test that needs its next open to be a genuinely NEW connection therefore
+// drops the pool first.
+//
+// `SqliteConnection.ClearAllPools()` drops the pool of EVERY database in the process,
+// including the ones the ~40 other test classes running in parallel are opening right
+// then. It disposes the native handle under a class mid-open, and that class fails with
+// `ObjectDisposedException 'SQLitePCL.sqlite3'` inside its own `openConnection` — a red
+// naming a test that did nothing wrong, on a tree whose change touched none of it.
+// Clearing BY CONNECTION STRING reaches only the database under test, whose path is the
+// caller's own temp dir, so no other class can be standing in it.
+// ----------------------------------------------------------------------------
+
+/// The connection string `TestPrune.Core` opens `dbPath` with, and therefore the key its
+/// pooled connections live under. Pinned by a test: a key that does not match the
+/// library's clears a different, empty pool, and the clear becomes a silent no-op.
+let sqliteConnectionString (dbPath: string) = $"Data Source=%s{dbPath}"
+
+/// Drop the pooled SQLite connections for `dbPath`, and only for `dbPath`, so the next
+/// open of that database is a new connection.
+let clearSqlitePool (dbPath: string) =
+    use conn = new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString dbPath)
+
+    Microsoft.Data.Sqlite.SqliteConnection.ClearPool(conn)
+
+/// The same clear, for a caller holding the database rather than its path: the key comes
+/// from the library's own connection, so it cannot drift from the one it pools under.
+let clearSqlitePoolForDb (db: TestPrune.Database.Database) =
+    use conn = db.OpenConnection()
+    Microsoft.Data.Sqlite.SqliteConnection.ClearPool(conn)
+
+// ----------------------------------------------------------------------------
 // Seeded test-prune environment scaffolding: `withSeededTestEnv` factors the ~25-line
 // prelude several TestPrunePlugin regression guards share, so they don't accumulate
 // near-duplicate boilerplate.
@@ -638,6 +674,73 @@ let FileWatchCollectionName = "FileWatch"
 
 [<Xunit.CollectionDefinition(FileWatchCollectionName, DisableParallelization = true)>]
 type FileWatchCollection() = class end
+
+// ----------------------------------------------------------------------------
+// Gated shell fixtures: a child that waits for the test, and stops waiting on its own.
+//
+// Shared between test projects because the defect is: an unbounded `while [ ! -f
+// release ]` strands its child whenever the test fails before writing the release, and a
+// stranded spinner polls fifty times a second on a core that every later run needs.
+// ----------------------------------------------------------------------------
+
+/// The wait a gated-host fixture spins on: poll until the test writes `release`, but never
+/// past the guards. `polls` is the iteration cap, at 20ms apiece.
+///
+/// `-d tmpDir` is the guard that carries the failure path, and it is doing more work than it
+/// looks. It reaps the child the moment `withTempDir` removes the tree, and -- unlike the
+/// release file -- a deleted directory STAYS deleted. Writing the release from a `finally`
+/// cannot be relied on to do this job, because it races that same cleanup: the file appears
+/// microseconds before the tree it sits in is deleted, so a child polling every 20ms nearly
+/// always wakes to find it gone again and spins on. That is measured, not theorised -- with
+/// the release as the only mechanism the probe below still leaked a spinner; with `-d` alone
+/// it exits in under half a second.
+///
+/// The cap covers the runs where the tree OUTLIVES them, where `-d` never fires: a hard
+/// `[<Fact(Timeout = ...)>]` expiry abandons the test without unwinding any `finally`, and
+/// `deleteTempDirResilient` deliberately gives up after ten attempts rather than fail a test,
+/// leaving the directory behind. Callers set `polls` to
+/// roughly twice their own xUnit budget, so a slow-but-correct run can never reach the cap --
+/// xUnit fails the test first, which is what assertions like `not runTask.IsCompleted` rest
+/// on -- while an orphan reaps itself inside a minute instead of polling until someone kills
+/// it by hand. A capped-out wait exits non-zero rather than falling through, so the backstop
+/// can never forge the completed work its caller is waiting for.
+///
+/// The guard belongs in the shell, not in the fixture, because every other bound available
+/// here dies with the process that spawned the child. A runner config's `TimeoutSec` and the
+/// 5-minute launch deadline are both enforced by a watchdog running INSIDE the test process,
+/// and `[<Fact(Timeout = ...)>]` is xUnit's own: once the run exits or the test is abandoned,
+/// none of them ever issues the kill. Worse for a wait like this one, which is silent --
+/// `TimeoutSec = None` leaves the launch deadline as the only in-process escape, and it only
+/// fires because a child that has produced no output reads as stalled. So this is not a
+/// second belt over an existing one. It is the first bound that outlives its spawner, and the
+/// only reason a stranded child stops on its own rather than polling until someone finds it.
+let gatedWait (tmpDir: string) (release: string) (polls: int) =
+    $"n=0; while [ -d '{tmpDir}' ] && [ ! -f '{release}' ] && [ $n -lt {polls} ]; "
+    + "do sleep 0.02; n=$((n+1)); done; "
+    + $"[ -f '{release}' ] || exit 91"
+
+/// Run `body` against the release file that ends a `gatedWait`, writing that file from a
+/// `finally` so a body that throws still lets the child go.
+///
+/// This release is the fast path, NOT the reaper. Whenever the gate's directory is torn down
+/// -- the usual case, under `withTempDir` -- `gatedWait`'s `-d` guard is what actually ends
+/// the wait, because this write races that cleanup and generally loses (see `gatedWait`).
+/// It earns its place in the case where the directory SURVIVES the failure and `-d` never
+/// fires: `deleteTempDirResilient` gives up after ten attempts rather than fail a test, and a
+/// gate rooted anywhere that is not deleted has no `-d` to fall back on. There, this is the
+/// only thing that stops the child short of the cap.
+let withReleaseGate (tmpDir: string) (name: string) (body: string -> 'a) : 'a =
+    let release = System.IO.Path.Combine(tmpDir, $"release-{name}")
+
+    try
+        body release
+    finally
+        // A release into a directory already gone is moot -- `gatedWait`'s `-d` guard has
+        // ended the wait -- and throwing here would mask the failure that got us here.
+        try
+            System.IO.File.WriteAllText(release, "")
+        with _ ->
+            ()
 
 /// A minimal RunVerdict for tests that only exercise the status TRANSITION — the content is
 /// irrelevant to them, but the type will not let a terminal status exist without one.

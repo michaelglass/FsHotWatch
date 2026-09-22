@@ -1,3 +1,11 @@
+// This module REDIRECTS `Console.Error` (see `captureStderr`). That writer is
+// process-wide, so a redirect here and a redirect in another class interleave: whichever
+// restores last hands back a writer the other class captured, and from then on this
+// class's output goes into that class's buffer while that class's output arrives in this
+// one. Observed as a capture full of another suite's temp directories, on a test that
+// asserts about its own sentence. Hence the serialized collection every other
+// `Console.Error` class in this project already joins.
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.IpcOutputTests
 
 open Xunit
@@ -1808,11 +1816,16 @@ let ``a tree that moves mid-check exits 2 AND records incomplete — the file an
 
 /// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
 ///
-/// `Console.SetError` is PROCESS-WIDE, and this suite runs in parallel: every other test
-/// writing to stderr lands in this writer while `f` runs. A bare `StringWriter` is not
-/// thread-safe, so its own `ToString()` threw `ArgumentOutOfRangeException (chunkLength)`
-/// mid-append under a loaded box — a test failing on other tests' output. The synchronized
-/// wrapper makes the capture safe; the foreign lines it may collect are harmless, since
+/// `Console.SetError` is PROCESS-WIDE. No lock in this file can exclude a writer or a
+/// redirector in another one, so the exclusion that matters is the module's
+/// `LogGlobalCollectionName` collection: it serializes this class against every other
+/// class that redirects `Console.Error`, which is what stops a foreign restore from
+/// handing our writer away mid-capture.
+///
+/// The rest is belt: a bare `StringWriter` is not thread-safe, so its own `ToString()`
+/// threw `ArgumentOutOfRangeException (chunkLength)` mid-append under a loaded box. The
+/// synchronized wrapper keeps that safe against a class that merely WRITES to stderr
+/// while running in parallel, and such a line is harmless to the assertions here, since
 /// every caller asserts on `Contains`, never on the whole buffer.
 ///
 /// Captures are serialized against each other so two of them cannot interleave their

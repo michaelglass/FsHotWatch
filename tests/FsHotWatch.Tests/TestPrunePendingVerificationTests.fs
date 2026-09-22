@@ -550,46 +550,48 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.foo")
 
-        let started = Path.Combine(tmpDir, "started")
-        let release = Path.Combine(tmpDir, "release")
+        withReleaseGate tmpDir "rerun" (fun release ->
+            let started = Path.Combine(tmpDir, "started")
 
-        let configs =
-            [ { Project = "P1"
-                Command = "sh"
-                Args = $"-c \"touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+            let configs =
+                [ { Project = "P1"
+                    Command = "sh"
+                    // 3000 polls at 20ms is ~60s: twice this test's 30s xUnit budget, so a
+                    // slow-but-correct run can never reach the cap. See `gatedWait`.
+                    Args = "-c \"touch '" + started + "'; " + gatedWait tmpDir release 3000 + "\""
+                    Group = "default"
+                    Environment = []
+                    FilterTemplate = None
+                    ClassJoin = " "
+                    TimeoutSec = None
+                    ReportVerificationFormat = AutoDetect } ]
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let (getCompleted, recorder) = testRunCompletedRecorder ()
-        host.RegisterHandler(recorder)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let (getCompleted, recorder) = testRunCompletedRecorder ()
+            host.RegisterHandler(recorder)
 
-        let handler = create dbPath tmpDir (Some configs) None None None None []
-        host.RegisterHandler(handler)
+            let handler = create dbPath tmpDir (Some configs) None None None None []
+            host.RegisterHandler(handler)
 
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitUntil (fun () -> File.Exists started) 10000
+            host.EmitBuildCompleted(BuildSucceeded)
+            waitUntil (fun () -> File.Exists started) 10000
 
-        // Re-observe the same debt while its covering run is active. The run holds the
-        // host busy, so the witness is the BatchChecked's own commit: once it lands,
-        // the rerun is queued, and releasing the runner cannot race the setup.
-        let committedBefore = committedBy host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
-        test <@ waitForCommitted host "test-prune" committedBefore 1L 10000 @>
+            // Re-observe the same debt while its covering run is active. The run holds the
+            // host busy, so the witness is the BatchChecked's own commit: once it lands,
+            // the rerun is queued, and releasing the runner cannot race the setup.
+            let committedBefore = committedBy host "test-prune"
+            host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+            test <@ waitForCommitted host "test-prune" committedBefore 1L 10000 @>
 
-        File.WriteAllText(release, "")
-        waitForQuiescent host 20000
+            File.WriteAllText(release, "")
+            waitForQuiescent host 20000
 
-        let completed = getCompleted ()
-        Assert.Single(completed) |> ignore
-        test <@ not (RunVerification.verifiedNothing completed.Head.Verification) @>
+            let completed = getCompleted ()
+            Assert.Single(completed) |> ignore
+            test <@ not (RunVerification.verifiedNothing completed.Head.Verification) @>
 
-        let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ Set.isEmpty queue @>)
+            let queue = PendingQueueHelpers.loadQueue tmpDir
+            test <@ Set.isEmpty queue @>))
 
 type private ScenarioOutcome =
     { RunCount: int
@@ -603,15 +605,16 @@ let private runCohortScenario name trigger testExitCode editAfterSeal restoreAft
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
         let runMarker = Path.Combine(tmpDir, "runs")
         let started = Path.Combine(tmpDir, "started")
-        let release = Path.Combine(tmpDir, "release")
-        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-        let pipeline = CheckPipeline(checker)
 
-        let libSource1 = "module Lib\nlet foo (x: int) = x + 1\n"
-        let libSource2 = "module Lib\nlet foo (x: int) = x + 2\n"
+        withReleaseGate tmpDir "cohort" (fun release ->
+            let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+            let pipeline = CheckPipeline(checker)
 
-        let testsSource =
-            """module Tests
+            let libSource1 = "module Lib\nlet foo (x: int) = x + 1\n"
+            let libSource2 = "module Lib\nlet foo (x: int) = x + 2\n"
+
+            let testsSource =
+                """module Tests
 open Lib
 
 type FactAttribute() = inherit System.Attribute()
@@ -620,97 +623,106 @@ type FactAttribute() = inherit System.Attribute()
 let fooTest () = assert (foo 1 = 2)
 """
 
-        File.WriteAllText(libFile, libSource1)
-        File.WriteAllText(testsFile, testsSource)
+            File.WriteAllText(libFile, libSource1)
+            File.WriteAllText(testsFile, testsSource)
 
-        let libOptions =
-            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+            let libOptions =
+                getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
 
-        let projOptions =
-            { libOptions with
-                SourceFiles = [| libFile; testsFile |] }
+            let projOptions =
+                { libOptions with
+                    SourceFiles = [| libFile; testsFile |] }
 
-        pipeline.RegisterProject(libFile, projOptions)
+            pipeline.RegisterProject(libFile, projOptions)
 
-        // Prime the persisted symbol graph in an analysis-only host. The second host is
-        // the cold daemon: empty in-memory state over a warm on-disk impact database.
-        let primingHost = createModelHost checker tmpDir
-        primingHost.RegisterHandler(create dbPath tmpDir None None None None None [])
-        primingHost.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginIdle primingHost "test-prune" 5.0
+            // Prime the persisted symbol graph in an analysis-only host. The second host is
+            // the cold daemon: empty in-memory state over a warm on-disk impact database.
+            let primingHost = createModelHost checker tmpDir
+            primingHost.RegisterHandler(create dbPath tmpDir None None None None None [])
+            primingHost.EmitBuildCompleted(BuildSucceeded)
+            waitForPluginIdle primingHost "test-prune" 5.0
 
-        for file in [ libFile; testsFile ] do
-            match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
-            | Some result -> primingHost.EmitFileChecked(stampFixture result)
-            | None -> failwith $"priming check failed for {file}"
+            for file in [ libFile; testsFile ] do
+                match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
+                | Some result -> primingHost.EmitFileChecked(stampFixture result)
+                | None -> failwith $"priming check failed for {file}"
 
-        emitBatchAndQuiesce primingHost [ libFile; testsFile ]
+            emitBatchAndQuiesce primingHost [ libFile; testsFile ]
 
-        let configs =
-            [ { Project = "Lib"
-                Command = "sh"
-                Args =
-                  $"-c \"printf 'run\\n' >> '{runMarker}'; touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done; exit {testExitCode}\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = Some 15
-                ReportVerificationFormat = AutoDetect } ]
+            let configs =
+                [ { Project = "Lib"
+                    Command = "sh"
+                    // 3000 polls at 20ms is ~60s: twice the 30s xUnit budget of every Fact
+                    // backed by this scenario, so a slow-but-correct run can never reach the
+                    // cap. See `gatedWait`.
+                    Args =
+                      "-c \"printf 'run\\n' >> '"
+                      + runMarker
+                      + "'; touch '"
+                      + started
+                      + "'; "
+                      + gatedWait tmpDir release 3000
+                      + $"; exit {testExitCode}\""
+                    Group = "default"
+                    Environment = []
+                    FilterTemplate = None
+                    ClassJoin = " "
+                    TimeoutSec = Some 15
+                    ReportVerificationFormat = AutoDetect } ]
 
-        let host = createModelHost checker tmpDir
-        host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
+            let host = createModelHost checker tmpDir
+            host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
 
-        host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
-        |> Async.RunSynchronously
-        |> ignore
+            host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
+            |> Async.RunSynchronously
+            |> ignore
 
-        File.WriteAllText(libFile, libSource2)
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitUntil (fun () -> File.Exists started) 10000
+            File.WriteAllText(libFile, libSource2)
+            host.EmitBuildCompleted(BuildSucceeded)
+            waitUntil (fun () -> File.Exists started) 10000
 
-        let committedBefore = committedBy host "test-prune"
+            let committedBefore = committedBy host "test-prune"
 
-        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some result -> host.EmitFileChecked(stampFixture result)
-        | None -> failwith "cold-scan changed-file check failed"
+            match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+            | Some result -> host.EmitFileChecked(stampFixture result)
+            | None -> failwith "cold-scan changed-file check failed"
 
-        host.EmitBatchChecked(
-            { fakeBatchChecked [ libFile ] with
-                Trigger = trigger }
-        )
+            host.EmitBatchChecked(
+                { fakeBatchChecked [ libFile ] with
+                    Trigger = trigger }
+            )
 
-        // The run is held until the cohort seal has committed. A fixed sleep made this
-        // test assert scheduler speed on loaded Linux runners: the full run could finish
-        // before CheckFile, turning BootScan into a real second run.
-        test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
+            // The run is held until the cohort seal has committed. A fixed sleep made this
+            // test assert scheduler speed on loaded Linux runners: the full run could finish
+            // before CheckFile, turning BootScan into a real second run.
+            test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
 
-        // The cohort is sealed and the full run is still held. Edit the symbol again
-        // (and optionally restore the sealed bytes); each edit waits until test-prune has
-        // committed it, so the edit is observed before the run is released.
-        if editAfterSeal then
-            let sources =
-                [ "module Lib\nlet foo (x: int) = x + 3\n"
-                  if restoreAfterEdit then
-                      libSource2 ]
+            // The cohort is sealed and the full run is still held. Edit the symbol again
+            // (and optionally restore the sealed bytes); each edit waits until test-prune has
+            // committed it, so the edit is observed before the run is released.
+            if editAfterSeal then
+                let sources =
+                    [ "module Lib\nlet foo (x: int) = x + 3\n"
+                      if restoreAfterEdit then
+                          libSource2 ]
 
-            for source in sources do
-                File.WriteAllText(libFile, source)
-                let committedBeforeEdit = committedBy host "test-prune"
+                for source in sources do
+                    File.WriteAllText(libFile, source)
+                    let committedBeforeEdit = committedBy host "test-prune"
 
-                match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-                | Some result -> host.EmitFileChecked(stampFixture result)
-                | None -> failwith "post-seal changed-file check failed"
+                    match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+                    | Some result -> host.EmitFileChecked(stampFixture result)
+                    | None -> failwith "post-seal changed-file check failed"
 
-                test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L 10000 @>
+                    test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L 10000 @>
 
-        File.WriteAllText(release, "")
+            File.WriteAllText(release, "")
 
-        waitForQuiescent host 20000
+            waitForQuiescent host 20000
 
-        { RunCount = File.ReadAllLines(runMarker).Length
-          Queue = PendingQueueHelpers.loadQueue tmpDir
-          Status = host.GetStatus("test-prune") })
+            { RunCount = File.ReadAllLines(runMarker).Length
+              Queue = PendingQueueHelpers.loadQueue tmpDir
+              Status = host.GetStatus("test-prune") }))
 
 [<Fact(Timeout = 30000)>]
 let ``boot-scan symbols discovered during a green full run are covered without a second run`` () =
@@ -1858,19 +1870,17 @@ let ``scopeOf: a repo with no test projects is not a covered suite`` () =
 /// A single-project config whose command touches `started`, waits (bounded) for `release`,
 /// then touches `done` — so the test controls the in-flight window deterministically. The
 /// script lives in a file so no argument-quoting rules apply.
-let private gatedRunConfig (tmpDir: string) =
+///
+/// `polls` is the caller's cap, at 20ms apiece: roughly twice its own `[<Fact(Timeout)>]`
+/// budget, so a slow-but-correct run can never reach it. A capped-out `gatedWait` exits
+/// non-zero INSTEAD of falling through, so `done` cannot be forged by a wait that gave up
+/// — which the hand-rolled 10s cap this replaced did, on tests budgeted at 30s.
+let private gatedRunConfig (tmpDir: string) (release: string) (polls: int) =
     let started = Path.Combine(tmpDir, "started")
-    let release = Path.Combine(tmpDir, "release")
     let doneFile = Path.Combine(tmpDir, "done")
     let scriptPath = Path.Combine(tmpDir, "gated-run.sh")
 
-    File.WriteAllText(
-        scriptPath,
-        $"touch {started}\n"
-        + $"n=0\n"
-        + $"while [ ! -f {release} ] && [ \"$n\" -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"
-        + $"touch {doneFile}\n"
-    )
+    File.WriteAllText(scriptPath, $"touch {started}\n" + gatedWait tmpDir release polls + $"\ntouch {doneFile}\n")
 
     let config =
         { Project = "GatedProject"
@@ -1883,86 +1893,88 @@ let private gatedRunConfig (tmpDir: string) =
           TimeoutSec = Some 30
           ReportVerificationFormat = AutoDetect }
 
-    config, started, release, doneFile
+    config, started, doneFile
 
 [<Fact(Timeout = 30000)>]
 let ``run-tests: an in-flight command-driven run is visible to the daemon model`` () =
     withTempDir "tp-cmd-visible" (fun tmpDir ->
-        let config, started, release, _doneFile = gatedRunConfig tmpDir
+        withReleaseGate tmpDir "cmd-visible" (fun release ->
+            let config, started, _doneFile = gatedRunConfig tmpDir release 3000
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
-        host.RegisterHandler(handler)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+            host.RegisterHandler(handler)
 
-        let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        try
-            waitUntil (fun () -> File.Exists started) 15000
-            test <@ File.Exists started @>
+            try
+                waitUntil (fun () -> File.Exists started) 15000
+                test <@ File.Exists started @>
 
-            // The test process is running, so the plugin must hold the exclusive "tests"
-            // slot and report Running — otherwise a concurrent `fshw check` sees "at rest"
-            // and exits 0 mid-execution.
-            test <@ host.AnyPluginBusy() @>
+                // The test process is running, so the plugin must hold the exclusive "tests"
+                // slot and report Running — otherwise a concurrent `fshw check` sees "at rest"
+                // and exits 0 mid-execution.
+                test <@ host.AnyPluginBusy() @>
 
-            let statusDuringRun = host.GetStatus("test-prune")
+                let statusDuringRun = host.GetStatus("test-prune")
 
-            test
-                <@
-                    match statusDuringRun with
-                    | Some(Running _) -> true
-                    | _ -> false
-                @>
-        finally
-            File.WriteAllText(release, "")
+                test
+                    <@
+                        match statusDuringRun with
+                        | Some(Running _) -> true
+                        | _ -> false
+                    @>
+            finally
+                File.WriteAllText(release, "")
 
-        cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
-        test <@ cmdTask.IsCompleted @>
-        // The results JSON is unchanged by the accounting.
-        test <@ cmdTask.Result.IsSome @>
-        test <@ cmdTask.Result.Value.Contains("projects") @>)
+            cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+            test <@ cmdTask.IsCompleted @>
+            // The results JSON is unchanged by the accounting.
+            test <@ cmdTask.Result.IsSome @>
+            test <@ cmdTask.Result.Value.Contains("projects") @>))
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked while a test run is in flight must not report a terminal status`` () =
     withTempDir "tp-midrun-stamp" (fun tmpDir ->
-        let config, started, release, doneFile = gatedRunConfig tmpDir
+        withReleaseGate tmpDir "midrun-stamp" (fun release ->
+            let config, started, doneFile = gatedRunConfig tmpDir release 3000
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
-        host.RegisterHandler(handler)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+            host.RegisterHandler(handler)
 
-        let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        try
-            waitUntil (fun () -> File.Exists started) 15000
-            test <@ File.Exists started @>
+            try
+                waitUntil (fun () -> File.Exists started) 15000
+                test <@ File.Exists started @>
 
-            // An editor save during a long suite. Whatever its analysis outcome, the run
-            // owns the status until TestsFinished delivers the earned verdict — analysis
-            // diagnostics still reach the error ledger, so nothing is lost by staying
-            // Running.
-            let srcFile = Path.Combine(tmpDir, "Lib.fs")
-            File.WriteAllText(srcFile, "module Lib\nlet x = 1\n")
+                // An editor save during a long suite. Whatever its analysis outcome, the run
+                // owns the status until TestsFinished delivers the earned verdict — analysis
+                // diagnostics still reach the error ledger, so nothing is lost by staying
+                // Running.
+                let srcFile = Path.Combine(tmpDir, "Lib.fs")
+                File.WriteAllText(srcFile, "module Lib\nlet x = 1\n")
 
-            // Subscribe BEFORE the mid-run event: the bug is a TRANSIENT terminal, stamped
-            // and immediately overwritten, which a polling sampler misses entirely.
-            let terminalDuringRun = beginAwaitNextTerminal host "test-prune"
+                // Subscribe BEFORE the mid-run event: the bug is a TRANSIENT terminal, stamped
+                // and immediately overwritten, which a polling sampler misses entirely.
+                let terminalDuringRun = beginAwaitNextTerminal host "test-prune"
 
-            host.EmitFileChecked(
-                { fakeFileCheckResult srcFile with
-                    Source = "module Lib\nlet x = 1\n" }
-            )
+                host.EmitFileChecked(
+                    { fakeFileCheckResult srcFile with
+                        Source = "module Lib\nlet x = 1\n" }
+                )
 
-            // The run is provably still gated (`done` unwritten), so any terminal
-            // transition observed inside this window is the manufactured status.
-            let stampedMidRun = terminalDuringRun.Wait(TimeSpan.FromSeconds 3.0)
-            test <@ not (File.Exists doneFile) @>
-            test <@ not stampedMidRun @>
-        finally
-            File.WriteAllText(release, "")
+                // The run is provably still gated (`done` unwritten), so any terminal
+                // transition observed inside this window is the manufactured status.
+                let stampedMidRun = terminalDuringRun.Wait(TimeSpan.FromSeconds 3.0)
+                test <@ not (File.Exists doneFile) @>
+                test <@ not stampedMidRun @>
+            finally
+                File.WriteAllText(release, "")
 
-        cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
-        test <@ cmdTask.IsCompleted @>)
+            cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+            test <@ cmdTask.IsCompleted @>))
 
 [<Fact(Timeout = 30000)>]
 let ``a green run's Completed status carries its verdict`` () =
@@ -1986,9 +1998,8 @@ let ``a green run's Completed status carries its verdict`` () =
 
 /// Like `gatedRunConfig`, but the script appends one line per invocation to a `runs` file,
 /// so a test can COUNT executions rather than trusting a status.
-let private countingGatedRunConfig (tmpDir: string) =
+let private countingGatedRunConfig (tmpDir: string) (release: string) (polls: int) =
     let started = Path.Combine(tmpDir, "started")
-    let release = Path.Combine(tmpDir, "release")
     let runs = Path.Combine(tmpDir, "runs")
     let scriptPath = Path.Combine(tmpDir, "counting-gated-run.sh")
 
@@ -1996,8 +2007,8 @@ let private countingGatedRunConfig (tmpDir: string) =
         scriptPath,
         $"echo run >> {runs}\n"
         + $"touch {started}\n"
-        + $"n=0\n"
-        + $"while [ ! -f {release} ] && [ \"$n\" -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"
+        + gatedWait tmpDir release polls
+        + "\n"
     )
 
     let config =
@@ -2011,7 +2022,7 @@ let private countingGatedRunConfig (tmpDir: string) =
           TimeoutSec = Some 30
           ReportVerificationFormat = AutoDetect }
 
-    config, started, release, runs
+    config, started, runs
 
 let private runCount (runs: string) =
     if File.Exists runs then
@@ -2024,43 +2035,44 @@ let private runCount (runs: string) =
 [<Fact(Timeout = 60000)>]
 let ``run-tests refused the slot is QUEUED and still runs — never a green it did not earn`` () =
     withTempDir "tp-rerun-queued" (fun tmpDir ->
-        let config, started, release, runs = countingGatedRunConfig tmpDir
+        withReleaseGate tmpDir "rerun-queued" (fun release ->
+            let config, started, runs = countingGatedRunConfig tmpDir release 6000
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
-        host.RegisterHandler(handler)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+            host.RegisterHandler(handler)
 
-        // Run #1 claims the slot and blocks on the gate.
-        let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
-        waitUntil (fun () -> File.Exists started) 20000
-        test <@ runCount runs = 1 @>
+            // Run #1 claims the slot and blocks on the gate.
+            let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            waitUntil (fun () -> File.Exists started) 20000
+            test <@ runCount runs = 1 @>
 
-        // Run #2 arrives while the slot is HELD. Replying `busy` here means exit 0 having
-        // executed nothing.
-        let second = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            // Run #2 arrives while the slot is HELD. Replying `busy` here means exit 0 having
+            // executed nothing.
+            let second = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        // Still queued, and still owed a reply.
-        Thread.Sleep 500
-        test <@ runCount runs = 1 @>
-        test <@ not second.IsCompleted @>
+            // Still queued, and still owed a reply.
+            Thread.Sleep 500
+            test <@ runCount runs = 1 @>
+            test <@ not second.IsCompleted @>
 
-        File.WriteAllText(release, "")
+            File.WriteAllText(release, "")
 
-        first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
-        second.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            second.Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-        test <@ first.IsCompleted @>
-        test <@ second.IsCompleted @>
+            test <@ first.IsCompleted @>
+            test <@ second.IsCompleted @>
 
-        // The suite executed TWICE, and the second reply is a real results payload rather
-        // than a "busy" non-verdict.
-        waitUntil (fun () -> runCount runs = 2) 20000
-        test <@ runCount runs = 2 @>
+            // The suite executed TWICE, and the second reply is a real results payload rather
+            // than a "busy" non-verdict.
+            waitUntil (fun () -> runCount runs = 2) 20000
+            test <@ runCount runs = 2 @>
 
-        test <@ second.Result.IsSome @>
-        let json = second.Result.Value
-        test <@ json.Contains("projects") @>
-        test <@ not (json.Contains("\"busy\"")) @>)
+            test <@ second.Result.IsSome @>
+            let json = second.Result.Value
+            test <@ json.Contains("projects") @>
+            test <@ not (json.Contains("\"busy\"")) @>))
 
 [<Fact(Timeout = 60000)>]
 let ``a queued run-tests reply resolves — a refused claim can never strand the IPC caller`` () =
@@ -2068,27 +2080,28 @@ let ``a queued run-tests reply resolves — a refused claim can never strand the
     // async, so a silently-dropped claim resolved nothing and the command's
     // `Async.AwaitTask reply.Task` waited forever.
     withTempDir "tp-rerun-noStrand" (fun tmpDir ->
-        let config, started, release, _runs = countingGatedRunConfig tmpDir
+        withReleaseGate tmpDir "rerun-nostrand" (fun release ->
+            let config, started, _runs = countingGatedRunConfig tmpDir release 6000
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
-        host.RegisterHandler(handler)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+            host.RegisterHandler(handler)
 
-        let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
-        waitUntil (fun () -> File.Exists started) 20000
+            let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            waitUntil (fun () -> File.Exists started) 20000
 
-        // Three force-runs pile up behind the in-flight one; none may be stranded.
-        let queued =
-            [ for _ in 1..3 -> host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask ]
+            // Three force-runs pile up behind the in-flight one; none may be stranded.
+            let queued =
+                [ for _ in 1..3 -> host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask ]
 
-        File.WriteAllText(release, "")
+            File.WriteAllText(release, "")
 
-        first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-        for t in queued do
-            t.Wait(TimeSpan.FromSeconds 30.0) |> ignore
-            test <@ t.IsCompleted @>
-            test <@ t.Result.IsSome @>)
+            for t in queued do
+                t.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                test <@ t.IsCompleted @>
+                test <@ t.Result.IsSome @>))
 
 [<Fact(Timeout = 30000)>]
 let ``run-tests bounds its wait: a run that outlives the budget reports busy, never a verdict`` () =
@@ -2096,22 +2109,23 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
     // never-releasing run must return the DISTINCT `busy` status, which the CLI maps to a
     // non-zero exit so it can never read as a pass the run did not produce.
     withTempDir "tp-rerun-bounded" (fun tmpDir ->
-        let config, started, release, _runs = countingGatedRunConfig tmpDir
+        withReleaseGate tmpDir "rerun-bounded" (fun release ->
+            let config, started, _runs = countingGatedRunConfig tmpDir release 3000
 
-        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
-        host.RegisterHandler(handler)
+            let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+            host.RegisterHandler(handler)
 
-        try
-            let json =
-                host.RunCommand("run-tests", [| """{"waitSec":1}""" |])
-                |> Async.RunSynchronously
+            try
+                let json =
+                    host.RunCommand("run-tests", [| """{"waitSec":1}""" |])
+                    |> Async.RunSynchronously
 
-            test <@ json.IsSome @>
-            test <@ json.Value.Contains("\"busy\"") @>
-            test <@ not (json.Value.Contains("\"projects\"")) @>
-            test <@ File.Exists started @>
-        finally
-            // Let the daemon-side run finish so the temp dir can be cleaned.
-            File.WriteAllText(release, "")
-            waitUntil (fun () -> not (host.AnyPluginBusy())) 30000)
+                test <@ json.IsSome @>
+                test <@ json.Value.Contains("\"busy\"") @>
+                test <@ not (json.Value.Contains("\"projects\"")) @>
+                test <@ File.Exists started @>
+            finally
+                // Let the daemon-side run finish so the temp dir can be cleaned.
+                File.WriteAllText(release, "")
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 30000))

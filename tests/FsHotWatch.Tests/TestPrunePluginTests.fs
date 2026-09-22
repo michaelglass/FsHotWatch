@@ -1230,7 +1230,7 @@ let beta () = ()
 
         waitUntil
             (fun () ->
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                clearSqlitePool dbPath
                 let freshDb = Database.create dbPath
                 testMethods <- freshDb.GetTestMethodsInFile "Tests.fsx"
                 testMethods.Length >= 2)
