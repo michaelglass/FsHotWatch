@@ -1731,6 +1731,43 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     test <@ reply.Task.Result.Contains("host start fault") @>
     test <@ finalState.EvidenceReceipt.IsNone @>
 
+[<Fact(Timeout = 15000)>]
+let ``a test host that cannot start leaves the build artifacts valid for the next launch`` () =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA" ]) None None None None []
+
+    let reply = System.Threading.Tasks.TaskCompletionSource<string>()
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+    let mutable hostFaultRelease: SharedResourceState option = None
+    let mutable unusableArtifactsRelease: SharedResourceState option = None
+
+    let ctx =
+        { recordingCtx with
+            EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+            RunExclusiveShared =
+                fun _ _ _ classify failureMessage ->
+                    // The framework's own path: the work built against a lease faults,
+                    // that fault becomes the launch's outcome, and the classifier
+                    // decides what is released back into the lease for the next claim.
+                    hostFaultRelease <- Some(classify (failureMessage (InvalidOperationException("host start fault"))))
+
+                    // The control: a launch that really did find the artifacts unusable
+                    // must still carry that invalidity forward.
+                    unusableArtifactsRelease <-
+                        Some(classify (ArtifactsUnavailable("build output is invalid", Set.empty, None)))
+
+                    SharedClaimed }
+
+    handler.Update ctx handler.Init (Custom(RunTestsRequested([ projConfig "ProjA" ], None, reply)))
+    |> Async.RunSynchronously
+    |> ignore
+
+    // A host that would not start says nothing about the build output. Released
+    // invalid, it refuses every later launch on an unchanged tree — blaming the
+    // build — until a build actually runs.
+    test <@ hostFaultRelease = Some Ready @>
+    test <@ unusableArtifactsRelease = Some(Invalid "build output is invalid") @>
+
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
     let root = isolatedRoot ()

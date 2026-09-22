@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed: a test host that could not start refused every later launch on an unchanged
+  tree. A refused launch releases the shared build-artifact lease and the next claimant
+  is handed whatever the last release left; a host start failure released `Invalid`,
+  exactly as an unusable-artifacts refusal does. One transient host fault therefore
+  stayed red — reported as "the preceding build left invalid artifacts", naming the
+  wrong culprit — until a build actually ran and released the lease as valid again. A
+  host that would not start now releases the lease unchanged. A launch that really did
+  find the artifacts unusable still carries that invalidity forward.
+
 ## 0.13.0-alpha.43 - 2026-09-22
 
 - Let a plugin fold declare one long bounded unit of work
