@@ -3789,3 +3789,50 @@ let ``a retained receipt beside an outstanding failure earns a refusal, never a 
             // Kept strict rather than tolerant: were this arm allowed, the assertion above
             // would pass for a completion that minted nothing at all and prove nothing.
             failwith "the drain must earn evidence under the fixture's model, so that its refusal is provable")
+
+// --- a revoked receipt names WHICH cause fired ---
+
+module private Mismatch =
+    open FsHotWatch.TestPrune.TestPrunePlugin
+
+    let all =
+        [ ReceiptInputTree.UnboundAtLaunch
+          ReceiptInputTree.UnreadableAtCompletion
+          ReceiptInputTree.MovedDuringRun ]
+
+[<Fact>]
+let ``the three input-tree mismatch causes are told apart`` () =
+    let open' = Some "aaa"
+    let other = Some "bbb"
+
+    test <@ ReceiptInputTree.classifyMismatch None open' = ReceiptInputTree.UnboundAtLaunch @>
+    test <@ ReceiptInputTree.classifyMismatch open' None = ReceiptInputTree.UnreadableAtCompletion @>
+    test <@ ReceiptInputTree.classifyMismatch open' other = ReceiptInputTree.MovedDuringRun @>
+
+    // An unbound launch is unbound whether or not the tree can be read now, so the
+    // arms are ordered rather than overlapping.
+    test <@ ReceiptInputTree.classifyMismatch None None = ReceiptInputTree.UnboundAtLaunch @>
+
+[<Fact>]
+let ``no two revocation causes render the same text`` () =
+    // The defect: one string covered every cause, so a reader who saw a revocation
+    // could not tell a defect in the input walk from a tree somebody edited mid-run.
+    // Establishing that the tree had NOT moved took an hour of checking `jj status`
+    // and the mtime of every declared verdict input — work the message could have
+    // saved by naming its arm.
+    let rendered = Mismatch.all |> List.map ReceiptInputTree.describeMismatch
+
+    test <@ List.distinct rendered = rendered @>
+
+    // And each is self-describing, so the text is usable without the type beside it:
+    // the two defects say so, and the innocent cause does not.
+    let unbound = ReceiptInputTree.describeMismatch ReceiptInputTree.UnboundAtLaunch
+
+    let unreadable =
+        ReceiptInputTree.describeMismatch ReceiptInputTree.UnreadableAtCompletion
+
+    let moved = ReceiptInputTree.describeMismatch ReceiptInputTree.MovedDuringRun
+
+    test <@ unbound.Contains "UNBOUND" && unbound.Contains "defect" @>
+    test <@ unreadable.Contains "READ" && unreadable.Contains "defect" @>
+    test <@ moved.Contains "MOVED" && not (moved.Contains "defect") @>

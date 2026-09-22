@@ -1394,6 +1394,46 @@ module internal ReceiptInputTree =
         | Some before, Some after -> String.Equals(before, after, StringComparison.Ordinal)
         | _ -> false
 
+    /// Why `matches` said no. It says no for THREE situations with three different
+    /// remedies, and one message covered all of them — so a reader who saw a
+    /// revocation had to establish by separate investigation whether the tree had
+    /// actually moved. On one occasion that was an hour of checking `jj status` and
+    /// the mtime of every declared verdict input, to conclude it had not.
+    ///
+    /// The branch is known where the message is produced. Naming it costs nothing.
+    type Mismatch =
+        /// The launch never bound a tree: `read` returned `None` before the run. A
+        /// DEFECT in the input walk — a skipped entry or an unreadable file — and
+        /// evidence earned by a fully successful run is discarded because of it.
+        /// Remedy: fix the walk.
+        | UnboundAtLaunch
+        /// The tree cannot be read NOW, so there is nothing to compare against. The
+        /// same class of defect as `UnboundAtLaunch`, at the other end of the run,
+        /// and worth separating because the two implicate different moments.
+        | UnreadableAtCompletion
+        /// Both trees were read and they differ. CORRECT behaviour: the tree was
+        /// edited while the run was in flight and the receipt must not outlive it.
+        /// Remedy: none, or re-run on a settled tree.
+        | MovedDuringRun
+
+    let classifyMismatch expected current =
+        match expected, current with
+        | None, _ -> UnboundAtLaunch
+        | _, None -> UnreadableAtCompletion
+        | Some _, Some _ -> MovedDuringRun
+
+    /// The revocation reason for a mismatch, naming the arm and its remedy.
+    let describeMismatch mismatch =
+        match mismatch with
+        | UnboundAtLaunch ->
+            "the input tree was UNBOUND at launch — the input walk returned nothing to bind to, "
+            + "so evidence from this run is discarded through no fault of the tree. This is a defect in the walk"
+        | UnreadableAtCompletion ->
+            "the input tree could not be READ at completion, so there was nothing to compare the launch "
+            + "binding against. This is a defect in the walk, not a change to the tree"
+        | MovedDuringRun ->
+            "the input tree MOVED between launch and completion — it was edited while the run was in flight"
+
 type TestEvidenceReceipt =
     { InputTreeHash: string option
       RunId: Guid
@@ -2525,7 +2565,9 @@ module ReceiptTransition =
                 ReceiptTransition.Revoked "already verified, but no receipt is bound to the current tree"
         | Normal when not executed -> ReceiptTransition.Revoked "the run executed no project to a verdict"
         | Normal when not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) ->
-            ReceiptTransition.Revoked "the input tree was unbound at launch or moved before completion"
+            ReceiptInputTree.classifyMismatch launch.InputTreeHash currentInputTree
+            |> ReceiptInputTree.describeMismatch
+            |> ReceiptTransition.Revoked
         | Normal ->
             let narrowerThanPrevious =
                 previousBoundToCurrentTree
