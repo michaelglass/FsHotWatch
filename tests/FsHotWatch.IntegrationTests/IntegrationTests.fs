@@ -189,7 +189,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let host = PluginHost.create checker repoRoot
+    let host = createModelHost checker repoRoot
     host.RegisterHandler(analyzers)
 
     // Events.fs has match expressions the wildcard analyzer can inspect.
@@ -213,7 +213,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let completion = beginAwaitTerminal host "analyzers"
 
     match result with
-    | Some checkResult -> host.EmitFileChecked(checkResult)
+    | Some checkResult -> host.EmitFileChecked(stampFixture checkResult)
     | None -> failwith "Failed to check file"
 
     completion.Wait(TimeSpan.FromSeconds 25.0) |> ignore
@@ -337,7 +337,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let host = PluginHost.create checker repoRoot
+        let host = createModelHost checker repoRoot
 
         // failOnSeverity = Error so the analyzer's RAW severity survives to the ledger.
         // Under the default Hint threshold `promoteIfFailing` rewrites every sub-error
@@ -354,7 +354,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
             match result with
             | Some checkResult ->
-                host.EmitFileChecked(checkResult)
+                host.EmitFileChecked(stampFixture checkResult)
                 waitForTerminalStatus host "analyzers" 10000
                 assertResult host tmpFile
             | None -> Assert.Fail("FCS failed to check file")))
@@ -370,7 +370,7 @@ let x = 5
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
-        let host = PluginHost.create checker repoRoot
+        let host = createModelHost checker repoRoot
         let lint = LintPlugin.create None None None None
         host.RegisterHandler(lint)
 
@@ -379,7 +379,7 @@ let x = 5
 
             match result with
             | Some checkResult ->
-                host.EmitFileChecked(checkResult)
+                host.EmitFileChecked(stampFixture checkResult)
 
                 waitUntil
                     (fun () ->
@@ -587,7 +587,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let host = PluginHost.create checker repoRoot
+    let host = createModelHost checker repoRoot
     let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
@@ -609,7 +609,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
 
     match result with
     | Some checkResult ->
-        host.EmitFileChecked(checkResult)
+        host.EmitFileChecked(stampFixture checkResult)
 
         waitUntil
             (fun () ->
@@ -636,7 +636,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let host = PluginHost.create checker repoRoot
+    let host = createModelHost checker repoRoot
     let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
@@ -651,7 +651,7 @@ let x = 5
 
             match result with
             | Some checkResult ->
-                host.EmitFileChecked(checkResult)
+                host.EmitFileChecked(stampFixture checkResult)
 
                 waitUntil
                     (fun () ->
@@ -681,7 +681,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let host = PluginHost.create checker repoRoot
+        let host = createModelHost checker repoRoot
         let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
         host.RegisterHandler(analyzers)
 
@@ -702,7 +702,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 
         match result with
         | Some checkResult ->
-            host.EmitFileChecked(checkResult)
+            host.EmitFileChecked(stampFixture checkResult)
 
             waitForTerminalStatus host "analyzers" 10000
 
@@ -723,7 +723,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let host = PluginHost.create checker repoRoot
+        let host = createModelHost checker repoRoot
 
         let analyzers =
             AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Hint
@@ -747,7 +747,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         match result with
         | Some checkResult ->
-            host.EmitFileChecked(checkResult)
+            host.EmitFileChecked(stampFixture checkResult)
 
             waitForTerminalStatus host "analyzers" 10000
 
@@ -822,7 +822,7 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
             Directory.CreateDirectory(analyzerDir) |> ignore
 
             let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-            let host = PluginHost.create checker repoRoot
+            let host = createModelHost checker repoRoot
 
             // analyzerDir is EMPTY at construction, so zero analyzers load — the warm
             // daemon's state before the downstream add. failOnSeverity = Error keeps the
@@ -838,7 +838,7 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
 
                 let emit () =
                     match checkTempFile checker tmpFile with
-                    | Some checkResult -> host.EmitFileChecked(checkResult)
+                    | Some checkResult -> host.EmitFileChecked(stampFixture checkResult)
                     | None -> Assert.Fail("FCS failed to check temp file")
 
                 emit ()
@@ -870,7 +870,7 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
     let repoRoot = findRepoRoot ()
     let rulesBin = conventionRulesPath.Value
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-    let host = PluginHost.create checker repoRoot
+    let host = createModelHost checker repoRoot
 
     let analyzers =
         AnalyzersPlugin.create None [ rulesBin ] None DiagnosticSeverity.Error
@@ -888,7 +888,7 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
             // reason. Refuse the fixture rather than emit a meaningless verdict.
             test <@ not checkResult.ParseResults.ParseHadErrors @>
 
-            host.EmitFileChecked(checkResult)
+            host.EmitFileChecked(stampFixture checkResult)
             waitForTerminalStatus host "analyzers" 15000
             host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
         | None -> failwith "FCS failed to check temp file")

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fixed: a phantom analyzer finding for a file the project model dropped. A
+  rediscovery that removes a file clears that file's findings in every plugin
+  ledger, and it clears them before the replacement model is published — so a
+  `FileChecked` captured under the OLD model and still queued in the
+  analyzers mailbox was folded afterwards and re-reported a finding about a file that is
+  no longer part of the build. Nothing checks a dropped path again, so the
+  finding stood until the daemon was restarted. The fold now applies
+  TestPrune's rule: a result is analyzed only when it carries the generation of
+  the model the host currently publishes as available. A file the new model
+  still has is re-checked against it and republishes, so refusing costs it
+  nothing.
+
 ## 0.7.0-alpha.35 - 2026-09-22
 
 - analyzers: supply `CliContext.TypedTree` instead of always passing `None`.

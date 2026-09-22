@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fixed: a phantom lint finding for a file the project model dropped. A
+  rediscovery that removes a file clears that file's findings in every plugin
+  ledger, and it clears them before the replacement model is published — so a
+  `FileChecked` captured under the OLD model and still queued in the lint
+  mailbox was folded afterwards and re-reported a finding about a file that is
+  no longer part of the build. Nothing checks a dropped path again, so the
+  finding stood until the daemon was restarted. The fold now applies
+  TestPrune's rule: a result is linted only when it carries the generation of
+  the model the host currently publishes as available. A file the new model
+  still has is re-checked against it and republishes, so refusing costs it
+  nothing.
+
 ## 0.7.0-alpha.25 - 2026-09-17
 
 - docs: reword comments and docs left ungrammatical by removing private references
