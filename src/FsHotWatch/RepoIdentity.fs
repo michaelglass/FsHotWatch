@@ -97,6 +97,56 @@ let describe (repoRoot: string) : RepoIdentitySource =
                     )
                 | _ -> RepoIdentitySource.CheckoutPath root
 
+/// Which checkout of a repository a directory is, read from the filesystem.
+[<RequireQualifiedAccess>]
+type CheckoutKind =
+    /// `.jj/repo` is a directory: the workspace that owns the store.
+    | JjDefaultWorkspace
+    /// `.jj/repo` is a file pointing at another workspace's store (`jj workspace add`).
+    | JjSecondaryWorkspace
+    /// `.git` is a directory.
+    | GitMainCheckout
+    /// `.git` is a `gitdir:` file (`git worktree add`).
+    | GitWorktree
+    /// Neither `.jj` nor `.git` is recognised.
+    | PlainDirectory
+
+/// Classify `root`. jj is read first: a colocated repository carries `.git` too, and
+/// only jj's pointer says which workspace this is. Config cannot answer this —
+/// `.fshw.json` is tracked, so every workspace reads the same one.
+let checkoutKind (root: string) : CheckoutKind =
+    let jjRepo = Path.Combine(root, ".jj", "repo")
+    let git = Path.Combine(root, ".git")
+
+    if Directory.Exists jjRepo then
+        CheckoutKind.JjDefaultWorkspace
+    elif File.Exists jjRepo then
+        CheckoutKind.JjSecondaryWorkspace
+    elif Directory.Exists git then
+        CheckoutKind.GitMainCheckout
+    elif File.Exists git then
+        CheckoutKind.GitWorktree
+    else
+        CheckoutKind.PlainDirectory
+
+/// A secondary checkout: a jj workspace other than the default, or a git worktree.
+let isSecondaryCheckout (kind: CheckoutKind) : bool =
+    match kind with
+    | CheckoutKind.JjSecondaryWorkspace
+    | CheckoutKind.GitWorktree -> true
+    | CheckoutKind.JjDefaultWorkspace
+    | CheckoutKind.GitMainCheckout
+    | CheckoutKind.PlainDirectory -> false
+
+/// How a startup log names a checkout kind, with the evidence it was read from.
+let describeCheckoutKind (kind: CheckoutKind) : string =
+    match kind with
+    | CheckoutKind.JjDefaultWorkspace -> "the jj default workspace (.jj/repo is a directory)"
+    | CheckoutKind.JjSecondaryWorkspace -> "a secondary jj workspace (.jj/repo is a file)"
+    | CheckoutKind.GitMainCheckout -> "a git main checkout (.git is a directory)"
+    | CheckoutKind.GitWorktree -> "a git worktree (.git is a file)"
+    | CheckoutKind.PlainDirectory -> "a plain directory (no .jj or .git)"
+
 /// The string an identity is hashed from. Tagged by kind so a `.git` directory and a
 /// checkout that merely happens to have the same path cannot collide.
 let internal identitySource (source: RepoIdentitySource) =

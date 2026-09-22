@@ -3,26 +3,34 @@
 ## Unreleased
 
 - fix: the check-result cache served stale diagnostics, and could not help the scan it
-  sits in front of. Three defects in the `"cache": "memory"` backend:
+  sits in front of.
   - **Unsound key.** Entries were keyed on a file's own bytes and its project's
-    options, not on the files it is type-checked against. Edit `A.fs` and a cached
-    `B.fs` that uses `A` kept its old, clean result on every rescan and change batch,
-    including the from-disk rescan `check`/`confirm` force. The key now also carries
-    `CheckCache.upstreamFingerprint`: the content of the files before it in compile
-    order, every source file of every referenced project (transitively), and in-repo
-    `-r:` assemblies that are not an F# project's output. Unchanged files are
-    re-hashed only when their (mtime, length) stamp moves (`FileContentHasher`).
-  - **Sized below the working set.** A 500-entry LRU against a 1835-file scan that
-    visits files in the same order every time evicts each entry just before it is
-    needed: measured **0 hits of 208** on repeated scans of this repository at the
-    same 27% ratio. `CheckPipeline` now raises an `IWorkingSetSized` backend to the
-    registered (file, project) pairs as projects register, so the configured size is
-    a floor: **208 of 208** hits, warm-rescan FCS CPU 6.7–15.7 s → 0.6–0.8 s.
-  - **Unbounded by edits.** A new result for a (file, project) now replaces the old
-    one, so the cache holds at most one entry per pair — measured about 250 KB of
-    retention per entry beyond what the checker already keeps.
-
-  The daemon also logs the cache's state at startup (`describeCheckCache`), including
+    options, not on the sources it is type-checked against. Change a signature in
+    project A and a cached file in C (C → B → A) kept its old, clean result on every
+    rescan and change batch — including the from-disk rescan `check`/`confirm` force.
+    The key now carries `CheckCache.upstreamFingerprints`: the files before it in
+    compile order, every source file of every TRANSITIVELY referenced project, and
+    in-repo non-project `-r:` assemblies. Unchanged files are re-read only when their
+    (mtime, length) stamp moves (`FileContentHasher`).
+  - **Fingerprint cost.** Computed once per project per generation
+    (`CheckPipeline.BeginGeneration`, called by each scan and change batch) instead of
+    per file: 213 (file, project) pairs cost 4 ms as per-project tables vs 126–305 ms
+    per lookup; a warm scan of this repository spends 9–21 ms on it. A result is
+    stored only if the key re-derived from disk after the check still matches, so a
+    check that ran against an upstream edited mid-generation is never written.
+  - **Sized below the working set.** A 500-entry LRU against a sequential scan of a
+    larger tree evicts each entry just before it is needed: measured **0 of 208**
+    hits at the same 27% ratio. `InMemoryCheckCache` now takes a
+    `CacheCapacity` — `Entries n` (a fixed budget) or `WorkingSet` (grows to what it
+    admits: **208 of 208** hits, warm-rescan CPU 6.7–15.7 s → 0.3–0.5 s, ~250 KB held
+    per entry) — and a project filter; the pipeline skips non-admitted projects
+    entirely (`IScopedCheckCache`). A fixed bound below the working set is warned
+    about once the generation starts, naming the final count.
+  - **Unbounded by edits.** A new result for a (file, project) replaces the old one.
+- feat: `RepoIdentity.checkoutKind` reads whether a directory is the jj default
+  workspace (`.jj/repo` is a directory), a secondary jj workspace (a file), a git main
+  checkout, a git worktree, or neither.
+- The daemon logs the cache's state at startup (`describeCheckCache`), including
   `OFF`, so an inert cache no longer reads as a working one.
 
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
