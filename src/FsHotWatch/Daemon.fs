@@ -200,6 +200,21 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
+/// `<projDir>/obj/project.assets.json` for a project file — restore's materialized
+/// package graph, and the path `resolveAffectedProjects` maps back to this same
+/// `.fsproj`. Both directions derive the shape here so neither can start naming a
+/// path the other does not.
+///
+/// `None` when the project path has no directory part, which no discovered project
+/// has.
+let internal projectAssetsFileFor (fsproj: string) : string option =
+    let directory = Path.GetDirectoryName(fsproj: string)
+
+    if String.IsNullOrEmpty directory then
+        None
+    else
+        Some(Path.Combine(directory, "obj", "project.assets.json"))
+
 /// Record the discovered project files' current content in `tracker`, so a watcher
 /// echo carrying the SAME bytes the model was just built from is not admitted as a
 /// change.
@@ -219,6 +234,14 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
 /// re-discovered: that race costs a redundant rediscovery, never a missed one. Seeding
 /// AFTER the load would invert it — the tracker would hold bytes the model was not built
 /// from, and the one event that would have repaired it would be swallowed.
+///
+/// COVERS `obj/project.assets.json` as well as `.fsproj`. `Watcher.isRelevantFile`
+/// admits both at the project tier, and a build's restore rewrites every project's
+/// assets file — so seeding only `.fsproj` left the input a cold `check` is GUARANTEED
+/// to touch with no prior at all. One redundant echo per project file is a bounded
+/// cost; a scoped invalidation of every project in the tree, arriving while the initial
+/// scan is still blocked on the build that provoked it, cancels that scan's in-flight
+/// checks and buys a second full pass over the workspace.
 let internal observeProjectContent
     (repoRoot: string)
     (excludePatterns: string list)
@@ -226,9 +249,17 @@ let internal observeProjectContent
     : unit =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
-    Discovery.findFsprojFiles repoRoot
-    |> List.filter (fun f -> not (isExcluded f))
-    |> List.iter tracker.Observe
+    let projects =
+        Discovery.findFsprojFiles repoRoot |> List.filter (fun f -> not (isExcluded f))
+
+    projects |> List.iter tracker.Observe
+
+    // Seeded WITHOUT the exclude filter, because every assets file lives under `obj/`
+    // and `isExcludedPath` excludes that whole subtree. `Watcher.isProjectAssetsJson`
+    // bypasses the same filter, for the same reason and in the same direction: the
+    // watcher admits these paths, so the tracker has to hold a prior for them or the
+    // first echo of each is answered "changed" on its content-free default.
+    projects |> List.choose projectAssetsFileFor |> List.iter tracker.Observe
 
 [<Literal>]
 let internal projInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"

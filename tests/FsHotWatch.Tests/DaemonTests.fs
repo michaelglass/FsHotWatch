@@ -1494,28 +1494,49 @@ let ``observing project content answers the next echo of the same bytes as uncha
         File.WriteAllText(kept, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
         File.WriteAllText(edited, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
 
+        // Restore's output for those projects. A build rewrites it, the watcher admits
+        // it at the project tier, so the tracker needs a prior for it exactly as much
+        // as for the `.fsproj` beside it.
+        let objDirectory = Path.Combine(directory, "obj")
+        Directory.CreateDirectory objDirectory |> ignore
+        let assets = Path.Combine(objDirectory, "project.assets.json")
+        File.WriteAllText(assets, "{}")
+
         let tracker = FsHotWatch.ContentDedup.Tracker()
 
         // An UNSEEDED tracker calls both of them changed — correct for a file it has
         // no prior for, and the false positive that re-discovered a cold workspace.
         let unseeded = FsHotWatch.ContentDedup.Tracker()
         test <@ unseeded.HasContentChanged kept @>
+        test <@ unseeded.HasContentChanged assets @>
 
         FsHotWatch.Daemon.observeProjectContent root [] tracker
 
         test <@ not (tracker.HasContentChanged kept) @>
         test <@ not (tracker.HasContentChanged edited) @>
 
+        // Seeded even though it sits under `obj/`, which every exclude filter drops.
+        test <@ not (tracker.HasContentChanged assets) @>
+
         // Content, not identity: a real edit is still a change.
         File.WriteAllText(edited, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
         test <@ tracker.HasContentChanged edited @>
         test <@ not (tracker.HasContentChanged kept) @>
 
+        // And a restore that genuinely changes the package graph is still a change.
+        File.WriteAllText(assets, "{\"version\": 3}")
+        test <@ tracker.HasContentChanged assets @>
+
         // A project file an exclude pattern hides is not observed, so nothing about it
         // is claimed: it keeps the no-prior answer.
         let excluded = FsHotWatch.ContentDedup.Tracker()
         FsHotWatch.Daemon.observeProjectContent root [ "src" ] excluded
-        test <@ excluded.HasContentChanged kept @>)
+        test <@ excluded.HasContentChanged kept @>
+
+        // The assets file is derived from the project that owns it, so an excluded
+        // project takes its restore output out of scope with it rather than leaving a
+        // seeded orphan behind.
+        test <@ excluded.HasContentChanged assets @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a cold daemon does not re-discover on a watcher echo of an unchanged project file`` () =
@@ -1608,6 +1629,21 @@ let ``a cold daemon does not re-discover on a watcher echo of an unchanged proje
         Assert.True(
             SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 20.0),
             "the source change must produce a sealed cohort"
+        )
+
+        test <@ loader.Loads = 1 @>
+
+        // The same echo for restore's OUTPUT. `dotnet build` rewrites every project's
+        // assets file, so of the paths the project tier admits this is the one a cold
+        // `check` is guaranteed to provoke against itself — and it arrives while the
+        // scan that triggered the build is still waiting for it to finish.
+        File.WriteAllText(sourcePath, "module Echo\nlet value = 2\n")
+        deliver (ProjectChanged [ Path.Combine(objDir, "project.assets.json") ])
+        deliver (SourceChanged [ sourcePath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> seals.Count >= 2), TimeSpan.FromSeconds 20.0),
+            "the second source change must produce a sealed cohort"
         )
 
         test <@ loader.Loads = 1 @>
