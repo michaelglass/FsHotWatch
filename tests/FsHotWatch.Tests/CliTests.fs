@@ -2685,6 +2685,127 @@ let ``missing test-scope warnings refuse evidence without prescribing merge poli
         finally
             FsHotWatch.Logging.setLogLevel originalLevel)
 
+/// How the plugin answers a scope command, independent of the transport it is reached by.
+type ScopeAnswer =
+    /// The host has no such command (no test projects configured).
+    | Absent
+    /// The command faults.
+    | Throws
+    /// The command answers with this reply.
+    | Replies
+
+/// ONE VERDICT, TWO TRANSPORTS: `confirm` over the daemon and `confirm --run-once` must say
+/// the same thing, and decide the same thing, for the same answer from the plugin. They
+/// used to carry a copy of each scope command apiece, and the copies drifted — the same
+/// refusal was worded differently depending on how the CLI reached the plugin. This pins
+/// the BEHAVIOUR, not the wording: whatever the sentences are, both transports produce
+/// the same ones, and the same reading.
+[<Theory(Timeout = 15000)>]
+[<InlineData("absent")>]
+[<InlineData("throws")>]
+[<InlineData("replies")>]
+let ``both transports say and decide the same thing for the same scope-command answer`` (answerName: string) =
+    let answer =
+        match answerName with
+        | "absent" -> Absent
+        | "throws" -> Throws
+        | _ -> Replies
+
+    let reply =
+        """{"scope":"full","ranProjects":6,"totalProjects":6"""
+        + BaselineFixtures.replyFragment
+        + "}"
+
+    let commands =
+        [ IpcParsing.TestScopeCommand
+          IpcParsing.CheckReachCommand
+          IpcParsing.SetScopeCommand
+          IpcParsing.RunTestsCommand ]
+
+    withTempDir "scope-transports" (fun repoRoot ->
+        let host =
+            FsHotWatch.PluginHost.PluginHost.create
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                repoRoot
+
+        if answer <> Absent then
+            host.RegisterHandler(
+                { Name = PluginName.create "fake-test-prune"
+                  Init = ()
+                  Update = fun _ctx state _event -> async { return state }
+                  Commands =
+                    commands
+                    |> List.map (fun name ->
+                        name,
+                        PluginCommand.Request(fun _ctx (_: string array) ->
+                            async { return (if answer = Throws then failwith "boom" else reply) }))
+                  Subscriptions = PluginSubscriptions.none
+                  PrepareCommit = None
+                  CacheKey = None
+                  Teardown = None }
+                : PluginHandler<unit, unit>
+            )
+
+        let ipc =
+            { fakeIpc () with
+                RunCommand =
+                    fun _ name _ ->
+                        async {
+                            return
+                                match answer with
+                                | Absent -> FsHotWatch.Ipc.unknownCommandReply name
+                                | Throws -> failwith "boom"
+                                | Replies -> reply
+                        } }
+
+        // A log line's timestamp is the one thing two calls may not share.
+        let untimed (stderr: string) =
+            Text.RegularExpressions.Regex.Replace(stderr, @"\d{4}-\d\d-\d\dT[\d:.]+Z ", "")
+
+        let observe (f: unit -> 'a) =
+            let stderr, decided = captureStderr (fun () -> sprintf "%A" (f ()))
+            untimed stderr, decided
+
+        // Every scope command `check`/`confirm` sends, as (what it printed, what it decided).
+        let observeAll (readTestRun, readCheckReach, requestFullSuiteScope, requestFullRun) =
+            [ observe readTestRun
+              observe readCheckReach
+              observe requestFullSuiteScope
+              observe requestFullRun ]
+
+        let originalLevel = FsHotWatch.Logging.logLevel
+
+        try
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+
+            let inProcess =
+                observeAll (
+                    (fun () -> RunOnceCheck.readTestRun host),
+                    (fun () -> RunOnceCheck.readCheckReach host),
+                    (fun () -> RunOnceCheck.requestFullSuiteScope host),
+                    (fun () -> RunOnceCheck.requestFullRun host)
+                )
+
+            let overDaemon =
+                observeAll (
+                    (fun () -> readTestRun ipc "pipe"),
+                    (fun () -> readCheckReach ipc "pipe"),
+                    (fun () -> requestFullSuiteScope ipc "pipe"),
+                    (fun () -> forceFullSuiteRun ipc "pipe")
+                )
+
+            test <@ inProcess = overDaemon @>
+            // Not vacuous: two SILENT refusals would compare equal too. Every refusal says
+            // something — on stderr, or in the reading the verdict carries.
+            if answer <> Replies then
+                test
+                    <@
+                        inProcess
+                        |> List.forall (fun (stderr, decided) -> stderr.Trim() <> "" || decided <> "()")
+                    @>
+        finally
+            FsHotWatch.Logging.setLogLevel originalLevel)
+
 [<Fact(Timeout = 15000)>]
 let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} payload`` () =
     // Doubly broken before: the command name was wrong AND the args were `set-scope

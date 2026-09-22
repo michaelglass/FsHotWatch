@@ -777,83 +777,23 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
             2)
         action
 
-/// Ask the test-prune plugin what the last completed run actually covered — the daemon
-/// twin of `RunOnceCheck.readTestRun`, which documents why the two ways of not getting
-/// an answer are kept apart:
-///
-///   * an UNKNOWN-COMMAND reply → `ScopeUnknown` (no test projects configured);
-///   * a TRANSPORT FAULT → `ScopeUnreadable`, refused in BOTH modes.
-///
-/// Nothing here can round UP to `FullSuite`, and both failures are WARNED about rather
-/// than folded in silently.
+/// The scope commands over this transport — the daemon's IPC socket. The bodies, and
+/// every sentence they print, live ONCE in `ScopeCommands`, shared with `--run-once`;
+/// see there for what each way of not getting an answer means.
+let private scopeSend (ipc: IpcOps) (pipeName: string) : ScopeCommands.Send =
+    ScopeCommands.overIpc (fun name args -> ipc.RunCommand pipeName name args |> Async.RunSynchronously)
+
+/// `ScopeCommands.readTestRun` over the daemon.
 let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
-    try
-        let reply = ipc.RunCommand pipeName TestScopeCommand "" |> Async.RunSynchronously
+    ScopeCommands.readTestRun (scopeSend ipc pipeName)
 
-        if FsHotWatch.Ipc.isUnknownCommandReply reply then
-            FsHotWatch.Logging.warn
-                "cli-confirm"
-                $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a full-suite \
-                   verdict cannot be earned from it. `fshw confirm` will report NO VERDICT."
-
-            IpcParsing.TestRunReport.noTestSuite
-        else
-            IpcParsing.parseTestRunReport reply
-    with ex ->
-        FsHotWatch.Logging.warn
-            "cli-confirm"
-            $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
-               report NO VERDICT rather than pass on a reading it does not have."
-
-        IpcParsing.TestRunReport.ofScopeOnly (
-            ScopeUnreadable $"the `%s{TestScopeCommand}` request to the daemon faulted: %s{ex.Message}"
-        )
-
-/// Ask what `check`'s impact selection WOULD have reached in the run
-/// this `confirm` did not have to escalate.
-///
-/// Costs nothing and RUNS nothing: the answer was computed at the launch chokepoint and
-/// has been sitting in the plugin since. Every way of not getting one is a value, not an
-/// exception — a daemon without the command (an older build, or no test projects), a
-/// fault, a reply this build cannot read — and every one of them reaches the verdict as
-/// "no sample", never as agreement.
+/// `ScopeCommands.readCheckReach` over the daemon.
 let internal readCheckReach (ipc: IpcOps) (pipeName: string) : IpcParsing.CheckReachReading =
-    try
-        let reply = ipc.RunCommand pipeName CheckReachCommand "" |> Async.RunSynchronously
+    ScopeCommands.readCheckReach (scopeSend ipc pipeName)
 
-        if FsHotWatch.Ipc.isUnknownCommandReply reply then
-            IpcParsing.ReachUnavailable
-                $"the daemon has no `%s{CheckReachCommand}` command — it predates the projection, or it \
-                   has no test projects configured"
-        else
-            IpcParsing.parseCheckReach reply
-    with ex ->
-        IpcParsing.ReachUnavailable $"the `%s{CheckReachCommand}` request to the daemon faulted: %s{ex.Message}"
-
-/// Put the daemon's test-prune plugin into full-suite scope for the rest of this
-/// session. Called BEFORE `confirm` triggers its scan, so the test run the scan provokes
-/// is already unfiltered and `confirm` never pays for two runs.
-///
-/// A failure here is NOT fatal on its own — `confirm` does not trust this call's return
-/// value anyway. It trusts `readTestRun`, which reports what actually ran. If the scope
-/// could not be set, the run comes back impact-filtered and the verdict is
-/// `UnearnedScope`. The request is not the evidence.
+/// `ScopeCommands.requestFullSuiteScope` over the daemon.
 let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
-    try
-        let reply =
-            ipc.RunCommand pipeName SetScopeCommand FullSuiteScopeArgs
-            |> Async.RunSynchronously
-
-        if FsHotWatch.Ipc.isUnknownCommandReply reply then
-            eprintfn
-                $"fshw confirm: the daemon has no `%s{SetScopeCommand}` command (no test projects configured). \
-                   The verdict will be refused."
-        else
-            FsHotWatch.Logging.debug "cli-confirm" $"set-scope reply: %s{reply}"
-    with ex ->
-        eprintfn
-            $"fshw confirm: could not put the daemon in full-suite scope (%s{ex.Message}). \
-               The tests will run impact-filtered, and the verdict will be refused."
+    ScopeCommands.requestFullSuiteScope (scopeSend ipc pipeName)
 
 /// Tell the build plugin the next build must be REAL, not a cache replay (see
 /// `IpcParsing.ForceRebuildCommand`). Best-effort and non-fatal by design, exactly like
@@ -875,28 +815,10 @@ let internal forceRealBuild (ipc: IpcOps) (pipeName: string) : unit =
     with ex ->
         FsHotWatch.Logging.warn "cli-confirm" $"the forced rebuild request failed: %s{ex.Message}"
 
-/// Run EVERY configured test project on the daemon, now — `run-tests` with no filter
-/// and no project selection. This is how `fshw confirm` FORCES the run it demands:
-/// `set-scope full` only makes the NEXT run unfiltered, and on a warm daemon whose
-/// impact DB says nothing changed there is no next run.
-/// `CheckVerdict.confirmNeedsFullRun` decides when this fires — never in the inner
-/// loop, and never when the scan already produced a full suite.
-///
-/// Sends no `waitSec`, so the plugin's own default budget applies. An expired budget
-/// does NOT cancel the run (it was already launched; only the wait gave up), and the
-/// caller's `settle` is the authoritative bound.
+/// `ScopeCommands.requestFullRun` over the daemon — how `fshw confirm` FORCES the run it
+/// demands. The caller's `settle` is the authoritative bound.
 let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
-    try
-        let reply = ipc.RunCommand pipeName RunTestsCommand "{}" |> Async.RunSynchronously
-
-        if FsHotWatch.Ipc.isUnknownCommandReply reply then
-            FsHotWatch.Logging.warn
-                "cli-confirm"
-                $"the daemon has no `%s{RunTestsCommand}` command — no tests can be forced"
-        else
-            FsHotWatch.Logging.debug "cli-confirm" $"run-tests reply: %s{reply}"
-    with ex ->
-        FsHotWatch.Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
+    ScopeCommands.requestFullRun (scopeSend ipc pipeName)
 
 /// Force a fresh from-disk scan, then ride the daemon's next scan completion.
 ///

@@ -134,6 +134,22 @@ let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStat
     | StatusView.Running _ -> Glyph.ellipsis
     | StatusView.Idle -> Glyph.idle
 
+/// Fail closed: a `Completed` with NO run record never renders as a bare ✓ — the
+/// absence is stated in words (`completedNoRecordLine`). Not when the ledger has
+/// failing diagnostics: the issue-count line is already honest then, so it takes
+/// precedence. ONE copy for compact and verbose, which used to carry this guard
+/// byte-for-byte apiece.
+let private completedWithoutRecord (warningsAreFailures: bool) (parsed: ParsedPluginStatus) : bool =
+    match parsed.Status with
+    | StatusView.Completed _ ->
+        parsed.LastRun.IsNone
+        && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
+    | _ -> false
+
+/// The line for a `completedWithoutRecord` plugin, compact and verbose alike.
+let private completedNoRecordLine (padded: string) : string =
+    $"  %s{Glyph.warn} %s{padded} %s{Color.dim}{Glyph.sep} %s{CompletedNoRecordText}%s{Color.reset}"
+
 // ----- Compact -----
 
 let private renderCompact
@@ -146,14 +162,7 @@ let private renderCompact
 
     let line =
         match parsed.Status with
-        // Fail closed: no run record ⇒ no bare ✓ (see `CompletedNoRecordText`). When the
-        // ledger has failing diagnostics the issue-count path below is already honest, so
-        // it takes precedence.
-        | StatusView.Completed _ when
-            parsed.LastRun.IsNone
-            && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
-            ->
-            $"  %s{Glyph.warn} %s{padded} %s{Color.dim}{Glyph.sep} %s{CompletedNoRecordText}%s{Color.reset}"
+        | StatusView.Completed _ when completedWithoutRecord warningsAreFailures parsed -> completedNoRecordLine padded
         | StatusView.Completed _ ->
             let withIssues = DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
 
@@ -274,13 +283,7 @@ let private verboseHeader
                     ""
 
             $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{detail}"
-    // Fail closed: Completed with NO run record never renders as a bare ✓ —
-    // the absence is stated in words (see CompletedNoRecordText).
-    | StatusView.Completed _ when
-        parsed.LastRun.IsNone
-        && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
-        ->
-        $"  %s{Glyph.warn} %s{padded} %s{Color.dim}{Glyph.sep} %s{CompletedNoRecordText}%s{Color.reset}"
+    | StatusView.Completed _ when completedWithoutRecord warningsAreFailures parsed -> completedNoRecordLine padded
     | StatusView.Completed _ ->
         let timingPart =
             match terminalTimingStr parsed with

@@ -43,6 +43,53 @@ type BuildOutcome =
     | BuildArtifactsStale of stale: StaleArtifact list * output: string
     | BuildOutputFailed of outputs: string list
 
+/// A `force-rebuild` request, stamped so only a build LAUNCHED after it can spend it.
+///
+/// A bare flag has no identity: any `BuildDone` looks like the one that answered it. A
+/// build already in flight when the request folds read its inputs and wrote `bin/`
+/// before anyone asked, yet its completion would spend the request and the next lookup
+/// would replay the very cache the request exists to refuse. Stamps make that
+/// unrepresentable: requests count up, a build records the count it launched under,
+/// and its completion can spend no request newer than that.
+///
+/// One record suffices for the in-flight build because the framework single-flights
+/// "build" and holds the slot until the result folds: no second build can launch (and
+/// overwrite `LaunchedUnder`) between a build finishing and its `BuildDone` folding.
+type ForceRebuildStamp =
+    {
+        /// How many requests have arrived. Monotonic; the newest request's stamp.
+        Requested: int64
+        /// The `Requested` count when the in-flight (or last) build was launched.
+        LaunchedUnder: int64
+        /// The newest request a COMPLETED build answered.
+        Spent: int64
+    }
+
+    /// A request is owed that no completed build has answered.
+    member this.Pending = this.Requested > this.Spent
+
+module ForceRebuildStamp =
+    let none =
+        { Requested = 0L
+          LaunchedUnder = 0L
+          Spent = 0L }
+
+    /// A new request, newer than every build launched so far.
+    let request (stamp: ForceRebuildStamp) =
+        { stamp with
+            Requested = stamp.Requested + 1L }
+
+    /// A build launched now answers every request made so far — and none made later.
+    let launched (stamp: ForceRebuildStamp) =
+        { stamp with
+            LaunchedUnder = stamp.Requested }
+
+    /// The in-flight build completed: it spends what it launched under, never more.
+    /// `max` because a completion can never un-spend an older answer.
+    let completed (stamp: ForceRebuildStamp) =
+        { stamp with
+            Spent = max stamp.Spent stamp.LaunchedUnder }
+
 /// The build plugin has no in-flight build of its own (the framework's
 /// `RunExclusive "build"` owns single-flighting). `PendingFiles` buffers
 /// file changes that arrived before this plugin's `dependsOn` were satisfied.
@@ -59,9 +106,10 @@ type BuildState =
         /// owed, but MSBuild must not rewrite those outputs until every active run
         /// has emitted its matching completion boundary.
         ActiveTestRuns: Set<Guid>
-        /// The next build must run for real, not replay. Set by the `force-rebuild`
-        /// intent and spent only by a build that actually completed.
-        ForceRebuild: bool
+        /// The next build must run for real, not replay, while `ForceRebuild.Pending`.
+        /// Requested by the `force-rebuild` intent and spent only by the completion of a
+        /// build launched after the request — see `ForceRebuildStamp`.
+        ForceRebuild: ForceRebuildStamp
         /// What the last completed build EARNED, when it failed: a red build runs no
         /// tests and analyses nothing, so it mints neither receipt, and an evidence wait
         /// had nothing to end on over a tree whose answer was already on the screen.
@@ -791,9 +839,23 @@ let createWith
             info "build" "Build slot held by a finished build — keeping this change for its result to build"
             owed
 
+    /// A claim the framework accepted is a build launched NOW, so it answers every
+    /// `force-rebuild` requested so far. A refused one launched nothing and answers none:
+    /// the build holding the slot keeps the stamp it launched under.
+    let launchedOn (claim: SharedRunClaim) (force: ForceRebuildStamp) =
+        match claim with
+        | SharedClaimed
+        | SharedQueued -> ForceRebuildStamp.launched force
+        | LocalSlotBusy -> force
+
     /// `owed` is the input this build is for. A refused claim keeps it owed: see
     /// `retainedOn`.
-    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) (owed: FileChangeKind list) =
+    let startBuild
+        (ctx: PluginCtx<BuildMsg>)
+        (idle: Lifecycle<Idle, BuildOutcome option>)
+        (force: ForceRebuildStamp)
+        (owed: FileChangeKind list)
+        =
         let buildStarted = DateTime.UtcNow
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
@@ -882,7 +944,7 @@ let createWith
           PendingFiles = retainedOn claim owed
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false
+          ForceRebuild = launchedOn claim force
           // A build that is starting has not completed, so it has earned nothing yet: the
           // previous failure stops being the current answer the moment a new build runs.
           BuildFailure = None }
@@ -890,6 +952,7 @@ let createWith
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
         (idle: Lifecycle<Idle, BuildOutcome option>)
+        (force: ForceRebuildStamp)
         (template: string)
         (files: AbsFilePath list)
         (owed: FileChangeKind list)
@@ -901,7 +964,7 @@ let createWith
         let buildable = affected |> List.filter (fun p -> not (isTestProject p))
 
         if buildable.IsEmpty then
-            startBuild ctx idle owed
+            startBuild ctx idle force owed
         else
             let buildableSet = buildable |> Set.ofList
 
@@ -1006,7 +1069,7 @@ let createWith
               PendingFiles = retainedOn claim owed
               SatisfiedDeps = Set.empty
               ActiveTestRuns = Set.empty
-              ForceRebuild = false
+              ForceRebuild = launchedOn claim force
               BuildFailure = None }
 
     let handleSourceChanged
@@ -1023,15 +1086,13 @@ let createWith
         // change leaves a stale DLL for `--no-build` to run → false green (ADR-012).
         match buildTemplate with
         | Some template ->
-            { (startTemplateBuild ctx idle template files owed) with
+            { (startTemplateBuild ctx idle state.ForceRebuild template files owed) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns
-                ForceRebuild = state.ForceRebuild }
+                ActiveTestRuns = state.ActiveTestRuns }
         | None ->
-            { (startBuild ctx idle owed) with
+            { (startBuild ctx idle state.ForceRebuild owed) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns
-                ForceRebuild = state.ForceRebuild }
+                ActiveTestRuns = state.ActiveTestRuns }
 
     let handleProjectChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1039,10 +1100,9 @@ let createWith
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (owed: FileChangeKind list)
         =
-        { (startBuild ctx idle owed) with
+        { (startBuild ctx idle state.ForceRebuild owed) with
             SatisfiedDeps = state.SatisfiedDeps
-            ActiveTestRuns = state.ActiveTestRuns
-            ForceRebuild = state.ForceRebuild }
+            ActiveTestRuns = state.ActiveTestRuns }
 
     let launchPending (ctx: PluginCtx<BuildMsg>) (state: BuildState) =
         if
@@ -1077,7 +1137,7 @@ let createWith
           PendingFiles = []
           SatisfiedDeps = Set.empty
           ActiveTestRuns = Set.empty
-          ForceRebuild = false
+          ForceRebuild = ForceRebuildStamp.none
           // A build that is starting has not completed, so it has earned nothing yet: the
           // previous failure stops being the current answer the moment a new build runs.
           BuildFailure = None }
@@ -1162,7 +1222,10 @@ let createWith
                             (state.PendingFiles @ [ change ])
                 | FileChanged(ProjectChanged _ as change) ->
                     return handleProjectChanged ctx state state.LastBuild (state.PendingFiles @ [ change ])
-                | Custom ForceRebuildRequested -> return { state with ForceRebuild = true }
+                | Custom ForceRebuildRequested ->
+                    return
+                        { state with
+                            ForceRebuild = ForceRebuildStamp.request state.ForceRebuild }
                 | Custom(BuildDone(outcome, entries, elapsed)) ->
                     // The completion message arrives carrying the pre-build idle
                     // lifecycle; advance it through Running ▸ Completed for
@@ -1253,8 +1316,10 @@ let createWith
                             // asked for. Spent HERE rather than where the cache key read
                             // it, so a lookup that never reached a build (a suppressed or
                             // superseded dispatch) cannot spend the request and leave the
-                            // artifacts stale anyway.
-                            ForceRebuild = false
+                            // artifacts stale anyway. And spent only up to the stamp this
+                            // build LAUNCHED under: a build already in flight when the
+                            // request folded never saw it, so it cannot answer it.
+                            ForceRebuild = ForceRebuildStamp.completed state.ForceRebuild
                             BuildFailure = buildFailure }
 
                     return launchPending ctx completedState
@@ -1364,8 +1429,8 @@ let createWith
             // cache, run Update.
             | FileChanged _ when not state.ActiveTestRuns.IsEmpty -> None
             | CommandCompleted result when depNames.Contains result.Name && not state.ActiveTestRuns.IsEmpty -> None
-            | FileChanged _ when state.ForceRebuild -> None
-            | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild -> None
+            | FileChanged _ when state.ForceRebuild.Pending -> None
+            | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild.Pending -> None
 
             // Re-verify the ARTIFACTS at cache-replay time, not only after a real
             // build.
