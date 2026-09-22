@@ -7545,12 +7545,10 @@ let internal createWithLaunchDeadline
                             // when this run is the one that wrote them.
                             let storedTrust = FileFreshness.trustStoredRows storedFreshness storedRows
 
-                            // `planLook` is the whole decision, and it
-                            // names the two ways of contributing nothing separately — so
-                            // the one that HIDES a file's changes cannot go out at the
-                            // same log level as the one that hides nothing. It replaced a
-                            // `(names, bool)` pair whose bool this call site computed and
-                            // then `ignore`d.
+                            // `planLook` is the whole decision. Its only way of
+                            // contributing nothing is the one that HIDES a file's changes,
+                            // and it goes out at warn. It replaced a `(names, bool)` pair
+                            // whose bool this call site computed and then `ignore`d.
                             let changedNames =
                                 match FileFreshness.planLook currentClean storedTrust with
                                 | FileFreshness.Diffable baseline ->
@@ -7581,14 +7579,6 @@ let internal createWithLaunchDeadline
                                         $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, baseline=%A{baseline}): %d{changes.Length} changes, %d{priorSymbols.Length} diffed against, %d{normalizedSymbols.Length} current"
 
                                     changedSymbolNames changes
-                                | FileFreshness.NothingHidden ->
-                                    // The ordinary cold scan. Its full-suite baseline runs
-                                    // anyway, so there is no wider answer being declined.
-                                    Logging.info
-                                        "test-prune"
-                                        $"no baseline and no sidecar record for %s{relPath} (rows=%A{storedRows}); the cold-scan full-suite run covers it"
-
-                                    []
                                 | FileFreshness.FileUnverified ->
                                     // The one arm that DROPS a file's changes. At warn,
                                     // and stating the consequence rather than the
