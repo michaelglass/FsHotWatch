@@ -909,14 +909,17 @@ let ``owner transitions retain their result until actual store publication`` ope
                 None
 
         let blocker = store.Register("held publication writer", (), fun () -> idle ())
-        use entered = new ManualResetEventSlim(false)
+        // Continuations run off the writer: the test body must never resume inside the change it holds.
+        let entered =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
         use release = new ManualResetEventSlim(false)
 
         let held =
             store.ChangeAsync(
                 blocker,
                 fun _ () ->
-                    entered.Set()
+                    entered.TrySetResult(()) |> ignore
 
                     if not (release.Wait(TimeSpan.FromSeconds 15.0)) then
                         invalidOp "fixture never released the held publication"
@@ -925,7 +928,9 @@ let ``owner transitions retain their result until actual store publication`` ope
             )
 
         try
-            Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0), "the held change must enter the writer")
+            // Every wait below is for an ORDER, not a latency: under a starved pool the posting
+            // thread can start arbitrarily late, and only the test's Timeout bounds a hang.
+            do! entered.Task
             let before = store.Snapshot
 
             let transition =
@@ -941,15 +946,16 @@ let ``owner transitions retain their result until actual store publication`` ope
                         | _ -> owner.CompleteRun(Option.get run))
                 )
 
-            Assert.True(
-                SpinWait.SpinUntil((fun () -> store.PendingChanges = 1), TimeSpan.FromSeconds 5.0),
-                "the transition must be queued behind the held change"
-            )
+            // Wait until the transition is queued behind the held change, or has already
+            // returned — the defect this test exists to catch. Then say which.
+            while store.PendingChanges <> 1 && not transition.IsCompleted do
+                do! Task.Delay 1
 
             Assert.False(transition.IsCompleted, "a queued transition cannot return before its publication")
+            Assert.Equal(1, store.PendingChanges)
             Assert.Equal(before.Version, store.Snapshot.Version)
             release.Set()
-            let! next = transition.WaitAsync(TimeSpan.FromSeconds 5.0)
+            let! next = transition
 
             match operation, next with
             | "publish", _ -> owner.SettleEvent event
