@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a client that disconnects mid-call no longer leaves its RPC running for
+  nobody. The IPC server builds one RPC target per connection and cancels it when the
+  connection drops: the call is released and retired from the operation watchdog at
+  once (it no longer shows as in flight), and a `RunCommand` handler's own async runs
+  under that token, so work it does inline stops at its next cancellation point. Work
+  the call only WAITS on is shared and keeps running: plugin runs (including a run a
+  command queued on a plugin's key, e.g. `run-tests`), the daemon-wide terminal and
+  scan waits, triggered builds and re-runs, and formatting on the change agent. One
+  waiter leaving never cancels what another client or the watcher still depends on.
+
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that
