@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a forced `run-tests` that is cancelled — its daemon shutting down, or every
+  client that asked for it gone — now closes the run it opened. Its `finally` emits
+  the `Aborted` `TestRunCompleted` for the `TestRunStarted` it emitted. Before, the
+  RunId stayed in Build's live-run set forever and every later build was deferred.
+  `Aborted` with no results is evidence of nothing: Coverage skips it, a FileCommand
+  `afterTests` trigger matches no results, and TestPrune folds nothing from it.
+- feat: the forced `run-tests` run is declared `PluginWork.cooperativeSafe`, so when
+  every client that asked for it has gone the framework cancels it and reaps its test
+  hosts instead of running the suite to completion for nobody. A cancelled run earns
+  no evidence and removes none: whatever an earlier completed run earned stands.
+
 - Fixed: a test host that could not start refused every later launch on an unchanged
   tree. A refused launch releases the shared build-artifact lease and the next claimant
   is handed whatever the last release left; a host start failure released `Invalid`,
