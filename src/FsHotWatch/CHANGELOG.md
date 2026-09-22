@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.42 - 2026-09-22
+
+- core: the self-incompatible guard now sees FCS's GROUP SEPARATOR
+
+
 ## 0.10.0-alpha.41 - 2026-09-22
 
 - core: recovery attempts are serialised per project, so an in-flight restore is

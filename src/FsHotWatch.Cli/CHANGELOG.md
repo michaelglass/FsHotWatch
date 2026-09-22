@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.59 - 2026-09-22
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.58 - 2026-09-22
 
 - **`fshw stop` no longer reports success for a daemon that is still running.** It
