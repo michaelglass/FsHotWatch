@@ -432,3 +432,46 @@ let ``lint refuses a FileChecked captured against a superseded model`` () =
     test <@ errors |> Map.containsKey removed |> not @>
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+
+// The refusal has two disjuncts and the test above exercises only one of them: a
+// result stamped with a generation that is no longer in force. The other is a result
+// carrying NO generation at all, which the daemon does not produce today but a plugin
+// under test, a replayed cache entry, or a future emitter can. It is refused for a
+// different reason than being out of date — nothing stamped it, so there is no model
+// it can be said to describe, and admitting it would mean trusting a claim no one made.
+[<Fact(Timeout = 20000)>]
+let ``lint refuses a FileChecked that carries no model generation at all`` () =
+    let repoRoot = "/my/repo"
+    let unstamped = "/my/repo/src/Unstamped.fs"
+    let present = "/my/repo/src/Present.fs"
+
+    let host = createModelHost (Unchecked.defaultof<_>) repoRoot
+    let linted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let runner (result: FileCheckResult) =
+        linted.Enqueue(AbsFilePath.value result.File)
+        Lint.LintResult.Success []
+
+    let handler = create (Some repoRoot) None (Some runner) None
+    host.RegisterHandler(handler)
+
+    // The model in force. Nothing is superseded here — the only thing wrong with the
+    // first result is that it claims nothing.
+    host.WorkStore.PublishProjectModel(fixtureModelOf 1L)
+
+    host.EmitFileChecked(
+        { fakeFileCheckResult unstamped with
+            ModelGeneration = None }
+    )
+
+    // Positive control, stamped with the generation in force, emitted second: the
+    // mailbox serializes per-plugin events, so its terminal status proves the
+    // unstamped one was already dequeued rather than merely slow.
+    host.EmitFileChecked(
+        { fakeFileCheckResult present with
+            ModelGeneration = Some 1L }
+    )
+
+    waitForTerminalStatus host "lint" 15000
+
+    test <@ linted |> List.ofSeq = [ present ] @>
