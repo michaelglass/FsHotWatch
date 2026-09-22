@@ -237,15 +237,27 @@ let ``runWithCancellableTimeout cancelled unit releases its lock so the next uni
         gate.Release() |> ignore
 
 [<Fact(Timeout = 20000)>]
-let ``runWithCancellableTimeoutTracked keeps token source alive through late registration`` () =
+let ``an expired deadline keeps its token source alive through a late registration`` () =
     // A synchronous callback can reach its first token-aware Async boundary only
     // after the caller has observed timeout. Disposing the CTS at timeout made that
     // late registration throw ObjectDisposedException on the orphan thread.
-    let registered = new System.Threading.ManualResetEventSlim(false)
+    //
+    // What this test has to establish is an ORDER — the registration happens AFTER the
+    // deadline expired — and the order is now imposed rather than raced. It used to be a
+    // 20ms deadline over a 100ms sleep, which measures the scheduler: on a loaded box the
+    // assertion runs against whichever of the two the machine got to first, and the test
+    // false-reds on a gate that is otherwise green. Here the deadline expires without
+    // consulting the work at all (`fun _ -> false`), and the work is HELD at a gate until
+    // the caller is holding the outcome, so "late" is a fact of the fixture, not of the
+    // clock. `runWithCancellableTimeoutTracked` is a one-line delegation to this
+    // primitive with `task.Wait timeout` as the deadline, so the keep-alive proved here
+    // is the one it gets.
+    use expired = new System.Threading.ManualResetEventSlim(false)
+    use registered = new System.Threading.ManualResetEventSlim(false)
 
     let outcome, completion =
-        runWithCancellableTimeoutTracked (TimeSpan.FromMilliseconds 20.0) (fun ct ->
-            System.Threading.Thread.Sleep 100
+        runWithCancellableDeadline (fun _ -> false) (TimeSpan.FromMilliseconds 20.0) (fun ct ->
+            Assert.True(expired.Wait(TimeSpan.FromSeconds 10.0), "the fixture must release the work")
             use _registration = ct.Register(fun () -> registered.Set())
             registered.Set())
 
@@ -253,7 +265,11 @@ let ``runWithCancellableTimeoutTracked keeps token source alive through late reg
     | WorkTimedOut _ -> ()
     | WorkCompleted _ -> Assert.Fail "expected timeout"
 
-    Assert.True(completion.Wait(TimeSpan.FromSeconds 5.0), "timed-out work never completed")
+    // Only now may the work reach its registration: the deadline has already expired and
+    // the token has already been cancelled.
+    expired.Set()
+
+    Assert.True(completion.Wait(TimeSpan.FromSeconds 10.0), "timed-out work never completed")
     Assert.Equal(System.Threading.Tasks.TaskStatus.RanToCompletion, completion.Status)
     Assert.True(registered.IsSet, "late token registration did not execute")
 
