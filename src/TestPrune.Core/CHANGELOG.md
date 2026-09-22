@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 10.0.0 - 2026-09-23
+
 - fix: a signature-file (`.fsi`) declaration is analyzed as a source occurrence of the
   symbol it declares, under the same canonical name as its implementation. It is no
   longer a separate node in a reserved signature namespace, joined by a bridging edge.
