@@ -615,3 +615,49 @@ let ``an aborted check reports no diagnostic messages`` () =
     // recovery would fire on an interrupted check and re-typecheck a project
     // for no reason.
     test <@ answerMessages FSharpCheckFileAnswer.Aborted |> Seq.isEmpty @>
+
+[<Fact>]
+let ``nothing in the daemon reads symbol uses, so background resolutions stay off`` () =
+    // `keepAllBackgroundResolutions` retains every symbol-use resolution for a
+    // project so `GetAllUsesOfAllSymbolsInFile`, `GetUsesOfSymbolInFile` and the
+    // semantic-classification APIs can be answered later. It was on, and nothing
+    // called any of them — retention proportional to the repository, for a
+    // capability with no consumer.
+    //
+    // This guards the AUDIT rather than the flag: the flag is only safe to leave
+    // off while that remains true. If a rename, find-references or semantic-
+    // highlight feature lands, this test fails and whoever adds it has to turn the
+    // retention back on deliberately and measure what it costs.
+    let sources =
+        Directory.EnumerateFiles(FsHotWatch.Tests.RepoTasks.repoRoot (), "*.fs", SearchOption.AllDirectories)
+        |> Seq.filter (fun path ->
+            let normalized = path.Replace('\\', '/')
+
+            normalized.Contains "/src/"
+            && not (normalized.Contains "/obj/")
+            && not (normalized.Contains "/bin/"))
+        |> Seq.toList
+
+    test <@ not (List.isEmpty sources) @>
+
+    let symbolUseApis =
+        [ "GetAllUsesOfAllSymbolsInFile"
+          "GetUsesOfSymbolInFile"
+          "GetAllUsesOfAllSymbolsInProject"
+          "GetSemanticClassification" ]
+
+    let callers =
+        sources
+        |> List.choose (fun path ->
+            let text = File.ReadAllText path
+
+            let hits =
+                symbolUseApis
+                |> List.filter (fun api -> text.Contains("." + api, StringComparison.Ordinal))
+
+            if List.isEmpty hits then
+                None
+            else
+                Some(Path.GetFileName path, hits))
+
+    test <@ List.isEmpty callers @>
