@@ -661,3 +661,60 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
                 Some(Path.GetFileName path, hits))
 
     test <@ List.isEmpty callers @>
+
+// --- Check-result cache soundness and sizing ---
+
+[<Fact(Timeout = 120000)>]
+let ``a cached check is not served after a file it depends on changes`` () =
+    // The cache key used to be (own bytes, project options). B's bytes and options do
+    // not change when A's signature does, so B was served its old, clean result while
+    // FCS would now report a type error — on every rescan, which is exactly the
+    // from-disk recheck `fshw check` forces to catch what the watcher missed.
+    withTempDir "cache-upstream" (fun tmpDir ->
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+
+        let a = Path.Combine(tmpDir, "A.fs")
+        let b = Path.Combine(tmpDir, "B.fsx")
+        File.WriteAllLines(a, [| "module A"; "let x = 1" |])
+        File.WriteAllLines(b, [| "#load \"A.fs\""; "let y : int = A.x + 1" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                b,
+                SourceText.ofString (File.ReadAllText b),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
+        let pipeline = CheckPipeline(checker, cacheBackend = cache)
+        pipeline.RegisterProject(Path.Combine(tmpDir, "B.fsproj"), options)
+
+        let errorsOf () =
+            match pipeline.CheckFile(AbsFilePath.create b) |> Async.RunSynchronously with
+            | Some { CheckResults = FullCheck r } ->
+                r.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.length
+            | other -> failwith $"expected a full check, got %A{other}"
+
+        // Positive control: B is clean against the original A, and was cached.
+        test <@ errorsOf () = 0 @>
+        test <@ cache.Count >= 1 @>
+
+        File.WriteAllLines(a, [| "module A"; "let x = \"no longer an int\"" |])
+
+        test <@ errorsOf () > 0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``registering projects grows an in-memory cache to the working set`` () =
+    // A cache below the working set gets ~0% hits on a sequential scan (see
+    // CheckCacheTests), so the pipeline — the one place that knows the working set —
+    // sizes it.
+    let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(2)
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+    let files = [ for i in 1..5 -> $"/tmp/ws/F%d{i}.fs" ]
+    pipeline.RegisterProject("/tmp/ws/P.fsproj", dummyOptions "/tmp/ws/P.fsproj" files)
+    pipeline.RegisterProject("/tmp/ws/Q.fsproj", dummyOptions "/tmp/ws/Q.fsproj" (List.take 2 files))
+    // 5 + 2: a file compiled into two projects is two entries (different options).
+    test <@ cache.Capacity >= 7 @>

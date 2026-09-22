@@ -3413,6 +3413,8 @@ module Daemon =
                 | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink, repoRoot = repoRoot)
                 | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot)
 
+            Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache cacheBackend)
+
             let graph = ProjectGraph()
 
             let loader =

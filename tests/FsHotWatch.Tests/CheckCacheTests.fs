@@ -389,3 +389,175 @@ let ``hashDiagnosticsOrFailure success path differs from any failure hash`` () =
     let throwIo () : DiagnosticSignature seq = raise (System.IO.IOException "io-fail")
 
     Assert.NotEqual<string>(hashDiagnosticsOrFailure success, hashDiagnosticsOrFailure throwIo)
+
+// --- upstreamFingerprint: what a file's check result depends on besides its own bytes ---
+
+let private fakeHasher (contents: Map<string, string>) : string -> string =
+    fun path -> contents |> Map.tryFind path |> Option.defaultValue "missing"
+
+let private twoFileOptions =
+    makeProjectOptions "/repo/P.fsproj" [ "/repo/A.fs"; "/repo/B.fs"; "/repo/C.fs" ] []
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint changes when a file EARLIER in the project changes`` () =
+    // B is type-checked against A's signature, so B's cached result is stale once A
+    // changes even though B's own bytes did not.
+    let before =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/A.fs", "a1"; "/repo/B.fs", "b"; "/repo/C.fs", "c" ]))
+            None
+            "/repo/B.fs"
+            twoFileOptions
+
+    let after =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/A.fs", "a2"; "/repo/B.fs", "b"; "/repo/C.fs", "c" ]))
+            None
+            "/repo/B.fs"
+            twoFileOptions
+
+    Assert.NotEqual<string>(before, after)
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint ignores files LATER in the project`` () =
+    // F# compilation order: B cannot see C, so an edit to C must not cost B its entry.
+    let before =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/A.fs", "a"; "/repo/B.fs", "b"; "/repo/C.fs", "c1" ]))
+            None
+            "/repo/B.fs"
+            twoFileOptions
+
+    let after =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/A.fs", "a"; "/repo/B.fs", "b"; "/repo/C.fs", "c2" ]))
+            None
+            "/repo/B.fs"
+            twoFileOptions
+
+    Assert.Equal(before, after)
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint changes when a referenced project's source changes`` () =
+    let lib = makeProjectOptions "/repo/Lib.fsproj" [ "/repo/Lib.fs" ] []
+
+    let app =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [ "-r:/repo/obj/Lib.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/Lib.dll", lib) |] }
+
+    let fp libHash =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/Lib.fs", libHash; "/repo/App.fs", "app" ]))
+            None
+            "/repo/App.fs"
+            app
+
+    Assert.NotEqual<string>(fp "lib1", fp "lib2")
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint changes when a referenced assembly's content changes`` () =
+    // A non-F# reference (a C# project's output, a vendored dll) is read by FCS as
+    // metadata, so its bytes are an input too.
+    let opts =
+        makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [ "-r:/repo/lib/Vendored.dll" ]
+
+    let fp dllHash =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/lib/Vendored.dll", dllHash; "/repo/App.fs", "app" ]))
+            None
+            "/repo/App.fs"
+            opts
+
+    Assert.NotEqual<string>(fp "v1", fp "v2")
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint does not hash assemblies outside the repository`` () =
+    // NuGet and SDK assemblies live at version-qualified paths, so the path (already in
+    // the options hash) identifies their content; hashing hundreds of them per lookup
+    // would spend the CPU the cache exists to save.
+    let hashed = System.Collections.Generic.List<string>()
+
+    let hasher path =
+        hashed.Add path
+        "h"
+
+    let opts =
+        makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [ "-r:/nuget/pkg/1.0/Pkg.dll" ]
+
+    upstreamFingerprint hasher (Some "/repo") "/repo/App.fs" opts |> ignore
+    Assert.DoesNotContain("/nuget/pkg/1.0/Pkg.dll", hashed)
+
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher re-hashes a file whose content changed`` () =
+    withTempDir "content-hasher" (fun dir ->
+        let path = Path.Combine(dir, "A.fs")
+        let hasher = FileContentHasher()
+        File.WriteAllText(path, "let x = 1")
+        let first = hasher.Hash path
+        File.WriteAllText(path, "let x = \"changed\"")
+        Assert.NotEqual<string>(first, hasher.Hash path))
+
+// --- InMemoryCheckCache under a sequential scan ---
+
+let private scanKey (i: int) = makeKey $"file-%d{i}"
+
+let private scanPass (cache: ICheckCacheBackend) (n: int) =
+    let mutable hits = 0
+
+    for i in 0 .. n - 1 do
+        match cache.TryGet(scanKey i) with
+        | Some _ -> hits <- hits + 1
+        | None -> cache.Set (scanKey i) (makeTestResult $"f%d{i}.fs" 1L)
+
+    hits
+
+[<Fact(Timeout = 15000)>]
+let ``an LRU smaller than the working set gets zero hits on a repeated sequential scan`` () =
+    // The pathology this cache was configured into: 500 entries against 1835 files
+    // visited in the same order every scan. Pinned so the sizing below has a reason.
+    let cache = InMemoryCheckCache(500) :> ICheckCacheBackend
+    scanPass cache 1835 |> ignore
+    Assert.Equal(0, scanPass cache 1835)
+
+[<Fact(Timeout = 15000)>]
+let ``EnsureCapacity grows the cache to the working set so a repeated scan hits every file`` () =
+    let cache = InMemoryCheckCache(500)
+    cache.EnsureCapacity 1835
+    let backend = cache :> ICheckCacheBackend
+    scanPass backend 1835 |> ignore
+    Assert.Equal(1835, scanPass backend 1835)
+
+[<Fact(Timeout = 15000)>]
+let ``EnsureCapacity never shrinks a configured size`` () =
+    let cache = InMemoryCheckCache(500)
+    cache.EnsureCapacity 10
+    Assert.Equal(500, cache.Capacity)
+
+[<Fact(Timeout = 15000)>]
+let ``Set drops the superseded entry for the same file and project`` () =
+    // One slot per (file, project): an edit produces a new key, and the old entry can
+    // never be looked up again. Keeping it until LRU pressure found it would hold a
+    // dead typed tree per edit for the life of the daemon.
+    let cache = InMemoryCheckCache(100)
+    let backend = cache :> ICheckCacheBackend
+    backend.Set (makeKey "v1") (makeTestResult "a.fs" 1L)
+    backend.Set (makeKey "v2") (makeTestResult "a.fs" 2L)
+    Assert.Equal(1, cache.Count)
+    Assert.True(backend.TryGet(makeKey "v1").IsNone)
+    Assert.True(backend.TryGet(makeKey "v2").IsSome)
+
+// --- Startup description: an inert cache must say so ---
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache says OFF when there is no backend`` () =
+    // Silence is what let an inert cache read as a working one.
+    Assert.Contains("OFF", describeCheckCache None)
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache names the in-memory bound and that it grows`` () =
+    let text = describeCheckCache (Some(InMemoryCheckCache(500) :> ICheckCacheBackend))
+
+    Assert.Contains("in-memory", text)
+    Assert.Contains("500", text)
+    Assert.Contains("working set", text)
