@@ -137,3 +137,26 @@ let ``no test clears the process-wide SQLite pool`` () =
         |> List.ofArray
 
     test <@ offenders = [] @>
+
+[<Fact(Timeout = 20000)>]
+let ``every source that redirects Console.Error joins the serialized collection`` () =
+    // `Console.SetError` is process-wide: two classes redirecting it in parallel restore
+    // each other's writers, so one class's output lands in the other's capture and the
+    // capturing test asserts against a stranger. The only exclusion that works is the
+    // one every redirector honours, so a redirector outside the collection is a defect
+    // wherever it sits — this went unnoticed in one file out of twelve.
+    //
+    // File granularity, deliberately: the attribute may sit on the module or on a type
+    // inside it, and a file that redirects anywhere needs the serialization everywhere.
+    // Spelled in halves so this guard is not itself a match for what it looks for.
+    let redirect = "Console." + "SetError"
+    let serialized = "LogGlobal" + "CollectionName"
+
+    let unserialized =
+        testProjectSources ()
+        |> Array.filter (fun (_, lines) -> callSites redirect lines |> Array.isEmpty |> not)
+        |> Array.filter (fun (_, lines) -> callSites serialized lines |> Array.isEmpty)
+        |> Array.map fst
+        |> List.ofArray
+
+    test <@ unserialized = [] @>
