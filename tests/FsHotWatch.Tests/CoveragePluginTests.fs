@@ -583,10 +583,12 @@ let ``coverage-ratchet REFUSES to race a check that is reading the file it rewri
         // Let the check settle so the temp dir can be cleaned.
         waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
 
-[<Fact(Timeout = 30000)>]
-let ``a second TestRunCompleted while a check is in flight is skipped, not stacked`` () =
-    // The `SlotBusy` arm of the check trigger: skipping is correct here — the next
-    // completed run re-checks against its own fresh cobertura.
+[<Fact(Timeout = 60000)>]
+let ``triggers refused while a check is in flight are coalesced into one later check`` () =
+    // The `SlotBusy` arm of the check trigger. A refused trigger is KEPT: the runs it
+    // speaks for produced coverage nothing has judged, and no later event re-requests
+    // it. So the holder's result fold runs it — once, however many triggers were
+    // refused, because they all describe the same cobertura on disk.
     withTempDir "coverage-double-trigger" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, defaultThresholdsJson)
@@ -596,6 +598,8 @@ let ``a second TestRunCompleted while a check is in flight is skipped, not stack
 
         emitRunCompleted host
 
+        // With no coverage XML on disk the check holds the slot for its full poll
+        // window, so the triggers below are refused without racing anything.
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
@@ -603,19 +607,17 @@ let ``a second TestRunCompleted while a check is in flight is skipped, not stack
                 | _ -> false)
             10000
 
-        // Second trigger while the first check holds the slot.
+        // Three more triggers while the first check holds the slot.
+        emitRunCompleted host
+        emitRunCompleted host
         emitRunCompleted host
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("coverage") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            20000
+        let settled = waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 45000
+        test <@ settled @>
 
-        // Exactly ONE check cycle ran (one terminal in the run history).
-        test <@ host.GetHistory("coverage").Length = 1 @>
-        waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
+        // The first check, plus ONE for everything refused behind it — not three, and
+        // not the zero the dropped trigger used to leave.
+        test <@ host.GetHistory("coverage").Length = 2 @>)
 
 // ---------------------------------------------------------------------------
 // `coverage-status` — the human-facing answer to "what did coverage decide?".
@@ -755,3 +757,128 @@ let ``the coverage plugin never reads or writes the task cache`` () =
         // both counters stay at zero rather than merely missing.
         test <@ counting.Gets = 0 @>
         test <@ counting.Sets = 0 @>)
+
+// ---------------------------------------------------------------------------
+// A refused claim on "coverage-check" must not DROP the trigger.
+//
+// The key is held from the claim until the run's RESULT FOLD commits, not until
+// the worker finishes: `PluginWorkOwner.completeRun` turns the lane's holder from
+// `Worker` into `Folding`, and `tryClaim` refuses any lane that exists. So a
+// `TestRunCompleted` folded between a check finishing and its `CheckDone`
+// committing is refused while `IsRunning "coverage-check"` reads false — and a
+// refused trigger that is only logged is coverage for the newest test run that is
+// never judged, with nothing left to re-request it.
+//
+// These drive that window directly — the refusal is the stub's answer, not a
+// race to be slept on.
+// ---------------------------------------------------------------------------
+
+module PF = FsHotWatch.PluginFramework
+
+/// A context whose `RunExclusive` answers `claim` and records what it was handed.
+/// `IsRunning` is false throughout: that IS the fold window — no worker is live,
+/// yet the key is held.
+let private stubCoverageCtx
+    (claim: string -> Async<CovPlugin.CoverageMsg> -> PF.RunClaim)
+    : PF.PluginCtx<CovPlugin.CoverageMsg> =
+    { ReportStatus = ignore
+      ReportErrors = fun _ _ -> ()
+      ClearErrors = ignore
+      ClearAllErrors = ignore
+      EmitBuildCompleted = ignore
+      EmitTestRunStarted = ignore
+      EmitTestProgress = ignore
+      EmitTestRunCompleted = ignore
+      EmitCommandCompleted = ignore
+      Checker = Unchecked.defaultof<_>
+      RepoRoot = "/tmp"
+      Post = ignore
+      EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+      StartSubtask = fun _ _ -> ()
+      UpdateSubtask = fun _ _ -> ()
+      EndSubtask = ignore
+      Log = ignore
+      CompleteWithTimeout = ignore
+      RunExclusive = claim
+      RunExclusiveShared = fun _ _ _ _ _ -> failwith "coverage takes no shared lease"
+      IsRunning = fun _ -> false
+      DeclareBoundedWork = PF.BoundedWork.undeclared
+      FcsSuppressedCodes = Set.empty
+      ProjectGraph = PF.ProjectGraphAccessor.none }
+
+/// A completed run that PROVED `scope` — the input the check trigger reads.
+let private runCompleted (scope: RunScope) =
+    let wasFiltered = (scope = RunScope.Partial)
+
+    TestRunCompleted
+        { RunId = Guid.NewGuid()
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList [ "p1", TestsPassed("ok", wasFiltered, TimeSpan.Zero) ]
+          Verification = Ran scope }
+
+[<Fact(Timeout = 15000)>]
+let ``a trigger refused while a finished check's fold holds the key is retained`` () =
+    let handler = CovPlugin.create "/tmp/ratchet.json" "/tmp"
+    let refused = stubCoverageCtx (fun _ _ -> PF.SlotBusy)
+
+    let owed =
+        handler.Update refused handler.Init (runCompleted RunScope.Partial)
+        |> Async.RunSynchronously
+
+    test <@ owed.Owed = Some RunScope.Partial @>
+
+    // Positive control on the same path: an accepted claim owes nothing, so the
+    // retention above is the refusal's doing and not an unconditional write.
+    let accepted =
+        handler.Update (stubCoverageCtx (fun _ _ -> PF.Claimed)) handler.Init (runCompleted RunScope.Partial)
+        |> Async.RunSynchronously
+
+    test <@ accepted.Owed = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``the trigger retained behind a finished check is run by that check's result fold`` () =
+    withTempDir "coverage-owed-drained" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        // One file below the default 100% floor: the drained check has something to
+        // judge, so its verdict names the scope it ran under.
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let handler = CovPlugin.create configPath dir
+
+        // The newer test run arrives while the key is held: impact-FILTERED, unlike
+        // the full-suite run whose fold holds it.
+        let retained =
+            handler.Update (stubCoverageCtx (fun _ _ -> PF.SlotBusy)) handler.Init (runCompleted RunScope.Partial)
+            |> Async.RunSynchronously
+
+        test <@ retained.Owed = Some RunScope.Partial @>
+
+        let mutable scheduled: (string * Async<CovPlugin.CoverageMsg>) option = None
+
+        let holderFold =
+            stubCoverageCtx (fun key work ->
+                scheduled <- Some(key, work)
+                PF.Claimed)
+
+        // The finished check's own result fold: it holds the key, so its claim is the
+        // one that can start the retained trigger.
+        let drained =
+            handler.Update holderFold retained (Custom(CovPlugin.CheckDone(CovPlugin.Passed, TimeSpan.Zero)))
+            |> Async.RunSynchronously
+
+        test <@ drained.Owed = None @>
+        // The holder's own verdict still lands — draining does not eat it.
+        test <@ drained.LastCheckPassed = Some true @>
+
+        match scheduled with
+        | None -> Assert.Fail "the retained trigger must reach a coverage check"
+        | Some(key, work) ->
+            test <@ key = "coverage-check" @>
+
+            // And it checks for the NEWER run: the shortfall is gated by the retained
+            // `Partial` scope (a notice), not by the full-suite holder's (a red).
+            match work |> Async.RunSynchronously with
+            | CovPlugin.CheckDone(CovPlugin.NotGatedFiltered count, _) -> test <@ count = 1 @>
+            | other -> Assert.Fail $"expected the retained Partial trigger's verdict, got {other}")

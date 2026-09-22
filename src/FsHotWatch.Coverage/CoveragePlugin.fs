@@ -37,6 +37,32 @@ type CoverageMsg =
     /// (the framework reported Running at the claim).
     | RatchetDone of message: string * elapsed: System.TimeSpan
 
+/// What the plugin carries between events.
+///
+/// `Owed` exists because the "coverage-check" key is held from the claim until the
+/// run's RESULT FOLD commits — not until the worker finishes. A `TestRunCompleted`
+/// folded in that window has its claim refused while no check is live, and a refused
+/// trigger that is merely logged is work that silently vanishes: nothing re-requests
+/// it, so the latest test run's coverage is never judged. A refused claim keeps the
+/// trigger here and the fold that holds the key drains it.
+type CoverageState =
+    {
+        /// The last COMMITTED check verdict — the answer `coverage-status` gives.
+        /// `None` until a check has run; a ratchet rewrite never touches it.
+        LastCheckPassed: bool option
+        /// The scope of a trigger whose claim was refused, newest wins. A check reads
+        /// whatever Cobertura XML is on disk when it runs, which is the newest run's
+        /// output, so the newest run's scope is the one that describes what it reads.
+        /// Cleared the moment a check for it is claimed.
+        Owed: RunScope option
+    }
+
+[<RequireQualifiedAccess>]
+module CoverageState =
+
+    /// No check has run and nothing is owed.
+    let initial = { LastCheckPassed = None; Owed = None }
+
 /// Decide the gated verdict from a raw ratchet `CheckResult` and what the run
 /// established. Pure, so the gating policy is unit-testable without spinning a
 /// daemon.
@@ -72,13 +98,66 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
 let private runCheck (configPath: string) (xmlPaths: string list) : CheckResult =
     check (loadConfig configPath) (parseFiles xmlPaths)
 
+/// One coverage check: find this run's Cobertura output, judge it, and gate the raw
+/// result by the scope the run PROVED.
+let private checkWork (configPath: string) (searchDir: string) (scope: RunScope) =
+    async {
+        let runStarted = System.DateTime.UtcNow
+        let! xmlPaths = pollForFiles searchDir 50 100
+
+        let result =
+            if List.isEmpty xmlPaths then
+                AllPassed
+            else
+                runCheck configPath xmlPaths
+
+        // No baseline to refresh here: the TestPrune DB is the coverage
+        // high-watermark, ingested (max-merged across projects) per run, and emits
+        // the shared cobertura.
+        return CheckDone(gateVerdict scope result, System.DateTime.UtcNow - runStarted)
+    }
+
+/// Launch a check for `scope`, returning what the launch leaves OWED.
+///
+/// A claim the framework accepted owns the trigger, so nothing is owed. A refused one
+/// means "coverage-check" is held — by a live check, or by a finished check whose
+/// result fold has not committed yet, which is the case `IsRunning` reads as false.
+/// Either way the holder's fold drains what is kept here, so the trigger waits rather
+/// than disappearing.
+let private startCheck
+    (ctx: PluginCtx<CoverageMsg>)
+    (configPath: string)
+    (searchDir: string)
+    (scope: RunScope)
+    : RunScope option =
+    match ctx.RunExclusive "coverage-check" (checkWork configPath searchDir scope) with
+    | Claimed -> None
+    | SlotBusy ->
+        ctx.Log "coverage-check slot held — keeping this trigger for the holder's result fold to run"
+        Some scope
+
+/// Run whatever a refused claim left owed. Called from the folds that HOLD
+/// "coverage-check": a result fold may claim the next run under its own key before it
+/// commits, so this is the one place the retained trigger can actually start.
+let private drainOwed
+    (ctx: PluginCtx<CoverageMsg>)
+    (configPath: string)
+    (searchDir: string)
+    (state: CoverageState)
+    : CoverageState =
+    match state.Owed with
+    | None -> state
+    | Some scope ->
+        { state with
+            Owed = startCheck ctx configPath searchDir scope }
+
 /// <summary>Create a CoveragePlugin handler that checks per-file line and branch coverage
 /// thresholds after each <c>TestRunCompleted</c> event.</summary>
 /// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
 /// <param name="searchDir">Directory tree to search for <c>coverage.cobertura.xml</c> files.</param>
-let create (configPath: string) (searchDir: string) : PluginHandler<bool option, CoverageMsg> =
+let create (configPath: string) (searchDir: string) : PluginHandler<CoverageState, CoverageMsg> =
     { Name = PluginName.create "coverage"
-      Init = None
+      Init = CoverageState.initial
       Subscriptions = Set.singleton SubscribeTestRunCompleted
       CacheKey = None
       Teardown = None
@@ -124,7 +203,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
           PluginCommand.Observe(fun _ctx state _args ->
               async {
                   return
-                      match state with
+                      match state.LastCheckPassed with
                       | None -> "coverage: no check run yet"
                       | Some true -> "coverage: OK"
                       | Some false -> "coverage: FAILED (run `fshw errors` for details)"
@@ -142,34 +221,16 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
                 | Normal, Some scope ->
-                    let claim =
-                        ctx.RunExclusive
-                            "coverage-check"
-                            (async {
-                                let runStarted = System.DateTime.UtcNow
-                                let! xmlPaths = pollForFiles searchDir 50 100
-
-                                let result =
-                                    if List.isEmpty xmlPaths then
-                                        AllPassed
-                                    else
-                                        runCheck configPath xmlPaths
-
-                                // No baseline to refresh here: the TestPrune DB is the
-                                // coverage high-watermark, ingested (max-merged across
-                                // projects) per run, and emits the shared cobertura.
-                                return CheckDone(gateVerdict scope result, System.DateTime.UtcNow - runStarted)
-                            })
-
-                    match claim with
-                    | Claimed -> ()
-                    | SlotBusy ->
-                        // A check (or a ratchet rewrite) is already in flight;
-                        // skipping is correct — the next TestRunCompleted
-                        // re-checks against its own fresh cobertura output.
-                        ctx.Log "coverage check already in flight — skipping this trigger"
-
-                    async { return state }
+                    // A refused claim (a check or a ratchet rewrite holds the key, or a
+                    // finished one's result fold still does) KEEPS this trigger owed;
+                    // the holder's fold runs it. `startCheck` answers with what is left
+                    // owed, so a claim that succeeded clears any older debt this run
+                    // supersedes.
+                    async {
+                        return
+                            { state with
+                                Owed = startCheck ctx configPath searchDir scope }
+                    }
 
             | Custom(RatchetRequested(cfgPath, reply)) ->
                 let work =
@@ -223,7 +284,9 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                     // untouched — a ratchet is not a check.
                     ctx.ReportStatus(PluginStatus.Completed(System.DateTime.UtcNow, RunVerdict.create message elapsed))
 
-                    return state
+                    // This fold holds "coverage-check" until it commits, so a trigger
+                    // refused while the ratchet ran starts here.
+                    return drainOwed ctx configPath searchDir state
                 }
 
             | Custom(CheckDone(Passed, elapsed)) ->
@@ -237,7 +300,16 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                         )
                     )
 
-                    return Some true
+                    // The terminal is reported BEFORE the owed trigger is drained: a
+                    // claim makes this fold hold a live run again, and the status funnel
+                    // drops a terminal reported while one is in flight.
+                    return
+                        drainOwed
+                            ctx
+                            configPath
+                            searchDir
+                            { state with
+                                LastCheckPassed = Some true }
                 }
 
             | Custom(CheckDone(NotGatedFiltered belowFloorCount, elapsed)) ->
@@ -254,7 +326,13 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
 
                     ctx.ReportStatus(PluginStatus.Completed(System.DateTime.UtcNow, RunVerdict.create summary elapsed))
 
-                    return Some true
+                    return
+                        drainOwed
+                            ctx
+                            configPath
+                            searchDir
+                            { state with
+                                LastCheckPassed = Some true }
                 }
 
             | Custom(CheckDone(Failed results, elapsed)) ->
@@ -277,7 +355,14 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
 
                     let summary = $"%d{results.Length} file(s) below threshold"
                     ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
-                    return Some false
+
+                    return
+                        drainOwed
+                            ctx
+                            configPath
+                            searchDir
+                            { state with
+                                LastCheckPassed = Some false }
                 }
 
             | _ -> async { return state } }

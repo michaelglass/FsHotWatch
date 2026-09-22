@@ -36,6 +36,17 @@ let private fsharpLintVersion =
 // checkout could have read anyway.
 let private pluginCacheSalt = "lint-merkle-v2"
 
+/// The generation of the model the host currently publishes, when it is available.
+/// `None` while no model is observable (never discovered, mid-rediscovery, or
+/// unavailable): membership never outlives its model, so nothing can be shown to
+/// belong to the model in force.
+let private currentModelGeneration (ctx: PluginCtx<'Msg>) =
+    match ctx.ProjectGraph.ObserveModel() with
+    | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+    | FsHotWatch.ProjectModel.Observation.Unobserved
+    | FsHotWatch.ProjectModel.Observation.Rediscovering _
+    | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
+
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
 /// content-merkle (file source + tool/config hashes); jj commit_id is not
@@ -117,7 +128,29 @@ let create
       Update =
         fun ctx state event ->
             async {
+                let modelGeneration = currentModelGeneration ctx
+
+                // Lint only a result published against the model this host publishes
+                // NOW. One from a replaced model was admitted before the replacement,
+                // and one with no model was captured against none, so it cannot
+                // describe this one.
+                let notCurrent (published: int64 option) =
+                    published.IsNone || published <> modelGeneration
+
                 match event with
+                // A rediscovery that drops a file clears that file's findings in every
+                // plugin ledger, and it clears them BEFORE the new model is published.
+                // Nothing checks a dropped path again, so an old-model result folded
+                // after that clear re-reports a finding for a file that is no longer in
+                // the build and nothing will ever clear it again. A file the new model
+                // still has is re-checked against it and republishes, so refusing costs
+                // that file nothing.
+                | FileChecked result when notCurrent result.ModelGeneration ->
+                    Logging.debug
+                        "lint"
+                        $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
+
+                    return state
                 | FileChecked result ->
                     let fileStr = AbsFilePath.value result.File
 

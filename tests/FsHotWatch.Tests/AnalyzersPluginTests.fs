@@ -32,7 +32,7 @@ let ``plugin has correct name`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``diagnostics command returns zeroes when no files checked`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -45,7 +45,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``analyzer error path does not crash`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -73,7 +73,7 @@ let ``analyzer error path does not crash`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``analyzer with non-existent path skips loading`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
         create None [ "/tmp/no-such-analyzer-dir-12345" ] None DiagnosticSeverity.Hint
@@ -92,7 +92,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
     System.IO.Directory.CreateDirectory(emptyDir) |> ignore
 
     try
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
         let handler =
             create
@@ -174,7 +174,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -186,7 +186,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
-          ModelGeneration = None }
+          ModelGeneration = Some fixtureModelGeneration }
 
     host.EmitFileChecked(fakeResult)
 
@@ -213,7 +213,7 @@ let ``empty analyzer paths still creates working handler`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``AnalysisFailed custom message sets status to Completed`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -380,6 +380,7 @@ let ``a refused analyzer identity means no cache key, no cache entry, and the an
                 FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = repoRoot) :> FsHotWatch.TaskCache.ITaskCache
 
             let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+            host.WorkStore.PublishProjectModel fixtureModel
             let handler = create (Some repoRoot) [ dir ] None DiagnosticSeverity.Hint
             // The analyzers loaded: the refusal is about the CACHE, not the run.
             test <@ handler.Init.LoadedCount >= 1 @>
@@ -549,6 +550,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -591,6 +593,7 @@ let ``regression: cache replay must not resurrect a stale global findings summar
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -656,6 +659,7 @@ let ``per-file replay WITH findings derives EXACTLY those findings, not a hardco
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -715,6 +719,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -740,7 +745,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
 
 [<Fact(Timeout = 15000)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -760,7 +765,7 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``teardown cancels CTS and disposes resources`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
@@ -779,7 +784,7 @@ let ``teardown cancels CTS and disposes resources`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``analyzers handler times out when work exceeds TimeoutSec`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     // Sleeps well past the 1s timeout, forcing a TimedOut outcome.
     let slowHook () = System.Threading.Thread.Sleep 3000
 
@@ -803,7 +808,7 @@ let ``timed-out synchronous analyzer cannot overlap the next file`` () =
     // Production change that makes this pass: retain the analyzer concurrency
     // permit until non-cooperative timed-out work has actually exited. Merely
     // cancelling its token is insufficient for a synchronous analyzer callback.
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     use release = new System.Threading.ManualResetEventSlim(false)
     let mutable started = 0
     let mutable active = 0
@@ -868,7 +873,7 @@ let ``timed-out synchronous analyzer cannot overlap the next file`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``analyzers skip compile items outside the repo`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     // The hook fires at the START of analysis, so it counts files actually analyzed.
     let mutable analyzedCount = 0
 
@@ -1332,3 +1337,63 @@ let ``isFcsBinaryMismatch names the assembly mismatch and nothing else`` () =
     test <@ isFcsBinaryMismatch (TypeLoadException "FSharpType") @>
     test <@ not (isFcsBinaryMismatch (InvalidOperationException "analyzer bug")) @>
     test <@ not (isFcsBinaryMismatch (exn "boom")) @>
+
+// A rediscovery that drops a file clears that file's findings in EVERY plugin ledger
+// (`rediscoverAndClearRemoved` -> `ClearFileEverywhere`), and it clears them while the
+// discovery coordinator is still `Rediscovering` — before the replacement model is
+// published. A `FileChecked` captured under the OLD model and still sitting in the
+// analyzers mailbox is folded after that clear, and nothing checks a dropped path
+// again: the finding it re-reports is about a file outside the build and stands until
+// the daemon restarts. So the fold must refuse what the current model did not stamp.
+[<Fact(Timeout = 20000)>]
+let ``analyzers refuse a FileChecked captured against a superseded model`` () =
+    let repoRoot = "/my/repo"
+    let removed = "/my/repo/src/Removed.fs"
+    let present = "/my/repo/src/Present.fs"
+
+    // Publishes the fixture model (generation 1) — the model both results below were
+    // captured under.
+    let host = createModelHost (Unchecked.defaultof<_>) repoRoot
+
+    // A throwing hook is the cheapest analyzer that produces a FINDING without loading
+    // a real analyzer assembly: the crash path reports one entry against the file, so
+    // the ledger shows exactly what a superseded fold would have re-added.
+    let mutable analyzedCount = 0
+
+    let hook () =
+        Threading.Interlocked.Increment(&analyzedCount) |> ignore
+        failwith "analyzer boom"
+
+    let handler =
+        createWithSlowHook (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook)
+
+    host.RegisterHandler(handler)
+
+    // The rediscovery lands: generation 2 no longer has Removed.fs, and the host has
+    // already cleared its findings.
+    host.WorkStore.PublishProjectModel(fixtureModelOf 2L)
+    host.ClearFileEverywhere(removed)
+
+    // Queued under generation 1 — the model that still had the file.
+    host.EmitFileChecked(fakeResult removed)
+
+    // Positive control, stamped with the generation now in force. Emitted second, so
+    // its terminal status is a sleep-free sync point: per-plugin events are serialized
+    // by the MailboxProcessor, so the stale one was dequeued before this one completes.
+    host.EmitFileChecked(
+        { fakeResult present with
+            ModelGeneration = Some 2L }
+    )
+
+    waitForTerminalStatus host "analyzers" 15000
+
+    // The superseded result was never analyzed...
+    let analyzed = Threading.Volatile.Read(&analyzedCount)
+    test <@ analyzed = 1 @>
+
+    let errors = host.GetErrorsByPlugin("analyzers")
+
+    // ...so no finding was re-reported for the file the new model dropped...
+    test <@ errors |> Map.containsKey removed |> not @>
+    // ...and the current-generation result still reports its findings.
+    test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>

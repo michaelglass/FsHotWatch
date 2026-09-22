@@ -5171,10 +5171,17 @@ let internal createWithLaunchDeadline
             | Ready -> work
             | Invalid reason -> async { return ArtifactsUnavailable(reason, owed, reply) }
 
+        // What this launch releases into the shared "build-artifacts" lease, which the
+        // next claimant is handed. Only a verdict ABOUT the artifacts may change it.
+        // A refusal that found them unusable carries that invalidity forward, so a
+        // failed build stays sticky until one succeeds. A test host that would not
+        // start says nothing about the build output: it releases the lease as valid,
+        // so the next launch on an unchanged tree runs instead of being refused — with
+        // the build named as the culprit — until something forces a real rebuild.
         let classify =
             function
             | ArtifactsUnavailable(reason, _, _) -> Invalid reason
-            | TestHostUnavailable(reason, _, _) -> Invalid reason
+            | TestHostUnavailable _ -> Ready
             | _ -> Ready
 
         let failureMessage (ex: exn) =

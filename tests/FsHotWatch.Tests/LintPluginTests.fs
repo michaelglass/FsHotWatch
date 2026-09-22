@@ -30,7 +30,7 @@ let ``plugin has correct name`` () =
 // skip; the `includeOutsideRepo` config maps to `None` to disable it.
 [<Fact(Timeout = 20000)>]
 let ``lint skips compile items outside the repo`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     // The runner is reached only for files that pass the skip — count them.
     let mutable lintedCount = 0
@@ -57,7 +57,7 @@ let ``lint skips compile items outside the repo`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``warnings command returns zeroes when no files checked`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None None None None
     host.RegisterHandler(handler)
@@ -74,7 +74,7 @@ let ``LintPlugin with configPath sets up lint params`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``lint error path sets Failed status on null check results`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None None None None
     host.RegisterHandler(handler)
@@ -108,7 +108,7 @@ let ``lint error path sets Failed status on null check results`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``warnings command with args passes through`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None None None None
     host.RegisterHandler(handler)
@@ -122,7 +122,7 @@ let ``warnings command with args passes through`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``lint skips file with null ParseResults without crashing`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create None None None None
     host.RegisterHandler(handler)
@@ -152,7 +152,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``lint handler times out when runner exceeds TimeoutSec`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let slowRunner (_result: FileCheckResult) =
         System.Threading.Thread.Sleep 3000
@@ -175,7 +175,7 @@ let ``lint handler times out when runner exceeds TimeoutSec`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``lint runner returning Failure reports errors and sets Failed status`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let runner (_result: FileCheckResult) =
         Lint.LintResult.Failure(Lint.LintFailure.RunTimeConfigError "bad config")
@@ -198,7 +198,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``lint runner returning Success with warnings reports them to error ledger`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let range = Range.mkRange "Warn.fs" (Position.mkPos 10 4) (Position.mkPos 10 20)
 
@@ -241,7 +241,7 @@ let ``lint runner returning Success with warnings reports them to error ledger``
 
 [<Fact(Timeout = 15000)>]
 let ``lint runner returning Success with no warnings clears errors`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let runner (_result: FileCheckResult) = Lint.LintResult.Success []
 
@@ -270,7 +270,7 @@ let ``lint runner returning Success with no warnings clears errors`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``warnings command reflects warning count after lint with warnings`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
     let range = Range.mkRange "A.fs" (Position.mkPos 1 0) (Position.mkPos 1 5)
 
@@ -364,3 +364,71 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
         (claimedFindings = liveFindings),
         $"lint replay summary must match the live ledger: summary=\"%s{summary}\" claims %d{claimedFindings}, live diagnostics has %d{liveFindings}"
     )
+
+// A rediscovery that drops a file clears that file's findings in EVERY plugin ledger
+// (`rediscoverAndClearRemoved` -> `ClearFileEverywhere`), and it clears them while the
+// discovery coordinator is still `Rediscovering` — before the replacement model is
+// published. A `FileChecked` captured under the OLD model and still sitting in the lint
+// mailbox is folded after that clear, and nothing checks a dropped path again: the
+// finding it re-reports is about a file outside the build and stands until the daemon
+// restarts. So the fold must refuse what the current model did not stamp.
+[<Fact(Timeout = 20000)>]
+let ``lint refuses a FileChecked captured against a superseded model`` () =
+    let repoRoot = "/my/repo"
+    let removed = "/my/repo/src/Removed.fs"
+    let present = "/my/repo/src/Present.fs"
+
+    // Publishes the fixture model (generation 1) — the model both results below were
+    // captured under.
+    let host = createModelHost (Unchecked.defaultof<_>) repoRoot
+
+    let linted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let runner (result: FileCheckResult) =
+        let file = AbsFilePath.value result.File
+        linted.Enqueue file
+        let range = Range.mkRange file (Position.mkPos 1 0) (Position.mkPos 1 5)
+
+        let warning: LintWarning =
+            { Details =
+                { Range = range
+                  Message = "Consider using List.isEmpty"
+                  SuggestedFix = None
+                  TypeChecks = [] }
+              ErrorText = "FL0065"
+              FilePath = file
+              RuleName = "Hints"
+              RuleIdentifier = "FL0065" }
+
+        Lint.LintResult.Success [ warning ]
+
+    let handler = create (Some repoRoot) None (Some runner) None
+    host.RegisterHandler(handler)
+
+    // The rediscovery lands: generation 2 no longer has Removed.fs, and the host has
+    // already cleared its findings.
+    host.WorkStore.PublishProjectModel(fixtureModelOf 2L)
+    host.ClearFileEverywhere(removed)
+
+    // Queued under generation 1 — the model that still had the file.
+    host.EmitFileChecked(fakeFileCheckResult removed)
+
+    // Positive control, stamped with the generation now in force. Emitted second, so
+    // its terminal status is a sleep-free sync point: per-plugin events are serialized
+    // by the MailboxProcessor, so the stale one was dequeued before this one completes.
+    host.EmitFileChecked(
+        { fakeFileCheckResult present with
+            ModelGeneration = Some 2L }
+    )
+
+    waitForTerminalStatus host "lint" 15000
+
+    // The superseded result never reached the linter...
+    test <@ linted |> List.ofSeq = [ present ] @>
+
+    let errors = host.GetErrorsByPlugin("lint")
+
+    // ...so no finding was re-reported for the file the new model dropped...
+    test <@ errors |> Map.containsKey removed |> not @>
+    // ...and the current-generation result still reports its findings.
+    test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>

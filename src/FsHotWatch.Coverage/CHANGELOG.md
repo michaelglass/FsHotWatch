@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix: a coverage check trigger refused by a busy slot is no longer dropped.**
+  The "coverage-check" key is held until a finished check's RESULT FOLD commits,
+  so a `TestRunCompleted` folded in that window was refused and discarded — the
+  newest test run's coverage was never judged and nothing re-requested it. A
+  refused trigger is now kept and run by the fold that holds the key.
+
 ## 0.7.0-alpha.24 - 2026-09-17
 
 - Plugin handlers state what they read and what they commit (breaking plugin API)
