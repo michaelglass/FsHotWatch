@@ -324,6 +324,24 @@ let private markAbsent key (state: LedgerState) =
 /// is re-checked and passes. Thread-safe via MailboxProcessor agent.
 /// Supports optional version-guarded updates: when a version is provided,
 /// stale updates (version < last accepted) are silently ignored.
+/// How long a reader waits for the agent before failing loudly.
+///
+/// `PostAndReply` with no timeout waits FOREVER. A mailbox that stops draining —
+/// a handler that threw, a message whose reply channel is never filled — then
+/// hangs every caller permanently rather than the agent, and these readers are on
+/// the gate's path: an unbounded wait here is a daemon that never answers and a
+/// `check` that never returns.
+///
+/// On expiry `PostAndReply` RAISES, and that is the behaviour this wants. An
+/// agent that cannot answer must not be read as an agent with nothing to say:
+/// returning an empty result on timeout would turn a wedged ledger into a green
+/// verdict, which is the one failure this system must never produce quietly.
+///
+/// Generous on purpose. These are in-memory agents answering from a map; if one
+/// has not replied within this budget it is not slow, it is stuck.
+[<Literal>]
+let private agentReplyTimeoutMs = 30_000
+
 type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string -> unit) =
     let reporters = defaultArg reporters []
 
@@ -585,34 +603,35 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// Snapshot each currently-present plugin/file key with an opaque mutation
     /// revision for a later compare-and-remove operation.
     member internal _.SnapshotKeys() : LedgerKeyRevision list =
-        agent.PostAndReply(fun rc -> SnapshotKeys rc)
+        agent.PostAndReply(((fun rc -> SnapshotKeys rc)), agentReplyTimeoutMs)
 
     /// Remove only keys that have not been reported or cleared since the caller's
     /// snapshot. One mailbox operation makes the comparison and removal atomic.
     member internal _.PruneIfCurrent(candidates: LedgerKeyRevision list) : int =
-        agent.PostAndReply(fun rc -> PruneIfCurrent(candidates, rc))
+        agent.PostAndReply(((fun rc -> PruneIfCurrent(candidates, rc))), agentReplyTimeoutMs)
 
     /// Get all errors grouped by file path. Each entry includes the plugin name.
-    member _.GetAll() : Map<string, (string * ErrorEntry) list> = agent.PostAndReply(fun rc -> GetAll rc)
+    member _.GetAll() : Map<string, (string * ErrorEntry) list> =
+        agent.PostAndReply(((fun rc -> GetAll rc)), agentReplyTimeoutMs)
 
     /// Get errors for a specific plugin only.
     member _.GetByPlugin(pluginName: string) : Map<string, ErrorEntry list> =
-        agent.PostAndReply(fun rc -> GetByPlugin(pluginName, rc))
+        agent.PostAndReply(((fun rc -> GetByPlugin(pluginName, rc))), agentReplyTimeoutMs)
 
     /// Get per-plugin error/warning counts in a single agent roundtrip.
     /// Plugins with no ledger entries are absent from the map.
     member _.GetCountsByPlugin() : Map<string, DiagnosticCounts> =
-        agent.PostAndReply(fun rc -> GetCountsByPlugin rc)
+        agent.PostAndReply(((fun rc -> GetCountsByPlugin rc)), agentReplyTimeoutMs)
 
     /// Get all failing entries grouped by file path, filtered by severity.
     /// When warningsAreFailures is true, both Error and Warning entries are included.
     /// When false, only Error entries are included.
     member _.FailingReasons(warningsAreFailures: bool) : Map<string, (string * ErrorEntry) list> =
-        agent.PostAndReply(fun rc -> FailingReasons(warningsAreFailures, rc))
+        agent.PostAndReply(((fun rc -> FailingReasons(warningsAreFailures, rc))), agentReplyTimeoutMs)
 
     /// True if any failing entries exist (Error, or Warning when warningsAreFailures=true).
     member _.HasFailingReasons(warningsAreFailures: bool) =
-        agent.PostAndReply(fun rc -> HasFailingReasons(warningsAreFailures, rc))
+        agent.PostAndReply(((fun rc -> HasFailingReasons(warningsAreFailures, rc))), agentReplyTimeoutMs)
 
     /// Unhandled exceptions inside the mailbox loop surface here. Subscribe to
     /// observe programming bugs. The default subscriber (wired in

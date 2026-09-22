@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
+  timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
+  ledger, two in the plugin host's status agent — passed no timeout. A mailbox that
+  stops draining then hangs every caller permanently rather than the agent, and these
+  readers are on the gate's path. On expiry the call RAISES, which is the behaviour
+  this wants: an agent that cannot answer must not be read as an agent with nothing
+  to say, because returning an empty result would turn a wedged ledger into a green
+  verdict.
+
+- feat(analyzers): `FSHW-WAIT-002` fails the build on a `PostAndReply` family call
+  with no timeout, in production sources, with a `FSHW-WAIT-002 ok: <reason>` opt-out
+  so the exceptions stay countable. Matched in both AST spellings: a compound
+  receiver folds to `DotGet` and a bare identifier receiver to `LongIdent`, and every
+  real call site is the second — a rule written against `DotGet` alone would have
+  matched nothing and looked like a clean tree.
+
 - perf: a scan dispatches each file once, across tiers as well as within one. The
   scan resolves each tier's files to check thunks in a PER-TIER dictionary, which
   collapses a file two projects in the same tier both compile but cannot see one

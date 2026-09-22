@@ -30,6 +30,24 @@ type PreprocessorsRun =
     }
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
+/// How long a reader waits for the agent before failing loudly.
+///
+/// `PostAndReply` with no timeout waits FOREVER. A mailbox that stops draining —
+/// a handler that threw, a message whose reply channel is never filled — then
+/// hangs every caller permanently rather than the agent, and these readers are on
+/// the gate's path: an unbounded wait here is a daemon that never answers and a
+/// `check` that never returns.
+///
+/// On expiry `PostAndReply` RAISES, and that is the behaviour this wants. An
+/// agent that cannot answer must not be read as an agent with nothing to say:
+/// returning an empty result on timeout would turn a wedged ledger into a green
+/// verdict, which is the one failure this system must never produce quietly.
+///
+/// Generous on purpose. These are in-memory agents answering from a map; if one
+/// has not replied within this budget it is not slow, it is stuck.
+[<Literal>]
+let private agentReplyTimeoutMs = 30_000
+
 type PluginHost
     (
         checker: FSharpChecker,
@@ -542,11 +560,11 @@ type PluginHost
 
     /// Get the status of a specific plugin by name.
     member _.GetStatus(pluginName: string) : PluginStatus option =
-        statusAgent.PostAndReply(fun ch -> GetStatus(pluginName, ch))
+        statusAgent.PostAndReply(((fun ch -> GetStatus(pluginName, ch))), agentReplyTimeoutMs)
 
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> =
-        statusAgent.PostAndReply(fun ch -> GetAllStatuses ch)
+        statusAgent.PostAndReply(((fun ch -> GetAllStatuses ch)), agentReplyTimeoutMs)
 
     /// UTC timestamp of the most recent host activity: an event dispatch or a
     /// plugin status transition. Used by `WaitForComplete` to enforce a

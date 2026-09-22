@@ -366,6 +366,50 @@ module Detect =
             | _ -> None
         | _ -> None
 
+    /// An agent round-trip that can never time out. `PostAndReply` takes the reply
+    /// builder first and the timeout as an optional SECOND argument.
+    ///
+    ///     // FSHW-WAIT-002 ok: <reason>
+    ///     agent.PostAndReply(fun rc -> Snapshot rc)
+    ///
+    /// `rg "FSHW-WAIT-002 ok"` then lists every sanctioned unbounded round-trip.
+    [<Literal>]
+    let ReplyOptOutMarker = "FSHW-WAIT-002 ok"
+
+    let private isReplyCallName (ids: Ident list) =
+        match List.tryLast ids with
+        | Some id ->
+            id.idText = "PostAndReply"
+            || id.idText = "PostAndAsyncReply"
+            || id.idText = "TryPostAndReply"
+            || id.idText = "TryPostAndAsyncReply"
+        | None -> false
+
+    /// True when the call passes a timeout alongside the reply builder. One
+    /// argument is the builder alone; two or more means a timeout was supplied,
+    /// positionally or by name.
+    let private suppliesReplyTimeout (arg: SynExpr) =
+        match unwrapParen arg with
+        | SynExpr.Tuple(exprs = exprs) -> List.length exprs >= 2
+        | _ -> false
+
+    /// A `PostAndReply` family call with no timeout argument.
+    ///
+    /// Matched in BOTH spellings on purpose: a compound receiver
+    /// (`this.statusAgent.PostAndReply …`) folds to `DotGet`, while a bare
+    /// identifier receiver (`agent.PostAndReply …`) folds to `LongIdent` — and
+    /// every real call site in this repository is the second shape, so a rule
+    /// written against `DotGet` alone would match nothing and look like a clean
+    /// tree.
+    let private unboundedReplyInExpr (e: SynExpr) : range option =
+        match e with
+        | SynExpr.App(funcExpr = f; argExpr = arg) when not (suppliesReplyTimeout arg) ->
+            match unwrapParen f with
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when isReplyCallName ids -> Some e.Range
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when isReplyCallName ids -> Some e.Range
+            | _ -> None
+        | _ -> None
+
     let private rangeContains (outer: range) (inner: range) =
         posLeq (outer.StartLine, outer.StartColumn) (inner.StartLine, inner.StartColumn)
         && posLeq (inner.EndLine, inner.EndColumn) (outer.EndLine, outer.EndColumn)
@@ -402,6 +446,11 @@ module Detect =
         /// so the filtering lives in `untrackedSpawns`.
         member val ProcessStarts = ResizeArray<range>()
 
+        /// FSHW-WAIT-002 material: every `PostAndReply` family call with no
+        /// timeout. Whether one is a FINDING depends on the file, which the
+        /// collector cannot see, so the filtering lives in `unboundedAgentReplies`.
+        member val UnboundedReplies = ResizeArray<range>()
+
         override this.WalkExpr(_path, expr) =
             match discardedClaimInExpr expr with
             | Some r -> this.DiscardedClaims.Add r
@@ -409,6 +458,10 @@ module Detect =
 
             match processStartCall expr with
             | Some r -> this.ProcessStarts.Add r
+            | None -> ()
+
+            match unboundedReplyInExpr expr with
+            | Some r -> this.UnboundedReplies.Add r
             | None -> ()
 
             match threadSleepCall expr with
@@ -651,6 +704,36 @@ module Detect =
             |> List.ofSeq
             |> List.filter (fun spawn -> not (optedOut spawn))
 
+    /// FSHW-WAIT-002. Ranges where a production source waits on an agent reply
+    /// with no timeout.
+    ///
+    /// Production sources only, for the same reason the spawn rule is: a test that
+    /// hangs is caught by its own xUnit timeout and dies with the run, while a
+    /// daemon that hangs stays hung and takes every later caller with it.
+    let unboundedAgentReplies (getLine: int -> string) (fileName: string) (input: ParsedInput) : range list =
+        if isTestSource fileName then
+            []
+        else
+            let optedOut (call: range) =
+                let rec scan (line: int) (remaining: int) =
+                    if remaining <= 0 || line < 1 then
+                        false
+                    else
+                        let text = getLine line
+
+                        if text.Contains(ReplyOptOutMarker) then
+                            true
+                        elif line = call.StartLine || text.TrimStart().StartsWith("//") then
+                            scan (line - 1) (remaining - 1)
+                        else
+                            false
+
+                scan call.StartLine 25
+
+            (collect input).UnboundedReplies
+            |> List.ofSeq
+            |> List.filter (fun call -> not (optedOut call))
+
 [<CliAnalyzer("RunClaimDiscardedAnalyzer",
               "A RunClaim (RunExclusive's result) must be matched, never discarded — a dropped SlotBusy is dropped work")>]
 let runClaimDiscardedAnalyzer: Analyzer<CliContext> =
@@ -757,6 +840,40 @@ let untrackedSpawnAnalyzer: Analyzer<CliContext> =
                          warning it produces ('spawned pid N with no registry in scope') arrives far too late to act on. Route it through \
                          ProcessHelper, or, if it detaches on purpose, say so with a `FSHW-SPAWN-001 ok: <reason>` comment on the call or the lines above it."
                       Code = "FSHW-SPAWN-001"
+                      Severity = Severity.Error
+                      Range = range
+                      Fixes = [] })
+        }
+
+[<CliAnalyzer("UnboundedAgentReplyAnalyzer",
+              "In production sources: forbids a PostAndReply family call that cannot time out")>]
+let unboundedAgentReplyAnalyzer: Analyzer<CliContext> =
+    fun (context: CliContext) ->
+        async {
+            // Same defensive shape as the other line-reading rules: an analyzer that
+            // throws takes the whole run's findings with it.
+            let getLine (line: int) =
+                try
+                    if line >= 1 && line <= context.SourceText.GetLineCount() then
+                        context.SourceText.GetLineString(line - 1)
+                    else
+                        ""
+                with _ ->
+                    ""
+
+            return
+                Detect.unboundedAgentReplies getLine context.FileName context.ParseFileResults.ParseTree
+                |> List.map (fun range ->
+                    { Type = "Agent round-trip that cannot time out"
+                      Message =
+                        "this waits on an agent reply with no timeout, so it waits FOREVER. A mailbox that stops draining \
+                         — a handler that threw, a reply channel never filled — then hangs every caller permanently rather than \
+                         the agent, and these round-trips sit on the gate's path: the result is a daemon that never answers and \
+                         a check that never returns. Pass a timeout as the second argument. On expiry the call RAISES, which is \
+                         what you want: an agent that cannot answer must not be read as an agent with nothing to say, because \
+                         returning an empty result would turn a wedged ledger into a green verdict. If waiting forever is \
+                         genuinely correct here, say so with a `FSHW-WAIT-002 ok: <reason>` comment on the call or the lines above it."
+                      Code = "FSHW-WAIT-002"
                       Severity = Severity.Error
                       Range = range
                       Fixes = [] })
