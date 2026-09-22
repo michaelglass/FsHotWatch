@@ -215,6 +215,21 @@ type PluginCtx<'Msg> =
         /// gate or report decision so the user-visible error stream and any
         /// cache-poisoning gates agree on what counts as an error.
         FcsSuppressedCodes: Set<int>
+        /// Declare that this fold is entering ONE long unit of work that will finish no
+        /// plugin event while it runs — a first-run impact attribution over a cold
+        /// database — and bound it. Dispose the handle to end the declaration.
+        ///
+        /// The stall detector reads owned work, and a slow fold and a stuck one look
+        /// identical to it: work owned, nothing `Running`, the host's completed-event
+        /// counter still. Only the plugin knows which it is, so it says so and pays for
+        /// saying it with a deadline. Inside the deadline the work counts as progress;
+        /// past it the declaration's own failure is recorded and the detector names the
+        /// plugin exactly as it names an undeclared stall.
+        ///
+        /// Declaring nothing is the safe default: an undeclared fold is still caught at
+        /// the detector's own threshold. Never wrap a fold whose duration you cannot
+        /// bound — that is the shape the detector exists to catch.
+        DeclareBoundedWork: string -> System.TimeSpan -> System.IDisposable
         /// Read-only project-graph accessor for dependency-aware test selection.
         /// The daemon wires this from its live `ProjectGraph`; tests and the
         /// null-checker daemon leave it at the no-op default (every accessor
@@ -250,6 +265,16 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
         /// target framework couldn't be resolved.
         GetCanonicalDllPath: string -> string option
     }
+
+module BoundedWork =
+    /// The declaration made by a context with no host behind it — test fixtures, and any
+    /// embedder wiring a bare `PluginCtx`. Declaring nothing is the SAFE default, never a
+    /// loophole: an undeclared fold is still caught by the stall detector at its own
+    /// threshold, so a fixture that forgets to supervise loses no detection.
+    let undeclared: string -> System.TimeSpan -> System.IDisposable =
+        fun _ _ ->
+            { new System.IDisposable with
+                member _.Dispose() = () }
 
 module ProjectGraphAccessor =
     /// No-op accessor: no graph wired (tests, null-checker daemon). Every query
@@ -767,6 +792,15 @@ let internal registerHandlerForOwner
 
     let isRunning (key: string) = owner.Snapshot.IsRunning key
 
+    /// The plugin's name is part of the operation name, so the wedge message that names
+    /// an overrun declaration names the plugin that made it.
+    let declareBoundedWork (label: string) (deadline: System.TimeSpan) =
+        SupervisedWork.declare
+            owner.Store
+            SupervisedWork.defaultScheduler
+            $"%s{PluginName.value handler.Name}: %s{label}"
+            deadline
+
     /// The context `Update` receives for one event. `event` names that event, so a claim
     /// it makes can follow the key's result fold.
     let contextFor (event: PluginWorkOwner.WorkId option) : PluginCtx<'Msg> =
@@ -791,6 +825,7 @@ let internal registerHandlerForOwner
           RunExclusive = runExclusive event
           RunExclusiveShared = runExclusiveShared event
           IsRunning = isRunning
+          DeclareBoundedWork = declareBoundedWork
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }
 
@@ -1155,6 +1190,7 @@ let internal registerHandlerForOwner
                                                 SharedQueued
                                             | LocalSlotBusy -> LocalSlotBusy
                                       IsRunning = isRunning
+                                      DeclareBoundedWork = declareBoundedWork
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
 

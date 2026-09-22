@@ -53,6 +53,51 @@ let private requestCancellation (name: string) (source: CancellationTokenSource)
         )
     |> ignore
 
+/// Declare that the caller is entering ONE long unit of work that will finish no plugin
+/// event while it runs — a first-run impact attribution, a cold discovery — and bound it.
+///
+/// The stall detector cannot tell a fold that is merely slow from one that will never
+/// return, because the two look identical: work owned, nothing `Running`, the host's
+/// completed-event counter still. What separates them is not how they look but what will
+/// happen next, and only the caller knows that. So it says so, and pays for saying it with
+/// a deadline: while the declaration is live and inside `deadline` the work counts as
+/// progress; when the deadline expires the operation's own failure is recorded, it stops
+/// counting, and the detector names it exactly as it names an undeclared stall.
+///
+/// Declaring nothing is therefore the SAFE default, not a loophole: an undeclared fold is
+/// still caught at the detector's own threshold. A declaration can only move the bound for
+/// the region it wraps, and only to a bound it states out loud.
+///
+/// Dispose to end it. Disposal is idempotent.
+let declare
+    (store: PluginWorkOwner.Store)
+    (schedule: TimeSpan -> (unit -> unit) -> IDisposable)
+    (name: string)
+    (deadline: TimeSpan)
+    : IDisposable =
+    requireBounded deadline
+    let identity = store.BeginOperation(name, true)
+
+    let timer =
+        schedule deadline (fun () ->
+            store.FailOperation(
+                identity,
+                TimeoutException(
+                    $"declared bounded work '%s{name}' overran its %O{deadline} deadline without returning"
+                )
+            )
+            |> ignore)
+
+    let mutable ended = 0
+
+    { new IDisposable with
+        member _.Dispose() =
+            if Interlocked.Exchange(&ended, 1) = 0 then
+                // Disarm first: a callback that fires after the operation is retired
+                // cannot reopen it, and `FailOperation` refuses it.
+                timer.Dispose()
+                store.EndOperation identity }
+
 /// Run one piece of external work under a finite deadline and a child-process scope.
 ///
 /// - `schedule` arms the deadline before `work` is invoked, so a callback that blocks

@@ -347,3 +347,106 @@ let ``CompletedDispatches keeps moving while a plugin drains a queue`` () =
 
     test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 20_000 @>
     test <@ host.CompletedDispatches() = 10L @>
+
+// ---------------------------------------------------------------------------
+// Slow is not stuck: the cold-start false positive.
+// ---------------------------------------------------------------------------
+//
+// A workspace with no impact database makes test-prune do its largest single unit of
+// work — every symbol in the tree is a seed, and the selection is the whole suite. That
+// runs inside ONE event fold: the plugin owns work, nothing is `Running`, and no plugin
+// event finishes anywhere in the host for as long as it takes. Byte for byte, that is
+// the signature of an event whose handler never returned, and the detector called it
+// WEDGED and failed the check — on work that completed seconds later.
+//
+// The two cases below are the whole distinction, and they differ in ONE thing: whether
+// the fold said what it was doing. `stuckHandler` above is the undeclared stall and is
+// still named in milliseconds. A fold that declares a bounded unit of work is waited on
+// while it is inside that bound — and named the moment it outlives it.
+
+/// One long unit of work, declared and bounded, exactly as a cold attribution does it.
+let private declaringHandler
+    (name: string)
+    (deadline: TimeSpan)
+    (entered: ManualResetEventSlim)
+    (release: ManualResetEventSlim)
+    =
+    { Name = PluginName.create name
+      Init = ()
+      Update =
+        fun ctx state _event ->
+            async {
+                use _bound = ctx.DeclareBoundedWork "cold impact attribution" deadline
+                entered.Set()
+                release.Wait()
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+      PrepareCommit = None
+      CacheKey = None
+      Teardown = None }
+
+[<Fact(Timeout = 60_000)>]
+let ``one long declared unit of work with no host events is not a wedge`` () =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        // A deadline far longer than this test: the work is inside its bound throughout.
+        host.RegisterHandler(declaringHandler "cold-start-plugin" (TimeSpan.FromMinutes 5.0) entered release)
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+
+        // The shape the detector used to get wrong, asserted rather than assumed: work
+        // owned, and no plugin event finishing anywhere in the host.
+        test <@ host.AnyPluginBusy() @>
+        test <@ host.CompletedDispatches() = 0L @>
+
+        // Stall threshold well under the overall timeout: if the detector still fired it
+        // would do so at 300ms, long before the 2s timeout, and the message would say so.
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                Daemon.waitForAllTerminalCore
+                    host
+                    (TimeSpan.FromSeconds 2.0)
+                    (TimeSpan.FromMilliseconds 300.0)
+                    CancellationToken.None
+                |> fun t -> t.GetAwaiter().GetResult())
+
+        // Still waiting — the honest answer — not a diagnosis of a bug that is not there.
+        test <@ not (failure.Message.Contains "WEDGED") @>
+        test <@ failure.Message.Contains "timed out" @>
+    finally
+        release.Set()
+
+[<Fact(Timeout = 60_000)>]
+let ``declared work held past its own deadline still reads as wedged`` () =
+    // The negative control, and the reason a declaration is not a loophole: it buys the
+    // fold the bound it NAMED and not one second more. Outlive it and the detector says
+    // so, naming the plugin, exactly as it does for work that declared nothing.
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        host.RegisterHandler(declaringHandler "overrunning-plugin" (TimeSpan.FromMilliseconds 200.0) entered release)
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                Daemon.waitForAllTerminalCore
+                    host
+                    (TimeSpan.FromSeconds 30.0)
+                    (TimeSpan.FromMilliseconds 400.0)
+                    CancellationToken.None
+                |> fun t -> t.GetAwaiter().GetResult())
+
+        test <@ failure.Message.Contains "WEDGED" @>
+        test <@ failure.Message.Contains "overrunning-plugin" @>
+    finally
+        release.Set()

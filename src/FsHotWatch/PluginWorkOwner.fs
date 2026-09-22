@@ -101,7 +101,15 @@ type private Row =
       Status: RowStatus }
 
 [<NoComparison; NoEquality>]
-type private Operation = { Name: string; Failure: exn option }
+type private Operation =
+    {
+        Name: string
+        Failure: exn option
+        /// Is this operation BOUNDED — declared to run under a finite deadline that will
+        /// fail it if it overruns? An ordinary host operation (a dispatch fan-out, a
+        /// preprocessor pass) is not.
+        Bounded: bool
+    }
 
 /// A typed capability for one row. Only `Store.Register` creates one.
 [<NoComparison; NoEquality>]
@@ -151,6 +159,8 @@ type HostSnapshot =
     member this.SupervisedWorkInFlight =
         this.Rows
         |> Map.exists (fun _ row -> row.Status.Supervised && row.Status.Busy && row.Status.Failure.IsNone)
+        || this.Operations
+           |> Map.exists (fun _ operation -> operation.Bounded && operation.Failure.IsNone)
 
     /// Does any row mint evidence? A host with none — an embedder that registers no
     /// evidence-minting plugin — offers no receipts, which is not the same as owing one.
@@ -378,10 +388,22 @@ type Store() =
     /// Own a named host operation: a preprocessor pass, a dispatch fan-out, a scan.
     /// Starting one clears the retained failures of earlier, finished operations of the
     /// same name. A failure of an overlapping operation that is still live stays.
-    member _.BeginOperation(name: string) : WorkId =
+    member this.BeginOperation(name: string) : WorkId = this.BeginOperation(name, false)
+
+    /// Own a named host operation, saying whether it is BOUNDED — run under a finite
+    /// deadline that will fail it if it overruns. Live bounded work is WORKING however
+    /// quiet it looks, so the stall detector waits on it; once its deadline records a
+    /// failure it stops counting as in flight and the detector names it as before.
+    member _.BeginOperation(name: string, bounded: bool) : WorkId =
         change (fun fresh snapshot ->
             { snapshot with
-                Operations = Map.add fresh { Name = name; Failure = None } snapshot.Operations
+                Operations =
+                    Map.add
+                        fresh
+                        { Name = name
+                          Failure = None
+                          Bounded = bounded }
+                        snapshot.Operations
                 SettledFailures = snapshot.SettledFailures |> Map.filter (fun _ (failed, _) -> failed <> name) },
             fresh)
 
