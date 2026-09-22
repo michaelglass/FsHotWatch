@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- feat: exclusive work carries consumer leases, so a run nobody is waiting for any
+  more stops holding the box. A plugin command runs under its requester's token (the
+  IPC server's per-connection token), and every intent it enqueues is held by that
+  client; the daemon's own wants (the watcher, a plugin's own event, a result fold)
+  hold a lease no client can release. Coalescing merges the consumers, and the
+  daemon's lease absorbs any client's. When the LAST lease is released: a queued
+  intent is withdrawn (its receipt fails; it never folds), and a running run is
+  cancelled only if its work was declared `PluginWork.cooperativeSafe`. Its process
+  scope is reaped, no result folds and no failure is recorded (a result it returns
+  after its processes were killed is dropped too), a shared resource goes back in the
+  state the run was handed, and the status its `Running` displaced is reported
+  again. Undeclared work still runs to completion. One client leaving never cancels
+  work another client or the daemon still needs.
+
 - fix: a client that disconnects mid-call no longer leaves its RPC running for
   nobody. The IPC server builds one RPC target per connection and cancels it when the
   connection drops: the call is released and retired from the operation watchdog at

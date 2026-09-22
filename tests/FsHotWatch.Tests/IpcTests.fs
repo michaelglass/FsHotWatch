@@ -1894,3 +1894,86 @@ let ``a dropped client does not cancel shared work another client still waits on
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
         host.Teardown()
+
+type private E2eMsg =
+    | E2eWanted
+    | E2eDone
+
+/// End to end: a client asks a plugin for a run over a real pipe and is killed while the
+/// run is in flight. The run existed only for that client, so the daemon cancels it —
+/// not merely the RPC waiting on it — and the plugin stops being busy.
+[<Fact(Timeout = 30000)>]
+let ``a dropped client cancels the plugin run it alone asked for`` () =
+    let pipeName = $"fshw-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    use watchdog = quietWatchdog ()
+
+    let started =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let cancelled =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let run =
+        PluginWork.cooperativeSafe (
+            async {
+                use! _onCancel = Async.OnCancel(fun () -> cancelled.TrySetResult(()) |> ignore)
+                started.TrySetResult(()) |> ignore
+                do! Async.Sleep Timeout.Infinite
+                return E2eDone
+            }
+        )
+
+    host.RegisterHandler(
+        { Name = PluginName.create "e2e-leased"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | Custom E2eWanted ->
+                        match ctx.RunExclusive "work" run with
+                        | Claimed -> ()
+                        | SlotBusy -> failwith "the delivered intent holds the key"
+                    | _ -> ()
+
+                    return state
+                }
+          Commands =
+            [ "want",
+              PluginCommand.Request(fun ctx _args ->
+                  async {
+                      do! ctx.EnqueueExclusiveIntent "work" None E2eWanted |> Async.AwaitTask
+                      // Waits for the run's result, as `run-tests` does.
+                      do! Async.Sleep Timeout.Infinite
+                      return "finished"
+                  }) ]
+          Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+    )
+
+    let server =
+        Async.StartAsTask(
+            IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName (defaultRpcConfig host) cts
+        )
+
+    try
+        waitForServer pipeName
+
+        let drop, _reply =
+            startAbandonableCall pipeName "RunCommand" [| box "want"; box "" |]
+
+        test <@ started.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+
+        drop ()
+
+        test <@ cancelled.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) 10000 @>
+        test <@ waitUntilTrue (fun () -> host.GetStatus "e2e-leased" = Some Idle) 10000 @>
+    finally
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
