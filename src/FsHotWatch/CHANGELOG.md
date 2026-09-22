@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.43 - 2026-09-22
+
 - perf: a build no longer re-discovers the tree it was triggered by. A cold scan
   emits a change for every registered file, which starts a build, then waits for
   that build to leave Running before the FCS tiers read the `obj/` refs it
