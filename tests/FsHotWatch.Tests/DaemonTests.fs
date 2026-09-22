@@ -2737,6 +2737,74 @@ let ``a deleted file is pruned the same way a renamed one is`` () =
     test <@ vanished = [ deleted ] @>
     test <@ files = [ "/repo/src/Stays.fs" ] @>
 
+// --- a scan dispatches each file once, across tiers as well as within one ---
+
+[<Fact>]
+let ``a file reached through two different tiers is dispatched by the first of them`` () =
+    // The defect this pins: the per-tier thunk dictionary collapses a file shared by
+    // two projects in the SAME tier, and cannot see one shared across tiers, so the
+    // file is checked and emitted twice and the scan reports checking more files than
+    // it registered.
+    let shared = AbsFilePath.create "/repo/tests/Unit/TestHelpers.fs"
+    let ownFile = AbsFilePath.create "/repo/tests/Unit/UnitTests.fs"
+    let downstream = AbsFilePath.create "/repo/tests/Integration/IntegrationTests.fs"
+
+    // Tier 0 owns the shared helper.
+    let tier0, afterTier0 = Daemon.freshForTier Set.empty [ ownFile; shared ]
+    // Tier 1 links the same helper in via a Compile Include/Link.
+    let tier1, _ = Daemon.freshForTier afterTier0 [ downstream; shared ]
+
+    test <@ tier0 = [ ownFile; shared ] @>
+    test <@ tier1 = [ downstream ] @>
+
+    // The whole point, stated as the scan states it: dispatched never exceeds distinct.
+    let dispatched = tier0 @ tier1
+    test <@ dispatched.Length = 3 @>
+    test <@ dispatched = List.distinct dispatched @>
+
+[<Fact>]
+let ``two projects in the same tier still collapse a file they share`` () =
+    // A positive control for the behaviour that already worked: the fix must not be
+    // purchased by breaking within-tier collapsing, which the thunk dictionary used to
+    // provide on its own.
+    let shared = AbsFilePath.create "/repo/src/Shared.fs"
+    let a = AbsFilePath.create "/repo/src/A.fs"
+    let b = AbsFilePath.create "/repo/src/B.fs"
+
+    let firstProject, afterFirst = Daemon.freshForTier Set.empty [ a; shared ]
+    let secondProject, _ = Daemon.freshForTier afterFirst [ b; shared ]
+
+    test <@ firstProject = [ a; shared ] @>
+    test <@ secondProject = [ b ] @>
+
+[<Fact>]
+let ``a tier of entirely new files dispatches all of them, in order`` () =
+    // Without this, a helper that simply returned [] would satisfy every
+    // no-duplicates assertion above while checking nothing at all — a far worse
+    // failure than the one being fixed, and invisible from the duplicate side alone.
+    let files =
+        [ "/repo/src/A.fs"; "/repo/src/B.fs"; "/repo/src/C.fs" ] |> List.map AbsFilePath.create
+
+    let fresh, seen = Daemon.freshForTier Set.empty files
+
+    test <@ fresh = files @>
+    test <@ Set.count seen = 3 @>
+
+[<Fact>]
+let ``a file an earlier tier never claimed is still available to a later one`` () =
+    // The deps-freshness gate refuses whole projects. Those files are never
+    // dispatched, so they must not be recorded as claimed either, or a later tier
+    // whose project passes the gate would silently skip them and the scan would
+    // report them unchecked.
+    let refused = AbsFilePath.create "/repo/src/GatedOut.fs"
+    let dispatched = AbsFilePath.create "/repo/src/Dispatched.fs"
+
+    // Only the dispatched project's files are threaded through the claim set.
+    let _, afterGatedTier = Daemon.freshForTier Set.empty [ dispatched ]
+    let laterTier, _ = Daemon.freshForTier afterGatedTier [ refused ]
+
+    test <@ laterTier = [ refused ] @>
+
 // --- per-scan measurement is emitted and comparable ---
 
 [<Fact(Timeout = 60000)>]

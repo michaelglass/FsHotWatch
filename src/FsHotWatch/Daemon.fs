@@ -2641,6 +2641,38 @@ module ScanCheckOutcome =
         | ScanCheckOutcome.AllChecked rounds -> rounds
         | ScanCheckOutcome.BudgetExhausted(_, rounds, _) -> rounds
 
+/// The files of a tier that no earlier tier has already claimed, paired with the
+/// extended claim set for the next tier.
+///
+/// The scan walks dependency-ordered tiers and resolves each tier's files to check
+/// thunks in a PER-TIER dictionary. A file compiled into two projects in the SAME
+/// tier collapses in that dictionary. One reached through projects in DIFFERENT
+/// tiers does not: it gets a thunk in each, and is checked and emitted twice. That
+/// is how a scan comes to report checking more files than it registered, while
+/// missing none.
+///
+/// The FIRST tier to reach a file wins it. Tiers are dependency-ordered, so that is
+/// the more upstream project — a helper linked from its owning project into a
+/// downstream one is checked in the project that owns it. Either project's options
+/// would type-check the file; ordering makes WHICH of them deterministic rather than
+/// "whichever tier happened to run last".
+///
+/// Pure, and threaded by the caller, so the cross-tier invariant is testable without
+/// a daemon, a checker or a project graph.
+let internal freshForTier
+    (claimed: Set<AbsFilePath>)
+    (candidates: AbsFilePath list)
+    : AbsFilePath list * Set<AbsFilePath> =
+    let fresh, seen =
+        (([], claimed), candidates)
+        ||> List.fold (fun (fresh, seen) file ->
+            if Set.contains file seen then
+                (fresh, seen)
+            else
+                (file :: fresh, Set.add file seen))
+
+    (List.rev fresh, seen)
+
 /// Drive per-file checks with a bounded retry on `None` results.
 ///
 /// Guards the cold-scan silent-truncation race: while the initial scan runs its FCS
@@ -2933,6 +2965,8 @@ let private performScan
                 // Every cohort file a tier claimed, whether it was then dispatched or
                 // refused by the deps gate. What remains is the uncovered set.
                 let tierCovered = System.Collections.Generic.HashSet<string>()
+                // Scan-scoped, where `tierThunks` below is per-tier. See `freshForTier`.
+                let mutable claimedInScan: Set<AbsFilePath> = Set.empty
 
                 // Check files in parallel tiers based on project dependency graph
                 let tiers = scanTiers
@@ -2961,14 +2995,20 @@ let private performScan
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
+                            // Claimed only where the file is actually dispatched, so a
+                            // file whose project the deps gate refuses stays available
+                            // to a later tier whose project passes it.
+                            let fresh, extended =
+                                projFiles |> List.map AbsFilePath.create |> freshForTier claimedInScan
+
+                            claimedInScan <- extended
+
                             match projectOptions with
                             | Some options ->
-                                for file in projFiles do
-                                    let absFile = AbsFilePath.create file
+                                for absFile in fresh do
                                     tierThunks[absFile] <- pipeline.CheckFileWithOptions(absFile, options, ct)
                             | None ->
-                                for file in projFiles do
-                                    let absFile = AbsFilePath.create file
+                                for absFile in fresh do
                                     tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
                         else
                             skippedCount <- skippedCount + projFiles.Length
