@@ -67,7 +67,7 @@ a compatibility alias. Unknown or incomplete entries fail configuration.
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon, then **wait for its process to actually exit** before reporting anything. Exits 0 (stopped, or nothing was running), 1 (the daemon is still there — it names the pid and what to do about it), or 2 (it could not tell). |
 | `scan` | Re-scan all files. |
-| `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. Exits 0 (tests ran and passed), 1 (failures), or **3** (the run executed **no tests** — see below). |
+| `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`, `--project <name>`, `--allow-full-suite`. Daemon-only. Exits 0 (tests ran and passed), 1 (failures), **2** (refused: a narrowed rerun with no daemon running and no valid full-suite baseline — starting the daemon would run the full suite; `fshw confirm` earns the baseline, `--allow-full-suite` starts it anyway), or **3** (the run executed **no tests** — see below). |
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
 | `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
 | `invalidate` | Clear every cached task result for this workspace without stopping the warm daemon. Repository-side clean commands should call this after removing `bin/` or `obj/`. |
