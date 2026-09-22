@@ -505,6 +505,43 @@ let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) 
     File.WriteAllText(projPath, xml)
 
 // ----------------------------------------------------------------------------
+// SQLite connection pools: clear ONE database's, never the process's.
+//
+// `Microsoft.Data.Sqlite` pools connections per connection string, and a pooled
+// connection outlives the `Database` that opened it — it keeps the file handle, so a
+// later open can be handed a snapshot, or the inode of a deleted file, that the test did
+// not expect. A test that needs its next open to be a genuinely NEW connection therefore
+// drops the pool first.
+//
+// `SqliteConnection.ClearAllPools()` drops the pool of EVERY database in the process,
+// including the ones the ~40 other test classes running in parallel are opening right
+// then. It disposes the native handle under a class mid-open, and that class fails with
+// `ObjectDisposedException 'SQLitePCL.sqlite3'` inside its own `openConnection` — a red
+// naming a test that did nothing wrong, on a tree whose change touched none of it.
+// Clearing BY CONNECTION STRING reaches only the database under test, whose path is the
+// caller's own temp dir, so no other class can be standing in it.
+// ----------------------------------------------------------------------------
+
+/// The connection string `TestPrune.Core` opens `dbPath` with, and therefore the key its
+/// pooled connections live under. Pinned by a test: a key that does not match the
+/// library's clears a different, empty pool, and the clear becomes a silent no-op.
+let sqliteConnectionString (dbPath: string) = $"Data Source=%s{dbPath}"
+
+/// Drop the pooled SQLite connections for `dbPath`, and only for `dbPath`, so the next
+/// open of that database is a new connection.
+let clearSqlitePool (dbPath: string) =
+    use conn =
+        new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString dbPath)
+
+    Microsoft.Data.Sqlite.SqliteConnection.ClearPool(conn)
+
+/// The same clear, for a caller holding the database rather than its path: the key comes
+/// from the library's own connection, so it cannot drift from the one it pools under.
+let clearSqlitePoolForDb (db: TestPrune.Database.Database) =
+    use conn = db.OpenConnection()
+    Microsoft.Data.Sqlite.SqliteConnection.ClearPool(conn)
+
+// ----------------------------------------------------------------------------
 // Seeded test-prune environment scaffolding: `withSeededTestEnv` factors the ~25-line
 // prelude several TestPrunePlugin regression guards share, so they don't accumulate
 // near-duplicate boilerplate.

@@ -264,8 +264,8 @@ module PendingQueueHelpers =
         db.RebuildProjects([ analysis ])
         // The plugin opens its OWN Database.create(dbPath) connection, which a pooled
         // stale snapshot can hide these writes from. Clear the pool so its first read sees
-        // the seed.
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        // the seed — THIS database's pool, not the process's (see `clearSqlitePool`).
+        clearSqlitePoolForDb db
 
     /// A test config whose runner exits 1 iff `flag` exists, and 0 otherwise.
     let flagConfig (tmpDir: string) (project: string) (flag: string) : TestConfig =

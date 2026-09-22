@@ -372,7 +372,7 @@ let ``a symbol with no covering test anywhere is uncovered, and names no unrunna
               IsExtern = false }
 
         db.RebuildProjects([ TestPrune.AstAnalyzer.AnalysisResult.Create([ orphan ], [], []) ])
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        clearSqlitePool dbPath
         seedBaseline tmpDir [ "P1" ]
         let configs = [ runner tmpDir "P1" "P1Tests.fooTest" ]
         PendingVerification.save tmpDir (Set.ofList [ "Lib.lonely" ])
