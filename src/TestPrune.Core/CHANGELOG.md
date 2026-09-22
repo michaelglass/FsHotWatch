@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a signature-file (`.fsi`) declaration is analyzed as a source occurrence of the
+  symbol it declares, under the same canonical name as its implementation. It is no
+  longer a separate node in a reserved signature namespace, joined by a bridging edge.
+  Its own dependencies, such as the types named in a `val` declaration, belong to the
+  signature file. Dead-code reporting shows one occurrence per name and prefers the
+  implementation.
 - fix!: **`SchemaVersion` 13 -> 14.** A symbol is one row with one source occurrence
   per declaring file (`symbol_occurrences`: location and content hash). Dependency
   edges, test methods and attributes record the file whose analysis contributed them,

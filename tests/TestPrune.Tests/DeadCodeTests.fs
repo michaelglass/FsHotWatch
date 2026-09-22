@@ -1798,3 +1798,68 @@ module ``Interface implementation reachability`` =
             // Known limitation: ConcreteHandler is unreachable because there's no direct edge from main
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "App.Handlers.ConcreteHandler" ] @>)
+
+module ``Signature occurrences`` =
+
+    // A symbol declared in a signature file has an occurrence in the `.fsi` and one in
+    // the `.fs`. Dead code reports ONE location per name: the implementation, which is
+    // the code to delete. A declaration with only a signature occurrence must still be
+    // reported at the signature — having nothing to prefer must not drop it.
+
+    let private occurrence name file line =
+        { FullName = name
+          Kind = Function
+          SourceFile = file
+          LineStart = line
+          LineEnd = line
+          ContentHash = ""
+          IsExtern = false }
+
+    let private reported (symbols: SymbolInfo list) =
+        let result, _ = findDeadCode symbols Set.empty Set.empty false
+
+        result.UnreachableSymbols
+        |> List.map (fun s -> s.FullName, s.SourceFile, s.LineStart)
+
+    [<Fact>]
+    let ``a dead name declared in a signature and an implementation reports the implementation`` () =
+        // Signature listed first, so "take the first occurrence" would report the .fsi.
+        let symbols =
+            [ occurrence "Library.calculate" "src/Library.fsi" 4
+              occurrence "Library.calculate" "src/Library.fs" 3 ]
+
+        test <@ reported symbols = [ "Library.calculate", "src/Library.fs", 3 ] @>
+
+    [<Fact>]
+    let ``the implementation is reported whichever occurrence is listed first`` () =
+        let symbols =
+            [ occurrence "Library.calculate" "src/Library.fs" 3
+              occurrence "Library.calculate" "src/Library.FSI" 4 ]
+
+        test <@ reported symbols = [ "Library.calculate", "src/Library.fs", 3 ] @>
+
+    [<Fact>]
+    let ``a dead name declared only in a signature is still reported, at the signature`` () =
+        let symbols =
+            [ occurrence "Library.orphan" "src/Library.fsi" 7
+              occurrence "Library.used" "src/Library.fs" 1 ]
+
+        test <@ reported symbols = [ "Library.orphan", "src/Library.fsi", 7; "Library.used", "src/Library.fs", 1 ] @>
+
+    [<Fact>]
+    let ``through the SQLite store, a signature-and-implementation symbol is reported once, at the implementation`` () =
+        withDb (fun db ->
+            let file path line =
+                AnalysisResult.Create([ occurrence "Library.calculate" path line ], [], [])
+
+            db.RebuildProjects [ file "src/Library.fsi" 4; file "src/Library.fs" 3 ]
+
+            let result, _ = runDeadCode db [] false
+
+            test
+                <@
+                    result.UnreachableSymbols
+                    |> List.map (fun s -> s.FullName, s.SourceFile, s.LineStart) = [ "Library.calculate",
+                                                                                     "src/Library.fs",
+                                                                                     3 ]
+                @>)

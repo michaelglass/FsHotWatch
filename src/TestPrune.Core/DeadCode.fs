@@ -61,8 +61,20 @@ let findDeadCode
     // entry points, modules are containers, a DU case belongs to its parent type, and
     // an extern is defined outside F#. Test sources are excluded wholesale unless
     // `includeTests` asks for them.
+    //
+    // A symbol declared in a signature file has two source occurrences. Only the
+    // implementation is code to delete, so one occurrence per name is reported, and a
+    // `.fsi` occurrence only when the name has no other.
+    let isSignatureOccurrence (s: SymbolInfo) =
+        s.SourceFile.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+
     let unreachableSymbols =
         allSymbols
+        |> List.groupBy _.FullName
+        |> List.map (fun (_, occurrences) ->
+            occurrences
+            |> List.tryFind (isSignatureOccurrence >> not)
+            |> Option.defaultValue occurrences.Head)
         |> List.filter (fun s ->
             unreachableNames |> Set.contains s.FullName
             && not (testMethodNames |> Set.contains s.FullName)

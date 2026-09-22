@@ -2276,75 +2276,12 @@ let private extractResults
 
             let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
 
-            // A signature declaration and its implementation share an FCS identity,
-            // but have different source hashes. Give the declaration its own graph node
-            // and retain canonical names for consumer references. Either side emits the
-            // bridge, so re-indexing an implementation replaces its outgoing edges without
-            // severing the unchanged signature's consumer path.
-            let isSignature =
-                match parseResults.ParseTree with
-                | ParsedInput.SigFile _ -> true
-                | ParsedInput.ImplFile _ -> false
-
-            let signatureName name = SyntheticSignaturePrefix + name
-
+            // A signature (`.fsi`) declaration and its implementation share one FCS
+            // identity, so both files report the same canonical names. Each file's
+            // symbols are that name's source OCCURRENCE in that file — the stores keep
+            // them side by side (see `Database.RebuildProjects`), never as two nodes.
             let declaredKinds =
                 symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
-
-            let declaredNames = declaredKinds |> Map.keys |> Set.ofSeq
-
-            let signatureDeclarations =
-                if isSignature then
-                    declaredNames
-                else
-                    definitions
-                    |> List.choose (fun (symbolInfo, symbolUse) ->
-                        if declaredNames.Contains symbolInfo.FullName then
-                            match symbolUse.Symbol.SignatureLocation with
-                            | Some location when location.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) ->
-                                Some symbolInfo.FullName
-                            | _ -> None
-                        else
-                            None)
-                    |> Set.ofList
-
-            let remap name =
-                if isSignature && declaredNames.Contains name then
-                    signatureName name
-                else
-                    name
-
-            let symbols =
-                symbols
-                |> List.map (fun symbol ->
-                    { symbol with
-                        FullName = remap symbol.FullName })
-
-            let dependencies =
-                (dependencies
-                 |> List.map (fun edge ->
-                     { edge with
-                         FromSymbol = remap edge.FromSymbol
-                         ToSymbol = remap edge.ToSymbol }))
-                @ (signatureDeclarations
-                   |> Set.toList
-                   |> List.map (fun name ->
-                       { FromSymbol = name
-                         ToSymbol = signatureName name
-                         Kind = UsesType
-                         Source = "core" }))
-
-            let parentLinks =
-                parentLinks
-                |> List.map (fun link ->
-                    { Child = remap link.Child
-                      Parent = remap link.Parent })
-
-            let attributes =
-                attributes
-                |> List.map (fun attribute ->
-                    { attribute with
-                        SymbolFullName = remap attribute.SymbolFullName })
 
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need
@@ -2354,7 +2291,8 @@ let private extractResults
             let externSymbols =
                 let seen = System.Collections.Generic.HashSet<string>()
 
-                (dependencies |> List.map _.ToSymbol) @ (signatureDeclarations |> Set.toList)
+                dependencies
+                |> List.map _.ToSymbol
                 |> List.choose (fun name ->
 
                     if seen.Add(name) && not (Set.contains name localSymbolNames) then
