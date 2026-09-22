@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.41 - 2026-09-22
+
 - core: recovery attempts are serialised per project, so an in-flight restore is
   no longer mistaken for a failed one. `MarkAttempted` is written before the
   restore runs and cleared only once it succeeds, so for the whole duration of a

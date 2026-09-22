@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.58 - 2026-09-22
+
 - **`fshw stop` no longer reports success for a daemon that is still running.** It
   counted delivered IPC shutdown requests and printed `✓ Daemon stopped` for any count
   above zero. The pipe going quiet proves the LISTENER is gone, not the process: a

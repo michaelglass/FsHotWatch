@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.35 - 2026-09-22
+
 - analyzers: supply `CliContext.TypedTree` instead of always passing `None`.
   Every analyzer the host ran received `typedTree = None`, so any rule that
   reads the typed tree returned no findings — an analyzer that needs type
