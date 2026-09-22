@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
+  overran — its tree read from `ps` before the kill (afterwards a survivor has been
+  re-parented and cannot be found from the root), the kill's outcome and duration, and the
+  members still alive after it, polled with `kill(pid, 0)` for up to ~2s and stopping as soon
+  as the tree is gone (not `ps -p`, whose exit code is 1 for some live pids on macOS).
+  Survivors are booked with `ProcessRegistry` as leaks. An unreadable table or an unanswered
+  probe is reported as unknown, never as none.
+  `runProcessTo` / `runProcess` are unchanged.
+
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that

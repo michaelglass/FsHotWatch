@@ -537,6 +537,176 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
     describeCoverageGap (examineArtifacts graph)
 
+/// What an overrunning build was building, as far as fshw can say.
+[<RequireQualifiedAccess>]
+type internal BuildScope =
+    /// The configured build command, run as one unit: fshw does not scope it to
+    /// projects, so the command IS the answer to "what was it building".
+    | WholeCommand of commandLine: string
+    /// One root of a `buildTemplate` build: the root in flight, the roots that
+    /// finished before it (with how long each took) and the roots still queued.
+    | TemplateRoot of commandLine: string * root: string * finished: (string * TimeSpan) list * queued: string list
+
+let private finishedProjectLine =
+    Text.RegularExpressions.Regex(@"^[ \t]*(\S+) -> \S", Text.RegularExpressions.RegexOptions.Multiline)
+
+/// The last project MSBuild reported FINISHING (`  Name -> path/Name.dll`). Not the
+/// project in flight — MSBuild names a project when it is done, and a quiet build names
+/// nothing at all — so it is reported as exactly what it is.
+let internal lastFinishedProject (output: string) : string option =
+    finishedProjectLine.Matches(output)
+    |> Seq.tryLast
+    |> Option.map (fun m -> m.Groups[1].Value)
+
+let private clip (text: string) =
+    if text.Length <= 160 then
+        text
+    else
+        text.Substring(0, 157) + "..."
+
+let private renderRow (row: ProcessRow) =
+    $"pid %d{row.Pid} `%s{clip row.Command}`"
+
+let private renderRows (rows: ProcessRow list) =
+    rows |> List.map renderRow |> String.concat ", "
+
+let private seconds (span: TimeSpan) = $"%.1f{span.TotalSeconds}s"
+
+/// The report for a build that overran its budget: `(summary, report)`. The summary is
+/// the one line a status shows; the report answers, one line each, what the budget was
+/// and where it is set, what was being built, how far it got, which process tree the
+/// kill was aimed at, what the kill call did, and what was still running after it.
+///
+/// "killed" is said only when the process table was re-read after the kill and none of
+/// the tree was left. A kill call that returned has sent signals; it has not shown
+/// anything is gone.
+let internal describeBuildOverrun
+    (nodeReuse: string)
+    (scope: BuildScope)
+    (budget: TimeSpan)
+    (elapsed: TimeSpan)
+    (output: string)
+    (teardown: TreeTeardown option)
+    (kill: KillOutcome)
+    : string * string =
+    let budgetText = renderBudget budget
+
+    let subject =
+        match scope with
+        | BuildScope.WholeCommand commandLine -> $"`%s{clip commandLine}`"
+        | BuildScope.TemplateRoot(_, root, _, _) -> $"template build of %s{root}"
+
+    let treeBrief =
+        match teardown with
+        | None -> (renderKillBrief kill).Trim()
+        | Some t ->
+            match t.Tree, t.Survivors with
+            | _, Result.Error _ -> "tree termination UNKNOWN"
+            | Ok tree, Ok survivors when List.isEmpty survivors ->
+                if List.isEmpty tree then
+                    "it had already exited"
+                else
+                    $"killed pid %d{t.RootPid} and its tree (%d{tree.Length} process(es)), none left running"
+            | _, Ok survivors -> $"LEAKED %s{renderRows survivors}"
+
+    let summary =
+        [ $"timed out: %s{subject} overran its %s{budgetText} budget"; treeBrief ]
+        |> List.filter (String.IsNullOrWhiteSpace >> not)
+        |> String.concat "; "
+
+    let building =
+        match scope with
+        | BuildScope.WholeCommand commandLine ->
+            $"  building: `%s{commandLine}` — the whole configured command (fshw does not know which project it had reached)"
+        | BuildScope.TemplateRoot(commandLine, root, finished, queued) ->
+            let finishedText =
+                if List.isEmpty finished then
+                    "none"
+                else
+                    finished
+                    |> List.map (fun (r, took) -> $"%s{r} (%s{seconds took})")
+                    |> String.concat ", "
+
+            let queuedText =
+                if List.isEmpty queued then
+                    "none"
+                else
+                    String.concat ", " queued
+
+            $"  building: template root %s{root} via `%s{commandLine}`; finished before it: %s{finishedText}; queued after it: %s{queuedText}"
+
+    let progress =
+        match lastFinishedProject output with
+        | Some project -> $"  last project the build reported finishing: %s{project}"
+        | None -> "  last project the build reported finishing: none"
+
+    let lastLine =
+        output.Split('\n')
+        |> Array.map _.Trim()
+        |> Array.filter (String.IsNullOrWhiteSpace >> not)
+        |> Array.tryLast
+        |> function
+            | Some line -> $"  last output line: %s{clip line}"
+            | None -> "  last output line: none — the build printed nothing before it was stopped"
+
+    let killLine (took: TimeSpan option) =
+        let tookText =
+            took
+            |> Option.map (fun t -> $" in %d{int t.TotalMilliseconds}ms")
+            |> Option.defaultValue ""
+
+        match kill with
+        | KillOutcome.Killed ->
+            $"  kill: sent the tree kill; the call returned%s{tookText} (what that achieved is the next line)"
+        | KillOutcome.AlreadyExited -> $"  kill: the root had already exited when the kill landed%s{tookText}"
+        | KillOutcome.KillFailed reason ->
+            $"  kill: KILL FAILED%s{tookText} — %s{reason.GetType().Name}: %s{reason.Message}"
+        | KillOutcome.KillTimedOut b ->
+            $"  kill: KILL TIMED OUT — the kill call did not return within %s{renderBudget b}"
+
+    let treeLines =
+        match teardown with
+        | None -> [ "  process tree: not recorded"; killLine None; (renderKill kill).Trim() ]
+        | Some t ->
+            let aimedAt =
+                match t.Tree with
+                | Ok tree when List.isEmpty tree ->
+                    $"  process tree the kill was aimed at: root pid %d{t.RootPid}, no longer in the process table"
+                | Ok tree -> $"  process tree the kill was aimed at (root pid %d{t.RootPid}): %s{renderRows tree}"
+                | Result.Error reason ->
+                    $"  process tree the kill was aimed at: root pid %d{t.RootPid}; its descendants are UNKNOWN — %s{reason}"
+
+            let after =
+                match t.Tree, t.Survivors with
+                | _, Result.Error reason -> $"  after the kill: UNKNOWN whether anything is still running — %s{reason}"
+                | Ok tree, Ok survivors when List.isEmpty survivors ->
+                    if List.isEmpty tree then
+                        "  after the kill: nothing in the tree was left to outlive it"
+                    else
+                        $"  after the kill: none of the %d{tree.Length} process(es) in the tree was still running"
+                | _, Ok survivors ->
+                    $"  after the kill: LEAKED — still running and no longer watched: %s{renderRows survivors}. \
+                      They may hold obj/ locks the next build trips over; kill them by hand."
+
+            [ aimedAt; killLine (Some t.KillTook); after ]
+
+    let report =
+        [ $"Build overran its %s{budgetText} budget after %s{seconds elapsed} and was stopped."
+          $"  budget: %s{budgetText} — `timeoutSec` on this build entry in .fshw.json (unset: the top-level `timeoutSec`)"
+          building
+          // A dotnet reusing an MSBuild node from an earlier build is one way a build
+          // overruns; this is the value fshw SET for the child. A wrapper script can
+          // still override it for what it launches.
+          $"  environment: MSBUILDDISABLENODEREUSE=%s{nodeReuse} set for the child (fshw sets it on every spawn, \
+            so a dotnet launched inside a shell wrapper inherits it unless the wrapper changes it)"
+          progress
+          lastLine
+          yield! treeLines ]
+        |> List.filter (String.IsNullOrWhiteSpace >> not)
+        |> String.concat "\n"
+
+    summary, report
+
 /// Case 1 promotes the corrected detector. The boolean
 /// remains in this compatibility entry point so existing callers still compile, but
 /// there is no longer an unsafe report-only mode: attributable stale output always
@@ -568,6 +738,14 @@ let createWith
     // nothing about liveness and a launch deadline would false-kill a healthy slow
     // build — `buildTimeout` is the bound.
     let buildBounds = ProcessBounds.silent buildTimeout
+
+    // What `runProcess` puts in the child's env for this key: the caller's own value, or
+    // the `1` fshw injects into every spawn. Named in the overrun report.
+    let nodeReuse =
+        mergeDotnetEnv buildCommand environment
+        |> List.tryFind (fun (key, _) -> key = "MSBUILDDISABLENODEREUSE")
+        |> Option.map snd
+        |> Option.defaultValue "1"
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
     // (callers inject `AbsFilePath.create` per file).
@@ -873,29 +1051,46 @@ let createWith
                         "dotnet build"
                         (async {
                             try
-                                let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
+                                let result, teardown =
+                                    runProcessAccounted buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
-                                let (rawOutcome, entries) =
-                                    decideBuildOutcome (isSucceeded result) (outputOf result)
+                                let overrun =
+                                    match result with
+                                    | TimedOut(after, tail, kill) ->
+                                        let summary, report =
+                                            describeBuildOverrun
+                                                nodeReuse
+                                                (BuildScope.WholeCommand $"%s{buildCommand} %s{buildArgs}")
+                                                after
+                                                (DateTime.UtcNow - buildStarted)
+                                                (ProcessOutput.text tail)
+                                                teardown
+                                                kill
+
+                                        Some(summary, report, $"%s{report}\n%s{renderOutput tail}")
+                                    | _ -> None
+
+                                let outputText =
+                                    match overrun with
+                                    | Some(_, _, text) -> text
+                                    | None -> outputOf result
+
+                                let (rawOutcome, entries) = decideBuildOutcome (isSucceeded result) outputText
 
                                 let copyVerifiedOutcome, verifiedEntries =
                                     verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
 
                                 let outcome = verifyAndDemote copyVerifiedOutcome
 
-                                match outcome, result with
-                                | BuildOutputFailed _, TimedOut(after, _, kill) ->
-                                    // The full diagnostic already rides in `entries` (via
-                                    // `outputOf`); this is the one-liner, so it gets the short
-                                    // marker — a build tree we could not kill still holds the
-                                    // obj/ locks the next build is about to trip over.
-                                    let summary =
-                                        $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
-
-                                    ctx.Log "Build TIMED OUT"
-                                    error "build" "Build TIMED OUT"
+                                match outcome, result, overrun with
+                                | BuildOutputFailed _, TimedOut _, Some(summary, report, _) ->
+                                    // The full report rides in `entries` (it heads `outputText`)
+                                    // and in the log; the summary is the status one-liner. Both
+                                    // name the command, the budget and what the kill left behind.
+                                    ctx.Log report
+                                    error "build" report
                                     ctx.CompleteWithTimeout summary
-                                | BuildOutputFailed _, Failed(exitCode, output) ->
+                                | BuildOutputFailed _, Failed(exitCode, output), _ ->
                                     ctx.Log "Build FAILED"
                                     error "build" "Build FAILED"
 
@@ -911,7 +1106,7 @@ let createWith
                                         let detail = formatSilentFailureDiagnostic exitCode (renderOutput output)
                                         ctx.Log detail
                                         error "build" detail
-                                | BuildOutputFailed _, _ ->
+                                | BuildOutputFailed _, _, _ ->
                                     ctx.Log "Build FAILED"
                                     error "build" "Build FAILED"
                                 | _ -> ()
@@ -990,31 +1185,54 @@ let createWith
                                     let mutable failures = []
                                     let mutable outputs = []
 
-                                    for root in roots do
+                                    let mutable finished = []
+
+                                    for index, root in List.indexed roots do
                                         let rootStr = AbsProjectPath.value root
                                         let rendered = template.Replace("{project}", rootStr)
                                         let (cmd, cmdArgs) = splitCommand rendered
                                         ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
+                                        let rootStarted = DateTime.UtcNow
 
                                         try
-                                            let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
-                                            let output = outputOf result
-                                            outputs <- output :: outputs
+                                            let result, teardown =
+                                                runProcessAccounted cmd cmdArgs ctx.RepoRoot environment buildBounds
 
                                             match result with
-                                            | Succeeded _ -> ()
-                                            | TimedOut(after, _, kill) ->
-                                                let summary =
-                                                    $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
+                                            | Succeeded _ -> outputs <- outputOf result :: outputs
+                                            | TimedOut(after, tail, kill) ->
+                                                let queued =
+                                                    roots |> List.skip (index + 1) |> List.map AbsProjectPath.value
 
-                                                ctx.Log $"Template build TIMED OUT for %s{rootStr}"
-                                                error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                                let summary, report =
+                                                    describeBuildOverrun
+                                                        nodeReuse
+                                                        (BuildScope.TemplateRoot(
+                                                            $"%s{cmd} %s{cmdArgs}",
+                                                            rootStr,
+                                                            List.rev finished,
+                                                            queued
+                                                        ))
+                                                        after
+                                                        (DateTime.UtcNow - rootStarted)
+                                                        (ProcessOutput.text tail)
+                                                        teardown
+                                                        kill
+
+                                                let output = $"%s{report}\n%s{renderOutput tail}"
+                                                outputs <- output :: outputs
+                                                ctx.Log report
+                                                error "build" report
                                                 ctx.CompleteWithTimeout summary
                                                 failures <- output :: failures
                                             | Failed _ ->
+                                                let output = outputOf result
+                                                outputs <- output :: outputs
                                                 ctx.Log $"Template build FAILED for %s{rootStr}"
                                                 error "build" $"Template build FAILED for %s{rootStr}"
                                                 failures <- output :: failures
+
+                                            finished <- (rootStr, DateTime.UtcNow - rootStarted) :: finished
                                         with ex ->
                                             ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
                                             error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"

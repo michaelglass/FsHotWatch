@@ -422,6 +422,199 @@ let internal killTreeWith (budget: TimeSpan) (pid: int) (describe: unit -> strin
 
     outcome
 
+/// One row of the OS process table, as `ps -A -o pid=,ppid=,stat=,command=` prints it.
+///
+/// The COMMAND rides along with the pid because a pid alone cannot tell "the same
+/// process, still running" from "a recycled pid, somebody else's process" — and a
+/// report that names a stranger as our leak sends an operator to kill the wrong thing.
+type internal ProcessRow =
+    {
+        Pid: int
+        ParentPid: int
+        /// Exited but not yet reaped. Dead: it holds no lock, port or pipe.
+        Zombie: bool
+        Command: string
+    }
+
+/// Parse `ps -A -o pid=,ppid=,stat=,command=` output. Lines that do not start with two
+/// integers and a state are skipped — a header, a blank line, a truncated tail.
+let internal parseProcessTable (text: string) : ProcessRow list =
+    text.Split('\n')
+    |> Array.choose (fun line ->
+        let parts =
+            line.Trim().Split([| ' '; '\t' |], 4, StringSplitOptions.RemoveEmptyEntries)
+
+        match parts with
+        | [| pid; ppid; stat; command |] ->
+            match Int32.TryParse pid, Int32.TryParse ppid with
+            | (true, p), (true, pp) ->
+                Some
+                    { Pid = p
+                      ParentPid = pp
+                      Zombie = stat.StartsWith "Z"
+                      Command = command.Trim() }
+            | _ -> None
+        | _ -> None)
+    |> Array.toList
+
+/// The root (when it is still in the table) followed by every process descended from
+/// it by parent pid, transitively — the tree `Kill(entireProcessTree = true)` aims at.
+///
+/// A descendant that was re-parented away BEFORE this snapshot (a double fork) is not
+/// in it: the table no longer links it to the root, and nothing else does either.
+let internal treeOf (rootPid: int) (rows: ProcessRow list) : ProcessRow list =
+    let children = rows |> List.groupBy _.ParentPid |> Map.ofList
+
+    let rec below pid =
+        match Map.tryFind pid children with
+        | Some kids -> kids |> List.collect (fun kid -> kid :: below kid.Pid)
+        | None -> []
+
+    let root = rows |> List.filter (fun r -> r.Pid = rootPid)
+    // A zombie has already exited: nothing to aim a kill at, nothing that can leak.
+    root @ below rootPid |> List.filter (fun r -> not r.Zombie)
+
+/// What tearing down a timed-out child's tree ESTABLISHED, as data a caller can put in
+/// its report — the kill outcome alone says what the kill CALL did, not what is left.
+[<NoComparison>]
+type internal TreeTeardown =
+    {
+        RootPid: int
+        /// The root and its descendants read from the process table immediately BEFORE
+        /// the kill. `Error` = the table could not be read, so the tree is unknown.
+        Tree: Result<ProcessRow list, string>
+        /// How long the kill call took (or was waited on, for `KillTimedOut`).
+        KillTook: TimeSpan
+        Kill: KillOutcome
+        /// Members of `Tree` still alive once the settle window is spent. `Error` = we
+        /// could not establish it either way — never to be read as "none".
+        Survivors: Result<ProcessRow list, string>
+    }
+
+/// Snapshot the tree, kill it, then poll each member's liveness until every one is
+/// gone or `settleAttempts` polls have been spent (`pause` between them) — and name
+/// whatever is left. A kill that RETURNED has only delivered signals; the poll is what
+/// establishes that the processes are actually gone, and it stops the moment they are.
+///
+/// The tree must be read BEFORE the kill: afterwards a surviving descendant has been
+/// re-parented to init and no walk from the root can find it.
+///
+/// A member still alive after the window is reported even if it is only a zombie its
+/// parent has not reaped — a parent that is not reaping is itself a survivor, and a
+/// false "nothing leaked" is the failure this exists to prevent. A pid recycled inside
+/// the (sub-second) window would read as alive; that errs the same way.
+///
+/// The table reader, the liveness probe, the pause and the kill are injected so the
+/// throwing, blocking and survivor arms are all deterministic.
+let internal accountTeardown
+    (readTable: unit -> Result<ProcessRow list, string>)
+    (isAlive: int -> Result<bool, string>)
+    (settleAttempts: int)
+    (pause: unit -> unit)
+    (rootPid: int)
+    (kill: unit -> KillOutcome)
+    : TreeTeardown =
+    let tree = readTable () |> Result.map (treeOf rootPid)
+    let clock = Stopwatch.StartNew()
+    let outcome = kill ()
+    let took = clock.Elapsed
+
+    let rec stillAlive (members: ProcessRow list) (alive: ProcessRow list) =
+        match members with
+        | [] -> Ok(List.rev alive)
+        | m :: rest ->
+            match isAlive m.Pid with
+            | Ok true -> stillAlive rest (m :: alive)
+            | Ok false -> stillAlive rest alive
+            | Error reason -> Error $"could not tell whether pid %d{m.Pid} is still running (%s{reason})"
+
+    let rec settle attempt (members: ProcessRow list) =
+        match stillAlive members [] with
+        | Error reason -> Error reason
+        | Ok left when List.isEmpty left || attempt >= settleAttempts -> Ok left
+        | Ok left ->
+            pause ()
+            settle (attempt + 1) left
+
+    let survivors =
+        match tree with
+        | Error reason -> Error $"the process table could not be read before the kill (%s{reason})"
+        | Ok members -> settle 1 members
+
+    { RootPid = rootPid
+      Tree = tree
+      KillTook = took
+      Kill = outcome
+      Survivors = survivors }
+
+[<RequireQualifiedAccess>]
+module private Libc =
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int kill(int pid, int signal)
+
+/// `kill(pid, 0)`: signal 0 delivers nothing and only checks the pid. 0 = it exists;
+/// ESRCH = no such process; EPERM = it exists but is not ours to signal (alive).
+///
+/// Not `ps -p <pid>`: on macOS its EXIT CODE is 1 for a live pid it is not entitled to
+/// inspect, which would read a survivor as dead. Called directly, not via `kill -0`,
+/// so the settle poll spawns nothing on a box that is already overloaded.
+let internal isProcessAlive (pid: int) : Result<bool, string> =
+    try
+        if Libc.kill (pid, 0) = 0 then
+            Ok true
+        else
+            match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+            | 3 -> Ok false // ESRCH
+            | 1 -> Ok true // EPERM
+            | errno -> Error $"kill(%d{pid}, 0) failed with errno %d{errno}"
+    with ex ->
+        Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// How long ONE read of the process table may take. `ps` returns in milliseconds; a
+/// box that cannot answer in this long is reported as "tree unknown", not waited on.
+let internal ProcessTableBudget = TimeSpan.FromSeconds 3.0
+
+/// Read the process table with `ps`, bounded by `ProcessTableBudget`. Spawned directly
+/// rather than through `runProcess`: this runs INSIDE a teardown — possibly one the
+/// process registry is performing at shutdown, when it refuses new admissions.
+let internal readProcessTable () : Result<ProcessRow list, string> =
+    try
+        let psi =
+            ProcessStartInfo(
+                "ps",
+                "-A -o pid=,ppid=,stat=,command=",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            )
+
+        use ps = Process.Start psi
+        let text = ps.StandardOutput.ReadToEndAsync()
+
+        if
+            ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
+            && text.Wait ProcessTableBudget
+        then
+            if ps.ExitCode = 0 then
+                Ok(parseProcessTable text.Result)
+            else
+                Error $"`ps` exited %d{ps.ExitCode}"
+        else
+            (try
+                ps.Kill true
+             with _ ->
+                 ())
+
+            Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+    with ex ->
+        Error $"`ps` could not run: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// Settle window after a tree kill: up to `SettleAttempts` liveness polls, `SettlePause`
+/// apart, ending early the moment the tree is gone. A SIGKILLed process is gone in
+/// milliseconds; one still alive after ~2s is not dying.
+let internal SettleAttempts = 40
+let internal SettlePause = TimeSpan.FromMilliseconds 50.0
+
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything
 /// else is a capture we cannot vouch for.
@@ -898,14 +1091,19 @@ let internal killIfUndecided (kill: unit -> 'Killed) (decide: unit -> 'T) : 'T =
 /// it may not turn a complete drain into a `DrainTimedOut` (the pump's own
 /// `failure` latch means "the STREAM died"), and a full disk may not fail a test
 /// run. The first throw is logged; the rest are silent.
-let runProcessTo
+///
+/// `accounted`: when true, a timeout's teardown also snapshots the process tree before
+/// the kill and names its survivors after it (`accountTeardown`), returned alongside
+/// the outcome. `runProcessTo` passes false; `runProcessAccounted` passes true.
+let internal runProcessCore
+    (accounted: bool)
     (sink: (string -> unit) option)
     (command: string)
     (args: string)
     (workDir: string)
     (env: (string * string) list)
     (bounds: ProcessBounds)
-    : ProcessOutcome =
+    : ProcessOutcome * TreeTeardown option =
     let timeout = bounds.Timeout
     let launchDeadline = bounds.LaunchDeadline
 
@@ -1011,78 +1209,138 @@ let runProcessTo
     // kill's OUTCOME is returned, never discarded: a tree we could not tear down
     // is still running. The policy — including the teardown budget that keeps a
     // blocked kill from wedging the whole run — lives in `killTreeWith`.
+    let describe () = $"`%s{command} %s{args}` (pid %d{pid})"
+
+    let plainKill () : KillOutcome =
+        killTreeWith TeardownBudget pid describe (fun () -> proc.Kill(entireProcessTree = true))
+
+    let teardown: TreeTeardown option ref = ref None
+
+    // The accounted kill: same policy, bracketed by process-table reads so the caller
+    // can NAME the tree and what survived it. Survivors are booked with the registry,
+    // exactly like a kill that failed outright — they are just as unwatched.
     let killTree () : KillOutcome =
-        killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
-            proc.Kill(entireProcessTree = true))
+        if accounted then
+            let t =
+                accountTeardown
+                    readProcessTable
+                    isProcessAlive
+                    SettleAttempts
+                    (fun () -> Thread.Sleep SettlePause)
+                    pid
+                    plainKill
+
+            match t.Survivors with
+            | Ok survivors ->
+                for s in survivors do
+                    ProcessRegistry.reportLeak
+                        s.Pid
+                        $"`%s{s.Command}` (pid %d{s.Pid}, in the tree of %s{describe ()})"
+                        "it was still running after the tree kill"
+            | Error _ -> ()
+
+            teardown.Value <- Some t
+            t.Kill
+        else
+            plainKill ()
 
     let pollMs = 250
 
-    try
-        let stdoutTask, stderrTask, outcome =
-            killIfUndecided killTree (fun () ->
-                let stdoutTask = pump proc.StandardOutput
-                let stderrTask = pump proc.StandardError
+    let outcome =
+        try
+            let stdoutTask, stderrTask, outcome =
+                killIfUndecided killTree (fun () ->
+                    let stdoutTask = pump proc.StandardOutput
+                    let stderrTask = pump proc.StandardError
 
-                // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
-                // the instant the child exits (so completion is observed promptly) but
-                // caps at `pollMs` so the launch/overall deadlines are still checked
-                // regularly. `observe` reads the independent liveness handle
-                // (`HasExited`) — the poll that closes the machine-sleep hole where a
-                // single blocking wait never returned.
-                let observe () =
-                    proc.HasExited, (Volatile.Read &sawOutput = 1)
+                    // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
+                    // the instant the child exits (so completion is observed promptly) but
+                    // caps at `pollMs` so the launch/overall deadlines are still checked
+                    // regularly. `observe` reads the independent liveness handle
+                    // (`HasExited`) — the poll that closes the machine-sleep hole where a
+                    // single blocking wait never returned.
+                    let observe () =
+                        proc.HasExited, (Volatile.Read &sawOutput = 1)
 
-                let sleep ms = proc.WaitForExit(ms: int) |> ignore
+                    let sleep ms = proc.WaitForExit(ms: int) |> ignore
 
-                stdoutTask,
-                stderrTask,
-                launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout)
+                    stdoutTask,
+                    stderrTask,
+                    launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout)
 
-        // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
-        // instant it exits (returns in ms); only a grandchild holding the pipe makes
-        // this block, and then only for the window. An expired window rides out on the
-        // value as `DrainTimedOut` so it cannot be mistaken for a child that said
-        // nothing.
-        let drainPumps () : ProcessOutput =
-            let waitReturned =
-                Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
+            // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
+            // instant it exits (returns in ms); only a grandchild holding the pipe makes
+            // this block, and then only for the window. An expired window rides out on the
+            // value as `DrainTimedOut` so it cannot be mistaken for a child that said
+            // nothing.
+            let drainPumps () : ProcessOutput =
+                let waitReturned =
+                    Task.WaitAll(
+                        [| stdoutTask :> Task; stderrTask :> Task |],
+                        int PostExitDrainWindow.TotalMilliseconds
+                    )
 
-            classifyDrain
-                waitReturned
-                (fun () -> stdoutTask.Result)
-                (fun () -> stderrTask.Result)
-                (drainedOutput ())
-                PostExitDrainWindow
+                classifyDrain
+                    waitReturned
+                    (fun () -> stdoutTask.Result)
+                    (fun () -> stderrTask.Result)
+                    (drainedOutput ())
+                    PostExitDrainWindow
 
-        match outcome with
-        | LaunchOutcome.Exited ->
-            let out = drainPumps ()
+            match outcome with
+            | LaunchOutcome.Exited ->
+                let out = drainPumps ()
 
-            if proc.ExitCode = 0 then
-                Succeeded out
-            else
-                Failed(proc.ExitCode, out)
-        | LaunchOutcome.TimedOut ->
-            let killed = killTree ()
-            TimedOut(timeout, drainPumps (), killed)
-        | LaunchOutcome.Stalled ->
-            // The exception below is the diagnostic; a kill that FAILED here is
-            // still logged by `killTree` itself, so the leaked tree is reported even
-            // though this arm throws.
-            killTree () |> ignore
+                if proc.ExitCode = 0 then
+                    Succeeded out
+                else
+                    Failed(proc.ExitCode, out)
+            | LaunchOutcome.TimedOut ->
+                let killed = killTree ()
+                TimedOut(timeout, drainPumps (), killed)
+            | LaunchOutcome.Stalled ->
+                // The exception below is the diagnostic; a kill that FAILED here is
+                // still logged by `killTree` itself, so the leaked tree is reported even
+                // though this arm throws.
+                killTree () |> ignore
 
-            // A stall is DEFINED as "not one byte within the launch deadline", so
-            // there is no capture to report: this runs only to let the pumps close
-            // their pipes, and the (necessarily empty) result is discarded.
-            drainPumps () |> ignore
+                // A stall is DEFINED as "not one byte within the launch deadline", so
+                // there is no capture to report: this runs only to let the pumps close
+                // their pipes, and the (necessarily empty) result is discarded.
+                drainPumps () |> ignore
 
-            raise (
-                LaunchStalledException(
-                    $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                raise (
+                    LaunchStalledException(
+                        $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                    )
                 )
-            )
-    finally
-        ProcessRegistry.untrack proc
+        finally
+            ProcessRegistry.untrack proc
+
+    outcome, teardown.Value
+
+/// See `runProcessCore`.
+let runProcessTo
+    (sink: (string -> unit) option)
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (bounds: ProcessBounds)
+    : ProcessOutcome =
+    runProcessCore false sink command args workDir env bounds |> fst
+
+/// `runProcess`, plus — when the child overran and was torn down — WHICH tree the
+/// kill was aimed at and which of its members survived (`TreeTeardown`). For callers
+/// whose timeout report must name what it killed and what it leaked.
+let internal runProcessAccounted
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (bounds: ProcessBounds)
+    : ProcessOutcome * TreeTeardown option =
+    runProcessCore true None command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every

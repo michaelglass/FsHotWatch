@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A build that overruns its `timeoutSec` budget now reports what it was doing instead of
+  "timed out after Ns". The status line names the command (or the `buildTemplate` root),
+  the budget, and whether the tree is gone, LEAKED (naming the survivors) or UNKNOWN. The
+  error entry adds where the budget is set in `.fshw.json`, the finished and queued template
+  roots with their times, the last project MSBuild reported finishing, the last output line,
+  the `MSBUILDDISABLENODEREUSE` value fshw set for the child, every pid and command the kill
+  was aimed at, what the kill call did, and which of those processes were still alive after it.
+
 - (breaking) Fix: a `force-rebuild` request is no longer spent by a build that was already
   in flight when it arrived. That build read its inputs and wrote `bin/` before the request,
   yet its completion cleared the flag, so the next lookup replayed the cache the request
