@@ -185,9 +185,10 @@ module ``InMemoryStore basics`` =
         test <@ reachable.Contains "Mod.C" @>
 
     [<Fact>]
-    let ``dependency from unknown symbol uses empty-string file grouping`` () =
-        // A dependency whose FromSymbol is not in the symbol list
-        // exercises the Option.defaultValue "" path
+    let ``dependency anchored outside the result is owned by the result's only file`` () =
+        // A dependency whose FromSymbol is not declared in this result is still a fact
+        // this result's file contributed (`AstAnalyzer.factOwner`), so it is owned by
+        // — and re-indexed with — that file.
         let graph =
             { Symbols =
                 [ { FullName = "Mod.Target"
@@ -208,13 +209,13 @@ module ``InMemoryStore basics`` =
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
-        // The dep from Unknown.Source gets grouped under "" file key
-        let depsFromEmpty = store.GetDependenciesFromFile ""
-        test <@ depsFromEmpty.Length = 1 @>
-        test <@ depsFromEmpty[0].FromSymbol = "Unknown.Source" @>
+        let owned = store.GetDependenciesFromFile "src/Mod.fs"
+        test <@ owned.Length = 1 @>
+        test <@ owned[0].FromSymbol = "Unknown.Source" @>
+        test <@ (store.GetDependenciesFromFile "").IsEmpty @>
 
     [<Fact>]
-    let ``test method from unknown symbol uses empty-string file grouping`` () =
+    let ``test method in a result with no source file is owned by the extern pseudo-file`` () =
         let graph =
             { Symbols = []
               Dependencies = []
@@ -228,9 +229,9 @@ module ``InMemoryStore basics`` =
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
-        let testsFromEmpty = store.GetTestMethodsInFile ""
-        test <@ testsFromEmpty.Length = 1 @>
-        test <@ testsFromEmpty[0].TestMethod = "test1" @>
+        let unowned = store.GetTestMethodsInFile ExternSourceFile
+        test <@ unowned.Length = 1 @>
+        test <@ unowned[0].TestMethod = "test1" @>
 
     [<Fact>]
     let ``GetIncomingEdgesBatch returns incoming edges for known symbols`` () =

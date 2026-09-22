@@ -5,20 +5,44 @@ open TestPrune.Ports
 
 /// Create an in-memory SymbolStore from a list of AnalysisResults.
 let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
-    // Match SQLite's UPSERT rule: a reference placeholder cannot replace a real
-    // declaration's kind or owning file. Keep the last real declaration if a
-    // caller supplies more than one, and use an extern only when no real one exists.
-    let allSymbols =
+    // A symbol is ONE node with one source occurrence per file that declares it (a
+    // `.fsi` declaration and its `.fs` implementation). Match SQLite's rules: a real
+    // occurrence is kept per (name, file), the last one winning if a caller supplies
+    // several; an extern placeholder exists only for a name with no real occurrence.
+    let occurrences =
         results
         |> List.collect (fun r -> r.Symbols)
-        |> List.groupBy _.FullName
-        |> List.map (fun (_, occurrences) ->
-            occurrences
-            |> List.tryFindBack (fun symbol -> not symbol.IsExtern)
-            |> Option.defaultValue (List.last occurrences))
+        |> List.filter (fun symbol -> not symbol.IsExtern)
+        |> List.groupBy (fun symbol -> symbol.FullName, symbol.SourceFile)
+        |> List.map (fun (_, duplicates) -> List.last duplicates)
 
-    let allDeps = results |> List.collect (fun r -> r.Dependencies)
-    let allTests = results |> List.collect (fun r -> r.TestMethods)
+    let occurrenceNames = occurrences |> List.map _.FullName |> Set.ofList
+
+    let externs =
+        results
+        |> List.collect (fun r -> r.Symbols)
+        |> List.filter (fun symbol -> symbol.IsExtern && not (occurrenceNames.Contains symbol.FullName))
+        |> List.groupBy _.FullName
+        |> List.map (fun (_, duplicates) -> List.last duplicates)
+
+    let allSymbols = occurrences @ externs
+
+    // Every per-file fact is owned by the file whose analysis produced it
+    // (`AstAnalyzer.factOwner`), exactly as `Database.RebuildProjects` records it.
+    let ownedDeps =
+        results
+        |> List.collect (fun r ->
+            let owner = factOwner r
+            r.Dependencies |> List.map (fun d -> owner (dependencyAnchor d), d))
+
+    let ownedTests =
+        results
+        |> List.collect (fun r ->
+            let owner = factOwner r
+            r.TestMethods |> List.map (fun t -> owner t.SymbolFullName, t))
+
+    let allDeps = ownedDeps |> List.map snd
+    let allTests = ownedTests |> List.map snd
     let allAttrs = results |> List.collect (fun r -> r.Attributes)
     let allParentLinks = results |> List.collect (fun r -> r.ParentLinks)
 
@@ -37,25 +61,33 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let attrsBySymbol =
         allAttrs |> List.groupBy (fun a -> a.SymbolFullName) |> Map.ofList
 
-    let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
-
-    let symbolFileMap =
-        allSymbols |> List.map (fun s -> s.FullName, s.SourceFile) |> Map.ofList
+    let symbolsByFile =
+        occurrences |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
 
     let depsByFile =
-        allDeps
-        |> List.groupBy (fun d -> symbolFileMap |> Map.tryFind d.FromSymbol |> Option.defaultValue "")
+        ownedDeps
+        |> List.groupBy fst
         |> Map.ofList
+        |> Map.map (fun _ owned -> owned |> List.map snd)
 
     let testsByFile =
-        allTests
-        |> List.groupBy (fun t -> symbolFileMap |> Map.tryFind t.SymbolFullName |> Option.defaultValue "")
+        ownedTests
+        |> List.groupBy fst
         |> Map.ofList
+        |> Map.map (fun _ owned -> owned |> List.map snd)
 
+    // Containment is a property of the symbol, so it is reported for every file with an
+    // occurrence of the child — as SQLite's `GetParentLinksInFile` joins it.
     let parentLinksByFile =
-        allParentLinks
-        |> List.groupBy (fun l -> symbolFileMap |> Map.tryFind l.Child |> Option.defaultValue "")
-        |> Map.ofList
+        symbolsByFile
+        |> Map.map (fun _ symbols ->
+            symbols
+            |> List.choose (fun symbol ->
+                parentByChild
+                |> Map.tryFind symbol.FullName
+                |> Option.map (fun parent ->
+                    { Child = symbol.FullName
+                      Parent = parent })))
 
     let forwardEdges = // from -> [to]
         allDeps

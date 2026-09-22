@@ -22,15 +22,21 @@ let private schema =
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         full_name TEXT NOT NULL UNIQUE,
         kind TEXT NOT NULL,
+        is_extern INTEGER NOT NULL DEFAULT 0,
+        parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+        CONSTRAINT symbols_full_name_is_qualified
+            CHECK (kind = 'Module' OR full_name LIKE '%.%')
+    );
+
+    CREATE TABLE IF NOT EXISTS symbol_occurrences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         source_file TEXT NOT NULL,
         line_start INTEGER NOT NULL,
         line_end INTEGER NOT NULL,
         content_hash TEXT NOT NULL DEFAULT '',
-        is_extern INTEGER NOT NULL DEFAULT 0,
-        parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
         indexed_at TEXT NOT NULL,
-        CONSTRAINT symbols_full_name_is_qualified
-            CHECK (kind = 'Module' OR full_name LIKE '%.%')
+        UNIQUE (symbol_id, source_file)
     );
 
     CREATE TABLE IF NOT EXISTS dependencies (
@@ -38,14 +44,16 @@ let private schema =
         to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         dep_kind TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'core',
-        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
+        source_file TEXT NOT NULL,
+        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind, source_file)
     );
 
     CREATE TABLE IF NOT EXISTS test_methods (
         symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
         test_project TEXT NOT NULL,
         test_class TEXT NOT NULL,
-        test_method TEXT NOT NULL
+        test_method TEXT NOT NULL,
+        source_file TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS project_keys (
@@ -75,15 +83,16 @@ let private schema =
         symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         attribute_name TEXT NOT NULL,
         args_json TEXT NOT NULL DEFAULT '[]',
-        PRIMARY KEY (symbol_id, attribute_name, args_json)
+        source_file TEXT NOT NULL,
+        PRIMARY KEY (symbol_id, attribute_name, args_json, source_file)
     );
 
     CREATE TABLE IF NOT EXISTS coverage_points (
-        symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        occurrence_id INTEGER NOT NULL REFERENCES symbol_occurrences(id) ON DELETE CASCADE,
         line_offset INTEGER NOT NULL,
         kind TEXT NOT NULL DEFAULT 'line',
         hits INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (symbol_id, line_offset, kind)
+        PRIMARY KEY (occurrence_id, line_offset, kind)
     );
 
     CREATE TABLE IF NOT EXISTS runtime_coverage (
@@ -98,14 +107,18 @@ let private schema =
         observed_at TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
+    CREATE INDEX IF NOT EXISTS idx_occurrences_by_file ON symbol_occurrences (source_file, line_start);
+    CREATE INDEX IF NOT EXISTS idx_occurrences_by_symbol ON symbol_occurrences (symbol_id);
+    CREATE INDEX IF NOT EXISTS idx_deps_by_file ON dependencies (source_file);
+    CREATE INDEX IF NOT EXISTS idx_test_methods_by_file ON test_methods (source_file);
+    CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_file ON symbol_attributes (source_file);
     CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
-    CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
+    CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id, from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
-    CREATE INDEX IF NOT EXISTS idx_coverage_by_symbol ON coverage_points (symbol_id);
+    CREATE INDEX IF NOT EXISTS idx_coverage_by_occurrence ON coverage_points (occurrence_id);
     CREATE INDEX IF NOT EXISTS idx_runtime_coverage_by_file ON runtime_coverage (source_file);
     """
 
@@ -289,6 +302,13 @@ let private openConnection (dbPath: string) =
 /// v13    — durable index-attempt metadata. Selection must remain fail-closed across
 ///          failed, crashed, or concurrent indexing attempts, so older caches are
 ///          recreated before the completion protocol is used.
+/// v14    — `symbol_occurrences`: a symbol is ONE row with one source occurrence per
+///          declaring file. A `.fsi` declaration and its `.fs` implementation share one
+///          compiler identity, and a single `source_file`/`content_hash` per row made the
+///          last-indexed file overwrite the other. Occurrences carry the location and
+///          hash; dependencies, test methods and attributes carry the `source_file` that
+///          contributed them, so re-indexing one file replaces only that file's facts;
+///          coverage points belong to the occurrence whose lines they were measured on.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -303,7 +323,7 @@ let private openConnection (dbPath: string) =
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
 /// the newer open path.
 [<Literal>]
-let SchemaVersion = 13
+let SchemaVersion = 14
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -475,152 +495,187 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
-            // Clear outgoing metadata for re-indexed files. Leaves incoming edges from
-            // non-re-indexed files untouched — those point INTO these files' symbols, whose
-            // row ids are preserved by the UPSERT below. Outgoing edges/test_methods/attributes
-            // may have changed in the new analysis, so they're re-inserted further down.
+            // Clear the facts each re-indexed file contributed — its edges, test methods
+            // and attributes, whichever symbol they hang off (`AstAnalyzer.factOwner`).
+            // Facts another file contributed survive, including edges INTO these files'
+            // symbols (row ids are preserved by the UPSERT below) and a signature file's
+            // edges when only its implementation is re-indexed, or vice versa.
             if not sourceFiles.IsEmpty then
-                for (table, col) in
-                    [ ("dependencies", "from_symbol_id")
-                      ("test_methods", "symbol_id")
-                      ("symbol_attributes", "symbol_id") ] do
+                for table in [ "dependencies"; "test_methods"; "symbol_attributes" ] do
                     use delCmd = conn.CreateCommand()
                     delCmd.Transaction <- txn
 
-                    delCmd.CommandText <-
-                        $"DELETE FROM %s{table} WHERE %s{col} IN (SELECT id FROM symbols WHERE source_file IN (%s{nameSet}))"
+                    delCmd.CommandText <- $"DELETE FROM %s{table} WHERE source_file IN (%s{nameSet})"
 
                     bindNameSet delCmd sourceFiles
                     delCmd.ExecuteNonQuery() |> ignore
 
-                // The production half of a literal bridge is synthetic-node -> producer,
-                // so its owning file is on the TO side. Clear precisely those edges before
-                // replacing the file's analysis; the ordinary outgoing-edge sweep above
-                // cannot see them because the synthetic node belongs to `_extern`.
-                use delSharedLiteralCmd = conn.CreateCommand()
-                delSharedLiteralCmd.Transaction <- txn
-
-                delSharedLiteralCmd.CommandText <-
-                    $"DELETE FROM dependencies WHERE dep_kind = 'shared_literal' AND to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{nameSet}))"
-
-                bindNameSet delSharedLiteralCmd sourceFiles
-                delSharedLiteralCmd.ExecuteNonQuery() |> ignore
-
             let now = DateTime.UtcNow.ToString("o")
 
-            // UPSERT preserves row id on conflict so incoming foreign-key references remain valid.
-            // Extern variant uses INSERT OR IGNORE so it can't overwrite a real symbol already in the DB.
-            let makeSymbolCmd (sql: string) =
-                let cmd = conn.CreateCommand()
-                cmd.Transaction <- txn
-                cmd.CommandText <- sql
+            // A symbol is one row per name; each declaring file has its own occurrence
+            // row carrying location and hash. UPSERT preserves both ids on conflict, so
+            // incoming foreign-key references (edges, coverage) remain valid.
+            //
+            // A real occurrence marks its symbol real. An extern placeholder is a symbol
+            // row with no occurrence at all and never overwrites a real one.
+            use realSymbolCmd = conn.CreateCommand()
+            realSymbolCmd.Transaction <- txn
 
+            realSymbolCmd.CommandText <-
+                """
+                INSERT INTO symbols (full_name, kind, is_extern)
+                VALUES (@fullName, @kind, 0)
+                ON CONFLICT(full_name) DO UPDATE SET
+                    kind = excluded.kind,
+                    is_extern = 0
+                RETURNING id
+                """
+
+            use externSymbolCmd = conn.CreateCommand()
+            externSymbolCmd.Transaction <- txn
+
+            externSymbolCmd.CommandText <-
+                """
+                INSERT INTO symbols (full_name, kind, is_extern)
+                VALUES (@fullName, @kind, 1)
+                ON CONFLICT(full_name) DO NOTHING
+                """
+
+            for cmd in [ realSymbolCmd; externSymbolCmd ] do
                 cmd.Parameters.Add("@fullName", SqliteType.Text) |> ignore
                 cmd.Parameters.Add("@kind", SqliteType.Text) |> ignore
-                cmd.Parameters.Add("@sourceFile", SqliteType.Text) |> ignore
-                cmd.Parameters.Add("@lineStart", SqliteType.Integer) |> ignore
-                cmd.Parameters.Add("@lineEnd", SqliteType.Integer) |> ignore
-                cmd.Parameters.Add("@contentHash", SqliteType.Text) |> ignore
-                cmd.Parameters.Add("@isExtern", SqliteType.Integer) |> ignore
-                cmd.Parameters.Add("@indexedAt", SqliteType.Text) |> ignore
-                cmd
 
-            use insCmd =
-                makeSymbolCmd
-                    """
-                    INSERT INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
-                    VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
-                    ON CONFLICT(full_name) DO UPDATE SET
-                        kind = excluded.kind,
-                        source_file = excluded.source_file,
-                        line_start = excluded.line_start,
-                        line_end = excluded.line_end,
-                        content_hash = excluded.content_hash,
-                        is_extern = excluded.is_extern,
-                        indexed_at = excluded.indexed_at
-                    """
+            use occurrenceCmd = conn.CreateCommand()
+            occurrenceCmd.Transaction <- txn
 
-            // Extern: bump indexed_at only if the existing row is also extern, so the
-            // orphan sweep below doesn't treat it as stale (callers may remap an extern's
-            // SourceFile to a real file). Never overwrites a real symbol.
-            use externCmd =
-                makeSymbolCmd
-                    """
-                    INSERT INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
-                    VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
-                    ON CONFLICT(full_name) DO UPDATE SET
-                        indexed_at = excluded.indexed_at
-                    WHERE symbols.is_extern = 1
-                    """
+            occurrenceCmd.CommandText <-
+                """
+                INSERT INTO symbol_occurrences (symbol_id, source_file, line_start, line_end, content_hash, indexed_at)
+                VALUES (@symbolId, @sourceFile, @lineStart, @lineEnd, @contentHash, @indexedAt)
+                ON CONFLICT(symbol_id, source_file) DO UPDATE SET
+                    line_start = excluded.line_start,
+                    line_end = excluded.line_end,
+                    content_hash = excluded.content_hash,
+                    indexed_at = excluded.indexed_at
+                """
 
-            let setSymbolParams (cmd: SqliteCommand) (sym: SymbolInfo) =
-                cmd.Parameters["@fullName"].Value <- sym.FullName
-                cmd.Parameters["@kind"].Value <- symbolKindToString sym.Kind
-                cmd.Parameters["@sourceFile"].Value <- sym.SourceFile
-                cmd.Parameters["@lineStart"].Value <- sym.LineStart
-                cmd.Parameters["@lineEnd"].Value <- sym.LineEnd
-                cmd.Parameters["@contentHash"].Value <- sym.ContentHash
-                cmd.Parameters["@isExtern"].Value <- if sym.IsExtern then 1 else 0
-                cmd.Parameters["@indexedAt"].Value <- now
+            let pOccSymbol = occurrenceCmd.Parameters.Add("@symbolId", SqliteType.Integer)
+            let pOccFile = occurrenceCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+            let pOccStart = occurrenceCmd.Parameters.Add("@lineStart", SqliteType.Integer)
+            let pOccEnd = occurrenceCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
+            let pOccHash = occurrenceCmd.Parameters.Add("@contentHash", SqliteType.Text)
+            occurrenceCmd.Parameters.AddWithValue("@indexedAt", now) |> ignore
 
-            // Must run BEFORE the upsert overwrites each symbol's stored content_hash. A
-            // changed hash means the stored coverage offsets were computed against the old
-            // body and are now invalid, so purge them; the impact re-run re-ingests fresh
-            // coverage. A MOVED symbol (same hash, shifted line_start) keeps its coverage —
-            // offsets are stable and GetFileCoverage re-derives the absolute line. New
-            // symbols and removed ones (CASCADE via the coverage_points FK on the orphan
-            // DELETE below) need nothing here.
+            // Must run BEFORE the upsert overwrites each occurrence's stored content_hash.
+            // A changed hash means the stored coverage offsets were computed against the
+            // old body and are now invalid, so purge them; the impact re-run re-ingests
+            // fresh coverage. A MOVED occurrence (same hash, shifted line_start) keeps its
+            // coverage — offsets are stable and GetFileCoverage re-derives the absolute
+            // line. New occurrences and removed ones (CASCADE via the coverage_points FK on
+            // the orphan DELETE below) need nothing here.
             use purgeCovCmd = conn.CreateCommand()
             purgeCovCmd.Transaction <- txn
 
             purgeCovCmd.CommandText <-
                 """
                 DELETE FROM coverage_points
-                WHERE symbol_id IN (
-                    SELECT id FROM symbols
-                    WHERE full_name = @fullName AND content_hash <> @contentHash
+                WHERE occurrence_id IN (
+                    SELECT o.id FROM symbol_occurrences o
+                    JOIN symbols s ON s.id = o.symbol_id
+                    WHERE s.full_name = @fullName
+                      AND o.source_file = @sourceFile
+                      AND o.content_hash <> @contentHash
                 )
                 """
 
             let pPurgeFullName = purgeCovCmd.Parameters.Add("@fullName", SqliteType.Text)
+            let pPurgeFile = purgeCovCmd.Parameters.Add("@sourceFile", SqliteType.Text)
             let pPurgeHash = purgeCovCmd.Parameters.Add("@contentHash", SqliteType.Text)
+
+            // Only an index that has ingested coverage has anything to purge; skipping the
+            // per-occurrence probe otherwise keeps a plain re-index at one write per row.
+            let hasCoverage =
+                use probe = conn.CreateCommand()
+                probe.Transaction <- txn
+                probe.CommandText <- "SELECT EXISTS(SELECT 1 FROM coverage_points)"
+
+                match probe.ExecuteScalar() with
+                | :? int64 as n -> n <> 0L
+                | _ -> true
 
             for result in results do
                 for sym in result.Symbols do
-                    if not sym.IsExtern then
+                    if hasCoverage && not sym.IsExtern then
                         pPurgeFullName.Value <- sym.FullName
+                        pPurgeFile.Value <- sym.SourceFile
                         pPurgeHash.Value <- sym.ContentHash
                         purgeCovCmd.ExecuteNonQuery() |> ignore
 
             for result in results do
                 for sym in result.Symbols do
-                    let cmd = if sym.IsExtern then externCmd else insCmd
-                    setSymbolParams cmd sym
+                    let cmd = if sym.IsExtern then externSymbolCmd else realSymbolCmd
+                    cmd.Parameters["@fullName"].Value <- sym.FullName
+                    cmd.Parameters["@kind"].Value <- symbolKindToString sym.Kind
 
                     // SQLite reports only the constraint name
                     // (`symbols_full_name_is_qualified`), never the offending row. Since the
                     // whole point of the constraint is to surface a bad name, the failure
                     // has to carry that name and its file.
-                    try
-                        cmd.ExecuteNonQuery() |> ignore
-                    with :? SqliteException as ex ->
-                        raise (
-                            SqliteException(
-                                $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}",
-                                ex.SqliteErrorCode,
-                                ex.SqliteExtendedErrorCode
+                    let symbolId =
+                        try
+                            cmd.ExecuteScalar()
+                        with :? SqliteException as ex ->
+                            raise (
+                                SqliteException(
+                                    $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}",
+                                    ex.SqliteErrorCode,
+                                    ex.SqliteExtendedErrorCode
+                                )
                             )
-                        )
 
-            // Orphan cleanup: every symbol touched by this pass had its indexed_at bumped
-            // to `now` (via UPSERT for real symbols, conditional UPSERT for externs). Any
-            // symbol in the re-indexed files still carrying an older timestamp wasn't in
-            // the new analysis — delete it. CASCADE removes its edges, which is correct.
+                    if not sym.IsExtern then
+                        pOccSymbol.Value <- symbolId
+                        pOccFile.Value <- sym.SourceFile
+                        pOccStart.Value <- sym.LineStart
+                        pOccEnd.Value <- sym.LineEnd
+                        pOccHash.Value <- sym.ContentHash
+                        occurrenceCmd.ExecuteNonQuery() |> ignore
+
+            // Orphan cleanup: every occurrence touched by this pass had its indexed_at
+            // bumped to `now`. An occurrence in the re-indexed files still carrying an older
+            // timestamp wasn't in the new analysis — delete it (CASCADE takes its coverage).
+            // A symbol survives while ANY file still declares it; a real symbol whose every
+            // occurrence is such a stale one was removed from the code, so delete it and
+            // CASCADE its edges. Only symbols with a stale occurrence are candidates, so a
+            // one-file re-index does not scan the whole symbol table.
             if not sourceFiles.IsEmpty then
+                use delUndeclared = conn.CreateCommand()
+                delUndeclared.Transaction <- txn
+
+                delUndeclared.CommandText <-
+                    $"""
+                    DELETE FROM symbols
+                    WHERE is_extern = 0
+                      AND id IN (
+                          SELECT symbol_id FROM symbol_occurrences
+                          WHERE source_file IN (%s{nameSet}) AND indexed_at < @now
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM symbol_occurrences o
+                          WHERE o.symbol_id = symbols.id
+                            AND (o.indexed_at >= @now OR o.source_file NOT IN (%s{nameSet}))
+                      )
+                    """
+
+                bindNameSet delUndeclared sourceFiles
+                delUndeclared.Parameters.AddWithValue("@now", now) |> ignore
+                delUndeclared.ExecuteNonQuery() |> ignore
+
                 use delOrphan = conn.CreateCommand()
                 delOrphan.Transaction <- txn
 
-                delOrphan.CommandText <- $"DELETE FROM symbols WHERE source_file IN (%s{nameSet}) AND indexed_at < @now"
+                delOrphan.CommandText <-
+                    $"DELETE FROM symbol_occurrences WHERE source_file IN (%s{nameSet}) AND indexed_at < @now"
 
                 bindNameSet delOrphan sourceFiles
                 delOrphan.Parameters.AddWithValue("@now", now) |> ignore
@@ -635,7 +690,7 @@ type Database(dbPath: string) =
                 clrParent.Transaction <- txn
 
                 clrParent.CommandText <-
-                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE source_file IN (%s{nameSet})"
+                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE id IN (SELECT symbol_id FROM symbol_occurrences WHERE source_file IN (%s{nameSet}))"
 
                 bindNameSet clrParent sourceFiles
                 clrParent.ExecuteNonQuery() |> ignore
@@ -668,8 +723,8 @@ type Database(dbPath: string) =
 
             depCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source)
-                SELECT f.id, t.id, @depKind, @source
+                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file)
+                SELECT f.id, t.id, @depKind, @source, @sourceFile
                 FROM symbols f, symbols t
                 WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
                 """
@@ -678,13 +733,17 @@ type Database(dbPath: string) =
             let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
             let pSource = depCmd.Parameters.Add("@source", SqliteType.Text)
+            let pDepFile = depCmd.Parameters.Add("@sourceFile", SqliteType.Text)
 
             for result in results do
+                let owner = factOwner result
+
                 for dep in result.Dependencies do
                     pFromSymbol.Value <- dep.FromSymbol
                     pToSymbol.Value <- dep.ToSymbol
                     pDepKind.Value <- depKindToString dep.Kind
                     pSource.Value <- dep.Source
+                    pDepFile.Value <- owner (dependencyAnchor dep)
                     depCmd.ExecuteNonQuery() |> ignore
 
             // A literal node is shared by every test/producer that contains its decoded
@@ -715,8 +774,8 @@ type Database(dbPath: string) =
 
             tmCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO test_methods (symbol_id, test_project, test_class, test_method)
-                SELECT id, @testProject, @testClass, @testMethod
+                INSERT OR REPLACE INTO test_methods (symbol_id, test_project, test_class, test_method, source_file)
+                SELECT id, @testProject, @testClass, @testMethod, @sourceFile
                 FROM symbols WHERE full_name = @symbolFullName
                 """
 
@@ -724,13 +783,17 @@ type Database(dbPath: string) =
             let pTestProject = tmCmd.Parameters.Add("@testProject", SqliteType.Text)
             let pTestClass = tmCmd.Parameters.Add("@testClass", SqliteType.Text)
             let pTestMethod = tmCmd.Parameters.Add("@testMethod", SqliteType.Text)
+            let pTestFile = tmCmd.Parameters.Add("@sourceFile", SqliteType.Text)
 
             for result in results do
+                let owner = factOwner result
+
                 for tm in result.TestMethods do
                     pSymbolFullName.Value <- tm.SymbolFullName
                     pTestProject.Value <- tm.TestProject
                     pTestClass.Value <- tm.TestClass
                     pTestMethod.Value <- tm.TestMethod
+                    pTestFile.Value <- owner tm.SymbolFullName
                     tmCmd.ExecuteNonQuery() |> ignore
 
             use attrCmd = conn.CreateCommand()
@@ -738,20 +801,24 @@ type Database(dbPath: string) =
 
             attrCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO symbol_attributes (symbol_id, attribute_name, args_json)
-                SELECT id, @attrName, @argsJson
+                INSERT OR IGNORE INTO symbol_attributes (symbol_id, attribute_name, args_json, source_file)
+                SELECT id, @attrName, @argsJson, @sourceFile
                 FROM symbols WHERE full_name = @symbolFullName
                 """
 
             let pAttrSymbol = attrCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
             let pAttrName = attrCmd.Parameters.Add("@attrName", SqliteType.Text)
             let pArgsJson = attrCmd.Parameters.Add("@argsJson", SqliteType.Text)
+            let pAttrFile = attrCmd.Parameters.Add("@sourceFile", SqliteType.Text)
 
             for result in results do
+                let owner = factOwner result
+
                 for attr in result.Attributes do
                     pAttrSymbol.Value <- attr.SymbolFullName
                     pAttrName.Value <- attr.AttributeName
                     pArgsJson.Value <- attr.ArgsJson
+                    pAttrFile.Value <- owner attr.SymbolFullName
                     attrCmd.ExecuteNonQuery() |> ignore
 
             // Cache keys go in this same transaction, so they can never claim a file is
@@ -965,16 +1032,19 @@ type Database(dbPath: string) =
         else
             Domain.CompositionRoot.restoreEmptiedProjects _.TestProject (walk true) (walk false)
 
-    /// Return all symbols stored for a given source file path.
+    /// Return every symbol occurrence declared in a given source file path, with that
+    /// file's location and content hash.
     member _.GetSymbolsInFile(sourceFile: string) : SymbolInfo list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end, content_hash, is_extern
-            FROM symbols WHERE source_file = @sourceFile
-            ORDER BY line_start
+            SELECT s.full_name, s.kind, o.source_file, o.line_start, o.line_end, o.content_hash, s.is_extern
+            FROM symbol_occurrences o
+            JOIN symbols s ON s.id = o.symbol_id
+            WHERE o.source_file = @sourceFile
+            ORDER BY o.line_start
             """
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
@@ -999,16 +1069,25 @@ type Database(dbPath: string) =
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
-    /// Return all symbols ordered by file and line.
+    /// Return every symbol occurrence, plus one `ExternSourceFile` entry per extern
+    /// placeholder, ordered by file and line. A symbol declared in several files (a
+    /// signature and its implementation) appears once per declaring file.
     member _.GetAllSymbols() : SymbolInfo list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end, content_hash, is_extern
-            FROM symbols ORDER BY source_file, line_start
+            SELECT s.full_name, s.kind, o.source_file, o.line_start, o.line_end, o.content_hash, s.is_extern
+            FROM symbol_occurrences o
+            JOIN symbols s ON s.id = o.symbol_id
+            UNION ALL
+            SELECT full_name, kind, @externFile, 0, 0, '', is_extern
+            FROM symbols WHERE is_extern = 1
+            ORDER BY 3, 4
             """
+
+        cmd.Parameters.AddWithValue("@externFile", ExternSourceFile) |> ignore
 
         use reader = cmd.ExecuteReader()
 
@@ -1156,7 +1235,7 @@ type Database(dbPath: string) =
 
             cmd.CommandText <-
                 $"""
-                SELECT s_to.full_name, s_from.full_name
+                SELECT DISTINCT s_to.full_name, s_from.full_name
                 FROM dependencies d
                 JOIN symbols s_to ON s_to.id = d.to_symbol_id
                 JOIN symbols s_from ON s_from.id = d.from_symbol_id
@@ -1172,7 +1251,8 @@ type Database(dbPath: string) =
             |> List.map (fun (k, vs) -> k, vs |> List.map snd)
             |> Map.ofList
 
-    /// Get dependencies originating from symbols defined in the given source file.
+    /// Get the dependency edges the given source file's analysis contributed
+    /// (`AstAnalyzer.factOwner`).
     member _.GetDependenciesFromFile(sourceFile: string) : Dependency list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -1183,7 +1263,7 @@ type Database(dbPath: string) =
             FROM dependencies d
             JOIN symbols f ON f.id = d.from_symbol_id
             JOIN symbols t ON t.id = d.to_symbol_id
-            WHERE f.source_file = @sourceFile
+            WHERE d.source_file = @sourceFile
             """
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
@@ -1206,9 +1286,10 @@ type Database(dbPath: string) =
         cmd.CommandText <-
             """
             SELECT c.full_name, p.full_name
-            FROM symbols c
+            FROM symbol_occurrences o
+            JOIN symbols c ON c.id = o.symbol_id
             JOIN symbols p ON p.id = c.parent_symbol_id
-            WHERE c.source_file = @sourceFile
+            WHERE o.source_file = @sourceFile
             """
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
@@ -1290,7 +1371,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT s.full_name, sa.attribute_name, sa.args_json
+            SELECT DISTINCT s.full_name, sa.attribute_name, sa.args_json
             FROM symbol_attributes sa
             JOIN symbols s ON s.id = sa.symbol_id
             """
@@ -1309,7 +1390,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT sa.attribute_name, sa.args_json
+            SELECT DISTINCT sa.attribute_name, sa.args_json
             FROM symbol_attributes sa
             JOIN symbols s ON s.id = sa.symbol_id
             WHERE s.full_name = @symbolFullName
@@ -1319,7 +1400,7 @@ type Database(dbPath: string) =
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0), r.GetString(1))
 
-    /// Get test methods whose symbol is defined in the given source file.
+    /// Get the test methods the given source file's analysis contributed.
     member _.GetTestMethodsInFile(sourceFile: string) : TestMethodInfo list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -1329,7 +1410,7 @@ type Database(dbPath: string) =
             SELECT s.full_name, tm.test_project, tm.test_class, tm.test_method
             FROM test_methods tm
             JOIN symbols s ON s.id = tm.symbol_id
-            WHERE s.source_file = @sourceFile
+            WHERE tm.source_file = @sourceFile
             """
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
@@ -1351,14 +1432,16 @@ type Database(dbPath: string) =
     /// the nearest preceding declaration — symbols tile the file, and a line belongs to the
     /// binding it falls under. A later/inner declaration has a larger `line_start`, so this
     /// naturally picks the innermost (most specific) enclosing symbol. Returns
-    /// `(symbol_id, line_start)`, or None only when the line precedes the file's first symbol.
+    /// `(occurrence_id, line_start)` — the occurrence in THIS file, since a symbol declared
+    /// in a signature and an implementation has one occurrence in each — or None only when
+    /// the line precedes the file's first symbol.
     member _.FindSymbolContainingLine(sourceFile: string, line: int) : (int64 * int) option =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
         cmd.CommandText <-
             """
-            SELECT id, line_start FROM symbols
+            SELECT id, line_start FROM symbol_occurrences
             WHERE source_file = @f AND line_start <= @l
             ORDER BY line_start DESC
             LIMIT 1
@@ -1376,7 +1459,7 @@ type Database(dbPath: string) =
 
     /// Record `hits` for an absolute `(file, line)` coverage point. Resolves the
     /// innermost containing symbol and stores the hit symbol-relative as
-    /// `(symbol_id, line - line_start)`, max-merging with any existing value so a
+    /// `(occurrence_id, line - line_start)`, max-merging with any existing value so a
     /// partial run can never lower a previously-observed hit count. If no symbol
     /// spans the line it is a no-op (per-file fallback is a later phase).
     member this.RecordCoverage(sourceFile: string, line: int, hits: int) : unit =
@@ -1388,9 +1471,9 @@ type Database(dbPath: string) =
 
             cmd.CommandText <-
                 """
-                INSERT INTO coverage_points (symbol_id, line_offset, kind, hits)
+                INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
                 VALUES (@s, @o, 'line', @h)
-                ON CONFLICT(symbol_id, line_offset, kind)
+                ON CONFLICT(occurrence_id, line_offset, kind)
                 DO UPDATE SET hits = MAX(hits, excluded.hits)
                 """
 
@@ -1415,7 +1498,7 @@ type Database(dbPath: string) =
 
         findCmd.CommandText <-
             """
-            SELECT id, line_start FROM symbols
+            SELECT id, line_start FROM symbol_occurrences
             WHERE source_file = @f AND line_start <= @l
             ORDER BY line_start DESC
             LIMIT 1
@@ -1429,9 +1512,9 @@ type Database(dbPath: string) =
 
         insCmd.CommandText <-
             """
-            INSERT INTO coverage_points (symbol_id, line_offset, kind, hits)
+            INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
             VALUES (@s, @o, 'line', @h)
-            ON CONFLICT(symbol_id, line_offset, kind)
+            ON CONFLICT(occurrence_id, line_offset, kind)
             DO UPDATE SET hits = MAX(hits, excluded.hits)
             """
 
@@ -1683,10 +1766,10 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT s.line_start + cp.line_offset AS line, cp.hits
+            SELECT o.line_start + cp.line_offset AS line, cp.hits
             FROM coverage_points cp
-            JOIN symbols s ON s.id = cp.symbol_id
-            WHERE s.source_file = @f AND cp.kind = 'line'
+            JOIN symbol_occurrences o ON o.id = cp.occurrence_id
+            WHERE o.source_file = @f AND cp.kind = 'line'
             ORDER BY line
             """
 
@@ -1703,10 +1786,10 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT DISTINCT s.source_file
-            FROM symbols s
-            JOIN coverage_points cp ON cp.symbol_id = s.id
-            ORDER BY s.source_file
+            SELECT DISTINCT o.source_file
+            FROM symbol_occurrences o
+            JOIN coverage_points cp ON cp.occurrence_id = o.id
+            ORDER BY o.source_file
             """
 
         use reader = cmd.ExecuteReader()

@@ -163,6 +163,40 @@ type AnalysisResult =
           ParentLinks = []
           Diagnostics = AnalysisDiagnostics.Zero }
 
+/// The source file that contributed each per-file fact (dependency edge, test method,
+/// attribute) in `result`, looked up by the symbol the fact is anchored to.
+///
+/// One symbol can have several source occurrences — a `.fsi` declaration and its
+/// `.fs` implementation — so a fact cannot be owned by "the symbol's file". It is owned
+/// by the file whose analysis produced it: the anchor's occurrence in this result, or,
+/// for an anchor declared elsewhere (a synthetic node, a cross-file target), the
+/// result's single source file. Re-indexing a file replaces exactly the facts it owns.
+/// Both stores use this one rule, so they cannot disagree about ownership.
+let internal factOwner (result: AnalysisResult) : string -> string =
+    let occurrences =
+        result.Symbols
+        |> List.filter (fun symbol -> not symbol.IsExtern && symbol.SourceFile <> ExternSourceFile)
+
+    let fileByName =
+        occurrences
+        |> List.map (fun symbol -> symbol.FullName, symbol.SourceFile)
+        |> Map.ofList
+
+    let fallback =
+        match occurrences |> List.map _.SourceFile |> List.distinct with
+        | [ file ] -> file
+        | _ -> ExternSourceFile
+
+    fun anchor -> fileByName |> Map.tryFind anchor |> Option.defaultValue fallback
+
+/// The symbol a dependency edge is anchored to for ownership. A shared-literal bridge
+/// runs literal-node -> producer, and the synthetic literal node belongs to no file, so
+/// the producer (the TO side) is the anchor; every other edge is anchored at its source.
+let internal dependencyAnchor (edge: Dependency) =
+    match edge.Kind with
+    | SharedLiteral -> edge.ToSymbol
+    | _ -> edge.FromSymbol
+
 /// Defensive accessor for fallible FCS symbol-name reads.
 ///
 /// FCS name accessors are NOT total: for un-nameable symbols — an anonymous-record

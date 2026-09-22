@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: **`SchemaVersion` 13 -> 14.** A symbol is one row with one source occurrence
+  per declaring file (`symbol_occurrences`: location and content hash). Dependency
+  edges, test methods and attributes record the file whose analysis contributed them,
+  so re-indexing one file replaces only that file's facts. A symbol survives while any
+  file still declares it, and coverage points belong to an occurrence. Existing
+  indexes are recreated automatically, and `Database.WasRecreated` reports it.
+  BREAKING CHANGE: `GetSymbolsInFile` and `GetAllSymbols` return one entry per
+  occurrence. `GetDependenciesFromFile` and `GetTestMethodsInFile` return the facts
+  that file's analysis contributed. `FindSymbolContainingLine` returns an occurrence id.
 - fix: queries that test membership against a caller-supplied list of names no longer
   fail once the list is large. They spent one SQLite host parameter per name, and SQLite
   caps those at `SQLITE_MAX_VARIABLE_NUMBER` (32766 in the pinned `e_sqlite3` build), so

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix!: the first index after upgrading automatically recreates `.test-prune.db`
+  (`SchemaVersion` 13 -> 14). A symbol now keeps one source occurrence per
+  declaring file, so a signature (`.fsi`) and its implementation no longer overwrite
+  each other's indexed state.
+
 ## 9.0.0 - 2026-09-17
 
 - fix: `index`, `run`, `status` and `dead-code` flush the audit sink before

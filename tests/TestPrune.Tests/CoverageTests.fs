@@ -64,7 +64,10 @@ module ``Coverage is symbol-relative`` =
             // Simulate an edit that pushed the symbol down 8 lines.
             use conn = openRawConnection path
             use cmd = conn.CreateCommand()
-            cmd.CommandText <- "UPDATE symbols SET line_start = 18 WHERE full_name = 'Foo.bar'"
+
+            cmd.CommandText <-
+                "UPDATE symbol_occurrences SET line_start = 18 WHERE symbol_id = (SELECT id FROM symbols WHERE full_name = 'Foo.bar')"
+
             cmd.ExecuteNonQuery() |> ignore
 
             test <@ db.GetFileCoverage "Foo.fs" = [ (23, 3) ] @>)
@@ -335,7 +338,10 @@ module ``Cobertura emit`` =
             // Simulate an edit that pushed Foo.bar down 8 lines (10 -> 18).
             use conn = openRawConnection path
             use cmd = conn.CreateCommand()
-            cmd.CommandText <- "UPDATE symbols SET line_start = 18 WHERE full_name = 'Foo.bar'"
+
+            cmd.CommandText <-
+                "UPDATE symbol_occurrences SET line_start = 18 WHERE symbol_id = (SELECT id FROM symbols WHERE full_name = 'Foo.bar')"
+
             cmd.ExecuteNonQuery() |> ignore
 
             let emitted = parseCobertura (emitCobertura db)

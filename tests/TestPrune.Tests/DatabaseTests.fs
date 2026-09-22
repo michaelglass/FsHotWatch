@@ -717,8 +717,9 @@ module ``stringToSymbolKind fallback`` =
 
             cmd.CommandText <-
                 """
-                INSERT INTO symbols (full_name, kind, source_file, line_start, line_end, indexed_at)
-                VALUES ('Foo.bar', 'UnknownKind', 'src/Foo.fs', 1, 5, '2024-01-01T00:00:00Z')
+                INSERT INTO symbols (full_name, kind) VALUES ('Foo.bar', 'UnknownKind');
+                INSERT INTO symbol_occurrences (symbol_id, source_file, line_start, line_end, indexed_at)
+                SELECT id, 'src/Foo.fs', 1, 5, '2024-01-01T00:00:00Z' FROM symbols WHERE full_name = 'Foo.bar'
                 """
 
             cmd.ExecuteNonQuery() |> ignore
@@ -768,8 +769,8 @@ module ``stringToDepKind fallback`` =
 
             cmd.CommandText <-
                 """
-                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind)
-                SELECT f.id, t.id, 'unknown_dep_kind'
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file)
+                SELECT f.id, t.id, 'unknown_dep_kind', 'tests/Tests.fs'
                 FROM symbols f, symbols t
                 WHERE f.full_name = 'Tests.testA' AND t.full_name = 'Lib.funcB'
                 """
@@ -1398,7 +1399,10 @@ module ``Unknown enum deduplication`` =
             // Overwrite both symbols to have the same unknown kind
             use conn = openRawConnection path
             use cmd = conn.CreateCommand()
-            cmd.CommandText <- "UPDATE symbols SET kind = 'FutureKind' WHERE source_file = 'src/A.fs'"
+
+            cmd.CommandText <-
+                "UPDATE symbols SET kind = 'FutureKind' WHERE id IN (SELECT symbol_id FROM symbol_occurrences WHERE source_file = 'src/A.fs')"
+
             cmd.ExecuteNonQuery() |> ignore
 
             // Read twice — both should deserialize without error
@@ -1452,8 +1456,8 @@ module ``Unknown enum deduplication`` =
 
             cmd2.CommandText <-
                 """
-                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind)
-                SELECT f.id, t.id, 'future_dep_kind'
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file)
+                SELECT f.id, t.id, 'future_dep_kind', 'src/Lib.fs'
                 FROM symbols f, symbols t
                 WHERE f.full_name = 'Lib.funcB' AND t.full_name = 'Tests.testA'
                 """
