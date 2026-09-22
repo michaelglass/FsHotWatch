@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Changed: a per-file cache replay's summary carries a tally. It was the plugin's
+  ledger counts plus `(cached)`, which read the same whether every file had been
+  examined or every file had been served from cache. It now reads
+  `M findings (…); E files examined, R replayed from cache (cached)`, counted per
+  registered plugin: `E` is per-file results produced by running the handler, `R`
+  is per-file results replayed.
+
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that

@@ -567,6 +567,14 @@ let internal registerHandlerForOwner
     // into this plugin, and no owner transition waits on this lock.
     let statusLock = obj ()
 
+    // Per-file results this registration produced by running `Update`, and per-file
+    // results it served from cache instead. A per-file replay's summary is derived from
+    // the ledger, which reads the same whether every file was examined or every file was
+    // replayed; the tally is what tells those apart. Both move only on the plugin's own
+    // loop, one event at a time.
+    let mutable perFileExamined = 0
+    let mutable perFileReplayed = 0
+
     /// The one funnel every status a plugin reports, a cache replay reports, or a fault
     /// forces passes through. A terminal is dropped while the owner holds a live
     /// exclusive run: that run reports its own terminal when it finishes. `status` is
@@ -899,6 +907,9 @@ let internal registerHandlerForOwner
 
                             match lookupResult with
                             | Some result ->
+                                if compKey.File.IsSome then
+                                    System.Threading.Interlocked.Increment(&perFileReplayed) |> ignore
+
                                 // Clear ONLY what the cached run itself
                                 // cleared. A replay must be observationally
                                 // indistinguishable from running the handler (the
@@ -974,9 +985,16 @@ let internal registerHandlerForOwner
                                 //   Otherwise: "analyzed 1044 files, 5 findings
                                 //   (cached)" over an empty ledger and a green
                                 //   verdict.
+                                //
+                                //   The ledger alone reads the same whether this plugin
+                                //   examined every file or replayed every file, so the
+                                //   summary carries the tally of both.
                                 let derivedVerdict elapsed =
+                                    let examined = System.Threading.Volatile.Read(&perFileExamined)
+                                    let replayed = System.Threading.Volatile.Read(&perFileReplayed)
+
                                     RunVerdict.create
-                                        (ledgerSummary (services.GetPluginDiagnostics handler.Name))
+                                        $"%s{ledgerSummary (services.GetPluginDiagnostics handler.Name)}; %d{examined} files examined, %d{replayed} replayed from cache"
                                         elapsed
 
                                 // Built lazily: the status funnel evaluates this only when
@@ -1216,6 +1234,9 @@ let internal registerHandlerForOwner
                                     | Some(Completed(_, v)), None -> Some(TaskCache.CachedRunCompleted v)
                                     | Some(Failed(err, _, v)), None -> Some(TaskCache.CachedRunFailed(err, v))
                                     | (Some(Idle | Running _) | None), _ -> None
+
+                                if cachedStatus.IsSome && compKey.File.IsSome then
+                                    System.Threading.Interlocked.Increment(&perFileExamined) |> ignore
 
                                 let cacheWrite =
                                     match attempted, cachedStatus with

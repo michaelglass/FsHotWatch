@@ -41,14 +41,23 @@ type AnalyzersState =
 /// that re-checks clean must drop to 0. The file's entry is REPLACED (with []) when
 /// it passes, so summing the map always reflects the current gated set. `✓` ⇒
 /// `0 findings`; any non-zero count ⇒ the verdict gates.
-let internal summarize (analyzed: int) (diagnosticsByFile: Map<AbsFilePath, ErrorEntry list>) : string =
+///
+/// It also states its evidence: how many files this handler analyzed, how many were
+/// replayed from cache instead, and which analyzer set ran. `0 findings` over files
+/// nobody examined must not read like `0 findings` over files that were.
+let internal summarize
+    (analyzed: int)
+    (replayed: int)
+    (analyzerSet: string)
+    (diagnosticsByFile: Map<AbsFilePath, ErrorEntry list>)
+    : string =
     // `findings` is the total across ALL severities (incl. Info/Hint), so it stays
     // its own count rather than being derived from the severity tally.
     let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
     let counts = DiagnosticCounts.ofEntries allEntries
     let findings = List.length allEntries
 
-    $"analyzed %d{analyzed} files, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings)"
+    $"analyzed %d{analyzed} files, replayed %d{replayed} from cache, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings) — %s{analyzerSet}"
 
 /// Assembly-name prefixes we always skip when loading analyzers. Analyzer
 /// packages (e.g. FSharpLintAnalyzerShim) ship bundled BCL/FCS deps that aren't
@@ -132,6 +141,14 @@ let internal snapshotAnalyzerSet
     | Result.Error refusals ->
         { Inputs = Result.Error refusals
           Materialization = materializationOf candidates }
+
+/// How a summary names the analyzer set: the head of the `analyzer-inputs` cache-key
+/// slot, so the set a summary names and the set its cache entries are keyed under are
+/// one value. A set with no identity has its cache off, and says so.
+let internal analyzerSetLabel (inputs: Result<string, AnalyzerIdentity.Refusal list>) : string =
+    match inputs with
+    | Result.Ok key -> $"analyzer set %s{key.Substring(0, min 12 key.Length)}"
+    | Result.Error _ -> "analyzer set unidentified (cache off)"
 
 /// One line per refusal, for the warning that explains why the analyzer cache is
 /// off. Hashes are left out: the reader needs the file and the cause, not 64 hex
@@ -419,6 +436,26 @@ let internal createWithSlowHook
     // under one drifted analyzer are one fact.
     let mutable warnedRefusals: string option = None
 
+    // Files served from cache instead of analyzed. The framework computes this
+    // handler's key and then EITHER replays the entry OR runs `Update`, one event at a
+    // time on the plugin's loop — so a keyed event that `Update` never saw was
+    // replayed. The key marks it pending, `Update` clears the mark, and whichever
+    // key computation comes next counts a mark still standing.
+    let mutable replayPending = false
+    let mutable replayedFiles = 0
+
+    let countPendingReplay () =
+        if Volatile.Read(&replayPending) then
+            Volatile.Write(&replayedFiles, Volatile.Read(&replayedFiles) + 1)
+            Volatile.Write(&replayPending, false)
+
+    let summarizeRun analyzed diagnosticsByFile =
+        summarize
+            analyzed
+            (Volatile.Read(&replayedFiles))
+            (analyzerSetLabel (Volatile.Read(&snapshot)).Inputs)
+            diagnosticsByFile
+
     let warnOnce (refusals: AnalyzerIdentity.Refusal list) =
         let signature = describeRefusals refusals
 
@@ -473,6 +510,10 @@ let internal createWithSlowHook
       Update =
         fun ctx state event ->
             async {
+                match event with
+                | FileChecked _ -> Volatile.Write(&replayPending, false)
+                | _ -> ()
+
                 let modelGeneration = currentModelGeneration ctx
 
                 // Analyze only a result published against the model this host publishes
@@ -709,7 +750,7 @@ let internal createWithSlowHook
 
                             PluginCtxHelpers.completeWith
                                 ctx
-                                (summarize analyzed updated)
+                                (summarizeRun analyzed updated)
                                 (DateTime.UtcNow - runStarted)
 
                             return
@@ -739,7 +780,7 @@ let internal createWithSlowHook
                     // Legacy test-driving arm: the analysis ran outside this
                     // handler, so there is no duration to swear to — Zero renders
                     // as "no timing shown", never a fabricated measurement.
-                    PluginCtxHelpers.completeWith ctx (summarize analyzed updated) TimeSpan.Zero
+                    PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated) TimeSpan.Zero
 
                     return
                         { state with
@@ -804,6 +845,8 @@ let internal createWithSlowHook
             |> FsHotWatch.CheckCache.sha256Hex
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
+            countPendingReplay ()
+
             match event with
             | FileChecked result ->
                 // The key is computed once per event on the plugin's own loop, before
@@ -815,6 +858,7 @@ let internal createWithSlowHook
                 | Result.Error _ -> None
                 | Result.Ok analyzerInputs ->
                     let file = AbsFilePath.value result.File
+                    Volatile.Write(&replayPending, true)
 
                     Some(
                         FsHotWatch.TaskCache.merkleCacheKey

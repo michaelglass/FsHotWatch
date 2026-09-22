@@ -1045,7 +1045,10 @@ let ``summarize derives findings from the live map, not an accumulator`` () =
             [ AbsFilePath.create "/tmp/A.fs", [ mkErr "e1"; mkWarn "w1" ]
               AbsFilePath.create "/tmp/B.fs", [ mkErr "e2" ] ]
 
-    test <@ summarize 2 map = "analyzed 2 files, 3 findings (2 errors, 1 warnings)" @>
+    test
+        <@
+            summarize 2 0 "analyzer set x" map = "analyzed 2 files, replayed 0 from cache, 3 findings (2 errors, 1 warnings) — analyzer set x"
+        @>
 
 [<Fact>]
 let ``summarize reads 0 findings when every file's entry is empty`` () =
@@ -1053,7 +1056,10 @@ let ``summarize reads 0 findings when every file's entry is empty`` () =
     let map =
         Map.ofList [ AbsFilePath.create "/tmp/A.fs", []; AbsFilePath.create "/tmp/B.fs", [] ]
 
-    test <@ summarize 2 map = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
+    test
+        <@
+            summarize 2 0 "analyzer set x" map = "analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings) — analyzer set x"
+        @>
 
 /// Recording PluginCtx: captures the run summaries carried by each terminal status, and
 /// the per-file report/clear calls as a stand-in for the gated ledger.
@@ -1124,7 +1130,11 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
         handler.Update ctx handler.Init (Custom(AnalysisComplete(file, findings)))
         |> Async.RunSynchronously
 
-    test <@ summaries |> Seq.last = "analyzed 1 files, 2 findings (2 errors, 0 warnings)" @>
+    test
+        <@
+            summaries |> Seq.last = $"analyzed 1 files, replayed 0 from cache, 2 findings (2 errors, 0 warnings) — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
+        @>
+
     test <@ ledger.ContainsKey file && ledger.[file].Length = 2 @>
 
     // The same file re-checks clean.
@@ -1133,7 +1143,11 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
     |> ignore
 
     // 0, not the stale 2 from the first cycle — and the ledger entry is cleared too.
-    test <@ summaries |> Seq.last = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
+    test
+        <@
+            summaries |> Seq.last = $"analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings) — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
+        @>
+
     test <@ not (ledger.ContainsKey file) @>
 
 // Covers the NON-empty fold; the empty-state path is covered by "diagnostics command
@@ -1397,3 +1411,100 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
     test <@ errors |> Map.containsKey removed |> not @>
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+
+// ---------------------------------------------------------------------------
+// Evidence, not just a result. `0 findings (cached)` read the same whether the stage
+// examined every file or replayed every file from cache, and named no analyzer set.
+// The summary must say how many files were examined, how many were replayed, and —
+// on the path that ran the analyzers — which analyzer set produced the findings.
+// ---------------------------------------------------------------------------
+
+/// The label the summary names the analyzer set by: the head of the `analyzer-inputs`
+/// cache-key slot, so the rendered name and the key are one value.
+let private setLabelOf (dirs: string list) =
+    analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes dirs).Inputs
+
+[<Fact>]
+let ``analyzerSetLabel names an identified set by the head of its cache-key slot`` () =
+    let key = String.replicate 8 "0123456789abcdef"
+    test <@ analyzerSetLabel (Result.Ok key) = "analyzer set 0123456789ab" @>
+
+[<Fact>]
+let ``analyzerSetLabel says so when the set has no identity and the cache is off`` () =
+    let refused: Result<string, FsHotWatch.Analyzers.AnalyzerIdentity.Refusal list> =
+        Result.Error [ FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.MissingPdb "/x/Rules.dll" ]
+
+    test <@ analyzerSetLabel refused = "analyzer set unidentified (cache off)" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a summary counts the files replayed from cache between the files it analyzed`` () =
+    // The framework computes the key, then either replays (Update never runs) or runs
+    // Update. A keyed event the handler never saw was replayed; the handler counts it.
+    let handler = create None [] None DiagnosticSeverity.Hint
+    let ctx, summaries, _ledger = makeAnalyzerRecordingCtx ()
+    let keyOf = handler.CacheKey.Value handler.Init
+
+    test <@ (keyOf (FileChecked(fakeResult "/tmp/evidence/Replayed1.fs"))).IsSome @>
+    test <@ (keyOf (FileChecked(fakeResult "/tmp/evidence/Replayed2.fs"))).IsSome @>
+
+    let analyzedMsg = Custom(AnalysisComplete("/tmp/evidence/Analyzed.fs", []))
+
+    test <@ (keyOf analyzedMsg).IsNone @>
+
+    handler.Update ctx handler.Init analyzedMsg |> Async.RunSynchronously |> ignore
+
+    let expected =
+        $"analyzed 1 files, replayed 2 from cache, 0 findings (0 errors, 0 warnings) — %s{setLabelOf []}"
+
+    test <@ summaries |> Seq.last = expected @>
+
+[<Fact(Timeout = 30000)>]
+let ``a replay-only run says it examined nothing; one that analyzed says how many`` () =
+    // The ticket's shape: every file served from cache. The summary must not read like a
+    // stage that examined the tree.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
+
+    let handler = create None [] None DiagnosticSeverity.Hint
+    host.RegisterHandler(handler)
+
+    let seed file =
+        let result = fakeResult file
+        let key = ((handler.CacheKey.Value handler.Init) (FileChecked result)).Value
+
+        cacheIface.Set
+            { Plugin = "analyzers"
+              File = Some(compositeFileKey "/tmp" file) }
+            key
+            { CacheKey = key
+              Errors = [ file, [] ]
+              Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 5.0)
+              EmittedEvents = [] }
+
+        result
+
+    let a = seed "/tmp/evidence/A.fs"
+    let b = seed "/tmp/evidence/B.fs"
+
+    host.EmitFileChecked a
+    host.EmitFileChecked b
+    waitForQuiescent host 15000
+
+    let summary () =
+        match host.GetStatus "analyzers" with
+        | Some(Completed(_, v)) -> v.Summary
+        | Some(Failed(_, _, v)) -> v.Summary
+        | other -> failwith $"expected a terminal analyzers status, got %A{other}"
+
+    test <@ summary () = "0 findings (0 errors, 0 warnings); 0 files examined, 2 replayed from cache (cached)" @>
+
+    // A file with no cache entry runs the handler (it crashes on the null parse
+    // results — still an examination), then a replay reports both tallies.
+    host.EmitFileChecked(fakeResult "/tmp/evidence/Fresh.fs")
+    waitForQuiescent host 15000
+    host.EmitFileChecked a
+    waitForQuiescent host 15000
+
+    test <@ (summary ()).EndsWith("; 1 files examined, 3 replayed from cache (cached)") @>
