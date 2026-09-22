@@ -2737,6 +2737,57 @@ let ``a deleted file is pruned the same way a renamed one is`` () =
     test <@ vanished = [ deleted ] @>
     test <@ files = [ "/repo/src/Stays.fs" ] @>
 
+// --- a scoped invalidation says WHICH projects, not just how many ---
+
+[<Fact>]
+let ``a scoped invalidation names the projects it invalidated`` () =
+    // "2 changed + 14 dependent" cost a reader on another machine a 45-minute
+    // re-run at DEBUG to learn WHICH two, from paths this call site already holds.
+    let rendered =
+        Daemon.describeChangedProjects
+            "/repo"
+            [ "/repo/src/Intelligence/Intelligence.fsproj"
+              "/repo/src/Shared/Shared.fsproj" ]
+
+    test <@ rendered = " [src/Intelligence/Intelligence.fsproj, src/Shared/Shared.fsproj]" @>
+
+[<Fact>]
+let ``two projects sharing a file name stay distinguishable`` () =
+    // Reported repo-relative rather than by file name on purpose. A basename that
+    // merges two subjects is how a report becomes WRONG rather than merely coarse —
+    // the same collision that puts a caveat on every basename-matched measurement.
+    let rendered =
+        Daemon.describeChangedProjects "/repo" [ "/repo/a/Tests.fsproj"; "/repo/b/Tests.fsproj" ]
+
+    test <@ rendered = " [a/Tests.fsproj, b/Tests.fsproj]" @>
+
+[<Fact>]
+let ``a wide invalidation names some and says how many it elided`` () =
+    // A tree-wide invalidation must not turn one log line into a screenful, and must
+    // not truncate SILENTLY either — a reader who cannot tell a list was cut will
+    // read the shown set as the whole set.
+    let projects = [ for i in 1..12 -> $"/repo/p%d{i}/P%d{i}.fsproj" ]
+    let rendered = Daemon.describeChangedProjects "/repo" projects
+
+    test <@ rendered.Contains "p1/P1.fsproj" @>
+    test <@ rendered.Contains "p8/P8.fsproj" @>
+    test <@ not (rendered.Contains "p9/P9.fsproj") @>
+    test <@ rendered.EndsWith ", and 4 more]" @>
+
+[<Fact>]
+let ``no changed projects renders nothing at all`` () =
+    // The fragment is spliced into a sentence, so the empty case has to contribute
+    // no text rather than an empty bracket pair.
+    test <@ Daemon.describeChangedProjects "/repo" [] = "" @>
+
+[<Fact>]
+let ``a project outside the repo root keeps its absolute path`` () =
+    // Relativising something outside the root yields a ladder of `..` segments that
+    // is longer and harder to read than the path it replaced.
+    let rendered = Daemon.describeChangedProjects "/repo" [ "/elsewhere/Other.fsproj" ]
+
+    test <@ rendered = " [/elsewhere/Other.fsproj]" @>
+
 // --- per-scan measurement is emitted and comparable ---
 
 [<Fact(Timeout = 60000)>]

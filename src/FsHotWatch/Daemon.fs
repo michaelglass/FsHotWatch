@@ -769,6 +769,45 @@ let private discoverAndRegisterProjects
               Registered = registeredCount }
     }
 
+/// How many changed projects a scoped-invalidation line names before eliding.
+[<Literal>]
+let internal scopedChangeNamesLogged = 8
+
+/// Render the changed projects for the scoped-invalidation log line.
+///
+/// The COUNT is not the actionable fact; the NAMES are. "2 changed + 14 dependent"
+/// tells a reader that something rewrote two project inputs mid-scan and refuses to
+/// say which two — and the paths are in hand at the call site, emitted one line
+/// earlier at DEBUG, which is the level nobody runs a long gate at. Recovering them
+/// meant re-running the whole gate with logging raised.
+///
+/// Repo-relative rather than by file name: two projects in different directories can
+/// share a `.fsproj` name, and a name that silently merges two subjects is how a
+/// count becomes wrong rather than merely coarse.
+///
+/// Elides past `scopedChangeNamesLogged` so a tree-wide invalidation cannot turn one
+/// line into a screenful, and SAYS it elided rather than truncating silently.
+let internal describeChangedProjects (repoRoot: string) (projects: string list) : string =
+    let relative (path: string) =
+        let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+
+        if rel.StartsWith("..", StringComparison.Ordinal) then
+            path
+        else
+            rel
+
+    match projects with
+    | [] -> ""
+    | _ ->
+        let shown = projects |> List.truncate scopedChangeNamesLogged |> List.map relative
+        let elided = projects.Length - shown.Length
+        let names = String.concat ", " shown
+
+        if elided > 0 then
+            $" [%s{names}, and %d{elided} more]"
+        else
+            $" [%s{names}]"
+
 /// Map a batch of changed project-tier paths (`.fsproj`, `.props`, or
 /// `obj/project.assets.json`) to the set of *known* `.fsproj` paths whose FCS
 /// state should be scoped-invalidated.
@@ -1356,7 +1395,7 @@ let private processBatchAttempt
 
                 Logging.info
                     "daemon"
-                    $"Scoped project change — %d{affectedFsprojs.Length} changed + %d{recheckProjects.Length - affectedFsprojs.Length} dependent project(s) invalidated; rest stay warm"
+                    $"Scoped project change — %d{affectedFsprojs.Length} changed%s{describeChangedProjects ctx.RepoRoot affectedFsprojs} + %d{recheckProjects.Length - affectedFsprojs.Length} dependent project(s) invalidated; rest stay warm"
 
                 let! _ =
                     rediscoverAndClearRemoved
