@@ -1559,4 +1559,3 @@ let ``every IpcFault case yields a non-empty hint`` () =
         let hint = ipcErrorHint sample
         test <@ hint.Length > 0 @>
         test <@ not (hint.Contains "None") @>
-

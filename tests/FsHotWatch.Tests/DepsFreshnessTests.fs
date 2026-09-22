@@ -910,7 +910,10 @@ let ``evaluateProject: a concurrent evaluation waits for an in-flight restore in
     let restored = ref false
 
     let probe _ =
-        if System.Threading.Volatile.Read(&restored.contents) then Fresh else Stale
+        if System.Threading.Volatile.Read(&restored.contents) then
+            Fresh
+        else
+            Stale
 
     let winner =
         System.Threading.Tasks.Task.Run(fun () ->
