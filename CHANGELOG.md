@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **cli: a filtered `test-rerun` no longer buys a full-suite run without saying so.**
+  With no daemon running and no valid full-suite baseline (a fresh clone or workspace),
+  `fshw test-rerun --filter-class X` started a daemon whose warm-up test pass the
+  test-prune plugin widens to EVERY configured project — the run the no-baseline rule
+  requires. The rerun's own filter was still honoured, but the user who asked for one
+  class also got the whole suite, and the only sign was a `Scope: FULL SUITE` line in the
+  daemon log. Parallel agents each doing a targeted rerun in their own workspace each
+  bought a full suite. A narrowed rerun (`--filter-class`, `--filter-trait`, `--project`)
+  now decides before it starts anything: with no daemon and no valid baseline it
+  **refuses (exit 2)**, naming the reason, and offers `fshw confirm` (earn the baseline)
+  or the same command with the new **`--allow-full-suite`** (`-F`) to start the daemon
+  anyway. Against an already-running daemon it proceeds, and says the daemon's own impact
+  runs are full-suite until a baseline exists and that the rerun earns no verdict. A
+  plain `test-rerun` (no narrowing) and a workspace with a valid baseline are unchanged.
+
 - **core: `fshw rerun <plugin>` no longer depends on the daemon's own working directory.**
   The synthetic path a rerun emits was a bare relative name, resolved downstream against
   the PROCESS working directory. A daemon outlives the shell that started it, so that

@@ -29,6 +29,10 @@ type RerunFlag =
         CmdArg("project")>] Project of string
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.");
         CmdArg("seconds")>] WaitSec of int
+    | [<CmdFlag(Description =
+                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun refuses rather than silently buying that run.",
+                Name = "allow-full-suite",
+                Short = "F")>] AllowFullSuite
 
 /// Default slot-wait budget (seconds) sent to the daemon's `run-tests` command
 /// when `--wait-sec` is not given. Generous so a long `tests.beforeRun` chain
@@ -66,7 +70,8 @@ module RerunFilter =
             // string — passing `--project` to the runner would make it choke on an
             // unknown option.
             | Project _
-            | WaitSec _ -> None)
+            | WaitSec _
+            | AllowFullSuite -> None)
         |> String.concat " "
 
     /// The test projects named with `--project`, in the order given. Empty means "every
@@ -85,6 +90,105 @@ module RerunFilter =
             | WaitSec n -> Some n
             | _ -> None)
         |> Option.defaultValue DefaultTestRerunWaitSec
+
+/// Whether a NARROWED `test-rerun` may start a daemon in a workspace with no valid
+/// full-suite baseline.
+///
+/// A daemon's startup scan ends in an impact run, and with no valid baseline the
+/// test-prune plugin widens that run to EVERY configured test project — correctly, for
+/// the verdict it serves. The rerun's own filter is still honoured, but a user who asked
+/// for one class would also be buying the full suite, with nothing on the command's
+/// output to say so. So the rerun decides BEFORE it starts anything, and never widens
+/// silently: it refuses (naming the reason and the two ways forward), or it proceeds and
+/// says what else is running.
+module RerunBaseline =
+    open FsHotWatch.TestPrune
+
+    [<RequireQualifiedAccess>]
+    type Decision =
+        | Proceed
+        /// Run, after printing these lines.
+        | ProceedWithNotice of lines: string list
+        /// Do not start or send anything; print these lines.
+        | Refuse of lines: string list
+
+    /// Why the workspace's full-suite baseline cannot vouch for `runnable` — `None` when
+    /// it can, or when no test project is configured (then no baseline is owed). The same
+    /// reading the test-prune plugin makes from the same sidecar.
+    let invalidReason (repoRoot: string) (runnable: Set<string>) : string option =
+        if Set.isEmpty runnable then
+            None
+        else
+            match FullSuiteBaseline.load repoRoot with
+            | FullSuiteBaseline.LoadedBaseline.Loaded None -> Some FullSuiteBaseline.absentReason
+            | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> FullSuiteBaseline.staleness runnable baseline
+            | FullSuiteBaseline.LoadedBaseline.Unreadable reason ->
+                Some
+                    $"the full-suite baseline (%s{FullSuiteBaseline.sidecarPath repoRoot}) exists but could not be read: %s{reason}"
+
+    /// The narrowing flags as `(flag, value)` pairs, in the order given.
+    let private narrowing (flags: RerunFlag list) : (string * string) list =
+        flags
+        |> List.choose (function
+            | FilterClass p -> Some("--filter-class", p)
+            | FilterTrait t -> Some("--filter-trait", t)
+            | Project p -> Some("--project", p)
+            | WaitSec _
+            | AllowFullSuite -> None)
+
+    /// POSIX single-quoting for a value the user will paste back into a shell — a
+    /// `--filter-class *Foo*` glob left bare is expanded (or rejected) by zsh.
+    let private shellQuote (s: string) : string =
+        if
+            s
+            |> Seq.exists (fun c -> not (Char.IsLetterOrDigit c || "-_.=+/,:@".Contains c))
+        then
+            "'" + s.Replace("'", "'\\''") + "'"
+        else
+            s
+
+    let private render (quote: string -> string) (pairs: (string * string) list) : string =
+        pairs
+        |> List.map (fun (flag, value) -> $"%s{flag} %s{quote value}")
+        |> String.concat " "
+
+    let decide (flags: RerunFlag list) (daemonRunning: bool) (invalid: string option) : Decision =
+        let pairs = narrowing flags
+
+        match invalid with
+        | None -> Decision.Proceed
+        // A plain `test-rerun` already asks for every project: nothing is widened.
+        | Some _ when List.isEmpty pairs -> Decision.Proceed
+        | Some reason ->
+            let asked = render id pairs
+
+            let header =
+                $"fshw test-rerun: no valid full-suite baseline in this workspace — %s{reason}."
+
+            let noVerdict =
+                "  A filtered rerun earns no verdict: there is no baseline for the tests it skips to be \
+                 equivalent to. `fshw confirm` runs the full suite and earns one."
+
+            if daemonRunning then
+                Decision.ProceedWithNotice
+                    [ header
+                      $"  This rerun runs only what you asked for (%s{asked}), but until a baseline is earned the \
+                        daemon widens its own impact runs to the FULL SUITE, and this rerun may queue behind one."
+                      noVerdict ]
+            elif List.contains AllowFullSuite flags then
+                Decision.ProceedWithNotice
+                    [ header
+                      $"  --allow-full-suite: starting the daemon anyway. Its warm-up test pass runs the FULL SUITE \
+                        (every configured test project); your rerun (%s{asked}) runs alongside it."
+                      noVerdict ]
+            else
+                Decision.Refuse
+                    [ $"fshw test-rerun: refusing — no valid full-suite baseline in this workspace: %s{reason}."
+                      $"  You asked for %s{asked}. No daemon is running here, and starting one runs a warm-up \
+                        test pass that, with no baseline, is widened to the FULL SUITE (every configured test \
+                        project) — far more than you asked for. Nothing was started."
+                      "  To earn the baseline (runs the full suite):              fshw confirm"
+                      $"  To start the daemon anyway and run your filter too:     fshw test-rerun %s{render shellQuote pairs} --allow-full-suite" ]
 
 type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
@@ -2447,6 +2551,14 @@ let executeCommand
             // naming a real class can run only the wrong project and report no match.
             let projects = RerunFilter.projects flags
 
+            let runnable =
+                config.Tests
+                |> Option.map (fun t -> t.Projects |> List.map (fun p -> p.Project) |> Set.ofList)
+                |> Option.defaultValue Set.empty
+
+            let baselineDecision =
+                RerunBaseline.decide flags (ipc.IsRunning pipeName) (RerunBaseline.invalidReason repoRoot runnable)
+
             let runArgsJson =
                 match RerunFilter.render flags, projects with
                 | "", [] -> JsonSerializer.Serialize {| waitSec = waitSec |}
@@ -2458,16 +2570,30 @@ let executeCommand
                            waitSec = waitSec
                            projects = ps |}
 
-            withDaemon (fun () ->
-                let result =
-                    if UI.isInteractive then
-                        UI.withSpinner "Rerunning tests" (fun () ->
-                            ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
-                    else
-                        eprintfn "  Rerunning tests..."
-                        ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
+            let rerun () =
+                withDaemon (fun () ->
+                    let result =
+                        if UI.isInteractive then
+                            UI.withSpinner "Rerunning tests" (fun () ->
+                                ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
+                        else
+                            eprintfn "  Rerunning tests..."
+                            ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
 
-                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+                    IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+
+            match baselineDecision with
+            | RerunBaseline.Decision.Proceed -> rerun ()
+            | RerunBaseline.Decision.ProceedWithNotice lines ->
+                for line in lines do
+                    eprintfn "%s" line
+
+                rerun ()
+            | RerunBaseline.Decision.Refuse lines ->
+                for line in lines do
+                    eprintfn "%s" line
+
+                2
         | Format flags when isRunOnce flags ->
             let formatConfig =
                 { stripConfig config with

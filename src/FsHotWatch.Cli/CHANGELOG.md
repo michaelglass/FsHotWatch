@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A narrowed `test-rerun` refuses rather than silently starting a full-suite daemon.**
+  With no daemon running and no valid full-suite baseline, `--filter-class` /
+  `--filter-trait` / `--project` exits 2 and says why, instead of starting a daemon whose
+  warm-up runs every test project. `--allow-full-suite` (`-F`) starts it anyway; against a
+  running daemon the rerun proceeds with a notice that no verdict can be earned.
+
 - **`confirm` and `confirm --run-once` now word their scope refusals identically.**
   The two transports each carried a copy of the test-scope, check-reach, set-scope and
   forced-run commands, and the copies had drifted (e.g. "could not put the daemon in
