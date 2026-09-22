@@ -1,7 +1,8 @@
-/// The per-project ratchet maps covered lines to symbol ids and then writes those ids
-/// into a table whose `symbol_id` is a foreign key into `symbols`. The mapping and the
-/// write must be one transaction: a graph rebuild that deletes the symbol in between
-/// turns the write into SQLite error 19 (FOREIGN KEY constraint failed).
+/// The per-project ratchet maps covered lines to symbol occurrence ids and then writes
+/// those ids into a table whose `occurrence_id` is a foreign key into
+/// `symbol_occurrences`. The mapping and the write must be one transaction: a graph
+/// rebuild that deletes the occurrence in between turns the write into SQLite error 19
+/// (FOREIGN KEY constraint failed).
 module FsHotWatch.Tests.TestPruneRatchetTransactionTests
 
 open System
@@ -13,6 +14,11 @@ open FsHotWatch.Tests.TestHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
+
+/// What a graph rebuild's orphan removal does to a declaration that vanished from its file.
+[<Literal>]
+let private deleteCoveredOccurrence =
+    "DELETE FROM symbol_occurrences WHERE symbol_id = (SELECT id FROM symbols WHERE full_name = 'Fixture.covered');"
 
 [<Theory(Timeout = 10000)>]
 [<InlineData(false)>]
@@ -58,7 +64,7 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
             // Microsoft.Data.Sqlite reads zero as "wait forever", not "fail now". Bound
             // the genuine lock wait while the writer owns the mapping.
             remove.CommandTimeout <- 1
-            remove.CommandText <- "DELETE FROM symbols WHERE full_name = 'Fixture.covered';"
+            remove.CommandText <- deleteCoveredOccurrence
 
             try
                 Assert.Equal(1, remove.ExecuteNonQuery())
@@ -87,7 +93,8 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
 
         coverage.CommandText <-
             """SELECT COUNT(*) FROM fshw_project_ratchet_coverage c
-               JOIN symbols s ON s.id = c.symbol_id
+               JOIN symbol_occurrences o ON o.id = c.occurrence_id
+               JOIN symbols s ON s.id = o.symbol_id
                WHERE c.project = 'Fixture.Tests' AND s.full_name = 'Fixture.covered'
                  AND c.line_offset = 0 AND c.hits = 7;"""
 
@@ -96,6 +103,6 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
         // The exclusion lasts only for the transaction. The waiting graph mutation may
         // proceed afterwards, and the ordinary FK cascade removes the obsolete points.
         use removeAfterCommit = inspection.CreateCommand()
-        removeAfterCommit.CommandText <- "DELETE FROM symbols WHERE full_name = 'Fixture.covered';"
+        removeAfterCommit.CommandText <- deleteCoveredOccurrence
         Assert.Equal(1, removeAfterCommit.ExecuteNonQuery())
         Assert.Equal(0L, Convert.ToInt64(coverage.ExecuteScalar())))

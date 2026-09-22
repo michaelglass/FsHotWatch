@@ -383,8 +383,11 @@ let private ProjectRatchetMetadataTable = "fshw_project_ratchet_metadata"
 [<Literal>]
 let private ProjectRatchetSchemaVersion = 1
 
+/// A covered line, stored relative to the TestPrune.Core symbol OCCURRENCE (one per
+/// declaring file) that it falls under, so the point follows that declaration's moves
+/// and is deleted with it.
 type private ProjectRatchetCoveragePoint =
-    { SymbolId: int64
+    { OccurrenceId: int64
       LineOffset: int
       Hits: int }
 
@@ -399,13 +402,13 @@ let private ensureProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.Sqlit
     cmd.CommandText <-
         $"""CREATE TABLE IF NOT EXISTS %s{ProjectRatchetCoverageTable} (
                 project TEXT NOT NULL,
-                symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                occurrence_id INTEGER NOT NULL REFERENCES symbol_occurrences(id) ON DELETE CASCADE,
                 line_offset INTEGER NOT NULL,
                 hits INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (project, symbol_id, line_offset)
+                PRIMARY KEY (project, occurrence_id, line_offset)
             );
-            CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_symbol
-                ON %s{ProjectRatchetCoverageTable} (symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_occurrence
+                ON %s{ProjectRatchetCoverageTable} (occurrence_id);
             CREATE TABLE IF NOT EXISTS %s{ProjectRatchetMetadataTable} (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 schema_version INTEGER NOT NULL,
@@ -475,10 +478,12 @@ let private mapProjectRatchetCoverage
             .Replace('\\', '/')
 
     // Match TestPrune.Core's line-to-symbol anchor: the nearest declaration at
-    // or before the covered line. The stored offset then follows symbol moves.
+    // or before the covered line, in THIS file (a symbol declared in a signature and
+    // an implementation has one occurrence in each). The stored offset then follows
+    // that occurrence's moves.
     lookup.CommandText <-
         """SELECT id, @line - line_start
-           FROM symbols
+           FROM symbol_occurrences
            WHERE source_file = @file AND line_start <= @line
            ORDER BY line_start DESC
            LIMIT 1;"""
@@ -503,8 +508,8 @@ let private mapProjectRatchetCoverage
     { Points =
         points
         |> Map.toList
-        |> List.map (fun ((symbolId, lineOffset), hits) ->
-            { SymbolId = symbolId
+        |> List.map (fun ((occurrenceId, lineOffset), hits) ->
+            { OccurrenceId = occurrenceId
               LineOffset = lineOffset
               Hits = hits })
       Ingested = ingested
@@ -519,10 +524,11 @@ let internal persistProjectRatchetCoverageWithMapped
     =
     use conn = db.OpenConnection()
     ensureProjectRatchetCoverageTable conn
-    // The ids `mapProjectRatchetCoverage` returns are foreign keys into `symbols`. Look
-    // them up inside the same IMMEDIATE (write-locked) transaction that persists them: on
-    // a separate read, a concurrent graph rebuild could delete a mapped symbol before the
-    // write, and the insert then fails with SQLite error 19 (FOREIGN KEY constraint).
+    // The ids `mapProjectRatchetCoverage` returns are foreign keys into
+    // `symbol_occurrences`. Look them up inside the same IMMEDIATE (write-locked)
+    // transaction that persists them: on a separate read, a concurrent graph rebuild
+    // could delete a mapped occurrence before the write, and the insert then fails with
+    // SQLite error 19 (FOREIGN KEY constraint).
     use transaction = conn.BeginTransaction(deferred = false)
     let mapped = mapProjectRatchetCoverage conn transaction repoRoot xml
     afterMapped ()
@@ -544,15 +550,15 @@ let internal persistProjectRatchetCoverageWithMapped
         upsert.Transaction <- transaction
 
         upsert.CommandText <-
-            $"""INSERT INTO %s{ProjectRatchetCoverageTable} (project, symbol_id, line_offset, hits)
-                VALUES (@project, @symbol, @offset, @hits)
-                ON CONFLICT(project, symbol_id, line_offset)
+            $"""INSERT INTO %s{ProjectRatchetCoverageTable} (project, occurrence_id, line_offset, hits)
+                VALUES (@project, @occurrence, @offset, @hits)
+                ON CONFLICT(project, occurrence_id, line_offset)
                 DO UPDATE SET hits = MAX(hits, excluded.hits);"""
 
         for point in mapped.Points do
             upsert.Parameters.Clear()
             upsert.Parameters.AddWithValue("@project", input.Project) |> ignore
-            upsert.Parameters.AddWithValue("@symbol", point.SymbolId) |> ignore
+            upsert.Parameters.AddWithValue("@occurrence", point.OccurrenceId) |> ignore
             upsert.Parameters.AddWithValue("@offset", point.LineOffset) |> ignore
             upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
             upsert.ExecuteNonQuery() |> ignore
@@ -599,13 +605,13 @@ let private projectRatchetCobertura (db: Database) : string option =
     use cmd = conn.CreateCommand()
 
     cmd.CommandText <-
-        $"""SELECT s.source_file,
-                   s.line_start + c.line_offset AS absolute_line,
+        $"""SELECT o.source_file,
+                   o.line_start + c.line_offset AS absolute_line,
                    MAX(c.hits)
             FROM %s{ProjectRatchetCoverageTable} c
-            JOIN symbols s ON s.id = c.symbol_id
-            GROUP BY s.source_file, s.line_start + c.line_offset
-            ORDER BY s.source_file, absolute_line;"""
+            JOIN symbol_occurrences o ON o.id = c.occurrence_id
+            GROUP BY o.source_file, o.line_start + c.line_offset
+            ORDER BY o.source_file, absolute_line;"""
 
     use reader = cmd.ExecuteReader()
     let points = ResizeArray<string * int * int>()
@@ -4841,6 +4847,13 @@ let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: 
 
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
 /// call. Pure function: takes state, returns updated state.
+///
+/// The results go to `RebuildProjects` ONE PER FILE, never merged per project.
+/// TestPrune.Core attributes each edge, test method and attribute to the file whose
+/// `AnalysisResult` carried it, so re-indexing a file replaces exactly that file's facts.
+/// A merged result carrying a signature (`.fsi`) and its implementation would credit the
+/// signature's facts to whichever file declared the shared name last, and a later flush
+/// of that file alone would delete them.
 let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
     let allResults = ResizeArray<AnalysisResult>()
 
@@ -4850,27 +4863,8 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         match Map.tryFind projectName newPending with
         | Some items ->
             newPending <- Map.remove projectName newPending
-
-            // Use a full record literal (not AnalysisResult.Create) so per-file
-            // Attributes and ParentLinks survive the per-project merge.
-            // Create defaults both to []; the per-file results above carry them
-            // and we'd silently drop them on every flush. Single fold over
-            // items to avoid 5 separate passes.
-            let syms, deps, tms, attrs, pls =
-                (([], [], [], [], []), items)
-                ||> List.fold (fun (s, d, t, a, p) r ->
-                    (r.Symbols :: s, r.Dependencies :: d, r.TestMethods :: t, r.Attributes :: a, r.ParentLinks :: p))
-
-            let combined =
-                { Symbols = syms |> List.rev |> List.concat
-                  Dependencies = deps |> List.rev |> List.concat
-                  TestMethods = tms |> List.rev |> List.concat
-                  Attributes = attrs |> List.rev |> List.concat
-                  ParentLinks = pls |> List.rev |> List.concat
-                  Diagnostics = AnalysisDiagnostics.Zero }
-
             Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
-            allResults.Add(combined)
+            allResults.AddRange(items)
         | None -> ()
 
     if allResults.Count > 0 then

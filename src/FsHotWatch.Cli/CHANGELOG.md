@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14), in lockstep with
+  FsHotWatch.TestPrune. `fshw dead-code` accepts a v14 index and refuses an older one,
+  as it does for every schema bump. A symbol declared in a signature is reported once,
+  at its implementation.
 - **A narrowed `test-rerun` refuses rather than silently starting a full-suite daemon.**
   With no daemon running and no valid full-suite baseline, `--filter-class` /
   `--filter-trait` / `--project` exits 2 and says why, instead of starting a daemon whose
