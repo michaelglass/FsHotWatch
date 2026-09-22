@@ -93,13 +93,17 @@ symbol currently in the file is new. The widening is **per file**, not per proje
 it is bounded — the baseline is marked established once the extraction is consumed, so a
 recovery costs one widening rather than one on every save.
 
-`NoDiff` is now reachable from exactly one pair, `Unknown, NoRows` — the ordinary cold
-scan, whose full-suite baseline runs anyway, so nothing is being declined. A test
-enumerates the whole 3×3 table and fails if any other pair drifts into it.
+`NoDiff` no longer exists. Its last pair, `Unknown, NoRows`, was justified as the
+ordinary cold scan, whose full-suite baseline runs anyway — but a file **created** while
+the daemon is warm reaches the same pair (no sidecar record, no rows) with a valid
+watermark and a session baseline, so its tests took the zero-affected skip: a green that
+ran none of them. That pair now widens like `Clean, NoRows`. A test enumerates the whole
+3×3 table and fails if any pair stops being diffable for a clean extraction.
 
-The two ways of contributing nothing are also named separately (`FileFreshness.planLook`
-→ `NothingHidden` vs `FileUnverified`), because a run that skipped a file and a run that
-had nothing to skip used to produce the same info-level log line and the same green.
+The only way left to contribute nothing is `FileFreshness.planLook` → `FileUnverified`
+(FCS reported errors on this very check), and it is reported at warn, because a run that
+skipped a file and a run that had nothing to skip used to produce the same info-level
+log line and the same green.
 
 ## Configuration
 

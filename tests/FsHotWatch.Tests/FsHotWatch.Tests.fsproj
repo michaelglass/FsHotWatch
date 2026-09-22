@@ -87,6 +87,7 @@
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
     <Compile Include="DeletedFileFreshnessTests.fs" />
+    <Compile Include="NewFileSelectionTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />

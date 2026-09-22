@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed: a source file created while the daemon was warm could run zero tests. Its first
+  check has no freshness record and no index rows, the pair `trustStoredRows` answered
+  with "contribute no changed symbols" on the premise that only a cold scan produces it
+  and the cold-scan full suite covers it. With a valid full-suite watermark and a
+  session baseline no such run is owed, so the new file's tests took the zero-affected
+  skip — logged as "the cold-scan full-suite run covers it" while nothing did. That pair
+  now widens (every symbol in the file reads as new), and the narrow `NoDiff` /
+  `NothingHidden` answers are gone.
 - Fixed: a test host that could not start refused every later launch on an unchanged
   tree. A refused launch releases the shared build-artifact lease and the next claimant
   is handed whatever the last release left; a host start failure released `Invalid`,

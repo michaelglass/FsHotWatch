@@ -262,6 +262,14 @@ let classify (relPath: string) (store: Store) : Freshness =
 /// file. The `detectChanges` call site in `TestPrunePlugin` matches on this instead
 /// of on a bare bool, so every arm has to be named — and so the arm that is only
 /// reachable after the database threw its rows away cannot be reached by accident.
+///
+/// There is deliberately NO "contribute nothing" arm. There used to be one, `NoDiff`,
+/// reachable last from `Unknown, NoRows` on the premise that only the ordinary cold
+/// scan produces that pair and its full-suite run covers it. A file CREATED while the
+/// daemon is warm produces the identical pair — no sidecar record, no rows — with a valid
+/// full-suite watermark and a session baseline, so nothing widened the run: the new
+/// file's tests took the zero-affected skip, a green that executed none of them.
+/// "I have never seen this file" is never "nothing in it changed".
 type StoredRowTrust =
     /// The stored rows are a usable baseline: diff the current extraction against them.
     | DiffAgainstStored
@@ -270,17 +278,6 @@ type StoredRowTrust =
     /// possible answer — every symbol currently in the file reads as added — and that is
     /// the intended outcome, not a side effect. See `trustStoredRows`.
     | EverySymbolIsNew
-    /// Contribute no changed symbols for this file. THE NARROWEST ANSWER THERE IS, and
-    /// the only one that can hide a change, so it is reachable from exactly ONE pair —
-    /// `Unknown, NoRows`, the ordinary cold scan whose full-suite baseline runs anyway.
-    ///
-    /// `Dirty, _` used to land here too, which made a file whose last
-    /// check hit a transient FCS error contribute NOTHING on the pass that recovered —
-    /// no warning, no selection, a green that had tested none of it. "I cannot tell what
-    /// changed" and "nothing changed" are different answers; this arm is only ever the
-    /// second one. `trustStoredRows: NoDiff is reachable from exactly one pair` is the
-    /// test that keeps it that way.
-    | NoDiff
 
 /// What the index holds for one file, and WHEN it came to hold it.
 ///
@@ -336,17 +333,17 @@ type StoredRows =
 /// is the CORRECT one. `Clean` over an empty row set is the honest reading "this index
 /// has never seen this file", and every symbol in it therefore is new. That also covers
 /// the case that has nothing to do with a recreate: a clean-checked file that genuinely
-/// held no symbols and has just gained some. Routing either to `NoDiff` would drop the
+/// held no symbols and has just gained some. Contributing nothing for either would drop the
 /// file's changes silently — under-testing, which `PendingVerification.fs`'s header
 /// forbids ("widen, never wipe"). The `Clean` arm is therefore load-bearing for
 /// correctness, not an optimisation; `trustStoredRows: a Clean stamp can never buy the
 /// NARROW answer` is the test that says so.
 ///
-/// `Unknown` keeps its seeded-DB asymmetry on purpose: with PRIOR rows it is a seeded
-/// `test-impact.db` (ADR-010) whose sidecar did not travel into a fresh workspace, and
-/// those rows are a real prior extraction worth diffing; with none it is an ordinary
-/// cold scan whose full-suite baseline runs anyway, so widening would buy nothing and
-/// cost a whole-suite selection on every cold start.
+/// `Unknown` with PRIOR rows is a seeded `test-impact.db` (ADR-010) whose sidecar did
+/// not travel into a fresh workspace, and those rows are a real prior extraction worth
+/// diffing. `Unknown` with NO rows widens, for the same reason `Clean, NoRows` does: the
+/// index has never seen this file. That pair is not only the cold scan — a file created
+/// while the daemon is warm reaches it too, with no full-suite run owed to cover it.
 /// `RowsFromThisRun` is the arm the index clock added. It resolves exactly as `NoRows` does,
 /// and for the same reason: in both cases the index knew NOTHING about this file
 /// before this run, so every symbol currently in it is new to the index. Routing it to
@@ -359,13 +356,14 @@ let trustStoredRows (freshness: Freshness) (rows: StoredRows) : StoredRowTrust =
     | Clean, RowsFromPriorRun -> DiffAgainstStored
     | Clean, (NoRows | RowsFromThisRun) -> EverySymbolIsNew
     | Unknown, RowsFromPriorRun -> DiffAgainstStored
-    // No sidecar record AND no baseline. `NoRows` stays `NoDiff` — an ordinary cold
-    // scan, whose full-suite baseline runs anyway, so widening buys nothing and costs a
-    // whole-suite selection on every cold start. `RowsFromThisRun` is NOT that case: the
-    // rows are this run's own, so the alternative is not "a cheap cold scan" but "a diff
-    // against itself", and `PendingVerification.fs`'s rule applies — widen, never wipe.
-    | Unknown, RowsFromThisRun -> EverySymbolIsNew
-    | Unknown, NoRows -> NoDiff
+    // No sidecar record AND no baseline: the index has never seen this file. This was
+    // `NoDiff` for `NoRows`, justified as "an ordinary cold scan, whose full-suite
+    // baseline runs anyway". A file created in a WARM daemon reaches the same pair with
+    // a valid watermark and a session baseline, contributed nothing, and its tests took
+    // the zero-affected skip. On a real cold scan the full suite runs regardless, so
+    // widening there costs only the queue entries that run discharges.
+    // `PendingVerification.fs`'s rule applies to both — widen, never wipe.
+    | Unknown, (NoRows | RowsFromThisRun) -> EverySymbolIsNew
     // `Dirty` says the stored rows are not a BASELINE — they were
     // written while FCS reported errors and may be partial. It says NOTHING about the
     // current extraction, which the call site has already established is FCS-clean and
@@ -391,10 +389,9 @@ let trustStoredRows (freshness: Freshness) (rows: StoredRows) : StoredRowTrust =
 /// extraction it is holding is itself FCS-clean.
 ///
 /// The call site carried this as a bare `bool` that it then `ignore`d,
-/// which made the two ways of contributing nothing indistinguishable: an ordinary cold
-/// scan, which hides nothing, and a file whose changes were genuinely dropped. Both
-/// logged at `info`, both selected nothing, and from outside a run that skipped a file
-/// and a run that had nothing to skip produce the same green.
+/// which made a file whose changes were genuinely dropped log at `info` and select
+/// nothing, indistinguishable from a run that had nothing to skip. The one remaining
+/// way to contribute nothing, `FileUnverified`, is named and reported at warn.
 ///
 /// It also carries WHAT to diff against, rather than leaving the call site to work that
 /// out from the `StoredRowTrust` a second time. The `Dirty`-recovery fix found that call
@@ -414,10 +411,6 @@ type DiffBaseline =
 type LookOutcome =
     /// Diff the current extraction, against the baseline named here.
     | Diffable of DiffBaseline
-    /// No changed symbols for this file, and nothing is hidden by that: the ordinary
-    /// cold scan (`Unknown, NoRows`), whose full-suite baseline runs anyway. There is
-    /// no narrower answer being taken here, because there is no wider one available.
-    | NothingHidden
     /// No changed symbols for this file, and this file's changes ARE hidden by that.
     /// FCS reported errors for the file on this very check, so the symbols just
     /// extracted may be PARTIAL — widening from them would enqueue names that may not
@@ -432,13 +425,12 @@ type LookOutcome =
     | FileUnverified
 
 /// Join the two halves of the decision. Total over the pair, so no caller can add a
-/// third silent way to contribute nothing without adding a case here first — and the
+/// second silent way to contribute nothing without adding a case here first — and the
 /// baseline comes out of the same match that chose the arm, so the two cannot disagree.
 let planLook (currentClean: bool) (trust: StoredRowTrust) : LookOutcome =
     match currentClean, trust with
     | true, DiffAgainstStored -> Diffable AgainstStoredRows
     | true, EverySymbolIsNew -> Diffable AgainstNothing
-    | true, NoDiff -> NothingHidden
     | false, _ -> FileUnverified
 
 /// The rows to diff the current extraction against, given the baseline the plan chose.
@@ -469,7 +461,7 @@ let baselineRows (baseline: DiffBaseline) (storedRows: 'row list) : 'row list =
 ///     one per file per session instead of forever: once a trustworthy extraction has
 ///     been taken and consumed, the rows the next look sees genuinely predate whatever
 ///     edit provokes it, and the cheap narrow diff is correct again. A discarded
-///     extraction — an FCS-dirty one, or a `NoDiff` arm — marks nothing, so the next
+///     extraction — an FCS-dirty one — marks nothing, so the next
 ///     look still widens.
 ///
 /// Thread-safe by construction: the mailbox and the cache intercept run on different

@@ -355,9 +355,11 @@ let ``trustStoredRows: Clean over PRIOR rows diffs; Clean over nothing widens`` 
     test <@ trustStoredRows Clean NoRows = EverySymbolIsNew @>
 
 [<Fact(Timeout = 5000)>]
-let ``trustStoredRows: Unknown diffs only against PRIOR rows (ADR-010 seeded DB)`` () =
+let ``trustStoredRows: Unknown diffs only against PRIOR rows (ADR-010 seeded DB); over nothing it widens`` () =
     test <@ trustStoredRows Unknown RowsFromPriorRun = DiffAgainstStored @>
-    test <@ trustStoredRows Unknown NoRows = NoDiff @>
+    // Not `NoDiff` any more: a file created in a warm daemon reaches this pair with no
+    // cold-scan full suite to cover it. `NewFileSelectionTests` drives that end to end.
+    test <@ trustStoredRows Unknown NoRows = EverySymbolIsNew @>
 
 [<Fact(Timeout = 5000)>]
 let ``trustStoredRows: Dirty never diffs, whatever the index holds — it WIDENS instead`` () =
@@ -393,10 +395,8 @@ let ``rows THIS RUN wrote are not a baseline — every symbol reads as new`` () 
 [<Fact(Timeout = 5000)>]
 let ``no sidecar and no baseline still widens rather than diffing against itself`` () =
     // The fresh-workspace shape: `.fshw/` did not travel, so there is no sidecar
-    // record, and the only rows in the index are the ones this scan wrote. `NoDiff`
-    // (the pre-fix answer for `Unknown` + no rows) is right for an ordinary cold scan,
-    // whose full-suite baseline runs anyway — it is NOT right here, where the
-    // alternative was a diff against itself. Widen, never wipe.
+    // record, and the only rows in the index are the ones this scan wrote. Diffing
+    // against them is a diff against itself. Widen, never wipe.
     test <@ trustStoredRows Unknown RowsFromThisRun = EverySymbolIsNew @>
 
 [<Fact(Timeout = 5000)>]
@@ -477,7 +477,6 @@ let ``the pass that RECOVERS from a transient FCS error selects the file's tests
     let priorSymbols =
         match plan with
         | Diffable baseline -> baselineRows baseline storedDuringDirtyCheck
-        | NothingHidden
         | FileUnverified -> []
 
     let (changes, _) = detectChanges currentAfterRecovery priorSymbols
@@ -515,7 +514,6 @@ let ``the recovery pass selected NOTHING when the partial rows were this run's o
     let priorSymbols =
         match plan with
         | Diffable baseline -> baselineRows baseline identicalRows
-        | NothingHidden
         | FileUnverified -> identicalRows
 
     test <@ List.isEmpty priorSymbols @>
@@ -538,17 +536,14 @@ let ``baselineRows is what makes AgainstNothing mean nothing`` () =
     test <@ baselineRows AgainstStoredRows rows = rows @>
 
 [<Fact(Timeout = 5000)>]
-let ``NoDiff is reachable from exactly ONE pair — the detector-went-blind guard`` () =
+let ``every pair is diffable once the extraction is clean — the detector-went-blind guard`` () =
     // THE test for the failure mode itself rather than for one instance of it.
     //
-    // `NoDiff` is the only `StoredRowTrust` that can hide a change: it contributes no
-    // symbols, so nothing selects tests, so the run is green having verified nothing
-    // about the file. Asserting "the Dirty arm no longer returns NoDiff" would not
-    // catch the NEXT arm to drift into it. This enumerates the whole 3x3 product and
-    // names the single pair entitled to that answer — the ordinary cold scan, whose
-    // full-suite baseline runs anyway, so nothing is being declined.
-    //
-    // If a future edit routes any other pair to `NoDiff`, this fails by name.
+    // A trust answer that contributes no symbols for a clean extraction is a green that
+    // verified nothing about the file. `Dirty, _` used to be one; `Unknown, NoRows` was
+    // the last, justified as the cold scan whose full-suite run covers it — until a file
+    // created in a warm daemon reached the same pair with no such run owed. This
+    // enumerates the whole 3x3 product so the NEXT arm to drift narrow fails by name.
     let allPairs =
         [ for freshness in [ Clean; Dirty; Unknown ] do
               for rows in [ NoRows; RowsFromPriorRun; RowsFromThisRun ] -> freshness, rows ]
@@ -557,9 +552,21 @@ let ``NoDiff is reachable from exactly ONE pair — the detector-went-blind guar
     // vacuously.
     test <@ List.length allPairs = 9 @>
 
-    let blind = allPairs |> List.filter (fun (f, r) -> trustStoredRows f r = NoDiff)
+    let blind =
+        allPairs
+        |> List.filter (fun (f, r) ->
+            match planLook true (trustStoredRows f r) with
+            | Diffable _ -> false
+            | FileUnverified -> true)
 
-    test <@ blind = [ (Unknown, NoRows) ] @>
+    Assert.True(List.isEmpty blind, $"pairs that contribute nothing for a clean extraction: %A{blind}")
+
+    // And the only pairs allowed the narrow diff are the ones with a real BEFORE.
+    let narrow =
+        allPairs
+        |> List.filter (fun (f, r) -> planLook true (trustStoredRows f r) = Diffable AgainstStoredRows)
+
+    test <@ narrow = [ (Clean, RowsFromPriorRun); (Unknown, RowsFromPriorRun) ] @>
 
 [<Fact(Timeout = 5000)>]
 let ``PositiveControl: an ordinary run still PRUNES — the fix is not "select everything"`` () =
@@ -582,20 +589,15 @@ let ``PositiveControl: an ordinary run still PRUNES — the fix is not "select e
     test <@ (afterEdit |> List.map changedName) = [ "Heartbeat.alarmWiringA" ] @>
 
 [<Fact(Timeout = 5000)>]
-let ``planLook separates the two ways of contributing nothing`` () =
-    // The loudness half. The call site used to compute a `suppressedDiff: bool` and
-    // then `ignore` it, so "an ordinary cold scan, nothing hidden" and "this file's
-    // changes were DROPPED" were the same value and the same info-level log line.
-    // They need opposite reactions, so they are separate cases.
-    test <@ planLook true NoDiff = NothingHidden @>
-    test <@ planLook false DiffAgainstStored = FileUnverified @>
-    test <@ planLook false EverySymbolIsNew = FileUnverified @>
-    test <@ planLook false NoDiff = FileUnverified @>
-
+let ``planLook: a dirty current extraction is the only way to contribute nothing`` () =
+    // The call site used to compute a `suppressedDiff: bool` and then `ignore` it, so
+    // "this file's changes were DROPPED" logged at info like routine progress. It is now
+    // the one named case that selects nothing, reported at warn.
+    //
     // An FCS-dirty CURRENT extraction is never diffable, whatever the stored rows are
     // worth: widening from symbols that may themselves be partial would enqueue names
     // that need not exist in the tree.
-    for trust in [ DiffAgainstStored; EverySymbolIsNew; NoDiff ] do
+    for trust in [ DiffAgainstStored; EverySymbolIsNew ] do
         test <@ planLook false trust = FileUnverified @>
 
 // -----------------------------------------------------------------------------
@@ -637,8 +639,7 @@ let ``ledger: a CONSUMED extraction establishes the baseline — the widening co
 
 [<Fact(Timeout = 5000)>]
 let ``ledger: an UNCONSUMED extraction establishes nothing — the next look still widens`` () =
-    // The positive control for the mark. An FCS-dirty extraction, or one that landed on
-    // a `NoDiff` arm, is discarded; a baseline it never established must not be claimed
+    // The positive control for the mark. An FCS-dirty extraction is discarded; a baseline it never established must not be claimed
     // on its behalf, or the widening is skipped and the change is lost for good.
     let ledger = PriorRowLedger()
 
@@ -690,18 +691,6 @@ let ``end to end: the fresh-workspace second look SELECTS, where a self-diff sel
     // puts the file's symbols back in front of the selector.
     let (widened, _) = detectChanges current []
     test <@ not (List.isEmpty widened) @>
-
-[<Fact(Timeout = 5000)>]
-let ``trustStoredRows: a Clean stamp can never buy the NARROW answer`` () =
-    // The polarity guard. `NoDiff` contributes no changed symbols for the file, so
-    // routing a Clean stamp there is the UNDER-testing direction — the one
-    // `PendingVerification.fs`'s header forbids and the one the sibling
-    // `pending-verification.json` bug actually took. Collapsing `Clean` into
-    // `Unknown`'s "only when rows exist" rule is exactly how that flip would arrive, and
-    // it lands here.
-    test <@ trustStoredRows Clean RowsFromPriorRun <> NoDiff @>
-    test <@ trustStoredRows Clean RowsFromThisRun <> NoDiff @>
-    test <@ trustStoredRows Clean NoRows <> NoDiff @>
 
 [<Fact(Timeout = 5000)>]
 let ``save uses atomic write — partial state never visible at sidecar path`` () =
