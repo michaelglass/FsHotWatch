@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- perf: a scan dispatches each file once, across tiers as well as within one. The
+  scan resolves each tier's files to check thunks in a PER-TIER dictionary, which
+  collapses a file two projects in the same tier both compile but cannot see one
+  reached through projects in different tiers — that file got a thunk in each and was
+  checked, and emitted, twice. The scan's own summary had been reporting it:
+  `checked 211 of 206 registered file(s), unchecked 0`, and `checked 2083 of 2057` on
+  a larger tree. The first tier to reach a file now wins it, which is the more
+  upstream project, so which options type-check a shared file is deterministic rather
+  than "whichever tier ran last".
+
+- obs: a scoped invalidation names the projects it invalidated instead of only
+  counting them. `Scoped project change — 2 changed + 14 dependent` said that
+  something rewrote two project inputs mid-scan and refused to say which two, while
+  holding the paths — they were emitted one line earlier at DEBUG, the level nobody
+  runs a long gate at, so recovering them meant re-running the whole gate. Named
+  repo-relative, because two projects in different directories can share a `.fsproj`
+  name; elided past eight, and the line says that it elided.
+
+- CORRECTION to the `0.10.0-alpha.43` entry below. "a build no longer re-discovers
+  the tree it was triggered by" is too strong. Measured since on a second machine:
+  of five `project.assets.json` files rewritten during a run, three were byte-identical
+  and correctly suppressed by the seeding, and two had genuinely changed and correctly
+  invalidated. So the accurate claim is that a restore's byte-identical rewrites no
+  longer report every project as changed — which is real, and is not the same as the
+  tree no longer being re-discovered. A single scoped invalidation regenerates the
+  project model and supersedes an in-flight scan as thoroughly as twenty-three do, so
+  narrowing the set does not on its own recover the duplicated pass. What rewrites
+  those two projects' inputs mid-run is not yet identified; a gate's own `beforeRun`
+  steps have been eliminated as the writer.
+
 ## 0.10.0-alpha.43 - 2026-09-22
 
 - perf: a build no longer re-discovers the tree it was triggered by. A cold scan
