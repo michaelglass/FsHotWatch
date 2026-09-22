@@ -89,6 +89,7 @@ type CheckPipeline
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
+    let upstreamHasher = FileContentHasher()
     let mutable nextVersion = 0L
 
     let makeCacheKeyFast (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
@@ -97,14 +98,20 @@ type CheckPipeline
             | true, hash -> hash
             | false, _ -> getProjectOptionsHashRelativeTo repoRoot options
 
-        // GetFileHash returns None when the file is unreadable. Propagate
-        // that None upstream so the cache lookup is bypassed and the next
-        // call (after the transient lock clears) produces a fresh read
-        // instead of poisoning the cache with a synthesized key.
-        keyProvider.GetFileHash(AbsFilePath.value filePath)
-        |> Option.map (fun fileHash ->
-            { FileHash = ContentHash.create fileHash
-              ProjectOptionsHash = ContentHash.create optionsHash })
+        // GetFileHash returns None when the file is unreadable. That None
+        // propagates so the cache lookup is bypassed and the next call (after
+        // the transient lock clears) produces a fresh read instead of
+        // poisoning the cache with a synthesized key.
+        makeCacheKeyWith keyProvider upstreamHasher.Hash repoRoot optionsHash (AbsFilePath.value filePath) options
+
+    /// Raise a working-set-sized backend's bound to the (file, project) pairs registered.
+    let ensureCacheCoversWorkingSet () =
+        match cacheBackend with
+        | Some(:? IWorkingSetSized as sized) ->
+            projectOptionsByProject.Values
+            |> Seq.sumBy (fun o -> o.SourceFiles.Length)
+            |> sized.EnsureCapacity
+        | _ -> ()
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
@@ -206,6 +213,8 @@ type CheckPipeline
                         filteredOptions :: existing
             )
             |> ignore
+
+        ensureCacheCoversWorkingSet ()
 
     /// Get project options by project path.
     member _.GetProjectOptions(projectPath: string) : FSharpProjectOptions option =

@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
+  overran — its tree read from `ps` before the kill (afterwards a survivor has been
+  re-parented and cannot be found from the root), the kill's outcome and duration, and the
+  members still alive after it, polled with `kill(pid, 0)` for up to ~2s and stopping as soon
+  as the tree is gone (not `ps -p`, whose exit code is 1 for some live pids on macOS).
+  Survivors are booked with `ProcessRegistry` as leaks. An unreadable table or an unanswered
+  probe is reported as unknown, never as none.
+  `runProcessTo` / `runProcess` are unchanged.
+
+- Changed: a per-file cache replay's summary carries a tally. It was the plugin's
+  ledger counts plus `(cached)`, which read the same whether every file had been
+  examined or every file had been served from cache. It now reads
+  `M findings (…); E files examined, R replayed from cache (cached)`, counted per
+  registered plugin: `E` is per-file results produced by running the handler, `R`
+  is per-file results replayed.
+
+- fix: the check-result cache served stale diagnostics, and could not help the scan it
+  sits in front of. Three defects in the `"cache": "memory"` backend:
+  - **Unsound key.** Entries were keyed on a file's own bytes and its project's
+    options, not on the files it is type-checked against. Edit `A.fs` and a cached
+    `B.fs` that uses `A` kept its old, clean result on every rescan and change batch,
+    including the from-disk rescan `check`/`confirm` force. The key now also carries
+    `CheckCache.upstreamFingerprint`: the content of the files before it in compile
+    order, every source file of every referenced project (transitively), and in-repo
+    `-r:` assemblies that are not an F# project's output. Unchanged files are
+    re-hashed only when their (mtime, length) stamp moves (`FileContentHasher`).
+  - **Sized below the working set.** A 500-entry LRU against a 1835-file scan that
+    visits files in the same order every time evicts each entry just before it is
+    needed: measured **0 hits of 208** on repeated scans of this repository at the
+    same 27% ratio. `CheckPipeline` now raises an `IWorkingSetSized` backend to the
+    registered (file, project) pairs as projects register, so the configured size is
+    a floor: **208 of 208** hits, warm-rescan FCS CPU 6.7–15.7 s → 0.6–0.8 s.
+  - **Unbounded by edits.** A new result for a (file, project) now replaces the old
+    one, so the cache holds at most one entry per pair — measured about 250 KB of
+    retention per entry beyond what the checker already keeps.
+
+  The daemon also logs the cache's state at startup (`describeCheckCache`), including
+  `OFF`, so an inert cache no longer reads as a working one.
+
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that
