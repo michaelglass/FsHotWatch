@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- perf: a build no longer re-discovers the tree it was triggered by. A cold scan
+  emits a change for every registered file, which starts a build, then waits for
+  that build to leave Running before the FCS tiers read the `obj/` refs it
+  rewrites. The wait is correct and it was not enough: `dotnet restore` rewrites
+  every project's `obj/project.assets.json`, the watcher admits those at the
+  project tier, and a cold daemon held no prior content for any of them — so each
+  was reported changed on the content tracker's no-prior default. The scoped
+  invalidation that followed landed WHILE the scan was still blocked on the build
+  that provoked it, discarding the model the tiers were about to run against and
+  superseding every in-flight check. Measured over a cold scan of 1,868 files,
+  80.5% sat at exactly one cancellation and one check and 82.8% paired exactly
+  n-for-n; an independent run on another machine over 1,573 files put those at
+  84.4% and 86.8%. `observeProjectContent` now seeds each project's assets file
+  alongside its `.fsproj` — without the exclude filter, since assets live under
+  `obj/` by construction and `Watcher.isProjectAssetsJson` bypasses that same
+  filter for the same reason.
+
+- perf: stop retaining background resolutions nothing reads. `FSharpChecker` was
+  created with `keepAllBackgroundResolutions = true` while no code in `src/` reads
+  symbol uses or semantic classification off a check result, so the retained
+  resolutions were pure footprint. A test now scans `src/` for the APIs that would
+  consume them, so turning the flag back off cannot silently break a future reader.
+
 ## 0.10.0-alpha.42 - 2026-09-22
 
 - core: the self-incompatible guard now sees FCS's GROUP SEPARATOR
