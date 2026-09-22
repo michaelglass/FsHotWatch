@@ -770,6 +770,34 @@ let ``foreign and duplicate host completions leave admitted work owned`` () =
     Assert.True other.Snapshot.IsBusy
     other.EndOperation foreign
 
+// The predicate the stall detector's carve-out turns on. It has to separate three
+// states that a busy host cannot otherwise tell apart, so all three are driven here:
+// an ordinary operation (a dispatch fan-out) is NOT a reason to keep waiting; a
+// declared bounded one is, for exactly as long as its deadline has not spoken; and once
+// that deadline records a failure it stops being one, so the detector names it.
+[<Fact>]
+let ``only live bounded work counts as supervised work in flight`` () =
+    let store = Store()
+
+    let unbounded = store.BeginOperation "dispatch"
+    Assert.True store.Snapshot.IsBusy
+    Assert.False store.Snapshot.SupervisedWorkInFlight
+
+    let bounded = store.BeginOperation("test-prune: impact selection", true)
+    Assert.True store.Snapshot.SupervisedWorkInFlight
+
+    // An ordinary operation retiring changes nothing about the declaration.
+    store.EndOperation unbounded
+    Assert.True store.Snapshot.SupervisedWorkInFlight
+
+    // The deadline speaking is what ends it — not the work returning.
+    Assert.True(store.FailOperation(bounded, TimeoutException("deadline expired")))
+    Assert.True(store.Snapshot.IsBusy, "the work is still running; only its bound has expired")
+    Assert.False store.Snapshot.SupervisedWorkInFlight
+
+    store.EndOperation bounded
+    Assert.False store.Snapshot.SupervisedWorkInFlight
+
 [<Fact>]
 let ``failed host operation stays visible after cleanup until a new attempt`` () =
     let store = Store()

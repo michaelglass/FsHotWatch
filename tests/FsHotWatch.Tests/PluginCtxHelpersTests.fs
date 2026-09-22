@@ -39,6 +39,7 @@ let private makeRecordingCtx () =
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
           RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           IsRunning = fun _ -> false
+          DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
           FcsSuppressedCodes = Set.empty
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 

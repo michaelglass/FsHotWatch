@@ -2415,6 +2415,7 @@ let private stubBuildCtx (claim: string * string -> SharedRunClaim) (isRunning: 
       RunExclusive = fun _ _ -> failwith "build must use the shared artifact lease"
       RunExclusiveShared = fun key resource _ _ _ -> claim (key, resource)
       IsRunning = isRunning
+      DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none }
 

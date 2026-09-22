@@ -40,6 +40,7 @@ let private recordingCtx () : PluginCtx<TestPruneMsg> =
       RunExclusive = fun _ _ -> Claimed
       RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
       IsRunning = fun _ -> false
+      DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none }
 

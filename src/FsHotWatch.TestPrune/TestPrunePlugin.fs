@@ -37,6 +37,23 @@ let WideSelectionTests = 500
 [<Literal>]
 let MaxSeedsToAttribute = 200
 
+/// The bound `flushAndQueryAffected` declares over itself.
+///
+/// Impact selection is one long unit of work inside ONE event fold: it finishes no
+/// plugin event while it runs, and in a workspace with no impact database it does its
+/// largest possible version of that — every symbol in the tree is a seed and the
+/// selection is the whole suite. To the daemon's stall detector that is byte-for-byte
+/// the signature of a handler that never returned, and an undeclared fold is named
+/// WEDGED after five minutes. A cold attribution can legitimately exceed that, and did:
+/// a check was failed at five minutes on work that completed seventeen seconds later.
+///
+/// So the fold declares itself instead, and this is the price of the declaration. It is
+/// generous on purpose — roughly twice the whole observed cold-start window, of which
+/// selection was only a part — because failing a green tree costs more than waiting.
+/// It is still FINITE, and well inside the hour-long `WaitForComplete` timeout, so a
+/// selection that genuinely hangs is reported by name rather than swallowed.
+let ImpactSelectionDeadline = System.TimeSpan.FromMinutes 20.0
+
 /// How many CONSECUTIVE flush cycles a symbol must sit in the
 /// needs-testing queue before its persistence is itself evidence of a problem.
 ///
@@ -5902,6 +5919,14 @@ let internal createWithLaunchDeadline
             ChangedSymbolsAllUncovered = allChangesUncovered
             LastSeeds = seedsThatSelectedTests }
 
+    /// `flushAndQueryAffected` under the bound it declares over itself
+    /// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
+    /// work whichever event drove it, and a caller that forgot the declaration would be
+    /// the one the stall detector failed.
+    let flushAndQueryAffectedBounded (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+        use _declaration = ctx.DeclareBoundedWork "impact selection" ImpactSelectionDeadline
+        flushAndQueryAffected state
+
     // Per-file FCS freshness sidecar, loaded once at plugin construction from
     // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
     // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
@@ -7107,7 +7132,7 @@ let internal createWithLaunchDeadline
         | Some configs when not configs.IsEmpty ->
             match
                 (try
-                    Ok(flushAndQueryAffected state)
+                    Ok(flushAndQueryAffectedBounded ctx state)
                  with ex ->
                      Error ex)
             with
@@ -7656,7 +7681,7 @@ let internal createWithLaunchDeadline
                     // re-run plus the test-trigger.
                     let flushed =
                         try
-                            Ok(flushAndQueryAffected state)
+                            Ok(flushAndQueryAffectedBounded ctx state)
                         with ex ->
                             Error ex
 
@@ -7885,7 +7910,7 @@ let internal createWithLaunchDeadline
                             // the schema-drift self-heal and preserve the idle transition.
                             match
                                 (try
-                                    Ok(flushAndQueryAffected state)
+                                    Ok(flushAndQueryAffectedBounded ctx state)
                                  with ex ->
                                      Error ex)
                             with
