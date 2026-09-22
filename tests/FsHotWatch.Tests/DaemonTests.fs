@@ -3397,7 +3397,7 @@ let ``a self-incompatible type diagnostic never becomes a ledger entry`` () =
     let reportable, selfIncompatible =
         Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
 
-    test <@ reportable = [] @>
+    test <@ List.isEmpty reportable @>
     test <@ selfIncompatible |> List.map _.RenderedType = [ "Intelligence.Domain.BriefEntryEditV3.Edit" ] @>
 
 [<Fact(Timeout = 15000)>]
@@ -3407,7 +3407,7 @@ let ``NEGATIVE CONTROL - a genuine int-vs-string mismatch still reddens`` () =
     let reportable, selfIncompatible =
         Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
 
-    test <@ selfIncompatible = [] @>
+    test <@ List.isEmpty selfIncompatible @>
     test <@ reportable |> List.map _.Severity = [ ErrorLedger.DiagnosticSeverity.Error ] @>
 
 [<Fact(Timeout = 15000)>]
@@ -3427,7 +3427,7 @@ let ``NEGATIVE CONTROL - two same-named types from different assemblies still re
     let reportable, selfIncompatible =
         Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
 
-    test <@ selfIncompatible = [] @>
+    test <@ List.isEmpty selfIncompatible @>
     test <@ reportable |> List.length = 1 @>
 
 [<Fact(Timeout = 15000)>]
@@ -3451,8 +3451,8 @@ let ``suppression wins over the self-incompatible classification`` () =
     let reportable, selfIncompatible =
         Daemon.classifyFcsDiagnostics (Set.ofList [ 1 ]) [| diagnostic |]
 
-    test <@ reportable = [] @>
-    test <@ selfIncompatible = [] @>
+    test <@ List.isEmpty reportable @>
+    test <@ List.isEmpty selfIncompatible @>
 
 // --- the predicate itself -------------------------------------------------
 
@@ -3574,7 +3574,7 @@ let ``a clean answer is returned untouched and spends no budget`` () =
 let ``an answer with no diagnostics at all spends no budget`` () =
     let answer, retries = runRecheck true [] [ "should never be asked for" ]
 
-    test <@ answer = [] @>
+    test <@ List.isEmpty answer @>
     test <@ retries = 0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -3648,7 +3648,7 @@ let ``the internal fault a self-incompatible diagnostic becomes says whose fault
     test <@ entries |> List.map _.Line = [ 12 ] @>
     test <@ entries.Head.Message.Contains "NOT an error in your code" @>
     test <@ entries.Head.Message.Contains "Widgets.fsproj" @>
-    test <@ selfIncompatibleLedgerEntries "Widgets.fsproj" [] = [] @>
+    test <@ List.isEmpty (selfIncompatibleLedgerEntries "Widgets.fsproj" []) @>
 
 [<Fact(Timeout = 15000)>]
 let ``the warn lines name the project, the file and the type`` () =
@@ -3661,7 +3661,7 @@ let ``the warn lines name the project, the file and the type`` () =
         selfIncompatibleLogLines "Widgets.fsproj" "Thing.fs" [ fault ]
         |> List.exactlyOne
 
-    test <@ selfIncompatibleLogLines "Widgets.fsproj" "Thing.fs" [] = [] @>
+    test <@ List.isEmpty (selfIncompatibleLogLines "Widgets.fsproj" "Thing.fs" []) @>
 
     test
         <@
@@ -3729,7 +3729,7 @@ let ``the internal fault states the observation and does not claim a cause`` () 
           "Stamp" ]
         |> List.exists (fun claim -> text.Contains(claim, StringComparison.OrdinalIgnoreCase))
 
-    test <@ shown |> List.filter claimsACause = [] @>
+    test <@ List.isEmpty (shown |> List.filter claimsACause) @>
     // What it MUST say: not your fault, and that we do not know why.
     let says (phrase: string) (text: string) =
         text.Contains(phrase, StringComparison.OrdinalIgnoreCase)
