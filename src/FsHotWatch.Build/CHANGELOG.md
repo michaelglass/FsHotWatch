@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- (breaking) Fix: a `force-rebuild` request is no longer spent by a build that was already
+  in flight when it arrived. That build read its inputs and wrote `bin/` before the request,
+  yet its completion cleared the flag, so the next lookup replayed the cache the request
+  existed to refuse. `BuildState.ForceRebuild` is now a `ForceRebuildStamp`: requests count
+  up, a launched build records the count it launched under, and its completion spends no
+  newer request. A refused claim launches nothing and answers nothing.
+
 ## 0.7.0-alpha.38 - 2026-09-20
 
 - Drop private-tracker references from comments and docs

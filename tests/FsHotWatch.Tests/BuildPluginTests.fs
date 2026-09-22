@@ -2404,10 +2404,15 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
     Assert.True((handler.CacheKey.Value forced event).IsNone, "the forced state bypasses the cache")
     Assert.Equal<ContentHash option>(original, key event)
 
+    // The request is spent by a build LAUNCHED under it, so launch one before it completes.
+    let launched =
+        handler.Update (stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false)) forced event
+        |> Async.RunSynchronously
+
     let rebuilt =
         handler.Update
             (stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> true))
-            forced
+            launched
             (Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero)))
         |> Async.RunSynchronously
 
@@ -2431,6 +2436,138 @@ let ``force-rebuild replies only after the owner applies its intent`` () =
         Assert.Equal("ok", json.RootElement.GetProperty("status").GetString())
         Assert.True(json.RootElement.GetProperty("forced").GetBoolean())
     }
+
+// ---------------------------------------------------------------------------
+// A force-rebuild request may only be spent by a build LAUNCHED after it.
+//
+// The race: a build launched by a file change (op 1) is still running when `confirm`'s
+// `force-rebuild` folds (op 2). Both write the one flag in owner state. The in-flight
+// build's `BuildDone` folds next and — if the flag is a bare bool — spends a request that
+// build never saw: it read its inputs, and wrote `bin/`, before `confirm` asked. The next
+// lookup then replays the cache, which is the exact thing the request existed to refuse.
+// The window is the whole build, so it is wide, not theoretical.
+//
+// Driven through `Update` in the racing order, never with sleeps. The stub claim never
+// runs the build, so each launch and each completion happens exactly where the test says.
+// ---------------------------------------------------------------------------
+
+let private foldAll
+    (handler: PluginHandler<BuildState, BuildMsg>)
+    (steps: (PluginCtx<BuildMsg> * PluginEvent<BuildMsg>) list)
+    =
+    steps
+    |> List.fold (fun state (ctx, event) -> handler.Update ctx state event |> Async.RunSynchronously) handler.Init
+
+/// The build slot is free, so a file change launches a build whose claim the framework accepts.
+let private launching = stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false)
+
+/// The slot is held (as the framework holds it while a result folds), so nothing launches.
+let private holding = stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> true)
+
+let private sourceEdit = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+let private forceRequest = Custom ForceRebuildRequested
+let private buildPassed = Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero))
+
+let private freshHandler () =
+    let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
+
+    Assert.True(
+        (handler.CacheKey.Value handler.Init sourceEdit).IsSome,
+        "positive control: an unforced lookup replays the cache"
+    )
+
+    handler
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild is not spent by a build already in flight when it was requested`` () =
+    let handler = freshHandler ()
+
+    let afterInFlightBuild =
+        foldAll
+            handler
+            [ launching, sourceEdit // op 1: a build launches for an ordinary edit
+              launching, forceRequest // op 2: `confirm` asks while that build runs
+              holding, buildPassed ] // the OLDER build completes
+
+    Assert.True(
+        (handler.CacheKey.Value afterInFlightBuild sourceEdit).IsNone,
+        "a build launched before the request spent it; the next lookup would replay the cache"
+    )
+
+    let afterForcedBuild =
+        foldAll
+            handler
+            [ launching, sourceEdit
+              launching, forceRequest
+              holding, buildPassed
+              launching, sourceEdit // a build launched AFTER the request
+              holding, buildPassed ]
+
+    Assert.True(
+        (handler.CacheKey.Value afterForcedBuild sourceEdit).IsSome,
+        "a build launched after the request must spend it"
+    )
+
+[<Fact(Timeout = 15000)>]
+let ``a second force-rebuild during a forced build outlives that build`` () =
+    // Two requests, one build between them: the build covers the first request only.
+    let handler = freshHandler ()
+
+    let state =
+        foldAll
+            handler
+            [ launching, forceRequest
+              launching, sourceEdit // launches under request 1
+              launching, forceRequest // request 2 arrives mid-build
+              holding, buildPassed ]
+
+    Assert.True(
+        (handler.CacheKey.Value state sourceEdit).IsNone,
+        "the build predates the second request, so it cannot spend it"
+    )
+
+[<Fact(Timeout = 15000)>]
+let ``a refused build claim does not cover a force-rebuild`` () =
+    // `LocalSlotBusy` means nothing launched: the change stays owed and no build ran for
+    // the request, so the build whose result is folding cannot inherit the credit.
+    let handler = freshHandler ()
+    let refused = stubBuildCtx (fun _ -> LocalSlotBusy) (fun _ -> false)
+
+    let state =
+        foldAll
+            handler
+            [ launching, sourceEdit
+              launching, forceRequest
+              refused, sourceEdit
+              holding, buildPassed ]
+
+    Assert.True(
+        (handler.CacheKey.Value state sourceEdit).IsNone,
+        "a claim that launched nothing was credited with the forced build"
+    )
+
+[<Fact>]
+let ``a force-rebuild stamp is spent only by a completion launched at or after it`` () =
+    let requested = ForceRebuildStamp.none |> ForceRebuildStamp.request
+    Assert.True(requested.Pending, "a fresh request is owed")
+
+    // Launched before the request: its completion cannot answer it.
+    let olderBuild =
+        ForceRebuildStamp.none
+        |> ForceRebuildStamp.launched
+        |> ForceRebuildStamp.request
+        |> ForceRebuildStamp.completed
+
+    Assert.True(olderBuild.Pending, $"an earlier-launched build spent the request: %A{olderBuild}")
+
+    // Launched after the request: its completion answers it.
+    let forcedBuild =
+        requested |> ForceRebuildStamp.launched |> ForceRebuildStamp.completed
+
+    Assert.False(forcedBuild.Pending, $"the forced build did not spend the request: %A{forcedBuild}")
+
+    // A request that never reached a build is not spent by anything but a build.
+    Assert.True((requested |> ForceRebuildStamp.request).Pending, "a request was spent without a build")
 
 /// Two independent template roots whose builds append the built root to a log.
 let private twoRootTemplate (tmpDir: string) =
