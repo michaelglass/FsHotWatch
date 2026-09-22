@@ -403,65 +403,6 @@ let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<Bui
         host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
         observed.Value
 
-/// The wait a gated-host fixture spins on: poll until the test writes `release`, but never
-/// past the guards. `polls` is the iteration cap, at 20ms apiece.
-///
-/// `-d tmpDir` is the guard that carries the failure path, and it is doing more work than it
-/// looks. It reaps the child the moment `withTempDir` removes the tree, and -- unlike the
-/// release file -- a deleted directory STAYS deleted. Writing the release from a `finally`
-/// cannot be relied on to do this job, because it races that same cleanup: the file appears
-/// microseconds before the tree it sits in is deleted, so a child polling every 20ms nearly
-/// always wakes to find it gone again and spins on. That is measured, not theorised -- with
-/// the release as the only mechanism the probe below still leaked a spinner; with `-d` alone
-/// it exits in under half a second.
-///
-/// The cap covers the runs where the tree OUTLIVES them, where `-d` never fires: a hard
-/// `[<Fact(Timeout = ...)>]` expiry abandons the test without unwinding any `finally`, and
-/// `deleteTempDirResilient` deliberately gives up after ten attempts rather than fail a test,
-/// leaving the directory behind. Callers set `polls` to
-/// roughly twice their own xUnit budget, so a slow-but-correct run can never reach the cap --
-/// xUnit fails the test first, which is what assertions like `not runTask.IsCompleted` rest
-/// on -- while an orphan reaps itself inside a minute instead of polling until someone kills
-/// it by hand. A capped-out wait exits non-zero rather than falling through, so the backstop
-/// can never forge the completed work its caller is waiting for.
-///
-/// The guard belongs in the shell, not in the fixture, because every other bound available
-/// here dies with the process that spawned the child. A runner config's `TimeoutSec` and the
-/// 5-minute launch deadline are both enforced by a watchdog running INSIDE the test process,
-/// and `[<Fact(Timeout = ...)>]` is xUnit's own: once the run exits or the test is abandoned,
-/// none of them ever issues the kill. Worse for a wait like this one, which is silent --
-/// `TimeoutSec = None` leaves the launch deadline as the only in-process escape, and it only
-/// fires because a child that has produced no output reads as stalled. So this is not a
-/// second belt over an existing one. It is the first bound that outlives its spawner, and the
-/// only reason a stranded child stops on its own rather than polling until someone finds it.
-let private gatedWait (tmpDir: string) (release: string) (polls: int) =
-    $"n=0; while [ -d '{tmpDir}' ] && [ ! -f '{release}' ] && [ $n -lt {polls} ]; "
-    + "do sleep 0.02; n=$((n+1)); done; "
-    + $"[ -f '{release}' ] || exit 91"
-
-/// Run `body` against the release file that ends a `gatedWait`, writing that file from a
-/// `finally` so a body that throws still lets the child go.
-///
-/// This release is the fast path, NOT the reaper. Whenever the gate's directory is torn down
-/// -- the usual case, under `withTempDir` -- `gatedWait`'s `-d` guard is what actually ends
-/// the wait, because this write races that cleanup and generally loses (see `gatedWait`).
-/// It earns its place in the case where the directory SURVIVES the failure and `-d` never
-/// fires: `deleteTempDirResilient` gives up after ten attempts rather than fail a test, and a
-/// gate rooted anywhere that is not deleted has no `-d` to fall back on. There, this is the
-/// only thing that stops the child short of the cap.
-let private withReleaseGate (tmpDir: string) (name: string) (body: string -> 'a) : 'a =
-    let release = System.IO.Path.Combine(tmpDir, $"release-{name}")
-
-    try
-        body release
-    finally
-        // A release into a directory already gone is moot -- `gatedWait`'s `-d` guard has
-        // ended the wait -- and throwing here would mask the failure that got us here.
-        try
-            System.IO.File.WriteAllText(release, "")
-        with _ ->
-            ()
-
 [<Fact(Timeout = 15000)>]
 let ``file changes observed during a test host defer the build until that run completes`` () =
     withTempDir "build-during-test-host" (fun tmpDir ->
