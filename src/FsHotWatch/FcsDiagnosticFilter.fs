@@ -130,11 +130,23 @@ let private twoTypeMessageFamilies =
       "Type constraint mismatch. The type", "is not compatible with type" ]
 
 let private whitespaceRun =
-    System.Text.RegularExpressions.Regex(@"\s+", System.Text.RegularExpressions.RegexOptions.Compiled)
+    System.Text.RegularExpressions.Regex(@"[\s\p{Cc}]+", System.Text.RegularExpressions.RegexOptions.Compiled)
 
 /// FCS renders these messages across several lines with runs of padding spaces,
 /// and callers may have normalized the newlines already. Collapse both so the
 /// split below sees one shape.
+///
+/// `\p{Cc}` is there because `\s` is not enough, and this cost a release. .NET's
+/// `\s` is `[\f\n\r\t\v\x85\p{Z}]` — every character it matches is whitespace or a
+/// Unicode SEPARATOR. FCS separates the two rendered types with GROUP SEPARATOR
+/// (U+001D), which is a CONTROL character in category Cc and matches none of
+/// them. So the separator survived the collapse, the ` but here has type `
+/// lookup below could not find its padded form, `tryRenderedTypePair` returned
+/// `None`, and 64 self-incompatible diagnostics were reported as ordinary code
+/// errors on a tree whose 32,557 tests all passed.
+///
+/// The guard failed CLOSED, which is the right direction — but "fails closed"
+/// and "works" are different claims, and only the second one is useful here.
 let private collapseWhitespace (s: string) = whitespaceRun.Replace(s, " ").Trim()
 
 /// Strip the single quotes the templates wrap each rendered type in.

@@ -3736,3 +3736,67 @@ let ``the internal fault states the observation and does not claim a cause`` () 
 
     test <@ shown |> List.forall (says "not an error in your code") @>
     test <@ shown |> List.exists (says "not yet known") @>
+
+[<Fact>]
+let ``the two rendered types are found when FCS separates them with GROUP SEPARATOR`` () =
+    // Released as alpha.58 and MISSED 64 real occurrences on a consuming repo.
+    //
+    // The predicate collapsed runs of `\s` before looking for the connective
+    // phrase. .NET's `\s` is `[\f\n\r\t\v\x85\p{Z}]` — whitespace and Unicode
+    // SEPARATORS. FCS joins the two rendered types with GROUP SEPARATOR
+    // (U+001D), a CONTROL character in category Cc, which `\s` does not match.
+    // The separator survived, the padded ` but here has type ` lookup missed,
+    // and every one of those diagnostics was reported as an ordinary code error
+    // on a tree whose 32,557 tests passed.
+    //
+    // Pinned with the real separator rather than a newline, because a newline
+    // is exactly what made the original tests pass while the shipped guard did
+    // not work.
+    let gs = string (char 0x1D)
+
+    let separatedBy (sep: string) (opening: string) (connective: string) (left: string) (right: string) =
+        opening
+        + sep
+        + "    '"
+        + left
+        + "'    "
+        + sep
+        + connective
+        + sep
+        + "    '"
+        + right
+        + "'    "
+
+    let selfIncompatible =
+        separatedBy
+            gs
+            "This expression was expected to have type"
+            "but here has type"
+            "Intelligence.Lib.BriefPipelineDsl.Stage.StageContext"
+            "Intelligence.Lib.BriefPipelineDsl.Stage.StageContext"
+
+    test
+        <@
+            tryRenderedTypePair selfIncompatible = Some(
+                "Intelligence.Lib.BriefPipelineDsl.Stage.StageContext",
+                "Intelligence.Lib.BriefPipelineDsl.Stage.StageContext"
+            )
+        @>
+
+    // NEGATIVE CONTROL: a genuine mismatch carried by the same separator must
+    // still yield two DIFFERENT names, so the guard cannot swallow a real error.
+    let genuine =
+        separatedBy gs "This expression was expected to have type" "but here has type" "int" "string"
+
+    test <@ tryRenderedTypePair genuine = Some("int", "string") @>
+
+    // The other two families carry the same separator and must parse too.
+    let constraintMismatch =
+        separatedBy gs "Type constraint mismatch. The type" "is not compatible with type" "A.T" "A.T"
+
+    test <@ tryRenderedTypePair constraintMismatch = Some("A.T", "A.T") @>
+
+    let expectingA =
+        separatedBy gs "Type mismatch. Expecting a" "but given a" "A.T" "A.T"
+
+    test <@ tryRenderedTypePair expectingA = Some("A.T", "A.T") @>
