@@ -1,5 +1,8 @@
 # Signature declarations have separate graph nodes
 
+Superseded by [ADR 0004](0004-symbol-source-occurrences.md): a signature
+declaration is now a source occurrence of the canonical symbol.
+
 A public F# declaration in a signature and its implementation have the same
 compiler symbol identity. The symbol index stores one row per full name, so
 using that identity for both source occurrences overwrites one file's hash.

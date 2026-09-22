@@ -309,6 +309,7 @@ let private openConnection (dbPath: string) =
 ///          hash; dependencies, test methods and attributes carry the `source_file` that
 ///          contributed them, so re-indexing one file replaces only that file's facts;
 ///          coverage points belong to the occurrence whose lines they were measured on.
+///          See ADR 0004, which supersedes ADR 0002's synthetic signature nodes.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
