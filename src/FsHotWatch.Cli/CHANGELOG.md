@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The check-result cache is tunable.** Still OFF by default — it holds live FCS
+  results, about 250 KB per file beyond what the checker keeps — and a repository opts
+  in with:
+  ```json
+  "cache": { "maxEntries": "all", "scope": "default-workspace",
+             "include": ["src/App/"], "exclude": ["src/App/Legacy/"] }
+  ```
+  - `maxEntries`: a positive number (a memory budget) or `"all"` (every file the cache
+    admits). A number below the files cached is warned about at startup: a scan gets
+    ~0 hits from it, not a partial win.
+  - `scope`: `"all"` or `"default-workspace"` — cache only in the jj default workspace
+    or git main checkout, so short-lived task workspaces don't each hold one. Detected
+    from `.jj/repo` / `.git` being a directory or a file; the startup log says what it
+    found and whether the cache is therefore on.
+  - `include` / `exclude`: gitignore-style globs over repo-relative project paths;
+    `exclude` wins. An excluded project is never fingerprinted, looked up or stored.
+  - `"cache": "memory"` now means `maxEntries: "all"` (was 500 entries, which a scan
+    of a larger tree turns into ~0 hits), and `"cache": true` now enables the cache
+    (it used to select the default, which is off). Invalid values are a config error.
+
 - **`confirm` and `confirm --run-once` now word their scope refusals identically.**
   The two transports each carried a copy of the test-scope, check-reach, set-scope and
   forced-run commands, and the copies had drifted (e.g. "could not put the daemon in

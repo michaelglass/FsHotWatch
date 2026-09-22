@@ -21,22 +21,118 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 /// load rather than warning and carrying on, because a warning inside a long gate is
 /// indistinguishable from noise and lets the dead key survive indefinitely.
 type CacheBackendConfig =
-    /// No check-result cache. This is the DEFAULT.
+    /// No check-result cache. This is the DEFAULT: the cache holds live FCS results
+    /// (about 250 KB per file beyond what the checker keeps), so a repository opts in.
     | NoCache
-    /// In-memory LRU cache (lost on restart). Holds the live `FileCheckResult`, FCS
-    /// types and all.
-    | InMemoryOnly of maxSize: int
+    /// In-memory cache (lost on restart), holding the live `FileCheckResult`.
+    | InMemory of InMemoryCacheSettings
 
-/// Create cache backend and key provider from config.
+/// `cache.maxEntries`.
+and [<RequireQualifiedAccess>] CacheSize =
+    /// A fixed budget. Below the number of files cached, a scan gets ~0 hits (it is
+    /// warned about at startup).
+    | Entries of int
+    /// `"all"`: every file the cache admits — the size a repeated scan needs.
+    | All
+
+/// `cache.scope`: which checkouts of the repository run a cache.
+and [<RequireQualifiedAccess>] CacheScope =
+    /// `"all"`: every checkout.
+    | AllCheckouts
+    /// `"default-workspace"`: only the jj default workspace / git main checkout, so
+    /// short-lived task workspaces (jj secondary workspaces, git worktrees) do not each
+    /// hold a full cache. Read from the filesystem, not from config, since every
+    /// workspace shares the tracked `.fshw.json`.
+    | DefaultWorkspaceOnly
+
+/// `"cache": { "maxEntries", "scope", "include", "exclude" }`.
+and InMemoryCacheSettings =
+    {
+        MaxEntries: CacheSize
+        Scope: CacheScope
+        /// Gitignore-style globs over repo-relative PROJECT paths; empty = every project.
+        Include: string list
+        /// Globs over repo-relative project paths never cached; wins over `Include`.
+        Exclude: string list
+    }
+
+/// `"cache": "memory"` / `true`: every file, every checkout, every project.
+let defaultInMemoryCache =
+    { MaxEntries = CacheSize.All
+      Scope = CacheScope.AllCheckouts
+      Include = []
+      Exclude = [] }
+
+/// Whether `scope` runs a cache in a checkout of `kind`, and the startup line saying
+/// what was detected and what follows from it.
+let resolveCacheScope (scope: CacheScope) (kind: FsHotWatch.RepoIdentity.CheckoutKind) : bool * string =
+    let detected = FsHotWatch.RepoIdentity.describeCheckoutKind kind
+
+    match scope with
+    | CacheScope.AllCheckouts -> true, $"check-result cache: cache.scope is \"all\"; this checkout is %s{detected}"
+    | CacheScope.DefaultWorkspaceOnly when FsHotWatch.RepoIdentity.isSecondaryCheckout kind ->
+        false,
+        $"check-result cache: OFF in this checkout — cache.scope is \"default-workspace\" and this is %s{detected}"
+    | CacheScope.DefaultWorkspaceOnly ->
+        true, $"check-result cache: ON — cache.scope is \"default-workspace\" and this is %s{detected}"
+
+/// Which projects the cache holds: a project path (absolute) is admitted when it
+/// matches an `include` glob (or `include` is empty) and no `exclude` glob. Globs are
+/// gitignore-style, relative to the repository root.
+let cacheAdmits (repoRoot: string) (includes: string list) (excludes: string list) : string -> bool =
+    let matcher (patterns: string list) =
+        let ignore = (Ignore.Ignore(), patterns) ||> List.fold (fun ig p -> ig.Add(p))
+
+        fun (relative: string) -> ignore.IsIgnored relative
+
+    let included =
+        if List.isEmpty includes then
+            (fun _ -> true)
+        else
+            matcher includes
+
+    let excluded =
+        if List.isEmpty excludes then
+            (fun _ -> false)
+        else
+            matcher excludes
+
+    fun projectPath ->
+        let relative = Path.GetRelativePath(repoRoot, projectPath).Replace('\\', '/')
+
+        if relative.StartsWith("../", System.StringComparison.Ordinal) then
+            List.isEmpty includes
+        else
+            included relative && not (excluded relative)
+
+/// Create cache backend and key provider from config. Logs the scope decision.
 let createCacheComponents
-    (_repoRoot: string)
+    (repoRoot: string)
     (config: CacheBackendConfig)
     : (ICheckCacheBackend option * ICacheKeyProvider option) =
     match config with
     | NoCache -> (None, None)
-    | InMemoryOnly maxSize ->
-        (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+    | InMemory settings ->
+        let on, message =
+            resolveCacheScope settings.Scope (FsHotWatch.RepoIdentity.checkoutKind repoRoot)
+
+        Logging.info "cache" message
+
+        if not on then
+            (None, None)
+        else
+            let capacity =
+                match settings.MaxEntries with
+                | CacheSize.Entries n -> FsHotWatch.InMemoryCheckCache.CacheCapacity.Entries n
+                | CacheSize.All -> FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet
+
+            let cache =
+                FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
+                    capacity,
+                    cacheAdmits repoRoot settings.Include settings.Exclude
+                )
+
+            (Some(cache :> ICheckCacheBackend), Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
 
 /// Resolves which paths from `paths` exist, retrying with short backoff for the case
 /// where the daemon starts immediately after `jj workspace add`: workspace population
@@ -380,12 +476,54 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | _ -> true
 
     let cache =
+        let refuse (detail: string) =
+            raise (ConfigError $"cache: %s{detail}")
+
+        let globs (settings: JsonElement) (name: string) =
+            match settings.TryGetProperty name with
+            | true, v when v.ValueKind = JsonValueKind.Array ->
+                v.EnumerateArray()
+                |> Seq.map (fun e ->
+                    if e.ValueKind = JsonValueKind.String then
+                        e.GetString()
+                    else
+                        refuse $"%s{name} must be a list of glob strings")
+                |> Seq.toList
+            | true, _ -> refuse $"%s{name} must be a list of glob strings, e.g. [\"src/Libs/\"]"
+            | false, _ -> []
+
         match root.TryGetProperty("cache") with
         | true, v when v.ValueKind = JsonValueKind.False -> NoCache
-        | true, v when v.ValueKind = JsonValueKind.True -> defaults.Cache
+        | true, v when v.ValueKind = JsonValueKind.True -> InMemory defaultInMemoryCache
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            let maxEntries =
+                match v.TryGetProperty "maxEntries" with
+                | false, _ -> CacheSize.All
+                | true, m when m.ValueKind = JsonValueKind.String && m.GetString() = "all" -> CacheSize.All
+                | true, m when m.ValueKind = JsonValueKind.Number ->
+                    match m.TryGetInt32() with
+                    | true, n when n > 0 -> CacheSize.Entries n
+                    | _ -> refuse "maxEntries must be a positive whole number or \"all\""
+                | true, _ -> refuse "maxEntries must be a positive whole number or \"all\""
+
+            let scope =
+                match v.TryGetProperty "scope" with
+                | false, _ -> CacheScope.AllCheckouts
+                | true, s when s.ValueKind = JsonValueKind.String ->
+                    match s.GetString() with
+                    | "all" -> CacheScope.AllCheckouts
+                    | "default-workspace" -> CacheScope.DefaultWorkspaceOnly
+                    | other -> refuse $"scope '%s{other}' is not \"all\" or \"default-workspace\""
+                | true, _ -> refuse "scope must be \"all\" or \"default-workspace\""
+
+            InMemory
+                { MaxEntries = maxEntries
+                  Scope = scope
+                  Include = globs v "include"
+                  Exclude = globs v "exclude" }
         | true, v when v.ValueKind = JsonValueKind.String ->
             match v.GetString().ToLowerInvariant() with
-            | "memory" -> InMemoryOnly 500
+            | "memory" -> InMemory defaultInMemoryCache
             | "none"
             | "false" -> NoCache
             | ("file" | "jj") as removed ->
