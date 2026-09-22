@@ -13,6 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- First: registers the xUnit pipeline startup that initialises FSharp.Core's
+         quotation statics on one thread before tests run in parallel. See the file. -->
+    <Compile Include="QuotationStaticInit.fs" />
     <Compile Include="TestHelpers.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
          that watches a directory. -->
