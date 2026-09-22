@@ -20,106 +20,24 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.RunOnceOutput
 
-/// Send a command to the in-process plugin host.
-///
-/// `None` — the host has no such command, which is the in-process spelling of the IPC
-/// unknown-command sentinel. It means the test-prune plugin is not registered (no test
-/// projects configured), NOT that everything is fine.
-let private runHostCommand (host: PluginHost.PluginHost) (name: string) (args: string array) : string option =
-    host.RunCommand(name, args) |> Async.RunSynchronously
-
-/// Ask the host what the last completed run ACTUALLY covered.
-///
-/// No way of not getting a straight answer can round UP to `FullSuite`, so `confirm` can
-/// only go green on a scope it positively established. But the ways are different FACTS
-/// and are reported as such:
-///
-///   * NO SUCH COMMAND — the test-prune plugin is not registered, i.e. no test projects
-///     are configured. A provable "there is no scope to report, and there never will
-///     be": `ScopeUnknown`, which the inner loop tolerates and `confirm` refuses.
-///   * A THROW — we asked and could not find out. `ScopeUnreadable`, which BOTH modes
-///     refuse: the state it hides may be `NoTestsRun`.
-///
-/// Never SILENT about either.
+/// The scope commands over this transport — the in-process host. The bodies, and every
+/// sentence they print, live ONCE in `ScopeCommands`, shared with the daemon path; see
+/// there for what each way of not getting an answer means.
 let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
-    try
-        match runHostCommand host TestScopeCommand [||] with
-        | None ->
-            Logging.warn
-                "cli-confirm"
-                $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a full-suite \
-                   verdict cannot be earned here. `fshw confirm --run-once` will report NO VERDICT."
+    ScopeCommands.readTestRun (ScopeCommands.inProcess host)
 
-            TestRunReport.noTestSuite
-        | Some reply -> parseTestRunReport reply
-    with ex ->
-        Logging.warn
-            "cli-confirm"
-            $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
-               report NO VERDICT rather than pass on a reading it does not have."
-
-        TestRunReport.ofScopeOnly (
-            ScopeUnreadable $"the plugin host's `%s{TestScopeCommand}` command threw: %s{ex.Message}"
-        )
-
-/// Ask the in-process host what `check`'s impact selection WOULD have
-/// reached in the run this `confirm` did not have to escalate — the `--run-once` twin of
-/// `Program.readCheckReach`.
-///
-/// Reads state that already exists; nothing runs. Every way of not getting an answer is a
-/// VALUE — no such command (no test projects, or a plugin build that predates the
-/// projection), a throw, a reply this build cannot read — and each reaches the verdict as
-/// "no sample". None of them may reach it as "they agreed".
+/// `ScopeCommands.readCheckReach` over the in-process host.
 let internal readCheckReach (host: PluginHost.PluginHost) : CheckReachReading =
-    try
-        match runHostCommand host CheckReachCommand [||] with
-        | None ->
-            ReachUnavailable
-                $"the plugin host has no `%s{CheckReachCommand}` command — no test projects are configured, so there \
-                   is no impact selection to project through"
-        | Some reply -> parseCheckReach reply
-    with ex ->
-        ReachUnavailable $"the plugin host's `%s{CheckReachCommand}` command threw: %s{ex.Message}"
+    ScopeCommands.readCheckReach (ScopeCommands.inProcess host)
 
-/// Turn impact filtering OFF for this process, BEFORE anything runs.
-///
-/// The ordering matters, and is the same rule the daemon path follows: the scan below
-/// provokes the test run, and that run must ALREADY be unfiltered. Asking afterwards
-/// would only learn that it wasn't.
-///
-/// A failure here is not fatal on its own — `confirm` does not trust this call's return
-/// value. It trusts `readTestRun`, which reports what actually ran. The request is not
-/// the evidence.
+/// `ScopeCommands.requestFullSuiteScope` over the in-process host.
 let internal requestFullSuiteScope (host: PluginHost.PluginHost) : unit =
-    try
-        match runHostCommand host SetScopeCommand [| FullSuiteScopeArgs |] with
-        | None ->
-            eprintfn
-                $"fshw confirm: the plugin host has no `%s{SetScopeCommand}` command (no test projects configured). \
-                   The verdict will be refused."
-        | Some reply -> Logging.debug "cli-confirm" $"set-scope reply: %s{reply}"
-    with ex ->
-        eprintfn
-            $"fshw confirm: could not disable impact filtering (%s{ex.Message}). \
-               The tests will run impact-filtered, and the verdict will be refused."
+    ScopeCommands.requestFullSuiteScope (ScopeCommands.inProcess host)
 
-/// Ask the host to run EVERY configured test project, now — `run-tests` with no filter
-/// and no project selection. `confirm`'s teeth: see `CheckVerdict.confirmNeedsFullRun`.
-///
-/// Sends no `waitSec`, so the plugin's own default budget applies (ONE default, not a
-/// second one here). If that budget expires the run is NOT cancelled — it was already
-/// launched, and only the WAIT gave up. So this REQUESTS the run; `forceFullRun` below
-/// is what waits for it.
+/// `ScopeCommands.requestFullRun` over the in-process host. `forceFullRun` below is what
+/// waits for it.
 let internal requestFullRun (host: PluginHost.PluginHost) : unit =
-    try
-        match runHostCommand host RunTestsCommand [| "{}" |] with
-        | None ->
-            // No test-prune plugin: there is nothing to force, and `readTestRun` will
-            // report `ScopeUnknown` — which `confirm` refuses. Nothing to do but say so.
-            Logging.warn "cli-confirm" $"the plugin host has no `%s{RunTestsCommand}` command — no tests can be forced"
-        | Some reply -> Logging.debug "cli-confirm" $"run-tests reply: %s{reply}"
-    with ex ->
-        Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
+    ScopeCommands.requestFullRun (ScopeCommands.inProcess host)
 
 /// Request the full run AND wait for it.
 ///
@@ -416,9 +334,7 @@ let private runOnceAndVerdictIn
         let initialRead =
             match impactScoped with
             | Some _ ->
-                eprintfn
-                    "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
-                    (TestScope.describe preEscalation.Scope)
+                eprintfn "%s" (Verdict.CheckProse.forcingFullSuite preEscalation.Scope)
 
                 forceFullRun daemon
                 awaitDiscovery ()

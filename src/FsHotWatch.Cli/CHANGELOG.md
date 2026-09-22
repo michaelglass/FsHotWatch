@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`confirm` and `confirm --run-once` now word their scope refusals identically.**
+  The two transports each carried a copy of the test-scope, check-reach, set-scope and
+  forced-run commands, and the copies had drifted (e.g. "could not put the daemon in
+  full-suite scope" vs "could not disable impact filtering"). One body each now, shared
+  by both; the refusals name the missing command rather than the transport.
+
 ## 0.14.0-alpha.60 - 2026-09-22
 
 - chore: rebuild to bundle updated dependencies

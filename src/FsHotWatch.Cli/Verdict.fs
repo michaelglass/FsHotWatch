@@ -723,6 +723,13 @@ module Outcome =
 /// string — and that difference is presentation, which may vary. The words may not.
 module CheckProse =
 
+    /// The line `confirm` prints when the tests that ran are not the full suite and it
+    /// is about to FORCE one (`CheckVerdict.confirmNeedsFullRun`). One sentence for both
+    /// transports: the daemon path and `--run-once` escalate the same way, so they say
+    /// so the same way.
+    let forcingFullSuite (scope: IpcParsing.TestScope) : string =
+        $"  Confirm: the tests that ran were %s{TestScope.describe scope} — running the FULL suite to earn a verdict..."
+
     /// What happened. Never a red: nothing failed, and nothing was verified either.
     let waitingOnBuildCause =
         "waiting on build — a test project's build artifact was not produced, so its \

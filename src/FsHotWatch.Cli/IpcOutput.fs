@@ -1601,9 +1601,7 @@ let pollAndRenderForInvocation
                 // that pair — the tree moves in between.
                 impactScoped.Value <- Some(Verdict.impactScopedRun repoRoot firstRun preEscalation)
 
-                eprintfn
-                    "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
-                    (TestScope.describe firstRun.Scope)
+                eprintfn "%s" (Verdict.CheckProse.forcingFullSuite firstRun.Scope)
 
                 withProgress "Running the full suite (confirm)" "Running the full suite (confirm)..." (fun () ->
                     forceFullRun ())

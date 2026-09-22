@@ -50,6 +50,7 @@
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
         <Compile Include="IpcParsing.fs" />
+        <Compile Include="ScopeCommands.fs" />
         <Compile Include="CheckVerdict.fs" />
         <Compile Include="RunClaim.fs" />
         <Compile Include="Verdict.fs" />
