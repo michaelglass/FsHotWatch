@@ -626,69 +626,75 @@ module IpcServer =
     /// the connected pipe and a token cancelled when the client goes away.
     type internal ConnectionOpener = NamedPipeServerStream -> CancellationToken -> Async<obj option>
 
-    /// Accept a single connection, handle it, and clean up when done. Until its
-    /// teardown has finished — the pipe disposed, not merely the RPC completed — the
-    /// connection stays in `connections`, keyed to that teardown, so shutdown can wait
-    /// for it or close it.
+    /// Serve one accepted connection and clean up when done. Until its teardown has
+    /// finished — the pipe disposed, not merely the RPC completed — the connection stays
+    /// in `connections`, so shutdown can wait for it or close it.
+    let private handle
+        (pipeServer: NamedPipeServerStream)
+        (opener: ConnectionOpener)
+        (connections: Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>)
+        =
+        let served =
+            async {
+                // One target per connection, cancelled when this client goes away, so
+                // its calls stop rather than run on for nobody.
+                use clientGone = new CancellationTokenSource()
+
+                try
+                    match! opener pipeServer clientGone.Token with
+                    | None -> pipeServer.Dispose()
+                    | Some target ->
+                        let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
+                        use rpc = new JsonRpc(handler, target)
+
+                        rpc.Disconnected.Add(fun _ ->
+                            try
+                                clientGone.Cancel()
+                            with :? ObjectDisposedException ->
+                                // Torn down already: nothing is left running to cancel.
+                                ())
+
+                        rpc.StartListening()
+
+                        try
+                            // A client that vanishes faults the completion: an ordinary
+                            // end of the connection, not a failure to report.
+                            do! rpc.Completion.ContinueWith(fun (_: Task) -> ()) |> Async.AwaitTask
+                        finally
+                            pipeServer.Dispose()
+                with ex ->
+                    // A single bad connection (client vanished mid-handshake, broken
+                    // pipe, RPC wiring failure) must not kill the server, nor vanish
+                    // silently.
+                    pipeServer.Dispose()
+                    Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
+            }
+            |> Async.StartAsTask
+
+        connections[pipeServer] <- served
+
+        served.ContinueWith(fun (_: Task) -> connections.TryRemove pipeServer |> ignore)
+        |> ignore
+
+    /// Wait for one client on `pipeServer`, then hand the connection to `handle` and
+    /// return at once, so the accept loop replaces this acceptor while the connection
+    /// is still being served.
     let private acceptOne
-        (pipeName: string)
+        (pipeServer: NamedPipeServerStream)
         (opener: ConnectionOpener)
         (connections: Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>)
         (ct: CancellationToken)
         : Async<unit> =
         async {
-            let pipeServer =
-                new NamedPipeServerStream(
-                    pipeName,
-                    PipeDirection.InOut,
-                    NamedPipeServerStream.MaxAllowedServerInstances,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous
-                )
-
             try
                 do! pipeServer.WaitForConnectionAsync(ct) |> Async.AwaitTask
-
-                // One target per connection, cancelled when this client goes away, so
-                // its calls stop rather than run on for nobody.
-                let clientGone = new CancellationTokenSource()
-
-                match! opener pipeServer clientGone.Token with
-                | None ->
-                    pipeServer.Dispose()
-                    clientGone.Dispose()
-                | Some target ->
-
-                    let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
-                    let rpc = new JsonRpc(handler, target)
-
-                    rpc.Disconnected.Add(fun _ ->
-                        try
-                            clientGone.Cancel()
-                        with :? ObjectDisposedException ->
-                            // Torn down already: nothing is left running to cancel.
-                            ())
-
-                    rpc.StartListening()
-
-                    let teardown =
-                        rpc.Completion.ContinueWith(fun (_: Task) ->
-                            rpc.Dispose()
-                            pipeServer.Dispose()
-                            clientGone.Dispose())
-
-                    connections[pipeServer] <- teardown
-
-                    teardown.ContinueWith(fun (_: Task) -> connections.TryRemove pipeServer |> ignore)
-                    |> ignore
+                handle pipeServer opener connections
             with
             | :? OperationCanceledException ->
                 // Normal shutdown: the daemon's CancellationToken fired while
                 // waiting for a client. Quiet by design.
                 pipeServer.Dispose()
             | ex ->
-                // A single bad connection (client vanished mid-handshake, broken pipe,
-                // RPC wiring failure) must not kill the server, nor vanish silently.
                 pipeServer.Dispose()
                 Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
         }
@@ -711,8 +717,25 @@ module IpcServer =
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []
 
+            // Every server instance of a name shares one listening socket on Unix, and
+            // it closes when the last instance is disposed, dropping any client still in
+            // its backlog. So each acceptor's instance exists before the acceptor runs,
+            // and an acceptor is replaced as soon as it accepts, never after its
+            // connection is served.
             let startAccept () =
-                Async.StartAsTask(acceptOne pipeName opener connections cts.Token) :> Task
+                try
+                    let pipeServer =
+                        new NamedPipeServerStream(
+                            pipeName,
+                            PipeDirection.InOut,
+                            NamedPipeServerStream.MaxAllowedServerInstances,
+                            PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous
+                        )
+
+                    Async.StartAsTask(acceptOne pipeServer opener connections cts.Token) :> Task
+                with ex ->
+                    Task.FromException ex
 
             acceptTasks <- [ startAccept (); startAccept (); startAccept () ]
 
