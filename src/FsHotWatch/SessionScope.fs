@@ -76,6 +76,24 @@ let msbuildRelevant: EnvironmentKey list =
       EnvironmentKey.Exact "TF_BUILD"
       EnvironmentKey.Exact "GITHUB_ACTIONS" ]
 
+/// Variables a .NET process writes into its own environment: the .NET host sets
+/// `DOTNET_HOST_PATH` and `DOTNET_ROOT_<arch>`, and in-process MSBuild discovery
+/// (Ionide.ProjInfo `Init.init`) sets the MSBuild paths once it has resolved the SDK.
+/// They describe the host process, not a client's shell, so they are never compared;
+/// the SDK they point into is compared on its own (the host's toolchain check).
+let processOwned: string list =
+    [ "DOTNET_HOST_PATH"
+      "DOTNET_ROOT_ARM64"
+      "DOTNET_ROOT_X64"
+      "DOTNET_ROOT_X86"
+      "MSBUILD_EXE_PATH"
+      "MSBuildExtensionsPath"
+      "MSBuildSDKsPath" ]
+
+let private isProcessOwned (name: string) =
+    processOwned
+    |> List.exists (fun owned -> String.Equals(name, owned, StringComparison.OrdinalIgnoreCase))
+
 /// True when a variable named `name` can change in-process MSBuild evaluation.
 let isMsbuildRelevant (name: string) : bool =
     msbuildRelevant
@@ -118,7 +136,7 @@ module SessionEnvironment =
     /// value naming "my worktree" compares equal across worktrees.
     let private rebased (env: SessionEnvironment) =
         env.Variables
-        |> Map.filter (fun name _ -> isMsbuildRelevant name)
+        |> Map.filter (fun name _ -> isMsbuildRelevant name && not (isProcessOwned name))
         |> Map.map (fun _ value -> value.Replace(env.Root, "<worktree>", StringComparison.Ordinal))
 
     /// The MSBuild-relevant variables whose values differ between `host` and

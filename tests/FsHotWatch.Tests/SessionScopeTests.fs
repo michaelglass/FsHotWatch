@@ -206,6 +206,25 @@ let ``an MSBuild-relevant difference is a mismatch naming the variable and both 
     test <@ SessionEnvironment.msbuildMismatches host client = expected @>
 
 [<Fact(Timeout = 15000)>]
+let ``variables a .NET process writes for itself never count as a mismatch`` () =
+    // In-process MSBuild discovery writes the MSBuild paths into the host's own
+    // environment once its first session is built, and the .NET host sets its own paths:
+    // they describe the process, not the client's shell. The SDK they name is compared
+    // separately, by the toolchain check.
+    let host =
+        envOf
+            "/r"
+            [ "MSBUILD_EXE_PATH", "/sdk/MSBuild.dll"
+              "MSBuildExtensionsPath", "/sdk/"
+              "MSBuildSDKsPath", "/sdk/Sdks"
+              "DOTNET_HOST_PATH", "/dotnet/dotnet"
+              "DOTNET_ROOT_ARM64", "/dotnet" ]
+
+    let client = envOf "/b" []
+    test <@ List.isEmpty (SessionEnvironment.msbuildMismatches host client) @>
+    test <@ List.isEmpty (SessionEnvironment.msbuildMismatches client host) @>
+
+[<Fact(Timeout = 15000)>]
 let ``an irrelevant difference is not a mismatch`` () =
     let host = envOf "/r" [ "PATH", "/usr/bin"; "TERM", "xterm" ]
     let client = envOf "/b" [ "PATH", "/opt/bin"; "EDITOR", "vi" ]

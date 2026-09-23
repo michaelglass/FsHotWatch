@@ -319,8 +319,8 @@ let encodeRequest (request: AttachRequest) : string =
 
     let environment = JsonObject()
 
-    for KeyValue(name, value) in request.Environment do
-        environment[name] <- JsonValue.Create value
+    request.Environment
+    |> Map.iter (fun name value -> environment[name] <- JsonValue.Create value)
 
     node["environment"] <- environment
 

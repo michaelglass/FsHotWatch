@@ -315,3 +315,60 @@ host(1) p95 is +0.8% against legacy(1), well inside the 10% abandon threshold. S
 here is dominated by the 500 ms source debounce plus FCS work. Hosting adds routing
 and context flow but no measurable latency at this size. The 1/2/4-session memory
 matrix is the 677 harness's job, once it lands.
+
+### D3: the root-recursive stream while an unattached sibling builds
+
+Measured 2026-09-23. A host served one session at the repository root. A sibling
+worktree under `.workspaces/` that no session had attached (a restored commandtree
+copy) ran `dotnet build` on both its `src/` projects.
+
+| window | host CPU (`top` TIME) | stream events |
+|---|---|---|
+| 5 s idle | +0.01 s | — |
+| sibling build | +0.02 s | 150 received, 150 unowned, 0 delivered |
+
+- **Routing.** Every event from the unattached sibling was routed to no session, and
+  the attached session did no work: no `settled` line.
+- **Cost.** The shared stream's extra dispatch amounted to about 0.02 s of host CPU
+  for 150 events. The per-session-streams alternative (option b) is not needed, so the
+  root-recursive stream stays, as approved.
+
+### Findings made while implementing
+
+- **Process-owned variables.** In-process MSBuild discovery writes the MSBuild paths
+  into the host's own environment once its first session is built, and the .NET host
+  sets `DOTNET_HOST_PATH`. Compared as the client's environment, these made every later
+  attach an `EnvironmentMismatch`. They are now excluded (`SessionScope.processOwned`),
+  and the SDK they name is compared by the toolchain check.
+- **Executable lookup.** A child's `PATH` does not decide which executable starts;
+  the parent's does. A bare `dotnet` spawned by session B would have been the host's
+  (A's toolchain-bin) even with B's `PATH` set. Bare commands are now resolved on the
+  session's `PATH`, and one that is not there fails instead of falling back.
+- **Binary identity is per process.** A client of a different binary is refused:
+  `BinaryMismatch`, never a restart. That includes a test runner attaching in-process
+  to a separately launched host.
+- **G3 (cwd) audit is clean.** Config paths resolve against the worktree root
+  explicitly, no spawn uses a relative working directory, and the only cwd fallbacks
+  are for relative inputs, which the host never passes. The host pins its cwd to its
+  control directory. The in-process host-verb test and the smoke runs serve real
+  sessions from there.
+- **Unrelated, not investigated.** With build, format and lint all off, `fshw check`
+  sat in `WaitForComplete` for more than 10 minutes on a legacy daemon. It looks
+  pre-existing.
+- **Known gap.** A root-level unknown command (plugin passthrough) still goes to the
+  per-worktree pipe in host mode.
+
+### Isolation (T1–T4)
+
+`RepositoryHostIsolationTests` run two real sessions (real FCS and MSBuild) behind a
+real endpoint. After each of these in A, B's diagnostics projection, scan generation
+and every byte under its `.fshw`, including a planted `verdict.json`, are unchanged:
+
+- an edit checked in A;
+- a configuration reload that replaces A with a new incarnation (the old id is refused
+  `stale-incarnation`);
+- a request abandoned by its client, plus a stop of A while a B request is in flight;
+- a crash of A's session: A ends `Faulted`, its lock is released and it reattaches
+  fresh.
+
+The tests passed 4 of 4 runs.
