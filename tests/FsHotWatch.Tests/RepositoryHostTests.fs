@@ -599,6 +599,24 @@ let ``a second host for the same repository finds the first, and leaves it servi
         cts.Cancel()
         test <@ run.Wait(TimeSpan.FromSeconds 60.0) @>)
 
+[<Fact(Timeout = 60000)>]
+let ``a host refuses to start while its virtual root exists, and holds nothing`` () =
+    withRepository (fun fx ->
+        let settings = settingsFor fx
+        Directory.CreateDirectory settings.Control.VirtualRoot |> ignore
+        use cts = new CancellationTokenSource()
+
+        test
+            <@
+                RepositoryHost.run settings daemonFactory (TimeSpan.FromMilliseconds 200.0) cts = HostRun.VirtualRootExists
+                    settings.Control.VirtualRoot
+            @>
+
+        // It released its lock: with the root gone, a host starts (and idles out).
+        Directory.Delete settings.Control.VirtualRoot
+        use cts2 = new CancellationTokenSource()
+        test <@ RepositoryHost.run settings daemonFactory (TimeSpan.FromMilliseconds 200.0) cts2 = HostRun.Stopped @>)
+
 [<Fact(Timeout = 120000)>]
 let ``a host with no session exits after its idle grace`` () =
     withRepository (fun fx ->

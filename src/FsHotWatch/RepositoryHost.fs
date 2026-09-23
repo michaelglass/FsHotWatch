@@ -341,6 +341,8 @@ type HostRun =
     | AlreadyRunning of pid: int option
     /// The host served until it was stopped, or went idle.
     | Stopped
+    /// Something exists at the repository's virtual root, which must never exist.
+    | VirtualRootExists of path: string
 
 /// Take the repository's host lock, serve the endpoint until `cts` is cancelled or no
 /// session has been attached for `idleGrace`, then end every session and release the
@@ -363,6 +365,9 @@ let run
     | None ->
         let pid = tryReadPid settings.Control.PidFile
         HostRun.AlreadyRunning pid
+    | Some lock when Path.Exists settings.Control.VirtualRoot ->
+        lock.Dispose()
+        HostRun.VirtualRootExists settings.Control.VirtualRoot
     | Some lock ->
         try
             File.WriteAllText(settings.Control.PidFile, string Environment.ProcessId)

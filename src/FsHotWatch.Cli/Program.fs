@@ -2443,6 +2443,11 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             eprintfn $"repository host already running%s{who}"
             0
         | FsHotWatch.RepositoryHost.HostRun.Stopped -> 0
+        | FsHotWatch.RepositoryHost.HostRun.VirtualRootExists path ->
+            eprintfn
+                $"fshw host: %s{path} exists. Every worktree is checked under that path, and it must never exist: FCS would read project outputs from it. Remove it and start again."
+
+            2
 
 /// How a command reaches this worktree's daemon: its own per-worktree daemon, or its
 /// session of the repository host. Built once per invocation (`ownDaemonLink`,
