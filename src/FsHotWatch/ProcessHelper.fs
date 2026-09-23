@@ -792,15 +792,20 @@ let splitArgs (args: string) : string[] option =
             Some(tokens.ToArray())
 
 /// True when `path` is a file this user may execute.
-let private isExecutableFile (path: string) =
-    let execute =
-        IO.UnixFileMode.UserExecute
-        ||| IO.UnixFileMode.GroupExecute
-        ||| IO.UnixFileMode.OtherExecute
+/// Whether an existing file may be run: on Windows any file (it has no execute bit),
+/// elsewhere one with an execute bit set. Decided once for the platform.
+let private runnable: string -> bool =
+    if OperatingSystem.IsWindows() then
+        fun _ -> true
+    else
+        let execute =
+            IO.UnixFileMode.UserExecute
+            ||| IO.UnixFileMode.GroupExecute
+            ||| IO.UnixFileMode.OtherExecute
 
-    IO.File.Exists path
-    && (OperatingSystem.IsWindows()
-        || IO.File.GetUnixFileMode path &&& execute <> IO.UnixFileMode.None)
+        fun path -> IO.File.GetUnixFileMode path &&& execute <> IO.UnixFileMode.None
+
+let private isExecutableFile (path: string) = IO.File.Exists path && runnable path
 
 /// The executable a bare `command` names on `path` (a PATH value): the first
 /// directory holding an executable file of that name. `None` when `command` is bare and
