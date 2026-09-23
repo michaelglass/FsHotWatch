@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: classifying verification debt costs one grouped query per pass, not one graph walk
+  per queued symbol. The impact-selection flush, the test launch and the run's completion
+  each ask which test projects cover every symbol they handle; each asked
+  `QueryAffectedTests` once per symbol, so a queue of thousands of symbols held the plugin
+  in one flush for minutes, finishing no event, with a finished run's result waiting
+  behind it. They now ask TestPrune.Core 11's `QueryCoveringProjectsBySeed` once per pass,
+  which answers every symbol with one walk. The answers are unchanged.
+
 - Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14). A signature-file (`.fsi`)
   declaration is now an occurrence of the symbol its implementation defines, so editing
   only a signature selects the tests that use that symbol. The first open of an older

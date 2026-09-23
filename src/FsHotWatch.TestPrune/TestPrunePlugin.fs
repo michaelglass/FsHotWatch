@@ -5551,28 +5551,42 @@ let internal createWithQueries
     ///
     /// `excluded` is lazy so a classification that never meets an unconfigured coverer
     /// never resolves the declarations. Analysis-only daemons make no test claim, so every
-    /// covering project counts and the declarations are never consulted.
-    let debtScope (excluded: Lazy<Map<string, string>>) : string -> Set<string> =
+    /// covering project counts and the declarations are never consulted. `covering` is a
+    /// pass's `coveringOf`.
+    let debtScope (excluded: Lazy<Map<string, string>>) (covering: string -> Set<string>) : string -> Set<string> =
         let declaredExcluded (project: string) =
             match Map.tryFind project excluded.Value with
             | Some reason -> not (String.IsNullOrWhiteSpace reason)
             | None -> false
 
         fun symbol ->
-            let covering =
-                queries.AffectedTests [ symbol ]
-                |> List.map (fun t -> t.TestProject)
-                |> Set.ofList
+            let projects = covering symbol
 
             if Set.isEmpty runnableProjects then
-                covering
+                projects
             else
-                covering
+                projects
                 |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
 
     /// `debtScope` resolving the declarations only if a classification needs them.
-    let lazyDebtScope () =
-        debtScope (lazy (resolveExcludedProjects ()))
+    let lazyDebtScope (covering: string -> Set<string>) =
+        debtScope (lazy (resolveExcludedProjects ())) covering
+
+    /// The test projects covering each symbol a classification pass is about: what its
+    /// single-seed `QueryAffectedTests` would select from. One grouped query answers all
+    /// of `symbols`, run the first time any symbol is asked about and never when none is.
+    /// A symbol outside `symbols` is answered by a grouped query of its own.
+    let coveringOf (symbols: string seq) : string -> Set<string> =
+        let known = symbols |> Seq.distinct |> List.ofSeq
+        let grouped = lazy (queries.CoveringProjectsBySeed known)
+
+        fun symbol ->
+            match Map.tryFind symbol grouped.Value with
+            | Some projects -> projects
+            | None ->
+                queries.CoveringProjectsBySeed [ symbol ]
+                |> Map.tryFind symbol
+                |> Option.defaultValue Set.empty
 
     /// The unconfigured projects `owedTo` still waits on for `symbols`, for a message
     /// that has to name them.
@@ -5845,7 +5859,8 @@ let internal createWithQueries
         //    declares excluded. Nothing here can discharge it, and dropping it would let a
         //    configured-suite green retire tests that never ran. It STAYS owed; the verdict
         //    stays red and names the project until the config lists or excludes it.
-        let owedTo = lazyDebtScope ()
+        let covering = coveringOf symbols
+        let owedTo = lazyDebtScope covering
         let owing = symbols |> List.map (fun s -> s, owedTo s) |> Map.ofList
 
         let uncovered =
@@ -5861,7 +5876,7 @@ let internal createWithQueries
                 uncovered
                 |> Set.toList
                 |> List.choose (fun s ->
-                    match queries.AffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    match covering s with
                     | projects when Set.isEmpty projects -> None
                     | projects -> Some(s, projects))
                 |> Map.ofList
@@ -6191,7 +6206,7 @@ let internal createWithQueries
                 // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
                 // disagree. An unconfigured, undeclared coverer blocks the commit on
                 // purpose: its tests never ran, so they verified nothing.
-                let owedTo = lazyDebtScope ()
+                let owedTo = lazyDebtScope (coveringOf launchedSymbols)
 
                 let coveringProjectsBySymbol =
                     launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
@@ -8042,11 +8057,22 @@ let internal createWithQueries
                     // unobserved excluded project) fails this handler before it has emitted,
                     // recorded or committed anything, so the framework settles the work as a
                     // failure and every symbol stays owed.
+                    // Every symbol this completion can ask about: what the run launched,
+                    // what BootScan attached to it, and what is queued. One grouped query,
+                    // and only if something asks.
+                    let covering =
+                        coveringOf (
+                            Seq.concat
+                                [ Set.toSeq launch.Symbols
+                                  Map.keys state.BootScanDebtDuringFullRun
+                                  Set.toSeq state.Debt.PendingQueue ]
+                        )
+
                     let owedTo =
                         if Set.isEmpty runnableProjects then
-                            lazyDebtScope ()
+                            lazyDebtScope covering
                         else
-                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ()))
+                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ())) covering
 
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
