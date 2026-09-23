@@ -80,14 +80,15 @@ type private Recorded() =
     member _.Queries(db: Database) : ImpactQueries =
         let real = ImpactQueries.ofDatabase db
 
-        { AffectedTests =
-            fun seeds ->
-                lock gate (fun () -> affected.Add seeds)
-                real.AffectedTests seeds
-          CoveringProjectsBySeed =
-            fun seeds ->
-                lock gate (fun () -> grouped.Add seeds)
-                real.CoveringProjectsBySeed seeds }
+        { real with
+            AffectedTests =
+                fun seeds ->
+                    lock gate (fun () -> affected.Add seeds)
+                    real.AffectedTests seeds
+            CoveringProjectsBySeed =
+                fun seeds ->
+                    lock gate (fun () -> grouped.Add seeds)
+                    real.CoveringProjectsBySeed seeds }
 
     member _.SingleSeedWalks =
         lock gate (fun () -> affected |> Seq.filter (fun s -> s.Length = 1) |> Seq.length)

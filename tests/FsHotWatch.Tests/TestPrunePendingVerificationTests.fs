@@ -739,17 +739,19 @@ let ``boot-scan symbols discovered during a green full run are covered without a
     | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
 
 [<Fact(Timeout = 30000)>]
-let ``an in-session cohort discovered during a full run still queues exactly one rerun`` () =
-    // Mutation caught: matching every BatchChecked as BootScan would disable the real
-    // edit queue. The only difference from the regression above is cohort provenance.
+let ``an in-session cohort discovered during a confirm's full run joins it`` () =
+    // Under `set-scope full` no run may follow the full run, so every cohort attaches to
+    // it. The tree did not move, so the one green run covers it. That `check` still
+    // queues a rerun for an in-session cohort is pinned in
+    // `TestPruneConfirmPassThroughTests`.
     let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
     let outcome = runCohortScenario "tp-in-session" trigger 0 false false
-    Assert.Equal(2, outcome.RunCount)
+    Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>
 
     match outcome.Status with
     | Some(Completed _) -> ()
-    | other -> Assert.Fail($"expected the edit rerun to converge green, got %A{other}")
+    | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
 
 [<Fact(Timeout = 30000)>]
 let ``a failing full run cannot discharge boot-scan debt`` () =

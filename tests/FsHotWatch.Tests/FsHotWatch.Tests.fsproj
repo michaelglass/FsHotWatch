@@ -94,6 +94,8 @@
     <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />
     <Compile Include="TestPruneImpactQueryCountTests.fs" />
+    <Compile Include="TestPruneConfirmPassThroughTests.fs" />
+    <Compile Include="TestModeSeamTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />

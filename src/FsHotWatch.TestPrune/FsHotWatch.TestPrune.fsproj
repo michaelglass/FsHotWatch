@@ -38,6 +38,7 @@
     <Compile Include="DependencyFanout.fs" />
     <Compile Include="ArtifactFreshness.fs" />
     <Compile Include="StaleArtifactPreflight.fs" />
+    <Compile Include="TestMode.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

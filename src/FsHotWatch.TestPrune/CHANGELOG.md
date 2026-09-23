@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- fix!: `confirm` runs TestPrune in pass-through mode, and a cold `confirm` runs the suite
+  once. `set-scope full` now sets `TestPruneState.Mode = PassThrough` (replacing the
+  `FullSuiteRequested` bool; `ScopeRequested` carries a `TestMode`). Every launch already
+  ran every project in full, so the flush no longer selects or classifies, the launch
+  asks no covering query, and no run queues another: debt that arrives while the full
+  run is in flight attaches to it (`DebtDuringFullRun`, was `BootScanDebtDuringFullRun`).
+  A green full run over the input tree it launched against discharges that debt; a tree
+  that moved under it leaves the debt owed and the verdict unearned, with no second run.
+  Before, a cold `confirm` ran the suite three times: cohorts sealing mid-run queued
+  impact re-runs behind it. The mode stays set for the daemon session, as the full-suite
+  scope did, so a later `check` in the same daemon still runs the full suite.
+- fix: under `check`, a BootScan cohort that seals while a full-suite run is in flight
+  (a cold `check` earning its baseline) attaches to that run instead of queueing another.
+  The plugin now records what a claimed launch will execute (`InFlightScope`). An
+  in-session cohort still queues its own run.
+- A completion that ran every configured project in full over its launch tree, and passed
+  all of them, discharges its debt without asking which projects cover each symbol,
+  unless the index names a test project that is neither configured nor declared
+  excluded. `ImpactQueries.IndexedTestProjects` is that one scan.
+
 - fix: classifying verification debt costs one grouped query per pass, not one graph walk
   per queued symbol. The impact-selection flush, the test launch and the run's completion
   each ask which test projects cover every symbol they handle; each asked

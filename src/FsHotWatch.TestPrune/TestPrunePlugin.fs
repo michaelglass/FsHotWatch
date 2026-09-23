@@ -1471,12 +1471,22 @@ type VerificationDebt =
         RuntimeObligations: RuntimeCoverageObligations
     }
 
+/// What a launched run was going to execute, known when it claims the "tests" key.
+type LaunchScope =
+    /// Every configured project, unfiltered: requested, or widened to earn a baseline.
+    | LaunchedFullSuite
+    | LaunchedSelection
+
 type TestPruneState =
     {
         Debt: VerificationDebt
-        /// `set-scope full` is in effect: every launch runs every configured project in
-        /// full. A request, not evidence; `test-scope` reports what actually ran.
-        FullSuiteRequested: bool
+        /// Sticky for the daemon session: `set-scope full` is sent only by `confirm`, and
+        /// nothing sets it back. A request, not evidence; `test-scope` reports what
+        /// actually ran.
+        Mode: TestMode
+        /// The run holding the "tests" key whose result is not folded yet, if a launch
+        /// here claimed it. Cleared by that run's completion fold.
+        InFlightScope: LaunchScope option
         /// Every run this session completed, newest first, bounded at
         /// `SessionRunLedger`. `test-scope` declares them so a check can name each batch
         /// it ran.
@@ -1522,14 +1532,16 @@ type TestPruneState =
         /// tell "nothing needed running" from "nothing ran" goes looking for a bug
         /// in the selector.
         LastSeeds: string list
-        /// Symbols established by a BootScan cohort while a requested full-suite run was
-        /// already in flight, each with the debt revision captured when the cohort sealed.
-        /// The run covers the built tree being baselined, but these symbols are absent from
-        /// its immutable launch snapshot. They may be committed only after that run produces
-        /// genuinely green full-suite evidence over the input tree it launched against, and
-        /// only while the symbol is still at its captured revision: a later edit is new debt
-        /// the held run never built, even if the edit restores the sealed bytes.
-        BootScanDebtDuringFullRun: Map<string, int64>
+        /// Symbols that became owed while a full-suite run was already in flight and were
+        /// attached to it rather than queueing another run, each with the debt revision
+        /// captured when it attached. Under `ImpactSelection` only a BootScan cohort
+        /// attaches; under `PassThrough` every arrival does. The run covers the built tree
+        /// being baselined, but these symbols are absent from its immutable launch
+        /// snapshot. They may be committed only after that run produces genuinely green
+        /// full-suite evidence over the input tree it launched against, and only while the
+        /// symbol is still at its captured revision: a later edit is new debt the held run
+        /// never built, even if the edit restores the sealed bytes.
+        DebtDuringFullRun: Map<string, int64>
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -1642,8 +1654,8 @@ type TestRunInputs =
         OutstandingFailures: OutstandingFailure list
         /// The debt the run launches against, captured at dispatch.
         Debt: VerificationDebt
-        /// `set-scope full` was in effect at dispatch.
-        FullSuiteRequested: bool
+        /// The mode in effect at dispatch.
+        Mode: TestMode
         /// Source files whose symbols changed in this launch snapshot. Runtime
         /// project attribution is file-granular, so it consumes this alongside
         /// the symbol-precise AST selection.
@@ -1662,7 +1674,7 @@ module TestRunInputs =
           UnanalyzableFiles = state.UnanalyzableFiles
           OutstandingFailures = state.OutstandingFailures
           Debt = state.Debt
-          FullSuiteRequested = state.FullSuiteRequested
+          Mode = state.Mode
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds }
 
@@ -1872,8 +1884,8 @@ type TestPruneMsg =
     /// A run owed after the one holding the "tests" key: queued as an intent behind it,
     /// coalesced, and decided against the state it is delivered into.
     | ImpactRunRequested
-    /// `set-scope`: `true` runs every later launch in full.
-    | ScopeRequested of fullSuite: bool
+    /// `set-scope`: the mode every later launch runs under.
+    | ScopeRequested of TestMode
     /// A run could not ingest its runtime coverage receipt. Its durable recovery marker is
     /// already written; this makes the debt unknown in owner state too.
     | RuntimeCoverageFailed of project: string
@@ -5173,12 +5185,31 @@ type internal ImpactQueries =
         AffectedTests: string list -> TestMethodInfo list
         /// For each symbol, the test projects its single-seed query would select from.
         CoveringProjectsBySeed: string list -> Map<string, Set<string>>
+        /// Every test project the index holds a test method for. Not a covering query:
+        /// one scan, whatever is queued. `None` when the index cannot be read this way
+        /// (an in-memory index is private to the connection that made it).
+        IndexedTestProjects: unit -> Set<string> option
     }
 
 module internal ImpactQueries =
+    let private indexedTestProjects (db: Database) () : Set<string> option =
+        try
+            use conn = db.OpenConnection()
+            use query = conn.CreateCommand()
+            query.CommandText <- "SELECT DISTINCT test_project FROM test_methods;"
+            use reader = query.ExecuteReader()
+
+            [ while reader.Read() do
+                  reader.GetString 0 ]
+            |> Set.ofList
+            |> Some
+        with :? Microsoft.Data.Sqlite.SqliteException ->
+            None
+
     let ofDatabase (db: Database) : ImpactQueries =
         { AffectedTests = db.QueryAffectedTests
-          CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed }
+          CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed
+          IndexedTestProjects = indexedTestProjects db }
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
@@ -5595,10 +5626,10 @@ let internal createWithQueries
         |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
         |> Set.unionMany
 
-    // Flush pending analysis to DB and query affected tests from changed symbols.
+    // Flush pending analysis to DB and merge the runtime obligations it names.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
-    let flushAndQueryAffected (state: TestPruneState) =
+    let flushPending (state: TestPruneState) =
         // Capture OLD literal coupling before `RebuildProjects`
         // replaces a changed producer's outgoing graph. The unchanged test still
         // points at that old literal, but after the rebuild the producer does not;
@@ -5663,15 +5694,6 @@ let internal createWithQueries
                 db.RebuildProjects([ edgeResult ])
         | _ -> ()
 
-        // Affected tests must be computed from the WHOLE needs-testing queue —
-        // the in-memory hot view UNION the durable sidecar — not just the latest
-        // diff. The persisted queue holds symbols a green run hasn't yet cleared
-        // (e.g. carried across a restart, or left behind by an Aborted/failed
-        // run); they must keep selecting tests until a covering run passes.
-        let symbols =
-            Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
-            |> Set.toList
-
         let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
 
         let runtimeObligations =
@@ -5690,6 +5712,20 @@ let internal createWithQueries
                         $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
 
         reportRuntimeCoverageWidenings (Logging.warn "test-prune") runtimeSelection
+
+        flushedState, runtimeObligations
+
+    /// The impact selection over a flushed state, and the classification of every queued
+    /// symbol by the projects covering it.
+    let selectAffected (flushedState: TestPruneState) (runtimeObligations: RuntimeCoverageObligations) =
+        // Affected tests must be computed from the WHOLE needs-testing queue —
+        // the in-memory hot view UNION the durable sidecar — not just the latest
+        // diff. The persisted queue holds symbols a green run hasn't yet cleared
+        // (e.g. carried across a restart, or left behind by an Aborted/failed
+        // run); they must keep selecting tests until a covering run passes.
+        let symbols =
+            Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
+            |> Set.toList
 
         let affectedTests =
             if symbols.IsEmpty then
@@ -5995,6 +6031,22 @@ let internal createWithQueries
             ChangedSymbolsAllUncovered = allChangesUncovered
             LastSeeds = seedsThatSelectedTests }
 
+    /// Flush, then select, unless the mode skips `FlushSelection`: pass-through records
+    /// the debt without selecting or classifying it, and only a full run's green
+    /// discharges it.
+    let flushAndQueryAffected (state: TestPruneState) =
+        let flushedState, runtimeObligations = flushPending state
+
+        if TestMode.skips FlushSelection flushedState.Mode then
+            { flushedState with
+                Debt =
+                    { flushedState.Debt with
+                        RuntimeObligations = runtimeObligations }
+                AffectedTests = Analyzed []
+                ChangedSymbolsAllUncovered = UncoveredChanges.No }
+        else
+            selectAffected flushedState runtimeObligations
+
     /// `flushAndQueryAffected` under the bound it declares over itself
     /// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
     /// work whichever event drove it, and a caller that forgot the declaration would be
@@ -6037,7 +6089,8 @@ let internal createWithQueries
     // green.
     let initialState =
         { Debt = loadedDebt
-          FullSuiteRequested = false
+          Mode = TestMode.initial
+          InFlightScope = None
           CompletedRuns = []
           CheckReach = None
           Replies = []
@@ -6052,7 +6105,7 @@ let internal createWithQueries
           LastResults = None
           LastRunId = None
           LastSeeds = []
-          BootScanDebtDuringFullRun = Map.empty
+          DebtDuringFullRun = Map.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
@@ -6126,7 +6179,7 @@ let internal createWithQueries
             //    because the tests a filtered run skips have nothing to be equivalent
             //    to. A cold repository earns its baseline here; a repository whose
             //    `tests.projects` grew re-earns it. Same shape as 150.
-            let scopeIsFullSuite = inputs.FullSuiteRequested
+            let scopeIsFullSuite = TestMode.requestsFullSuite inputs.Mode
             let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
             let baselineInvalid = baselineInvalidReason inputs.Debt
 
@@ -6190,7 +6243,11 @@ let internal createWithQueries
             // Advance the poisoned-seed counters HERE, at the launch of
             // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
             // claim. `flushAndQueryAffected` runs several times per edit-save cycle.
-            Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols))
+            if not (TestMode.skips SeedAgeing inputs.Mode) then
+                Volatile.Write(
+                    &pendingAgeRef,
+                    bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols)
+                )
 
             try
                 // For each launched symbol, the set of test PROJECTS whose tests
@@ -6206,18 +6263,35 @@ let internal createWithQueries
                 // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
                 // disagree. An unconfigured, undeclared coverer blocks the commit on
                 // purpose: its tests never ran, so they verified nothing.
-                let owedTo = lazyDebtScope (coveringOf launchedSymbols)
-
+                //
+                // A pass-through run asks nothing: it runs every project, and its
+                // completion discharges by the full run's green (see `TestsFinished`).
                 let coveringProjectsBySymbol =
-                    launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
+                    if TestMode.skips LaunchCoveringCapture inputs.Mode then
+                        Map.empty
+                    else
+                        let owedTo = lazyDebtScope (coveringOf launchedSymbols)
+
+                        launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
 
                 // Extension-contributed edges were already written to the DB by
                 // flushAndQueryAffected, so `inputs.AffectedTests` already includes tests
                 // reachable through extension edges (sql, sql-hydra, falco, etc.).
+                //
+                // A pass-through flush selects nothing, so its launch asks the one grouped
+                // question the check-reach sample needs: what `check` would have selected.
                 let affectedTestsList =
-                    match inputs.AffectedTests with
-                    | Analyzed tests -> tests
-                    | NotYetAnalyzed -> []
+                    if TestMode.skips FlushSelection inputs.Mode then
+                        if Set.isEmpty launchedSymbols then
+                            []
+                        else
+                            queries.AffectedTests(Set.toList launchedSymbols)
+                            |> List.filter (fun t ->
+                                Set.isEmpty runnableProjects || Set.contains t.TestProject runnableProjects)
+                    else
+                        match inputs.AffectedTests with
+                        | Analyzed tests -> tests
+                        | NotYetAnalyzed -> []
 
                 let symbolAffectedByProject =
                     affectedTestsList
@@ -6760,7 +6834,7 @@ let internal createWithQueries
                             // Its own intent key: a scope change queued behind a running
                             // suite would hold `confirm` for that suite's whole length.
                             do!
-                                ctx.EnqueueExclusiveIntent "scope" None (ScopeRequested(requested = "full"))
+                                ctx.EnqueueExclusiveIntent "scope" None (ScopeRequested(TestMode.ofScope requested))
                                 |> Async.AwaitTask
 
                             return JsonSerializer.Serialize({| scope = requested |})
@@ -7170,6 +7244,57 @@ let internal createWithQueries
     let enqueueImpactRun (ctx: PluginCtx<TestPruneMsg>) =
         ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
 
+    /// What a launch from `inputs` will execute: the widenings `runTestsWithImpact`
+    /// applies to every project.
+    let launchScopeOf (inputs: TestRunInputs) =
+        if
+            TestMode.requestsFullSuite inputs.Mode
+            || inputs.Debt.RecoveryOutstanding
+            || Option.isSome (baselineInvalidReason inputs.Debt)
+        then
+            LaunchedFullSuite
+        else
+            LaunchedSelection
+
+    /// Claim the "tests" key for an impact launch from `launchState`. `Some` carries the
+    /// state recording what the claimed run will execute; `None` means the key is held.
+    let launchImpactRun
+        (ctx: PluginCtx<TestPruneMsg>)
+        (configs: TestConfig list)
+        (launchState: TestPruneState)
+        (hasCachedResults: bool)
+        (fanout: Set<string>)
+        =
+        let inputs = TestRunInputs.ofState launchState
+
+        match runTestHostExclusive ctx fanout None (runTestsWithImpact ctx configs inputs hasCachedResults fanout) with
+        | Claimed ->
+            Some
+                { launchState with
+                    InFlightScope = Some(launchScopeOf inputs) }
+        | SlotBusy -> None
+
+    /// Whether debt found while the key is held joins the run holding it instead of
+    /// queueing another. Only a full-suite run can take it. Under pass-through it takes
+    /// every arrival, since no run may follow it. Under impact selection it takes a
+    /// BootScan cohort, which scanned the tree that run is testing; an in-session cohort
+    /// is an edit the run never built, and queues its own run.
+    let joinsFullRun (state: TestPruneState) (bootScan: bool) =
+        state.InFlightScope = Some LaunchedFullSuite
+        && (TestMode.skips RerunIntents state.Mode || bootScan)
+
+    /// Attach what is owed to the full run in flight. The FIRST captured revision stands:
+    /// a later attach must not advance a symbol past an edit the held run never built.
+    let attachToFullRun (state: TestPruneState) =
+        { state with
+            DebtDuringFullRun =
+                (state.DebtDuringFullRun, state.Debt.PendingQueue)
+                ||> Set.fold (fun captured symbol ->
+                    if Map.containsKey symbol captured then
+                        captured
+                    else
+                        Map.add symbol (revisionOf state.Debt symbol) captured) }
+
     /// A launch that found its artifacts or test host unavailable ran nothing: it revokes
     /// the receipt, hands back the fanout it consumed, and fails.
     let unavailableRun
@@ -7183,6 +7308,7 @@ let internal createWithQueries
 
         { state with
             EvidenceReceipt = None
+            InFlightScope = None
             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
             Replies =
                 reply
@@ -7247,20 +7373,10 @@ let internal createWithQueries
                     { rerunState with
                         PendingForceRunProjects = Set.empty }
 
-                match
-                    runTestHostExclusive
-                        ctx
-                        fanout
-                        None
-                        (runTestsWithImpact
-                            ctx
-                            configs
-                            (TestRunInputs.ofState launchState)
-                            rerunState.LastResults.IsSome
-                            fanout)
-                with
-                | Claimed -> launchState
-                | SlotBusy ->
+                match launchImpactRun ctx configs launchState rerunState.LastResults.IsSome fanout with
+                | Some launched -> launched
+                | None when joinsFullRun rerunState false -> attachToFullRun rerunState
+                | None ->
                     enqueueImpactRun ctx
                     rerunState
         | _ -> state
@@ -7837,48 +7953,26 @@ let internal createWithQueries
                                     { flushedState with
                                         PendingForceRunProjects = Set.empty }
 
-                                match
-                                    runTestHostExclusive
-                                        ctx
-                                        forceRunProjects
-                                        None
-                                        (runTestsWithImpact
-                                            ctx
-                                            configs
-                                            (TestRunInputs.ofState drainedState)
-                                            hasCachedResults
-                                            forceRunProjects)
-                                with
-                                | Claimed ->
+                                match launchImpactRun ctx configs drainedState hasCachedResults forceRunProjects with
+                                | Some launched ->
                                     Logging.info
                                         "test-prune"
                                         $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
 
-                                    return drainedState
-                                | SlotBusy when batch.Trigger = BootScan && flushedState.FullSuiteRequested ->
-                                    // The requested full-suite run already covers the built
-                                    // tree that this cold cohort is baselining. Remember the
-                                    // late-discovered symbols, but do not schedule a duplicate
-                                    // run. TestsFinished may discharge them only from actual
-                                    // green full-suite evidence; failure or partial scope keeps
-                                    // the durable queue outstanding.
+                                    return launched
+                                | None when joinsFullRun flushedState (batch.Trigger = BootScan) ->
+                                    // The full-suite run in flight covers the built tree
+                                    // this cohort describes, so it takes the debt instead of
+                                    // a duplicate run. TestsFinished may discharge it only
+                                    // from actual green full-suite evidence over an
+                                    // unchanged input tree; failure, partial scope, or a
+                                    // moved tree keeps the durable queue outstanding.
                                     Logging.info
                                         "test-prune"
-                                        $"BatchChecked: %s{owedDescription flushedState.Debt} discovered by BootScan during a full-suite run — attaching debt to that run"
+                                        $"BatchChecked: %s{owedDescription flushedState.Debt} discovered during a full-suite run — attaching debt to that run"
 
-                                    return
-                                        { flushedState with
-                                            // The FIRST captured revision stands: a later
-                                            // seal must not advance a symbol past an edit
-                                            // the held run never built.
-                                            BootScanDebtDuringFullRun =
-                                                (flushedState.BootScanDebtDuringFullRun, flushedState.Debt.PendingQueue)
-                                                ||> Set.fold (fun captured symbol ->
-                                                    if Map.containsKey symbol captured then
-                                                        captured
-                                                    else
-                                                        Map.add symbol (revisionOf flushedState.Debt symbol) captured) }
-                                | SlotBusy ->
+                                    return attachToFullRun flushedState
+                                | None ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
                                     // Queue the rerun behind it as an intent. The pending
@@ -7963,7 +8057,19 @@ let internal createWithQueries
                             { state with
                                 PriorProjectFingerprints = currentFingerprints }
 
-                        if ctx.IsRunning "tests" then
+                        if ctx.IsRunning "tests" && joinsFullRun state false then
+                            // A pass-through full run takes what is owed: no run follows
+                            // it. The fanout is kept for whatever launches next.
+                            ctx.Log "  ↳ attached to the full run (tests already running)"
+
+                            Logging.info
+                                "test-prune"
+                                "BuildSucceeded received during a full-suite run — attaching debt to that run"
+
+                            return
+                                { attachToFullRun state with
+                                    PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
+                        elif ctx.IsRunning "tests" then
                             // The leading two spaces nest this under the in-flight test
                             // run in the activity-fold `recent:` view (the renderer
                             // already indents every tail entry by 8), so it does not read
@@ -8019,20 +8125,19 @@ let internal createWithQueries
                                         { stateWithAffected with
                                             PendingForceRunProjects = Set.empty }
 
-                                    match
-                                        runTestHostExclusive
-                                            ctx
-                                            forceRunProjects
-                                            None
-                                            (runTestsWithImpact
-                                                ctx
-                                                configs
-                                                (TestRunInputs.ofState launchState)
-                                                hasCachedResults
-                                                forceRunProjects)
-                                    with
-                                    | Claimed -> return launchState
-                                    | SlotBusy ->
+                                    match launchImpactRun ctx configs launchState hasCachedResults forceRunProjects with
+                                    | Some launched -> return launched
+                                    | None when joinsFullRun stateWithAffected false ->
+                                        // The key is held by a pass-through full run whose
+                                        // result is not folded yet: it takes the debt.
+                                        Logging.info
+                                            "test-prune"
+                                            "BuildSucceeded: tests slot held by a full-suite run — attaching debt to that run"
+
+                                        return
+                                            { attachToFullRun stateWithAffected with
+                                                PendingForceRunProjects = forceRunProjects }
+                                    | None ->
                                         // The key is held without a live run: a result fold
                                         // or an intent. Same treatment: queue the rerun behind
                                         // it, retain the un-consumed fanout.
@@ -8058,21 +8163,34 @@ let internal createWithQueries
                     // recorded or committed anything, so the framework settles the work as a
                     // failure and every symbol stays owed.
                     // Every symbol this completion can ask about: what the run launched,
-                    // what BootScan attached to it, and what is queued. One grouped query,
+                    // what was attached to it, and what is queued. One grouped query,
                     // and only if something asks.
                     let covering =
                         coveringOf (
                             Seq.concat
                                 [ Set.toSeq launch.Symbols
-                                  Map.keys state.BootScanDebtDuringFullRun
+                                  Map.keys state.DebtDuringFullRun
                                   Set.toSeq state.Debt.PendingQueue ]
                         )
 
-                    let owedTo =
+                    let excluded =
                         if Set.isEmpty runnableProjects then
-                            lazyDebtScope covering
+                            lazy (resolveExcludedProjects ())
                         else
-                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ())) covering
+                            Lazy<_>.CreateFromValue(resolveExcludedProjects ())
+
+                    let owedTo = debtScope excluded covering
+
+                    // Whether the index names a test project no run here can discharge:
+                    // neither configured nor declared excluded. If not, no symbol can be
+                    // owed elsewhere, so nothing needs asking per symbol. One scan of the
+                    // index, not a covering query, and only if something asks. An index
+                    // that cannot be scanned may name one.
+                    let noUnrunnableCoverers =
+                        lazy
+                            (match queries.IndexedTestProjects() with
+                             | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
+                             | None -> false)
 
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
@@ -8173,7 +8291,7 @@ let internal createWithQueries
                     // run completed and we know what it covered. Until a state carrying it
                     // is supplied, the cache key refuses to let a cached BuildCompleted
                     // assert a result this process never ran.
-                    let bootScanDebtDuringFullRun = state.BootScanDebtDuringFullRun
+                    let debtDuringFullRun = state.DebtDuringFullRun
 
                     let currentInputTree = ReceiptInputTree.read repoRoot
                     let currentModelGeneration = observeModelGeneration ctx
@@ -8211,7 +8329,8 @@ let internal createWithQueries
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
-                            BootScanDebtDuringFullRun = Map.empty
+                            DebtDuringFullRun = Map.empty
+                            InFlightScope = None
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
@@ -8254,17 +8373,29 @@ let internal createWithQueries
                         | Some r -> TestResult.verifiedGreen r
                         | None -> false
 
+                    // A run that executed every runnable project in full, over the input tree
+                    // it launched against, and passed all of them, covered every symbol that
+                    // tree holds: there is nothing left to ask per symbol, unless the index
+                    // names a coverer this daemon neither runs nor declares excluded.
+                    let coveredByConstruction =
+                        not aborted
+                        && not (Set.isEmpty runnableProjects)
+                        && completed.Verification = Ran FullSuite
+                        && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
+                        && runnableProjects |> Set.forall projectPassed
+                        && noUnrunnableCoverers.Value
+
                     let committedSymbols =
                         if aborted then
                             Set.empty
                         else
-                            // A late BootScan symbol may borrow this run only when the run
-                            // was actually full, over the input tree it launched against,
-                            // and the symbol is still at the revision its cohort sealed.
-                            let bootScanCandidates =
+                            // An attached symbol may borrow this run only when the run was
+                            // actually full, over the input tree it launched against, and the
+                            // symbol is still at the revision captured when it attached.
+                            let attachedCandidates =
                                 match completed.Verification with
                                 | Ran FullSuite when ReceiptInputTree.matches launch.InputTreeHash currentInputTree ->
-                                    bootScanDebtDuringFullRun
+                                    debtDuringFullRun
                                     |> Map.filter (fun symbol captured -> revisionOf state.Debt symbol = captured)
                                     |> Map.keys
                                     |> Set.ofSeq
@@ -8276,12 +8407,17 @@ let internal createWithQueries
                                     revisionOf state.Debt symbol = (Map.tryFind symbol launch.SymbolRevisions
                                                                     |> Option.defaultValue 0L))
 
-                            Set.union launchedCurrent bootScanCandidates
-                            |> Set.filter (fun s ->
-                                match Map.tryFind s launch.CoveringProjectsBySymbol with
-                                | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
-                                | Some _ -> true
-                                | None -> owedTo s |> Set.forall projectPassed)
+                            let candidates = Set.union launchedCurrent attachedCandidates
+
+                            if coveredByConstruction then
+                                candidates
+                            else
+                                candidates
+                                |> Set.filter (fun s ->
+                                    match Map.tryFind s launch.CoveringProjectsBySymbol with
+                                    | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
+                                    | Some _ -> true
+                                    | None -> owedTo s |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info
@@ -8299,15 +8435,24 @@ let internal createWithQueries
 
                                 Logging.info "test-prune" $"runtime coverage verified %s{file} by %s{projectNames}"
 
+                    // A run covered by construction discharges every obligation owed now,
+                    // not only those it launched with: what attached to it arrived over the
+                    // tree it ran.
+                    let retiredRuntime =
+                        if coveredByConstruction then
+                            debt.RuntimeObligations
+                        else
+                            launch.RuntimeProjectsByFile
+
                     let debt =
-                        if aborted || Map.isEmpty launch.RuntimeProjectsByFile then
+                        if aborted || Map.isEmpty retiredRuntime then
                             debt
                         else
                             { debt with
                                 RuntimeObligations =
                                     retireRuntimeCoverageObligations
                                         debt.RuntimeObligations
-                                        launch.RuntimeProjectsByFile
+                                        retiredRuntime
                                         projectPassed }
 
                     // Discharge an UNREADABLE ledger's debt.
@@ -8476,7 +8621,13 @@ let internal createWithQueries
                     // A function: it queries each queued symbol, and only non-green
                     // branches ask.
                     let pendingDescription () =
-                        match owedElsewhere owedTo queueAfterCommit |> Set.toList with
+                        let elsewhere =
+                            if noUnrunnableCoverers.Value then
+                                Set.empty
+                            else
+                                owedElsewhere owedTo queueAfterCommit
+
+                        match Set.toList elsewhere with
                         | [] -> $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
                         | projects ->
                             let names = projects |> String.concat ", "
@@ -8856,8 +9007,11 @@ let internal createWithQueries
                             // Only the files this run launched against are consumed; a
                             // file that changed during the run selects the next one.
                             ChangedFiles =
-                                state.ChangedFiles
-                                |> List.filter (fun file -> not (List.contains file launch.ChangedFiles))
+                                if coveredByConstruction then
+                                    []
+                                else
+                                    state.ChangedFiles
+                                    |> List.filter (fun file -> not (List.contains file launch.ChangedFiles))
                             ChangedSymbols = remainingChangedSymbols
                             AffectedTests = Analyzed []
                             Replies = replies }
@@ -8876,17 +9030,15 @@ let internal createWithQueries
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
                     return unavailableRun ctx state message owed reply
 
-                | Custom(ScopeRequested fullSuite) ->
-                    if fullSuite then
+                | Custom(ScopeRequested mode) ->
+                    if TestMode.requestsFullSuite mode then
                         Logging.info
                             "test-prune"
                             "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
                     else
                         Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
 
-                    return
-                        { state with
-                            FullSuiteRequested = fullSuite }
+                    return { state with Mode = mode }
 
                 | Custom(RuntimeCoverageFailed project) ->
                     Logging.warn
@@ -8981,7 +9133,10 @@ let internal createWithQueries
             let fullSuiteScopeHash () =
                 // A run widened by a missing baseline is a full-suite
                 // run too, and must not replay a filtered run's cached verdict.
-                if state.FullSuiteRequested || Option.isSome (baselineInvalidReason state.Debt) then
+                if
+                    TestMode.requestsFullSuite state.Mode
+                    || Option.isSome (baselineInvalidReason state.Debt)
+                then
                     Some "full"
                 else
                     None

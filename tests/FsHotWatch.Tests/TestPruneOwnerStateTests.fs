@@ -379,14 +379,9 @@ let ``set-scope replies only after the owner applies its intent`` (scope: string
         Assert.False(reply.IsCompleted, "set-scope acknowledged before its owner committed the intent")
 
         let applied =
-            update
-                (recordingCtx ())
-                handler
-                { handler.Init with
-                    FullSuiteRequested = true }
-                (Custom(snd intents[0]))
+            update (recordingCtx ()) handler { handler.Init with Mode = PassThrough } (Custom(snd intents[0]))
 
-        Assert.Equal((scope = "full"), applied.FullSuiteRequested)
+        Assert.Equal((if scope = "full" then PassThrough else ImpactSelection), applied.Mode)
         Assert.False(reply.IsCompleted, "set-scope acknowledged before its owner committed the intent")
         receipt.SetResult(())
         let! response = reply.WaitAsync(TimeSpan.FromSeconds 5.0)
