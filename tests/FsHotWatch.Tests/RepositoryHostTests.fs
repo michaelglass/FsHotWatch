@@ -81,6 +81,7 @@ let private settingsFor (fx: Fixture) : HostSettings =
             { Write = ignore
               Level = Logging.LogLevel.Info }
       WatchConfig = fun _ _ -> noop
+      SessionResources = fun _ -> []
       Describe = fun () -> JsonObject() }
 
 let private daemonFactory: SessionFactory =
@@ -669,3 +670,44 @@ let ``a host lock held without a pid says only that a host is running`` () =
 
         use cts = new CancellationTokenSource()
         test <@ RepositoryHost.run settings daemonFactory DefaultIdleGrace cts = HostRun.AlreadyRunning None @>)
+
+[<Fact(Timeout = 60000)>]
+let ``what a session leaves in the host process is released when it ends, and only then`` () =
+    let released = Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+    let settings fx =
+        { settingsFor fx with
+            SessionResources =
+                fun w ->
+                    [ { new IDisposable with
+                          member _.Dispose() =
+                              released.AddOrUpdate(w.Root.Value, 1, (fun _ n -> n + 1)) |> ignore } ] }
+
+    withHost settings daemonFactory (fun fx host ->
+        let a = attachedId (attachVia host (requestFrom fx.Primary "a"))
+        attachedId (attachVia host (requestFrom fx.Secondary "b")) |> ignore
+        test <@ released.IsEmpty @>
+        test <@ host.Registry.Detach a @>
+
+        let count =
+            match released.TryGetValue fx.Primary.Root.Value with
+            | true, n -> n
+            | _ -> 0
+
+        test <@ count = 1 @>
+        test <@ not (released.ContainsKey fx.Secondary.Root.Value) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a session that fails to start releases what it was given`` () =
+    let released = ref 0
+
+    let settings fx =
+        { settingsFor fx with
+            SessionResources =
+                fun _ ->
+                    [ { new IDisposable with
+                          member _.Dispose() = released.Value <- released.Value + 1 } ] }
+
+    withHost settings (fun _ -> invalidOp "no projects") (fun fx host ->
+        test <@ refusalKind (attachVia host (requestFrom fx.Primary "a")) = "session-start-failed" @>
+        test <@ released.Value = 1 @>)

@@ -347,6 +347,7 @@ let private inProcessHost (root: string) (stateHome: string) (factory: SessionRe
             fun _ _ ->
                 { new IDisposable with
                     member _.Dispose() = () }
+          SessionResources = fun _ -> []
           Describe = fun () -> Text.Json.Nodes.JsonObject() }
 
     let cts = new CancellationTokenSource()

@@ -117,6 +117,7 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
                 fun _ _ ->
                     { new IDisposable with
                         member _.Dispose() = () }
+              SessionResources = fun _ -> []
               Describe = fun () -> JsonObject() }
 
         let factory (spec: SessionSpec) =

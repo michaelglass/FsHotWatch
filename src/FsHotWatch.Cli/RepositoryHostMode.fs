@@ -146,6 +146,7 @@ let hostSettings
     (launchRoot: ResolvedWorktree)
     (sinkFor: ResolvedWorktree -> Logging.LogSink)
     (watchConfig: ResolvedWorktree -> (unit -> unit) -> IDisposable)
+    (sessionResources: ResolvedWorktree -> IDisposable list)
     (describe: unit -> JsonObject)
     : RepositoryHost.HostSettings =
     let environment = SessionEnvironment.ofProcess launchRoot.Root.Value
@@ -159,4 +160,5 @@ let hostSettings
       ToolchainOf = fun worktree env -> sdkVersion worktree.Root.Value env
       SinkFor = sinkFor
       WatchConfig = watchConfig
+      SessionResources = sessionResources
       Describe = describe }

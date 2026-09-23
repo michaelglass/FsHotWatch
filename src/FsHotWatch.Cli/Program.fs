@@ -2410,8 +2410,20 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             registerPlugins daemon worktreeRoot config
             daemon
 
+        // A session's TestPrune database connections are pooled per path, and the pool
+        // outlives the session. A worktree recreated at the same path would otherwise be
+        // handed a connection to its predecessor's file. Only this worktree's pool is
+        // cleared: a process-wide clear would land between a sibling's open and its read.
+        let sessionResources (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
+            [ { new IDisposable with
+                  member _.Dispose() =
+                      // TestPrune.Core pools under exactly this connection string.
+                      let dbPath = DaemonConfig.testImpactDbPath worktree.Root.Value
+                      use key = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
+                      Microsoft.Data.Sqlite.SqliteConnection.ClearPool key } ]
+
         let settings =
-            RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig describe
+            RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig sessionResources describe
 
         // The host's working directory is its own control directory, never a worktree:
         // a hidden dependence on the cwd then fails the same way for every session.

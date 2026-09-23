@@ -147,6 +147,10 @@ type HostSettings =
         SinkFor: ResolvedWorktree -> Logging.LogSink
         /// Watch a worktree's configuration; the callback reloads its session.
         WatchConfig: ResolvedWorktree -> (unit -> unit) -> IDisposable
+        /// Released when a worktree's session ends. A per-worktree daemon releases
+        /// everything by exiting; a host outlives its sessions, so what a session leaves
+        /// in the process (pooled database connections, say) is released here.
+        SessionResources: ResolvedWorktree -> IDisposable list
         /// Anything more the host reports about itself (its shared watcher, say).
         Describe: unit -> JsonObject
     }
@@ -208,7 +212,7 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
                           Config = request.Config
                           Environment = environment
                           Sink = settings.SinkFor worktree
-                          Owned = [ forget; lock ] }
+                          Owned = [ forget; lock ] @ settings.SessionResources worktree }
 
                     match registry.Start(id, spec) with
                     | Error reason -> refuse (AttachRefusal.SessionStartFailed reason)
