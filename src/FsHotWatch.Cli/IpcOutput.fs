@@ -1269,7 +1269,7 @@ let private publishVerdictWithReason
         if not UI.isInteractive then
             eprintfn ""
 
-            for line in ProgressRenderer.AgentHints.forVerdict priorVerdict v do
+            for line in ProgressRenderer.AgentHints.forVerdict (FsHotWatch.Ctrf.runExists repoRoot) priorVerdict v do
                 eprintfn "%s" line
 
         exitCode

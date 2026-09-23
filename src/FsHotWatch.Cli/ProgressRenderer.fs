@@ -662,7 +662,11 @@ module AgentHints =
     /// a no-test reading may instead preserve an applicable prior full green.
     /// Passing it in keeps this function pure and makes that ordering impossible to
     /// get silently wrong.
-    let forVerdict (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
+    ///
+    /// `runExists` answers whether a run's directory is on disk (`Ctrf.runExists` in
+    /// production). A run with no reports is only a run that tested nothing when its
+    /// directory is there to be empty.
+    let forVerdict (runExists: System.Guid -> bool) (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
         // NEVER print a path for a file that was not written: a hint that sends you to an
         // empty directory teaches distrust of the tool.
         //
@@ -710,12 +714,17 @@ module AgentHints =
                 [ $"    batches  the tests ran %d{n} times in this check — ALL %d{n} run directories are below" ]
             | _ -> []
 
-        let runDirs =
+        // Each run directory as it is on disk. An EMPTY one is a run that tested nothing;
+        // an ABSENT one (pruned by retention, or never written) says nothing about what
+        // its run tested, so the two are never reported as one fact.
+        let emptyDirs, absentDirs =
             v.Runs
             |> List.choose (fun r -> r.RunId)
             |> List.map (fun id ->
                 let dir = id.ToString("N")
-                $".fshw/test-runs/%s{dir}/")
+                runExists id, $".fshw/test-runs/%s{dir}/")
+            |> List.partition fst
+            |> fun (empty, absent) -> List.map snd empty, List.map snd absent
 
         let suitePathLines, noSuiteFactLines =
             match v.Suites, v.RunId with
@@ -725,13 +734,30 @@ module AgentHints =
                 :: priorEvidenceLines prior v
             | [], Some _ ->
                 let fact =
-                    match runDirs with
-                    | [ one ] -> $"    suites   NONE — the run executed no tests (its directory %s{one} is empty)"
-                    | dirs ->
-                        let listed = String.concat ", " dirs
+                    match emptyDirs, absentDirs with
+                    | [ one ], [] -> $"    suites   NONE — the run executed no tests (its directory %s{one} is empty)"
+                    | empty, [] ->
+                        let listed = String.concat ", " empty
 
-                        $"    suites   NONE — this check ran the tests %d{List.length dirs} times and every one of \
+                        $"    suites   NONE — this check ran the tests %d{List.length empty} times and every one of \
                            its run directories is empty (%s{listed})"
+                    | empty, absent ->
+                        let noun =
+                            match absent with
+                            | [ _ ] -> "directory"
+                            | _ -> "directories"
+
+                        let absentListed = String.concat ", " absent
+                        let emptyListed = String.concat ", " empty
+
+                        let emptyPart =
+                            if List.isEmpty empty then
+                                ""
+                            else
+                                $"; empty, so no tests ran there: %s{emptyListed}"
+
+                        $"    suites   UNREAD — run %s{noun} ABSENT (pruned, or never written), so what ran there \
+                           cannot be read and is not a report of zero tests: %s{absentListed}%s{emptyPart}"
 
                 [], fact :: priorEvidenceLines prior v
             | suites, _ ->
