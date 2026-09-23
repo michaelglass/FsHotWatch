@@ -250,3 +250,23 @@ let ``an edit appends a marker line and restoring returns the original bytes`` (
     let edited = Scenario.editedContent original 3
     test <@ edited.StartsWith original && edited.Contains "fshw-bench edit 3" @>
     test <@ Scenario.editedContent original 3 <> Scenario.editedContent original 4 @>
+
+let private st epoch after : DaemonLog.Settle =
+    { Epoch = epoch
+      AfterMs = after
+      Files = 1 }
+
+[<Fact>]
+let ``a high-fan-out edit's settle is the LAST line of the first new epoch`` () =
+    // One edit, three cohorts checked under epoch 7, then an unrelated epoch 8.
+    let fresh = [ st 7L 900.0; st 7L 4100.0; st 7L 9800.0; st 8L 300.0 ]
+    test <@ Scenario.editSettle fresh |> Option.map _.AfterMs = Some 9800.0 @>
+    test <@ Scenario.editSettle [] = None @>
+
+[<Fact>]
+let ``an edit's epoch is done when a later epoch appears or its lines go quiet`` () =
+    let quiet = System.TimeSpan.FromSeconds 3.0
+    test <@ not (Scenario.editEpochDone [] (System.TimeSpan.FromSeconds 60.0) quiet) @>
+    test <@ not (Scenario.editEpochDone [ st 7L 900.0 ] (System.TimeSpan.FromSeconds 1.0) quiet) @>
+    test <@ Scenario.editEpochDone [ st 7L 900.0 ] (System.TimeSpan.FromSeconds 3.0) quiet @>
+    test <@ Scenario.editEpochDone [ st 7L 900.0; st 8L 10.0 ] System.TimeSpan.Zero quiet @>

@@ -269,6 +269,22 @@ let hostSessionProblems (sessions: (int * string option) list) : string list =
 
     missing @ shared
 
+/// The settle an edit produced, from the settle lines that appeared after it: one edit
+/// can be checked in several cohorts under one epoch (a high fan-out edit re-checks its
+/// dependents), and the daemon writes a line per cohort, so the edit is settled at the
+/// LAST line of the first new epoch.
+let editSettle (fresh: DaemonLog.Settle list) : DaemonLog.Settle option =
+    match fresh with
+    | [] -> None
+    | first :: _ -> fresh |> List.filter (fun x -> x.Epoch = first.Epoch) |> List.tryLast
+
+/// Whether the first new epoch is finished: a later epoch has appeared, or no new line
+/// has arrived for `quiet`.
+let editEpochDone (fresh: DaemonLog.Settle list) (sinceLastLine: TimeSpan) (quiet: TimeSpan) : bool =
+    match fresh with
+    | [] -> false
+    | first :: _ -> fresh |> List.exists (fun x -> x.Epoch > first.Epoch) || sinceLastLine >= quiet
+
 /// A source file's content with edit `i`'s marker appended: a real content change (so
 /// the file is re-checked) that never changes what the file means.
 let editedContent (original: string) (i: int) : string =
@@ -576,16 +592,36 @@ let private editPhase
         let settleCount (s: SessionRun) =
             readLog s.Worktree |> DaemonLog.settled |> List.length
 
+        let fresh (s: SessionRun) (n: int) =
+            readLog s.Worktree |> DaemonLog.settled |> List.skip n
+
+        // Quiet this long after an epoch's last line means the epoch is finished.
+        let quiet = TimeSpan.FromSeconds 3.0
+
         let awaitSettles (before: (SessionRun * int) list) =
             let deadline = DateTime.UtcNow + cfg.SettleTimeout
+            let lastChange = Collections.Generic.Dictionary<int, int * DateTime>()
+
+            let isDone (s: SessionRun, n: int) =
+                let lines = fresh s n
+                let count = List.length lines
+
+                let since =
+                    match lastChange.TryGetValue s.Session with
+                    | true, (c, at) when c = count -> DateTime.UtcNow - at
+                    | _ ->
+                        lastChange.[s.Session] <- (count, DateTime.UtcNow)
+                        TimeSpan.Zero
+
+                editEpochDone lines since quiet
+
             let mutable pending = before
 
             while not (List.isEmpty pending) && DateTime.UtcNow < deadline do
                 Thread.Sleep 250
-                pending <- pending |> List.filter (fun (s, n) -> settleCount s <= n)
+                pending <- pending |> List.filter (isDone >> not)
 
-            before
-            |> List.map (fun (s, n) -> s, readLog s.Worktree |> DaemonLog.settled |> List.skip n |> List.tryHead)
+            before |> List.map (fun (s, n) -> s, editSettle (fresh s n))
 
         try
             for i in 1 .. cfg.Edits do
