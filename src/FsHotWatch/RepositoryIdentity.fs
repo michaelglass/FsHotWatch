@@ -455,6 +455,10 @@ type RepositoryControlPaths =
         /// The IPC endpoint (pipe) name. Short, because a Unix-domain socket path is
         /// length-limited and the runtime prefixes it.
         Endpoint: string
+        /// The root every worktree of the repository is checked under. It must never
+        /// exist: FCS reads a project reference's output from disk when a file is at its
+        /// output path, and every output path is under this root.
+        VirtualRoot: string
     }
 
 /// Hex characters of the `RepositoryId` the endpoint name carries (64 bits — ample to
@@ -470,7 +474,8 @@ let repositoryControlPaths (stateHome: string) (repository: RepositoryId) : Repo
       PidFile = Path.Combine(dir, "host.pid")
       IdentityFile = Path.Combine(dir, "host.identity")
       HostLog = Path.Combine(dir, "host.log")
-      Endpoint = $"fshw-repo-%s{repository.Value.Substring(0, EndpointIdLength)}" }
+      Endpoint = $"fshw-repo-%s{repository.Value.Substring(0, EndpointIdLength)}"
+      VirtualRoot = Path.Combine(dir, "virtual") }
 
 /// The repository's slice of the box-wide shared cache (immutable, content-keyed
 /// artifacts shared by all its worktrees).
