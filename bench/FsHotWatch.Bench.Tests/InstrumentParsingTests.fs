@@ -176,10 +176,37 @@ let private snapshot load1 free foreign : Load.Snapshot =
       MemBytes = 0L
       MemFreePercent = free
       SwapUsedBytes = None
-      ForeignDaemons = foreign }
+      ForeignDaemons = foreign
+      PowerSource = Some "AC Power" }
 
 [<Fact>]
 let ``a quiet box has no contention reasons and each breach is named`` () =
     test <@ List.isEmpty (Load.contention Load.defaultBar (snapshot 2.0 (Some 60) [])) @>
     test <@ List.length (Load.contention Load.defaultBar (snapshot 229.6 (Some 20) [ 87070 ])) = 3 @>
     test <@ List.isEmpty (Load.contention Load.defaultBar (snapshot 5.0 None [])) @>
+
+[<Fact>]
+let ``the power source is read from pmset's first line`` () =
+    test <@ Load.parsePowerSource "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t49%" = Some "AC Power" @>
+    test <@ Load.parsePowerSource "Now drawing from 'Battery Power'\n" = Some "Battery Power" @>
+    test <@ Load.parsePowerSource "garbage" = None @>
+
+[<Fact>]
+let ``a sample on battery is contended even when the load bar is off`` () =
+    let onBattery =
+        { snapshot 1.0 (Some 60) [] with
+            PowerSource = Some "Battery Power" }
+
+    let noLoadBar: Load.QuietBar =
+        { MaxLoadPerCpu = System.Double.PositiveInfinity
+          MinMemFreePercent = 0 }
+
+    test
+        <@
+            Load.contention Load.defaultBar onBattery = [ "on Battery Power, not AC: throttling and sleep invalidate latency" ]
+        @>
+
+    test
+        <@ Load.contention noLoadBar onBattery = [ "on Battery Power, not AC: throttling and sleep invalidate latency" ] @>
+    // An unreadable power source (a desktop with no battery report) is not contention.
+    test <@ List.isEmpty (Load.contention Load.defaultBar { onBattery with PowerSource = None }) @>

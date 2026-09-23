@@ -416,7 +416,7 @@ let write
     let s =
         { s with
             Invalid = s.Invalid @ sleepProblem }
-    // At sample time only a FOREIGN daemon counts as contention: load and memory are
+    // At sample time only a FOREIGN daemon, or battery power, counts as contention: load and memory are
     // recorded, but this harness's own daemons are what is being measured, so judging
     // them here would call every cold scan contended. The box itself was judged by
     // `preflight`, before any daemon started.

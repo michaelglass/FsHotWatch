@@ -122,7 +122,8 @@ let ``a record carries the retention reading and the summary scores only trusted
                       MemBytes = 0L
                       MemFreePercent = None
                       SwapUsedBytes = None
-                      ForeignDaemons = [] }
+                      ForeignDaemons = []
+                      PowerSource = Some "AC Power" }
                   Contended = []
                   Footprint = None
                   FootprintBeforeWalk = None

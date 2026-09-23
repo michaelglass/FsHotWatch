@@ -309,7 +309,8 @@ let private loadNode (l: Load.Snapshot) : JsonNode =
           "memBytes", n64 l.MemBytes
           "memFreePercent", opt ni l.MemFreePercent
           "swapUsedBytes", opt n64 l.SwapUsedBytes
-          "foreignDaemons", arr (l.ForeignDaemons |> List.map ni) ]
+          "foreignDaemons", arr (l.ForeignDaemons |> List.map ni)
+          "powerSource", opt ns l.PowerSource ]
 
 /// Render one record as a single JSON line (no trailing newline).
 let toJsonLine (r: BenchRecord) : string =

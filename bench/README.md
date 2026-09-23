@@ -85,6 +85,11 @@ The checks are:
   that was set. A run where the daemon ignored the setting can therefore never be scored
   under it. Every record carries `config: { strip, set, echo }`, and `cold-scan`
   records carry the echo read from the log.
+- the Mac was on AC power. `pmset -g batt` is read into every record's load
+  (`powerSource`), and battery power counts as contention at preflight and at every
+  sample. A laptop on battery throttles and sleeps, and either one invalidates a
+  latency. So a repetition cannot start on battery, and a record taken after a switch to
+  battery is excluded.
 - the machine did not sleep or dark-wake since the repetition began. A laptop with its
   lid closed on battery sleeps whatever `caffeinate` says. The .NET `Stopwatch` on macOS
   does not advance during sleep and the wall clock does. On this box they differed by

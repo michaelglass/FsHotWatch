@@ -101,7 +101,8 @@ let private record sessions rep session phase phys contended invalid : Record.Be
           MemBytes = 1L
           MemFreePercent = Some 70
           SwapUsedBytes = None
-          ForeignDaemons = [] }
+          ForeignDaemons = []
+          PowerSource = Some "AC Power" }
       Contended = contended
       Footprint = Some(fp phys)
       FootprintBeforeWalk = None

@@ -29,6 +29,9 @@ type Snapshot =
         SwapUsedBytes: int64 option
         /// Pids of FsHotWatch daemons alive that this harness did not start.
         ForeignDaemons: int list
+        /// `pmset -g batt`'s "Now drawing from '…'": `AC Power` or `Battery Power`.
+        /// `None` when unreadable (no battery report), which is not contention.
+        PowerSource: string option
     }
 
 /// Parse `sysctl -n vm.loadavg`: `{ 37.03 116.03 149.15 }`.
@@ -72,6 +75,14 @@ let parseSwapUsed (text: string) : int64 option =
 
         Some(int64 (n * scale))
 
+let private drawingFrom =
+    Regex(@"Now drawing from '(?<src>[^']+)'", RegexOptions.Compiled)
+
+/// Parse `pmset -g batt`'s power source line.
+let parsePowerSource (text: string) : string option =
+    let m = drawingFrom.Match(text)
+    if m.Success then Some m.Groups.["src"].Value else None
+
 /// Thresholds for calling the box quiet.
 type QuietBar =
     {
@@ -87,7 +98,9 @@ let defaultBar =
     { MaxLoadPerCpu = 0.5
       MinMemFreePercent = 30 }
 
-/// Why a snapshot is contended; empty means quiet.
+/// Why a snapshot is contended; empty means quiet. Battery power is contention under
+/// any bar: a laptop on battery throttles and sleeps, and either one invalidates a
+/// latency or a footprint taken across it.
 let contention (bar: QuietBar) (snap: Snapshot) : string list =
     [ if snap.Load1 > bar.MaxLoadPerCpu * float snap.Cpus then
           $"load1 %.1f{snap.Load1} > %.1f{bar.MaxLoadPerCpu * float snap.Cpus} (%.2f{bar.MaxLoadPerCpu} x %d{snap.Cpus} cpus)"
@@ -96,4 +109,7 @@ let contention (bar: QuietBar) (snap: Snapshot) : string list =
       | _ -> ()
       if not (List.isEmpty snap.ForeignDaemons) then
           let pids = snap.ForeignDaemons |> List.map string |> String.concat ","
-          $"%d{List.length snap.ForeignDaemons} foreign fshw daemon(s) alive: %s{pids}" ]
+          $"%d{List.length snap.ForeignDaemons} foreign fshw daemon(s) alive: %s{pids}"
+      match snap.PowerSource with
+      | Some source when source <> "AC Power" -> $"on %s{source}, not AC: throttling and sleep invalidate latency"
+      | _ -> () ]

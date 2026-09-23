@@ -511,6 +511,10 @@ let loadSnapshot (ours: int list) : Load.Snapshot =
         |> Result.toOption
         |> Option.bind Load.parseMemFreePercent
       SwapUsedBytes = sysctl "vm.swapusage" |> Option.bind Load.parseSwapUsed
+      PowerSource =
+        run "pmset" "-g batt" "/" (TimeSpan.FromSeconds 30.0)
+        |> Result.toOption
+        |> Option.bind Load.parsePowerSource
       ForeignDaemons =
         daemonPids ()
         |> List.filter (fun p -> not (List.contains p ours) && p <> Environment.ProcessId) }
