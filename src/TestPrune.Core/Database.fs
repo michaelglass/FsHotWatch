@@ -392,6 +392,10 @@ type Database(dbPath: string) =
     let warnedUnknownKinds = HashSet<string>()
     let mutable wasRecreated = false
 
+    // Recursive graph walks this instance has run. Read by tests that pin how many walks a
+    // query costs, which is the property the grouped seed query exists for.
+    let mutable recursiveWalks = 0L
+
     do
         let openedConn, fresh = openCheckedConnection dbPath
         wasRecreated <- fresh
@@ -875,6 +879,7 @@ type Database(dbPath: string) =
         if changedSymbolNames.IsEmpty then
             []
         else
+            System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
             use conn = openConnection dbPath
 
             use cmd = conn.CreateCommand()
@@ -1032,6 +1037,15 @@ type Database(dbPath: string) =
             walk false
         else
             Domain.CompositionRoot.restoreEmptiedProjects _.TestProject (walk true) (walk false)
+
+    /// Recursive graph walks this instance has run (`QueryAffectedTests` runs one or two
+    /// per call; `QueryCoveringProjectsBySeed` runs one per call).
+    member internal _.RecursiveWalks = System.Threading.Interlocked.Read(&recursiveWalks)
+
+    /// For each seed, the test projects `QueryAffectedTests [seed]` would select tests
+    /// from — every seed answered by ONE walk.
+    member this.QueryCoveringProjectsBySeed(seeds: string list) : Map<string, Set<string>> =
+        seeds |> List.map (fun seed -> seed, Set.empty) |> Map.ofList
 
     /// Return every symbol occurrence declared in a given source file path, with that
     /// file's location and content hash.

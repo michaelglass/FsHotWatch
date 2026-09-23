@@ -63,6 +63,7 @@
     <Compile Include="PortsTests.fs" />
     <Compile Include="InMemoryStoreTests.fs" />
     <Compile Include="CompositionRootSelectionTests.fs" />
+    <Compile Include="SeedCoverageTests.fs" />
     <Compile Include="IntegrationTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="TestRunnerTests.fs" />
