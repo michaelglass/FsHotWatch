@@ -46,13 +46,6 @@ let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
     | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
     | FSharpCheckFileAnswer.Aborted -> Seq.empty
 
-let private readSourceOrEmpty (absPath: string) : string =
-    try
-        File.ReadAllText(absPath)
-    with
-    | :? FileNotFoundException
-    | :? DirectoryNotFoundException -> ""
-
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -90,6 +83,10 @@ type CheckPipeline
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
     let upstreamFingerprints = UpstreamFingerprints(repoRoot)
+
+    /// Content hashes shared by the upstream fingerprints and the snapshot versions,
+    /// so a file is read and hashed once per change for both.
+    let hashFile = upstreamFingerprints.HashFile
     let mutable nextVersion = 0L
     let mutable lastFitWarning: string option = None
 
@@ -320,18 +317,20 @@ type CheckPipeline
     /// CancelPreviousCheck cancellations are observed even when the async CE's
     /// implicit token differs from the per-file token.
     member private this.CheckFileCore
-        (absPath: string, source: string, options: FSharpProjectOptions, ct: CancellationToken)
+        (openFile: ProjectSnapshots.OpenFile, options: FSharpProjectOptions, ct: CancellationToken)
         : Async<FileCheckResult option> =
         async {
             ct.ThrowIfCancellationRequested()
-            let sourceText = SourceText.ofString source
+            let absPath = openFile.Path
+            let source = openFile.Text
             let version = this.NextVersion()
 
             try
                 ct.ThrowIfCancellationRequested()
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let! firstParse, firstAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+                let! snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
+                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
@@ -356,7 +355,7 @@ type CheckPipeline
                 let onRecheck () =
                     recheckBudget.Spend(project, DateTime.UtcNow)
                     Logging.warn "check" retryLog
-                    checker.InvalidateConfiguration(options)
+                    ProjectSnapshots.invalidate checker options
 
                 let! parseResults, checkAnswer =
                     FcsDiagnosticFilter.recheckIfSelfIncompatible
@@ -364,7 +363,7 @@ type CheckPipeline
                         FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
                         budgetAllows
                         onRecheck
-                        (fun () -> checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options))
+                        (fun () -> ProjectSnapshots.parseAndCheck checker absPath snapshot)
                         (firstParse, firstAnswer)
 
                 sw.Stop()
@@ -420,8 +419,8 @@ type CheckPipeline
                 Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                 return Some cached
             | None ->
-                let source = readSourceOrEmpty absPath
-                let! result = this.CheckFileCore(absPath, source, options, ct)
+                let openFile = ProjectSnapshots.readOpenFile hashFile absPath
+                let! result = this.CheckFileCore(openFile, options, ct)
 
                 match result, cacheBackend, cacheKey with
                 | Some r, Some backend, Some key ->

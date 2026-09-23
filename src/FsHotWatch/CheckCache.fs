@@ -303,6 +303,9 @@ type UpstreamFingerprints(repoRoot: string option) =
         | true, fingerprint -> fingerprint
         | false, _ -> whole
 
+    /// The content hash of one file, from the same memo the tables are built from.
+    member _.HashFile(path: string) : string = hasher.Hash path
+
     /// Drop every memoized table; the next lookup per project rebuilds it.
     member _.BeginGeneration() =
         memo.Clear()
