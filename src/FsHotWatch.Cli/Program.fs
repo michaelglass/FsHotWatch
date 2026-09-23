@@ -2417,10 +2417,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let sessionResources (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             [ { new IDisposable with
                   member _.Dispose() =
-                      // TestPrune.Core pools under exactly this connection string.
-                      let dbPath = DaemonConfig.testImpactDbPath worktree.Root.Value
-                      use key = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
-                      Microsoft.Data.Sqlite.SqliteConnection.ClearPool key } ]
+                      FsHotWatch.TestPrune.ImpactDbPool.clear (DaemonConfig.testImpactDbPath worktree.Root.Value) } ]
 
         let settings =
             RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig sessionResources describe
@@ -3543,7 +3540,7 @@ let private runCli (args: string array) : int =
                         exit 2
 
                 let createDaemon (root: string) =
-                    daemonWith opts config (runModeFor command) FsHotWatch.DaemonHosting.standalone root
+                    daemonWith opts config (runModeFor command) FsHotWatch.DaemonHosting.Hosting.Standalone root
 
                 let loadedIdentity = configContentHash configSource
 
