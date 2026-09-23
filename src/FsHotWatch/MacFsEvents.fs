@@ -29,6 +29,10 @@ let private kFSEventStreamCreateFlagNoDefer = 0x00000002u
 [<Literal>]
 let private kCFStringEncodingUTF8 = 0x08000100u
 
+/// The most directory prefixes `FSEventStreamSetExclusionPaths` accepts.
+[<Literal>]
+let MaxExclusionPaths = 8
+
 // ─── Public pure functions for flag interpretation ─────────────────
 
 /// FSEvent flag constants exposed for testing and external use.
@@ -138,6 +142,14 @@ extern nativeint private FSEventStreamCreate(
     uint64 sinceWhen,
     double latency,
     uint32 flags
+)
+
+/// At most `MaxExclusionPaths` directory prefixes the kernel drops before dispatch.
+/// Must be called before the stream starts.
+[<DllImport(CoreServicesLib)>]
+extern [<return: MarshalAs(UnmanagedType.U1)>] bool private FSEventStreamSetExclusionPaths(
+    nativeint streamRef,
+    nativeint pathsToExclude
 )
 
 [<DllImport(CoreServicesLib)>]
@@ -266,8 +278,10 @@ type FsEventStream
         directories: string list,
         onFileEvent: string -> unit,
         onCoalescedEvent: (string -> unit) option,
-        latencySeconds: float
+        latencySeconds: float,
+        ?exclusionPaths: string list
     ) =
+    let exclusionPaths = defaultArg exclusionPaths []
     let mutable disposed = 0
     let mutable streamRef = nativeint 0
     let mutable runLoopRef = nativeint 0
@@ -276,6 +290,8 @@ type FsEventStream
     let mutable callbackHandle = Unchecked.defaultof<GCHandle>
     let mutable cfStringRefs: nativeint array = [||]
     let mutable cfArrayRef = nativeint 0
+    let mutable exclusionStringRefs: nativeint array = [||]
+    let mutable exclusionArrayRef = nativeint 0
 
     let callback =
         FSEventStreamCallback(fun _streamRef _clientInfo numEvents eventPaths eventFlags _eventIds ->
@@ -327,6 +343,16 @@ type FsEventStream
                 CFRelease(s)
 
         cfStringRefs <- [||]
+
+        for s in exclusionStringRefs do
+            if s <> nativeint 0 then
+                CFRelease(s)
+
+        exclusionStringRefs <- [||]
+
+        if exclusionArrayRef <> nativeint 0 then
+            CFRelease(exclusionArrayRef)
+            exclusionArrayRef <- nativeint 0
 
         if cfArrayRef <> nativeint 0 then
             CFRelease(cfArrayRef)
@@ -381,6 +407,19 @@ type FsEventStream
 
             if streamRef = nativeint 0 then
                 raise (CreateFailedException())
+
+            if exclusionPaths.Length > MaxExclusionPaths then
+                invalidArg "exclusionPaths" $"FSEvents accepts at most %d{MaxExclusionPaths} exclusion paths"
+
+            if not exclusionPaths.IsEmpty then
+                let arr, strs = createCFStringArray exclusionPaths
+                exclusionArrayRef <- arr
+                exclusionStringRefs <- strs
+
+                // A refused exclusion is not fatal: the managed callback still
+                // filters every event, the kernel just dispatches more of them.
+                if not (FSEventStreamSetExclusionPaths(streamRef, exclusionArrayRef)) then
+                    warn "fsevents" "FSEventStreamSetExclusionPaths refused; excluded paths are filtered after delivery"
 
             // kCFRunLoopDefaultMode is a CFString constant — create it by value
             runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", kCFStringEncodingUTF8)
@@ -447,6 +486,17 @@ type FsEventStream
 /// `latencySeconds` is the FSEvents coalescing window passed to `FSEventStreamCreate`.
 let create (directories: string list) (onFileEvent: string -> unit) (latencySeconds: float) =
     new FsEventStream(directories, onFileEvent, None, latencySeconds)
+
+/// Create an FsEventStream whose kernel-side exclusions drop `exclusionPaths`
+/// (directory prefixes, at most `MaxExclusionPaths`) before dispatch.
+let createExcluding
+    (directories: string list)
+    (exclusionPaths: string list)
+    (onFileEvent: string -> unit)
+    (onCoalescedEvent: string -> unit)
+    (latencySeconds: float)
+    =
+    new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, latencySeconds, exclusionPaths)
 
 /// Create an FsEventStream with a handler for coalesced (MustScanSubDirs) events.
 let createWithCoalesced
