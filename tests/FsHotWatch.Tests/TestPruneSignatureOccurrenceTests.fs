@@ -219,3 +219,99 @@ let ``a TestPrune v13 index is recreated at the current schema and the FCS check
 
         test <@ userVersion = SchemaVersion && SchemaVersion = 14 @>
         test <@ occurrenceTables = 1L @>)
+
+/// The name TestPrune.Core 9 queued for a `.fsi` edit: a synthetic signature node that
+/// Core 10 never emits, so no index will ever know it again.
+[<Literal>]
+let private StaleSignatureName = "TestPrune.__Signature__.Library.compute"
+
+// Upgrading from TestPrune.Core 9: the index is recreated, but the pending-verification
+// sidecar survives with the signature-node names 9.0.0 queued, and so does the full-suite
+// baseline that 9.0.0 earned. A valid baseline means NO full-suite run is forced after
+// the upgrade. Even once the cold scan re-indexes everything at v14, such a name resolves
+// to no test. That must be a run that verifies the debt, not a zero-test green that
+// discharges it: the guard on names the index does not know is what makes it one.
+[<Fact(Timeout = 30000)>]
+let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run after the upgrade`` () =
+    withTempDir "tp-upgrade-queue" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        // Touched IF any test runs.
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        // What 9.0.0 left behind: a v13 index holding the signature node, a queue that still
+        // owes it (an .fsi edit whose covering run never went green), and a valid full-suite
+        // baseline over the configured project.
+        do
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
+            conn.Open()
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                $"""CREATE TABLE symbols (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL UNIQUE, source_file TEXT NOT NULL);
+                   INSERT INTO symbols (full_name, source_file) VALUES ('%s{StaleSignatureName}', 'src/Library.fsi');
+                   PRAGMA user_version = 13;"""
+
+            cmd.ExecuteNonQuery() |> ignore
+
+        clearSqlitePool dbPath
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ StaleSignatureName ])
+        seedBaseline tmpDir [ "TestProject" ]
+
+        // The upgraded plugin opens the index: the schema-version path recreates it.
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
+
+        // The cold scan re-indexes at v14, one result per file: canonical names only, and
+        // `Library.compute` covered by `Tests.computeTest`.
+        let occurrence name file line : SymbolInfo =
+            { FullName = name
+              Kind = SymbolKind.Function
+              SourceFile = file
+              LineStart = line
+              LineEnd = line
+              ContentHash = $"{file}:{name}"
+              IsExtern = false }
+
+        let db = Database.create dbPath
+        test <@ not db.WasRecreated @> // the plugin's open already recreated it
+
+        db.RebuildProjects
+            [ AnalysisResult.Create([ occurrence "Library.compute" "src/Library.fsi" 4 ], [], [])
+              AnalysisResult.Create([ occurrence "Library.compute" "src/Library.fs" 3 ], [], [])
+              AnalysisResult.Create(
+                  [ occurrence "Tests.computeTest" "tests/Tests.fs" 5 ],
+                  [ { FromSymbol = "Tests.computeTest"
+                      ToSymbol = "Library.compute"
+                      Kind = DependencyKind.Calls
+                      Source = "core" } ],
+                  [ { SymbolFullName = "Tests.computeTest"
+                      TestProject = "TestProject"
+                      TestClass = "Tests"
+                      TestMethod = "computeTest" } ]
+              ) ]
+
+        // Controls: the canonical symbol IS covered, and the stale name is unknown for good,
+        // so an empty selection for it below is the upgrade's doing, not a broken fixture.
+        test <@ not (db.QueryAffectedTests [ "Library.compute" ]).IsEmpty @>
+        test <@ not (db.GetAllSymbolNames().Contains StaleSignatureName) @>
+        test <@ (db.QueryAffectedTests [ StaleSignatureName ]).IsEmpty @>
+
+        let completion = beginAwaitTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        test <@ completion.Wait(System.TimeSpan.FromSeconds 20.0) @>
+
+        // No under-selection: the owed name made the plugin run tests rather than green on
+        // zero, so the change 9.0.0 queued is verified.
+        test <@ File.Exists sentinel @>)
