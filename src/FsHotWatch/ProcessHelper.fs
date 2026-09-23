@@ -806,7 +806,7 @@ let private isExecutableFile (path: string) =
 /// directory holding an executable file of that name. `None` when `command` is bare and
 /// nothing on `path` matches; a command that names a location is its own answer.
 let tryResolveOnPath (path: string) (command: string) : string option =
-    if command.Contains '/' || command.Contains IO.Path.DirectorySeparatorChar then
+    if IO.Path.GetFileName command <> command then
         Some command
     else
         path.Split(IO.Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)

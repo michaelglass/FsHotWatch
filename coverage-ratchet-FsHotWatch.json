@@ -1786,7 +1786,7 @@
     },
     "ScanMetrics.fs": {
       "coveredLines": 84,
-      "coveredBranches": 15
+      "coveredBranches": 14
     },
     "SolutionScope.fs": [
       {

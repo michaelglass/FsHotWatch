@@ -49,7 +49,7 @@ type Hosting =
     | Hosted of watcherFactory: WatcherFactory
 
 /// A per-worktree daemon.
-let standalone: Hosting = Hosting.Standalone
+let standalone () : Hosting = Hosting.Standalone
 
 /// A session of a repository host, watching through `sharedWatcher`.
 let hostedBy (sharedWatcher: WatcherFactory) : Hosting = Hosting.Hosted sharedWatcher

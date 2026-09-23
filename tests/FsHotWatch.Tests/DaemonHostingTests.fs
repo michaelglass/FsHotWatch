@@ -48,7 +48,7 @@ let ``a hosted session watches through the host's factory, never its own`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``a standalone daemon keeps every process-wide behaviour`` () =
-    let seams = DaemonHosting.seams DaemonHosting.standalone
+    let seams = DaemonHosting.seams (DaemonHosting.standalone ())
     test <@ seams.ResourceScope = DaemonHosting.ResourceScope.Process @>
     test <@ seams.MayForceGc && seams.ClearsProcessCaches @>
     // A standalone daemon builds its own watcher: the factory it was given runs.

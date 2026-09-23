@@ -373,6 +373,33 @@ let ``a bare command is found on the session's PATH, not the host's`` () =
         test <@ seen = "session-dotnet" @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a session without a PATH finds no bare command, rather than falling back to the host's`` () =
+    let env = SessionEnvironment.create "/s" (Map.ofList [ "HOME", "/s" ])
+
+    let refused =
+        isolated (fun () ->
+            use _ = SessionEnvironment.install env
+
+            try
+                ProcessHelper.runProcess
+                    "sh"
+                    "-c true"
+                    "."
+                    []
+                    (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 10.0))
+                |> ignore
+
+                None
+            with :? System.ComponentModel.Win32Exception as ex ->
+                Some ex.Message)
+
+    test
+        <@
+            refused
+            |> Option.exists (fun message -> message.Contains "not found on this worktree's PATH")
+        @>
+
+[<Fact(Timeout = 15000)>]
 let ``a bare command resolves against a PATH, first match wins, rooted commands are left alone`` () =
     withTempDir "resolve-path" (fun dir ->
         let a = Path.Combine(dir, "a")

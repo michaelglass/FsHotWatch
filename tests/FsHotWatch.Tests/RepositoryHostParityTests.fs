@@ -408,7 +408,7 @@ let private serveInto (served: TaskCompletionSource<DaemonRpcConfig>) =
 
 let private runLegacy (root: string) =
     let transitions = ConcurrentQueue()
-    let daemon = build DaemonHosting.standalone transitions root
+    let daemon = build (DaemonHosting.standalone ()) transitions root
     use cts = new CancellationTokenSource()
     let served = TaskCompletionSource<DaemonRpcConfig>()
 

@@ -3540,7 +3540,7 @@ let private runCli (args: string array) : int =
                         exit 2
 
                 let createDaemon (root: string) =
-                    daemonWith opts config (runModeFor command) FsHotWatch.DaemonHosting.Hosting.Standalone root
+                    daemonWith opts config (runModeFor command) (FsHotWatch.DaemonHosting.standalone ()) root
 
                 let loadedIdentity = configContentHash configSource
 

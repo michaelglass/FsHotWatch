@@ -3349,7 +3349,7 @@ module Daemon =
             /// TransparentCompiler cache size factor, from the `checker.cacheSizeFactor`
             /// config key. See `DefaultCheckerCacheSizeFactor`.
             CheckerCacheSizeFactor: int
-            /// `DaemonHosting.standalone` (the default) for a per-worktree daemon;
+            /// `DaemonHosting.standalone ()` (the default) for a per-worktree daemon;
             /// `DaemonHosting.hostedBy` for a session of a repository host.
             Hosting: DaemonHosting.Hosting
         }
@@ -3366,7 +3366,7 @@ module Daemon =
               IdleExitMin = None
               PressureIdleFloorMin = None
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
-              Hosting = DaemonHosting.standalone }
+              Hosting = DaemonHosting.standalone () }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
