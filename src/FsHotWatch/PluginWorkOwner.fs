@@ -486,13 +486,12 @@ module ConsumerLeases =
         | HeldByClients tokens ->
             let abandoned = new CancellationTokenSource()
 
+            // The run disposes `watch` before the source. Disposing a registration waits
+            // for a callback already running and stops later ones, so `check` never sees
+            // a disposed source.
             let check () =
                 if allReleased leases then
-                    try
-                        abandoned.Cancel()
-                    with :? ObjectDisposedException ->
-                        // The work finished and let go of its source first.
-                        ()
+                    abandoned.Cancel()
 
             let registrations = tokens |> List.map (fun token -> token.Register(Action check))
 
