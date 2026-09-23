@@ -576,24 +576,32 @@ let internal registerHandlerForOwner
     let mutable perFileReplayed = 0
 
     /// The one funnel every status a plugin reports, a cache replay reports, or a fault
-    /// forces passes through. A terminal is dropped while the owner holds a live
-    /// exclusive run: that run reports its own terminal when it finishes. `status` is
-    /// built only when it is reported, so a summary derived from the ledger is read at
-    /// the instant it lands. Returns whether the status was reported.
-    let reportStatus (isTerminal: bool) (status: unit -> PluginStatus) (source: string) : bool =
+    /// forces passes through. A terminal is dropped while an exclusive run owes its
+    /// verdict: from its claim until its result fold commits, the run owns the status and
+    /// reports its own terminal. A finished worker whose result fold is still queued owes
+    /// it too, so an unrelated fold that happens to run first cannot replace the run's
+    /// `Running`. `reporter` is the event reporting: a result fold's own report is the
+    /// verdict. `status` is built only when it is reported, so a summary derived from the
+    /// ledger is read at the instant it lands. Returns whether the status was reported.
+    let reportStatus
+        (reporter: PluginWorkOwner.WorkId option)
+        (isTerminal: bool)
+        (status: unit -> PluginStatus)
+        (source: string)
+        : bool =
         lock statusLock (fun () ->
-            if isTerminal && owner.Snapshot.HasExclusiveRun then
+            if isTerminal && owner.Snapshot.OwesRunVerdict reporter then
                 debug
                     pluginName
-                    $"%s{source}: terminal status dropped — an exclusive run is in flight and owns the status"
+                    $"%s{source}: terminal status dropped — an exclusive run owes its verdict and owns the status"
 
                 false
             else
                 services.ReportStatus handler.Name (status ())
                 true)
 
-    let reportPluginStatus (status: PluginStatus) =
-        reportStatus (PluginStatus.isTerminal status) (fun () -> status) "status report"
+    let reportPluginStatus (reporter: PluginWorkOwner.WorkId option) (status: PluginStatus) =
+        reportStatus reporter (PluginStatus.isTerminal status) (fun () -> status) "status report"
         |> ignore
 
     /// A run's own failure. Its key is still held, so the funnel would drop it; it is the
@@ -812,7 +820,7 @@ let internal registerHandlerForOwner
     /// The context `Update` receives for one event. `event` names that event, so a claim
     /// it makes can follow the key's result fold.
     let contextFor (event: PluginWorkOwner.WorkId option) : PluginCtx<'Msg> =
-        { ReportStatus = reportPluginStatus
+        { ReportStatus = reportPluginStatus event
           ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
           ClearErrors = fun file -> services.ClearErrors handler.Name file
           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
@@ -1015,9 +1023,11 @@ let internal registerHandlerForOwner
                                 // re-reporting the cached `Completed` would stomp the
                                 // `Running` an in-flight test run set. The replay goes
                                 // through the same funnel as every other report, which
-                                // drops a terminal while the owner snapshot holds a live
-                                // run. Errors and emitted events still replay.
-                                reportStatus true mkReplayTerminal "cache replay" |> ignore
+                                // drops a terminal while a run owes its verdict. A
+                                // replayed event is never a run's result fold, so it
+                                // reports as no one's. Errors and emitted events still
+                                // replay.
+                                reportStatus None true mkReplayTerminal "cache replay" |> ignore
 
                                 // Replay emitted events. Cached test-lifecycle events carry the
                                 // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
@@ -1073,16 +1083,24 @@ let internal registerHandlerForOwner
                     /// Running, hits an error, never reports terminal, UI shows "running"
                     /// forever).
                     ///
-                    /// It goes through the status funnel: while an exclusive run is in
-                    /// flight, that run reports the terminal. The fault is logged either way.
+                    /// It goes through the status funnel: while an exclusive run owes its
+                    /// verdict, that run reports the terminal. The fault is logged either
+                    /// way. `identity` is the faulted event: a run's result fold that faults
+                    /// is the run's verdict.
                     ///
                     /// `what` names the layer that faulted ("handler", "dispatch"), and
                     /// `startedAt` is when that layer began, so the verdict carries a
                     /// MEASURED elapsed rather than a fabricated zero-length run.
-                    let reportForcedFailure (what: string) (startedAt: DateTime) (ex: exn) =
+                    let reportForcedFailure
+                        (identity: PluginWorkOwner.WorkId)
+                        (what: string)
+                        (startedAt: DateTime)
+                        (ex: exn)
+                        =
                         error pluginName $"%s{what} failed: %s{ex.ToString()}"
 
                         reportStatus
+                            (Some identity)
                             true
                             (fun () ->
                                 Failed(
@@ -1135,6 +1153,7 @@ let internal registerHandlerForOwner
                                             // become a cached result either.
                                             if
                                                 reportStatus
+                                                    (Some identity)
                                                     (PluginStatus.isTerminal status)
                                                     (fun () -> status)
                                                     "status report"
@@ -1370,7 +1389,7 @@ let internal registerHandlerForOwner
                                     // the one failed settlement, and its own failure is logged,
                                     // never allowed to retire the event a second time.
                                     try
-                                        reportForcedFailure what dispatchStarted cause
+                                        reportForcedFailure identity what dispatchStarted cause
                                     with reportingFailure ->
                                         error
                                             pluginName

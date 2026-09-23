@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a finished run keeps its `Running` status until its result fold commits. The
+  status funnel dropped an unrelated terminal only while a worker was live. Once the
+  worker finished, its result fold could sit in the mailbox behind a long fold, and a
+  per-file `Completed` reported in that window replaced the run's `Running` while the
+  plugin still owned the run. The verdict wait then saw owned work with nothing Running
+  and declared a false WEDGED the moment a declared bounded fold ended. The funnel now
+  drops such a terminal until the run's verdict is folded (`Snapshot.OwesRunVerdict`);
+  the result fold's own report still lands.
+
 - `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
   overran — its tree read from `ps` before the kill (afterwards a survivor has been
   re-parented and cannot be found from the root), the kill's outcome and duration, and the

@@ -46,12 +46,14 @@ let private handoffHandler
             async {
                 match event with
                 | BuildCompleted _ ->
-                    match ctx.RunExclusive
+                    match
+                        ctx.RunExclusive
                             "tests"
                             (async {
                                 workerGo.Wait()
                                 return RunDone
-                            }) with
+                            })
+                    with
                     | Claimed -> ()
                     | SlotBusy -> failwith "test setup: expected to claim the tests key"
                 | FileChanged(SourceChanged [ "hold" ]) ->

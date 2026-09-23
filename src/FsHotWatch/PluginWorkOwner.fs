@@ -578,6 +578,21 @@ type Snapshot<'State> =
         |> snd
         |> Map.exists (fun _ lane -> holdsWorker lane.Holder)
 
+    /// Does an exclusive run still owe its verdict? A live worker does, and so does a
+    /// finished worker whose result fold has not committed: the run's `Running` stands
+    /// until that fold reports the run's terminal. `reporter` is the event asking. A
+    /// worker's result fold reporting is that verdict, so it does not count against itself.
+    member this.OwesRunVerdict(reporter: WorkId option) =
+        obligations this.Work
+        |> snd
+        |> Map.exists (fun _ lane ->
+            holdsWorker lane.Holder
+            || match lane.Holder with
+               | Folding(first, later, _) ->
+                   first :: later
+                   |> List.exists (fun fold -> fold.IsWorkerResult && Some fold.Id <> reporter)
+               | Worker _ -> false)
+
 // ---------------------------------------------------------------------------------------
 // Pure transitions
 // ---------------------------------------------------------------------------------------
