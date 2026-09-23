@@ -62,7 +62,8 @@
         "args": "run --project bench/FsHotWatch.Bench.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "default"
+        "group": "default",
+        "coverage": false
       }
     ],
     "excluded": [
