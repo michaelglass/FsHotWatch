@@ -153,7 +153,13 @@ let private overrideConfig (worktree: string) (strip: string list) (sets: Config
     if not (List.isEmpty strip && List.isEmpty sets) then
         let file = Path.Combine(worktree, ".fshw.json")
 
-        match ConfigOverride.apply strip sets (File.ReadAllText file) with
+        let existing =
+            if File.Exists file then
+                Some(File.ReadAllText file)
+            else
+                None
+
+        match ConfigOverride.applyTo existing strip sets with
         | Ok text -> File.WriteAllText(file, text)
         | Error e -> failwith e
 
