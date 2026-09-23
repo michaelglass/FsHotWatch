@@ -1423,6 +1423,66 @@ module ``runIndexWith`` =
                   OriginalLoadReferences = []
                   Stamp = None }
 
+    /// Project options whose source files are the project's own compile list, in order.
+    let private compileListOptions: ProjectOptionsProvider =
+        fun checker fsprojPath ->
+            let compileFiles, _ = parseProjectFile fsprojPath
+            let first = List.head compileFiles
+
+            let options =
+                getScriptOptions checker first (File.ReadAllText first)
+                |> Async.RunSynchronously
+
+            { options with
+                SourceFiles = List.toArray compileFiles }
+
+    [<Fact>]
+    let ``index credits a signature file's edges to the signature, not its implementation`` () =
+        // `index` must hand the store one AnalysisResult per file. Merged per project, the
+        // signature's `val` edge was credited to `Library.fs` (the last file declaring the
+        // shared name), and re-indexing `Library.fs` alone would then delete it.
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let projectDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(projectDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="Library.fsi" /><Compile Include="Library.fs" /></ItemGroup></Project>"""
+        )
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Library.fsi"),
+            "module Library\ntype Token =\n    { Value: int }\nval calculate:\n    Token -> int\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Library.fs"),
+            "module Library\ntype Token = { Value: int }\nlet calculate (token: Token) = token.Value + 1\n"
+        )
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild compileListOptions tmpDir testChecker 1 (createNoopSink ())
+
+            Console.SetError(oldErr)
+            test <@ exitCode = 0 @>
+
+            let db = Database.create (Path.Combine(tmpDir, ".test-prune.db"))
+
+            let owns file target =
+                db.GetDependenciesFromFile file
+                |> List.exists (fun edge -> edge.FromSymbol = "Library.calculate" && edge.ToSymbol = target)
+
+            test <@ owns "src/Lib/Library.fsi" "Library.Token" @>
+            test <@ owns "src/Lib/Library.fs" "Microsoft.FSharp.Core.Operators.(+)" @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
     [<Fact>]
     let ``returns 1 when build fails`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")

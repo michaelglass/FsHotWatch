@@ -3,7 +3,9 @@ module TestPrune.InMemoryStore
 open TestPrune.AstAnalyzer
 open TestPrune.Ports
 
-/// Create an in-memory SymbolStore from a list of AnalysisResults.
+/// Create an in-memory SymbolStore from a list of AnalysisResults, ONE PER SOURCE FILE
+/// (see `Database.RebuildProjects`). A result declaring the same name in two files is
+/// rejected with an `ArgumentException`, exactly as SQLite rejects it.
 let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     // A symbol is ONE node with one source occurrence per file that declares it (a
     // `.fsi` declaration and its `.fs` implementation). Match SQLite's rules: a real

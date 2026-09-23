@@ -104,11 +104,14 @@ let createChecker () =
 
 /// Outcome of walking a project's files. `AllFilesCached` means every file hit the
 /// file-level cache and nothing needs writing back; `Analyzed` means at least one
-/// file was re-analyzed and `Result` must be persisted. The count is part of the
-/// `Analyzed` case so "analyzed > 0" and "have a Result" cannot disagree.
+/// file was re-analyzed and `Results` must be persisted. The count is part of the
+/// `Analyzed` case so "analyzed > 0" and "have Results" cannot disagree.
+///
+/// `Results` holds ONE `AnalysisResult` PER SOURCE FILE, never a per-project merge:
+/// `Database.RebuildProjects` credits each fact to the file whose result carried it.
 type AnalysisOutcome =
     | AllFilesCached
-    | Analyzed of Result: AnalysisResult * Count: int
+    | Analyzed of Results: AnalysisResult list * Count: int
 
 type IndexedData =
     { Outcome: AnalysisOutcome
@@ -275,21 +278,14 @@ let indexProject
 
             let results = revResults |> List.rev
 
-            let combined =
-                { Symbols = results |> List.collect (fun r -> r.Symbols)
-                  Dependencies = results |> List.collect (fun r -> r.Dependencies)
-                  TestMethods = results |> List.collect (fun r -> r.TestMethods)
-                  Attributes = results |> List.collect (fun r -> r.Attributes)
-                  ParentLinks = results |> List.collect (fun r -> r.ParentLinks)
-                  Diagnostics =
-                    { DroppedEdges = results |> List.sumBy (fun r -> r.Diagnostics.DroppedEdges)
-                      FilteredSymbols = results |> List.sumBy (fun r -> r.Diagnostics.FilteredSymbols)
-                      TotalDefinitions = results |> List.sumBy (fun r -> r.Diagnostics.TotalDefinitions) } }
+            let symbolCount = results |> List.sumBy _.Symbols.Length
+            let depCount = results |> List.sumBy _.Dependencies.Length
+            let testCount = results |> List.sumBy _.TestMethods.Length
 
             let fileCount = compileFiles.Length
 
             eprintfn
-                $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
+                $"  %s{projName}: %d{symbolCount} symbols, %d{depCount} deps, %d{testCount} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
 
             let allEvents =
                 (ProjectIndexedEvent(projName, fileCount) :: localEvents) |> List.rev
@@ -300,14 +296,14 @@ let indexProject
                 Indexed
                     { Outcome =
                         if analyzedFiles > 0 then
-                            Analyzed(combined, analyzedFiles)
+                            Analyzed(results, analyzedFiles)
                         else
                             AllFilesCached
                       FileKeys = localFileKeys |> List.rev
                       ProjectKey = (projName, hash)
-                      SymbolCount = combined.Symbols.Length
-                      DepCount = combined.Dependencies.Length
-                      TestCount = combined.TestMethods.Length
+                      SymbolCount = symbolCount
+                      DepCount = depCount
+                      TestCount = testCount
                       SkippedFiles = localSkippedFiles
                       TotalFiles = fileCount }
               Events = allEvents }
@@ -428,7 +424,7 @@ let internal runOwnedIndexWith
                     | Indexed d ->
                         let results =
                             match d.Outcome with
-                            | Analyzed(a, _) -> a :: results
+                            | Analyzed(perFile, _) -> List.rev perFile @ results
                             | AllFilesCached -> results
 
                         (results,

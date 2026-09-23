@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: `RebuildProjects` and `InMemoryStore.fromAnalysisResults` reject an
+  `AnalysisResult` that declares the same name in two source files, raising an
+  `ArgumentException` that names each such symbol and its files. Every edge, test method
+  and attribute is owned by the file whose result carried it. A project's results merged
+  into one, holding a signature (`.fsi`) and its implementation, therefore credited the
+  signature's facts to the implementation. Re-indexing the implementation alone then
+  deleted them, with no error. BREAKING CHANGE: pass one `AnalysisResult` per source
+  file; a merged result that 10.0.0 accepted silently now fails.
+
 ## 10.0.0 - 2026-09-23
 
 - fix: a signature-file (`.fsi`) declaration is analyzed as a source occurrence of the

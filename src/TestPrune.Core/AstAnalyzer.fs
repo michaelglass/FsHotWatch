@@ -167,10 +167,32 @@ type AnalysisResult =
 /// for an anchor declared elsewhere (a synthetic node, a cross-file target), the
 /// result's single source file. Re-indexing a file replaces exactly the facts it owns.
 /// Both stores use this one rule, so they cannot disagree about ownership.
+///
+/// An `AnalysisResult` therefore describes ONE source file. A result that declares the
+/// same name in two files (a project's results merged into one, holding a signature and
+/// its implementation) cannot say which file owns that name's facts, and crediting them
+/// to either silently loses them on that file's next re-index. That input is rejected.
 let internal factOwner (result: AnalysisResult) : string -> string =
     let occurrences =
         result.Symbols
         |> List.filter (fun symbol -> not symbol.IsExtern && symbol.SourceFile <> ExternSourceFile)
+
+    let ambiguous =
+        occurrences
+        |> List.groupBy _.FullName
+        |> List.choose (fun (name, declared) ->
+            match declared |> List.map _.SourceFile |> List.distinct with
+            | [ _ ] -> None
+            | files ->
+                let fileList = String.concat ", " files
+                Some $"%s{name} (%s{fileList})")
+
+    if not (List.isEmpty ambiguous) then
+        let names = String.concat "; " ambiguous
+
+        invalidArg
+            (nameof result)
+            $"An AnalysisResult must describe one source file, but this one declares the same name in several files, so the owner of its facts is ambiguous: %s{names}. Pass one AnalysisResult per source file instead of merging them."
 
     let fileByName =
         occurrences

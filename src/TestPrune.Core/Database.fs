@@ -473,6 +473,14 @@ type Database(dbPath: string) =
             List.ofSeq seeds
 
     /// Clear and re-insert symbols, dependencies, and test methods.
+    ///
+    /// Pass ONE `AnalysisResult` PER SOURCE FILE. Each edge, test method and attribute is
+    /// owned by the file whose result carried it (`AstAnalyzer.factOwner`), and re-indexing
+    /// a file replaces exactly the facts it owns. Do not merge a project's results into
+    /// one: a result declaring the same name in two files (a `.fsi` and its `.fs`) is
+    /// rejected with an `ArgumentException`, because the owner of that name's facts would
+    /// be ambiguous.
+    ///
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
     /// When called with a subset of projects, dependency edges to symbols in other projects will
     /// only resolve if those symbols already exist in the database from a prior call.

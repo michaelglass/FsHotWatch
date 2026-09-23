@@ -205,6 +205,66 @@ type StoreSnapshot =
       Incoming: Map<string, string list>
       TestNames: Set<string> }
 
+module ``One result per source file`` =
+
+    /// A project's results merged into one: the signature and the implementation both
+    /// declare `Library.calculate`, so the result cannot say which file owns its facts.
+    let private merged =
+        { AnalysisResult.Create(
+              (signatureResult "sig-calculate").Symbols @ implementationResult.Symbols,
+              (signatureResult "sig-calculate").Dependencies
+              @ implementationResult.Dependencies,
+              []
+          ) with
+            ParentLinks = (signatureResult "sig-calculate").ParentLinks }
+
+    let private rejection (act: unit -> unit) =
+        try
+            act ()
+            None
+        with :? ArgumentException as ex ->
+            Some ex.Message
+
+    [<Fact>]
+    let ``a result declaring one name in two files is rejected by both stores, naming it`` () =
+        let fromSqlite =
+            let path = tempDbPath ()
+
+            try
+                rejection (fun () -> (Database.create path).RebuildProjects [ merged ])
+            finally
+                SqliteConnection.ClearAllPools()
+                cleanupDb path
+
+        let fromMemory = rejection (fun () -> fromAnalysisResults [ merged ] |> ignore)
+
+        for message in [ fromSqlite; fromMemory ] do
+            test <@ message.IsSome @>
+            test <@ message.Value.Contains "Library.calculate (Library.fsi, Library.fs)" @>
+            test <@ message.Value.Contains "one AnalysisResult per source file" @>
+
+    [<Fact>]
+    let ``a multi-file result that declares each name once is still accepted`` () =
+        // Only the ambiguous shape is rejected: a hand-built result spanning files, with no
+        // name declared twice, still has one owner per fact.
+        let spanning =
+            AnalysisResult.Create(
+                implementationResult.Symbols @ consumerResult.Symbols,
+                implementationResult.Dependencies @ consumerResult.Dependencies,
+                consumerResult.TestMethods
+            )
+
+        withDb (fun db ->
+            db.RebuildProjects [ spanning ]
+            test <@ (db.GetSymbolsInFile "Consumer.fs").Length = 2 @>)
+
+        test
+            <@
+                (fromAnalysisResults [ spanning ]).GetSymbolsInFile "Library.fs"
+                |> List.isEmpty
+                |> not
+            @>
+
 module ``Store parity`` =
 
     /// Every read on the port, normalised for order, for the files and names in the fixture.

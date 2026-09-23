@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix!: `index` stores one analysis result per source file instead of one merged
+  result per project, so a signature file's edges belong to the signature. Before, a
+  project with `.fsi` files credited the signature's edges to its implementation.
+  BREAKING CHANGE: `Orchestration.AnalysisOutcome.Analyzed` carries the per-file
+  `AnalysisResult list`.
+
 ## 10.0.0 - 2026-09-23
 
 - fix!: the first index after upgrading automatically recreates `.test-prune.db`
