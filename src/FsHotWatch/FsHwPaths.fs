@@ -71,3 +71,35 @@ let sharedCacheHome () =
         (System.Environment.GetEnvironmentVariable CacheHomeEnvVar)
         (System.Environment.GetEnvironmentVariable "XDG_CACHE_HOME")
         (System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
+
+/// Environment override for the box-wide state home — where a repository host's
+/// control state (lock, pid, endpoint, identity, host log) lives.
+[<Literal>]
+let StateHomeEnvVar = "FSHW_STATE_HOME"
+
+/// The box-wide directory repository control state lives under, from the three values
+/// that decide it. Pure for the same reason as `sharedCacheHomeFrom`; an empty variable
+/// means "not configured", exactly like an unset one.
+let internal stateHomeFrom (stateHomeOverride: string) (xdgStateHome: string) (userProfile: string) =
+    if not (System.String.IsNullOrEmpty stateHomeOverride) then
+        stateHomeOverride
+    else
+        let baseDir =
+            if System.String.IsNullOrEmpty xdgStateHome then
+                Path.Combine(userProfile, ".local", "state")
+            else
+                xdgStateHome
+
+        Path.Combine(baseDir, "fshw")
+
+/// The box-wide state directory — `$FSHW_STATE_HOME`, else `$XDG_STATE_HOME/fshw`, else
+/// `~/.local/state/fshw`.
+///
+/// Deliberately OUTSIDE any checkout: a repository host serves every worktree of its
+/// repository, so its control state must survive the deletion of any one of them and
+/// must never be found by looking inside an arbitrary worktree's `.fshw`.
+let stateHome () =
+    stateHomeFrom
+        (System.Environment.GetEnvironmentVariable StateHomeEnvVar)
+        (System.Environment.GetEnvironmentVariable "XDG_STATE_HOME")
+        (System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
