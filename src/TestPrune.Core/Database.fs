@@ -1044,8 +1044,140 @@ type Database(dbPath: string) =
 
     /// For each seed, the test projects `QueryAffectedTests [seed]` would select tests
     /// from — every seed answered by ONE walk.
+    ///
+    /// A caller classifying many queued symbols by what covers each one would otherwise
+    /// run `QueryAffectedTests` once per symbol, and every one of those walks re-reads the
+    /// dependents the others already read. This loads the reverse closure of every seed
+    /// with one recursive walk and derives each seed's projects from it in memory
+    /// (`SeedCoverage`). The start set per seed, the barrier markers and the per-project
+    /// fail-safe are the ones `QueryAffectedTests` uses. Every seed is a key of the result;
+    /// a seed the index does not know maps to the empty set.
     member this.QueryCoveringProjectsBySeed(seeds: string list) : Map<string, Set<string>> =
-        seeds |> List.map (fun seed -> seed, Set.empty) |> Map.ofList
+        if seeds.IsEmpty then
+            Map.empty
+        else
+            use conn = openConnection dbPath
+            let typeKindStr = symbolKindToString Type
+
+            let idSet (prefix: string) =
+                $"SELECT value FROM json_each(@%s{prefix})"
+
+            let bindIds (prefix: string) (cmd: SqliteCommand) (ids: int64 list) =
+                cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
+                |> ignore
+
+            // Each seed's start set, labelled by seed: the seed itself, lifted to a
+            // containing type, and that type's members — `QueryAffectedTestsCore`'s
+            // `after_lift`/`expanded`, per seed. Not recursive.
+            let starts =
+                use cmd = conn.CreateCommand()
+
+                cmd.CommandText <-
+                    $"""
+                    WITH seeds(name) AS ({nameSet}),
+                    lifted(seed, id) AS (
+                        SELECT s.full_name, s.id
+                        FROM symbols s
+                        WHERE s.full_name IN (SELECT name FROM seeds)
+                        UNION
+                        SELECT child.full_name, parent.id
+                        FROM symbols child
+                        JOIN symbols parent ON child.parent_symbol_id = parent.id
+                        WHERE child.full_name IN (SELECT name FROM seeds)
+                          AND parent.kind = @typeKind
+                    )
+                    SELECT seed, id FROM lifted
+                    UNION
+                    SELECT l.seed, child.id
+                    FROM lifted l
+                    JOIN symbols parent ON parent.id = l.id
+                    JOIN symbols child ON child.parent_symbol_id = parent.id
+                    WHERE parent.kind = @typeKind
+                    """
+
+                bindNameSet cmd seeds
+                cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
+                use reader = cmd.ExecuteReader()
+                readAll reader (fun r -> r.GetString(0), r.GetInt64(1))
+
+            let startIds = starts |> List.map snd |> List.distinct
+
+            // THE walk: the reverse closure of every start at once.
+            let closure =
+                System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
+                use cmd = conn.CreateCommand()
+
+                cmd.CommandText <-
+                    $"""
+                    WITH RECURSIVE closure(id) AS (
+                        {idSet "s"}
+                        UNION
+                        SELECT d.from_symbol_id
+                        FROM dependencies d
+                        JOIN closure c ON d.to_symbol_id = c.id
+                    )
+                    SELECT id FROM closure
+                    """
+
+                bindIds "s" cmd startIds
+                use reader = cmd.ExecuteReader()
+                readAll reader (fun r -> r.GetInt64(0))
+
+            let rowsOver (sql: string) (read: SqliteDataReader -> 'T) (extra: SqliteCommand -> unit) =
+                use cmd = conn.CreateCommand()
+                cmd.CommandText <- sql
+                bindIds "c" cmd closure
+                extra cmd
+                use reader = cmd.ExecuteReader()
+                readAll reader read
+
+            let edges =
+                rowsOver
+                    $"""
+                    SELECT DISTINCT to_symbol_id, from_symbol_id
+                    FROM dependencies
+                    WHERE to_symbol_id IN ({idSet "c"})
+                    """
+                    (fun r -> r.GetInt64(0), r.GetInt64(1))
+                    ignore
+
+            let testProjects =
+                rowsOver
+                    $"""
+                    SELECT DISTINCT symbol_id, test_project
+                    FROM test_methods
+                    WHERE symbol_id IN ({idSet "c"})
+                    """
+                    (fun r -> r.GetInt64(0), r.GetString(1))
+                    ignore
+
+            let markers =
+                rowsOver $"""
+                    SELECT DISTINCT symbol_id
+                    FROM symbol_attributes
+                    WHERE attribute_name IN ({nameSetNamed "cr"})
+                      AND symbol_id IN ({idSet "c"})
+                    """ (fun r -> r.GetInt64(0)) (fun cmd -> bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
+
+            let region: SeedCoverage.Region =
+                { Starts =
+                    starts
+                    |> List.groupBy fst
+                    |> List.map (fun (seed, rows) -> KeyValuePair(seed, rows |> List.map snd))
+                    |> Dictionary
+                  Dependents =
+                    edges
+                    |> List.groupBy fst
+                    |> List.map (fun (target, rows) -> KeyValuePair(target, rows |> List.map snd))
+                    |> Dictionary
+                  Projects =
+                    testProjects
+                    |> List.groupBy fst
+                    |> List.map (fun (symbol, rows) -> KeyValuePair(symbol, rows |> List.map snd |> Set.ofList))
+                    |> Dictionary
+                  Barriers = HashSet<int64>(markers) }
+
+            SeedCoverage.coveringProjects region seeds
 
     /// Return every symbol occurrence declared in a given source file path, with that
     /// file's location and content hash.
