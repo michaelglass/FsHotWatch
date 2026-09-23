@@ -128,6 +128,7 @@ let private record sessions rep session phase phys contended invalid : Record.Be
               Succeeded = 3
               Skipped = 0 }
       PhaseMs = Some 1500.0
+      SettleFiles = None
       Invalid = invalid }
 
 [<Fact>]
@@ -234,7 +235,6 @@ let ``every record carries the config overrides it ran under and the daemon's ec
 
 let private hostRecord sessions rep session phase phys : Record.BenchRecord =
     { record sessions rep session phase phys [] [] with
-        Label = "host"
         Mode = "host"
         Footprint = (if session = 0 then Some(fp phys) else None) }
 
@@ -262,5 +262,60 @@ let ``host totals are compared with legacy totals for the same phase and session
               yield hostRecord 4 1 0 "post-gc" 1600L ]
 
     let report = Summary.summarize false series
-    test <@ report.HostVsLegacy = [ ("post-gc", 4), 0.4 ] @>
+    test <@ report.HostVsLegacy = [ ("per-worktree", "post-gc", 4), 0.4 ] @>
     test <@ (Summary.render report).Contains "host / legacy" @>
+
+let private editRecord mode sessions rep session (ms: float) files : Record.BenchRecord =
+    { record sessions rep session "edit" 0L [] [] with
+        Label = "leaf"
+        Mode = mode
+        Footprint = None
+        PhaseMs = Some ms
+        SettleFiles = Some files }
+
+[<Fact>]
+let ``an edit record carries the files its settle re-checked`` () =
+    let row =
+        (Record.tryParseLine (Record.toJsonLine (editRecord "host" 1 1 1 2373.0 15))).Value
+
+    test <@ row.SettleFiles = Some 15 && row.PhaseMs = Some 2373.0 && row.Mode = "host" @>
+
+[<Fact>]
+let ``the same label in two modes is two groups, with min, max and the files re-checked`` () =
+    let series =
+        rows
+            [ editRecord "legacy" 1 1 1 2000.0 15
+              editRecord "legacy" 1 2 1 2100.0 15
+              editRecord "host" 1 1 1 2300.0 15
+              editRecord "host" 1 2 1 2500.0 16 ]
+
+    let report = Summary.summarize false series
+    let legacy = report.Groups |> List.find (fun g -> g.Mode = "legacy")
+    let host = report.Groups |> List.find (fun g -> g.Mode = "host")
+    test <@ legacy.PhaseMsMin = Some 2000.0 && legacy.PhaseMsMax = Some 2100.0 @>
+    test <@ host.SettleFilesSeen = [ 15; 16 ] @>
+
+[<Fact>]
+let ``host(1) settle p95 is judged against legacy(1) with the 10 percent abandon bar`` () =
+    let within =
+        Summary.summarize
+            false
+            (rows
+                [ for i in 1..20 do
+                      yield editRecord "legacy" 1 i 1 2000.0 15
+                      yield editRecord "host" 1 i 1 2150.0 15 ])
+
+    test <@ within.SettleP95 |> List.map (fun v -> v.Label, v.Sessions) = [ "leaf", 1 ] @>
+    test <@ within.SettleP95.Head.Ratio = 1.075 && not within.SettleP95.Head.OverBar @>
+    test <@ (Summary.render within).Contains "within the 10% bar" @>
+
+    let over =
+        Summary.summarize
+            false
+            (rows
+                [ for i in 1..20 do
+                      yield editRecord "legacy" 1 i 1 2000.0 15
+                      yield editRecord "host" 1 i 1 2300.0 15 ])
+
+    test <@ over.SettleP95.Head.OverBar @>
+    test <@ (Summary.render over).Contains "OVER the 10% bar" @>

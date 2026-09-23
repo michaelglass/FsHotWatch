@@ -23,10 +23,13 @@ let percentile (p: float) (values: float list) : float option =
 /// The median (50th nearest-rank percentile).
 let median (values: float list) = percentile 50.0 values
 
-/// One (label, phase, sessions) group's scores.
+/// One (label, mode, phase, sessions) group's scores.
 type Group =
     {
         Label: string
+        /// `legacy` or `host`. The same label run in both modes is two groups, which is
+        /// what lets a comparison pair them.
+        Mode: string
         Phase: string
         Sessions: int
         /// Reps for which every one of the N sessions has a footprint.
@@ -48,6 +51,10 @@ type Group =
         RetentionTypedTreeHighMedian: float option
         PhaseMsMedian: float option
         PhaseMsP95: float option
+        PhaseMsMin: float option
+        PhaseMsMax: float option
+        /// Distinct `files=` counts the group's settles re-checked: its fan-out.
+        SettleFilesSeen: int list
         /// Distinct `filesChecked` values seen: more than one means sessions did not
         /// check the same work, and the group's memory is not comparable.
         FilesCheckedSeen: int list
@@ -55,15 +62,34 @@ type Group =
         TestsTotalSeen: int list
     }
 
+/// Host(N) settle p95 against legacy(N) settle p95 for one edit label.
+type SettleVerdict =
+    {
+        Label: string
+        Sessions: int
+        LegacyP95: float
+        HostP95: float
+        /// Host p95 / legacy p95.
+        Ratio: float
+        /// True when the host is more than `SettleP95Bar` worse: phase 1's abandon criterion.
+        OverBar: bool
+    }
+
+/// Phase 1's abandon criterion: host(1) settle p95 more than 10% worse than legacy(1).
+[<Literal>]
+let SettleP95Bar = 0.10
+
 /// The scored summary plus what was left out and why.
 type Report =
     {
         Groups: Group list
         /// `(label, phase, N) → ratio` of total footprint to the 1-session total.
         Ratios: ((string * string * int) * float) list
-        /// `(phase, N) → host total / legacy total`, medians over repetitions, for every
-        /// phase and session count both modes measured.
-        HostVsLegacy: ((string * int) * float) list
+        /// `(label, phase, N) → host total / legacy total`, medians over repetitions, for
+        /// every label, phase and session count both modes measured.
+        HostVsLegacy: ((string * string * int) * float) list
+        /// Edit-phase settle p95, host against legacy, per label and session count.
+        SettleP95: SettleVerdict list
         ExcludedInvalid: int
         ExcludedContended: int
         ContendedIncluded: bool
@@ -84,9 +110,9 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
 
     let groups =
         scored
-        |> List.groupBy (fun r -> r.Label, r.Position.Phase, r.Position.Sessions)
+        |> List.groupBy (fun r -> r.Label, r.Mode, r.Position.Phase, r.Position.Sessions)
         |> List.sortBy fst
-        |> List.map (fun ((label, phase, sessions), rs) ->
+        |> List.map (fun ((label, mode, phase, sessions), rs) ->
             let perRep =
                 rs
                 |> List.groupBy (fun r -> r.RunId, r.Position.Rep)
@@ -110,6 +136,7 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
             let ms = floats _.PhaseMs id rs
 
             { Label = label
+              Mode = mode
               Phase = phase
               Sessions = sessions
               CompleteReps = List.length perRep
@@ -129,6 +156,9 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
               RetentionTypedTreeHighMedian = median (floats _.RetentionTypedTreeHigh id rs)
               PhaseMsMedian = median ms
               PhaseMsP95 = percentile 95.0 ms
+              PhaseMsMin = if List.isEmpty ms then None else Some(List.min ms)
+              PhaseMsMax = if List.isEmpty ms then None else Some(List.max ms)
+              SettleFilesSeen = rs |> List.choose _.SettleFiles |> List.distinct |> List.sort
               FilesCheckedSeen = rs |> List.choose _.FilesChecked |> List.distinct |> List.sort
               TestsTotalSeen = rs |> List.choose _.TestsTotal |> List.distinct |> List.sort })
 
@@ -137,29 +167,45 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
         |> List.choose (fun g ->
             let baseline =
                 groups
-                |> List.tryFind (fun b -> b.Label = g.Label && b.Phase = g.Phase && b.Sessions = 1)
+                |> List.tryFind (fun b -> b.Label = g.Label && b.Mode = g.Mode && b.Phase = g.Phase && b.Sessions = 1)
                 |> Option.bind _.TotalFootprintMedian
 
             match baseline, g.TotalFootprintMedian with
             | Some b, Some t when b > 0.0 -> Some((g.Label, g.Phase, g.Sessions), t / b)
             | _ -> None)
 
-    let modeOf =
-        scored |> List.map (fun r -> r.Label, r.Mode) |> List.distinct |> Map.ofList
-
-    let totalsFor mode =
-        groups
-        |> List.filter (fun g -> modeOf |> Map.tryFind g.Label = Some mode)
-        |> List.choose (fun g -> g.TotalFootprintMedian |> Option.map (fun t -> (g.Phase, g.Sessions), t))
+    let pairs (value: Group -> float option) =
+        [ for h in groups do
+              if h.Mode = "host" then
+                  for l in groups do
+                      if
+                          l.Mode = "legacy"
+                          && l.Label = h.Label
+                          && l.Phase = h.Phase
+                          && l.Sessions = h.Sessions
+                      then
+                          match value h, value l with
+                          | Some hv, Some lv when lv > 0.0 -> yield h, hv, lv
+                          | _ -> () ]
 
     let hostVsLegacy =
-        [ for key, hostTotal in totalsFor "host" do
-              for legacyKey, legacyTotal in totalsFor "legacy" do
-                  if key = legacyKey && legacyTotal > 0.0 then
-                      yield key, hostTotal / legacyTotal ]
+        pairs _.TotalFootprintMedian
+        |> List.map (fun (h, hv, lv) -> (h.Label, h.Phase, h.Sessions), hv / lv)
+
+    let settleP95 =
+        pairs _.PhaseMsP95
+        |> List.filter (fun (h, _, _) -> h.Phase = "edit")
+        |> List.map (fun (h, hv, lv) ->
+            { Label = h.Label
+              Sessions = h.Sessions
+              LegacyP95 = lv
+              HostP95 = hv
+              Ratio = hv / lv
+              OverBar = hv / lv > 1.0 + SettleP95Bar })
 
     { Groups = groups
       HostVsLegacy = hostVsLegacy
+      SettleP95 = settleP95
       Ratios = ratios
       ExcludedInvalid = List.length invalid
       ExcludedContended = List.length contended
@@ -188,7 +234,7 @@ let render (report: Report) : string =
           yield $"excluded: %d{report.ExcludedInvalid} invalid, %d{report.ExcludedContended} contended"
           yield ""
           yield
-              "label | phase | N | reps | fp/session med | p95 | total med | x of N=1 | peak max | managed | native | live | shareable by type lo-hi | shareable by graph (typed tree) | phase s med/p95 | files | tests"
+              "label | mode | phase | N | reps | fp/session med | p95 | total med | x of N=1 | peak max | managed | native | live | shareable by type lo-hi | shareable by graph (typed tree) | phase s med/p95 (min-max) | settle files | files | tests"
           for g in report.Groups do
               let ratio =
                   report.Ratios
@@ -203,7 +249,7 @@ let render (report: Report) : string =
                       xs |> List.map string |> String.concat "/"
 
               yield
-                  $"%s{g.Label} | %s{g.Phase} | %d{g.Sessions} | %d{g.CompleteReps} | %s{mb g.SessionFootprintMedian} | %s{mb g.SessionFootprintP95} | %s{mb g.TotalFootprintMedian} | %s{ratio} | %s{mb g.PeakMax} | %s{mb g.ManagedMedian} | %s{mb g.NativeMedian} | %s{mb g.ManagedLiveMedian} | %s{pct g.ShareableLowMedian}-%s{pct g.ShareableHighMedian} | %s{pct g.RetentionHighMedian} (%s{pct g.RetentionTypedTreeHighMedian}) | %s{secs g.PhaseMsMedian}/%s{secs g.PhaseMsP95} | %s{seen g.FilesCheckedSeen} | %s{seen g.TestsTotalSeen}" ]
+                  $"%s{g.Label} | %s{g.Mode} | %s{g.Phase} | %d{g.Sessions} | %d{g.CompleteReps} | %s{mb g.SessionFootprintMedian} | %s{mb g.SessionFootprintP95} | %s{mb g.TotalFootprintMedian} | %s{ratio} | %s{mb g.PeakMax} | %s{mb g.ManagedMedian} | %s{mb g.NativeMedian} | %s{mb g.ManagedLiveMedian} | %s{pct g.ShareableLowMedian}-%s{pct g.ShareableHighMedian} | %s{pct g.RetentionHighMedian} (%s{pct g.RetentionTypedTreeHighMedian}) | %s{secs g.PhaseMsMedian}/%s{secs g.PhaseMsP95} (%s{secs g.PhaseMsMin}-%s{secs g.PhaseMsMax}) | %s{seen g.SettleFilesSeen} | %s{seen g.FilesCheckedSeen} | %s{seen g.TestsTotalSeen}" ]
 
     let comparison =
         if List.isEmpty report.HostVsLegacy then
@@ -211,7 +257,25 @@ let render (report: Report) : string =
         else
             [ yield ""
               yield "host / legacy total footprint (median over reps), same phase and session count:"
-              for (phase, n), ratio in report.HostVsLegacy do
-                  yield $"  %s{phase} N=%d{n}: %.2f{ratio}" ]
+              for (label, phase, n), ratio in report.HostVsLegacy do
+                  yield $"  %s{label} %s{phase} N=%d{n}: %.2f{ratio}" ]
 
-    String.Join("\n", lines @ comparison)
+    let verdicts =
+        if List.isEmpty report.SettleP95 then
+            []
+        else
+            [ yield ""
+              yield $"settle p95, host vs legacy (abandon if host is more than %.0f{SettleP95Bar * 100.0}%% worse):"
+              for v in report.SettleP95 do
+                  let worse = (v.Ratio - 1.0) * 100.0
+
+                  let verdict =
+                      if v.OverBar then
+                          $"OVER the %.0f{SettleP95Bar * 100.0}%% bar"
+                      else
+                          $"within the %.0f{SettleP95Bar * 100.0}%% bar"
+
+                  yield
+                      $"  %s{v.Label} N=%d{v.Sessions}: host %.0f{v.HostP95} ms vs legacy %.0f{v.LegacyP95} ms = %+.1f{worse}%% — %s{verdict}" ]
+
+    String.Join("\n", lines @ comparison @ verdicts)

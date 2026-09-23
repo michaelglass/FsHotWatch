@@ -133,6 +133,7 @@ let ``a record carries the retention reading and the summary scores only trusted
                   Scan = None
                   Tests = None
                   PhaseMs = None
+                  SettleFiles = None
                   Invalid = [] }
 
         (Record.tryParseLine json).Value

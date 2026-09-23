@@ -158,8 +158,12 @@ type BenchRecord =
         Config: ConfigProvenance
         Scan: FsHotWatch.ScanMetrics.ScanSample option
         Tests: DaemonLog.TestTotals option
-        /// Wall time of the phase the sample closes (scan, test run), ms.
+        /// Wall time of the phase the sample closes (scan, test run), ms. For an `edit`
+        /// record, the session's own settle latency.
         PhaseMs: float option
+        /// For an `edit` record: files the settle re-checked (`files=K`), so every
+        /// latency carries the fan-out it was measured at.
+        SettleFiles: int option
         /// Why this sample must not be scored; empty when valid.
         Invalid: string list
     }
@@ -350,6 +354,7 @@ let toJsonLine (r: BenchRecord) : string =
                             "skipped", ni t.Skipped ])
                   r.Tests
               "phaseMs", opt nf r.PhaseMs
+              "settleFiles", opt ni r.SettleFiles
               "invalid", arr (r.Invalid |> List.map ns) ]
 
     node.ToJsonString(JsonSerializerOptions(WriteIndented = false))
@@ -378,6 +383,7 @@ type Row =
         FilesUnchecked: int option
         TestsTotal: int option
         PhaseMs: float option
+        SettleFiles: int option
         Contended: bool
         Invalid: string list
     }
@@ -463,6 +469,7 @@ let tryParseLine (line: string) : Row option =
                       FilesUnchecked = intAt node [ "scan"; "filesUnchecked" ]
                       TestsTotal = intAt node [ "tests"; "total" ]
                       PhaseMs = floatAt node [ "phaseMs" ]
+                      SettleFiles = intAt node [ "settleFiles" ]
                       Contended = not (List.isEmpty (strings node [ "contended" ]))
                       Invalid = strings node [ "invalid" ] }
             | _ -> None
