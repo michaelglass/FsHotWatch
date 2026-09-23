@@ -58,6 +58,14 @@ module TestMode =
     /// Whether `mode` removes `work` from the lifecycle.
     let skips (work: PassThroughSkip) (mode: TestMode) = Set.contains work (skipped mode)
 
+    /// The mode once a run launched under `launchedUnder` has concluded. Pass-through
+    /// lasts for the confirm's run: the run it launched ends it, so a later `check` in the
+    /// same daemon is back under impact selection.
+    let afterRun (launchedUnder: TestMode) (current: TestMode) =
+        match launchedUnder with
+        | PassThrough -> ImpactSelection
+        | ImpactSelection -> current
+
     /// Whether every launch runs every configured project in full, unfiltered.
     let requestsFullSuite (mode: TestMode) =
         match mode with

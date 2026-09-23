@@ -1477,16 +1477,25 @@ type LaunchScope =
     | LaunchedFullSuite
     | LaunchedSelection
 
+/// The run holding the "tests" key, as its launch here claimed it.
+type InFlightRun =
+    {
+        Scope: LaunchScope
+        /// The mode it was launched under. Its fold ends a pass-through it ran for.
+        Mode: TestMode
+    }
+
 type TestPruneState =
     {
         Debt: VerificationDebt
-        /// Sticky for the daemon session: `set-scope full` is sent only by `confirm`, and
-        /// nothing sets it back. A request, not evidence; `test-scope` reports what
+        /// Set by `set-scope`. Pass-through lasts for the run launched under it: that
+        /// run's fold, or its failure to launch, returns the daemon to impact selection
+        /// (`TestMode.afterRun`). A request, not evidence; `test-scope` reports what
         /// actually ran.
         Mode: TestMode
         /// The run holding the "tests" key whose result is not folded yet, if a launch
         /// here claimed it. Cleared by that run's completion fold.
-        InFlightScope: LaunchScope option
+        InFlight: InFlightRun option
         /// Every run this session completed, newest first, bounded at
         /// `SessionRunLedger`. `test-scope` declares them so a check can name each batch
         /// it ran.
@@ -6090,7 +6099,7 @@ let internal createWithQueries
     let initialState =
         { Debt = loadedDebt
           Mode = TestMode.initial
-          InFlightScope = None
+          InFlight = None
           CompletedRuns = []
           CheckReach = None
           Replies = []
@@ -7271,7 +7280,10 @@ let internal createWithQueries
         | Claimed ->
             Some
                 { launchState with
-                    InFlightScope = Some(launchScopeOf inputs) }
+                    InFlight =
+                        Some
+                            { Scope = launchScopeOf inputs
+                              Mode = inputs.Mode } }
         | SlotBusy -> None
 
     /// Whether debt found while the key is held joins the run holding it instead of
@@ -7280,7 +7292,7 @@ let internal createWithQueries
     /// BootScan cohort, which scanned the tree that run is testing; an in-session cohort
     /// is an edit the run never built, and queues its own run.
     let joinsFullRun (state: TestPruneState) (bootScan: bool) =
-        state.InFlightScope = Some LaunchedFullSuite
+        (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
         && (TestMode.skips RerunIntents state.Mode || bootScan)
 
     /// Attach what is owed to the full run in flight. The FIRST captured revision stands:
@@ -7295,6 +7307,15 @@ let internal createWithQueries
                     else
                         Map.add symbol (revisionOf state.Debt symbol) captured) }
 
+    /// The run in flight has concluded: forget it, and end the pass-through it ran for.
+    let endRun (state: TestPruneState) =
+        { state with
+            InFlight = None
+            Mode =
+                match state.InFlight with
+                | Some run -> TestMode.afterRun run.Mode state.Mode
+                | None -> state.Mode }
+
     /// A launch that found its artifacts or test host unavailable ran nothing: it revokes
     /// the receipt, hands back the fanout it consumed, and fails.
     let unavailableRun
@@ -7306,9 +7327,8 @@ let internal createWithQueries
         =
         ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
-        { state with
+        { endRun state with
             EvidenceReceipt = None
-            InFlightScope = None
             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
             Replies =
                 reply
@@ -7327,7 +7347,13 @@ let internal createWithQueries
         let work = PluginWork.cooperativeSafe (commandForceRun ctx configs filter reply)
 
         match runTestHostExclusive ctx Set.empty (Some reply) work with
-        | Claimed -> { state with EvidenceReceipt = None }
+        | Claimed ->
+            { state with
+                EvidenceReceipt = None
+                InFlight =
+                    Some
+                        { Scope = LaunchedSelection
+                          Mode = state.Mode } }
         | SlotBusy ->
             // A busy key QUEUES the run, never refuses it: a refusal that reads as
             // success is a vacuous green. The intent waits behind the holder, owned, and
@@ -8330,7 +8356,8 @@ let internal createWithQueries
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
                             DebtDuringFullRun = Map.empty
-                            InFlightScope = None
+                            InFlight = None
+                            Mode = (endRun state).Mode
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
@@ -9169,6 +9196,9 @@ let internal createWithQueries
             // input, so a later lookup could not tell the entry from one that ran it.
             | BuildCompleted _
             | Custom(TestsFinished _) when not (Set.isEmpty state.PendingForceRunProjects) -> None
+            // A full-suite request earns its evidence from a real run, never a replay. The
+            // run's own entry is still written, from its `TestsFinished` window.
+            | BuildCompleted _ when TestMode.requestsFullSuite state.Mode -> None
             | _ ->
                 cacheKeyFor
                     changedSymbolsHash

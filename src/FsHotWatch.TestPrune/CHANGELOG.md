@@ -11,16 +11,24 @@
   A green full run over the input tree it launched against discharges that debt; a tree
   that moved under it leaves the debt owed and the verdict unearned, with no second run.
   Before, a cold `confirm` ran the suite three times: cohorts sealing mid-run queued
-  impact re-runs behind it. The mode stays set for the daemon session, as the full-suite
-  scope did, so a later `check` in the same daemon still runs the full suite.
+  impact re-runs behind it. The mode is branched on only in `TestMode.fs`; the work it
+  removes is the typed set `PassThroughSkip`, and everything else runs in both modes.
+- fix: full-suite scope lasts for the confirm's run. The run launched under
+  pass-through ends it when it folds (or fails to launch), and `set-scope impact` ends it
+  too, so a later `check` in the same daemon is back under impact selection and runs
+  nothing when nothing is owed. Before, `set-scope full` held for the daemon session and
+  every later build re-ran the whole suite. A full-suite request never replays a cached
+  `BuildCompleted`: its evidence comes from a real run.
 - fix: under `check`, a BootScan cohort that seals while a full-suite run is in flight
   (a cold `check` earning its baseline) attaches to that run instead of queueing another.
-  The plugin now records what a claimed launch will execute (`InFlightScope`). An
+  The plugin now records what a claimed launch will execute (`InFlight`). An
   in-session cohort still queues its own run.
 - A completion that ran every configured project in full over its launch tree, and passed
   all of them, discharges its debt without asking which projects cover each symbol,
   unless the index names a test project that is neither configured nor declared
-  excluded. `ImpactQueries.IndexedTestProjects` is that one scan.
+  excluded. `ImpactQueries.IndexedTestProjects` is that one scan. Such a run also clears
+  the files and runtime-coverage obligations that attached to it, which the next flush
+  used to turn back into obligations and a run.
 
 - fix: classifying verification debt costs one grouped query per pass, not one graph walk
   per queued symbol. The impact-selection flush, the test launch and the run's completion

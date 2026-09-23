@@ -530,18 +530,18 @@ let ``check still queues one rerun for an in-session cohort during its full run`
     test <@ Set.isEmpty outcome.Queue @>
     assertGreen outcome
 
-[<Fact(Timeout = 30000)>]
-let ``full-suite scope outlives the confirm that set it`` () =
-    // `set-scope full` is sticky for the daemon session, and only `confirm` sends it, so a
-    // later `check` in the same daemon runs the full suite too. Pass-through inherits that
-    // lifetime; this pins it.
-    withTempDir "tp-pt-sticky" (fun tmpDir ->
+/// Two projects, `Lib.foo` queued and covered by ProjA only, a baseline on disk: a `check`
+/// selects ProjA, a `confirm` runs both. `steps` drive one daemon; each is a scope request
+/// (or none) and the build it provokes. Returns how often each project ran.
+let private scopeSequence name (steps: string option list) =
+    withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "ProjA" "ATests" "fooTest"
         seedBaseline tmpDir [ "ProjA"; "ProjB" ]
         PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
         let runs = Path.Combine(tmpDir, "runs")
+        File.WriteAllText(runs, "")
 
         let config project =
             { Project = project
@@ -558,16 +558,50 @@ let ``full-suite scope outlives the confirm that set it`` () =
 
         host.RegisterHandler(create dbPath tmpDir (Some [ config "ProjA"; config "ProjB" ]) None None None None [])
 
-        host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
-        |> Async.RunSynchronously
-        |> ignore
+        for scope in steps do
+            match scope with
+            | Some scope ->
+                host.RunCommand("set-scope", [| $"{{\"scope\":\"%s{scope}\"}}" |])
+                |> Async.RunSynchronously
+                |> ignore
+            | None -> ()
 
-        // The confirm's run, then a later check's.
-        emitBuildAndWaitTerminal host
-        emitBuildAndWaitTerminal host
+            emitBuildAndWaitTerminal host
 
-        let executions = File.ReadAllLines(runs) |> Array.countBy id |> Map.ofArray
-        test <@ executions = Map.ofList [ "ProjA", 2; "ProjB", 2 ] @>)
+        File.ReadAllLines(runs) |> Array.countBy id |> Map.ofArray)
+
+let private confirmStep = Some "full"
+let private checkStep = None
+
+[<Fact(Timeout = 30000)>]
+let ``full-suite scope ends with the confirm's run`` () =
+    // `set-scope full` lasts for the run launched under it. A later build in the same
+    // daemon is `check`'s: nothing is owed and the confirm earned the baseline, so it runs
+    // nothing.
+    let executions = scopeSequence "tp-pt-ends" [ confirmStep; checkStep ]
+    test <@ executions = Map.ofList [ "ProjA", 1; "ProjB", 1 ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``check, confirm, check in one daemon: the last check runs nothing`` () =
+    // The first check selects ProjA for `Lib.foo`; the confirm runs both; the last check
+    // is back under impact selection and owes nothing.
+    let executions = scopeSequence "tp-pt-ccc" [ checkStep; confirmStep; checkStep ]
+    test <@ executions = Map.ofList [ "ProjA", 2; "ProjB", 1 ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``every confirm runs the suite, never a cached one`` () =
+    // A confirm bypasses cache reads for its evidence. Each one in a warm daemon over an
+    // unchanged tree runs both projects again.
+    let executions =
+        scopeSequence "tp-pt-no-replay" [ checkStep; confirmStep; confirmStep; confirmStep ]
+
+    test <@ executions = Map.ofList [ "ProjA", 4; "ProjB", 3 ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``set-scope impact ends pass-through before any run`` () =
+    let executions = scopeSequence "tp-pt-impact" [ confirmStep; Some "impact" ]
+    // The confirm's run, then a check that owes nothing.
+    test <@ executions = Map.ofList [ "ProjA", 1; "ProjB", 1 ] @>
 
 /// The observables a full run owns because it was SELECTED: what `check`'s widening and
 /// `confirm`'s request may report differently about the same run. Everything else must
@@ -589,6 +623,10 @@ let private runAt (root: string) (setup: Setup) =
         with _ ->
             ()
 
+/// One run lifecycle, two modes: pass-through only subtracts `PassThroughSkip`, so its run
+/// must be observably the full run a cold `check` makes, except where `selectionOwned`
+/// says. Driven over the in-process plugin host, which is the `--run-once` transport. The
+/// daemon transport delivers the plugin the same events over IPC, so it is not repeated.
 [<Fact(Timeout = 90000)>]
 let ``a confirm's run is observably the run check makes to earn its baseline`` () =
     // One root for both, so absolute paths, and every hash over them, agree.
@@ -650,11 +688,24 @@ let ``a check after a confirm in the same daemon is served warm`` () =
 
     Assert.Equal(1, outcome.RunCount)
     let warm = outcome.Warm.Value
-    // Every file the check re-checks replays test-prune's cached analysis.
-    test <@ List.isEmpty warm.FileLookupMisses @>
     test <@ warm.CoveringQueries = 0 @>
     test <@ warm.Runs = 0 @>
 
     match warm.Status with
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the warm check to report the confirm's green, got %A{other}")
+
+[<Fact(Timeout = 60000)>]
+let ``a covered full run leaves nothing for the next cohort over the same tree`` () =
+    // The BootScan cohort attached to the full run and the run covered it. Its files and
+    // their runtime-coverage obligations are covered too: before, they stayed in
+    // `ChangedFiles`, the next flush turned them back into obligations, and a check over
+    // the unchanged tree ran the suite again.
+    let outcome =
+        scenarioWith
+            "tp-covered-files"
+            { setup Check [ BootScan ] with
+                WarmCheck = true }
+
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Warm.Value.Runs = 0 @>
