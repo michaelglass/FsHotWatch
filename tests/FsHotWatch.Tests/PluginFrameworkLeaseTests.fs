@@ -369,3 +369,136 @@ let ``a cancelled run's child processes are reaped`` () =
     finally
         if not child.HasExited then
             child.Kill true
+
+type private FunnelMsg =
+    | FunnelWanted
+    | FunnelRunDone
+
+let private summaryOf (status: PluginStatus) =
+    match status with
+    | Completed(_, verdict) -> Some verdict.Summary
+    | _ -> None
+
+/// Both halves of the status funnel at once. A cancelled cooperative-safe run puts back
+/// the status its `Running` displaced — through the same funnel every report takes — and
+/// that funnel still drops an unrelated terminal while a FINISHED run's result fold is
+/// owed, letting only the run's own verdict land.
+[<Fact(Timeout = 30000)>]
+let ``a cancelled run restores its displaced status and an owed run verdict still gates terminals`` () =
+    let statuses = Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let wantedStarted = signal ()
+    let wantedCancelled = signal ()
+    use workerGo = new ManualResetEventSlim(false)
+    let mutable command: CommandHandler option = None
+
+    let handler: PluginHandler<unit, FunnelMsg> =
+        { Name = PluginName.create "funnel"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "before" ]) ->
+                        ctx.ReportStatus(PluginStatus.completedNow "before the run" TimeSpan.Zero)
+                    | Custom FunnelWanted ->
+                        let wanted =
+                            PluginWork.cooperativeSafe (
+                                async {
+                                    use! _cancel = Async.OnCancel(fun () -> wantedCancelled.TrySetResult(()) |> ignore)
+
+                                    wantedStarted.TrySetResult(()) |> ignore
+                                    do! Async.Sleep Timeout.Infinite
+                                    return FunnelRunDone
+                                }
+                            )
+
+                        match ctx.RunExclusive "work" wanted with
+                        | Claimed -> ()
+                        | SlotBusy -> failwith "the delivered intent holds the key"
+                    | FileChanged(SourceChanged [ "claim" ]) ->
+                        match
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    workerGo.Wait()
+                                    return FunnelRunDone
+                                })
+                        with
+                        | Claimed -> ()
+                        | SlotBusy -> failwith "the key is free"
+                    | FileChanged(SourceChanged [ "hold" ]) ->
+                        // Until the worker has retired into its result fold, which then
+                        // queues behind "report": that fold is owed while "report" runs.
+                        while ctx.IsRunning "work" do
+                            Thread.Sleep 5
+                    | FileChanged(SourceChanged [ "report" ]) ->
+                        ctx.ReportStatus(PluginStatus.completedNow "unrelated terminal" TimeSpan.Zero)
+                    | Custom FunnelRunDone -> ctx.ReportStatus(PluginStatus.completedNow "run done" TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands =
+            [ "want",
+              PluginCommand.Request(fun ctx _ ->
+                  async {
+                      do! ctx.EnqueueExclusiveIntent "work" None FunnelWanted |> Async.AwaitTask
+                      return "admitted"
+                  }) ]
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                RegisterCommand = fun (_, handler) -> command <- Some handler
+                ReportStatus = fun _ status -> statuses.Enqueue status }
+            handler
+
+    /// Dispatch without waiting; the answer completes when the event has committed.
+    let dispatch file : Task<unit> =
+        match registration.DispatchTracked(DispatchFileChanged(SourceChanged [ file ])) with
+        | Some receipt -> receipt.Wait(TimeSpan.FromSeconds 30.0)
+        | None -> failwith "subscribed"
+
+    // A terminal the plugin reported before any run: what a run's `Running` displaces.
+    test <@ (dispatch "before").Wait bound @>
+    test <@ statuses.ToArray() |> Array.last |> summaryOf = Some "before the run" @>
+
+    // A client's run, cancelled when the client goes.
+    use client = new CancellationTokenSource()
+
+    Async.StartAsTask(command.Value [||], cancellationToken = client.Token)
+    |> observe
+    |> ignore
+
+    test <@ wantedStarted.Task.Wait bound @>
+
+    test
+        <@
+            match statuses.ToArray() |> Array.last with
+            | Running _ -> true
+            | _ -> false
+        @>
+
+    client.Cancel()
+    test <@ wantedCancelled.Task.Wait bound @>
+    test <@ waitUntilTrue (fun () -> not (registration.IsBusy())) 10000 @>
+    // Restored through the funnel: exactly the displaced terminal, and nothing after it.
+    test <@ statuses.ToArray() |> Array.last |> summaryOf = Some "before the run" @>
+    let afterRestore = statuses.Count
+
+    // A daemon run whose result fold is owed while an unrelated terminal is reported.
+    dispatch "claim" |> ignore
+    dispatch "hold" |> ignore
+    let reported = dispatch "report"
+    workerGo.Set()
+
+    test <@ reported.Wait bound @>
+    test <@ waitUntilTrue (fun () -> not (registration.IsBusy())) 10000 @>
+
+    let window = statuses.ToArray() |> Array.skip afterRestore |> Array.choose summaryOf
+    // The unrelated terminal was dropped; the run's own verdict landed, and last.
+    test <@ window = [| "run done" |] @>
