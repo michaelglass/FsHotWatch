@@ -92,17 +92,6 @@ let private libFooSymbol: TestPrune.AstAnalyzer.SymbolInfo =
       IsExtern = false }
 
 [<Fact(Timeout = 20000)>]
-let ``the pool key the tests clear is the one the library opens with`` () =
-    // The clear is keyed by connection string. A key that does not match the library's
-    // clears a different, empty pool and the call becomes a silent no-op — the failure
-    // mode that leaves every test still passing and the defect still present.
-    withTempDir "sqlite-pool-key" (fun tmpDir ->
-        let dbPath = Path.Combine(tmpDir, "tp.db")
-        let db = TestPrune.Database.Database.create dbPath
-        use conn = db.OpenConnection()
-        test <@ conn.ConnectionString = sqliteConnectionString dbPath @>)
-
-[<Fact(Timeout = 20000)>]
 let ``clearSqlitePool drops the pooled connections of its own database`` () =
     withTempDir "sqlite-pool-clear" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")

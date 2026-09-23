@@ -258,6 +258,22 @@ let ``depRelevantSignature: compile-item-only change yields the SAME signature``
 
         test <@ before = after @>)
 
+/// An fsproj that cannot be read (here, gone) folds a sentinel rather than throwing,
+/// so the signature still answers and differs from any readable state.
+[<Fact(Timeout = 5000)>]
+let ``depRelevantSignature: an unreadable fsproj is a stable signature of its own, never a throw`` () =
+    withTempDir "deps-sig-unreadable" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        let unreadable = depRelevantSignature root fsproj
+
+        Directory.CreateDirectory projDir |> ignore
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
+
+        test <@ depRelevantSignature root fsproj <> unreadable @>
+        File.Delete fsproj
+        test <@ depRelevantSignature root fsproj = unreadable @>)
+
 /// The inverse: a real package change moves the signature and re-arms recovery.
 [<Fact(Timeout = 5000)>]
 let ``depRelevantSignature: PackageReference version change yields a DIFFERENT signature`` () =

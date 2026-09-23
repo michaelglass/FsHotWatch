@@ -27,6 +27,7 @@ let private sample generation rss =
       ManagedBytes = rss / 4L
       ForcedGc = true
       Gen2Collections = 3
+      Scope = DaemonHosting.ResourceScope.Process
       SampledAt = DateTime(2026, 9, 4, 10, 0, 0, DateTimeKind.Utc) }
 
 [<Fact>]
@@ -266,3 +267,26 @@ let ``skipped and deps-gated counts round-trip`` () =
         test <@ parsed.FilesSkipped = 900 @>
         test <@ parsed.FilesDepsGated = 512 @>
         test <@ parsed.FilesUncovered = 388 @>
+
+[<Fact>]
+let ``a host-scoped sample says so on its line, and round-trips`` () =
+    // Sessions of a repository host share one process: its RSS is the host's total,
+    // and a reader must never attribute it to one worktree.
+    let hosted =
+        { sample 1L 9_000_000_000L with
+            Scope = DaemonHosting.ResourceScope.Host }
+
+    let line = toJsonLine hosted
+    test <@ line.Contains "\"scope\":\"host\"" @>
+    test <@ tryParseLine line = Some hosted @>
+
+[<Fact>]
+let ``a per-worktree daemon's sample is process-scoped`` () =
+    test <@ (toJsonLine (sample 1L 1L)).Contains "\"scope\":\"process\"" @>
+
+[<Fact>]
+let ``a line written before samples carried a scope reads as process-scoped`` () =
+    let legacy = (toJsonLine (sample 2L 5L)).Replace(",\"scope\":\"process\"", "")
+
+    test <@ not (legacy.Contains "scope") @>
+    test <@ (tryParseLine legacy |> Option.map (fun s -> s.Scope)) = Some DaemonHosting.ResourceScope.Process @>

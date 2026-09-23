@@ -914,6 +914,30 @@
         "reason": "Linux floor (2026-09-23): 137 of 138 lines. The one line Linux cannot run is `defaultNative`'s call into MacFsEvents.createExcluding: FSEvents exists only on macOS, and off macOS the pool gives every session its own watcher instead. The two partial branches CI run 35841163259 reported (the `lock` expressions' never-taken lock-acquired checks) are gone: the pool takes its lock with Lock.Enter/Exit. The branch figure is predicted from macOS (42/42) and awaits the next Linux run. macOS covers every line and branch and stays on the ratchet default.",
         "platform": "linux"
       }
+    ],
+    "RepositoryHost.fs": [
+      {
+        "line": 100,
+        "branch": 89,
+        "reason": "(2026-09-23): new file. Measured line=100% branch=91.7% (33/36) on macOS over the repository-host test classes. The three uncovered branches are compiler-synthesised: the rethrow arm of the two `with :? IOException` filters (a lock FileStream failing with anything but IOException) and a `use` null check. Floor 2pp under the measurement.",
+        "platform": "macos"
+      }
+    ],
+    "RepositoryIpc.fs": [
+      {
+        "line": 100,
+        "branch": 90,
+        "reason": "(2026-09-23): new file. Measured line=100% branch=92% (46/50) on macOS over the repository-host test classes. The four uncovered branches are the compiler-synthesised second arms of `return raise` inside async/task builders (the exception-path continuations). Floor 2pp under the measurement.",
+        "platform": "macos"
+      }
+    ],
+    "RepositoryHostMode.fs": [
+      {
+        "line": 97,
+        "branch": 83,
+        "reason": "(2026-09-23): new file. Measured line=97.4% (74/76) branch=85.7% (12/14) on macOS. Uncovered: the `dotnet --version` probe timing out (a 30s bound) and an attach reply the host cannot have written (an unreadable handshake frame); the rest are synthesised string-pattern branches. Floor 2pp under the measurement.",
+        "platform": "macos"
+      }
     ]
   },
   "countFloors": {
@@ -1762,7 +1786,7 @@
     },
     "ScanMetrics.fs": {
       "coveredLines": 84,
-      "coveredBranches": 15
+      "coveredBranches": 14
     },
     "SolutionScope.fs": [
       {

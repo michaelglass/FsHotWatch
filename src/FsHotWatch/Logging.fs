@@ -20,8 +20,44 @@ let setLogLevel level =
     logLevel <- level
     verbose <- level >= LogLevel.Debug
 
+/// Where one session's log lines go, and how verbose that session is.
+///
+/// A per-worktree daemon logs to stderr, which its launcher redirects to its
+/// `daemon.log`. Sessions that share a repository host each install a sink instead, as
+/// an `AsyncLocal` flowing with their work, so each session's lines land in its own
+/// worktree's log. Work that carries no session's context logs to stderr: the host log.
+[<NoComparison; NoEquality>]
+type LogSink =
+    { Write: string -> unit
+      Level: LogLevel }
+
+let private currentSink = System.Threading.AsyncLocal<LogSink option>()
+
+/// Route this context's log lines to `sink` until the result is disposed, when the
+/// previous sink (or stderr) takes over again.
+let installSink (sink: LogSink) : System.IDisposable =
+    let prior = currentSink.Value
+    currentSink.Value <- Some sink
+
+    { new System.IDisposable with
+        member _.Dispose() = currentSink.Value <- prior }
+
+/// A sink appending to `path` (created, with its directory, if missing). Lines are
+/// written whole and flushed, so two sinks on one file interleave by line.
+let fileSink (path: string) (level: LogLevel) : LogSink =
+    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName path)
+    |> ignore
+
+    let gate = obj ()
+
+    { Write = fun line -> lock gate (fun () -> System.IO.File.AppendAllText(path, line + "\n"))
+      Level = level }
+
 /// Check if a given level is enabled.
-let isEnabled level = level <= logLevel
+let isEnabled level =
+    match currentSink.Value with
+    | Some sink -> level <= sink.Level
+    | None -> level <= logLevel
 
 /// Log a message at the given level, with a component tag and timestamp.
 let log (level: LogLevel) (tag: string) (msg: string) =
@@ -34,7 +70,11 @@ let log (level: LogLevel) (tag: string) (msg: string) =
         // reading one as the other has produced both a phantom wedge and an empty
         // `find -newermt` window that looked like a refutation.
         let ts = System.DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
-        eprintfn "  [%s] %s %s" tag ts msg
+        let line = $"  [%s{tag}] %s{ts} %s{msg}"
+
+        match currentSink.Value with
+        | Some sink -> sink.Write line
+        | None -> eprintfn "%s" line
 
 /// Log at Debug level (verbose only).
 let debug tag msg = log LogLevel.Debug tag msg
