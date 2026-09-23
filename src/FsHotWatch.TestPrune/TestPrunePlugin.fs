@@ -5165,12 +5165,29 @@ let internal cacheKeyFor
             )
     | _ -> None
 
+/// The impact queries the plugin runs against its index, in one place, so a test can
+/// count them per handler instance.
+type internal ImpactQueries =
+    {
+        /// The tests `QueryAffectedTests` selects for a set of changed symbols.
+        AffectedTests: string list -> TestMethodInfo list
+        /// For each symbol, the test projects its single-seed query would select from.
+        CoveringProjectsBySeed: string list -> Map<string, Set<string>>
+    }
+
+module internal ImpactQueries =
+    let ofDatabase (db: Database) : ImpactQueries =
+        { AffectedTests = db.QueryAffectedTests
+          CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
-/// to a different DB than the plugin's.
-let internal createWithLaunchDeadline
+/// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
+/// same DB.
+let internal createWithQueries
+    (queriesOf: Database -> ImpactQueries)
     (launchDeadline: TimeSpan)
     // The declared exclusions: indexed test-project name -> written reason. Called once
     // per debt classification (flush, launch, completion), so a caller can re-resolve
@@ -5192,6 +5209,7 @@ let internal createWithLaunchDeadline
     (dependsOn: string list)
     =
     let db = Database.create dbPath
+    let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
     /// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
@@ -5542,7 +5560,7 @@ let internal createWithLaunchDeadline
 
         fun symbol ->
             let covering =
-                db.QueryAffectedTests [ symbol ]
+                queries.AffectedTests [ symbol ]
                 |> List.map (fun t -> t.TestProject)
                 |> Set.ofList
 
@@ -5668,7 +5686,7 @@ let internal createWithLaunchDeadline
                 // execute — and make `allChangesUncovered` (and so the zero-affected
                 // skip) disagree with the commit rule. See `debtScope`.
                 let queryRunnable (seeds: string list) =
-                    db.QueryAffectedTests(seeds)
+                    queries.AffectedTests seeds
                     |> fun ts ->
                         if Set.isEmpty runnableProjects then
                             ts
@@ -5843,7 +5861,7 @@ let internal createWithLaunchDeadline
                 uncovered
                 |> Set.toList
                 |> List.choose (fun s ->
-                    match db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    match queries.AffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
                     | projects when Set.isEmpty projects -> None
                     | projects -> Some(s, projects))
                 |> Map.ofList
@@ -6644,7 +6662,7 @@ let internal createWithLaunchDeadline
                       if symbols.IsEmpty then
                           []
                       else
-                          db.QueryAffectedTests(symbols)
+                          queries.AffectedTests symbols
 
                   let testsData =
                       tests
@@ -8983,6 +9001,32 @@ let internal createWithLaunchDeadline
 
         Some cacheKey
       Teardown = None }
+
+/// `createWithQueries` over the plugin's own index.
+let internal createWithLaunchDeadline
+    (launchDeadline: TimeSpan)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    createWithQueries
+        ImpactQueries.ofDatabase
+        launchDeadline
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
 
 /// Create a TestPrune handler that honors declared test-scope exclusions.
 ///
