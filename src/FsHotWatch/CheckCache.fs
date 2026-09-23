@@ -168,7 +168,7 @@ type FileContentHasher() =
             Logging.debug "cache" $"Could not hash %s{path}: %s{ex.Message}"
             "unreadable"
 
-let private isUnderRoot (repoRoot: string option) (path: string) =
+let internal isUnderRoot (repoRoot: string option) (path: string) =
     match repoRoot with
     | None -> true
     | Some root ->

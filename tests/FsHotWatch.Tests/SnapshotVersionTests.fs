@@ -8,6 +8,7 @@ open System.IO
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
 open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
@@ -292,7 +293,6 @@ let ``two checkouts with identical content get identical snapshot versions`` () 
                         (Some tree.Dir)
                         (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash b2)
                         tree.BOptions
-                    |> Async.RunSynchronously
 
                 let local (path: string) = path.Replace(tree.Dir, "<checkout>")
 
@@ -304,3 +304,209 @@ let ``two checkouts with identical content get identical snapshot versions`` () 
             test <@ not (List.isEmpty files1) @>
             test <@ files1 = files2 @>
             test <@ refs1 = refs2 @>))
+
+// --- ProjectSnapshots, without a checker ---
+
+/// A `hashFile` that answers `first` once and `later` after that — a file that
+/// moves between two looks at it.
+let private movingHash (first: string) (later: string) =
+    let calls = ref 0
+
+    fun (_: string) ->
+        calls.Value <- calls.Value + 1
+        if calls.Value = 1 then first else later
+
+let private openFile path version text : FsHotWatch.ProjectSnapshots.OpenFile =
+    { Path = path
+      Version = version
+      Text = text }
+
+let private readSource (file: FSharp.Compiler.CodeAnalysis.ProjectSnapshot.FSharpFileSnapshot) =
+    file.GetSource().Result.GetSubTextString(0, file.GetSource().Result.Length)
+
+[<Fact>]
+let ``the open file is versioned by its content hash`` () =
+    withTempDir "snapshot-open" (fun dir ->
+        let path = Path.Combine(dir, "Open.fs")
+        File.WriteAllText(path, "module Open")
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let opened = FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash path
+        test <@ opened.Text = "module Open" @>
+        test <@ opened.Version = hasher.Hash path @>)
+
+[<Fact>]
+let ``a missing open file reads as empty`` () =
+    withTempDir "snapshot-open-missing" (fun dir ->
+        let path = Path.Combine(dir, "Gone.fs")
+        let opened = FsHotWatch.ProjectSnapshots.readOpenFile (fun _ -> "missing") path
+        test <@ opened.Text = "" @>
+        test <@ opened.Version = "missing" @>)
+
+[<Fact>]
+let ``an open file in a missing directory reads as empty`` () =
+    withTempDir "snapshot-open-no-dir" (fun dir ->
+        let path = Path.Combine(dir, "gone", "Gone.fs")
+        let opened = FsHotWatch.ProjectSnapshots.readOpenFile (fun _ -> "missing") path
+        test <@ opened.Text = "" @>)
+
+[<Fact>]
+let ``an open file that cannot be read for another reason is not read as empty`` () =
+    withTempDir "snapshot-open-directory" (fun dir ->
+        // A directory where the file should be: not missing, and not readable.
+        raises<UnauthorizedAccessException> <@ FsHotWatch.ProjectSnapshots.readOpenFile (fun _ -> "h") dir @>)
+
+[<Fact>]
+let ``an open file that moves while it is read is versioned by the text read`` () =
+    withTempDir "snapshot-open-moving" (fun dir ->
+        let path = Path.Combine(dir, "Moving.fs")
+        File.WriteAllText(path, "module Moving")
+
+        let opened =
+            FsHotWatch.ProjectSnapshots.readOpenFile (movingHash "before" "after") path
+
+        test <@ opened.Version.StartsWith "text:" @>
+
+        let again =
+            FsHotWatch.ProjectSnapshots.readOpenFile (movingHash "before" "after") path
+
+        test <@ again.Version = opened.Version @>)
+
+[<Fact>]
+let ``a source read after it moved is refused, not served under its old version`` () =
+    withTempDir "snapshot-disk-moving" (fun dir ->
+        let openPath = Path.Combine(dir, "Open.fs")
+        let other = Path.Combine(dir, "Other.fs")
+        File.WriteAllText(other, "module Other")
+
+        let options =
+            makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ other; openPath ] []
+
+        let opened = openFile openPath "v" "module Open"
+
+        let snapshot =
+            FsHotWatch.ProjectSnapshots.build (movingHash "before" "after") None opened options
+
+        let otherFile = snapshot.SourceFiles |> List.find (fun f -> f.FileName = other)
+        test <@ otherFile.Version = "before" @>
+        raises<IOException> <@ otherFile.GetSource() @>)
+
+[<Fact>]
+let ``sources are read when the checker asks for them`` () =
+    withTempDir "snapshot-disk" (fun dir ->
+        let openPath = Path.Combine(dir, "Open.fs")
+        let other = Path.Combine(dir, "Other.fs")
+        File.WriteAllText(other, "module Other")
+
+        let options =
+            makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ other; openPath ] []
+
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let opened = openFile openPath "v" "module Open"
+
+        let snapshot = FsHotWatch.ProjectSnapshots.build hasher.Hash None opened options
+
+        let texts = [ for f in snapshot.SourceFiles -> f.FileName, readSource f ]
+        test <@ texts = [ other, "module Other"; openPath, "module Open" ] @>)
+
+[<Fact>]
+let ``only references inside the repository are stamped by content`` () =
+    withTempDir "snapshot-refs" (fun dir ->
+        withTempDir "snapshot-refs-outside" (fun outside ->
+            let inside = Path.Combine(dir, "In.dll")
+            let external = Path.Combine(outside, "Out.dll")
+            File.WriteAllText(inside, "in")
+            File.WriteAllText(external, "out")
+
+            let options =
+                makeProjectOptions
+                    (Path.Combine(dir, "P.fsproj"))
+                    []
+                    [ $"-r:%s{inside}"; $"-r:%s{external}"; "--noframework" ]
+
+            let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+            let opened = openFile (Path.Combine(dir, "Open.fs")) "v" ""
+
+            let stamps repoRoot =
+                (FsHotWatch.ProjectSnapshots.build hasher.Hash repoRoot opened options).ReferencesOnDisk
+                |> List.map (fun r -> r.Path, r.LastModified)
+
+            let real path =
+                FSharp.Compiler.IO.FileSystemAutoOpens.FileSystem.GetLastWriteTimeShim path
+
+            let byContent path =
+                FsHotWatch.ProjectSnapshots.contentStamp (hasher.Hash path)
+
+            test <@ stamps (Some dir) = [ inside, byContent inside; external, real external ] @>
+            // With no repository to bound them, every reference keeps FCS's own stamp.
+            test <@ stamps None = [ inside, real inside; external, real external ] @>
+
+            let snapshot =
+                FsHotWatch.ProjectSnapshots.build hasher.Hash (Some dir) opened options
+
+            test <@ snapshot.OtherOptions = [ "--noframework" ] @>))
+
+[<Fact>]
+let ``content stamps are equal exactly when the content hashes are`` () =
+    let stamp = FsHotWatch.ProjectSnapshots.contentStamp
+    test <@ stamp "abc" = stamp "abc" @>
+    test <@ stamp "abc" <> stamp "abd" @>
+    test <@ (stamp "abc").Kind = DateTimeKind.Utc @>
+
+[<Fact>]
+let ``a project reached twice is snapshotted once, and non-F# references pass through`` () =
+    withTempDir "snapshot-graph" (fun dir ->
+        let a = makeProjectOptions (Path.Combine(dir, "A.fsproj")) [] []
+        let getStamp () = DateTime(2020, 1, 1)
+
+        let ilReference =
+            FSharpReferencedProject.ILModuleReference(
+                Path.Combine(dir, "IL.dll"),
+                getStamp,
+                fun () -> failwith "not read"
+            )
+
+        let peReference =
+            FSharpReferencedProject.PEReference(
+                getStamp,
+                DelayedILModuleReader(Path.Combine(dir, "PE.dll"), fun _ -> failwith "not read")
+            )
+
+        let b =
+            { makeProjectOptions (Path.Combine(dir, "B.fsproj")) [] [] with
+                ReferencedProjects = [| FSharpReferencedProject.FSharpReference(Path.Combine(dir, "A.dll"), a) |] }
+
+        let c =
+            { makeProjectOptions (Path.Combine(dir, "C.fsproj")) [] [] with
+                ReferencedProjects =
+                    [| FSharpReferencedProject.FSharpReference(Path.Combine(dir, "A.dll"), a)
+                       FSharpReferencedProject.FSharpReference(Path.Combine(dir, "B.dll"), b)
+                       ilReference
+                       peReference |] }
+
+        let opened = openFile (Path.Combine(dir, "Open.fs")) "v" ""
+
+        let snapshot = FsHotWatch.ProjectSnapshots.build (fun _ -> "h") None opened c
+
+        let outputs = snapshot.ReferencedProjects |> List.map (fun r -> r.OutputFile)
+
+        test
+            <@
+                outputs = [ Path.Combine(dir, "A.dll")
+                            Path.Combine(dir, "B.dll")
+                            Path.Combine(dir, "IL.dll")
+                            Path.Combine(dir, "PE.dll") ]
+            @>
+
+        let aDirect, aThroughB =
+            match snapshot.ReferencedProjects with
+            | FSharpReferencedProjectSnapshot.FSharpReference(_, direct) :: FSharpReferencedProjectSnapshot.FSharpReference(_,
+                                                                                                                            viaB) :: _ ->
+                match viaB.ReferencedProjects with
+                | [ FSharpReferencedProjectSnapshot.FSharpReference(_, throughB) ] -> direct, throughB
+                | other -> failwith $"unexpected %A{other}"
+            | other -> failwith $"unexpected %A{other}"
+
+        test <@ obj.ReferenceEquals(aDirect, aThroughB) @>)

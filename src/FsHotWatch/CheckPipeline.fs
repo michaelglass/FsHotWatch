@@ -329,7 +329,7 @@ type CheckPipeline
                 ct.ThrowIfCancellationRequested()
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let! snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
+                let snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
                 let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
