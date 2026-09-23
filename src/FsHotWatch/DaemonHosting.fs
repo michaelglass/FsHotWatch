@@ -8,12 +8,19 @@
 /// (`HostingSeamTests` refuses one).
 module FsHotWatch.DaemonHosting
 
+// TransparentCompiler.CacheSizes is marked experimental; it is the checker's configuration.
+#nowarn "57"
+
+open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
 open FsHotWatch.Watcher
 
 /// Constructs the repository watcher for a `Watching` daemon. The arguments are
 /// `FileWatcher.create`'s.
 type WatcherFactory = string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher
+
+/// Builds, or hands out, the checker for a checker configuration.
+type CheckerFactory = TransparentCompiler.CacheSizes -> FSharpChecker
 
 /// Whose resources a scan's RSS and managed figures measure.
 [<RequireQualifiedAccess>]
@@ -45,14 +52,17 @@ type Hosting =
     /// One daemon per worktree, owning its process, its watcher and the process-wide
     /// compiler caches.
     | Standalone
-    /// One session of a repository host, watching through the host's shared stream.
-    | Hosted of watcherFactory: WatcherFactory
+    /// One session of a repository host, watching through the host's shared stream and
+    /// checking through its partition's shared checker.
+    | Hosted of watcherFactory: WatcherFactory * checkers: CheckerFactory
 
 /// A per-worktree daemon.
 let standalone () : Hosting = Hosting.Standalone
 
-/// A session of a repository host, watching through `sharedWatcher`.
-let hostedBy (sharedWatcher: WatcherFactory) : Hosting = Hosting.Hosted sharedWatcher
+/// A session of a repository host, watching through `sharedWatcher` and checking
+/// through the checker `checkers` hands out for its configuration.
+let hostedBy (sharedWatcher: WatcherFactory) (checkers: CheckerFactory) : Hosting =
+    Hosting.Hosted(sharedWatcher, checkers)
 
 /// Everything a hosted session does differently from a per-worktree daemon.
 [<NoComparison; NoEquality>]
@@ -69,6 +79,12 @@ type HostingSeams =
         ClearsProcessCaches: bool
         /// The watcher the daemon uses, given the one it would build for itself.
         Watcher: WatcherFactory -> WatcherFactory
+        /// The checker the daemon uses, given how it would build its own.
+        Checker: CheckerFactory -> CheckerFactory
+        /// Whether a full rediscovery may drop everything the checker holds. A hosted
+        /// session's checker is shared with its partition's other sessions, so it drops
+        /// only its own projects.
+        InvalidatesWholeChecker: bool
     }
 
 /// The seams of a hosting mode.
@@ -78,9 +94,13 @@ let seams (hosting: Hosting) : HostingSeams =
         { ResourceScope = ResourceScope.Process
           MayForceGc = true
           ClearsProcessCaches = true
-          Watcher = id }
-    | Hosting.Hosted shared ->
+          Watcher = id
+          Checker = id
+          InvalidatesWholeChecker = true }
+    | Hosting.Hosted(sharedWatcher, checkers) ->
         { ResourceScope = ResourceScope.Host
           MayForceGc = false
           ClearsProcessCaches = false
-          Watcher = fun _ -> shared }
+          Watcher = fun _ -> sharedWatcher
+          Checker = fun _ -> checkers
+          InvalidatesWholeChecker = false }

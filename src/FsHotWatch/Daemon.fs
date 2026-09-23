@@ -2166,7 +2166,9 @@ type Daemon
         // and a parameter makes that ordering the only constructible one.
         processRegistry: ProcessRegistry.Registry,
         // Closes watcher input and the change-batch worker.
-        closeChanges: unit -> unit
+        closeChanges: unit -> unit,
+        // The checker this daemon checks through: its own, or its partition's in a host.
+        checker: FSharpChecker
     ) =
 
     let mutable disposed = false
@@ -2254,6 +2256,10 @@ type Daemon
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
+
+    /// The checker this daemon checks through. In a repository host, sessions of one
+    /// checker configuration share it.
+    member _.Checker: FSharpChecker = checker
 
     member internal _.ProcessRegistry = processRegistry
 
@@ -3375,6 +3381,24 @@ module Daemon =
     let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
         configured |> Option.defaultValue [] |> Set.ofList
 
+    /// What a full rediscovery drops from the checker. A daemon that owns its checker
+    /// drops everything it holds (and, owning its process, the language service's
+    /// process-wide caches). A hosted session's checker is shared with its partition's
+    /// other sessions, so it drops only `ownProjects`, and nothing its siblings hold.
+    let internal dropForRediscovery
+        (seams: DaemonHosting.HostingSeams)
+        (checker: FSharpChecker)
+        (ownProjects: FSharpProjectOptions list)
+        =
+        if seams.InvalidatesWholeChecker then
+            checker.InvalidateAll()
+
+            if seams.ClearsProcessCaches then
+                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+        else
+            for options in ownProjects do
+                ProjectSnapshots.invalidate checker options
+
     let private createWithCore
         (checker: FSharpChecker)
         (repoRoot: string)
@@ -3524,10 +3548,9 @@ module Daemon =
                         None
                     else
                         Some(fun () ->
-                            checker.InvalidateAll()
-
-                            if seams.ClearsProcessCaches then
-                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
+                            pipeline.GetRegisteredProjects()
+                            |> List.choose pipeline.GetProjectOptions
+                            |> dropForRediscovery seams checker)
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
@@ -3764,7 +3787,8 @@ module Daemon =
                 opts.PressureIdleFloorMin,
                 scanLeases,
                 processRegistry,
-                changeInput.Close
+                changeInput.Close,
+                checker
             )
         with _ ->
             lifetime.Dispose()
@@ -3887,6 +3911,8 @@ module Daemon =
         (opts: DaemonOptions)
         =
         Logging.info "config" $"checker: cacheSizeFactor=%d{opts.CheckerCacheSizeFactor}"
+
+        let makeChecker = (DaemonHosting.seams opts.Hosting).Checker makeChecker
 
         let checker =
             makeChecker (TransparentCompiler.CacheSizes.Create opts.CheckerCacheSizeFactor)

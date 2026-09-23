@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The repository host shares one checker between sessions with the same checker
+  configuration (`checker.cacheSizeFactor`).
+
 - **Repository host (opt-in).** `"repositoryHost": true` in `.fshw.json`, or
   `FSHW_REPOSITORY_HOST=1`, serves the worktree from one host process shared by every
   opted-in worktree of the repository, launched on demand (`fshw host <root>`).

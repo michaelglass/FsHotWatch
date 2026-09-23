@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat!: a repository host's sessions of one checker configuration check through one
+  checker (`CheckerPartitions`), so they hold one copy of the framework imports and
+  `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and
+  `HostingSeams` gains `Checker` and `InvalidatesWholeChecker`: a hosted session's full
+  rediscovery drops only its own projects, never its siblings'. `Daemon.Checker` exposes
+  the checker a daemon checks through.
+
 - feat: a repository host can serve many worktrees from one process, each as its own
   session of today's `Daemon`.
   - `SessionRegistry` builds each session in its own scope: a log sink, the client's
