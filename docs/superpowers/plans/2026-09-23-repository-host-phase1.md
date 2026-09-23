@@ -355,8 +355,10 @@ copy) ran `dotnet build` on both its `src/` projects.
 - **Unrelated, not investigated.** With build, format and lint all off, `fshw check`
   sat in `WaitForComplete` for more than 10 minutes on a legacy daemon. It looks
   pre-existing.
-- **Known gap.** A root-level unknown command (plugin passthrough) still goes to the
-  per-worktree pipe in host mode.
+- **Known gap.** A repository host does not serve plugin commands.
+  A root-level unknown command (plugin passthrough) exits 2 naming the host when the
+  worktree has opted in or the host serves it. It is not sent to the per-worktree
+  pipe. With `FSHW_REPOSITORY_HOST=0`, it reaches the worktree's own daemon.
 
 ### Isolation (T1–T4)
 
