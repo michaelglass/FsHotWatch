@@ -807,6 +807,16 @@ let private makeChildProcessStartInfo
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
 
+    // A session of a repository host spawns from ITS client's environment, not from
+    // the host process's, which belongs to whichever worktree launched the host.
+    match SessionScope.SessionEnvironment.current () with
+    | Some session ->
+        psi.Environment.Clear()
+
+        for KeyValue(key, value) in SessionScope.SessionEnvironment.variables session do
+            psi.Environment[key] <- value
+    | None -> ()
+
     // Strip before overlay so a caller-supplied entry in `env` survives.
     for key in sanitizedChildEnvKeys do
         psi.Environment.Remove(key) |> ignore

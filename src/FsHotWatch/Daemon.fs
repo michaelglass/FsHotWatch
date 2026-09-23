@@ -1192,6 +1192,22 @@ let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, 
             return Result.Error ex
     }
 
+/// What a full rediscovery drops from the compiler service.
+[<RequireQualifiedAccess>]
+type internal FcsInvalidation =
+    /// Every project's checker state, plus FCS's process-wide caches and a full
+    /// blocking collection.
+    | CheckerAndProcessCaches
+    /// Every project's checker state only. A session of a repository host must not
+    /// clear its siblings' caches or pause the collector under them.
+    | CheckerOnly
+
+/// The invalidation a daemon whose resources are `scope` may perform.
+let internal fcsInvalidationFor (scope: ScanMetrics.ResourceScope) : FcsInvalidation =
+    match scope with
+    | ScanMetrics.ResourceScope.Process -> FcsInvalidation.CheckerAndProcessCaches
+    | ScanMetrics.ResourceScope.Host -> FcsInvalidation.CheckerOnly
+
 /// Dependencies for processBatch, bundled to avoid a long closure capture list.
 [<NoComparison; NoEquality>]
 type internal BatchContext =
@@ -1234,6 +1250,9 @@ type internal BatchContext =
         /// analysis. `None` disables the gate (test daemons with a null
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
+        /// Whose resources this daemon's scan metrics measure: its own process, or a
+        /// repository host it shares with sibling sessions.
+        ResourceScope: ScanMetrics.ResourceScope
     }
 
 /// One cohort of watcher changes, and the `fshw format` requests flushed with it.
@@ -2376,7 +2395,21 @@ type Daemon
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
-    member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
+    /// Serve this daemon until `cts` is cancelled, then dispose it.
+    ///
+    /// `serve` is handed the daemon's RPC configuration and must run until `cts` is
+    /// cancelled: a per-worktree daemon serves its own pipe (`RunWithIpc`), a session
+    /// of a repository host registers with the host's endpoint. After cancellation the
+    /// daemon waits at most `serveBound` for `serve` to finish. `startedAt` is when this
+    /// daemon's start began — the process start for a per-worktree daemon, the attach
+    /// for a hosted session — and is what the Startup phase is measured from.
+    member this.RunWith
+        (
+            serve: DaemonRpcConfig -> CancellationTokenSource -> Async<unit>,
+            serveBound: TimeSpan,
+            startedAt: DateTime,
+            cts: CancellationTokenSource
+        ) =
         async {
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
@@ -2476,24 +2509,17 @@ type Daemon
                       GetUncheckedCount = getUncheckedCount
                       GetProjectModel = this.ProjectModel }
 
-                // Everything before the pipe listens — runtime
-                // boot, config and analyzer loading, the singleton lock — is wall time
-                // a cold `check` waits on. Measured from the process start, which is
-                // the earliest instant this process can vouch for.
-                let processStartedAt =
-                    try
-                        System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()
-                    with _ ->
-                        DateTime.UtcNow
-
+                // Everything before the daemon serves — runtime boot (per-worktree),
+                // config and analyzer loading, the singleton lock — is wall time a cold
+                // `check` waits on.
                 host.Phases.Record(
                     DaemonPhases.Phase.Startup,
-                    processStartedAt,
-                    DateTime.UtcNow - processStartedAt,
-                    Some "daemon process start to IPC pipe listening"
+                    startedAt,
+                    DateTime.UtcNow - startedAt,
+                    Some "daemon start to serving"
                 )
 
-                let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
+                let ipcTask = Async.StartAsTask(serve rpcConfig cts)
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
                 // timer that gracefully shuts the daemon down once it has been idle
@@ -2632,16 +2658,8 @@ type Daemon
 
                 do! tcs.Task |> Async.AwaitTask
 
-                // The server drains its connections, then waits for its pipe name to
-                // be released; a daemon disposed before that could hand a CLI a pipe
-                // that still accepts connections but has no daemon behind it.
-                let serverBound =
-                    IpcServer.ConnectionDrainBound
-                    + IpcServer.ReleaseBound
-                    + System.TimeSpan.FromSeconds(1.0)
-
                 let! _ =
-                    System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serverBound)
+                    System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serveBound)
                     |> Async.AwaitTask
 
                 if ipcTask.IsFaulted then
@@ -2650,6 +2668,26 @@ type Daemon
                 ready.Dispose()
                 (this :> IDisposable).Dispose()
         }
+
+    /// Serve this daemon on its own pipe until `cts` is cancelled.
+    member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
+        // Measured from the process start, the earliest instant this process can
+        // vouch for.
+        let processStartedAt =
+            try
+                System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()
+            with _ ->
+                DateTime.UtcNow
+
+        // The server drains its connections, then waits for its pipe name to be
+        // released; a daemon disposed before that could hand a CLI a pipe that still
+        // accepts connections but has no daemon behind it.
+        let serverBound =
+            IpcServer.ConnectionDrainBound
+            + IpcServer.ReleaseBound
+            + System.TimeSpan.FromSeconds(1.0)
+
+        this.RunWith(IpcServer.start pipeName, serverBound, processStartedAt, cts)
 
 /// What one tier's bounded check/retry loop settled on (`runChecksWithRetry`).
 ///
@@ -3158,7 +3196,7 @@ let private performScan
             // and compares; `ScanMetrics.fitRetention` turns the RSS series into a
             // slope. A write failure is logged, never fatal.
             let reading =
-                ScanMetrics.readResources (ScanMetrics.forceGcEnabled Environment.GetEnvironmentVariable)
+                ScanMetrics.readResources (ScanMetrics.forcesGc ctx.ResourceScope Environment.GetEnvironmentVariable)
 
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
@@ -3175,6 +3213,7 @@ let private performScan
                   ManagedBytes = reading.ManagedBytes
                   ForcedGc = reading.ForcedGc
                   Gen2Collections = reading.Gen2Collections
+                  Scope = ctx.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 
             match ScanMetrics.tryAppend (ScanMetrics.recordPath ctx.RepoRoot) sample with
@@ -3250,6 +3289,24 @@ module Daemon =
     /// `OneShot` host never calls it.
     type WatcherFactory = string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher
 
+    /// Whether this daemon owns its process or is one session of a repository host.
+    [<RequireQualifiedAccess; NoComparison; NoEquality>]
+    type Hosting =
+        /// One daemon per worktree, owning its process, its watcher and the process-wide
+        /// compiler caches.
+        | Standalone
+        /// One session of a repository host. It watches through the host's shared
+        /// stream (`watcherFactory`), records resources as host totals, and never clears
+        /// process-wide compiler caches or forces a collection under its siblings.
+        | Hosted of watcherFactory: WatcherFactory
+
+    module Hosting =
+        /// Whose resources a daemon hosted this way measures.
+        let resourceScope (hosting: Hosting) : ScanMetrics.ResourceScope =
+            match hosting with
+            | Hosting.Standalone -> ScanMetrics.ResourceScope.Process
+            | Hosting.Hosted _ -> ScanMetrics.ResourceScope.Host
+
     /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
     /// and modify only what they need.
     [<NoComparison; NoEquality>]
@@ -3291,6 +3348,9 @@ module Daemon =
             /// `pressureIdleFloorMin` config is done by the caller
             /// (`IdleExit.resolvePressureFloor`).
             PressureIdleFloorMin: int option
+            /// `Standalone` (the default) for a per-worktree daemon; `Hosted` for a
+            /// session of a repository host.
+            Hosting: Hosting
         }
 
     module DaemonOptions =
@@ -3303,7 +3363,8 @@ module Daemon =
               ExtraWatchPatterns = []
               FsEventsLatencySeconds = 0.25
               IdleExitMin = None
-              PressureIdleFloorMin = None }
+              PressureIdleFloorMin = None
+              Hosting = Hosting.Standalone }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -3335,6 +3396,13 @@ module Daemon =
         // orphan.
         let processRegistry = ProcessRegistry.Registry()
         ProcessRegistry.install processRegistry |> ignore
+
+        let resourceScope = Hosting.resourceScope opts.Hosting
+
+        let watcherFactory =
+            match opts.Hosting with
+            | Hosting.Hosted shared -> shared
+            | Hosting.Standalone -> watcherFactory
 
         let cacheBackend = opts.CacheBackend
         let cacheKeyProvider = opts.CacheKeyProvider
@@ -3459,7 +3527,11 @@ module Daemon =
                     else
                         Some(fun () ->
                             checker.InvalidateAll()
-                            checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
+
+                            match fcsInvalidationFor resourceScope with
+                            | FcsInvalidation.CheckerAndProcessCaches ->
+                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+                            | FcsInvalidation.CheckerOnly -> ())
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
@@ -3481,6 +3553,7 @@ module Daemon =
                   ExcludePatterns = excludePatterns
                   ContentTracker = ContentDedup.Tracker()
                   InSessionBatchGen = ref 0L
+                  ResourceScope = resourceScope
                   DepsGate =
                     if isNull (box checker) then
                         // No FCS analysis happens with a null checker (test

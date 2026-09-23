@@ -61,7 +61,9 @@
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="SharedWatchPoolTests.fs" />
+    <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />

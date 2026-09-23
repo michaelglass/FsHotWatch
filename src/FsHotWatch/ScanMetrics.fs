@@ -17,6 +17,15 @@ module FsHotWatch.ScanMetrics
 open System
 open System.Text.Json
 
+/// Whose resources a sample's RSS and managed figures measure.
+[<RequireQualifiedAccess>]
+type ResourceScope =
+    /// The process is this worktree's own daemon.
+    | Process
+    /// The process is a repository host serving several worktrees: the figures are
+    /// the host's totals, never this worktree's share.
+    | Host
+
 /// One completed scan generation's measurement. Field names are the JSON keys.
 type ScanSample =
     {
@@ -62,6 +71,8 @@ type ScanSample =
         /// Cumulative gen-2 collections at sample time — lets a reader normalise
         /// a live `ManagedBytes` series by how much GC actually ran.
         Gen2Collections: int
+        /// Whose resources `RssBytes` and `ManagedBytes` measure.
+        Scope: ResourceScope
         /// UTC sample instant, round-trip ("o") format.
         SampledAt: DateTime
     }
@@ -108,6 +119,11 @@ let forceGcEnabled (getEnv: string -> string) : bool =
     | null -> false
     | value -> value.Trim() = "1" || value.Trim().ToLowerInvariant() = "true"
 
+/// Whether a scan in `scope` forces a collection before sampling. Never in a host: a
+/// forced full GC there pauses every sibling session to measure one of them.
+let forcesGc (scope: ResourceScope) (getEnv: string -> string) : bool =
+    scope = ResourceScope.Process && forceGcEnabled getEnv
+
 /// Path of the JSON Lines record for a repository.
 let recordPath (repoRoot: string) : string =
     System.IO.Path.Combine(repoRoot, ".fshw", "scan-metrics.jsonl")
@@ -129,6 +145,10 @@ let toJsonLine (sample: ScanSample) : string =
            managedBytes = sample.ManagedBytes
            forcedGc = sample.ForcedGc
            gen2Collections = sample.Gen2Collections
+           scope =
+            match sample.Scope with
+            | ResourceScope.Process -> "process"
+            | ResourceScope.Host -> "host"
            sampledAt = sample.SampledAt.ToString("o") |}
     )
 
@@ -172,6 +192,10 @@ let tryParseLine (line: string) : ScanSample option =
                   ManagedBytes = (field "managedBytes").GetInt64()
                   ForcedGc = (field "forcedGc").GetBoolean()
                   Gen2Collections = (field "gen2Collections").GetInt32()
+                  Scope =
+                    match root.TryGetProperty "scope" with
+                    | true, value when value.GetString() = "host" -> ResourceScope.Host
+                    | _ -> ResourceScope.Process
                   // RoundtripKind, not the default: without it the "o" string's
                   // trailing Z is applied and then the value is converted to LOCAL
                   // time, so a series written in one timezone reads back shifted.
