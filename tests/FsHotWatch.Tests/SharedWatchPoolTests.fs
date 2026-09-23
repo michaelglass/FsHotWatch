@@ -506,3 +506,26 @@ let ``on macOS a real shared stream delivers a write to its owner only`` () =
             Directory.CreateDirectory third |> ignore
             use _c = pool.WatcherFactoryFor anchor third ignore None [] 0.05
             test <@ pool.Stats.NativeStreams = 1 && pool.Stats.Subscribers = 3 @>)
+
+// ---------------------------------------------------------------------------
+// The default pool, on every platform
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 60000)>]
+let ``the default pool starts empty, and its platform factory gives a session a working watcher`` () =
+    withTempDir "pool-default-ctor" (fun dir ->
+        let canonical =
+            match canonicalize dir with
+            | Ok c -> c.Value
+            | Error e -> failwith (IdentityError.describe e)
+
+        Directory.CreateDirectory(Path.Combine(canonical, "src")) |> ignore
+        let pool = WatchPool()
+        test <@ pool.Stats.NativeStreams = 0 && pool.Stats.Subscribers = 0 @>
+
+        // Off macOS this is the session's own watcher; on macOS it joins a native stream.
+        use watcher = pool.WatcherFactoryFor canonical canonical ignore None [] 0.05
+        test <@ not watcher.Disposables.IsEmpty @>
+
+        let expectedStreams = if OperatingSystem.IsMacOS() then 1 else 0
+        test <@ pool.Stats.NativeStreams = expectedStreams @>)

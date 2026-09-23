@@ -906,6 +906,14 @@
         "reason": "higher line coverage on Linux CI (no FSEvents)",
         "platform": "linux"
       }
+    ],
+    "SharedWatchPool.fs": [
+      {
+        "line": 99,
+        "branch": 100,
+        "reason": "Linux floor (2026-09-23): 137 of 138 lines. The one line Linux cannot run is `defaultNative`'s call into MacFsEvents.createExcluding: FSEvents exists only on macOS, and off macOS the pool gives every session its own watcher instead. The two partial branches CI run 35841163259 reported (the `lock` expressions' never-taken lock-acquired checks) are gone: the pool takes its lock with Lock.Enter/Exit. The branch figure is predicted from macOS (42/42) and awaits the next Linux run. macOS covers every line and branch and stays on the ratchet default.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

@@ -143,3 +143,15 @@ let ``a path is a worktree-metadata path when a segment is .jj or .git, and name
     test <@ worktreeRootOfMetadataPath "/r/.workspaces/y/.git" = Some "/r/.workspaces/y" @>
     test <@ worktreeRootOfMetadataPath "/r/src/A.fs" = None @>
     test <@ worktreeRootOfMetadataPath "/r/src/.jjx/A.fs" = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``the filesystem root can own paths, and asks about each directory beneath it`` () =
+    let t = table [ "/", "everything" ]
+    let asked = Collections.Generic.List<string>()
+
+    let probe dir =
+        asked.Add dir
+        false
+
+    test <@ RoutingTable.route probe "/x/y/A.fs" t = Some "everything" @>
+    test <@ List.ofSeq asked = [ "/x"; "/x/y" ] @>

@@ -137,7 +137,18 @@ let internal defaultFallback: FallbackFactory =
     fun root onChange patterns latency -> FileWatcher.create root onChange None patterns latency
 
 type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory) =
-    let gate = obj ()
+    // `Lock.Enter`/`Exit`, not `lock`: `lock` leaves a never-taken "was the lock
+    // acquired" branch behind in every caller.
+    let gate = Lock()
+
+    let locked (work: unit -> 'T) : 'T =
+        gate.Enter()
+
+        try
+            work ()
+        finally
+            gate.Exit()
+
     let mutable anchors: Map<string, AnchorEntry> = Map.empty
     let mutable received = 0L
     let mutable delivered = 0L
@@ -189,7 +200,7 @@ type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory
     /// already gone (a second Dispose) changes nothing.
     let unsubscribe (anchor: string) (sub: Subscriber) =
         let closing =
-            lock gate (fun () ->
+            locked (fun () ->
                 match Map.tryFind anchor anchors with
                 | Some entry when RoutingTable.sessions entry.Table |> List.contains sub ->
                     let table = RoutingTable.detach sub entry.Table
@@ -217,7 +228,7 @@ type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory
         (anchor: string, root: string, extraPatterns: FilePattern list, latency: float, onChange: FileChangeKind -> unit) : IDisposable =
         let sub = Subscriber(root, extraPatterns, onChange, ExecutionContext.Capture())
 
-        lock gate (fun () ->
+        locked (fun () ->
             let entry =
                 match Map.tryFind anchor anchors with
                 | Some entry -> entry
