@@ -70,6 +70,7 @@
     <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="RepositoryHostModeTests.fs" />
     <Compile Include="RepositoryHostIsolationTests.fs" />
+    <Compile Include="RepositoryHostParityTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
