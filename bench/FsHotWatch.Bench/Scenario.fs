@@ -264,9 +264,9 @@ type Sample =
         Tests: DaemonLog.TestTotals option
         PhaseMs: float option
         Invalid: string list
-        /// The box and the daemon's liveness AT SAMPLE TIME, for records written later
+        /// The box, the daemon's liveness and the sleep gap AT SAMPLE TIME, for records written later
         /// (a deferred retention analysis runs after the daemons stop). `None` = read now.
-        Stamp: (Load.Snapshot * bool) option
+        Stamp: (Load.Snapshot * bool * TimeSpan) option
         /// The walk's kept raw trace, for the retention analysis.
         Trace: string option
         Retention: Retention.Reading option
@@ -311,12 +311,30 @@ let write
     (pid: int)
     (ours: int list)
     (preflight: string list)
+    (sleepWindow: Sleep.Window)
     (s: Sample)
     =
-    let load, alive =
+    let load, alive, sleepGap =
         match s.Stamp with
         | Some stamp -> stamp
-        | None -> Instruments.loadSnapshot ours, Instruments.isAlive pid
+        | None -> Instruments.loadSnapshot ours, Instruments.isAlive pid, Sleep.gap Sleep.system sleepWindow
+
+    // A record whose window spans a sleep is invalid: the daemon was frozen for part of
+    // it. The clock gap decides; pmset's log, read only when there is a gap, names it.
+    let sleepProblem =
+        if sleepGap <= Sleep.Tolerance then
+            []
+        else
+            let events =
+                Instruments.run "pmset" "-g log" "/" (TimeSpan.FromSeconds 60.0)
+                |> Result.map Sleep.parsePowerLog
+                |> Result.defaultValue []
+
+            Sleep.problem sleepGap sleepWindow events |> Option.toList
+
+    let s =
+        { s with
+            Invalid = s.Invalid @ sleepProblem }
     // At sample time only a FOREIGN daemon counts as contention: load and memory are
     // recorded, but this harness's own daemons are what is being measured, so judging
     // them here would call every cold scan contended. The box itself was judged by
@@ -335,6 +353,7 @@ let write
           Worktree = worktree
           Pid = pid
           Alive = alive
+          SleepGapMs = sleepGap.TotalMilliseconds
           Load = load
           Contended = contended
           Footprint = s.Footprint
@@ -465,6 +484,10 @@ let runMatrix (cfg: Config) : int =
 
                 log $"N=%d{sessions} rep %d{rep}: starting %d{sessions} daemon(s)"
 
+                // Opened before the daemons start: every record of this repetition is
+                // judged on whether the machine slept at any point since.
+                let sleepWindow = Sleep.openWindow Sleep.system
+
                 let daemons =
                     active |> List.mapi (fun i wt -> start cfg runDir cacheHome (i + 1) wt)
 
@@ -512,6 +535,7 @@ let runMatrix (cfg: Config) : int =
                                 d.Pid
                                 ours
                                 preflight
+                                sleepWindow
                                 { Phase = "cold-scan"
                                   Footprint = fp
                                   FootprintBeforeWalk = before
@@ -557,6 +581,7 @@ let runMatrix (cfg: Config) : int =
                             d.Pid
                             ours
                             preflight
+                            sleepWindow
                             { Phase = "settled"
                               Footprint = fp
                               FootprintBeforeWalk = before
@@ -586,7 +611,12 @@ let runMatrix (cfg: Config) : int =
                                   Tests = None
                                   PhaseMs = None
                                   Invalid = problems @ parity
-                                  Stamp = Some(Instruments.loadSnapshot ours, Instruments.isAlive d.Pid)
+                                  Stamp =
+                                    Some(
+                                        Instruments.loadSnapshot ours,
+                                        Instruments.isAlive d.Pid,
+                                        Sleep.gap Sleep.system sleepWindow
+                                    )
                                   Trace = tracePath d.Session "post-gc"
                                   Retention = None }
                             )
@@ -636,7 +666,12 @@ let runMatrix (cfg: Config) : int =
                                   Tests = totals
                                   PhaseMs = Some ms
                                   Invalid = problems @ checkProblem @ noTests
-                                  Stamp = Some(Instruments.loadSnapshot ours, Instruments.isAlive d.Pid)
+                                  Stamp =
+                                    Some(
+                                        Instruments.loadSnapshot ours,
+                                        Instruments.isAlive d.Pid,
+                                        Sleep.gap Sleep.system sleepWindow
+                                    )
                                   Trace = tracePath d.Session "after-tests"
                                   Retention = None }
                             )
@@ -653,7 +688,7 @@ let runMatrix (cfg: Config) : int =
                             else
                                 sample
 
-                        write cfg.Out runId cfg.Label position d.Worktree d.Pid ours preflight enriched
+                        write cfg.Out runId cfg.Label position d.Worktree d.Pid ours preflight sleepWindow enriched
 
         0
     finally
@@ -676,6 +711,7 @@ let probe
         2
     else
         let runId = "probe-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmss")
+        let sleepWindow = Sleep.openWindow Sleep.system
 
         let trace =
             if heap && retention then
@@ -706,7 +742,7 @@ let probe
                   Tests = if Option.isSome worktree then testTotals window else None
                   PhaseMs = None
                   Invalid = problems @ pidProblem
-                  Stamp = Some(Instruments.loadSnapshot [ pid ], true)
+                  Stamp = Some(Instruments.loadSnapshot [ pid ], true, Sleep.gap Sleep.system sleepWindow)
                   Trace = trace
                   Retention = None }
 
@@ -722,6 +758,7 @@ let probe
             pid
             [ pid ]
             []
+            sleepWindow
             sample
 
         if List.isEmpty problems then 0 else 1

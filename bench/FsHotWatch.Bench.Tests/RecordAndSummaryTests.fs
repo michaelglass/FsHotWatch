@@ -91,6 +91,7 @@ let private record sessions rep session phase phys contended invalid : Record.Be
       Worktree = "/w"
       Pid = 42
       Alive = true
+      SleepGapMs = 0.0
       Load =
         { Load1 = 1.0
           Load5 = 1.0
@@ -128,6 +129,7 @@ let private record sessions rep session phase phys contended invalid : Record.Be
 let ``a record round-trips the fields the summary scores`` () =
     let line = Record.toJsonLine (record 2 1 2 "post-gc" 1000L [] [])
     test <@ not (line.Contains "\n") @>
+    test <@ line.Contains "\"sleepGapMs\":0" @>
 
     match Record.tryParseLine line with
     | None -> failwith "did not parse"

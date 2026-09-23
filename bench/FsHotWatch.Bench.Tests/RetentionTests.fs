@@ -112,6 +112,7 @@ let ``a record carries the retention reading and the summary scores only trusted
                   Worktree = ""
                   Pid = 1
                   Alive = true
+                  SleepGapMs = 0.0
                   Load =
                     { Load1 = 0.0
                       Load5 = 0.0

@@ -74,6 +74,12 @@ The checks are:
 - the log's `Checked N files` agrees with `scan-metrics.jsonl`;
 - every session of a repetition checked the same number of files (parity);
 - with `--tests`, `fshw check` succeeded and a complete test cycle with a summary exists.
+- the machine did not sleep or dark-wake since the repetition began. A laptop with its
+  lid closed on battery sleeps whatever `caffeinate` says. The .NET `Stopwatch` on macOS
+  does not advance during sleep and the wall clock does. On this box they differed by
+  20h 38m over 7 days of uptime and 397 sleeps. So a wall-minus-monotonic gap above 2 s
+  marks the record invalid. The gap is recorded as `sleepGapMs`, and `pmset -g log`
+  names the Sleep/DarkWake events in the window.
 
 ## Reading memory on macOS: which counter means what
 

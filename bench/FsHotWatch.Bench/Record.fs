@@ -122,6 +122,10 @@ type BenchRecord =
         Worktree: string
         Pid: int
         Alive: bool
+        /// Wall-clock minus sleep-excluding monotonic time since the repetition's window
+        /// opened, ms: time the machine spent asleep. Above `Sleep.Tolerance` the record
+        /// is invalid.
+        SleepGapMs: float
         Load: Load.Snapshot
         Contended: string list
         Footprint: Footprint.Reading option
@@ -293,6 +297,7 @@ let toJsonLine (r: BenchRecord) : string =
               "worktree", ns r.Worktree
               "pid", ni r.Pid
               "alive", JsonValue.Create(r.Alive)
+              "sleepGapMs", nf r.SleepGapMs
               "load", loadNode r.Load
               "contended", arr (r.Contended |> List.map ns)
               "footprint", opt footprintNode r.Footprint

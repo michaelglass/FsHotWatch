@@ -20,6 +20,7 @@
     <Compile Include="Retention.fs" />
     <Compile Include="DaemonLog.fs" />
     <Compile Include="Load.fs" />
+    <Compile Include="Sleep.fs" />
     <Compile Include="Record.fs" />
     <Compile Include="Summary.fs" />
     <Compile Include="Instruments.fs" />

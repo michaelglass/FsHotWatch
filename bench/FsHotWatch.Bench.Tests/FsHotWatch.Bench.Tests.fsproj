@@ -19,6 +19,7 @@
     <Compile Include="RecordAndSummaryTests.fs" />
     <Compile Include="HeapGraphTests.fs" />
     <Compile Include="RetentionTests.fs" />
+    <Compile Include="SleepTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
