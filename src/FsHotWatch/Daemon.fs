@@ -1258,8 +1258,18 @@ type internal BatchContext =
 /// One cohort of watcher changes, and the `fshw format` requests flushed with it.
 [<NoComparison; NoEquality>]
 type private ChangeRequest =
-    { Changes: FileChangeKind list
-      FormatReplies: TaskCompletionSource<string> list }
+    {
+        Changes: FileChangeKind list
+        FormatReplies: TaskCompletionSource<string> list
+        /// When the watcher reported the earliest change in this request.
+        SeenAt: DateTime
+    }
+
+/// The line a checked change cohort writes: its in-session epoch, how long after the
+/// watcher reported its first change it was checked, and how many files it checked.
+/// Benchmarks read settle latency from it, so its shape is kept stable.
+let internal settledLine (epoch: int64) (after: TimeSpan) (files: int) : string =
+    $"settled epoch=%d{epoch} after=%d{int64 after.TotalMilliseconds}ms files=%d{files}"
 
 /// The reply `fshw format` prints. It names the set that was offered, and the formatter
 /// that ran over it — or the reason none did. `formatted 0 files` on its own was the
@@ -1287,6 +1297,7 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 /// when a publication meets a model newer than the one the attempt captured.
 let private processBatchAttempt
     (ctx: BatchContext)
+    (seenAt: DateTime)
     (changes: FileChangeKind list)
     (suppressed: Set<string>)
     (hasContentChanged: string -> bool)
@@ -1586,13 +1597,17 @@ let private processBatchAttempt
                     let nextGen =
                         System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
 
+                    let completedAt = System.DateTime.UtcNow
+
                     ctx.Host.EmitBatchChecked
                         { Trigger = InSessionBatch changes
                           Files = dispatchedFiles |> List.ofSeq
                           Generation = nextGen
                           ModelGeneration = modelGenerationOf batchModel
                           StartedAt = batchStartedAt
-                          CompletedAt = System.DateTime.UtcNow })
+                          CompletedAt = completedAt }
+
+                    Logging.info "check" (settledLine nextGen (completedAt - seenAt) dispatchedFiles.Count))
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
@@ -1633,6 +1648,7 @@ type private ChangeWorkerState =
 /// `ModelKeptChangingException`, which carries what it owes.
 let internal processBatch
     (ctx: BatchContext)
+    (seenAt: DateTime)
     (changes: FileChangeKind list)
     (suppressed: Set<string>)
     (alreadyAdmitted: Set<string>)
@@ -1652,7 +1668,7 @@ let internal processBatch
             ctx.DaemonCt.Value.ThrowIfCancellationRequested()
 
             try
-                return! processBatchAttempt ctx changes suppressed hasContentChanged
+                return! processBatchAttempt ctx seenAt changes suppressed hasContentChanged
             with :? ModelSupersededException when attempt < changeBatchAttemptLimit ->
                 Logging.debug "changes" "model superseded; running the cohort against the current model"
                 return! completeCurrent (attempt + 1)
@@ -3604,6 +3620,7 @@ module Daemon =
                                                 "processChanges"
                                                 (processBatch
                                                     { batchCtx with DaemonCt = ref ct }
+                                                    request.SeenAt
                                                     changes
                                                     state.Suppressed
                                                     owed.Admitted)
@@ -3638,7 +3655,8 @@ module Daemon =
                     changeWorker,
                     (fun earlier later ->
                         { Changes = earlier.Changes @ later.Changes
-                          FormatReplies = earlier.FormatReplies @ later.FormatReplies })
+                          FormatReplies = earlier.FormatReplies @ later.FormatReplies
+                          SeenAt = min earlier.SeenAt later.SeenAt })
                 )
 
             let onChange change =
@@ -3648,7 +3666,8 @@ module Daemon =
                     let receipt =
                         changeInput.Post(
                             { Changes = [ change ]
-                              FormatReplies = [] },
+                              FormatReplies = []
+                              SeenAt = DateTime.UtcNow },
                             TimeSpan.FromMilliseconds(float (delayForChange change))
                         )
 
@@ -3732,7 +3751,8 @@ module Daemon =
                         let receipt =
                             changeInput.Post(
                                 { Changes = []
-                                  FormatReplies = [ reply ] },
+                                  FormatReplies = [ reply ]
+                                  SeenAt = DateTime.UtcNow },
                                 TimeSpan.Zero
                             )
 

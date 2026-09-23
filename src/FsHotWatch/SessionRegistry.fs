@@ -129,6 +129,13 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
             SessionEnvironment.install spec.Environment |> ignore
             let startedAt = DateTime.UtcNow
             let daemon = factory spec
+
+            // One line naming the process and the session, after the configuration lines
+            // the build wrote: the session's log says who is behind it.
+            Logging.info
+                "host"
+                $"Attached to repository host pid=%d{Environment.ProcessId} session=%s{SessionId.render id}"
+
             let cts = new CancellationTokenSource()
 
             let serving =

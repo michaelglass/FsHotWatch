@@ -220,9 +220,14 @@ type DeadCodeFlag =
 [<Literal>]
 let private HelpIndent = "                   "
 
+/// `--repository`: act on the repository host and every worktree it serves.
+type RepositoryFlag =
+    | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
+
 type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
-    | [<Cmd("Stop the daemon")>] Stop
+    | [<CmdExample("", "--repository"); Cmd("Stop the daemon (in host mode: detach this worktree)")>] Stop of
+        RepositoryFlag list
     | [<CmdExample("", "--run-once");
         Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, so a green says nothing you changed broke anything the selector chose to look at, NOT that the whole suite is green. `confirm` runs the same checks unfiltered when you need that stronger claim")>] Check of
         RunFlag list
@@ -265,8 +270,9 @@ type Command =
         Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
         RerunFlag list
     | [<CmdExample("", "--run-once"); Cmd("Format code")>] Format of RunFlag list
-    | [<CmdArg("plugin name (optional)"); CmdExample("", "build", "test-prune"); Cmd("Show current status")>] Status of
-        plugin: string option
+    | [<CmdArg("plugin name (optional)", FieldIndex = 0);
+        CmdExample("", "build", "test-prune", "--repository");
+        Cmd("Show current status")>] Status of plugin: string option * flags: RepositoryFlag list
     | [<Cmd("Scan for file changes")>] Scan
     | [<Cmd("Invalidate cached task results without stopping the daemon")>] Invalidate
     | [<CmdArg("plugin name");
@@ -279,6 +285,9 @@ type Command =
         Cmd("Report unreachable symbols from entry points (TestPrune dead-code analysis over the daemon DB)",
             Name = "dead-code")>] DeadCode of DeadCodeFlag list
     | [<Cmd("Install fish completions")>] Completions
+    | [<CmdArg("worktree root");
+        Cmd("Run the repository host for the repository containing <root> (launched on demand when `repositoryHost` is enabled)")>] Host of
+        root: string
 
 type GlobalFlag =
     | [<CmdFlag(Short = "v", Description = "Enable debug-level logging")>] Verbose
@@ -2176,7 +2185,251 @@ let internal withRunHooksUnclaimedFor
         action ()
 
 /// Execute a parsed command with injectable dependencies.
-let executeCommand
+/// How a command reaches this worktree's daemon when the repository host serves it.
+[<NoComparison; NoEquality>]
+type HostLink =
+    {
+        Endpoint: string
+        /// The session this worktree is attached as, now.
+        Session: unit -> FsHotWatch.RepositoryIdentity.SessionId
+        /// Attach again (the session may have been replaced); true when it serves.
+        Reattach: unit -> bool
+    }
+
+/// The daemon operations, sent to this worktree's session of the repository host. Each
+/// RPC carries the session and this CLI's invocation; the pipe name is not used.
+let sessionIpcOps (link: HostLink) : IpcOps =
+    let invocation = FsHotWatch.RepositoryIpc.InvocationId.mint ()
+
+    let call (methodName: string) (args: obj array) =
+        async {
+            let preamble = FsHotWatch.RepositoryIpc.Preamble.Session(link.Session(), invocation)
+
+            return! FsHotWatch.RepositoryIpc.invoke link.Endpoint preamble methodName args
+        }
+
+    { Shutdown = fun _ -> call "Shutdown" [||]
+      Scan = fun _ -> call "Scan" [||]
+      ScanStatus = fun _ -> call "ScanStatus" [||]
+      GetStatus = fun _ -> call "GetStatus" [||]
+      GetPluginStatus = fun _ plugin -> call "GetPluginStatus" [| plugin |]
+      RunCommand = fun _ name argsJson -> call "RunCommand" [| name; argsJson |]
+      GetDiagnostics = fun _ filter -> call "GetDiagnostics" [| filter |]
+      WaitForScan = fun _ after -> call "WaitForScan" [| after |]
+      WaitForComplete = fun _ timeoutMs -> call "WaitForComplete" [| timeoutMs |]
+      TriggerBuild = fun _ -> call "TriggerBuild" [||]
+      FormatAll = fun _ -> call "FormatAll" [||]
+      RerunPlugin = fun _ name -> call "RerunPlugin" [| name |]
+      Invalidate = fun _ -> call "Invalidate" [||]
+      IsRunning = fun _ -> FsHotWatch.RepositoryIpc.isRunning link.Endpoint
+      LaunchDaemon = fun _ _ _ -> () }
+
+/// The repository host's control state for the repository `repoRoot` belongs to.
+let private repositoryControl (repoRoot: string) =
+    FsHotWatch.RepositoryIdentity.resolveWorktree repoRoot
+    |> Result.map (fun w -> FsHotWatch.RepositoryIdentity.repositoryControlPaths (FsHwPaths.stateHome ()) w.Repository)
+
+let private repositoryCall (endpoint: string) (methodName: string) =
+    FsHotWatch.RepositoryIpc.invoke
+        endpoint
+        (FsHotWatch.RepositoryIpc.Preamble.Repository(FsHotWatch.RepositoryIpc.InvocationId.mint ()))
+        methodName
+        [||]
+    |> Async.RunSynchronously
+
+/// Render the host's `ListSessions` answer for a human.
+let internal renderRepositoryStatus (json: string) : string list =
+    let node = System.Text.Json.Nodes.JsonNode.Parse json
+    let text (n: System.Text.Json.Nodes.JsonNode) (name: string) = n[name].GetValue<string>()
+    let sessions = node["sessions"].AsArray() |> List.ofSeq
+    let pid = node["hostPid"].GetValue<int>()
+    let endpoint = text node "endpoint"
+
+    [ yield $"Repository host pid %d{pid} on %s{endpoint}: %d{sessions.Length} session(s)"
+      for s in sessions do
+          let state =
+              if s["serving"].GetValue<bool>() then
+                  "serving"
+              else
+                  "starting"
+
+          let generation = s["scanGeneration"].GetValue<int64>()
+          let root = text s "root"
+          yield $"  %s{root}  %s{state}, scan generation %d{generation}"
+      match node["watch"] with
+      | null -> ()
+      | watch ->
+          let rendered = watch.ToJsonString()
+          yield $"  watch: %s{rendered}" ]
+
+/// `status --repository`: every session the repository's host serves.
+let internal repositoryStatus (agent: bool) (repoRoot: string) : int =
+    match repositoryControl repoRoot with
+    | Error e ->
+        eprintfn $"fshw: %s{FsHotWatch.RepositoryIdentity.IdentityError.describe e}"
+        2
+    | Ok control when not (FsHotWatch.RepositoryIpc.isRunning control.Endpoint) ->
+        eprintfn "No repository host is running for this repository."
+        0
+    | Ok control ->
+        let json = repositoryCall control.Endpoint "ListSessions"
+
+        if agent then
+            printfn "%s" json
+        else
+            for line in renderRepositoryStatus json do
+                eprintfn "%s" line
+
+        0
+
+/// `stop --repository`: stop the repository's host, ending every session.
+let internal stopRepositoryHost (repoRoot: string) : int =
+    match repositoryControl repoRoot with
+    | Error e ->
+        eprintfn $"fshw: %s{FsHotWatch.RepositoryIdentity.IdentityError.describe e}"
+        2
+    | Ok control when not (FsHotWatch.RepositoryIpc.isRunning control.Endpoint) ->
+        eprintfn "No repository host is running for this repository."
+        0
+    | Ok control ->
+        repositoryCall control.Endpoint "StopHost" |> ignore
+        let deadline = DateTime.UtcNow.AddSeconds 60.0
+
+        while FsHotWatch.RepositoryIpc.isRunning control.Endpoint
+              && DateTime.UtcNow < deadline do
+            Thread.Sleep 100
+
+        if FsHotWatch.RepositoryIpc.isRunning control.Endpoint then
+            eprintfn $"The repository host is still serving 60s after it was asked to stop; see %s{control.HostLog}"
+            1
+        else
+            eprintfn "Stopped the repository host."
+            0
+
+/// Build the daemon for the worktree at `root` from its configuration: a per-worktree
+/// daemon (`Standalone`) or a session of the repository host (`Hosted`).
+let internal daemonWith
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (runMode: Daemon.RunMode)
+    (hosting: Daemon.Hosting)
+    (root: string)
+    : Daemon =
+    let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
+    let backend, keyProvider = DaemonConfig.createCacheComponents root cacheConfig
+
+    let fileCommandPatterns =
+        config.FileCommands
+        |> List.choose (fun fc -> fc.Pattern)
+        |> List.map FsHotWatch.Watcher.FilePattern.parse
+
+    // Resolve the idle-exit threshold from the `idleExitMin` config + this daemon's
+    // repo path (AUTO-on for `/.workspaces/` checkouts). `None` leaves the timer off. A
+    // hosted session that goes idle detaches; the host outlives it.
+    let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
+
+    // Resolve the pressure floor from `pressureIdleFloorMin` (default-on at 2 min).
+    // Under memory pressure this shortens an already-eligible idle window to
+    // `min(idleExitMin, floor)`; `None` disables pressure-shortening. It never makes a
+    // non-eligible daemon (e.g. the default workspace) eligible.
+    let pressureIdleFloorMin =
+        FsHotWatch.IdleExit.resolvePressureFloor config.PressureIdleFloorMin
+
+    Daemon.create
+        root
+        { Daemon.DaemonOptions.defaults with
+            RunMode = runMode
+            CacheBackend = backend
+            CacheKeyProvider = keyProvider
+            ExcludePatterns = config.Exclude
+            ExtraWatchPatterns = fileCommandPatterns
+            FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
+            IdleExitMin = idleExitMin
+            PressureIdleFloorMin = pressureIdleFloorMin
+            Hosting = hosting }
+
+/// `fshw host <root>`: serve the repository `root` belongs to until stopped or idle.
+/// Launched on demand by an opted-in CLI, from the host's control directory, with the
+/// launching shell's environment.
+let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
+    match FsHotWatch.RepositoryIdentity.resolveWorktree root with
+    | Error e ->
+        eprintfn $"fshw host: %s{FsHotWatch.RepositoryIdentity.IdentityError.describe e}"
+        2
+    | Ok launchRoot ->
+        let pool = FsHotWatch.SharedWatchPool.WatchPool()
+
+        let sinkFor (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
+            let logDir =
+                try
+                    (DaemonConfig.loadConfig worktree.Root.Value).LogDir
+                with ConfigError _ ->
+                    DaemonConfig.DefaultLogDir
+
+            let dir =
+                if Path.IsPathRooted logDir then
+                    logDir
+                else
+                    Path.Combine(worktree.Root.Value, logDir)
+
+            FsHotWatch.Logging.fileSink (Path.Combine(dir, DaemonConfig.DaemonLog.FileName)) FsHotWatch.Logging.logLevel
+
+        let watchConfig (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) (onChange: unit -> unit) =
+            DaemonConfig.watchRepoConfigFile worktree.Root.Value (fun reason ->
+                FsHotWatch.Logging.info "config" reason
+                onChange ())
+
+        let describe () =
+            let stats = pool.Stats
+            let watch = System.Text.Json.Nodes.JsonObject()
+            watch["nativeStreams"] <- System.Text.Json.Nodes.JsonValue.Create stats.NativeStreams
+            watch["subscribers"] <- System.Text.Json.Nodes.JsonValue.Create stats.Subscribers
+            watch["eventsReceived"] <- System.Text.Json.Nodes.JsonValue.Create stats.EventsReceived
+            watch["eventsDelivered"] <- System.Text.Json.Nodes.JsonValue.Create stats.EventsDelivered
+            watch["eventsUnowned"] <- System.Text.Json.Nodes.JsonValue.Create stats.EventsUnowned
+            let node = System.Text.Json.Nodes.JsonObject()
+            node["watch"] <- watch
+            node
+
+        let factory (spec: FsHotWatch.SessionRegistry.SessionSpec) =
+            let worktreeRoot = spec.Worktree.Root.Value
+            let config = DaemonConfig.loadConfig worktreeRoot
+
+            match RunOnceOutput.failIfNoProjects worktreeRoot config.Exclude with
+            | Some _ -> invalidOp $"no F# projects were discovered under %s{worktreeRoot}"
+            | None -> ()
+
+            let hosting =
+                Daemon.Hosting.Hosted(pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
+
+            let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
+
+            registerPlugins daemon worktreeRoot config
+            daemon
+
+        let settings =
+            RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig describe
+
+        // The host's working directory is its own control directory, never a worktree:
+        // a hidden dependence on the cwd then fails the same way for every session.
+        Directory.CreateDirectory settings.Control.Directory |> ignore
+        Directory.SetCurrentDirectory settings.Control.Directory
+        use cts = new CancellationTokenSource()
+
+        Console.CancelKeyPress.Add(fun e ->
+            e.Cancel <- true
+            cts.Cancel())
+
+        match FsHotWatch.RepositoryHost.run settings factory FsHotWatch.RepositoryHost.DefaultIdleGrace cts with
+        | FsHotWatch.RepositoryHost.HostRun.AlreadyRunning pid ->
+            let who = pid |> Option.map (sprintf " (pid %d)") |> Option.defaultValue ""
+
+            eprintfn $"repository host already running%s{who}"
+            0
+        | FsHotWatch.RepositoryHost.HostRun.Stopped -> 0
+
+let executeCommandWith
+    (link: HostLink option)
     (loadedConfigIdentity: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
@@ -2227,7 +2480,7 @@ let executeCommand
         // asks the daemon nothing, so a workspace with zero projects is not an
         // error for it — it simply has no verdict yet (exit 5).
         | Verdict
-        | Stop
+        | Stop _
         | Scan
         | Invalidate
         | Status _
@@ -2235,7 +2488,8 @@ let executeCommand
         | Config _
         | Coverage _
         | DeadCode _
-        | Completions -> false
+        | Completions
+        | Host _ -> false
 
     // Only pre-check when we're about to launch (or have launched) a fresh
     // daemon. A reused already-running daemon is already past discovery,
@@ -2252,7 +2506,9 @@ let executeCommand
     | None ->
 
         let ensureDaemonFn () =
-            ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+            match link with
+            | Some host -> host.Reattach()
+            | None -> ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
         // Gate the check on the daemon actually answering RPCs, not just the pipe
         // being listenable. The readiness deadline is at least
@@ -2266,21 +2522,25 @@ let executeCommand
         // `ensureDaemonFn` this never reuses — the current pipe occupant is emitting
         // garbage.
         let forceRestartDaemon () : bool =
-            let sw = System.Diagnostics.Stopwatch.StartNew()
+            // A host session is never restarted from here: siblings share its process.
+            match link with
+            | Some host -> host.Reattach()
+            | None ->
+                let sw = System.Diagnostics.Stopwatch.StartNew()
 
-            while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
-                try
-                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                with ex ->
-                    FsHotWatch.Logging.debug
-                        "cli-heal"
-                        $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
+                while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
+                    try
+                        ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                    with ex ->
+                        FsHotWatch.Logging.debug
+                            "cli-heal"
+                            $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
 
-                Thread.Sleep(200)
+                    Thread.Sleep(200)
 
-            killStaleDaemon repoRoot
+                killStaleDaemon repoRoot
 
-            startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+                startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -2348,6 +2608,13 @@ let executeCommand
         let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
 
         match command with
+        | Start when link.IsSome ->
+            let session = link.Value.Session()
+
+            eprintfn
+                $"Attached to the repository host as session %s{FsHotWatch.RepositoryIdentity.SessionId.render session}"
+
+            0
         | Start ->
             // Fail-fast on misconfiguration BEFORE acquiring the lockfile, writing the
             // pidfile, or creating the daemon — the same contract as the run-once paths.
@@ -2385,6 +2652,22 @@ let executeCommand
                     $"pid=%d{Environment.ProcessId} argv=%s{argv}"
 
                 match acquired with
+                | None when
+                    (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                        FsHotWatch.RepositoryHost.processAlive
+                        repoRoot)
+                        .IsSome
+                    ->
+                    let record =
+                        (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                            FsHotWatch.RepositoryHost.processAlive
+                            repoRoot)
+                            .Value
+
+                    eprintfn
+                        $"fshw: daemon not started — this worktree is served by the repository host (pid %d{record.HostPid}) as session %s{FsHotWatch.RepositoryIdentity.SessionId.render record.Session}; `fshw stop` detaches it"
+
+                    2
                 | None ->
                     let pidInfo =
                         if File.Exists pidFile then
@@ -2471,7 +2754,14 @@ let executeCommand
                     finally
                         if File.Exists pidFile then
                             File.Delete pidFile
-        | Stop ->
+        | Host root -> runHostVerb opts root
+        | Stop flags when List.contains Repository flags -> stopRepositoryHost repoRoot
+        | Stop _ when link.IsSome ->
+            // Detach: this session's Shutdown ends it alone.
+            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+            eprintfn "Detached this worktree from the repository host."
+            0
+        | Stop _ ->
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.
             withIpcNoHeal (fun () ->
@@ -2481,7 +2771,7 @@ let executeCommand
             // A scan runs REAL WORK on the daemon — never on a stale-binary
             // one (its results would come from the wrong binary). Same decision as
             // ensureDaemon, which also announces why it restarts.
-            if ipc.IsRunning pipeName then
+            if link.IsNone && ipc.IsRunning pipeName then
                 match DaemonIdentity.verdictFor repoRoot with
                 | DaemonIdentity.IdentityVerdict.Stale _ -> ensureDaemonFn () |> ignore
                 | DaemonIdentity.IdentityVerdict.Match -> ()
@@ -2498,10 +2788,13 @@ let executeCommand
                 let result = ipc.Invalidate pipeName |> Async.RunSynchronously
                 UI.success $"Cache %s{result}; daemon preserved"
                 0)
-        | Status pluginName ->
+        | Status(_, flags) when List.contains Repository flags ->
+            repositoryStatus (mode = ProgressRenderer.Agent) repoRoot
+        | Status(pluginName, _) ->
             // Say it in words: a status computed by a daemon built from different code
-            // than this CLI is never presented silently as current.
-            if ipc.IsRunning pipeName then
+            // than this CLI is never presented silently as current. A host session's
+            // binary was checked by the attach handshake instead.
+            if link.IsNone && ipc.IsRunning pipeName then
                 match DaemonIdentity.verdictFor repoRoot with
                 | DaemonIdentity.IdentityVerdict.Stale reason -> eprintfn "%s" (staleIdentityStatusWarning reason)
                 | DaemonIdentity.IdentityVerdict.Match -> ()
@@ -2840,6 +3133,30 @@ let executeCommand
                 eprintfn "Could not install fish completions: %s" reason
                 1
 
+/// `executeCommandWith` for a worktree served by its own daemon.
+let executeCommand
+    (loadedConfigIdentity: string)
+    (createDaemon: string -> Daemon)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (command: Command)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : int =
+    executeCommandWith
+        None
+        loadedConfigIdentity
+        createDaemon
+        ipc
+        repoRoot
+        pipeName
+        command
+        opts
+        config
+        startupTimeoutSeconds
+
 /// Outcome of forwarding a root-level unknown command to the daemon.
 ///   `Handled exitCode` — the daemon recognized and ran the command (a real plugin
 ///     command); `exitCode` is its rendered result.
@@ -2972,6 +3289,102 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
+/// Launch the repository host detached, from its control directory.
+let private launchHost (repoRoot: string) (control: FsHotWatch.RepositoryIdentity.RepositoryControlPaths) =
+    let entryDll =
+        System.Reflection.Assembly.GetEntryAssembly()
+        |> Option.ofObj
+        |> Option.map (fun a -> a.Location)
+
+    let exe, toolPrefix = computeLaunchCommand Environment.ProcessPath entryDll
+    Directory.CreateDirectory control.Directory |> ignore
+    eprintfn $"Starting the repository host... (log: %s{control.HostLog})"
+
+    DetachedLaunch.launch
+        control.Directory
+        (RepositoryHostMode.hostShellCommand exe toolPrefix repoRoot control.HostLog)
+
+/// Whether a command brings this worktree's daemon up (in host mode: attaches a
+/// session). `status` and `stop` only ever observe the one that is already there.
+let internal needsDaemon (command: Command) : bool =
+    match command with
+    | Check flags
+    | Confirm flags
+    | Format flags when isRunOnce flags -> false
+    | Status _
+    | Stop _
+    | Verdict
+    | Init
+    | Config _
+    | Coverage _
+    | DeadCode _
+    | Completions
+    | Host _ -> false
+    | _ -> true
+
+/// How this invocation reaches its daemon: `None` for the worktree's own daemon, a
+/// `HostLink` for a repository-host session, or an exit code when it must stop here.
+let private chooseLink (repoRoot: string) (configText: string) (command: Command) : Result<HostLink option, int> =
+    let live =
+        FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot
+
+    let linkTo endpoint session =
+        let current = ref session
+
+        { Endpoint = endpoint
+          Session = fun () -> current.Value
+          Reattach =
+            fun () ->
+                match
+                    RepositoryHostMode.attach
+                        (FsHwPaths.stateHome ())
+                        (launchHost repoRoot)
+                        (TimeSpan.FromSeconds 30.0)
+                        repoRoot
+                        configText
+                with
+                | RepositoryHostMode.Attach.Serving(_, id) ->
+                    current.Value <- id
+                    true
+                | RepositoryHostMode.Attach.OwnDaemon reason
+                | RepositoryHostMode.Attach.Refused reason ->
+                    eprintfn $"fshw: %s{reason}"
+                    false }
+
+    let enabled =
+        RepositoryHostMode.enabled configText Environment.GetEnvironmentVariable
+
+    match command, live with
+    // Observing and detaching need no attach: the worktree's record names its session.
+    | Status(_, flags), Some record
+    | Stop flags, Some record when not (List.contains Repository flags) ->
+        Ok(Some(linkTo record.Endpoint record.Session))
+    | _ when not (needsDaemon command) -> Ok None
+    | _ when enabled ->
+        match
+            RepositoryHostMode.attach
+                (FsHwPaths.stateHome ())
+                (launchHost repoRoot)
+                (TimeSpan.FromSeconds 30.0)
+                repoRoot
+                configText
+        with
+        | RepositoryHostMode.Attach.Serving(endpoint, session) -> Ok(Some(linkTo endpoint session))
+        | RepositoryHostMode.Attach.OwnDaemon reason ->
+            eprintfn $"fshw: using this worktree's own daemon: %s{reason}"
+            Ok None
+        | RepositoryHostMode.Attach.Refused reason ->
+            eprintfn $"fshw: %s{reason}"
+            Error 2
+    | _, Some record ->
+        eprintfn
+            $"fshw: this worktree is served by the repository host (pid %d{record.HostPid}), but this shell has not \
+              opted in; set %s{RepositoryHostMode.EnvVar}=1 (or \"repositoryHost\": true in .fshw.json) to use it, \
+              or run `fshw stop` to detach it"
+
+        Error 2
+    | _ -> Ok None
+
 let private runCli (args: string array) : int =
     let argList = args |> Array.toList
 
@@ -2998,6 +3411,9 @@ let private runCli (args: string array) : int =
 
         match classifyParse parsed with
         | RepoIndependent exitCode -> exitCode
+        // The host is launched from its own control directory, outside any checkout:
+        // it is told its repository, never finds it from the cwd.
+        | RunCommand(globals, Host root) -> runHostVerb (applyGlobalFlags globals) root
         | dispatch ->
             // Both remaining cases need the repo root. A root-level unknown command
             // can't reach a daemon outside a repo, so fail hard with the canonical
@@ -3028,42 +3444,27 @@ let private runCli (args: string array) : int =
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
 
-                let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-                let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
-
-                let fileCommandPatterns =
-                    config.FileCommands
-                    |> List.choose (fun fc -> fc.Pattern)
-                    |> List.map FsHotWatch.Watcher.FilePattern.parse
-
                 let createDaemon (root: string) =
-                    // Resolve the idle-exit threshold from the `idleExitMin`
-                    // config + this daemon's repo path (AUTO-on for
-                    // `/.workspaces/` checkouts). `None` leaves the timer off.
-                    let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
-
-                    // Resolve the pressure floor from `pressureIdleFloorMin`
-                    // (default-on at 2 min). Under memory pressure this shortens
-                    // an already-eligible idle window to `min(idleExitMin, floor)`;
-                    // `None` disables pressure-shortening. It never makes a
-                    // non-eligible daemon (e.g. the default workspace) eligible.
-                    let pressureIdleFloorMin =
-                        FsHotWatch.IdleExit.resolvePressureFloor config.PressureIdleFloorMin
-
-                    Daemon.create
-                        root
-                        { Daemon.DaemonOptions.defaults with
-                            RunMode = runModeFor command
-                            CacheBackend = backend
-                            CacheKeyProvider = keyProvider
-                            ExcludePatterns = config.Exclude
-                            ExtraWatchPatterns = fileCommandPatterns
-                            FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
-                            IdleExitMin = idleExitMin
-                            PressureIdleFloorMin = pressureIdleFloorMin }
+                    daemonWith opts config (runModeFor command) Daemon.Hosting.Standalone root
 
                 let loadedIdentity = configContentHash configSource
-                executeCommand loadedIdentity createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+
+                match chooseLink repoRoot configSource command with
+                | Error exitCode -> exitCode
+                | Ok None ->
+                    executeCommand loadedIdentity createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+                | Ok(Some link) ->
+                    executeCommandWith
+                        (Some link)
+                        loadedIdentity
+                        createDaemon
+                        (sessionIpcOps link)
+                        repoRoot
+                        pipeName
+                        command
+                        opts
+                        config
+                        30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.

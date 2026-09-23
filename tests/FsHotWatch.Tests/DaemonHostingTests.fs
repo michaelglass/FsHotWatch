@@ -118,3 +118,7 @@ let ``RunWith waits for serve no longer than its bound`` () =
         daemon.Ready.Wait(TimeSpan.FromSeconds 10.0) |> ignore
         cts.Cancel()
         test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a checked cohort's settle line keeps the shape benchmarks parse`` () =
+    test <@ settledLine 7L (TimeSpan.FromMilliseconds 1234.9) 3 = "settled epoch=7 after=1234ms files=3" @>

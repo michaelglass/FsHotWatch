@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- feat: a repository host can serve many worktrees from one process, each as its own
+  session of today's `Daemon`.
+  - `SessionRegistry` builds each session in its own scope: a log sink, the client's
+    environment, and its own process registry. A session that ends for any reason is
+    removed alone.
+  - `RepositoryHost` attaches a worktree as a transaction and refuses loudly. It
+    covers the attach handshake (now protocol 2, which carries the client's
+    environment), MSBuild-relevant environment, SDK, and the worktree's own lock.
+  - `RepositoryIpc` serves one endpoint per repository, with a preamble naming each
+    connection's session and invocation.
+  - `SharedWatchPool` and `WatchRouter` share one FSEvents stream per repository
+    anchor and route each event to exactly one session.
+- feat: `Daemon.RunWith` serves through whatever it is handed; `RunWithIpc` is that
+  over its own pipe. `DaemonOptions.Hosting` marks a hosted session: it watches
+  through the host's stream, never clears process-wide compiler caches, and records
+  resources as the host's (`scope` in `scan-metrics.jsonl`).
+- feat: every checked change cohort logs `[check] settled epoch=E after=Nms files=K`.
+- fix: the analyzers' withheld-typed-tree latch belongs to the plugin instance, not
+  the process.
+- feat: `ProcessHelper` spawns from the session's environment when one is in scope,
+  and looks a bare command up on that environment's `PATH`.
+
 - feat: exclusive work carries consumer leases, so a run nobody is waiting for any
   more stops holding the box. A plugin command runs under its requester's token (the
   IPC server's per-connection token), and every intent it enqueues is held by that

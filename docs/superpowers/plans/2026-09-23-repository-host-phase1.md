@@ -292,3 +292,26 @@ D1, D2 and D3 are approved as proposed. The approval added these requirements.
   5. status (T10).
 
 **Launch race.** Two first attaches can start two `fshw host` processes at once. The singleton control lock picks one. The losing host process exits 0 and logs "repository host already running (pid N)". The losing CLI does not fail: it keeps waiting for the endpoint to accept, within the usual daemon start-up bound, and then attaches to the winner.
+
+## 10. Measurements
+
+### Early abandon signal: settle latency, host(1) against legacy(1)
+
+Measured 2026-09-23 on a copy of commandtree: 4 projects and 22 files registered, with
+only FCS checking enabled (`build`, `format` and `lint` off).
+
+- **Method.** Each mode ran one warm daemon, then took 25 one-line edits to
+  `src/CommandTree/Reflection.fs`. Each edit waited for its
+  `[check] settled … after=Nms` line, then paused 1 s before the next.
+- **Scope.** The first edit is dropped as warm-up. There was one run per mode, on a
+  working (not quiet) box.
+
+| mode | n | p50 | p95 | mean |
+|---|---|---|---|---|
+| legacy daemon | 24 | 2392 ms | 2515 ms | 2371 ms |
+| host, 1 session | 24 | 2312 ms | 2536 ms | 2301 ms |
+
+host(1) p95 is +0.8% against legacy(1), well inside the 10% abandon threshold. Settle
+here is dominated by the 500 ms source debounce plus FCS work. Hosting adds routing
+and context flow but no measurable latency at this size. The 1/2/4-session memory
+matrix is the 677 harness's job, once it lands.

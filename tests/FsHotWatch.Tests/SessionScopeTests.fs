@@ -322,3 +322,64 @@ let ``killing session B's registry leaves session A's child running`` () =
         registryA.KillAll()
 
     test <@ childA.WaitForExit 10000 @>
+
+[<Fact(Timeout = 60000)>]
+let ``a bare command is found on the session's PATH, not the host's`` () =
+    if OperatingSystem.IsWindows() then
+        Assert.Skip "POSIX shell"
+
+    withTempDir "session-path" (fun dir ->
+        // The session's own `dotnet`, the way a workspace's toolchain-bin wraps it.
+        let bin = Path.Combine(dir, "toolchain-bin")
+        Directory.CreateDirectory bin |> ignore
+        let wrapper = Path.Combine(bin, "dotnet")
+        File.WriteAllText(wrapper, "#!/bin/sh\nprintf session-dotnet\n")
+        File.SetUnixFileMode(wrapper, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+
+        let env =
+            SessionEnvironment.create dir (Map.ofList [ "PATH", $"%s{bin}:/usr/bin:/bin" ])
+
+        let seen =
+            isolated (fun () ->
+                use _ = SessionEnvironment.install env
+
+                ProcessHelper.runProcess
+                    "dotnet"
+                    "--version"
+                    "."
+                    []
+                    (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 30.0))
+                |> stdoutOf)
+
+        test <@ seen = "session-dotnet" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a bare command resolves against a PATH, first match wins, rooted commands are left alone`` () =
+    withTempDir "resolve-path" (fun dir ->
+        let a = Path.Combine(dir, "a")
+        let b = Path.Combine(dir, "b")
+        Directory.CreateDirectory a |> ignore
+        Directory.CreateDirectory b |> ignore
+
+        let exe (folder: string) (name: string) =
+            let path = Path.Combine(folder, name)
+            File.WriteAllText(path, "#!/bin/sh\n")
+
+            if not (OperatingSystem.IsWindows()) then
+                File.SetUnixFileMode(path, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+            path
+
+        let inB = exe b "tool"
+        let inA = exe a "tool"
+        File.WriteAllText(Path.Combine(a, "plain"), "not executable")
+        let path = $"%s{a}:%s{b}"
+        test <@ ProcessHelper.resolveOnPath path "tool" = inA @>
+        test <@ ProcessHelper.resolveOnPath $"%s{b}:%s{a}" "tool" = inB @>
+        test <@ ProcessHelper.resolveOnPath path "missing" = "missing" @>
+        test <@ ProcessHelper.resolveOnPath path "/bin/sh" = "/bin/sh" @>
+        test <@ ProcessHelper.resolveOnPath path "./tool" = "./tool" @>
+        test <@ ProcessHelper.resolveOnPath "" "tool" = "tool" @>
+
+        if not (OperatingSystem.IsWindows()) then
+            test <@ ProcessHelper.resolveOnPath path "plain" = "plain" @>)
