@@ -434,8 +434,12 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         // The plugin says the same, and says which tool it asked.
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(createFormatCheck dir None)
+        // A run reports its terminal status before the state it built is committed, and
+        // `unformatted` reads committed state: each read below waits for the commit.
+        let beforeFirst = committedBy host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
         waitCompleted host 30000
+        test <@ waitForCommitted host "format-check" beforeFirst 1L 30000 @>
 
         test <@ summaryOf host = $"1 of 1 files need formatting — %s{evidenceFor dir thisRepoPin.Version}" @>
         test <@ (unformattedCount host).Contains("\"count\": 1") @>
@@ -456,9 +460,11 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         test
             <@ File.ReadAllText(file).Contains "runOnceAndVerdictWith runOnce render mode warn create root config 0" @>
 
+        let beforeSecond = committedBy host "format-check"
         let second = beginAwaitNextTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
         test <@ second.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ waitForCommitted host "format-check" beforeSecond 1L 30000 @>
         test <@ summaryOf host = $"format OK (1 checked) — %s{evidenceFor dir thisRepoPin.Version}" @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
@@ -556,17 +562,22 @@ let ``format check detects formatting change even with same commit ID`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(createFormatCheck dir None)
 
-        // First: file is unformatted
+        // First: file is unformatted. Each read waits for the run's commit, not only
+        // its terminal status (see the pinned-oracle test).
+        let beforeFirst = committedBy host "format-check"
         File.WriteAllText(file, "module Test\nlet   x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
         waitCompleted host 25000
+        test <@ waitForCommitted host "format-check" beforeFirst 1L 25000 @>
         test <@ (unformattedCount host).Contains("\"count\": 1") @>
 
         // Second: file is now formatted, but commit ID hasn't changed
+        let beforeSecond = committedBy host "format-check"
         let second = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Test\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
         test <@ second.Wait(TimeSpan.FromSeconds 25.0) @>
+        test <@ waitForCommitted host "format-check" beforeSecond 1L 25000 @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
 [<Fact(Timeout = 30000)>]

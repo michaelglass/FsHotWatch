@@ -410,6 +410,64 @@ let ``an SDK probe whose dotnet fails says how`` () =
 
             test <@ RepositoryHostMode.sdkVersion root env = "unresolved (`dotnet --version` exited 3)" @>)
 
+[<Fact(Timeout = 60000)>]
+let ``an SDK probe that does not finish within its bound says so`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withRepository (fun root _ ->
+            let bin = Path.Combine(root, "slow-bin")
+            Directory.CreateDirectory bin |> ignore
+            let fake = Path.Combine(bin, "dotnet")
+            File.WriteAllText(fake, "#!/bin/sh\nsleep 30\n")
+            File.SetUnixFileMode(fake, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+
+            let env =
+                SessionScope.SessionEnvironment.create root (Map.ofList [ "PATH", $"%s{bin}:/usr/bin:/bin" ])
+
+            test
+                <@
+                    RepositoryHostMode.sdkVersionWithin (TimeSpan.FromMilliseconds 500.0) root env = "unresolved (`dotnet --version` did not complete)"
+                @>)
+
+[<Fact(Timeout = 60000)>]
+let ``an attach reply the host cannot have written is a stop, naming why`` () =
+    withRepository (fun root stateHome ->
+        let worktree =
+            match resolveWorktree root with
+            | Ok w -> w
+            | Error e -> failwith (IdentityError.describe e)
+
+        let control = repositoryControlPaths stateHome worktree.Repository
+
+        // Something on the repository's endpoint that answers every request with bytes
+        // no host writes.
+        let opener: Ipc.IpcServer.ConnectionOpener =
+            fun pipe _ ->
+                async {
+                    match! RepositoryIpc.readFrame pipe CancellationToken.None |> Async.AwaitTask with
+                    | Ok _ ->
+                        do!
+                            RepositoryIpc.writeFrame pipe "not json" CancellationToken.None
+                            |> Async.AwaitTask
+                    | Error _ -> ()
+
+                    return None
+                }
+
+        use cts = new CancellationTokenSource()
+
+        let server =
+            Async.StartAsTask(Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) control.Endpoint opener cts)
+
+        try
+            test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning control.Endpoint) 10000 @>
+
+            match RepositoryHostMode.attach stateHome ignore (TimeSpan.FromSeconds 10.0) root "" with
+            | RepositoryHostMode.Attach.Refused reason -> test <@ reason.Contains "could not be read" @>
+            | other -> failwith $"%A{other}"
+        finally
+            cts.Cancel()
+            server.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
+
 // ---------------------------------------------------------------------------
 // Plugin passthrough
 // ---------------------------------------------------------------------------

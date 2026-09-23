@@ -92,8 +92,12 @@ module HostSessionRecord =
 let processAlive (pid: int) : bool =
     pid > 0
     && (try
-            use p = Diagnostics.Process.GetProcessById pid
-            not p.HasExited
+            let p = Diagnostics.Process.GetProcessById pid
+
+            try
+                not p.HasExited
+            finally
+                p.Dispose()
         with _ ->
             false)
 
@@ -244,18 +248,23 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
                     respond settings.Identity resolveWorktree registry.Live mint requestJson
                 | Ok request ->
                     let derived = resolveWorktree request.ClaimedRoot
+                    let decided = decide settings.Identity derived registry.Live mint request
 
-                    match decide settings.Identity derived registry.Live mint request, derived with
-                    | Attached(id, AttachDisposition.NewSession, _), Ok worktree -> startSession id worktree request
-                    | Attached(live, AttachDisposition.RejoinedConfigChanged, _), Ok worktree ->
-                        // The configuration changed under the live session: replace it
-                        // with a new incarnation, so nothing from the old one survives.
-                        registry.Detach live |> ignore
+                    match derived with
+                    // A worktree that does not resolve is only ever refused.
+                    | Error _ -> decided
+                    | Ok worktree ->
+                        match decided with
+                        | Attached(id, AttachDisposition.NewSession, _) -> startSession id worktree request
+                        | Attached(live, AttachDisposition.RejoinedConfigChanged, _) ->
+                            // The configuration changed under the live session: replace it
+                            // with a new incarnation, so nothing from the old one survives.
+                            registry.Detach live |> ignore
 
-                        match startSession (freshId worktree) worktree request with
-                        | Attached(id, _, h) -> Attached(id, AttachDisposition.RejoinedConfigChanged, h)
-                        | refused -> refused
-                    | decided, _ -> decided
+                            match startSession (freshId worktree) worktree request with
+                            | Attached(id, _, h) -> Attached(id, AttachDisposition.RejoinedConfigChanged, h)
+                            | refused -> refused
+                        | _ -> decided
 
             match response with
             | Refused(refusal, _) ->
@@ -355,39 +364,41 @@ let run
         let pid = tryReadPid settings.Control.PidFile
         HostRun.AlreadyRunning pid
     | Some lock ->
-        use _lock = lock
-        File.WriteAllText(settings.Control.PidFile, string Environment.ProcessId)
-        File.WriteAllText(settings.Control.IdentityFile, BinaryIdentity.render settings.Identity.Protocol.Binary)
-        use registry = new SessionRegistry(factory)
+        try
+            File.WriteAllText(settings.Control.PidFile, string Environment.ProcessId)
+            File.WriteAllText(settings.Control.IdentityFile, BinaryIdentity.render settings.Identity.Protocol.Binary)
 
-        let host =
-            RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound)
+            using (new SessionRegistry(factory)) (fun registry ->
+                let host =
+                    RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound)
 
-        Logging.info
-            "host"
-            $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
+                Logging.info
+                    "host"
+                    $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
 
-        let serving =
-            Async.StartAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
+                let serving =
+                    Async.StartAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
-        // Idle exit: no session attached for the whole grace period.
-        let mutable idleSince = DateTime.UtcNow
+                // Idle exit: no session attached for the whole grace period.
+                let mutable idleSince = DateTime.UtcNow
 
-        while not cts.IsCancellationRequested do
-            cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
+                while not cts.IsCancellationRequested do
+                    cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
-            if not (List.isEmpty registry.Sessions) then
-                idleSince <- DateTime.UtcNow
-            elif DateTime.UtcNow - idleSince >= idleGrace then
-                Logging.info "host" $"no session for %s{string idleGrace}; exiting"
-                cts.Cancel()
+                    if not (List.isEmpty registry.Sessions) then
+                        idleSince <- DateTime.UtcNow
+                    elif DateTime.UtcNow - idleSince >= idleGrace then
+                        Logging.info "host" $"no session for %s{string idleGrace}; exiting"
+                        cts.Cancel()
 
-        serving.Wait(
-            Ipc.IpcServer.ConnectionDrainBound
-            + Ipc.IpcServer.ReleaseBound
-            + TimeSpan.FromSeconds 1.0
-        )
-        |> ignore
+                serving.Wait(
+                    Ipc.IpcServer.ConnectionDrainBound
+                    + Ipc.IpcServer.ReleaseBound
+                    + TimeSpan.FromSeconds 1.0
+                )
+                |> ignore
 
-        File.Delete settings.Control.PidFile
-        HostRun.Stopped
+                File.Delete settings.Control.PidFile
+                HostRun.Stopped)
+        finally
+            lock.Dispose()

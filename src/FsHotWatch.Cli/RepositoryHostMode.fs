@@ -29,7 +29,7 @@ let EnvVar = "FSHW_REPOSITORY_HOST"
 /// True when `.fshw.json`'s text sets `"repositoryHost": true`.
 let configured (configText: string) : bool =
     try
-        use doc =
+        let doc =
             JsonDocument.Parse(
                 if String.IsNullOrWhiteSpace configText then
                     "{}"
@@ -37,9 +37,12 @@ let configured (configText: string) : bool =
                     configText
             )
 
-        match doc.RootElement.TryGetProperty "repositoryHost" with
-        | true, v -> v.ValueKind = JsonValueKind.True
-        | _ -> false
+        try
+            match doc.RootElement.TryGetProperty "repositoryHost" with
+            | true, v -> v.ValueKind = JsonValueKind.True
+            | _ -> false
+        finally
+            doc.Dispose()
     with _ ->
         false
 
@@ -51,9 +54,9 @@ let enabled (configText: string) (getEnv: string -> string) : bool =
     | value -> value.Trim() = "1" || value.Trim().ToLowerInvariant() = "true"
 
 /// The .NET SDK `root` selects under `env`: `dotnet --version` run there, as that
-/// worktree's shell would run it. Anything but a clean answer is reported as such, and
-/// never matches a real version.
-let sdkVersion (root: string) (env: SessionEnvironment) : string =
+/// worktree's shell would run it, given at most `bound`. Anything but a clean answer is
+/// reported as such, and never matches a real version.
+let sdkVersionWithin (bound: TimeSpan) (root: string) (env: SessionEnvironment) : string =
     isolated (fun () ->
         use _ = SessionEnvironment.install env
         // Reaped with this probe, whoever asks: the host itself has no session scope.
@@ -61,19 +64,16 @@ let sdkVersion (root: string) (env: SessionEnvironment) : string =
         use _ = ProcessRegistry.install registry
 
         try
-            match
-                ProcessHelper.runProcess
-                    "dotnet"
-                    "--version"
-                    root
-                    []
-                    (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 30.0))
-            with
+            match ProcessHelper.runProcess "dotnet" "--version" root [] (ProcessHelper.ProcessBounds.silent bound) with
             | ProcessHelper.Succeeded output -> (ProcessHelper.ProcessOutput.text output).Trim()
             | ProcessHelper.Failed(code, _) -> $"unresolved (`dotnet --version` exited %d{code})"
             | _ -> "unresolved (`dotnet --version` did not complete)"
         with ex ->
             $"unresolved (`dotnet --version` could not run: %s{ex.Message})")
+
+/// `sdkVersionWithin` 30 seconds.
+let sdkVersion (root: string) (env: SessionEnvironment) : string =
+    sdkVersionWithin (TimeSpan.FromSeconds 30.0) root env
 
 /// What attaching a worktree came to.
 [<RequireQualifiedAccess>]

@@ -162,6 +162,57 @@ let ``two worktrees attach as two sessions, each routed to its own daemon`` () =
         test <@ listed["hostPid"].GetValue<int>() = Environment.ProcessId @>)
 
 [<Fact(Timeout = 60000)>]
+let ``a claimed root that does not resolve is refused, and starts nothing`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        let request =
+            { requestFrom fx.Primary "a" with
+                ClaimedRoot = Path.Combine(fx.StateHome, "definitely-not-a-worktree") }
+
+        test <@ refusalKind (attachVia host request) <> "attached" @>
+        test <@ List.isEmpty host.Registry.Sessions @>)
+
+/// Make `path` a file this process cannot open for writing, or skip: a superuser opens
+/// it anyway.
+let private unwritable (path: string) =
+    File.WriteAllText(path, "")
+    File.SetUnixFileMode(path, UnixFileMode.None)
+
+    let opens =
+        try
+            (new FileStream(path, FileMode.Open, FileAccess.Write)).Dispose()
+            true
+        with :? UnauthorizedAccessException ->
+            false
+
+    if opens then
+        Assert.Skip "this process opens any file for writing (running as root)"
+
+[<Fact(Timeout = 60000)>]
+let ``a lock file that cannot be opened is an error, not another holder`` () =
+    if OperatingSystem.IsWindows() then
+        Assert.Skip "POSIX permissions"
+
+    withRepository (fun fx ->
+        // The worktree's own lock: `None` would claim a daemon holds it.
+        let root = fx.Primary.Root.Value
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+        unwritable (worktreeLockPath root)
+
+        Assert.Throws<UnauthorizedAccessException>(fun () -> tryLockWorktree root |> ignore)
+        |> ignore
+
+        // The host's own lock: `AlreadyRunning` would claim another host holds it.
+        let settings = settingsFor fx
+        Directory.CreateDirectory settings.Control.Directory |> ignore
+        unwritable settings.Control.LockFile
+        use cts = new CancellationTokenSource()
+
+        Assert.Throws<UnauthorizedAccessException>(fun () ->
+            RepositoryHost.run settings daemonFactory (TimeSpan.FromSeconds 1.0) cts
+            |> ignore)
+        |> ignore)
+
+[<Fact(Timeout = 60000)>]
 let ``attaching again with the same configuration rejoins the same session`` () =
     withHost settingsFor daemonFactory (fun fx host ->
         let first = attachedId (attachVia host (requestFrom fx.Primary "a"))

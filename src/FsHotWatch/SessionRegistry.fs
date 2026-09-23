@@ -110,15 +110,25 @@ let private serveInto (serving: TaskCompletionSource<DaemonRpcConfig>) =
         }
 
 type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
-    let gate = obj ()
+    let gate = Lock()
+
+    // Lock.Enter/Exit rather than F#'s `lock`, whose never-taken "lock not acquired"
+    // check is a branch no input reaches.
+    let locked (work: unit -> 'T) : 'T =
+        gate.Enter()
+
+        try
+            work ()
+        finally
+            gate.Exit()
+
     let mutable sessions: Map<WorktreeId, WorktreeSession> = Map.empty
     let mutable starting: Set<WorktreeId> = Set.empty
 
     let current () = Volatile.Read(&sessions)
 
     let remove (session: WorktreeSession) =
-        lock gate (fun () ->
-            sessions <- sessions |> Map.filter (fun _ live -> not (obj.ReferenceEquals(live, session))))
+        locked (fun () -> sessions <- sessions |> Map.filter (fun _ live -> not (obj.ReferenceEquals(live, session))))
 
     /// Build and run the session, inside its own scope. The worktree is reserved.
     let launch (id: SessionId) (spec: SessionSpec) : WorktreeSession =
@@ -145,7 +155,7 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
                 TaskCompletionSource<SessionEnd>(TaskCreationOptions.RunContinuationsAsynchronously)
 
             let session = WorktreeSession(id, spec, daemon, cts, serving.Task, ended.Task)
-            lock gate (fun () -> sessions <- sessions.Add(spec.Worktree.Worktree, session))
+            locked (fun () -> sessions <- sessions.Add(spec.Worktree.Worktree, session))
 
             let body =
                 async {
@@ -179,7 +189,7 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
         let worktree = spec.Worktree.Worktree
 
         let reserved =
-            lock gate (fun () ->
+            locked (fun () ->
                 if sessions.ContainsKey worktree || starting.Contains worktree then
                     false
                 else
@@ -197,7 +207,7 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
                     release spec.Owned
                     Error $"the session for %s{spec.Worktree.Root.Value} could not start: %s{ex.Message}"
             finally
-                lock gate (fun () -> starting <- starting.Remove worktree)
+                locked (fun () -> starting <- starting.Remove worktree)
 
     /// The live session `id` — exactly that incarnation.
     member _.TryGet(id: SessionId) : WorktreeSession option =

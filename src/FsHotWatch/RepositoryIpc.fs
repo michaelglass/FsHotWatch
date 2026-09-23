@@ -233,9 +233,10 @@ let private drainUnread (stream: Stream) (bound: TimeSpan) : Task =
             while reading do
                 let! n = stream.ReadAsync(buffer.AsMemory(), timeout.Token)
                 reading <- n > 0
-        with
-        | :? OperationCanceledException
-        | :? IOException -> ()
+        with _ ->
+            // The bound passing, the client resetting, or anything else: the connection
+            // closes next either way.
+            ()
     }
 
 /// What the host does with each kind of connection.
@@ -330,20 +331,35 @@ let private connect (endpoint: string) =
         let pipe =
             new NamedPipeClientStream(".", endpoint, PipeDirection.InOut, PipeOptions.Asynchronous)
 
-        try
-            do! pipe.ConnectAsync(int ConnectBound.TotalMilliseconds) |> Async.AwaitTask
-            return pipe
-        with ex ->
-            pipe.Dispose()
-            return raise ex
+        let! connected =
+            pipe.ConnectAsync(int ConnectBound.TotalMilliseconds)
+            |> Async.AwaitTask
+            |> Async.Catch
+
+        return
+            match connected with
+            | Choice1Of2() -> pipe
+            | Choice2Of2 ex ->
+                pipe.Dispose()
+                raise ex
     }
 
 let private readReplyFrame (pipe: Stream) =
     async {
-        match! readFrame pipe CancellationToken.None |> Async.AwaitTask with
-        | Ok text -> return text
-        | Error e -> return raise (IOException $"the repository host sent no reply (%A{e})")
+        let! frame = readFrame pipe CancellationToken.None |> Async.AwaitTask
+
+        return
+            match frame with
+            | Ok text -> text
+            | Error e -> raise (IOException $"the repository host sent no reply (%A{e})")
     }
+
+/// Raise unless the host's reply to a preamble accepted the connection.
+let private requireAccepted (replyText: string) : unit =
+    match decodeReply replyText with
+    | Ok PreambleReply.Accepted -> ()
+    | Ok(PreambleReply.Refused(kind, message)) -> raise (RepositoryRefusedException(kind, message))
+    | Error reason -> raise (IOException $"the repository host's reply is unreadable: %s{reason}")
 
 /// Send an attach request and return the host's response JSON.
 let attach (endpoint: string) (requestJson: string) : Async<string> =
@@ -365,14 +381,11 @@ let invoke (endpoint: string) (preamble: Preamble) (methodName: string) (args: o
 
         let! replyText = readReplyFrame pipe
 
-        match decodeReply replyText with
-        | Ok PreambleReply.Accepted ->
-            let handler = new HeaderDelimitedMessageHandler(pipe :> Stream)
-            use rpc = new JsonRpc(handler)
-            rpc.StartListening()
-            return! rpc.InvokeAsync<string>(methodName, args) |> Async.AwaitTask
-        | Ok(PreambleReply.Refused(kind, message)) -> return raise (RepositoryRefusedException(kind, message))
-        | Error reason -> return raise (IOException $"the repository host's reply is unreadable: %s{reason}")
+        requireAccepted replyText
+        let handler = new HeaderDelimitedMessageHandler(pipe :> Stream)
+        use rpc = new JsonRpc(handler)
+        rpc.StartListening()
+        return! rpc.InvokeAsync<string>(methodName, args) |> Async.AwaitTask
     }
 
 /// Whether anything accepts connections on `endpoint` right now.

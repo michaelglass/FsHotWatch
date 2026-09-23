@@ -48,9 +48,18 @@ let fileSink (path: string) (level: LogLevel) : LogSink =
     System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName path)
     |> ignore
 
-    let gate = obj ()
+    let gate = System.Threading.Lock()
 
-    { Write = fun line -> lock gate (fun () -> System.IO.File.AppendAllText(path, line + "\n"))
+    // Lock.Enter/Exit rather than F#'s `lock`, whose never-taken "lock not acquired"
+    // check is a branch no input reaches.
+    { Write =
+        fun line ->
+            gate.Enter()
+
+            try
+                System.IO.File.AppendAllText(path, line + "\n")
+            finally
+                gate.Exit()
       Level = level }
 
 /// Check if a given level is enabled.
