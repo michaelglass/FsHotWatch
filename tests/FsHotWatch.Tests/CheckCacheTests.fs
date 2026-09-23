@@ -561,3 +561,60 @@ let ``describeCheckCache names the in-memory bound and that it grows`` () =
     Assert.Contains("in-memory", text)
     Assert.Contains("500", text)
     Assert.Contains("working set", text)
+
+type private ForeignBackend() =
+    interface ICheckCacheBackend with
+        member _.TryGet _ = None
+        member _.Set _ _ = ()
+        member _.Invalidate _ = ()
+        member _.Clear() = ()
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache names a backend it does not know by its type`` () =
+    let text = describeCheckCache (Some(ForeignBackend() :> ICheckCacheBackend))
+
+    Assert.Equal("check-result cache: ForeignBackend", text)
+
+// --- Removal of keys the cache no longer holds ---
+
+[<Fact(Timeout = 15000)>]
+let ``InMemoryCheckCache invalidating a key it never held changes nothing`` () =
+    let cache = InMemoryCheckCache(10)
+    let backend = cache :> ICheckCacheBackend
+    backend.Set (makeKey "held") (makeTestResult "a.fs" 1L)
+
+    backend.Invalidate(makeKey "never-set")
+
+    Assert.Equal(1, cache.Count)
+    Assert.True(backend.TryGet(makeKey "held").IsSome)
+
+[<Fact(Timeout = 15000)>]
+let ``InMemoryCheckCache a slot naming an invalidated key is taken over cleanly`` () =
+    // One key re-set with another file's result leaves its first slot naming it. Once
+    // that key is invalidated, the stale slot must not block, or evict, the next result
+    // for the first file.
+    let cache = InMemoryCheckCache(10)
+    let backend = cache :> ICheckCacheBackend
+    backend.Set (makeKey "k1") (makeTestResult "a.fs" 1L)
+    backend.Set (makeKey "k1") (makeTestResult "b.fs" 2L)
+    backend.Set (makeKey "other") (makeTestResult "c.fs" 3L)
+    backend.Invalidate(makeKey "k1")
+
+    backend.Set (makeKey "k2") (makeTestResult "a.fs" 4L)
+
+    Assert.Equal(2, cache.Count)
+    Assert.True(backend.TryGet(makeKey "k2").IsSome)
+    Assert.True(backend.TryGet(makeKey "other").IsSome)
+
+[<Fact(Timeout = 15000)>]
+let ``InMemoryCheckCache a key moved to another file releases its new slot on removal`` () =
+    let cache = InMemoryCheckCache(10)
+    let backend = cache :> ICheckCacheBackend
+    backend.Set (makeKey "k1") (makeTestResult "a.fs" 1L)
+    backend.Set (makeKey "k1") (makeTestResult "b.fs" 2L)
+
+    // k2 takes b.fs's slot, which k1 holds, so k1 is superseded outright.
+    backend.Set (makeKey "k2") (makeTestResult "b.fs" 3L)
+
+    Assert.Equal(1, cache.Count)
+    Assert.True(backend.TryGet(makeKey "k1").IsNone)

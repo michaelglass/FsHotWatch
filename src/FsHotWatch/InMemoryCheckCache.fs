@@ -41,37 +41,30 @@ type InMemoryCheckCache(maxSize: int) =
 
         struct (AbsFilePath.value result.File, project)
 
-    /// Move a key to the most-recently-used end of the LRU list.
+    // Invariants, all under `lockObj`:
+    // - `store` and `lruNodes` always hold the same keys.
+    // - The slot of a held key's result maps to that key. `Set` writes the mapping, and
+    //   the only way another key takes the slot is a `Set` that first removes this one.
+
+    /// Move a held key to the most-recently-used end of the LRU list.
     let moveToEnd (hashedKey: string) =
-        match lruNodes.TryGetValue(hashedKey) with
-        | true, node ->
-            lruList.Remove(node)
-            let newNode = lruList.AddLast(hashedKey)
-            lruNodes[hashedKey] <- newNode
-        | false, _ -> ()
+        lruList.Remove(lruNodes[hashedKey])
+        lruNodes[hashedKey] <- lruList.AddLast(hashedKey)
 
     /// Add a key to the most-recently-used end of the LRU list.
     let addToEnd (hashedKey: string) =
         let node = lruList.AddLast(hashedKey)
         lruNodes[hashedKey] <- node
 
-    /// Remove one entry from every index.
+    /// Remove one entry from every index. A key no longer held is a no-op: a slot can
+    /// still name a key that was invalidated after its result moved to another file.
     let remove (hashedKey: string) =
-        match lruNodes.TryGetValue(hashedKey) with
-        | true, node ->
-            lruList.Remove(node)
+        match store.TryGetValue(hashedKey) with
+        | true, result ->
+            lruList.Remove(lruNodes[hashedKey])
             lruNodes.Remove(hashedKey) |> ignore
-
-            match store.TryGetValue(hashedKey) with
-            | true, result ->
-                let slot = slotOf result
-
-                match slots.TryGetValue slot with
-                | true, owner when owner = hashedKey -> slots.Remove slot |> ignore
-                | _ -> ()
-
-                store.Remove(hashedKey) |> ignore
-            | false, _ -> ()
+            store.Remove(hashedKey) |> ignore
+            slots.Remove(slotOf result) |> ignore
         | false, _ -> ()
 
     /// Evict the least-recently-used entry.
