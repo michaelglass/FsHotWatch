@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 3.1.5 - 2026-09-23
+
+- docs: reword private downstream-repo references and a scrubbed coverage reason
+
+
 ## 3.1.4 - 2026-09-15
 
 - Recognize accessible and escaped test declarations and file modules when
