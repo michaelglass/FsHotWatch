@@ -67,6 +67,8 @@
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
+    <Compile Include="RepositoryIdentityTests.fs" />
+    <Compile Include="AttachHandshakeTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />

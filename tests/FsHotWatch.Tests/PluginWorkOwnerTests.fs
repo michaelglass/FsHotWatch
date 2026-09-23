@@ -993,6 +993,21 @@ let ``a finished run owes its verdict until its result fold commits, except to t
     Assert.False(owner.Snapshot.OwesRunVerdict None)
 
 [<Fact>]
+let ``a result fold that launched the next run owes that run's verdict, even to itself`` () =
+    // The successor is live, so its Running stands against every report, including the
+    // fold that launched it: that fold's terminal would describe the finished run.
+    let owner = Owner(0)
+    let fold = complete owner (claim owner "tests")
+    let successor = owner.TryClaim("tests", after = fold) |> Option.get
+    Assert.True(owner.Snapshot.IsRunning "tests")
+    Assert.True(owner.Snapshot.OwesRunVerdict(Some fold))
+
+    owner.CommitEvent(fold, 1)
+    Assert.True(owner.Snapshot.OwesRunVerdict None)
+    owner.CommitEvent(complete owner successor, 2)
+    Assert.False(owner.Snapshot.OwesRunVerdict None)
+
+[<Fact>]
 let ``a delivered intent holds its key without owing a run verdict`` () =
     let owner = Owner(0)
     let delivered = ResizeArray<WorkId>()

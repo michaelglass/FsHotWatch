@@ -34,6 +34,36 @@
   and declared a false WEDGED the moment a declared bounded fold ended. The funnel now
   drops such a terminal until the run's verdict is folded (`Snapshot.OwesRunVerdict`);
   the result fold's own report still lands.
+- feat: `RepositoryIdentity` — distinct, stable identities for a repository host that
+  serves many worktrees. `RepositoryId` digests the canonical COMMON metadata store and
+  its provider, so every jj workspace (primary or secondary) and every git worktree of
+  one repository share it, a `git worktree add` made from a colocated jj repository
+  joins that repository (proven by jj's `git_target` pointing back), and two
+  independent clones never collide, even with the same origin URL. `WorktreeId` is one
+  canonical physical root within the repository: a worktree deleted and recreated at
+  the same path keeps it. `SessionIncarnation` is a host-minted nonce, so a recreated
+  worktree cannot accept its previous life's completions. Roots are canonicalized
+  component by component — every symlink resolved, `..` applied physically, each name
+  spelled as stored on disk — so symlinked and case-variant spellings are one worktree.
+  Git's common directory is read from the `commondir` file git writes rather than
+  guessed from a `/worktrees/` path segment. Unlike the cache namespace
+  (`RepoIdentity`), an unreadable, malformed or dangling VCS pointer is an
+  `IdentityError`, never a guess. `repositoryControlPaths` puts a repository's lock,
+  pid, identity, host log and endpoint name under `FsHwPaths.stateHome ()`
+  (`$FSHW_STATE_HOME`, else `$XDG_STATE_HOME/fshw`, else `~/.local/state/fshw`) keyed
+  by `RepositoryId` — never inside a worktree, so it survives the deletion of any one.
+
+- feat: `AttachHandshake` — the versioned attach handshake (`fshw.attach`, protocol 1)
+  carrying repository id, worktree id and canonical root, session-incarnation
+  expectation, configuration digest and binary/protocol identity. The host re-derives
+  the worktree's identity from the claimed root and checks every claim; `decide` is
+  pure. Mixed incompatible clients FAIL LOUDLY: a protocol or binary mismatch, a wrong
+  repository, a claim the host's derivation contradicts, an unknown session or a stale
+  incarnation is a typed refusal with an explanation — never a restart, which with one
+  host serving many worktrees would tear down every sibling session. A request of
+  another protocol version, or a malformed one, is still answered with a refusal. No
+  host serves this yet.
+
 - `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
   overran — its tree read from `ps` before the kill (afterwards a survivor has been
   re-parented and cannot be found from the root), the kill's outcome and duration, and the
