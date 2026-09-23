@@ -1796,6 +1796,87 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
     openAndDrain gate reg
 
 [<Fact(Timeout = 20000)>]
+let ``cache path: a per-file result finished while a run is in flight is withheld but still cached`` () =
+    // The whole-run case above must not cache a verdict nobody observed. A per-file entry
+    // is different: it stores no summary, only that the file's work finished, and replays
+    // through the same funnel. Dropping it left every file a cold scan analysed during
+    // the run it started to be re-analysed by the next check.
+    let cache = TaskCache.InMemoryTaskCache()
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let gate = Gate()
+    let file = "/tmp/repo/src/A.fs"
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "per-file-during-run"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | FileChecked _ -> ctx.ReportStatus(PluginStatus.completedNow "analysed A.fs" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeFileChecked ]
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false))
+        10000
+
+    reg.Dispatch(DispatchFileChecked(fakeFileCheckResult file))
+    test <@ waitUntilTrue (fun () -> reg.CompletedDispatches() >= 2L) 10000 @>
+
+    // Withheld: the run owns the status …
+    test
+        <@
+            statuses
+            |> Seq.forall (function
+                | Completed _
+                | Failed _ -> false
+                | Idle
+                | Running _ -> true)
+        @>
+
+    // … but the file's finished work is cached for the next scan to replay.
+    let cached =
+        (cache :> TaskCache.ITaskCache).TryGet
+            { Plugin = "per-file-during-run"
+              File = Some(CachePathIdentity.ofPath "/tmp/repo" file |> CachePathIdentity.toKey) }
+            (ContentHash.create "k")
+
+    test <@ cached.IsSome @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
 let ``cache path: a handler that LAUNCHES a run does not cache the terminal it reported first`` () =
     // TestPrune's queued-rerun shape: report the completed run's verdict, then immediately
     // launch the next run. That terminal is about to be superseded, so caching it would

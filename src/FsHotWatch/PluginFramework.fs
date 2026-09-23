@@ -1331,19 +1331,29 @@ let internal registerHandlerForOwner
                                 // it would replay a verdict the rerun exists to overturn.
                                 let mutable launchedRunInWindow = false
 
+                                // A per-file entry stores no summary and no timestamp, only
+                                // that the file's work finished (see the mint below), and a
+                                // replay reports it through the same funnel. So the funnel
+                                // dropping this report while a run owns the status withholds
+                                // its PUBLICATION, not the file's cached result: work done
+                                // while a run is in flight is replayed like any other.
+                                let perFile = (compositeKey event).File.IsSome
+
                                 let capturingCtx =
                                     { ReportStatus =
                                         fun status ->
-                                            // Capture only a report that landed: a terminal the
-                                            // funnel dropped was never observable, so it must not
-                                            // become a cached result either.
-                                            if
+                                            // A whole-run entry replays its verdict, so it captures
+                                            // only a report that landed: a terminal the funnel
+                                            // dropped was never observable, and must not become a
+                                            // cached verdict either.
+                                            let landed =
                                                 reportStatus
                                                     (Some identity)
                                                     (PluginStatus.isTerminal status)
                                                     (fun () -> status)
                                                     "status report"
-                                            then
+
+                                            if landed || perFile then
                                                 capturedStatus <- Some status
                                       ReportErrors =
                                         fun file entries ->

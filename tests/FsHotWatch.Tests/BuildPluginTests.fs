@@ -2346,6 +2346,79 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
     let afterBuild = cacheKeyFn fileEvt
     test <@ afterBuild.IsSome @>
 
+[<Fact(Timeout = 40000)>]
+let ``a forced build populates the cache the next unforced build replays`` () =
+    // `confirm` bypasses the cache READ so its build is real, but must still WRITE: a
+    // `check` on the unchanged tree afterwards replays that build instead of running one.
+    // The forced FileChanged has no key (no read), and the build's entry is minted from
+    // its own `BuildDone` window, which keeps its key.
+    withTempDir "build-force-writes" (fun tmpDir ->
+        let source = System.IO.Path.Combine(tmpDir, "Source.fs")
+        let buildCount = System.IO.Path.Combine(tmpDir, "build-count")
+        let script = System.IO.Path.Combine(tmpDir, "build.sh")
+        System.IO.File.WriteAllText(source, "module Source")
+        System.IO.File.WriteAllText(script, $"printf 'x\\n' >> '{buildCount}'\n")
+
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+
+        let host =
+            PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = (cache :> FsHotWatch.TaskCache.ITaskCache))
+
+        let mutable completedBuilds = 0
+
+        let recorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "forced-build-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BuildCompleted _ -> System.Threading.Interlocked.Increment(&completedBuilds) |> ignore
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeBuildCompleted
+              PrepareCommit = None
+              CacheKey = None
+              Teardown = None }
+
+        let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+        host.RegisterHandler(recorder)
+        host.RegisterHandler(build)
+
+        let builds () =
+            if System.IO.File.Exists buildCount then
+                System.IO.File.ReadAllLines(buildCount).Length
+            else
+                0
+
+        let change (step: string) =
+            let before = completedBuilds
+            host.EmitFileChanged(SourceChanged [ source ])
+
+            let settled =
+                waitUntilTrue (fun () -> completedBuilds > before && not (host.AnyPluginBusy())) 10000
+
+            Assert.True(
+                settled,
+                $"%s{step}: no BuildCompleted (builds run: %d{builds ()}, completed: %d{completedBuilds})"
+            )
+
+        change "warm-up"
+        test <@ builds () = 1 @>
+
+        // The confirm's build: forced, so real.
+        host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
+        change "forced"
+        test <@ builds () = 2 @>
+
+        // The check after it, over the same tree: served from what the forced build wrote.
+        change "after"
+        test <@ builds () = 2 @>
+        test <@ completedBuilds = 3 @>)
+
 [<Fact(Timeout = 15000)>]
 let ``the build plugin's force-rebuild command matches the name the CLI sends`` () =
     // Plugins sit below the CLI, so the name is a bare literal here and a [<Literal>] there.

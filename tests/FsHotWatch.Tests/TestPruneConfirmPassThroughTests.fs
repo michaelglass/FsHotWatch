@@ -648,11 +648,8 @@ let ``a confirm's run is observably the run check makes to earn its baseline`` (
         [ for required in [ "events"; "statuses"; "file:.fshw/test-history.json"; "test-scope:scope" ] do
               if not (List.contains required keys) then
                   required
-          // No `cache:` prefix: a session's first run mints no test-prune entry in either
-          // mode (the key refuses until the session holds test evidence, and a per-file
-          // analysis folded while the run owns the status reports no terminal). Whatever
-          // either mode writes is still compared below.
-          for prefix in [ "index:"; "file:.fshw/test-runs/"; "file:coverage/" ] do
+          // The per-file analysis entries the cohort wrote while the run owned the status.
+          for prefix in [ "index:"; "cache:test-prune:"; "file:.fshw/test-runs/"; "file:coverage/" ] do
               if not (keys |> List.exists (fun k -> k.StartsWith prefix)) then
                   prefix + "*" ]
 
@@ -688,6 +685,9 @@ let ``a check after a confirm in the same daemon is served warm`` () =
 
     Assert.Equal(1, outcome.RunCount)
     let warm = outcome.Warm.Value
+    // Every file the check re-checks replays test-prune's cached analysis, including the
+    // ones the confirm analysed while its run owned the status.
+    test <@ List.isEmpty warm.FileLookupMisses @>
     test <@ warm.CoveringQueries = 0 @>
     test <@ warm.Runs = 0 @>
 

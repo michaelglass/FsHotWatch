@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a per-file result a plugin finishes while an exclusive run owns its status is
+  still written to the task cache. The funnel withholds the status publication, as
+  before, but a per-file entry carries no summary and replays through the same funnel,
+  so the next scan replays the file instead of re-running its work. A cold scan analyses
+  its files while the run it started is in flight, so a `check` after a cold `check` or
+  `confirm` re-analysed every file. A whole-run entry still captures only a terminal
+  that landed.
+
 - fix: a rewrite that leaves a file's bytes unchanged no longer re-typechecks the
   projects downstream of it. The check pipeline builds the checker's project
   snapshots itself (`ProjectSnapshots`) instead of handing it project options, so
