@@ -42,6 +42,8 @@ type Config =
         Prepare: string
         /// Top-level `.fshw.json` keys removed in the (throwaway) bench worktrees.
         Strip: string list
+        /// `--set` overrides applied after `Strip`, in order.
+        Set: ConfigOverride.Set list
         Tests: bool
         Heap: bool
         /// Keep caches between repetitions instead of forcing a cold scan each time.
@@ -117,16 +119,14 @@ let private removeWorktree (cfg: Config) (name: string) (path: string) =
     with _ ->
         ()
 
-/// Remove top-level keys from a worktree's `.fshw.json`.
-let private stripConfig (worktree: string) (keys: string list) =
-    if not (List.isEmpty keys) then
+/// Apply `--strip` then `--set` to a worktree's `.fshw.json`.
+let private overrideConfig (worktree: string) (strip: string list) (sets: ConfigOverride.Set list) =
+    if not (List.isEmpty strip && List.isEmpty sets) then
         let file = Path.Combine(worktree, ".fshw.json")
-        let node = Text.Json.Nodes.JsonNode.Parse(File.ReadAllText file).AsObject()
 
-        for k in keys do
-            node.Remove(k) |> ignore
-
-        File.WriteAllText(file, node.ToJsonString())
+        match ConfigOverride.apply strip sets (File.ReadAllText file) with
+        | Ok text -> File.WriteAllText(file, text)
+        | Error e -> failwith e
 
 /// A daemon the harness started.
 type Daemon =
@@ -270,6 +270,8 @@ type Sample =
         /// The walk's kept raw trace, for the retention analysis.
         Trace: string option
         Retention: Retention.Reading option
+        /// The daemon's config echo, on records that read its log window.
+        Echo: (string * string) list option
     }
 
 /// Take one sample of a daemon: footprint, and with `heap` a heap walk first (the
@@ -311,6 +313,7 @@ let write
     (pid: int)
     (ours: int list)
     (preflight: string list)
+    (provenance: Record.ConfigProvenance)
     (sleepWindow: Sleep.Window)
     (s: Sample)
     =
@@ -363,6 +366,7 @@ let write
             s.Walk
             |> Option.map (fun w -> HeapHistogram.estimate w.Stats, HeapHistogram.top 40 w.Stats)
           Retention = s.Retention
+          Config = { provenance with Echo = s.Echo }
           Scan = s.Scan
           Tests = s.Tests
           PhaseMs = s.PhaseMs
@@ -447,6 +451,11 @@ let runMatrix (cfg: Config) : int =
             log "refusing to measure (pass --allow-contended to record contended samples anyway)"
             exit 3
 
+    let provenance: Record.ConfigProvenance =
+        { Strip = cfg.Strip
+          Set = cfg.Set |> List.map (fun s -> ConfigOverride.pathText s, s.Json)
+          Echo = None }
+
     let maxSessions = List.max cfg.Sessions
     let wtRoot = Path.Combine(cfg.Repo, ".workspaces")
     Directory.CreateDirectory wtRoot |> ignore
@@ -460,7 +469,7 @@ let runMatrix (cfg: Config) : int =
         for i, (name, path) in List.indexed worktrees do
             log $"worktree %d{i + 1}: %s{path} at %s{cfg.Rev}"
             addWorktree cfg name path
-            stripConfig path cfg.Strip
+            overrideConfig path cfg.Strip cfg.Set
 
             if not (String.IsNullOrWhiteSpace cfg.Prepare) then
                 log $"prepare: %s{cfg.Prepare}"
@@ -535,6 +544,7 @@ let runMatrix (cfg: Config) : int =
                                 d.Pid
                                 ours
                                 preflight
+                                provenance
                                 sleepWindow
                                 { Phase = "cold-scan"
                                   Footprint = fp
@@ -543,10 +553,14 @@ let runMatrix (cfg: Config) : int =
                                   Scan = scan
                                   Tests = None
                                   PhaseMs = scan |> Option.map _.DurationMs
-                                  Invalid = problems @ scanProblems d.Pid scan window
+                                  Invalid =
+                                    problems
+                                    @ scanProblems d.Pid scan window
+                                    @ ConfigOverride.echoProblems cfg.Set (ConfigOverride.echo window)
                                   Stamp = None
                                   Trace = None
-                                  Retention = None }
+                                  Retention = None
+                                  Echo = Some(ConfigOverride.echo window) }
 
                         for d in still do
                             if not (Instruments.isAlive d.Pid) then
@@ -581,6 +595,7 @@ let runMatrix (cfg: Config) : int =
                             d.Pid
                             ours
                             preflight
+                            provenance
                             sleepWindow
                             { Phase = "settled"
                               Footprint = fp
@@ -592,7 +607,8 @@ let runMatrix (cfg: Config) : int =
                               Invalid = problems @ parity
                               Stamp = None
                               Trace = None
-                              Retention = None }
+                              Retention = None
+                              Echo = None }
 
                     // Phase 3: post-GC, one session at a time so walks do not overlap.
                     if cfg.Heap then
@@ -618,7 +634,8 @@ let runMatrix (cfg: Config) : int =
                                         Sleep.gap Sleep.system sleepWindow
                                     )
                                   Trace = tracePath d.Session "post-gc"
-                                  Retention = None }
+                                  Retention = None
+                                  Echo = None }
                             )
 
                     // Phase 4: a full check in every worktree at once, then post-GC again.
@@ -673,7 +690,8 @@ let runMatrix (cfg: Config) : int =
                                         Sleep.gap Sleep.system sleepWindow
                                     )
                                   Trace = tracePath d.Session "after-tests"
-                                  Retention = None }
+                                  Retention = None
+                                  Echo = None }
                             )
                 finally
                     for d in daemons do
@@ -688,7 +706,18 @@ let runMatrix (cfg: Config) : int =
                             else
                                 sample
 
-                        write cfg.Out runId cfg.Label position d.Worktree d.Pid ours preflight sleepWindow enriched
+                        write
+                            cfg.Out
+                            runId
+                            cfg.Label
+                            position
+                            d.Worktree
+                            d.Pid
+                            ours
+                            preflight
+                            provenance
+                            sleepWindow
+                            enriched
 
         0
     finally
@@ -744,7 +773,8 @@ let probe
                   Invalid = problems @ pidProblem
                   Stamp = Some(Instruments.loadSnapshot [ pid ], true, Sleep.gap Sleep.system sleepWindow)
                   Trace = trace
-                  Retention = None }
+                  Retention = None
+                  Echo = None }
 
         write
             out
@@ -758,6 +788,7 @@ let probe
             pid
             [ pid ]
             []
+            Record.noConfig
             sleepWindow
             sample
 

@@ -9,7 +9,7 @@ let private usage =
 
   fshw-bench run --repo <path> [--rev <rev>] [--sessions 1,2,4] [--reps 5]
                  [--out <jsonl>] [--label per-worktree] [--cli <FsHotWatch.Cli.dll>]
-                 [--prepare "<shell cmd>"] [--strip <key>]... [--tests] [--no-heap]
+                 [--prepare "<shell cmd>"] [--strip <key>]... [--set <dotted.path>=<json>]... [--tests] [--no-heap]
                  [--warm-cache] [--settle-sec 60] [--sample-sec 5]
                  [--scan-timeout-min 60] [--test-timeout-min 120]
                  [--keep-worktrees] [--allow-contended] [--keep-traces <dir>] [--no-retention]
@@ -73,6 +73,25 @@ let main argv =
         | Some repo ->
             let repo = Path.GetFullPath repo
 
+            // Every --set is parsed before anything is created: a typo exits here, not
+            // after worktrees were built.
+            let sets =
+                opts
+                |> Map.tryFind "set"
+                |> Option.defaultValue []
+                |> List.map ConfigOverride.parseSet
+
+            match
+                sets
+                |> List.choose (function
+                    | Error e -> Some e
+                    | Ok _ -> None)
+            with
+            | first :: _ ->
+                eprintfn "%s" first
+                exit 2
+            | [] -> ()
+
             Scenario.runMatrix
                 { Repo = repo
                   Rev = one opts "rev" |> Option.defaultValue "@-"
@@ -88,6 +107,7 @@ let main argv =
                   Cli = one opts "cli" |> Option.defaultValue (defaultCli ())
                   Prepare = one opts "prepare" |> Option.defaultValue "dotnet build"
                   Strip = opts |> Map.tryFind "strip" |> Option.defaultValue []
+                  Set = sets |> List.choose Result.toOption
                   Tests = flag opts "tests"
                   Heap = not (flag opts "no-heap")
                   WarmCache = flag opts "warm-cache"

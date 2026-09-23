@@ -98,6 +98,21 @@ let split (fp: Footprint.Reading) (gc: GcReading) : Split =
       Image = dirty Footprint.Bucket.Image
       StackAndOther = dirty Footprint.Bucket.Stack + dirty Footprint.Bucket.Other }
 
+/// The config overrides a record ran under, and what the daemon echoed back.
+type ConfigProvenance =
+    {
+        /// `--strip` keys, in order.
+        Strip: string list
+        /// `--set` paths and their JSON values, in order.
+        Set: (string * string) list
+        /// The daemon's `[config] section: key=value` echo from its log window
+        /// (`section.key → value`). `None` when the log was not read for this record.
+        Echo: (string * string) list option
+    }
+
+/// No overrides (a probe, or a run without `--strip`/`--set`).
+let noConfig = { Strip = []; Set = []; Echo = None }
+
 /// Where in a scenario a record was taken.
 type Position =
     {
@@ -137,6 +152,7 @@ type BenchRecord =
         Heap: (HeapHistogram.ShareEstimate * HeapHistogram.TypeStat list) option
         /// The heap-graph partition that narrows the type-based shareable range.
         Retention: Retention.Reading option
+        Config: ConfigProvenance
         Scan: FsHotWatch.ScanMetrics.ScanSample option
         Tests: DaemonLog.TestTotals option
         /// Wall time of the phase the sample closes (scan, test run), ms.
@@ -271,6 +287,12 @@ let private retentionNode (r: Retention.Reading) : JsonNode =
           "accountingError", nf r.Narrowed.AccountingError
           "problems", arr (r.Problems |> List.map ns) ]
 
+let private configNode (c: ConfigProvenance) : JsonNode =
+    obj
+        [ "strip", arr (c.Strip |> List.map ns)
+          "set", obj [ for path, json in c.Set -> path, JsonNode.Parse(json) ]
+          "echo", opt (fun (pairs: (string * string) list) -> obj [ for k, v in pairs -> k, ns v ]) c.Echo ]
+
 let private loadNode (l: Load.Snapshot) : JsonNode =
     obj
         [ "load1", nf l.Load1
@@ -309,6 +331,7 @@ let toJsonLine (r: BenchRecord) : string =
                | _ -> null)
               "heap", opt heapNode r.Heap
               "retention", opt retentionNode r.Retention
+              "config", configNode r.Config
               "scan",
               opt
                   (fun (s: FsHotWatch.ScanMetrics.ScanSample) -> JsonNode.Parse(FsHotWatch.ScanMetrics.toJsonLine s))

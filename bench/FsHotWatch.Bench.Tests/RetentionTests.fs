@@ -128,6 +128,7 @@ let ``a record carries the retention reading and the summary scores only trusted
                   Gc = None
                   Heap = None
                   Retention = Some reading
+                  Config = Record.noConfig
                   Scan = None
                   Tests = None
                   PhaseMs = None
