@@ -680,12 +680,15 @@ let runMatrix (cfg: Config) : int =
 
                 // Host mode: one state home per repetition, so each starts a fresh host.
                 let stateHome = Path.Combine(runDir, $"state-n%d{sessions}-r%d{rep}")
-                let hostPort = Path.Combine(runDir, $"h%d{sessions}-%d{rep}.sock")
 
+                // No DOTNET_DiagnosticPorts here: the CLI that launches the host is a
+                // .NET process with the same environment, so it binds that listen path
+                // first and removes it on exit, and the host is left without it
+                // (observed: host alive, env set, no socket at the path). The host's own
+                // default socket is found from its pid instead (`lsof -U`).
                 let hostEnv =
                     [ "FSHW_REPOSITORY_HOST", "1"
                       "FSHW_STATE_HOME", stateHome
-                      "DOTNET_DiagnosticPorts", $"%s{hostPort},listen,nosuspend"
                       FsHwPaths.CacheHomeEnvVar, cacheHome ]
 
                 let launched = ResizeArray<Process>()
@@ -718,19 +721,42 @@ let runMatrix (cfg: Config) : int =
                             launched.Add(launch cfg hostEnv wt $"%s{noCache}scan" out)
                             i, wt, started
 
+                        // A host start that fails must not leak the host or its CLIs:
+                        // the repetition's own cleanup only covers a started repetition.
+                        let abandon (why: string) =
+                            let exe, prefix = cliInvocation cfg.Cli
+
+                            Instruments.runWith
+                                hostEnv
+                                exe
+                                (prefix + "stop --repository")
+                                active.Head
+                                (TimeSpan.FromMinutes 2.0)
+                            |> ignore
+
+                            hostPidIn stateHome |> Option.iter stopPid
+
+                            for p in launched do
+                                try
+                                    if not p.HasExited then
+                                        p.Kill(true)
+                                with _ ->
+                                    ()
+
+                            failwith why
+
                         let first = startSession 1 active.Head
 
-                        let hostPid =
+                        let hostPid, hostPort =
                             match waitFor (TimeSpan.FromMinutes 5.0) (fun () -> hostPidIn stateHome) with
-                            | Some pid when File.Exists hostPort -> pid
+                            | None -> abandon $"no repository host appeared under %s{stateHome}"
                             | Some pid ->
                                 match
-                                    waitFor (TimeSpan.FromSeconds 30.0) (fun () ->
-                                        if File.Exists hostPort then Some() else None)
+                                    waitFor (TimeSpan.FromSeconds 60.0) (fun () ->
+                                        Instruments.diagnosticPort pid None |> Result.toOption)
                                 with
-                                | Some() -> pid
-                                | None -> failwith $"host pid %d{pid} opened no diagnostic port at %s{hostPort}"
-                            | None -> failwith $"no repository host appeared under %s{stateHome}"
+                                | Some port -> pid, port
+                                | None -> abandon $"host pid %d{pid} has no diagnostic socket"
 
                         let rest = active |> List.tail |> List.mapi (fun i wt -> startSession (i + 2) wt)
 
