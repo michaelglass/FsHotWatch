@@ -339,6 +339,7 @@ type Sample =
         Scan: ScanMetrics.ScanSample option
         Tests: DaemonLog.TestTotals option
         PhaseMs: float option
+        SettleFiles: int option
         Invalid: string list
         /// The box, the daemon's liveness and the sleep gap AT SAMPLE TIME, for records written later
         /// (a deferred retention analysis runs after the daemons stop). `None` = read now.
@@ -448,6 +449,7 @@ let write
           Scan = s.Scan
           Tests = s.Tests
           PhaseMs = s.PhaseMs
+          SettleFiles = s.SettleFiles
           Invalid = s.Invalid }
 
     Record.append out record
@@ -582,7 +584,7 @@ let private stopPid (pid: int) =
 let private editPhase
     (cfg: Config)
     (sessions: SessionRun list)
-    (record: SessionRun -> float option -> string list -> unit)
+    (record: SessionRun -> DaemonLog.Settle option -> string list -> unit)
     =
     match cfg.EditFile with
     | Some rel when cfg.Edits > 0 ->
@@ -632,7 +634,7 @@ let private editPhase
 
                 for s, settle in awaitSettles before do
                     match settle with
-                    | Some st -> record s (Some st.AfterMs) []
+                    | Some st -> record s (Some st) []
                     | None ->
                         record
                             s
@@ -847,6 +849,7 @@ let runMatrix (cfg: Config) : int =
                       Scan = None
                       Tests = None
                       PhaseMs = None
+                      SettleFiles = None
                       Invalid = []
                       Stamp = None
                       Trace = None
@@ -988,7 +991,7 @@ let runMatrix (cfg: Config) : int =
                             )
 
                     // Phase 4: settle latency under concurrency.
-                    editPhase cfg sessionRuns (fun s afterMs problems ->
+                    editPhase cfg sessionRuns (fun s settle problems ->
                         emit
                             s.Worktree
                             (match s.Owner with
@@ -996,7 +999,8 @@ let runMatrix (cfg: Config) : int =
                              | Owner.Host pid -> pid)
                             (pos s.Session "edit")
                             { blank "edit" with
-                                PhaseMs = afterMs
+                                PhaseMs = settle |> Option.map _.AfterMs
+                                SettleFiles = settle |> Option.map _.Files
                                 Invalid = problems })
 
                     // Phase 5: a full check in every worktree at once, then post-GC again.
@@ -1165,6 +1169,7 @@ let probe
                   Scan = scan
                   Tests = if Option.isSome worktree then testTotals window else None
                   PhaseMs = None
+                  SettleFiles = None
                   Invalid = problems @ pidProblem
                   Stamp = Some(Instruments.loadSnapshot [ pid ], true, Sleep.gap Sleep.system sleepWindow)
                   Trace = trace
