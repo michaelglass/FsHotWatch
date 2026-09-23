@@ -22,7 +22,7 @@ let private keyOf (handler: PluginHandler<'State, 'Msg>) = handler.CacheKey.Valu
 let ``decideBuildOutcome success with clean output yields BuildPassed and no entries`` () =
     let output = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
     let (outcome, entries) = decideBuildOutcome true output
-    test <@ outcome = BuildPassed output @>
+    test <@ outcome = BuildPassed(output, None) @>
     test <@ entries.IsEmpty @>
 
 [<Fact(Timeout = 15000)>]
@@ -31,10 +31,51 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
         "/src/Bar.fs(3,1): warning FS0040: This construct causes code to be less generic"
 
     let (outcome, entries) = decideBuildOutcome true output
-    test <@ outcome = BuildPassed output @>
+    test <@ outcome = BuildPassed(output, None) @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Warning @>
     test <@ entries.[0].Line = 3 @>
+
+// --- how many projects a passed build actually re-emitted ---
+
+let private threeProjectOutput =
+    [ "  Lib -> /repo/src/Lib/bin/Debug/net10.0/Lib.dll"
+      "  App -> /repo/src/App/bin/Debug/net10.0/App.dll"
+      "  Tests -> /repo/tests/Tests/bin/Debug/net10.0/Tests.dll" ]
+    |> String.concat "\n"
+
+let private buildStarted = DateTime(2026, 9, 24, 1, 0, 0, DateTimeKind.Utc)
+
+[<Fact(Timeout = 15000)>]
+let ``countRebuilt counts only the outputs written after the build started`` () =
+    let writtenAt path =
+        match path with
+        | "/repo/tests/Tests/bin/Debug/net10.0/Tests.dll" -> Some(buildStarted.AddSeconds 12.0)
+        | "/repo/src/Lib/bin/Debug/net10.0/Lib.dll" -> Some(buildStarted.AddMinutes -20.0)
+        | _ -> None
+
+    test <@ countRebuilt writtenAt buildStarted threeProjectOutput = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeBuildPassed says how many of the named projects were rebuilt`` () =
+    test <@ describeBuildPassed threeProjectOutput (Some 1) = "rebuilt 1 of 3 projects" @>
+    test <@ describeBuildPassed threeProjectOutput (Some 0) = "3 projects up to date" @>
+    test <@ describeBuildPassed threeProjectOutput None = "3 projects built or up to date" @>
+    test <@ describeBuildPassed "Build succeeded." (Some 0) = "build succeeded" @>
+
+[<Fact(Timeout = 15000)>]
+let ``withRebuiltCount measures a passed build and leaves failures alone`` () =
+    let writtenAt (_: string) = Some(buildStarted.AddSeconds 1.0)
+
+    test
+        <@
+            withRebuiltCount writtenAt buildStarted (BuildPassed(threeProjectOutput, None)) = BuildPassed(
+                threeProjectOutput,
+                Some 3
+            )
+        @>
+
+    test <@ withRebuiltCount writtenAt buildStarted (BuildOutputFailed [ "x" ]) = BuildOutputFailed [ "x" ] @>
 
 [<Fact(Timeout = 15000)>]
 let ``successful build is refused when an MSB3026 migration copy remains unresolved`` () =
@@ -85,7 +126,7 @@ let ``MSB3026 retry that eventually copied matching dependency bytes remains suc
     let outcome, verifiedEntries =
         verifyCopyRetryWarningsWith (fun _ -> "matching-hash") "/repo" rawOutcome entries
 
-    test <@ outcome = BuildPassed output @>
+    test <@ outcome = BuildPassed(output, None) @>
     test <@ verifiedEntries = entries @>
 
 [<Fact(Timeout = 15000)>]
@@ -1396,7 +1437,8 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     let cacheKeyFn = handler.CacheKey.Value handler.Init
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 
-    let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], System.TimeSpan.Zero))
+    let buildDoneEvt =
+        Custom(BuildDone(BuildPassed("x", None), [], System.TimeSpan.Zero))
 
     let fileKey = cacheKeyFn fileEvt
     let doneKey = cacheKeyFn buildDoneEvt
@@ -1448,7 +1490,8 @@ let ``BuildPlugin cache reads are limited to genuine build-trigger events`` () =
     test <@ failedDependencyKey = None @>
     test <@ unrelatedKey = None @>
 
-    let stored = cacheKey (Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero)))
+    let stored =
+        cacheKey (Custom(BuildDone(BuildPassed("ok", None), [], TimeSpan.Zero)))
 
     test <@ stored.IsSome @>
 
@@ -2302,7 +2345,7 @@ let ``force-rebuild still lets the fresh build's result be cached`` () =
     let handler, _ = warmedWithKeyFn ()
     let cacheKeyFn = handler.CacheKey.Value(forceRebuildState handler)
 
-    let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
+    let buildDoneEvt = Custom(BuildDone(BuildPassed("x", None), [], TimeSpan.Zero))
 
     let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
     let storeKey = cacheKeyFn buildDoneEvt
@@ -2434,7 +2477,7 @@ let ``only a passing build result vouches for the shared artifacts`` () =
     let summary (_: BuildOutcome) (_: ErrorEntry list) = "summary"
 
     let passed =
-        classifyBuildMsg summary (BuildDone(BuildPassed "ok", [], TimeSpan.Zero))
+        classifyBuildMsg summary (BuildDone(BuildPassed("ok", None), [], TimeSpan.Zero))
 
     let failed =
         classifyBuildMsg summary (BuildDone(BuildOutputFailed [ "x" ], [], TimeSpan.Zero))
@@ -2555,7 +2598,7 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
         handler.Update
             (stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> true))
             launched
-            (Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero)))
+            (Custom(BuildDone(BuildPassed("ok", None), [], TimeSpan.Zero)))
         |> Async.RunSynchronously
 
     Assert.True((handler.CacheKey.Value rebuilt event).IsSome, "a completed build spends the request")
@@ -2608,7 +2651,9 @@ let private holding = stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> true)
 
 let private sourceEdit = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 let private forceRequest = Custom ForceRebuildRequested
-let private buildPassed = Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero))
+
+let private buildPassed =
+    Custom(BuildDone(BuildPassed("ok", None), [], TimeSpan.Zero))
 
 let private freshHandler () =
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
@@ -2794,7 +2839,7 @@ let ``input retained behind a finished build is built by that build's result fol
 
         // The finished build's own result fold holds the slot, so its claim succeeds.
         let drained =
-            handler.Update holderFold retained (Custom(BuildDone(BuildPassed "first", [], TimeSpan.Zero)))
+            handler.Update holderFold retained (Custom(BuildDone(BuildPassed("first", None), [], TimeSpan.Zero)))
             |> Async.RunSynchronously
 
         Assert.Empty drained.PendingFiles
@@ -2843,7 +2888,7 @@ let ``dependency success preserves queued input while the build slot is held`` (
     running <- false
 
     let drained =
-        update satisfied (Custom(BuildDone(BuildPassed "original", [], TimeSpan.Zero)))
+        update satisfied (Custom(BuildDone(BuildPassed("original", None), [], TimeSpan.Zero)))
 
     Assert.Empty drained.PendingFiles
     Assert.Equal<(string * string) list>([ "build", "build-artifacts" ], Seq.toList claims)
@@ -2926,7 +2971,7 @@ let ``a source touched after the build bypasses the cache, though the merkle can
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
         let cacheKeyFn = handler.CacheKey.Value handler.Init
         let fileEvt = FileChanged(SourceChanged [ srcPath ])
-        let storeEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
+        let storeEvt = Custom(BuildDone(BuildPassed("x", None), [], TimeSpan.Zero))
 
         // POSITIVE CONTROL (inline): with the outputs fresh, this very detector serves
         // the cache. Without it the assertion below would also pass against a gate that
@@ -2979,7 +3024,10 @@ let ``stale artifacts suppress the cache LOOKUP only, never the STORE`` () =
         System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
 
         let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
-        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+
+        let storeKey =
+            cacheKeyFn (Custom(BuildDone(BuildPassed("x", None), [], TimeSpan.Zero)))
+
         test <@ lookupKey.IsNone @>
         test <@ storeKey.IsSome @>)
 
@@ -3188,7 +3236,10 @@ let ``a dependency-gated build still stores its result`` () =
         System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
 
         let lookupKey = cacheKeyFn (depSatisfied "fmt")
-        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+
+        let storeKey =
+            cacheKeyFn (Custom(BuildDone(BuildPassed("x", None), [], TimeSpan.Zero)))
+
         test <@ lookupKey.IsNone @>
         test <@ storeKey.IsSome @>)
 
@@ -3497,7 +3548,10 @@ let ``a pending dependency copy suppresses the cache LOOKUP only, never the STOR
         let cacheKeyFn = keyOf (BuildPlugin.create "true" "" [] graph [] None [] None)
 
         let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
-        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+
+        let storeKey =
+            cacheKeyFn (Custom(BuildDone(BuildPassed("x", None), [], TimeSpan.Zero)))
+
         test <@ lookupKey.IsNone @>
         test <@ storeKey.IsSome @>)
 
@@ -3601,7 +3655,7 @@ let ``a failed build mints evidence for the model it failed under; a passing one
     // The control: a green build earns a receipt from the runs it enables, not from
     // itself. Minting one here would end an evidence wait on a build that verified
     // nothing — the very vacuous clean this slice removes.
-    let passedState = fold (BuildPassed "ok")
+    let passedState = fold (BuildPassed("ok", None))
     test <@ (passedState :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
 
     // A build that failed under no model answers nothing about the graded one.
