@@ -505,19 +505,21 @@ type DaemonRpcTarget
                     |> Map.toList
                     |> List.choose (fun (name, s) -> if Events.PluginStatus.isTerminal s then None else Some name)
 
-                match running with
-                | [] -> Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — all plugins already terminal"
-                | plugins ->
-                    let joined = plugins |> String.concat ", "
-                    Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — waiting for: %s{joined}"
-
                 let timeout =
                     if timeoutMs <= 0 then
-                        Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC"
-                        |> Option.ofObj
-                        |> resolveVerdictDeadline
+                        ambientRpcDeadline ()
                     else
                         TimeSpan.FromMilliseconds(float timeoutMs)
+
+                // Logged as the bound actually applied: a client that imposes none still
+                // waits under the daemon's deadline, never without one.
+                match running with
+                | [] when statuses.IsEmpty ->
+                    Logging.info "rpc" $"WaitForComplete(bound %O{timeout}) called — no plugins registered"
+                | [] -> Logging.info "rpc" $"WaitForComplete(bound %O{timeout}) called — all plugins already terminal"
+                | plugins ->
+                    let joined = plugins |> String.concat ", "
+                    Logging.info "rpc" $"WaitForComplete(bound %O{timeout}) called — waiting for: %s{joined}"
 
                 do! config.WaitForAllTerminal(timeout)
                 config.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore

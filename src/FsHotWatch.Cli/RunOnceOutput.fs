@@ -46,21 +46,6 @@ module StatusView =
         | Completed(at, _) -> StatusView.Completed at
         | Failed(error, at, _) -> StatusView.Failed(error, at)
 
-    // Idle counts as quiescent for status-aggregation callers that query after
-    // WaitForScan: Idle there means "not triggered by this scan", not "pending".
-    //
-    // `Unreadable` is quiescent too: there is nothing to WAIT for — a status we cannot
-    // read will not become readable by polling it again, and blocking on one would hang
-    // the check instead of failing it. It is terminal AND failing (see
-    // `Verdict.pluginOutcomeOf`).
-    let isQuiescent (status: StatusView) =
-        match status with
-        | StatusView.Running _ -> false
-        | StatusView.Idle
-        | StatusView.Completed _
-        | StatusView.Failed _
-        | StatusView.Unreadable _ -> true
-
 type ParsedPluginStatus =
     { Status: StatusView
       Subtasks: Subtask list

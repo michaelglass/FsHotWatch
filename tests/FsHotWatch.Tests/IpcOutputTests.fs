@@ -707,8 +707,8 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 //
 // The scan signals its generation as soon as FCS check + BatchChecked finish; at that
 // instant test-prune can still be Idle (its queued `BuildCompleted` has not been handled,
-// so it has not transitioned Idle->Running). `isAllTerminal` treats Idle as quiescent and
-// never consults the host's inflight/busy state, so `check` concluded "settled", read
+// so it has not transitioned Idle->Running). A status-map predicate treats Idle as quiescent
+// and never consults the host's inflight/busy state, so `check` concluded "settled", read
 // diagnostics during that Idle window, and exited 0 while real test failures were still
 // pending. `pollAndRender` now blocks on `WaitForComplete` before reading diagnostics;
 // status polling is rendering-only.
@@ -800,7 +800,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
     // ...and exit 1 only happens if the check waited for the verdict before reading
-    // diagnostics. Settling on `isAllTerminal` reads the clean ledger during the Idle
+    // diagnostics. Settling on the status map reads the clean ledger during the Idle
     // window and returns 0 — the false green.
     test <@ exitCode = 1 @>
 

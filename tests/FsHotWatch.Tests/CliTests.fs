@@ -760,8 +760,8 @@ let private fakeConfig: DaemonConfiguration =
         Cache = FsHotWatch.Cli.DaemonConfig.NoCache }
 
 /// Structured plugin-status JSON in the shape `parsePluginStatuses` expects — object per
-/// plugin, not a bare string. The bare-string shape parses to an empty map, on which
-/// `isAllTerminal` is false, so the pollAndRender loop hangs.
+/// plugin, not a bare string. The bare-string shape parses to an empty map, which
+/// renders no plugin at all.
 let private completedStatusJson =
     """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
 

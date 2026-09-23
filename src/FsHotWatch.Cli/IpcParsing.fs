@@ -362,7 +362,7 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
 /// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into the CLI-side
 /// `StatusView`. TOTAL — every way of not understanding the element is a
 /// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from the
-/// map (which would make `isAllTerminal` read true for a plugin it can no longer see).
+/// map (which would hide that plugin from every reader of the map).
 /// The verdict travels in `lastRun`, not here.
 ///
 /// The `running`/`since` arm bites hardest: `since` is the ONLY input to the wedge
@@ -1035,12 +1035,6 @@ let parseCheckReach (json: string) : CheckReachReading =
                   Recall = recall }
     with ex ->
         ReachUnavailable $"the daemon's `%s{CheckReachCommand}` reply could not be parsed: %s{ex.Message}"
-
-/// Check if all statuses are quiescent (Completed, Failed, or Idle).
-/// Returns false for empty maps (no plugins registered yet).
-let isAllTerminal (statuses: Map<string, StatusView>) : bool =
-    not statuses.IsEmpty
-    && statuses |> Map.forall (fun _ s -> StatusView.isQuiescent s)
 
 // ---------------------------------------------------------------------------
 // Wall-time attribution rework. The daemon's OWN account of where its wall time went.

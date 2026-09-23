@@ -365,6 +365,52 @@ let ``a verdict wait ends on a completed build failure, which mints no other rec
         FsHotWatch.Daemon.waitForVerdict host (System.TimeSpan.FromSeconds 5.0) CancellationToken.None
         |> fun waiting -> waiting.GetAwaiter().GetResult())
 
+// ---------------------------------------------------------------------------
+// A configuration that turns every plugin off registers none.
+// ---------------------------------------------------------------------------
+
+/// A host as a daemon configured with no plugins builds it: a published model, an empty
+/// registry.
+let private pluginFreeHost (repoRoot: string) =
+    let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+    host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+    host
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait over a host with no plugins registered resolves at once`` () =
+    withTempDir "verdict-wait-no-plugins" (fun repoRoot ->
+        let host = pluginFreeHost repoRoot
+
+        // Nothing owns work and nothing owes a receipt, so the answer exists the moment
+        // the wait starts. Waiting on would be waiting for evidence no plugin can produce.
+        test <@ host.GetAllStatuses() |> Map.isEmpty @>
+        test <@ not host.WorkSnapshot.IsBusy @>
+        test <@ not host.WorkSnapshot.OffersEvidence @>
+
+        FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult())
+
+[<Fact(Timeout = 30000)>]
+let ``a host with no plugins still waits for the work it owns, and names it`` () =
+    withTempDir "verdict-wait-no-plugins-owned" (fun repoRoot ->
+        // The control for the test above: an empty registry settles because it owns
+        // nothing, not because an empty registry is waved through.
+        let host = pluginFreeHost repoRoot
+        let scan = host.WorkStore.BeginOperation "scan"
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 1.0) CancellationToken.None
+                |> fun waiting -> waiting.GetAwaiter().GetResult())
+
+        test <@ failure.Message.Contains "no plugins are registered" @>
+        test <@ failure.Message.Contains "scan" @>
+
+        host.WorkStore.EndOperation scan
+
+        FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult())
+
 [<Fact(Timeout = 30000)>]
 let ``an in-flight verdict wait IS the client observation that inhibits idle exit`` () =
     withTempDir "verdict-wait-observed" (fun repoRoot ->

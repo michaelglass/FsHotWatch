@@ -517,10 +517,6 @@ let private withProjectOnlyRepo (name: string) (f: string -> 'a) : 'a =
 /// The cheapest config that still registers a plugin: the read-only format check —
 /// in-process (no `dotnet` spawn), and a no-op on a repo with no `.fs` files.
 ///
-/// It has to register SOMETHING. `isAllTerminal` is false for an EMPTY plugin map ("no
-/// plugins registered yet" is not "everything finished"), so a genuinely plugin-free daemon
-/// never settles and `RunOnce` blocks until its 30-minute timeout.
-///
 /// No build, no lint, and above all NO TESTS: with no test projects there is no test-prune
 /// plugin, hence no `test-scope` command, hence no way to establish what ran. That is the
 /// state `confirm` must refuse.
@@ -595,6 +591,38 @@ let ``check and confirm --run-once complete without constructing a file watcher`
         // The exit codes are the ones the watcher-backed tests above establish for this
         // tree: `check` tolerates the unknown scope, `confirm` refuses it. A one-shot host
         // changes what is CONSTRUCTED, not what is verdicted.
+        let expected = if confirm then 3 else 0
+        test <@ exitCode = expected @>)
+
+[<Theory(Timeout = 60000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``check and confirm --run-once with no plugins registered return a verdict`` (confirm: bool) =
+    // `{"build": false, "format": false, "lint": false}` and nothing else: the host
+    // registers no plugin at all. Nothing can owe it work or evidence, so the settle has
+    // its answer as soon as the scan commits.
+    withProjectOnlyRepo "runonce-no-plugins" (fun repoRoot ->
+        let command, mode =
+            if confirm then
+                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.CheckVerdict.Confirmation
+            else
+                FsHotWatch.Cli.Program.Command.Check [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+                (fun _ -> "")
+                mode
+                false
+                (hostFor command)
+                repoRoot
+                { noTestProjectsConfig () with
+                    Format = FsHotWatch.Cli.DaemonConfig.Off }
+                None
+
+        // The same verdicts as the format-only config above: no tests configured is a
+        // green for `check` and an unearned scope for `confirm`.
         let expected = if confirm then 3 else 0
         test <@ exitCode = expected @>)
 

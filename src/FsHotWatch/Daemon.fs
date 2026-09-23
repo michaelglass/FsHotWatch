@@ -1801,9 +1801,10 @@ let private waitCoreWith
             let snapshot = host.WorkSnapshot
 
             if statuses.IsEmpty then
-                // The whole answer, and it implies the verdict reason below, which
-                // would otherwise be printed alongside it saying the same thing.
-                "nothing running, and no plugins are registered"
+                // A plugin-free host owes no evidence, so only work the host itself owns
+                // (a scan, a discovery) can hold it — name that work.
+                let owned = String.concat ", " snapshot.BusyNames
+                $"no plugins are registered, but the host still owns work: %s{owned}"
             else
                 let busyNames = String.concat ", " busy
 
@@ -1865,11 +1866,13 @@ let private waitCoreWith
         // dispatch fan-out until every recipient has admitted its event — so a handoff
         // from one owner to the next can never be read as rest between two reads, and
         // there is nothing left for a quiescence window to cover.
+        //
+        // A host with no plugins registered is at rest once it owns nothing: every
+        // caller registers its plugins before it can wait, so an empty registry is the
+        // configuration, not a host that has not started yet.
         let snapshot = host.WorkSnapshot
 
-        not (Map.isEmpty (host.GetAllStatuses()))
-        && not snapshot.IsBusy
-        && restRequires snapshot
+        not snapshot.IsBusy && restRequires snapshot
 
     // Wedge detection state: how much work the host had FINISHED when we last
     // saw progress, and when that was.
