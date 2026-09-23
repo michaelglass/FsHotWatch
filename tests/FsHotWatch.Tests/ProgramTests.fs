@@ -571,7 +571,7 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
                 ipc
                 tmpDir
                 "pipe-multi"
-                Stop
+                (Stop [])
                 defaultGlobalOptions
                 fakeConfig
                 5.0
@@ -607,7 +607,7 @@ let ``executeCommand Stop reports when no daemon is running`` () =
                     ipc
                     tmpDir
                     "pipe-none"
-                    Stop
+                    (Stop [])
                     defaultGlobalOptions
                     fakeConfig
                     5.0)

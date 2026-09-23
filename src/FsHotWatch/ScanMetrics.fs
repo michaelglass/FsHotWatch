@@ -62,6 +62,8 @@ type ScanSample =
         /// Cumulative gen-2 collections at sample time — lets a reader normalise
         /// a live `ManagedBytes` series by how much GC actually ran.
         Gen2Collections: int
+        /// Whose resources `RssBytes` and `ManagedBytes` measure.
+        Scope: DaemonHosting.ResourceScope
         /// UTC sample instant, round-trip ("o") format.
         SampledAt: DateTime
     }
@@ -129,6 +131,7 @@ let toJsonLine (sample: ScanSample) : string =
            managedBytes = sample.ManagedBytes
            forcedGc = sample.ForcedGc
            gen2Collections = sample.Gen2Collections
+           scope = DaemonHosting.ResourceScope.render sample.Scope
            sampledAt = sample.SampledAt.ToString("o") |}
     )
 
@@ -172,6 +175,12 @@ let tryParseLine (line: string) : ScanSample option =
                   ManagedBytes = (field "managedBytes").GetInt64()
                   ForcedGc = (field "forcedGc").GetBoolean()
                   Gen2Collections = (field "gen2Collections").GetInt32()
+                  Scope =
+                    DaemonHosting.ResourceScope.parse (
+                        match root.TryGetProperty "scope" with
+                        | true, value -> value.GetString()
+                        | _ -> ""
+                    )
                   // RoundtripKind, not the default: without it the "o" string's
                   // trailing Z is applied and then the value is converted to LOCAL
                   // time, so a series written in one timezone reads back shifted.
