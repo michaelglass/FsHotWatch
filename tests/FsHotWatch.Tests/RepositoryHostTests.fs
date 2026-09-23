@@ -552,7 +552,11 @@ let ``a second host for the same repository finds the first, and leaves it servi
 let ``a host with no session exits after its idle grace`` () =
     withRepository (fun fx ->
         use cts = new CancellationTokenSource()
-        let run = runHost (settingsFor fx) (TimeSpan.FromMilliseconds 200.0) cts
+        // Not `runHost`: its wait to see the endpoint up can straddle the whole 200ms
+        // life of a host that nobody attaches to.
+        let run =
+            Task.Run(fun () -> RepositoryHost.run (settingsFor fx) daemonFactory (TimeSpan.FromMilliseconds 200.0) cts)
+
         test <@ run.Wait(TimeSpan.FromSeconds 30.0) @>
         test <@ run.Result = HostRun.Stopped @>)
 
