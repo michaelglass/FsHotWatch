@@ -39,13 +39,13 @@ let private listAt (map: IReadOnlyDictionary<int64, int64 list>) (id: int64) =
     | true, values -> values
     | _ -> []
 
-/// For every symbol reachable from `roots` through `successors`, the union of `own` over
-/// everything it reaches, itself included. One pass: an iterative Tarjan emits each
+/// For every root, and everything reachable from it through `successors`, the union of
+/// `own` over everything it reaches, itself included. Only roots may be looked up. One pass: an iterative Tarjan emits each
 /// strongly connected component after every component it reaches, so each component's
 /// set is built once from finished successors. Iterative because an index's dependency
 /// chains can be deeper than the stack.
 let private reachability
-    (roots: int64 seq)
+    (roots: int64 list)
     (successors: int64 -> int64 list)
     (own: int64 -> Set<string>)
     : int64 -> Set<string> =
@@ -115,10 +115,8 @@ let private reachability
 
                         sets.Add reached
 
-    fun id ->
-        match componentOf.TryGetValue id with
-        | true, c -> sets[c]
-        | _ -> own id
+    // Only roots are ever looked up, and every root was visited above.
+    fun id -> sets[componentOf[id]]
 
 /// For each seed, the test projects `QueryAffectedTests [seed]` selects tests from.
 /// Every seed is present in the result; one the index does not know maps to the empty set.

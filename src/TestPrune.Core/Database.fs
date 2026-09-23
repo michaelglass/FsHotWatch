@@ -1056,128 +1056,124 @@ type Database(dbPath: string) =
         if seeds.IsEmpty then
             Map.empty
         else
-            use conn = openConnection dbPath
-            let typeKindStr = symbolKindToString Type
+            // Every connection, command and reader here is disposed in `finally`, not by
+            // `use`: a `use` binding adds a null check on a value that is never null, a
+            // branch no test can take.
+            let conn = openConnection dbPath
+
+            let rows (sql: string) (bind: SqliteCommand -> unit) (read: SqliteDataReader -> 'T) : 'T list =
+                let cmd = conn.CreateCommand()
+
+                try
+                    cmd.CommandText <- sql
+                    bind cmd
+                    let reader = cmd.ExecuteReader()
+
+                    try
+                        readAll reader read
+                    finally
+                        reader.Dispose()
+                finally
+                    cmd.Dispose()
 
             let idSet (prefix: string) =
                 $"SELECT value FROM json_each(@%s{prefix})"
 
-            let bindIds (prefix: string) (cmd: SqliteCommand) (ids: int64 list) =
+            let bindIds (prefix: string) (ids: int64 list) (cmd: SqliteCommand) =
                 cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
                 |> ignore
 
-            // Each seed's start set, labelled by seed: the seed itself, lifted to a
-            // containing type, and that type's members — `QueryAffectedTestsCore`'s
-            // `after_lift`/`expanded`, per seed. Not recursive.
-            let starts =
-                use cmd = conn.CreateCommand()
-
-                cmd.CommandText <-
-                    $"""
-                    WITH seeds(name) AS ({nameSet}),
-                    lifted(seed, id) AS (
-                        SELECT s.full_name, s.id
-                        FROM symbols s
-                        WHERE s.full_name IN (SELECT name FROM seeds)
+            try
+                // Each seed's start set, labelled by seed: the seed itself, lifted to a
+                // containing type, and that type's members — `QueryAffectedTestsCore`'s
+                // `after_lift`/`expanded`, per seed. Not recursive.
+                let starts =
+                    rows
+                        $"""
+                        WITH seeds(name) AS ({nameSet}),
+                        lifted(seed, id) AS (
+                            SELECT s.full_name, s.id
+                            FROM symbols s
+                            WHERE s.full_name IN (SELECT name FROM seeds)
+                            UNION
+                            SELECT child.full_name, parent.id
+                            FROM symbols child
+                            JOIN symbols parent ON child.parent_symbol_id = parent.id
+                            WHERE child.full_name IN (SELECT name FROM seeds)
+                              AND parent.kind = @typeKind
+                        )
+                        SELECT seed, id FROM lifted
                         UNION
-                        SELECT child.full_name, parent.id
-                        FROM symbols child
-                        JOIN symbols parent ON child.parent_symbol_id = parent.id
-                        WHERE child.full_name IN (SELECT name FROM seeds)
-                          AND parent.kind = @typeKind
-                    )
-                    SELECT seed, id FROM lifted
-                    UNION
-                    SELECT l.seed, child.id
-                    FROM lifted l
-                    JOIN symbols parent ON parent.id = l.id
-                    JOIN symbols child ON child.parent_symbol_id = parent.id
-                    WHERE parent.kind = @typeKind
-                    """
+                        SELECT l.seed, child.id
+                        FROM lifted l
+                        JOIN symbols parent ON parent.id = l.id
+                        JOIN symbols child ON child.parent_symbol_id = parent.id
+                        WHERE parent.kind = @typeKind
+                        """
+                        (fun cmd ->
+                            bindNameSet cmd seeds
+                            cmd.Parameters.AddWithValue("@typeKind", symbolKindToString Type) |> ignore)
+                        (fun r -> r.GetString(0), r.GetInt64(1))
 
-                bindNameSet cmd seeds
-                cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
-                use reader = cmd.ExecuteReader()
-                readAll reader (fun r -> r.GetString(0), r.GetInt64(1))
+                let startIds = starts |> List.map snd |> List.distinct
 
-            let startIds = starts |> List.map snd |> List.distinct
-
-            // THE walk: the reverse closure of every start at once.
-            let closure =
+                // THE walk: the reverse closure of every start at once.
                 System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
-                use cmd = conn.CreateCommand()
 
-                cmd.CommandText <-
-                    $"""
-                    WITH RECURSIVE closure(id) AS (
-                        {idSet "s"}
-                        UNION
-                        SELECT d.from_symbol_id
-                        FROM dependencies d
-                        JOIN closure c ON d.to_symbol_id = c.id
-                    )
-                    SELECT id FROM closure
-                    """
+                let closure =
+                    rows $"""
+                        WITH RECURSIVE closure(id) AS (
+                            {idSet "s"}
+                            UNION
+                            SELECT d.from_symbol_id
+                            FROM dependencies d
+                            JOIN closure c ON d.to_symbol_id = c.id
+                        )
+                        SELECT id FROM closure
+                        """ (bindIds "s" startIds) (fun r -> r.GetInt64(0))
 
-                bindIds "s" cmd startIds
-                use reader = cmd.ExecuteReader()
-                readAll reader (fun r -> r.GetInt64(0))
+                let edges =
+                    rows $"""
+                        SELECT DISTINCT to_symbol_id, from_symbol_id
+                        FROM dependencies
+                        WHERE to_symbol_id IN ({idSet "c"})
+                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetInt64(1))
 
-            let rowsOver (sql: string) (read: SqliteDataReader -> 'T) (extra: SqliteCommand -> unit) =
-                use cmd = conn.CreateCommand()
-                cmd.CommandText <- sql
-                bindIds "c" cmd closure
-                extra cmd
-                use reader = cmd.ExecuteReader()
-                readAll reader read
+                let testProjects =
+                    rows $"""
+                        SELECT DISTINCT symbol_id, test_project
+                        FROM test_methods
+                        WHERE symbol_id IN ({idSet "c"})
+                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetString(1))
 
-            let edges =
-                rowsOver
-                    $"""
-                    SELECT DISTINCT to_symbol_id, from_symbol_id
-                    FROM dependencies
-                    WHERE to_symbol_id IN ({idSet "c"})
-                    """
-                    (fun r -> r.GetInt64(0), r.GetInt64(1))
-                    ignore
+                let markers =
+                    rows
+                        $"""
+                        SELECT DISTINCT symbol_id
+                        FROM symbol_attributes
+                        WHERE attribute_name IN ({nameSetNamed "cr"})
+                          AND symbol_id IN ({idSet "c"})
+                        """
+                        (fun cmd ->
+                            bindIds "c" closure cmd
+                            bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
+                        (fun r -> r.GetInt64(0))
 
-            let testProjects =
-                rowsOver
-                    $"""
-                    SELECT DISTINCT symbol_id, test_project
-                    FROM test_methods
-                    WHERE symbol_id IN ({idSet "c"})
-                    """
-                    (fun r -> r.GetInt64(0), r.GetString(1))
-                    ignore
-
-            let markers =
-                rowsOver $"""
-                    SELECT DISTINCT symbol_id
-                    FROM symbol_attributes
-                    WHERE attribute_name IN ({nameSetNamed "cr"})
-                      AND symbol_id IN ({idSet "c"})
-                    """ (fun r -> r.GetInt64(0)) (fun cmd -> bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
-
-            let region: SeedCoverage.Region =
-                { Starts =
-                    starts
+                let byFirst (pairs: ('K * 'V) list) (values: 'V list -> 'W) =
+                    pairs
                     |> List.groupBy fst
-                    |> List.map (fun (seed, rows) -> KeyValuePair(seed, rows |> List.map snd))
+                    |> List.map (fun (key, group) -> KeyValuePair(key, group |> List.map snd |> values))
                     |> Dictionary
-                  Dependents =
-                    edges
-                    |> List.groupBy fst
-                    |> List.map (fun (target, rows) -> KeyValuePair(target, rows |> List.map snd))
-                    |> Dictionary
-                  Projects =
-                    testProjects
-                    |> List.groupBy fst
-                    |> List.map (fun (symbol, rows) -> KeyValuePair(symbol, rows |> List.map snd |> Set.ofList))
-                    |> Dictionary
-                  Barriers = HashSet<int64>(markers) }
 
-            SeedCoverage.coveringProjects region seeds
+                let region: SeedCoverage.Region =
+                    { Starts = byFirst starts id
+                      Dependents = byFirst edges id
+                      Projects = byFirst testProjects Set.ofList
+                      Barriers = HashSet<int64>(markers) }
+
+                SeedCoverage.coveringProjects region seeds
+            finally
+                conn.Dispose()
 
     /// Return every symbol occurrence declared in a given source file path, with that
     /// file's location and content hash.
