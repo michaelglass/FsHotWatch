@@ -10,9 +10,27 @@
   `confirm` re-analysed every file. A whole-run entry still captures only a terminal
   that landed.
 
+- fix: a rewrite that leaves a file's bytes unchanged no longer re-typechecks the
+  projects downstream of it. The check pipeline builds the checker's project
+  snapshots itself (`ProjectSnapshots`) instead of handing it project options, so
+  every source file is versioned by its content hash, not its last-write time, and
+  every `-r:` reference inside the repository by a stamp derived from its content
+  hash. A no-op rebuild of an upstream assembly, a restore or a checkout used to
+  discard the type-check work of every project downstream of the file it rewrote. Two
+  checkouts with identical content now produce identical file versions and reference
+  stamps. The hashes come from the memo the check-result cache's upstream
+  fingerprints already keep, so a file is read again only when its stat moves.
+
+- fix: invalidating a project now clears what the checker holds for it. The options
+  overload of `InvalidateConfiguration` clears nothing on the TransparentCompiler the
+  daemon uses, so both the per-project invalidation on a project change and the
+  one-time re-check of a self-incompatible type diagnostic went to FCS's cache
+  unchanged. Both now invalidate by the project's snapshot identity.
+
 - feat: `DaemonOptions.CheckerCacheSizeFactor` (default `Daemon.DefaultCheckerCacheSizeFactor`,
   100) sets the checker's `TransparentCompiler.CacheSizes`. The checker is built by
   `Daemon.createCheckerWithCacheSizes`, and `createChecker ()` stays at the default.
+
 - feat: exclusive work carries consumer leases, so a run nobody is waiting for any
   more stops holding the box. A plugin command runs under its requester's token (the
   IPC server's per-connection token), and every intent it enqueues is held by that

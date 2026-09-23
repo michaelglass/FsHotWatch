@@ -3487,7 +3487,7 @@ module Daemon =
                             // ClearLanguageServiceRootCaches — that GC is what
                             // makes the full path cold; scoping is the point.
                             for opts in optsList do
-                                checker.InvalidateConfiguration(opts))
+                                ProjectSnapshots.invalidate checker opts)
                   RepoRoot = repoRoot
                   Loader = loader
                   MapOptions = mapProjectOptions
