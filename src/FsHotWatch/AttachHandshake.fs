@@ -19,6 +19,7 @@ open System
 open System.Text.Json.Nodes
 open FsHotWatch.DaemonIdentity
 open FsHotWatch.RepositoryIdentity
+open FsHotWatch.SessionScope
 
 /// The wire schema name. A message without it is not an attach message.
 [<Literal>]
@@ -26,8 +27,10 @@ let Schema = "fshw.attach"
 
 /// The attach protocol this build speaks. Bump on ANY change to the message shape or
 /// its meaning; peers of different versions refuse each other.
+///
+/// 2: the request carries the client's environment.
 [<Literal>]
-let ProtocolVersion = 1
+let ProtocolVersion = 2
 
 /// Digest of the configuration a client loaded (SHA-256, lowercase hex).
 type ConfigDigest =
@@ -79,6 +82,9 @@ type AttachRequest =
         ClaimedRoot: string
         Expectation: IncarnationExpectation
         Config: ConfigDigest
+        /// The client's environment. The session's children start from it, and the
+        /// host refuses a client whose MSBuild-relevant variables differ from its own.
+        Environment: Map<string, string>
     }
 
 /// Who the host is, stated in every reply so a refused client can say what it met.
@@ -120,6 +126,14 @@ type AttachRefusal =
     | UnknownSession of expected: SessionId
     /// The worktree has a live session, but not the incarnation the client expects.
     | StaleIncarnation of expected: SessionId * live: SessionId
+    /// The worktree's own per-worktree daemon holds its lock (pid, when it recorded one).
+    | WorktreeOwnedByDaemon of pid: int option
+    /// The worktree resolves a different .NET SDK than the one this host loaded.
+    | ToolchainMismatch of client: string * host: string
+    /// The client's MSBuild-relevant environment differs from the host's.
+    | EnvironmentMismatch of EnvironmentMismatch list
+    /// The session could not be built (a configuration error, no projects, ...).
+    | SessionStartFailed of reason: string
 
 module AttachRefusal =
     /// A stable, payload-free name for each refusal — what goes on the wire as `kind`.
@@ -133,6 +147,18 @@ module AttachRefusal =
         | AttachRefusal.ClaimMismatch _ -> "claim-mismatch"
         | AttachRefusal.UnknownSession _ -> "unknown-session"
         | AttachRefusal.StaleIncarnation _ -> "stale-incarnation"
+        | AttachRefusal.WorktreeOwnedByDaemon _ -> "worktree-owned-by-daemon"
+        | AttachRefusal.ToolchainMismatch _ -> "toolchain-mismatch"
+        | AttachRefusal.EnvironmentMismatch _ -> "environment-mismatch"
+        | AttachRefusal.SessionStartFailed _ -> "session-start-failed"
+
+    /// True when a refusal of `kind` means "this worktree keeps its own per-worktree
+    /// daemon": the host is healthy but cannot serve THIS worktree in its process.
+    /// Every other refusal stops the client, which must never quietly go its own way.
+    let fallsBackToOwnDaemon (kind: string) : bool =
+        kind = "worktree-owned-by-daemon"
+        || kind = "toolchain-mismatch"
+        || kind = "environment-mismatch"
 
     /// One human-readable explanation, including what to do.
     let describe (refusal: AttachRefusal) : string =
@@ -158,6 +184,27 @@ module AttachRefusal =
         | AttachRefusal.StaleIncarnation(expected, live) ->
             $"session %s{SessionId.render expected} has been replaced by %s{SessionId.render live}; \
               results from the old incarnation are void — attach afresh"
+        | AttachRefusal.WorktreeOwnedByDaemon pid ->
+            let who =
+                match pid with
+                | Some pid -> $"its own daemon (pid %d{pid})"
+                | None -> "its own daemon"
+
+            $"this worktree is already served by %s{who}, which keeps serving it; to move it into \
+              the repository host, `fshw stop` that daemon first"
+        | AttachRefusal.ToolchainMismatch(client, host) ->
+            $"this worktree resolves .NET SDK %s{client} but the repository host loaded %s{host}, and \
+              one process can load only one MSBuild; this worktree keeps its own daemon — align its \
+              global.json with the host's to share it"
+        | AttachRefusal.EnvironmentMismatch mismatches ->
+            let each =
+                mismatches |> List.map SessionEnvironment.describeMismatch |> String.concat "; "
+
+            $"this shell's MSBuild-relevant environment differs from the repository host's (%s{each}), \
+              and in-process MSBuild evaluation reads the host's; this worktree keeps its own daemon — \
+              run from a shell that matches, or stop the host"
+        | AttachRefusal.SessionStartFailed reason ->
+            $"the repository host could not start this worktree's session: %s{reason}"
 
 type AttachResponse =
     | Attached of session: SessionId * disposition: AttachDisposition * host: HostIdentity
@@ -215,7 +262,8 @@ let decide
                 refuse (AttachRefusal.StaleIncarnation(expected, live.Session))
             | IncarnationExpectation.Resume expected, None -> refuse (AttachRefusal.UnknownSession expected)
 
-/// The request a client builds for its own resolved worktree.
+/// The request a client builds for its own resolved worktree, with an empty
+/// environment; a client sets `Environment` to its own.
 let requestFor
     (protocol: ProtocolIdentity)
     (worktree: ResolvedWorktree)
@@ -227,7 +275,8 @@ let requestFor
       Worktree = worktree.Worktree
       ClaimedRoot = worktree.Root.Value
       Expectation = expectation
-      Config = config }
+      Config = config
+      Environment = Map.empty }
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -267,6 +316,13 @@ let encodeRequest (request: AttachRequest) : string =
     node["worktree"] <- JsonValue.Create request.Worktree.Value
     node["root"] <- JsonValue.Create request.ClaimedRoot
     node["config"] <- JsonValue.Create request.Config.Value
+
+    let environment = JsonObject()
+
+    for KeyValue(name, value) in request.Environment do
+        environment[name] <- JsonValue.Create value
+
+    node["environment"] <- environment
 
     let expect = JsonObject()
 
@@ -350,6 +406,21 @@ let decodeRequest (json: string) : Result<AttachRequest, DecodeError> =
         let! root = field "root" nonEmpty node
         let! config = field "config" ConfigDigest.tryParse node
         let! expect = objectField "expect" node
+        let! environment = objectField "environment" node
+
+        let! variables =
+            environment
+            |> Seq.fold
+                (fun acc (KeyValue(name, value)) ->
+                    acc
+                    |> Result.bind (fun (vars: Map<string, string>) ->
+                        match value with
+                        | :? JsonValue as v ->
+                            match v.TryGetValue<string>() with
+                            | true, s -> Ok(vars.Add(name, s))
+                            | _ -> Error(DecodeError.Malformed $"environment `%s{name}` is not a string")
+                        | _ -> Error(DecodeError.Malformed $"environment `%s{name}` is not a string")))
+                (Ok Map.empty)
 
         let! expectation =
             match field "kind" Some expect with
@@ -368,7 +439,8 @@ let decodeRequest (json: string) : Result<AttachRequest, DecodeError> =
               Worktree = worktree
               ClaimedRoot = root
               Expectation = expectation
-              Config = config }
+              Config = config
+              Environment = variables }
     }
 
 /// The host's side of the wire: decode, then decide. An undecodable request is still

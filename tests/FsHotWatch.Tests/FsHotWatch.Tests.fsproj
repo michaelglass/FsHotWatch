@@ -65,6 +65,8 @@
     <Compile Include="DaemonTests.fs" />
     <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="SessionRegistryTests.fs" />
+    <Compile Include="RepositoryIpcTests.fs" />
+    <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />

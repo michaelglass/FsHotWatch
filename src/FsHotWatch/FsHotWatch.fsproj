@@ -114,6 +114,7 @@
     <Compile Include="DepsFreshness.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
+    <Compile Include="RepositoryIpc.fs" />
     <Compile Include="ScanActivity.fs" />
     <Compile Include="IdleExit.fs" />
     <Compile Include="Heartbeat.fs" />
@@ -121,6 +122,7 @@
     <Compile Include="ScanMetrics.fs" />
     <Compile Include="Daemon.fs" />
     <Compile Include="SessionRegistry.fs" />
+    <Compile Include="RepositoryHost.fs" />
   </ItemGroup>
 
   <ItemGroup>
