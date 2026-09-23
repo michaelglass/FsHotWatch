@@ -83,3 +83,94 @@ let ``the scan recognises a branch on the mode`` (line: string) =
 [<InlineData("            link.Ensure()")>]
 let ``the scan leaves questions to the seam alone`` (line: string) =
     test <@ not (modeBranch.IsMatch(codeOf line)) @>
+
+// ---------------------------------------------------------------------------
+// The checker
+//
+// A hosted session checks through a checker it shares with its partition's sibling
+// sessions. Two things follow, and each is a guard over `src/`: nothing builds a
+// checker outside the one constructor the seam hands out, and nothing drops the whole
+// of a checker unless the seam has said this daemon owns it.
+// ---------------------------------------------------------------------------
+
+/// The one place a checker is built.
+let private checkerConstructor = "src/FsHotWatch/Daemon.fs"
+
+let private buildsAChecker = Regex(@"\bFSharpChecker\.Create\b")
+
+/// Dropping every project a checker holds, or its process-wide root caches.
+let private dropsTheWholeChecker =
+    Regex(@"\.InvalidateAll\s*\(|\bClearLanguageServiceRootCaches\w*\s*\(")
+
+/// The lines of `src/` whose code matches `pattern`, as (file, 1-based line, all lines).
+let private matchesIn (root: string) (pattern: Regex) =
+    Directory.EnumerateFiles(Path.Combine(root, "src"), "*.fs", SearchOption.AllDirectories)
+    |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
+    |> Seq.filter (fun (relative, _) -> not (relative.Contains "/obj/"))
+    |> Seq.collect (fun (relative, path) ->
+        let lines = File.ReadAllLines path
+
+        lines
+        |> Seq.mapi (fun i line -> i, line)
+        |> Seq.filter (fun (_, line) -> pattern.IsMatch(codeOf line))
+        |> Seq.map (fun (i, _) -> relative, i, lines))
+    |> List.ofSeq
+
+/// Whether the code at `index` sits under a condition that asks the seam: one of the
+/// three lines above it tests a `seams.` answer.
+let private guardedBySeam (lines: string array) (index: int) =
+    [ max 0 (index - 3) .. index - 1 ]
+    |> List.exists (fun i -> Regex.IsMatch(codeOf lines[i], @"\bif\b.*\bseams\.\w+"))
+
+[<Fact>]
+let ``nothing outside the daemon's constructor builds a checker`` () =
+    let found = matchesIn (repoRoot ()) buildsAChecker
+    // PRESENT: a guard over a renamed constructor would pass by finding nothing.
+    test <@ found |> List.exists (fun (file, _, _) -> file = checkerConstructor) @>
+
+    let stray =
+        found
+        |> List.filter (fun (file, _, _) -> file <> checkerConstructor)
+        |> List.map (fun (file, i, lines) -> $"%s{file}:%d{i + 1}: %s{lines[i].Trim()}")
+
+    if not (List.isEmpty stray) then
+        Assert.Fail(
+            "A checker is built outside "
+            + checkerConstructor
+            + ". Ask the seam (`HostingSeams.Checker`) for one instead:\n"
+            + String.Join("\n", stray)
+        )
+
+[<Fact>]
+let ``the whole checker is dropped only where the seam says the daemon owns it`` () =
+    let found = matchesIn (repoRoot ()) dropsTheWholeChecker
+    test <@ not (List.isEmpty found) @>
+
+    let unguarded =
+        found
+        |> List.filter (fun (_, i, lines) -> not (guardedBySeam lines i))
+        |> List.map (fun (file, i, lines) -> $"%s{file}:%d{i + 1}: %s{lines[i].Trim()}")
+
+    if not (List.isEmpty unguarded) then
+        Assert.Fail(
+            "These drop a whole checker without asking the seam. A hosted session's \
+             checker is shared, so dropping all of it drops its siblings' state too \
+             (`HostingSeams.InvalidatesWholeChecker`, `ClearsProcessCaches`):\n"
+            + String.Join("\n", unguarded)
+        )
+
+[<Fact>]
+let ``the drop guard refuses a drop no condition asks the seam about`` () =
+    let unguarded =
+        [| "        Some(fun () ->"; "            checker.InvalidateAll()" |]
+
+    let guarded =
+        [| "        Some(fun () ->"
+           "            if seams.InvalidatesWholeChecker then"
+           "                checker.InvalidateAll()" |]
+
+    test <@ dropsTheWholeChecker.IsMatch unguarded[1] && not (guardedBySeam unguarded 1) @>
+    test <@ dropsTheWholeChecker.IsMatch guarded[2] && guardedBySeam guarded 2 @>
+    test <@ dropsTheWholeChecker.IsMatch "checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()" @>
+    // A comment that names the call is documentation, not a drop.
+    test <@ not (dropsTheWholeChecker.IsMatch(codeOf "            // checker.InvalidateAll() drops siblings' state")) @>

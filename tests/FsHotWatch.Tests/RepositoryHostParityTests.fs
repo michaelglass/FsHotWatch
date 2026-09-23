@@ -11,6 +11,9 @@
 [<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.RepositoryHostParityTests
 
+// TransparentCompiler.CacheSizes is marked experimental; it is the checker's configuration.
+#nowarn "57"
+
 open System
 open System.Collections.Concurrent
 open System.IO
@@ -133,12 +136,17 @@ let private writeWorktree (root: string) =
     | other -> failwith $"restore failed: %A{other}"
 
 /// Build the worktree's daemon as the CLI does: its configuration, its plugins.
-let private build (hosting: DaemonHosting.Hosting) (transitions: ConcurrentQueue<string * string>) (root: string) =
+let private build
+    (hosting: DaemonHosting.Hosting)
+    (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker)
+    (transitions: ConcurrentQueue<string * string>)
+    (root: string)
+    =
     let config = Cli.DaemonConfig.loadConfig root
 
     let daemon =
         Daemon.Daemon.createWithWatcherFactory
-            (Daemon.Daemon.createChecker ())
+            checker
             root
             { Daemon.Daemon.DaemonOptions.defaults with
                 ExcludePatterns = config.Exclude
@@ -408,7 +416,10 @@ let private serveInto (served: TaskCompletionSource<DaemonRpcConfig>) =
 
 let private runLegacy (root: string) =
     let transitions = ConcurrentQueue()
-    let daemon = build (DaemonHosting.standalone ()) transitions root
+
+    let daemon =
+        build (DaemonHosting.standalone ()) (Daemon.Daemon.createChecker ()) transitions root
+
     use cts = new CancellationTokenSource()
     let served = TaskCompletionSource<DaemonRpcConfig>()
 
@@ -426,17 +437,25 @@ let private runLegacy (root: string) =
     clearSqlitePool (Cli.DaemonConfig.testImpactDbPath root)
     observed
 
-let private runHosted (root: string) =
-    let transitions = ConcurrentQueue()
+/// Run `body` with `name` set to `value` in the process environment, restoring it after.
+/// Process-global, hence the serialized collection this module runs in.
+let private withEnvValue (name: string) (value: string) (body: unit -> 'T) : 'T =
+    let prior = Environment.GetEnvironmentVariable name
+    Environment.SetEnvironmentVariable(name, value)
 
-    let worktree =
-        match resolveWorktree root with
-        | Ok w -> w
-        | Error e -> failwith (IdentityError.describe e)
+    try
+        body ()
+    finally
+        Environment.SetEnvironmentVariable(name, prior)
 
-    use registry =
-        new SessionRegistry(fun spec ->
-            build (DaemonHosting.hostedBy inertWatcher) transitions spec.Worktree.Root.Value)
+let private resolvedOrFail (root: string) =
+    match resolveWorktree root with
+    | Ok w -> w
+    | Error e -> failwith (IdentityError.describe e)
+
+/// Start the session for `root` in `registry`.
+let private startSession (registry: SessionRegistry) (root: string) =
+    let worktree = resolvedOrFail root
 
     let id =
         { Repository = worktree.Repository
@@ -450,32 +469,104 @@ let private runHosted (root: string) =
           Sink =
             { Write = ignore
               Level = Logging.LogLevel.Info }
-          Owned = [] }
+          // What the host gives every session (`SessionResources`): its pooled test-impact
+          // connections go when it ends. Each mode reuses this worktree's path, and a
+          // pooled connection would otherwise carry the last mode's database into the next.
+          Owned =
+            [ { new IDisposable with
+                  member _.Dispose() =
+                      FsHotWatch.TestPrune.ImpactDbPool.clear (Cli.DaemonConfig.testImpactDbPath root) } ] }
 
-    let session =
-        match registry.Start(id, spec) with
-        | Ok s -> s
-        | Error e -> failwith e
+    match registry.Start(id, spec) with
+    | Ok s -> id, s
+    | Error e -> failwith e
 
+/// The session's checker is its own: no sibling shares it.
+let private unshared: DaemonHosting.CheckerFactory =
+    fun _ -> failwith "this session was given its checker"
+
+let private runHosted (root: string) =
+    let transitions = ConcurrentQueue()
+
+    use registry =
+        new SessionRegistry(fun spec ->
+            build
+                (DaemonHosting.hostedBy inertWatcher unshared)
+                (Daemon.Daemon.createChecker ())
+                transitions
+                spec.Worktree.Root.Value)
+
+    let id, session = startSession registry root
     let config = session.Serving.Result
     let phases = drive root config session.Daemon.GetScanGeneration transitions
     let observed = observe root config phases
     test <@ registry.Detach id @>
     observed
 
-/// Run `body` with `name` set to `value` in the process environment, restoring it after.
-/// Process-global, hence the serialized collection this module runs in.
-let private withEnvValue (name: string) (value: string) (body: unit -> 'T) : 'T =
-    let prior = Environment.GetEnvironmentVariable name
-    Environment.SetEnvironmentVariable(name, value)
+/// A hosted session whose checker is shared with a sibling: a second worktree of the
+/// same repository, the same content at another path, that has checked everything once
+/// and then sits idle while the observed session runs the scenario. Sharing is then
+/// exercised, not merely configured: the sibling's projects are in the checker the
+/// observed session checks through.
+let private runHostedBesideASibling (root: string) =
+    let sibling = Path.Combine(Path.GetDirectoryName root, "sibling")
+    let siblingJj = Path.Combine(sibling, ".jj")
+    Directory.CreateDirectory siblingJj |> ignore
 
-    try
-        body ()
-    finally
-        Environment.SetEnvironmentVariable(name, prior)
+    File.WriteAllText(
+        Path.Combine(siblingJj, "repo"),
+        Path.GetRelativePath(siblingJj, Path.Combine(root, ".jj", "repo"))
+    )
+
+    writeWorktree sibling
+
+    let partitions =
+        CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
+
+    let shared =
+        partitions.For(
+            FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create
+                Daemon.Daemon.DefaultCheckerCacheSizeFactor
+        )
+
+    let transitions = ConcurrentQueue()
+    // The sibling's own statuses: never part of what the observed session is compared on.
+    let siblingTransitions = ConcurrentQueue()
+
+    use registry =
+        new SessionRegistry(fun spec ->
+            let worktreeRoot = spec.Worktree.Root.Value
+
+            let queue =
+                if worktreeRoot = root then
+                    transitions
+                else
+                    siblingTransitions
+
+            build (DaemonHosting.hostedBy inertWatcher partitions.For) shared queue worktreeRoot)
+
+    // The sibling keeps its own shared task cache: lint's content-keyed results would
+    // otherwise replay from it into the observed session's summary. That sharing is the
+    // host's by design; what this run isolates is the shared checker.
+    let siblingId, siblingSession =
+        withEnvValue "FSHW_CACHE_HOME" (Path.Combine(Path.GetDirectoryName root, "cache-sibling")) (fun () ->
+            startSession registry sibling)
+
+    siblingSession.Serving.Result |> ignore
+
+    test <@ waitUntilTrue (fun () -> siblingSession.Daemon.GetScanGeneration() > 0L) 300000 @>
+
+    let id, session = startSession registry root
+    test <@ obj.ReferenceEquals(session.Daemon.Checker, siblingSession.Daemon.Checker) @>
+    let config = session.Serving.Result
+    let phases = drive root config session.Daemon.GetScanGeneration transitions
+    let observed = observe root config phases
+    test <@ registry.Detach id @>
+    test <@ registry.Detach siblingId @>
+    observed
 
 [<Fact(Timeout = 900000)>]
-let ``a legacy daemon and a single hosted session observe the same run`` () =
+let ``a legacy daemon, a hosted session, and one sharing its checker observe the same run`` () =
     withTempDir "parity" (fun dir ->
         let canonical =
             match canonicalize dir with
@@ -503,6 +594,10 @@ let ``a legacy daemon and a single hosted session observe the same run`` () =
             withEnvValue "FSHW_CACHE_HOME" (Path.Combine(canonical, "cache-hosted")) (fun () ->
                 inFreshWorktree "hosted" runHosted)
 
+        let besideASibling =
+            withEnvValue "FSHW_CACHE_HOME" (Path.Combine(canonical, "cache-shared")) (fun () ->
+                inFreshWorktree "shared" runHostedBesideASibling)
+
         // A vacuous agreement is not parity: the scenario must have built, tested and
         // measured coverage.
         let names = legacy.Statuses |> List.map (fun (name, _, _, _, _) -> name)
@@ -529,4 +624,17 @@ let ``a legacy daemon and a single hosted session observe the same run`` () =
         test <@ hosted.TestRuns = legacy.TestRuns @>
         test <@ hosted.Coverage = legacy.Coverage @>
         test <@ hosted.StateFiles = legacy.StateFiles @>
-        test <@ hosted.ScanMetrics = legacy.ScanMetrics @>)
+        test <@ hosted.ScanMetrics = legacy.ScanMetrics @>
+
+        // The same run through a checker a sibling session shares.
+        test <@ besideASibling.Count = legacy.Count @>
+        test <@ besideASibling.Files = legacy.Files @>
+        test <@ besideASibling.Unchecked = legacy.Unchecked @>
+        test <@ besideASibling.ProjectModel = legacy.ProjectModel @>
+        test <@ besideASibling.Receipts = legacy.Receipts @>
+        test <@ besideASibling.Statuses = legacy.Statuses @>
+        test <@ besideASibling.Phases = legacy.Phases @>
+        test <@ besideASibling.TestRuns = legacy.TestRuns @>
+        test <@ besideASibling.Coverage = legacy.Coverage @>
+        test <@ besideASibling.StateFiles = legacy.StateFiles @>
+        test <@ besideASibling.ScanMetrics = legacy.ScanMetrics @>)
