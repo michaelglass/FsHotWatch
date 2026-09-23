@@ -132,7 +132,7 @@ let ``scan validity flags a truncated scan, a foreign window and log-metrics dis
           ManagedBytes = 0L
           ForcedGc = false
           Gen2Collections = 0
-          Scope = FsHotWatch.ScanMetrics.ResourceScope.Process
+          Scope = FsHotWatch.DaemonHosting.ResourceScope.Process
           SampledAt = System.DateTime.UtcNow }
 
     test <@ List.isEmpty (Scenario.scanProblems (Scenario.Owner.Process 87070) (Some(sample 207 0)) window) @>
@@ -222,7 +222,7 @@ let private scanOf checkedFiles : FsHotWatch.ScanMetrics.ScanSample =
       ManagedBytes = 0L
       ForcedGc = false
       Gen2Collections = 0
-      Scope = FsHotWatch.ScanMetrics.ResourceScope.Process
+      Scope = FsHotWatch.DaemonHosting.ResourceScope.Process
       SampledAt = System.DateTime.UtcNow }
 
 [<Fact>]

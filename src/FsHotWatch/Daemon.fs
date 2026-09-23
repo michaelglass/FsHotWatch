@@ -1195,22 +1195,6 @@ let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, 
             return Result.Error ex
     }
 
-/// What a full rediscovery drops from the compiler service.
-[<RequireQualifiedAccess>]
-type internal FcsInvalidation =
-    /// Every project's checker state, plus FCS's process-wide caches and a full
-    /// blocking collection.
-    | CheckerAndProcessCaches
-    /// Every project's checker state only. A session of a repository host must not
-    /// clear its siblings' caches or pause the collector under them.
-    | CheckerOnly
-
-/// The invalidation a daemon whose resources are `scope` may perform.
-let internal fcsInvalidationFor (scope: ScanMetrics.ResourceScope) : FcsInvalidation =
-    match scope with
-    | ScanMetrics.ResourceScope.Process -> FcsInvalidation.CheckerAndProcessCaches
-    | ScanMetrics.ResourceScope.Host -> FcsInvalidation.CheckerOnly
-
 /// Dependencies for processBatch, bundled to avoid a long closure capture list.
 [<NoComparison; NoEquality>]
 type internal BatchContext =
@@ -1253,9 +1237,8 @@ type internal BatchContext =
         /// analysis. `None` disables the gate (test daemons with a null
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
-        /// Whose resources this daemon's scan metrics measure: its own process, or a
-        /// repository host it shares with sibling sessions.
-        ResourceScope: ScanMetrics.ResourceScope
+        /// What this daemon does differently as a session of a repository host.
+        Seams: DaemonHosting.HostingSeams
     }
 
 /// One cohort of watcher changes, and the `fshw format` requests flushed with it.
@@ -3215,7 +3198,10 @@ let private performScan
             // and compares; `ScanMetrics.fitRetention` turns the RSS series into a
             // slope. A write failure is logged, never fatal.
             let reading =
-                ScanMetrics.readResources (ScanMetrics.forcesGc ctx.ResourceScope Environment.GetEnvironmentVariable)
+                ScanMetrics.readResources (
+                    ctx.Seams.MayForceGc
+                    && ScanMetrics.forceGcEnabled Environment.GetEnvironmentVariable
+                )
 
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
@@ -3232,7 +3218,7 @@ let private performScan
                   ManagedBytes = reading.ManagedBytes
                   ForcedGc = reading.ForcedGc
                   Gen2Collections = reading.Gen2Collections
-                  Scope = ctx.ResourceScope
+                  Scope = ctx.Seams.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 
             match ScanMetrics.tryAppend (ScanMetrics.recordPath ctx.RepoRoot) sample with
@@ -3306,7 +3292,7 @@ module Daemon =
     /// Constructs the repository watcher for a `Watching` daemon. The arguments
     /// are `FileWatcher.create`'s; the seam exists so a test can prove a
     /// `OneShot` host never calls it.
-    type WatcherFactory = string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher
+    type WatcherFactory = DaemonHosting.WatcherFactory
 
     /// The TransparentCompiler cache size factor when `.fshw.json` sets none: FCS's
     /// own default (its internal `TransparentCompiler.CacheSizes.Default` is `Create 100`), so
@@ -3318,24 +3304,6 @@ module Daemon =
     /// re-typechecks more, so it trades memory for CPU. FsAutoComplete runs at 10.
     [<Literal>]
     let DefaultCheckerCacheSizeFactor = 100
-
-    /// Whether this daemon owns its process or is one session of a repository host.
-    [<RequireQualifiedAccess; NoComparison; NoEquality>]
-    type Hosting =
-        /// One daemon per worktree, owning its process, its watcher and the process-wide
-        /// compiler caches.
-        | Standalone
-        /// One session of a repository host. It watches through the host's shared
-        /// stream (`watcherFactory`), records resources as host totals, and never clears
-        /// process-wide compiler caches or forces a collection under its siblings.
-        | Hosted of watcherFactory: WatcherFactory
-
-    module Hosting =
-        /// Whose resources a daemon hosted this way measures.
-        let resourceScope (hosting: Hosting) : ScanMetrics.ResourceScope =
-            match hosting with
-            | Hosting.Standalone -> ScanMetrics.ResourceScope.Process
-            | Hosting.Hosted _ -> ScanMetrics.ResourceScope.Host
 
     /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
     /// and modify only what they need.
@@ -3381,9 +3349,9 @@ module Daemon =
             /// TransparentCompiler cache size factor, from the `checker.cacheSizeFactor`
             /// config key. See `DefaultCheckerCacheSizeFactor`.
             CheckerCacheSizeFactor: int
-            /// `Standalone` (the default) for a per-worktree daemon; `Hosted` for a
-            /// session of a repository host.
-            Hosting: Hosting
+            /// `DaemonHosting.standalone` (the default) for a per-worktree daemon;
+            /// `DaemonHosting.hostedBy` for a session of a repository host.
+            Hosting: DaemonHosting.Hosting
         }
 
     module DaemonOptions =
@@ -3398,7 +3366,7 @@ module Daemon =
               IdleExitMin = None
               PressureIdleFloorMin = None
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
-              Hosting = Hosting.Standalone }
+              Hosting = DaemonHosting.standalone }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -3431,12 +3399,8 @@ module Daemon =
         let processRegistry = ProcessRegistry.Registry()
         ProcessRegistry.install processRegistry |> ignore
 
-        let resourceScope = Hosting.resourceScope opts.Hosting
-
-        let watcherFactory =
-            match opts.Hosting with
-            | Hosting.Hosted shared -> shared
-            | Hosting.Standalone -> watcherFactory
+        let seams = DaemonHosting.seams opts.Hosting
+        let watcherFactory = seams.Watcher watcherFactory
 
         let cacheBackend = opts.CacheBackend
         let cacheKeyProvider = opts.CacheKeyProvider
@@ -3562,10 +3526,8 @@ module Daemon =
                         Some(fun () ->
                             checker.InvalidateAll()
 
-                            match fcsInvalidationFor resourceScope with
-                            | FcsInvalidation.CheckerAndProcessCaches ->
-                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-                            | FcsInvalidation.CheckerOnly -> ())
+                            if seams.ClearsProcessCaches then
+                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
@@ -3587,7 +3549,7 @@ module Daemon =
                   ExcludePatterns = excludePatterns
                   ContentTracker = ContentDedup.Tracker()
                   InSessionBatchGen = ref 0L
-                  ResourceScope = resourceScope
+                  Seams = seams
                   DepsGate =
                     if isNull (box checker) then
                         // No FCS analysis happens with a null checker (test

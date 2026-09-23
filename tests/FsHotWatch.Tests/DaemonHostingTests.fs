@@ -41,25 +41,49 @@ let ``a hosted session watches through the host's factory, never its own`` () =
                 nullChecker
                 tmpDir
                 { Daemon.DaemonOptions.defaults with
-                    Hosting = Daemon.Hosting.Hosted shared }
+                    Hosting = DaemonHosting.hostedBy shared }
                 throwingFactory
 
         test <@ calls.Value = 1 @>)
 
 [<Fact(Timeout = 5000)>]
-let ``a standalone daemon measures its process; a hosted session measures the host`` () =
-    test <@ Daemon.Hosting.resourceScope Daemon.Hosting.Standalone = ScanMetrics.ResourceScope.Process @>
+let ``a standalone daemon keeps every process-wide behaviour`` () =
+    let seams = DaemonHosting.seams DaemonHosting.standalone
+    test <@ seams.ResourceScope = DaemonHosting.ResourceScope.Process @>
+    test <@ seams.MayForceGc && seams.ClearsProcessCaches @>
+    // A standalone daemon builds its own watcher: the factory it was given runs.
+    let own =
+        Assert.Throws<exn>(fun () -> seams.Watcher throwingFactory "/r" ignore None [] 0.25 |> ignore)
 
-    test <@ Daemon.Hosting.resourceScope (Daemon.Hosting.Hosted throwingFactory) = ScanMetrics.ResourceScope.Host @>
+    test <@ own.Message.Contains "host's stream" @>
 
 [<Fact(Timeout = 5000)>]
-let ``only a daemon that owns its process clears process-wide compiler caches`` () =
-    test <@ fcsInvalidationFor ScanMetrics.ResourceScope.Process = FcsInvalidation.CheckerAndProcessCaches @>
-    test <@ fcsInvalidationFor ScanMetrics.ResourceScope.Host = FcsInvalidation.CheckerOnly @>
+let ``a hosted session subtracts exactly the process-wide behaviours, and watches through the host`` () =
+    let calls = ref 0
+
+    let shared: Daemon.WatcherFactory =
+        fun _ _ _ _ _ ->
+            calls.Value <- calls.Value + 1
+            inertWatcher
+
+    let seams = DaemonHosting.seams (DaemonHosting.hostedBy shared)
+    test <@ seams.ResourceScope = DaemonHosting.ResourceScope.Host @>
+    test <@ not seams.MayForceGc && not seams.ClearsProcessCaches @>
+    // The session's own factory is never asked; the host's is.
+    seams.Watcher throwingFactory "/r" ignore None [] 0.25 |> ignore
+    test <@ calls.Value = 1 @>
 
 [<Fact(Timeout = 5000)>]
 let ``hosting defaults to standalone`` () =
-    test <@ Daemon.Hosting.resourceScope Daemon.DaemonOptions.defaults.Hosting = ScanMetrics.ResourceScope.Process @>
+    test <@ (DaemonHosting.seams Daemon.DaemonOptions.defaults.Hosting).ClearsProcessCaches @>
+
+[<Fact(Timeout = 5000)>]
+let ``a resource scope round-trips its wire spelling, and anything else is the process`` () =
+    for scope in [ DaemonHosting.ResourceScope.Process; DaemonHosting.ResourceScope.Host ] do
+        test <@ DaemonHosting.ResourceScope.parse (DaemonHosting.ResourceScope.render scope) = scope @>
+
+    test <@ DaemonHosting.ResourceScope.parse "" = DaemonHosting.ResourceScope.Process @>
+    test <@ DaemonHosting.ResourceScope.parse "elsewhere" = DaemonHosting.ResourceScope.Process @>
 
 [<Fact(Timeout = 20000)>]
 let ``RunWith hands serve the daemon's RPC configuration and stops when cancelled`` () =

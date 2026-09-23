@@ -108,6 +108,7 @@
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="SharedWatchPool.fs" />
+    <Compile Include="DaemonHosting.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="OutputCopyFreshness.fs" />

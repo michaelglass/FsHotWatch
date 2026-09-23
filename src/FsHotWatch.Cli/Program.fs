@@ -2312,7 +2312,7 @@ let internal daemonWith
     (opts: GlobalOptions)
     (config: DaemonConfiguration)
     (runMode: Daemon.RunMode)
-    (hosting: Daemon.Hosting)
+    (hosting: FsHotWatch.DaemonHosting.Hosting)
     (root: string)
     : Daemon =
     let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
@@ -2401,7 +2401,9 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             | None -> ()
 
             let hosting =
-                Daemon.Hosting.Hosted(pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
+                FsHotWatch.DaemonHosting.hostedBy (
+                    pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree)
+                )
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 
@@ -2429,8 +2431,95 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             0
         | FsHotWatch.RepositoryHost.HostRun.Stopped -> 0
 
+/// How a command reaches this worktree's daemon: its own per-worktree daemon, or its
+/// session of the repository host. Built once per invocation (`ownDaemonLink`,
+/// `hostSessionLink`); the command bodies ask it and never ask which it is.
+[<NoComparison; NoEquality>]
+type DaemonLink =
+    {
+        /// Bring the daemon up, or attach; true when it serves.
+        Ensure: unit -> bool
+        /// Replace a daemon whose pipe answers garbage. A host is never restarted from a
+        /// CLI, because siblings share it; the session is attached again instead.
+        ForceRestart: unit -> bool
+        /// Say so when the serving daemon was built from different code. A host
+        /// session's binary was already checked by the attach handshake.
+        WarnIfStale: unit -> unit
+        /// Restart a daemon built from different code before real work runs on it.
+        RestartIfStale: unit -> unit
+        /// `fshw start`, given how a per-worktree daemon starts in this process.
+        Start: (unit -> int) -> int
+        /// `fshw stop`, given how a per-worktree daemon is stopped.
+        Stop: (unit -> int) -> int
+    }
+
+/// The worktree's own per-worktree daemon.
+let internal ownDaemonLink
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : DaemonLink =
+    let ensure () =
+        ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+
+    let staleness () =
+        if ipc.IsRunning pipeName then
+            match DaemonIdentity.verdictFor repoRoot with
+            | DaemonIdentity.IdentityVerdict.Stale reason -> Some reason
+            | DaemonIdentity.IdentityVerdict.Match -> None
+        else
+            None
+
+    { Ensure = ensure
+      // Stop EVERYTHING answering on the pipe (a corrupted reply usually means two
+      // daemons share it, so one Shutdown is not enough), reap the pidfile, start
+      // fresh. Unlike `Ensure` this never reuses: the pipe's occupant emits garbage.
+      ForceRestart =
+        fun () ->
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+
+            while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
+                try
+                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                with ex ->
+                    FsHotWatch.Logging.debug
+                        "cli-heal"
+                        $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
+
+                Thread.Sleep(200)
+
+            killStaleDaemon repoRoot
+            startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+      WarnIfStale = fun () -> staleness () |> Option.iter (staleIdentityStatusWarning >> eprintfn "%s")
+      RestartIfStale = fun () -> staleness () |> Option.iter (fun _ -> ensure () |> ignore)
+      Start = fun startHere -> startHere ()
+      Stop = fun stopHere -> stopHere () }
+
+/// The worktree's session of the repository host.
+let internal hostSessionLink (host: HostLink) : DaemonLink =
+    let ipc = sessionIpcOps host
+
+    { Ensure = host.Reattach
+      ForceRestart = host.Reattach
+      WarnIfStale = ignore
+      RestartIfStale = ignore
+      Start =
+        fun _ ->
+            let session = FsHotWatch.RepositoryIdentity.SessionId.render (host.Session())
+            eprintfn $"Attached to the repository host as session %s{session}"
+            0
+      Stop =
+        fun _ ->
+            // Detach: this session's Shutdown ends it alone.
+            ipc.Shutdown "" |> Async.RunSynchronously |> ignore
+            eprintfn "Detached this worktree from the repository host."
+            0 }
+
 let executeCommandWith
-    (link: HostLink option)
+    (link: DaemonLink)
     (loadedConfigIdentity: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
@@ -2506,10 +2595,7 @@ let executeCommandWith
     | Some exitCode -> exitCode
     | None ->
 
-        let ensureDaemonFn () =
-            match link with
-            | Some host -> host.Reattach()
-            | None -> ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+        let ensureDaemonFn () = link.Ensure()
 
         // Gate the check on the daemon actually answering RPCs, not just the pipe
         // being listenable. The readiness deadline is at least
@@ -2517,31 +2603,8 @@ let executeCommandWith
         let waitReadyFn () =
             waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
 
-        // Forced restart for corrupted-pipe self-healing: stop EVERYTHING answering on
-        // the pipe (a corrupted reply usually means two daemons share it, so one
-        // Shutdown is not enough), reap the pidfile, start fresh. Unlike
-        // `ensureDaemonFn` this never reuses — the current pipe occupant is emitting
-        // garbage.
-        let forceRestartDaemon () : bool =
-            // A host session is never restarted from here: siblings share its process.
-            match link with
-            | Some host -> host.Reattach()
-            | None ->
-                let sw = System.Diagnostics.Stopwatch.StartNew()
-
-                while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
-                    try
-                        ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                    with ex ->
-                        FsHotWatch.Logging.debug
-                            "cli-heal"
-                            $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
-
-                    Thread.Sleep(200)
-
-                killStaleDaemon repoRoot
-
-                startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+        // Forced restart for corrupted-pipe self-healing (see `DaemonLink.ForceRestart`).
+        let forceRestartDaemon () : bool = link.ForceRestart()
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -2609,173 +2672,163 @@ let executeCommandWith
         let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
 
         match command with
-        | Start when link.IsSome ->
-            let session = link.Value.Session()
-
-            eprintfn
-                $"Attached to the repository host as session %s{FsHotWatch.RepositoryIdentity.SessionId.render session}"
-
-            0
         | Start ->
-            // Fail-fast on misconfiguration BEFORE acquiring the lockfile, writing the
-            // pidfile, or creating the daemon — the same contract as the run-once paths.
-            match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
-            | Some exitCode -> exitCode
-            | None ->
+            link.Start(fun () ->
+                // Fail-fast on misconfiguration BEFORE acquiring the lockfile, writing the
+                // pidfile, or creating the daemon — the same contract as the run-once paths.
+                match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
+                | Some exitCode -> exitCode
+                | None ->
 
-                let stateDir = Path.Combine(repoRoot, ".fshw")
-                let pidFile = Path.Combine(stateDir, "daemon.pid")
-                let lockFile = Path.Combine(stateDir, "daemon.lock")
-                Directory.CreateDirectory(stateDir) |> ignore
+                    let stateDir = Path.Combine(repoRoot, ".fshw")
+                    let pidFile = Path.Combine(stateDir, "daemon.pid")
+                    let lockFile = Path.Combine(stateDir, "daemon.lock")
+                    Directory.CreateDirectory(stateDir) |> ignore
 
-                // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
-                // daemon's lifetime. Two concurrent `start` invocations cannot both
-                // acquire it; the second exits cleanly. Not a probe-based guard — that
-                // has a TOCTOU window between the IsRunning check and the pipe claim.
-                let acquired =
-                    try
-                        Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
-                    with :? IOException ->
-                        None
+                    // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
+                    // daemon's lifetime. Two concurrent `start` invocations cannot both
+                    // acquire it; the second exits cleanly. Not a probe-based guard — that
+                    // has a TOCTOU window between the IsRunning check and the pipe claim.
+                    let acquired =
+                        try
+                            Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                        with :? IOException ->
+                            None
 
-                // Which process is which, when two exist for one repo root?
-                // `ps` could not answer that after the fact:
-                // `confirm` is the same binary in the same cwd as a daemon and runs
-                // for 20+ minutes, so "two FsHotWatch.Cli processes" may be one
-                // daemon plus a client. argv settles it.
-                //
-                // Not a separate log write: a launched daemon's stderr IS
-                // daemon.log (`LaunchDaemon` runs `nohup … >> logFile 2>&1`), so
-                // both lines below already land there for the nohup-launched
-                // population this is about.
-                let argvLine =
-                    let argv = Environment.GetCommandLineArgs() |> String.concat " "
-                    $"pid=%d{Environment.ProcessId} argv=%s{argv}"
+                    // Which process is which, when two exist for one repo root?
+                    // `ps` could not answer that after the fact:
+                    // `confirm` is the same binary in the same cwd as a daemon and runs
+                    // for 20+ minutes, so "two FsHotWatch.Cli processes" may be one
+                    // daemon plus a client. argv settles it.
+                    //
+                    // Not a separate log write: a launched daemon's stderr IS
+                    // daemon.log (`LaunchDaemon` runs `nohup … >> logFile 2>&1`), so
+                    // both lines below already land there for the nohup-launched
+                    // population this is about.
+                    let argvLine =
+                        let argv = Environment.GetCommandLineArgs() |> String.concat " "
+                        $"pid=%d{Environment.ProcessId} argv=%s{argv}"
 
-                match acquired with
-                | None when
-                    (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
-                        FsHotWatch.RepositoryHost.processAlive
-                        repoRoot)
-                        .IsSome
-                    ->
-                    let record =
+                    match acquired with
+                    | None when
                         (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
                             FsHotWatch.RepositoryHost.processAlive
                             repoRoot)
-                            .Value
+                            .IsSome
+                        ->
+                        let record =
+                            (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                                FsHotWatch.RepositoryHost.processAlive
+                                repoRoot)
+                                .Value
 
-                    eprintfn
-                        $"fshw: daemon not started — this worktree is served by the repository host (pid %d{record.HostPid}) as session %s{FsHotWatch.RepositoryIdentity.SessionId.render record.Session}; `fshw stop` detaches it"
+                        eprintfn
+                            $"fshw: daemon not started — this worktree is served by the repository host (pid %d{record.HostPid}) as session %s{FsHotWatch.RepositoryIdentity.SessionId.render record.Session}; `fshw stop` detaches it"
 
-                    2
-                | None ->
-                    let pidInfo =
-                        if File.Exists pidFile then
-                            $" (pid %s{File.ReadAllText(pidFile).Trim()})"
-                        else
-                            ""
+                        2
+                    | None ->
+                        let pidInfo =
+                            if File.Exists pidFile then
+                                $" (pid %s{File.ReadAllText(pidFile).Trim()})"
+                            else
+                                ""
 
-                    eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo} — refused %s{argvLine}"
-                    0
-                | Some lockStream ->
-                    use _lock = lockStream
-                    eprintfn $"Starting FsHotWatch daemon for %s{repoRoot} — claimed the singleton lock, %s{argvLine}"
-                    eprintfn $"Pipe: %s{pipeName}"
+                        eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo} — refused %s{argvLine}"
+                        0
+                    | Some lockStream ->
+                        use _lock = lockStream
 
-                    // Write our own PID so killStaleDaemon can find the actual daemon process,
-                    // not the nohup wrapper that launched us.
-                    File.WriteAllText(pidFile, string Environment.ProcessId)
+                        eprintfn
+                            $"Starting FsHotWatch daemon for %s{repoRoot} — claimed the singleton lock, %s{argvLine}"
 
-                    // Record THIS binary's identity BEFORE the IPC pipe starts
-                    // listening, so a CLI that observes a live pipe always finds the
-                    // record. Any daemon that never wrote one reads as `NotRecorded`
-                    // — and is restarted.
-                    DaemonIdentity.recordCurrent repoRoot
+                        eprintfn $"Pipe: %s{pipeName}"
 
-                    // Likewise the identity of the configuration THIS process parsed:
-                    // whoever launched it, and whatever the file says by now, a CLI
-                    // must compare against what is actually running.
-                    File.WriteAllText(Path.Combine(stateDir, "config.hash"), loadedConfigIdentity)
+                        // Write our own PID so killStaleDaemon can find the actual daemon process,
+                        // not the nohup wrapper that launched us.
+                        File.WriteAllText(pidFile, string Environment.ProcessId)
 
-                    // The pidfile is released on EVERY way out of this block — a clean
-                    // stop, a refused watcher start, an unexpected exception — and the
-                    // singleton lock goes with `_lock` above. The next `fshw start`
-                    // therefore never finds a pidfile naming a process that never ran.
-                    try
+                        // Record THIS binary's identity BEFORE the IPC pipe starts
+                        // listening, so a CLI that observes a live pipe always finds the
+                        // record. Any daemon that never wrote one reads as `NotRecorded`
+                        // — and is restarted.
+                        DaemonIdentity.recordCurrent repoRoot
+
+                        // Likewise the identity of the configuration THIS process parsed:
+                        // whoever launched it, and whatever the file says by now, a CLI
+                        // must compare against what is actually running.
+                        File.WriteAllText(Path.Combine(stateDir, "config.hash"), loadedConfigIdentity)
+
+                        // The pidfile is released on EVERY way out of this block — a clean
+                        // stop, a refused watcher start, an unexpected exception — and the
+                        // singleton lock goes with `_lock` above. The next `fshw start`
+                        // therefore never finds a pidfile naming a process that never ran.
                         try
-                            let daemon = createDaemon repoRoot
-                            registerPlugins daemon repoRoot config
-                            // Registered: any refusal a previous launch recorded no longer
-                            // describes this daemon.
-                            DaemonStartupFailure.clear repoRoot
-                            let cts = new CancellationTokenSource()
+                            try
+                                let daemon = createDaemon repoRoot
+                                registerPlugins daemon repoRoot config
+                                // Registered: any refusal a previous launch recorded no longer
+                                // describes this daemon.
+                                DaemonStartupFailure.clear repoRoot
+                                let cts = new CancellationTokenSource()
 
-                            Console.CancelKeyPress.Add(fun e ->
-                                e.Cancel <- true
-                                cts.Cancel())
-
-                            // Stop the daemon cleanly if `.fshw.json` is edited. The
-                            // user then runs the daemon again to pick up the new config (or
-                            // sees the error if the edit was invalid). No hot-reload.
-                            use _configWatcher =
-                                watchRepoConfigFile repoRoot (fun reason ->
-                                    FsHotWatch.Logging.info "config" reason
+                                Console.CancelKeyPress.Add(fun e ->
+                                    e.Cancel <- true
                                     cts.Cancel())
 
-                            try
-                                Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
-                            with :? OperationCanceledException ->
-                                ()
+                                // Stop the daemon cleanly if `.fshw.json` is edited. The
+                                // user then runs the daemon again to pick up the new config (or
+                                // sees the error if the edit was invalid). No hot-reload.
+                                use _configWatcher =
+                                    watchRepoConfigFile repoRoot (fun reason ->
+                                        FsHotWatch.Logging.info "config" reason
+                                        cts.Cancel())
 
-                            eprintfn "Daemon stopped."
-                            0
-                        with
-                        | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
-                            // The persistent-refusal case: macOS refused the native FSEvents
-                            // stream on every attempt of the retry budget. Persistent, so
-                            // fail closed — `Daemon.create` already disposed the partial
-                            // daemon, no watcher exists, and the finally + `_lock` release
-                            // the pidfile and the singleton lock. Exit 2, the fail-closed
-                            // code every other startup refusal uses, never 1.
-                            eprintfn
-                                $"fshw: daemon not started — %s{ex.Message}. Nothing is left running (no watcher, no pidfile, no lock). Run `fshw start` again once fseventsd is healthy; if it keeps refusing, the repository is on a volume FSEvents cannot watch — move it to a local volume."
+                                try
+                                    Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
+                                with :? OperationCanceledException ->
+                                    ()
 
-                            2
-                        | ConfigError message ->
-                            // An expected, user-correctable refusal (e.g.
-                            // analyzers.paths that have not been built) — never an unhandled
-                            // exception with a stack trace. Exit 2, the fail-closed startup
-                            // code: nothing ran, so nothing may read as green. Recorded so the
-                            // CLI that launched this detached daemon can print the reason
-                            // itself instead of pointing at daemon.log.
-                            eprintfn $"fshw: daemon not started — config error:\n%s{message}"
-                            DaemonStartupFailure.record repoRoot message
-                            2
-                    finally
-                        if File.Exists pidFile then
-                            File.Delete pidFile
+                                eprintfn "Daemon stopped."
+                                0
+                            with
+                            | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
+                                // The persistent-refusal case: macOS refused the native FSEvents
+                                // stream on every attempt of the retry budget. Persistent, so
+                                // fail closed — `Daemon.create` already disposed the partial
+                                // daemon, no watcher exists, and the finally + `_lock` release
+                                // the pidfile and the singleton lock. Exit 2, the fail-closed
+                                // code every other startup refusal uses, never 1.
+                                eprintfn
+                                    $"fshw: daemon not started — %s{ex.Message}. Nothing is left running (no watcher, no pidfile, no lock). Run `fshw start` again once fseventsd is healthy; if it keeps refusing, the repository is on a volume FSEvents cannot watch — move it to a local volume."
+
+                                2
+                            | ConfigError message ->
+                                // An expected, user-correctable refusal (e.g.
+                                // analyzers.paths that have not been built) — never an unhandled
+                                // exception with a stack trace. Exit 2, the fail-closed startup
+                                // code: nothing ran, so nothing may read as green. Recorded so the
+                                // CLI that launched this detached daemon can print the reason
+                                // itself instead of pointing at daemon.log.
+                                eprintfn $"fshw: daemon not started — config error:\n%s{message}"
+                                DaemonStartupFailure.record repoRoot message
+                                2
+                        finally
+                            if File.Exists pidFile then
+                                File.Delete pidFile)
         | Host root -> runHostVerb opts root
         | Stop flags when List.contains Repository flags -> stopRepositoryHost repoRoot
-        | Stop _ when link.IsSome ->
-            // Detach: this session's Shutdown ends it alone.
-            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-            eprintfn "Detached this worktree from the repository host."
-            0
         | Stop _ ->
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.
-            withIpcNoHeal (fun () ->
-                stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
-                |> reportStopOutcome)
+            link.Stop(fun () ->
+                withIpcNoHeal (fun () ->
+                    stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
+                    |> reportStopOutcome))
         | Scan ->
             // A scan runs REAL WORK on the daemon — never on a stale-binary
             // one (its results would come from the wrong binary). Same decision as
             // ensureDaemon, which also announces why it restarts.
-            if link.IsNone && ipc.IsRunning pipeName then
-                match DaemonIdentity.verdictFor repoRoot with
-                | DaemonIdentity.IdentityVerdict.Stale _ -> ensureDaemonFn () |> ignore
-                | DaemonIdentity.IdentityVerdict.Match -> ()
+            link.RestartIfStale()
 
             withIpc (fun () ->
                 let result = ipc.Scan pipeName |> Async.RunSynchronously
@@ -2793,12 +2846,8 @@ let executeCommandWith
             repositoryStatus (mode = ProgressRenderer.Agent) repoRoot
         | Status(pluginName, _) ->
             // Say it in words: a status computed by a daemon built from different code
-            // than this CLI is never presented silently as current. A host session's
-            // binary was checked by the attach handshake instead.
-            if link.IsNone && ipc.IsRunning pipeName then
-                match DaemonIdentity.verdictFor repoRoot with
-                | DaemonIdentity.IdentityVerdict.Stale reason -> eprintfn "%s" (staleIdentityStatusWarning reason)
-                | DaemonIdentity.IdentityVerdict.Match -> ()
+            // than this CLI is never presented silently as current.
+            link.WarnIfStale()
 
             withIpc (fun () ->
                 let filter = pluginName |> Option.defaultValue ""
@@ -3147,7 +3196,7 @@ let executeCommand
     (startupTimeoutSeconds: float)
     : int =
     executeCommandWith
-        None
+        (ownDaemonLink ipc repoRoot pipeName opts config startupTimeoutSeconds)
         loadedConfigIdentity
         createDaemon
         ipc
@@ -3325,32 +3374,49 @@ let internal needsDaemon (command: Command) : bool =
 
 /// How this invocation reaches its daemon: `None` for the worktree's own daemon, a
 /// `HostLink` for a repository-host session, or an exit code when it must stop here.
-let private chooseLink (repoRoot: string) (configText: string) (command: Command) : Result<HostLink option, int> =
+/// How this invocation reaches its daemon, and the IPC it sends through: the
+/// worktree's own daemon, or its repository-host session. This is where the CLI decides
+/// between the two; everything after asks the `DaemonLink`. An `Error` is the exit code
+/// when the invocation must stop here.
+let private chooseLink
+    (repoRoot: string)
+    (pipeName: string)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (configText: string)
+    (command: Command)
+    : Result<DaemonLink * IpcOps, int> =
+    let ownDaemon =
+        Ok(ownDaemonLink defaultIpcOps repoRoot pipeName opts config 30.0, defaultIpcOps)
+
     let live =
         FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot
 
     let linkTo endpoint session =
         let current = ref session
 
-        { Endpoint = endpoint
-          Session = fun () -> current.Value
-          Reattach =
-            fun () ->
-                match
-                    RepositoryHostMode.attach
-                        (FsHwPaths.stateHome ())
-                        (launchHost repoRoot)
-                        (TimeSpan.FromSeconds 30.0)
-                        repoRoot
-                        configText
-                with
-                | RepositoryHostMode.Attach.Serving(_, id) ->
-                    current.Value <- id
-                    true
-                | RepositoryHostMode.Attach.OwnDaemon reason
-                | RepositoryHostMode.Attach.Refused reason ->
-                    eprintfn $"fshw: %s{reason}"
-                    false }
+        let host =
+            { Endpoint = endpoint
+              Session = fun () -> current.Value
+              Reattach =
+                fun () ->
+                    match
+                        RepositoryHostMode.attach
+                            (FsHwPaths.stateHome ())
+                            (launchHost repoRoot)
+                            (TimeSpan.FromSeconds 30.0)
+                            repoRoot
+                            configText
+                    with
+                    | RepositoryHostMode.Attach.Serving(_, id) ->
+                        current.Value <- id
+                        true
+                    | RepositoryHostMode.Attach.OwnDaemon reason
+                    | RepositoryHostMode.Attach.Refused reason ->
+                        eprintfn $"fshw: %s{reason}"
+                        false }
+
+        Ok(hostSessionLink host, sessionIpcOps host)
 
     let enabled =
         RepositoryHostMode.enabled configText Environment.GetEnvironmentVariable
@@ -3358,9 +3424,8 @@ let private chooseLink (repoRoot: string) (configText: string) (command: Command
     match command, live with
     // Observing and detaching need no attach: the worktree's record names its session.
     | Status(_, flags), Some record
-    | Stop flags, Some record when not (List.contains Repository flags) ->
-        Ok(Some(linkTo record.Endpoint record.Session))
-    | _ when not (needsDaemon command) -> Ok None
+    | Stop flags, Some record when not (List.contains Repository flags) -> linkTo record.Endpoint record.Session
+    | _ when not (needsDaemon command) -> ownDaemon
     | _ when enabled ->
         match
             RepositoryHostMode.attach
@@ -3370,10 +3435,10 @@ let private chooseLink (repoRoot: string) (configText: string) (command: Command
                 repoRoot
                 configText
         with
-        | RepositoryHostMode.Attach.Serving(endpoint, session) -> Ok(Some(linkTo endpoint session))
+        | RepositoryHostMode.Attach.Serving(endpoint, session) -> linkTo endpoint session
         | RepositoryHostMode.Attach.OwnDaemon reason ->
             eprintfn $"fshw: using this worktree's own daemon: %s{reason}"
-            Ok None
+            ownDaemon
         | RepositoryHostMode.Attach.Refused reason ->
             eprintfn $"fshw: %s{reason}"
             Error 2
@@ -3384,7 +3449,7 @@ let private chooseLink (repoRoot: string) (configText: string) (command: Command
               or run `fshw stop` to detach it"
 
         Error 2
-    | _ -> Ok None
+    | _ -> ownDaemon
 
 let private runCli (args: string array) : int =
     let argList = args |> Array.toList
@@ -3446,26 +3511,14 @@ let private runCli (args: string array) : int =
                         exit 2
 
                 let createDaemon (root: string) =
-                    daemonWith opts config (runModeFor command) Daemon.Hosting.Standalone root
+                    daemonWith opts config (runModeFor command) FsHotWatch.DaemonHosting.standalone root
 
                 let loadedIdentity = configContentHash configSource
 
-                match chooseLink repoRoot configSource command with
+                match chooseLink repoRoot pipeName opts config configSource command with
                 | Error exitCode -> exitCode
-                | Ok None ->
-                    executeCommand loadedIdentity createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
-                | Ok(Some link) ->
-                    executeCommandWith
-                        (Some link)
-                        loadedIdentity
-                        createDaemon
-                        (sessionIpcOps link)
-                        repoRoot
-                        pipeName
-                        command
-                        opts
-                        config
-                        30.0
+                | Ok(link, ipc) ->
+                    executeCommandWith link loadedIdentity createDaemon ipc repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.

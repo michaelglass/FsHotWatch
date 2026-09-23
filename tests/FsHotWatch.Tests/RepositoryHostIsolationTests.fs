@@ -123,7 +123,7 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
             Daemon.Daemon.create
                 spec.Worktree.Root.Value
                 { Daemon.Daemon.DaemonOptions.defaults with
-                    Hosting = Daemon.Daemon.Hosting.Hosted inertWatcher }
+                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher }
 
         use registry = new SessionRegistry(factory, run)
         let host = RepositoryHost(settings, registry, ignore, TimeSpan.FromSeconds 60.0)

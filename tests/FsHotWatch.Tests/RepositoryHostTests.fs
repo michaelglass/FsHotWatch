@@ -89,7 +89,7 @@ let private daemonFactory: SessionFactory =
             nullChecker
             spec.Worktree.Root.Value
             { Daemon.DaemonOptions.defaults with
-                Hosting = Daemon.Hosting.Hosted inertWatcher }
+                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher }
             inertWatcher
 
 let private requestFrom (worktree: ResolvedWorktree) (config: string) =

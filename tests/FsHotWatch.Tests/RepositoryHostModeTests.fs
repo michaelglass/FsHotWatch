@@ -363,7 +363,7 @@ let private daemonFactory: SessionRegistry.SessionFactory =
             nullChecker
             spec.Worktree.Root.Value
             { FsHotWatch.Daemon.Daemon.DaemonOptions.defaults with
-                Hosting = FsHotWatch.Daemon.Daemon.Hosting.Hosted inertWatcher }
+                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher }
             inertWatcher
 
 [<Fact(Timeout = 120000)>]

@@ -80,7 +80,7 @@ let private daemonFactory (onBuilt: SessionSpec -> Daemon -> unit) : SessionFact
                 nullChecker
                 spec.Worktree.Root.Value
                 { Daemon.DaemonOptions.defaults with
-                    Hosting = Daemon.Hosting.Hosted inertWatcher }
+                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher }
                 inertWatcher
 
         onBuilt spec daemon

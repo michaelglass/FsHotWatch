@@ -27,7 +27,7 @@ let private sample generation rss =
       ManagedBytes = rss / 4L
       ForcedGc = true
       Gen2Collections = 3
-      Scope = ResourceScope.Process
+      Scope = DaemonHosting.ResourceScope.Process
       SampledAt = DateTime(2026, 9, 4, 10, 0, 0, DateTimeKind.Utc) }
 
 [<Fact>]
@@ -274,7 +274,7 @@ let ``a host-scoped sample says so on its line, and round-trips`` () =
     // and a reader must never attribute it to one worktree.
     let hosted =
         { sample 1L 9_000_000_000L with
-            Scope = ResourceScope.Host }
+            Scope = DaemonHosting.ResourceScope.Host }
 
     let line = toJsonLine hosted
     test <@ line.Contains "\"scope\":\"host\"" @>
@@ -289,11 +289,4 @@ let ``a line written before samples carried a scope reads as process-scoped`` ()
     let legacy = (toJsonLine (sample 2L 5L)).Replace(",\"scope\":\"process\"", "")
 
     test <@ not (legacy.Contains "scope") @>
-    test <@ (tryParseLine legacy |> Option.map (fun s -> s.Scope)) = Some ResourceScope.Process @>
-
-[<Fact>]
-let ``a host never forces a collection, whatever the environment asks`` () =
-    // A forced full GC in a shared host would pause every sibling session.
-    test <@ forcesGc ResourceScope.Host (fun _ -> "1") = false @>
-    test <@ forcesGc ResourceScope.Process (fun _ -> "1") @>
-    test <@ forcesGc ResourceScope.Process (fun _ -> null) = false @>
+    test <@ (tryParseLine legacy |> Option.map (fun s -> s.Scope)) = Some DaemonHosting.ResourceScope.Process @>
