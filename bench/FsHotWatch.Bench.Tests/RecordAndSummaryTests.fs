@@ -83,6 +83,7 @@ let private record sessions rep session phase phys contended invalid : Record.Be
     { RunId = "run1"
       RecordedAt = DateTime(2026, 9, 23, 0, 0, 0, DateTimeKind.Utc)
       Label = "per-worktree"
+      Mode = "legacy"
       Position =
         { Sessions = sessions
           Rep = rep
@@ -230,3 +231,36 @@ let ``every record carries the config overrides it ran under and the daemon's ec
     test <@ config.["strip"].[0].GetValue<string>() = "tests" @>
     test <@ config.["set"].["checker.cacheSizeFactor"].GetValue<int>() = 10 @>
     test <@ config.["echo"].["checker.cacheSizeFactor"].GetValue<string>() = "10" @>
+
+let private hostRecord sessions rep session phase phys : Record.BenchRecord =
+    { record sessions rep session phase phys [] [] with
+        Label = "host"
+        Mode = "host"
+        Footprint = (if session = 0 then Some(fp phys) else None) }
+
+[<Fact>]
+let ``a host record (session 0) IS the N-session total; per-session host rows carry no footprint`` () =
+    let series =
+        rows
+            [ yield hostRecord 1 1 0 "post-gc" 1000L
+              yield hostRecord 1 1 1 "post-gc" 0L
+              yield hostRecord 4 1 0 "post-gc" 1500L
+              for s in 1..4 do
+                  yield hostRecord 4 1 s "post-gc" 0L ]
+
+    let report = Summary.summarize false series
+    let four = report.Groups |> List.find (fun g -> g.Sessions = 4)
+    test <@ four.TotalFootprintMedian = Some 1500.0 && four.CompleteReps = 1 @>
+    test <@ four.SessionFootprintMedian = None @>
+    test <@ report.Ratios |> List.find (fun ((_, _, n), _) -> n = 4) |> snd = 1.5 @>
+
+[<Fact>]
+let ``host totals are compared with legacy totals for the same phase and session count`` () =
+    let series =
+        rows
+            [ yield! [ for s in 1..4 -> record 4 1 s "post-gc" 1000L [] [] ]
+              yield hostRecord 4 1 0 "post-gc" 1600L ]
+
+    let report = Summary.summarize false series
+    test <@ report.HostVsLegacy = [ ("post-gc", 4), 0.4 ] @>
+    test <@ (Summary.render report).Contains "host / legacy" @>

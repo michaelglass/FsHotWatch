@@ -1,5 +1,10 @@
-/// The scripted scenarios: N concurrent worktree daemons on one repository, measured at
-/// fixed phases, repeated.
+/// The scripted scenarios: N concurrent worktree sessions on one repository, served either
+/// by N legacy per-worktree daemons (`--mode legacy`) or by ONE repository host
+/// (`--mode host`), measured at fixed phases, repeated.
+///
+/// In host mode the one host process is sampled once per phase as session 0 (its
+/// footprint IS the N-session total); sessions 1..N still get records for scan validity
+/// and settle latency.
 ///
 /// One repetition of an N-session scenario:
 ///
@@ -9,7 +14,10 @@
 /// 2. `settled` — after a quiet interval, sample without forcing anything.
 /// 3. `post-gc` — walk each heap (inducing a full blocking collection) and sample the
 ///    footprint straight after: live set, GC heap, GC committed, and the native rest.
-/// 4. `after-tests` (with `--tests`) — run `fshw check` in every worktree concurrently,
+/// 4. `edit` (with `--edits K --edit-file <path>`) — K rounds of a one-line edit to the
+///    same file in every worktree at once; each session's `[check] settled … after=Nms`
+///    line is its settle latency. The file is restored afterwards.
+/// 5. `after-tests` (with `--tests`) — run `fshw check` in every worktree concurrently,
 ///    then repeat the post-GC reading and count the tests the last complete cycle ran.
 ///
 /// Validity is checked, not assumed: every scan must report `unchecked 0` and no
@@ -24,6 +32,19 @@ open System.Diagnostics
 open System.IO
 open System.Threading
 open FsHotWatch
+
+/// Who serves the sessions.
+[<RequireQualifiedAccess>]
+type RunMode =
+    /// One `fshw start` daemon per worktree (today).
+    | Legacy
+    /// One repository host for all worktrees (`FSHW_REPOSITORY_HOST=1`).
+    | Host
+
+let modeName (mode: RunMode) =
+    match mode with
+    | RunMode.Legacy -> "legacy"
+    | RunMode.Host -> "host"
 
 /// Harness settings.
 type Config =
@@ -58,6 +79,13 @@ type Config =
         KeepTraces: string option
         /// Partition each walked heap by import reachability (see `Retention`).
         Retention: bool
+        Mode: RunMode
+        /// Edit rounds for the settle-latency phase (0 = no edit phase).
+        Edits: int
+        /// Worktree-relative file the edit phase appends a marker line to.
+        EditFile: string option
+        /// How long one edit round waits for every session's settle line.
+        SettleTimeout: TimeSpan
     }
 
 let private log (msg: string) =
@@ -165,17 +193,6 @@ let private start (cfg: Config) (runDir: string) (cacheHome: string) (session: i
       Port = port
       Started = started }
 
-let private stop (cfg: Config) (d: Daemon) =
-    let _ = runCli cfg "stop" d.Worktree (TimeSpan.FromMinutes 2.0)
-    let deadline = DateTime.UtcNow.AddSeconds 60.0
-
-    while Instruments.isAlive d.Pid && DateTime.UtcNow < deadline do
-        Thread.Sleep 500
-
-    if Instruments.isAlive d.Pid then
-        log $"pid %d{d.Pid} survived stop; SIGKILL"
-        Instruments.run "kill" $"-9 %d{d.Pid}" "/" (TimeSpan.FromSeconds 10.0) |> ignore
-
 /// The first scan sample this daemon wrote (sampled after it started).
 let scanSampleSince (worktree: string) (since: DateTime) : ScanMetrics.ScanSample option =
     ScanMetrics.readSeries (ScanMetrics.recordPath worktree)
@@ -190,8 +207,16 @@ let private readLog (worktree: string) =
     else
         []
 
+/// Which process a session's log window must belong to.
+[<RequireQualifiedAccess>]
+type Owner =
+    /// A legacy per-worktree daemon: its log announces its own pid.
+    | Process of pid: int
+    /// A repository host: the session's log names the host it attached to.
+    | Host of pid: int
+
 /// Validity problems of one session's scan against its own log window.
-let scanProblems (pid: int) (sample: ScanMetrics.ScanSample option) (window: string list) : string list =
+let scanProblems (owner: Owner) (sample: ScanMetrics.ScanSample option) (window: string list) : string list =
     [ match sample with
       | None -> "no scan-metrics sample for this daemon"
       | Some s ->
@@ -210,10 +235,45 @@ let scanProblems (pid: int) (sample: ScanMetrics.ScanSample option) (window: str
               $"log scan checked %d{counts.Checked} but scan-metrics says %d{s.FilesChecked}"
           | Some _ -> ()
 
-      match DaemonLog.announcedPid window with
-      | Some p when p <> pid -> $"daemon.log window belongs to pid %d{p}, not the measured %d{pid}"
-      | None -> "daemon.log window announces no pid"
-      | Some _ -> () ]
+      match owner with
+      | Owner.Process pid ->
+          match DaemonLog.announcedPid window with
+          | Some p when p <> pid -> $"daemon.log window belongs to pid %d{p}, not the measured %d{pid}"
+          | None -> "daemon.log window announces no pid"
+          | Some _ -> ()
+      | Owner.Host pid ->
+          match DaemonLog.attachedHost window with
+          | Some(p, _) when p <> pid -> $"session attached to host pid %d{p}, not the measured host %d{pid}"
+          | None -> "daemon.log window shows no attach to a repository host"
+          | Some _ -> () ]
+
+/// In host mode every session must have attached, each under its own session id.
+let hostSessionProblems (sessions: (int * string option) list) : string list =
+    let missing =
+        [ for s, id in sessions do
+              if id.IsNone then
+                  yield $"s%d{s} never attached to the repository host" ]
+
+    let ids = sessions |> List.choose snd
+
+    let shared =
+        if List.length (List.distinct ids) < List.length ids then
+            let detail =
+                sessions
+                |> List.choose (fun (s, id) -> id |> Option.map (fun i -> $"s%d{s}=%s{i}"))
+                |> String.concat " "
+
+            [ $"sessions share a host session id: %s{detail}" ]
+        else
+            []
+
+    missing @ shared
+
+/// A source file's content with edit `i`'s marker appended: a real content change (so
+/// the file is re-checked) that never changes what the file means.
+let editedContent (original: string) (i: int) : string =
+    let sep = if original.EndsWith("\n") then "" else "\n"
+    $"%s{original}%s{sep}// fshw-bench edit %d{i}\n"
 
 /// Parity across the sessions of one repetition: all must have checked the same files.
 let parityProblems (checkedBySession: (int * int) list) : string list =
@@ -308,6 +368,7 @@ let write
     (out: string)
     (runId: string)
     (label: string)
+    (mode: string)
     (position: Record.Position)
     (worktree: string)
     (pid: int)
@@ -352,6 +413,7 @@ let write
         { RunId = runId
           RecordedAt = DateTime.UtcNow
           Label = label
+          Mode = mode
           Position = position
           Worktree = worktree
           Pid = pid
@@ -432,6 +494,125 @@ let withRetention (keep: bool) (s: Sample) : Sample =
         { s with Retention = reading }
     | _ -> s
 
+/// One worktree session of a repetition.
+type SessionRun =
+    { Session: int
+      Worktree: string
+      Started: DateTime
+      Owner: Owner }
+
+/// A process the harness samples: a legacy daemon (its session's index) or the repository
+/// host (session 0).
+type Measured =
+    { Session: int
+      Worktree: string
+      Pid: int
+      Port: string }
+
+/// Start a CLI command in the background, not waited for, output appended to `outFile`.
+let private launch (cfg: Config) (env: (string * string) list) (worktree: string) (args: string) (outFile: string) =
+    let exe, prefix = cliInvocation cfg.Cli
+
+    let script =
+        $"exec %s{ProcessHelper.quoteArg exe} %s{prefix}%s{args} >> %s{ProcessHelper.quoteArg outFile} 2>&1"
+
+    let psi = ProcessStartInfo("/bin/sh", [| "-c"; script |])
+    psi.WorkingDirectory <- worktree
+    psi.UseShellExecute <- false
+
+    for k, v in env do
+        psi.Environment.[k] <- v
+
+    Process.Start psi
+
+/// Poll `probe` until it answers or `timeout` passes.
+let private waitFor (timeout: TimeSpan) (probe: unit -> 'a option) : 'a option =
+    let deadline = DateTime.UtcNow + timeout
+    let mutable found = probe ()
+
+    while found.IsNone && DateTime.UtcNow < deadline do
+        Thread.Sleep 250
+        found <- probe ()
+
+    found
+
+/// The host pid a repository host wrote under `stateHome`.
+let private hostPidIn (stateHome: string) : int option =
+    let dir = Path.Combine(stateHome, "repositories")
+
+    if not (Directory.Exists dir) then
+        None
+    else
+        Directory.GetFiles(dir, "host.pid", SearchOption.AllDirectories)
+        |> Array.tryPick (fun f ->
+            match Int32.TryParse((File.ReadAllText f).Trim()) with
+            | true, pid when Instruments.isAlive pid -> Some pid
+            | _ -> None)
+
+let private stopPid (pid: int) =
+    let deadline = DateTime.UtcNow.AddSeconds 60.0
+
+    while Instruments.isAlive pid && DateTime.UtcNow < deadline do
+        Thread.Sleep 500
+
+    if Instruments.isAlive pid then
+        log $"pid %d{pid} survived stop; SIGKILL"
+        Instruments.run "kill" $"-9 %d{pid}" "/" (TimeSpan.FromSeconds 10.0) |> ignore
+
+/// The edit phase: `cfg.Edits` rounds of a marker-line edit to `cfg.EditFile` in every
+/// session at once. Each session's first NEW `[check] settled` line after the edit gives
+/// its settle latency (the daemon measures it from the watcher's first report). The file
+/// is restored afterwards, and the restore's own settle awaited but not recorded.
+let private editPhase
+    (cfg: Config)
+    (sessions: SessionRun list)
+    (record: SessionRun -> float option -> string list -> unit)
+    =
+    match cfg.EditFile with
+    | Some rel when cfg.Edits > 0 ->
+        let file (s: SessionRun) = Path.Combine(s.Worktree, rel)
+        let originals = sessions |> List.map (fun s -> s, File.ReadAllText(file s))
+
+        let settleCount (s: SessionRun) =
+            readLog s.Worktree |> DaemonLog.settled |> List.length
+
+        let awaitSettles (before: (SessionRun * int) list) =
+            let deadline = DateTime.UtcNow + cfg.SettleTimeout
+            let mutable pending = before
+
+            while not (List.isEmpty pending) && DateTime.UtcNow < deadline do
+                Thread.Sleep 250
+                pending <- pending |> List.filter (fun (s, n) -> settleCount s <= n)
+
+            before
+            |> List.map (fun (s, n) -> s, readLog s.Worktree |> DaemonLog.settled |> List.skip n |> List.tryHead)
+
+        try
+            for i in 1 .. cfg.Edits do
+                let before = sessions |> List.map (fun s -> s, settleCount s)
+
+                for s, original in originals do
+                    File.WriteAllText(file s, editedContent original i)
+
+                for s, settle in awaitSettles before do
+                    match settle with
+                    | Some st -> record s (Some st.AfterMs) []
+                    | None ->
+                        record
+                            s
+                            None
+                            [ $"no [check] settled line within %.0f{cfg.SettleTimeout.TotalSeconds} s of edit %d{i}" ]
+
+                Thread.Sleep 1000
+        finally
+            let before = sessions |> List.map (fun s -> s, settleCount s)
+
+            for s, original in originals do
+                File.WriteAllText(file s, original)
+
+            awaitSettles before |> ignore
+    | _ -> ()
+
 /// Run the whole matrix.
 let runMatrix (cfg: Config) : int =
     let runId =
@@ -441,6 +622,7 @@ let runMatrix (cfg: Config) : int =
     // Short and TMPDIR-independent: unix socket paths are capped at 104 bytes on macOS.
     let runDir = Path.Combine("/tmp", $"fshw-bench-%s{runId}")
     Directory.CreateDirectory runDir |> ignore
+    let mode = modeName cfg.Mode
 
     let preflight = Load.contention Load.defaultBar (Instruments.loadSnapshot [])
 
@@ -481,7 +663,6 @@ let runMatrix (cfg: Config) : int =
         for sessions in cfg.Sessions do
             for rep in 1 .. cfg.Reps do
                 let cacheHome = Path.Combine(runDir, $"cache-n%d{sessions}-r%d{rep}")
-
                 let active = worktrees |> List.truncate sessions |> List.map snd
 
                 if not cfg.WarmCache then
@@ -491,18 +672,81 @@ let runMatrix (cfg: Config) : int =
                         with _ ->
                             ()
 
-                log $"N=%d{sessions} rep %d{rep}: starting %d{sessions} daemon(s)"
-
-                // Opened before the daemons start: every record of this repetition is
+                // Opened before anything starts: every record of this repetition is
                 // judged on whether the machine slept at any point since.
                 let sleepWindow = Sleep.openWindow Sleep.system
+                let noCache = if cfg.WarmCache then "" else "--no-cache "
+                log $"N=%d{sessions} rep %d{rep} (%s{mode}): starting"
 
-                let daemons =
-                    active |> List.mapi (fun i wt -> start cfg runDir cacheHome (i + 1) wt)
+                // Host mode: one state home per repetition, so each starts a fresh host.
+                let stateHome = Path.Combine(runDir, $"state-n%d{sessions}-r%d{rep}")
+                let hostPort = Path.Combine(runDir, $"h%d{sessions}-%d{rep}.sock")
 
-                let ours = daemons |> List.map _.Pid
+                let hostEnv =
+                    [ "FSHW_REPOSITORY_HOST", "1"
+                      "FSHW_STATE_HOME", stateHome
+                      "DOTNET_DiagnosticPorts", $"%s{hostPort},listen,nosuspend"
+                      FsHwPaths.CacheHomeEnvVar, cacheHome ]
 
-                let deferred = ResizeArray<Record.Position * Daemon * Sample>()
+                let launched = ResizeArray<Process>()
+
+                let sessionRuns, measured =
+                    match cfg.Mode with
+                    | RunMode.Legacy ->
+                        let daemons =
+                            active |> List.mapi (fun i wt -> start cfg runDir cacheHome (i + 1) wt)
+
+                        daemons
+                        |> List.map (fun d ->
+                            { Session = d.Session
+                              Worktree = d.Worktree
+                              Started = d.Started
+                              Owner = Owner.Process d.Pid }),
+                        daemons
+                        |> List.map (fun d ->
+                            { Session = d.Session
+                              Worktree = d.Worktree
+                              Pid = d.Pid
+                              Port = d.Port })
+                    | RunMode.Host ->
+                        // Only the FIRST attach's environment reaches the host (it is
+                        // spawned by that CLI), so worktree 1 goes alone and the rest wait
+                        // for the host and its diagnostic port.
+                        let startSession (i: int) (wt: string) =
+                            let started = DateTime.UtcNow
+                            let out = Path.Combine(runDir, $"scan-n%d{sessions}-r%d{rep}-s%d{i}.log")
+                            launched.Add(launch cfg hostEnv wt $"%s{noCache}scan" out)
+                            i, wt, started
+
+                        let first = startSession 1 active.Head
+
+                        let hostPid =
+                            match waitFor (TimeSpan.FromMinutes 5.0) (fun () -> hostPidIn stateHome) with
+                            | Some pid when File.Exists hostPort -> pid
+                            | Some pid ->
+                                match
+                                    waitFor (TimeSpan.FromSeconds 30.0) (fun () ->
+                                        if File.Exists hostPort then Some() else None)
+                                with
+                                | Some() -> pid
+                                | None -> failwith $"host pid %d{pid} opened no diagnostic port at %s{hostPort}"
+                            | None -> failwith $"no repository host appeared under %s{stateHome}"
+
+                        let rest = active |> List.tail |> List.mapi (fun i wt -> startSession (i + 2) wt)
+
+                        (first :: rest)
+                        |> List.map (fun (i, wt, started) ->
+                            { Session = i
+                              Worktree = wt
+                              Started = started
+                              Owner = Owner.Host hostPid }),
+                        [ { Session = 0
+                            Worktree = active.Head
+                            Pid = hostPid
+                            Port = hostPort } ]
+
+                let ours = measured |> List.map _.Pid
+                let deferred = ResizeArray<Record.Position * Measured * Sample>()
 
                 let tracePath (session: int) (phase: string) =
                     let file = $"%s{runId}-n%d{sessions}-r%d{rep}-s%d{session}-%s{phase}.nettrace"
@@ -518,206 +762,295 @@ let runMatrix (cfg: Config) : int =
                       Session = session
                       Phase = phase }
 
+                let emit (worktree: string) (pid: int) (position: Record.Position) (sample: Sample) =
+                    write
+                        cfg.Out
+                        runId
+                        cfg.Label
+                        mode
+                        position
+                        worktree
+                        pid
+                        ours
+                        preflight
+                        provenance
+                        sleepWindow
+                        sample
+
+                let blank (phase: string) : Sample =
+                    { Phase = phase
+                      Footprint = None
+                      FootprintBeforeWalk = None
+                      Walk = None
+                      Scan = None
+                      Tests = None
+                      PhaseMs = None
+                      Invalid = []
+                      Stamp = None
+                      Trace = None
+                      Retention = None
+                      Echo = None }
+
+                let sessionScanProblems (s: SessionRun) =
+                    let window = readLog s.Worktree
+                    let scan = scanSampleSince s.Worktree s.Started
+
+                    scan,
+                    window,
+                    scanProblems s.Owner scan window
+                    @ ConfigOverride.echoProblems cfg.Set (ConfigOverride.echo window)
+
                 try
                     // Phase 1: cold scan, every session concurrently.
                     let deadline = DateTime.UtcNow + cfg.ScanTimeout
-                    let mutable pending = daemons
+                    let mutable pending = sessionRuns
+                    let sessionProblems = Collections.Generic.Dictionary<int, string list>()
 
                     while not (List.isEmpty pending) && DateTime.UtcNow < deadline do
                         Thread.Sleep(TimeSpan.FromSeconds(float cfg.SampleSec))
 
                         let finished, still =
                             pending
-                            |> List.partition (fun d -> (scanSampleSince d.Worktree d.Started).IsSome)
+                            |> List.partition (fun s -> (scanSampleSince s.Worktree s.Started).IsSome)
 
-                        for d in finished do
-                            let scan = scanSampleSince d.Worktree d.Started
-                            let window = readLog d.Worktree
-                            let fp, before, _, problems = measure false d.Pid None None
+                        for s in finished do
+                            let scan, window, problems = sessionScanProblems s
+                            sessionProblems.[s.Session] <- problems
 
-                            write
-                                cfg.Out
-                                runId
-                                cfg.Label
-                                (pos d.Session "cold-scan")
-                                d.Worktree
-                                d.Pid
-                                ours
-                                preflight
-                                provenance
-                                sleepWindow
-                                { Phase = "cold-scan"
-                                  Footprint = fp
-                                  FootprintBeforeWalk = before
-                                  Walk = None
-                                  Scan = scan
-                                  Tests = None
-                                  PhaseMs = scan |> Option.map _.DurationMs
-                                  Invalid =
-                                    problems
-                                    @ scanProblems d.Pid scan window
-                                    @ ConfigOverride.echoProblems cfg.Set (ConfigOverride.echo window)
-                                  Stamp = None
-                                  Trace = None
-                                  Retention = None
-                                  Echo = Some(ConfigOverride.echo window) }
+                            // Legacy: the session's own daemon is sampled at its scan's end.
+                            // Host: the session record carries validity only; the host is
+                            // sampled once, when the last session finishes.
+                            let fp, fpProblems =
+                                match s.Owner with
+                                | Owner.Process pid ->
+                                    let fp, _, _, p = measure false pid None None
+                                    fp, p
+                                | Owner.Host _ -> None, []
 
-                        for d in still do
-                            if not (Instruments.isAlive d.Pid) then
-                                failwith
-                                    $"daemon s%d{d.Session} (pid %d{d.Pid}) died during its scan; see %s{d.Worktree}/logs/daemon.log"
+                            emit
+                                s.Worktree
+                                (match s.Owner with
+                                 | Owner.Process pid
+                                 | Owner.Host pid -> pid)
+                                (pos s.Session "cold-scan")
+                                { blank "cold-scan" with
+                                    Footprint = fp
+                                    Scan = scan
+                                    PhaseMs = scan |> Option.map _.DurationMs
+                                    Invalid = fpProblems @ problems
+                                    Echo = Some(ConfigOverride.echo window) }
+
+                        for m in measured do
+                            if not (Instruments.isAlive m.Pid) then
+                                failwith $"pid %d{m.Pid} (session %d{m.Session}) died during the scan"
 
                         pending <- still
 
                     if not (List.isEmpty pending) then
                         failwith
-                            $"%d{List.length pending} daemon(s) did not finish their scan within %A{cfg.ScanTimeout}"
+                            $"%d{List.length pending} session(s) did not finish their scan within %A{cfg.ScanTimeout}"
 
                     let parity =
-                        daemons
-                        |> List.choose (fun d ->
-                            scanSampleSince d.Worktree d.Started
-                            |> Option.map (fun s -> d.Session, s.FilesChecked))
+                        sessionRuns
+                        |> List.choose (fun s ->
+                            scanSampleSince s.Worktree s.Started
+                            |> Option.map (fun x -> s.Session, x.FilesChecked))
                         |> parityProblems
+
+                    // Host mode: one host record for the whole scan, invalid if any session is.
+                    let hostProblems =
+                        match cfg.Mode with
+                        | RunMode.Legacy -> []
+                        | RunMode.Host ->
+                            let attached =
+                                sessionRuns
+                                |> List.map (fun s ->
+                                    s.Session, readLog s.Worktree |> DaemonLog.attachedHost |> Option.map snd)
+
+                            hostSessionProblems attached
+                            @ [ for KeyValue(i, ps) in sessionProblems do
+                                    for p in ps -> $"s%d{i}: %s{p}" ]
+
+                    match cfg.Mode with
+                    | RunMode.Host ->
+                        let host = measured.Head
+                        let fp, _, _, problems = measure false host.Pid None None
+
+                        emit
+                            host.Worktree
+                            host.Pid
+                            (pos 0 "cold-scan")
+                            { blank "cold-scan" with
+                                Footprint = fp
+                                Invalid = problems @ hostProblems @ parity }
+                    | RunMode.Legacy -> ()
 
                     // Phase 2: settled, nothing forced.
                     Thread.Sleep(TimeSpan.FromSeconds(float cfg.SettleSec))
 
-                    for d in daemons do
-                        let fp, before, _, problems = measure false d.Pid None None
+                    for m in measured do
+                        let fp, _, _, problems = measure false m.Pid None None
 
-                        write
-                            cfg.Out
-                            runId
-                            cfg.Label
-                            (pos d.Session "settled")
-                            d.Worktree
-                            d.Pid
-                            ours
-                            preflight
-                            provenance
-                            sleepWindow
-                            { Phase = "settled"
-                              Footprint = fp
-                              FootprintBeforeWalk = before
-                              Walk = None
-                              Scan = scanSampleSince d.Worktree d.Started
-                              Tests = None
-                              PhaseMs = None
-                              Invalid = problems @ parity
-                              Stamp = None
-                              Trace = None
-                              Retention = None
-                              Echo = None }
+                        emit
+                            m.Worktree
+                            m.Pid
+                            (pos m.Session "settled")
+                            { blank "settled" with
+                                Footprint = fp
+                                Scan =
+                                    scanSampleSince m.Worktree DateTime.MinValue
+                                    |> Option.filter (fun _ -> m.Session > 0)
+                                Invalid = problems @ parity @ hostProblems }
 
-                    // Phase 3: post-GC, one session at a time so walks do not overlap.
+                    // Phase 3: post-GC, one process at a time so walks do not overlap.
                     if cfg.Heap then
-                        for d in daemons do
+                        for m in measured do
                             let fp, before, walk, problems =
-                                measure true d.Pid (Some d.Port) (tracePath d.Session "post-gc")
+                                measure true m.Pid (Some m.Port) (tracePath m.Session "post-gc")
 
                             deferred.Add(
-                                (pos d.Session "post-gc"),
-                                d,
-                                { Phase = "post-gc"
-                                  Footprint = fp
-                                  FootprintBeforeWalk = before
-                                  Walk = walk
-                                  Scan = scanSampleSince d.Worktree d.Started
-                                  Tests = None
-                                  PhaseMs = None
-                                  Invalid = problems @ parity
-                                  Stamp =
-                                    Some(
-                                        Instruments.loadSnapshot ours,
-                                        Instruments.isAlive d.Pid,
-                                        Sleep.gap Sleep.system sleepWindow
-                                    )
-                                  Trace = tracePath d.Session "post-gc"
-                                  Retention = None
-                                  Echo = None }
+                                pos m.Session "post-gc",
+                                m,
+                                { blank "post-gc" with
+                                    Footprint = fp
+                                    FootprintBeforeWalk = before
+                                    Walk = walk
+                                    Invalid = problems @ parity @ hostProblems
+                                    Stamp =
+                                        Some(
+                                            Instruments.loadSnapshot ours,
+                                            Instruments.isAlive m.Pid,
+                                            Sleep.gap Sleep.system sleepWindow
+                                        )
+                                    Trace = tracePath m.Session "post-gc" }
                             )
 
-                    // Phase 4: a full check in every worktree at once, then post-GC again.
+                    // Phase 4: settle latency under concurrency.
+                    editPhase cfg sessionRuns (fun s afterMs problems ->
+                        emit
+                            s.Worktree
+                            (match s.Owner with
+                             | Owner.Process pid
+                             | Owner.Host pid -> pid)
+                            (pos s.Session "edit")
+                            { blank "edit" with
+                                PhaseMs = afterMs
+                                Invalid = problems })
+
+                    // Phase 5: a full check in every worktree at once, then post-GC again.
                     if cfg.Tests then
+                        let env =
+                            match cfg.Mode with
+                            | RunMode.Host -> hostEnv
+                            | RunMode.Legacy -> []
+
                         let checks =
-                            daemons
-                            |> List.map (fun d ->
+                            sessionRuns
+                            |> List.map (fun s ->
                                 async {
                                     let sw = Stopwatch.StartNew()
-                                    let result = runCli cfg "check" d.Worktree cfg.TestTimeout
-                                    return d, sw.Elapsed.TotalMilliseconds, result
+                                    let exe, prefix = cliInvocation cfg.Cli
+
+                                    let result =
+                                        Instruments.runWith env exe (prefix + "check") s.Worktree cfg.TestTimeout
+
+                                    return s, sw.Elapsed.TotalMilliseconds, result
                                 })
                             |> Async.Parallel
                             |> Async.RunSynchronously
+                            |> Array.toList
 
-                        for d, ms, result in checks do
-                            let window = readLog d.Worktree
+                        let checkProblems (s: SessionRun, _, result: Result<string, string>) =
+                            let totals = testTotals (readLog s.Worktree)
+
+                            [ match result with
+                              | Ok _ -> ()
+                              | Error e ->
+                                  let firstLine = e.Split('\n') |> Array.tryHead |> Option.defaultValue ""
+                                  $"s%d{s.Session}: fshw check did not succeed: %s{firstLine}"
+                              if totals.IsNone then
+                                  $"s%d{s.Session}: no complete test cycle with a summary in its log window" ]
+
+                        for m in measured do
+                            // Legacy: this daemon's own session. Host: every session.
+                            let mine =
+                                checks |> List.filter (fun (s, _, _) -> m.Session = 0 || s.Session = m.Session)
+
+                            let totals = mine |> List.map (fun (s, _, _) -> testTotals (readLog s.Worktree))
+
+                            let summed: DaemonLog.TestTotals option =
+                                if totals |> List.forall Option.isSome then
+                                    let ts = totals |> List.choose id
+
+                                    Some
+                                        { Total = ts |> List.sumBy _.Total
+                                          Failed = ts |> List.sumBy _.Failed
+                                          Succeeded = ts |> List.sumBy _.Succeeded
+                                          Skipped = ts |> List.sumBy _.Skipped }
+                                else
+                                    None
 
                             let fp, before, walk, problems =
-                                measure cfg.Heap d.Pid (Some d.Port) (tracePath d.Session "after-tests")
-
-                            let totals = testTotals window
-
-                            let checkProblem =
-                                match result with
-                                | Ok _ -> []
-                                | Error e ->
-                                    let firstLine = e.Split('\n') |> Array.tryHead |> Option.defaultValue ""
-                                    [ $"fshw check did not succeed: %s{firstLine}" ]
-
-                            let noTests =
-                                if totals.IsNone then
-                                    [ "no complete test cycle with a summary in this daemon's log window" ]
-                                else
-                                    []
+                                measure cfg.Heap m.Pid (Some m.Port) (tracePath m.Session "after-tests")
 
                             deferred.Add(
-                                (pos d.Session "after-tests"),
-                                d,
-                                { Phase = "after-tests"
-                                  Footprint = fp
-                                  FootprintBeforeWalk = before
-                                  Walk = walk
-                                  Scan = scanSampleSince d.Worktree d.Started
-                                  Tests = totals
-                                  PhaseMs = Some ms
-                                  Invalid = problems @ checkProblem @ noTests
-                                  Stamp =
-                                    Some(
-                                        Instruments.loadSnapshot ours,
-                                        Instruments.isAlive d.Pid,
-                                        Sleep.gap Sleep.system sleepWindow
-                                    )
-                                  Trace = tracePath d.Session "after-tests"
-                                  Retention = None
-                                  Echo = None }
+                                pos m.Session "after-tests",
+                                m,
+                                { blank "after-tests" with
+                                    Footprint = fp
+                                    FootprintBeforeWalk = before
+                                    Walk = walk
+                                    Tests = summed
+                                    PhaseMs =
+                                        match mine |> List.map (fun (_, ms, _) -> ms) with
+                                        | [] -> None
+                                        | ms -> Some(List.max ms)
+                                    Invalid = problems @ (mine |> List.collect checkProblems)
+                                    Stamp =
+                                        Some(
+                                            Instruments.loadSnapshot ours,
+                                            Instruments.isAlive m.Pid,
+                                            Sleep.gap Sleep.system sleepWindow
+                                        )
+                                    Trace = tracePath m.Session "after-tests" }
                             )
                 finally
-                    for d in daemons do
-                        stop cfg d
+                    match cfg.Mode with
+                    | RunMode.Legacy ->
+                        for m in measured do
+                            runCli cfg "stop" m.Worktree (TimeSpan.FromMinutes 2.0) |> ignore
+                            stopPid m.Pid
+                    | RunMode.Host ->
+                        let exe, prefix = cliInvocation cfg.Cli
 
-                    // Walk records are written now, with the daemons gone, so the graph
+                        Instruments.runWith
+                            hostEnv
+                            exe
+                            (prefix + "stop --repository")
+                            active.Head
+                            (TimeSpan.FromMinutes 2.0)
+                        |> ignore
+
+                        for m in measured do
+                            stopPid m.Pid
+
+                    for p in launched do
+                        try
+                            if not p.HasExited then
+                                p.Kill(true)
+                        with _ ->
+                            ()
+
+                    // Walk records are written now, with the processes gone, so the graph
                     // analysis never competes with what it measures.
-                    for position, d, sample in deferred do
+                    for position, m, sample in deferred do
                         let enriched =
                             if cfg.Retention then
                                 withRetention cfg.KeepTraces.IsSome sample
                             else
                                 sample
 
-                        write
-                            cfg.Out
-                            runId
-                            cfg.Label
-                            position
-                            d.Worktree
-                            d.Pid
-                            ours
-                            preflight
-                            provenance
-                            sleepWindow
-                            enriched
+                        emit m.Worktree m.Pid position enriched
 
         0
     finally
@@ -780,6 +1113,7 @@ let probe
             out
             runId
             label
+            "legacy"
             { Sessions = 1
               Rep = 1
               Session = 1

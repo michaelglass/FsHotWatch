@@ -61,6 +61,9 @@ type Report =
         Groups: Group list
         /// `(label, phase, N) → ratio` of total footprint to the 1-session total.
         Ratios: ((string * string * int) * float) list
+        /// `(phase, N) → host total / legacy total`, medians over repetitions, for every
+        /// phase and session count both modes measured.
+        HostVsLegacy: ((string * int) * float) list
         ExcludedInvalid: int
         ExcludedContended: int
         ContendedIncluded: bool
@@ -88,14 +91,22 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
                 rs
                 |> List.groupBy (fun r -> r.RunId, r.Position.Rep)
                 |> List.choose (fun (_, repRows) ->
-                    let fps = repRows |> List.choose _.PhysFootprint
+                    // Host mode: the session-0 record measured the one process that
+                    // serves all N sessions, so it IS the total.
+                    match repRows |> List.tryFind (fun r -> r.Position.Session = 0) with
+                    | Some host -> host.PhysFootprint |> Option.map float
+                    | None ->
+                        let fps = repRows |> List.choose _.PhysFootprint
 
-                    if List.length fps = sessions then
-                        Some(float (List.sum fps))
-                    else
-                        None)
+                        if List.length fps = sessions then
+                            Some(float (List.sum fps))
+                        else
+                            None)
 
-            let fp = floats _.PhysFootprint float rs
+            // Per-SESSION footprint only means something for per-session processes.
+            let fp =
+                floats _.PhysFootprint float (rs |> List.filter (fun r -> r.Position.Session > 0))
+
             let ms = floats _.PhaseMs id rs
 
             { Label = label
@@ -133,7 +144,22 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
             | Some b, Some t when b > 0.0 -> Some((g.Label, g.Phase, g.Sessions), t / b)
             | _ -> None)
 
+    let modeOf =
+        scored |> List.map (fun r -> r.Label, r.Mode) |> List.distinct |> Map.ofList
+
+    let totalsFor mode =
+        groups
+        |> List.filter (fun g -> modeOf |> Map.tryFind g.Label = Some mode)
+        |> List.choose (fun g -> g.TotalFootprintMedian |> Option.map (fun t -> (g.Phase, g.Sessions), t))
+
+    let hostVsLegacy =
+        [ for key, hostTotal in totalsFor "host" do
+              for legacyKey, legacyTotal in totalsFor "legacy" do
+                  if key = legacyKey && legacyTotal > 0.0 then
+                      yield key, hostTotal / legacyTotal ]
+
     { Groups = groups
+      HostVsLegacy = hostVsLegacy
       Ratios = ratios
       ExcludedInvalid = List.length invalid
       ExcludedContended = List.length contended
@@ -179,4 +205,13 @@ let render (report: Report) : string =
               yield
                   $"%s{g.Label} | %s{g.Phase} | %d{g.Sessions} | %d{g.CompleteReps} | %s{mb g.SessionFootprintMedian} | %s{mb g.SessionFootprintP95} | %s{mb g.TotalFootprintMedian} | %s{ratio} | %s{mb g.PeakMax} | %s{mb g.ManagedMedian} | %s{mb g.NativeMedian} | %s{mb g.ManagedLiveMedian} | %s{pct g.ShareableLowMedian}-%s{pct g.ShareableHighMedian} | %s{pct g.RetentionHighMedian} (%s{pct g.RetentionTypedTreeHighMedian}) | %s{secs g.PhaseMsMedian}/%s{secs g.PhaseMsP95} | %s{seen g.FilesCheckedSeen} | %s{seen g.TestsTotalSeen}" ]
 
-    String.Join("\n", lines)
+    let comparison =
+        if List.isEmpty report.HostVsLegacy then
+            []
+        else
+            [ yield ""
+              yield "host / legacy total footprint (median over reps), same phase and session count:"
+              for (phase, n), ratio in report.HostVsLegacy do
+                  yield $"  %s{phase} N=%d{n}: %.2f{ratio}" ]
+
+    String.Join("\n", lines @ comparison)

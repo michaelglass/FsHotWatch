@@ -202,3 +202,48 @@ let parseTestTotals (outputText: string) : TestTotals option =
                   Succeeded = succeeded
                   Skipped = skipped }
         | _ -> None
+
+let private attachedLine =
+    Regex(@"^Attached to repository host pid=(?<pid>\d+) session=(?<session>\S+)", RegexOptions.Compiled)
+
+/// The repository host a hosted session's log says it attached to: `(host pid, session id)`.
+/// `None` for a legacy per-worktree daemon's log.
+let attachedHost (window: string list) : (int * string) option =
+    window
+    |> List.tryPick (fun line ->
+        match tryTagged line with
+        | Some("host", body) ->
+            let m = attachedLine.Match(body)
+
+            if m.Success then
+                Some(int m.Groups.["pid"].Value, m.Groups.["session"].Value)
+            else
+                None
+        | _ -> None)
+
+/// One checked change cohort: `[check] settled epoch=E after=Nms files=K`. `AfterMs` runs
+/// from the watcher's first report of the cohort (source debounce included).
+type Settle =
+    { Epoch: int64
+      AfterMs: float
+      Files: int }
+
+let private settledLine =
+    Regex(@"^settled epoch=(?<e>\d+) after=(?<ms>\d+(\.\d+)?)ms files=(?<f>\d+)", RegexOptions.Compiled)
+
+/// Every settle in the window, oldest first (relayed nested-daemon lines never count).
+let settled (window: string list) : Settle list =
+    window
+    |> List.choose (fun line ->
+        match tryTagged line with
+        | Some("check", body) ->
+            let m = settledLine.Match(body)
+
+            if m.Success then
+                Some
+                    { Epoch = int64 m.Groups.["e"].Value
+                      AfterMs = float m.Groups.["ms"].Value
+                      Files = int m.Groups.["f"].Value }
+            else
+                None
+        | _ -> None)

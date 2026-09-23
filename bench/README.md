@@ -41,6 +41,8 @@ cannot find the runtime without `DOTNET_ROOT`.
 | `--tests` | adds the `after-tests` phase: `fshw check` runs in every worktree at once |
 | `--strip <key>` | removes a top-level `.fshw.json` key in the throwaway bench worktrees, e.g. `--strip tests` for a scan-only run. Name it in `--label` |
 | `--set <dotted.path>=<json>` | writes a value into the bench worktrees' `.fshw.json` after any `--strip`, creating intermediate objects. It can be repeated; the last write wins. Strings must be quoted JSON (`--set build.args='"build -c Release"'`). A value that is not JSON, or a path through a non-object, is refused before any worktree is created |
+| `--mode legacy\|host` | `legacy` (default): one `fshw start` daemon per worktree. `host`: every worktree runs `fshw scan` with `FSHW_REPOSITORY_HOST=1` and a fresh per-repetition `FSHW_STATE_HOME`, so one repository host serves all N sessions. Worktree 1 starts alone, because only the first attach's environment (including the diagnostic port) reaches the host. The rest start once `host.pid` and the port exist. The host is sampled once per phase as **session 0**, and that footprint *is* the N-session total. Sessions 1..N get validity-only records. `summarize` reports host / legacy for every phase and N that both modes measured |
+| `--edits K --edit-file <path>` | adds the `edit` phase: K rounds of a marker-line edit to that worktree-relative file, in every session at once. Each record's `phaseMs` is the session's own `[check] settled … after=Nms`, so the summary's phase med/p95 is the settle latency p50/p95. The file is restored afterwards. A round with no settle line within `--settle-timeout-sec` (120 s by default) is invalid |
 | `--warm-cache` | keeps caches between repetitions. Without it, every repetition starts `--no-cache` with a fresh `FSHW_CACHE_HOME` and no `.fshw/cache` |
 | `--no-heap` | skips the heap walk (footprint only) |
 | `--allow-contended` | records on a busy box. Records are marked `contended`, and `summarize` leaves them out unless also given `--allow-contended` |
@@ -74,6 +76,8 @@ The checks are:
 - the `daemon.log` window announces the pid that was measured;
 - the log's `Checked N files` agrees with `scan-metrics.jsonl`;
 - every session of a repetition checked the same number of files (parity);
+- host mode: every session's log shows `Attached to repository host pid=<the measured host>`,
+  and no two sessions share a session id. The host record is invalid if any session is;
 - with `--tests`, `fshw check` succeeded and a complete test cycle with a summary exists.
 - every `--set` under a section the daemon echoes at startup
   (`[config] checker: cacheSizeFactor=N`) shows up in that echo with exactly the value

@@ -13,6 +13,8 @@ let private usage =
                  [--warm-cache] [--settle-sec 60] [--sample-sec 5]
                  [--scan-timeout-min 60] [--test-timeout-min 120]
                  [--keep-worktrees] [--allow-contended] [--keep-traces <dir>] [--no-retention]
+                 [--mode legacy|host] [--edits K --edit-file <worktree-relative path>]
+                 [--settle-timeout-sec 120]
   fshw-bench probe --pid <pid> [--port <socket>] [--worktree <path>] [--no-heap] [--no-retention]
                    [--out <jsonl>] [--label <text>]
   fshw-bench port --pid <pid>
@@ -81,6 +83,13 @@ let main argv =
                 |> Option.defaultValue []
                 |> List.map ConfigOverride.parseSet
 
+            if
+                (one opts "edits" |> Option.map int |> Option.defaultValue 0) > 0
+                && (one opts "edit-file").IsNone
+            then
+                eprintfn "--edits needs --edit-file <worktree-relative path>"
+                exit 2
+
             match
                 sets
                 |> List.choose (function
@@ -120,7 +129,19 @@ let main argv =
                   KeepWorktrees = flag opts "keep-worktrees"
                   AllowContended = flag opts "allow-contended"
                   KeepTraces = one opts "keep-traces"
-                  Retention = not (flag opts "no-retention") }
+                  Retention = not (flag opts "no-retention")
+                  Mode =
+                    match one opts "mode" with
+                    | Some "host" -> Scenario.RunMode.Host
+                    | Some "legacy"
+                    | None -> Scenario.RunMode.Legacy
+                    | Some other ->
+                        eprintfn "--mode must be legacy or host, not %s" other
+                        exit 2
+                  Edits = one opts "edits" |> Option.map int |> Option.defaultValue 0
+                  EditFile = one opts "edit-file"
+                  SettleTimeout =
+                    TimeSpan.FromSeconds(one opts "settle-timeout-sec" |> Option.map float |> Option.defaultValue 120.0) }
     | "probe" ->
         match one opts "pid" with
         | None ->

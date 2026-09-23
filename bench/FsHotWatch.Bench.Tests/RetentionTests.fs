@@ -104,6 +104,7 @@ let ``a record carries the retention reading and the summary scores only trusted
                 { RunId = "r"
                   RecordedAt = System.DateTime.UtcNow
                   Label = "l"
+                  Mode = "legacy"
                   Position =
                     { Sessions = 1
                       Rep = 1
