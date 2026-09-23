@@ -2,7 +2,8 @@
 /// by N legacy per-worktree daemons (`--mode legacy`) or by ONE repository host
 /// (`--mode host`), measured at fixed phases, repeated.
 ///
-/// In host mode the one host process is sampled once per phase as session 0 (its
+/// Host sessions attach with `FSHW_REPOSITORY_HOST=1 fshw start`, exactly as legacy
+/// daemons start. In host mode the one host process is sampled once per phase as session 0 (its
 /// footprint IS the N-session total); sessions 1..N still get records for scan validity
 /// and settle latency.
 ///
@@ -284,6 +285,13 @@ let editEpochDone (fresh: DaemonLog.Settle list) (sinceLastLine: TimeSpan) (quie
     match fresh with
     | [] -> false
     | first :: _ -> fresh |> List.exists (fun x -> x.Epoch > first.Epoch) || sinceLastLine >= quiet
+
+/// The CLI arguments that attach a session to the repository host: `start`, as a legacy
+/// daemon starts. `scan` would attach AND force a second full scan on top of the attach's
+/// cold one (measured: 62.7 s cold, then 21.6 s forced), churn legacy `start` never does,
+/// right before the settled sample and the first edit.
+let hostAttachArgs (warmCache: bool) : string =
+    (if warmCache then "" else "--no-cache ") + "start"
 
 /// A source file's content with edit `i`'s marker appended: a real content change (so
 /// the file is re-checked) that never changes what the file means.
@@ -713,7 +721,6 @@ let runMatrix (cfg: Config) : int =
                 // Opened before anything starts: every record of this repetition is
                 // judged on whether the machine slept at any point since.
                 let sleepWindow = Sleep.openWindow Sleep.system
-                let noCache = if cfg.WarmCache then "" else "--no-cache "
                 log $"N=%d{sessions} rep %d{rep} (%s{mode}): starting"
 
                 // Host mode: one state home per repetition, so each starts a fresh host.
@@ -756,7 +763,7 @@ let runMatrix (cfg: Config) : int =
                         let startSession (i: int) (wt: string) =
                             let started = DateTime.UtcNow
                             let out = Path.Combine(runDir, $"scan-n%d{sessions}-r%d{rep}-s%d{i}.log")
-                            launched.Add(launch cfg hostEnv wt $"%s{noCache}scan" out)
+                            launched.Add(launch cfg hostEnv wt (hostAttachArgs cfg.WarmCache) out)
                             i, wt, started
 
                         // A host start that fails must not leak the host or its CLIs:

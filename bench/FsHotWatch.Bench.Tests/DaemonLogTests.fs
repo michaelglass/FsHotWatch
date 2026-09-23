@@ -272,3 +272,11 @@ let ``an edit's epoch is done when a later epoch appears or its lines go quiet``
     test <@ not (Scenario.editEpochDone [ st 7L 900.0 ] (System.TimeSpan.FromSeconds 1.0) quiet) @>
     test <@ Scenario.editEpochDone [ st 7L 900.0 ] (System.TimeSpan.FromSeconds 3.0) quiet @>
     test <@ Scenario.editEpochDone [ st 7L 900.0; st 8L 10.0 ] System.TimeSpan.Zero quiet @>
+
+[<Fact>]
+let ``a host session attaches with start, as a legacy daemon starts, never with scan`` () =
+    // `scan` on a fresh attach runs the attach's cold scan AND a forced one (~21 s of
+    // extra churn right before the settled sample and the first edit), which legacy
+    // `start` does not: the modes would not be doing the same work.
+    test <@ Scenario.hostAttachArgs false = "--no-cache start" @>
+    test <@ Scenario.hostAttachArgs true = "start" @>
