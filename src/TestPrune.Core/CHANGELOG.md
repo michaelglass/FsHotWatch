@@ -11,6 +11,12 @@
   deleted them, with no error. BREAKING CHANGE: pass one `AnalysisResult` per source
   file; a merged result that 10.0.0 accepted silently now fails.
 
+- feat: `Database.QueryCoveringProjectsBySeed` answers, for every seed at once, the test
+  projects `QueryAffectedTests [seed]` would select from, with one recursive walk instead of
+  one per seed. Each seed's start set, the composition-root barriers and the per-project
+  fail-safe are the ones `QueryAffectedTests` uses; reachable projects are computed once per
+  strongly connected component. A seed the index does not know maps to the empty set.
+
 ## 10.0.0 - 2026-09-23
 
 - fix: a signature-file (`.fsi`) declaration is analyzed as a source occurrence of the

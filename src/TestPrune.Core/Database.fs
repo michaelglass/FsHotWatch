@@ -392,6 +392,10 @@ type Database(dbPath: string) =
     let warnedUnknownKinds = HashSet<string>()
     let mutable wasRecreated = false
 
+    // Recursive graph walks this instance has run. Read by tests that pin how many walks a
+    // query costs, which is the property the grouped seed query exists for.
+    let mutable recursiveWalks = 0L
+
     do
         let openedConn, fresh = openCheckedConnection dbPath
         wasRecreated <- fresh
@@ -883,6 +887,7 @@ type Database(dbPath: string) =
         if changedSymbolNames.IsEmpty then
             []
         else
+            System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
             use conn = openConnection dbPath
 
             use cmd = conn.CreateCommand()
@@ -1040,6 +1045,143 @@ type Database(dbPath: string) =
             walk false
         else
             Domain.CompositionRoot.restoreEmptiedProjects _.TestProject (walk true) (walk false)
+
+    /// Recursive graph walks this instance has run (`QueryAffectedTests` runs one or two
+    /// per call; `QueryCoveringProjectsBySeed` runs one per call).
+    member internal _.RecursiveWalks = System.Threading.Interlocked.Read(&recursiveWalks)
+
+    /// For each seed, the test projects `QueryAffectedTests [seed]` would select tests
+    /// from — every seed answered by ONE walk.
+    ///
+    /// A caller classifying many queued symbols by what covers each one would otherwise
+    /// run `QueryAffectedTests` once per symbol, and every one of those walks re-reads the
+    /// dependents the others already read. This loads the reverse closure of every seed
+    /// with one recursive walk and derives each seed's projects from it in memory
+    /// (`SeedCoverage`). The start set per seed, the barrier markers and the per-project
+    /// fail-safe are the ones `QueryAffectedTests` uses. Every seed is a key of the result;
+    /// a seed the index does not know maps to the empty set.
+    member this.QueryCoveringProjectsBySeed(seeds: string list) : Map<string, Set<string>> =
+        if seeds.IsEmpty then
+            Map.empty
+        else
+            // Every connection, command and reader here is disposed in `finally`, not by
+            // `use`: a `use` binding adds a null check on a value that is never null, a
+            // branch no test can take.
+            let conn = openConnection dbPath
+
+            let rows (sql: string) (bind: SqliteCommand -> unit) (read: SqliteDataReader -> 'T) : 'T list =
+                let cmd = conn.CreateCommand()
+
+                try
+                    cmd.CommandText <- sql
+                    bind cmd
+                    let reader = cmd.ExecuteReader()
+
+                    try
+                        readAll reader read
+                    finally
+                        reader.Dispose()
+                finally
+                    cmd.Dispose()
+
+            let idSet (prefix: string) =
+                $"SELECT value FROM json_each(@%s{prefix})"
+
+            let bindIds (prefix: string) (ids: int64 list) (cmd: SqliteCommand) =
+                cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
+                |> ignore
+
+            try
+                // Each seed's start set, labelled by seed: the seed itself, lifted to a
+                // containing type, and that type's members — `QueryAffectedTestsCore`'s
+                // `after_lift`/`expanded`, per seed. Not recursive.
+                let starts =
+                    rows
+                        $"""
+                        WITH seeds(name) AS ({nameSet}),
+                        lifted(seed, id) AS (
+                            SELECT s.full_name, s.id
+                            FROM symbols s
+                            WHERE s.full_name IN (SELECT name FROM seeds)
+                            UNION
+                            SELECT child.full_name, parent.id
+                            FROM symbols child
+                            JOIN symbols parent ON child.parent_symbol_id = parent.id
+                            WHERE child.full_name IN (SELECT name FROM seeds)
+                              AND parent.kind = @typeKind
+                        )
+                        SELECT seed, id FROM lifted
+                        UNION
+                        SELECT l.seed, child.id
+                        FROM lifted l
+                        JOIN symbols parent ON parent.id = l.id
+                        JOIN symbols child ON child.parent_symbol_id = parent.id
+                        WHERE parent.kind = @typeKind
+                        """
+                        (fun cmd ->
+                            bindNameSet cmd seeds
+                            cmd.Parameters.AddWithValue("@typeKind", symbolKindToString Type) |> ignore)
+                        (fun r -> r.GetString(0), r.GetInt64(1))
+
+                let startIds = starts |> List.map snd |> List.distinct
+
+                // THE walk: the reverse closure of every start at once.
+                System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
+
+                let closure =
+                    rows $"""
+                        WITH RECURSIVE closure(id) AS (
+                            {idSet "s"}
+                            UNION
+                            SELECT d.from_symbol_id
+                            FROM dependencies d
+                            JOIN closure c ON d.to_symbol_id = c.id
+                        )
+                        SELECT id FROM closure
+                        """ (bindIds "s" startIds) (fun r -> r.GetInt64(0))
+
+                let edges =
+                    rows $"""
+                        SELECT DISTINCT to_symbol_id, from_symbol_id
+                        FROM dependencies
+                        WHERE to_symbol_id IN ({idSet "c"})
+                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetInt64(1))
+
+                let testProjects =
+                    rows $"""
+                        SELECT DISTINCT symbol_id, test_project
+                        FROM test_methods
+                        WHERE symbol_id IN ({idSet "c"})
+                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetString(1))
+
+                let markers =
+                    rows
+                        $"""
+                        SELECT DISTINCT symbol_id
+                        FROM symbol_attributes
+                        WHERE attribute_name IN ({nameSetNamed "cr"})
+                          AND symbol_id IN ({idSet "c"})
+                        """
+                        (fun cmd ->
+                            bindIds "c" closure cmd
+                            bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
+                        (fun r -> r.GetInt64(0))
+
+                let byFirst (pairs: ('K * 'V) list) (values: 'V list -> 'W) =
+                    pairs
+                    |> List.groupBy fst
+                    |> List.map (fun (key, group) -> KeyValuePair(key, group |> List.map snd |> values))
+                    |> Dictionary
+
+                let region: SeedCoverage.Region =
+                    { Starts = byFirst starts id
+                      Dependents = byFirst edges id
+                      Projects = byFirst testProjects Set.ofList
+                      Barriers = HashSet<int64>(markers) }
+
+                SeedCoverage.coveringProjects region seeds
+            finally
+                conn.Dispose()
 
     /// Return every symbol occurrence declared in a given source file path, with that
     /// file's location and content hash.
