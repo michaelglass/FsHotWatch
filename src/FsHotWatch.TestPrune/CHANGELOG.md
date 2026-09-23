@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14). A signature-file (`.fsi`)
+  declaration is now an occurrence of the symbol its implementation defines, so editing
+  only a signature selects the tests that use that symbol. The first open of an older
+  index recreates it and clears the FCS check cache, as for every schema bump.
+- Fixed: analysis results are flushed to the index one per file, not merged per project.
+  TestPrune.Core credits each edge, test method and attribute to the file whose result
+  carried it. A merged result that held a signature and its implementation credited the
+  signature's facts to the implementation, and a later flush of the implementation alone
+  deleted them.
+- Fixed for TestPrune.Core 10: the per-project coverage ratchet anchors covered lines to
+  a symbol's occurrence in the covered file (`symbol_occurrences`), not to the `symbols`
+  row. `symbols` no longer carries a file or line, so the old queries failed with
+  "no such column".
 - Fixed: a source file created while the daemon was warm could run zero tests. Its first
   check has no freshness record and no index rows, the pair `trustStoredRows` answered
   with "contribute no changed symbols" on the premise that only a cold scan produces it
