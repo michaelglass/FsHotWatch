@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `DaemonOptions.CheckerCacheSizeFactor` (default `Daemon.DefaultCheckerCacheSizeFactor`,
+  100) sets the checker's `TransparentCompiler.CacheSizes`. The checker is built by
+  `Daemon.createCheckerWithCacheSizes`, and `createChecker ()` stays at the default.
 - feat: exclusive work carries consumer leases, so a run nobody is waiting for any
   more stops holding the box. A plugin command runs under its requester's token (the
   IPC server's per-connection token), and every intent it enqueues is held by that

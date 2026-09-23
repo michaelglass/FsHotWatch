@@ -117,6 +117,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent
       FsEventsLatencyMs = 250
+      CheckerCacheSizeFactor = FsHotWatch.Daemon.Daemon.DefaultCheckerCacheSizeFactor
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None

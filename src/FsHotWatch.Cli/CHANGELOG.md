@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The checker's TransparentCompiler cache size is configurable** with
+  `"checker": { "cacheSizeFactor": N }` in `.fshw.json`. The default stays at FCS's 100, so
+  behaviour is unchanged. A value that is not a positive integer is a config error. The
+  effective factor is logged at startup.
 - Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14), in lockstep with
   FsHotWatch.TestPrune. `fshw dead-code` accepts a v14 index and refuses an older one,
   as it does for every schema bump. A symbol declared in a signature is reported once,
