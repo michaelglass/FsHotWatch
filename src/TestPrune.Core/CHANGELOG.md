@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 11.0.0 - 2026-09-23
+
 - fix!: `RebuildProjects` and `InMemoryStore.fromAnalysisResults` reject an
   `AnalysisResult` that declares the same name in two source files, raising an
   `ArgumentException` that names each such symbol and its files. Every edge, test method
