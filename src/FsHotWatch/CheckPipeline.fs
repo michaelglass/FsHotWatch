@@ -89,24 +89,86 @@ type CheckPipeline
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
+    let upstreamFingerprints = UpstreamFingerprints(repoRoot)
     let mutable nextVersion = 0L
+    let mutable lastFitWarning: string option = None
 
+    let optionsHashOf (options: FSharpProjectOptions) =
+        match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
+        | true, hash -> hash
+        | false, _ -> getProjectOptionsHashRelativeTo repoRoot options
+
+    // GetFileHash returns None when the file is unreadable. That None propagates so
+    // the cache lookup is bypassed and the next call (after the transient lock
+    // clears) produces a fresh read instead of poisoning the cache with a
+    // synthesized key.
+
+    /// The lookup key: upstream fingerprint from this generation's per-project table.
     let makeCacheKeyFast (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
-        let optionsHash =
-            match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
-            | true, hash -> hash
-            | false, _ -> getProjectOptionsHashRelativeTo repoRoot options
+        let path = AbsFilePath.value filePath
+        let optionsHash = optionsHashOf options
 
-        // GetFileHash returns None when the file is unreadable. Propagate
-        // that None upstream so the cache lookup is bypassed and the next
-        // call (after the transient lock clears) produces a fresh read
-        // instead of poisoning the cache with a synthesized key.
-        keyProvider.GetFileHash(AbsFilePath.value filePath)
-        |> Option.map (fun fileHash ->
-            { FileHash = ContentHash.create fileHash
-              ProjectOptionsHash = ContentHash.create optionsHash })
+        let upstream = upstreamFingerprints.For(path, options, optionsHash)
+
+        makeCacheKeyWith keyProvider optionsHash upstream path
+
+    /// The key as the disk stands NOW, bypassing the generation memo. A result is
+    /// stored only under a key this still produces after the check, so a check that
+    /// ran against an upstream edited mid-generation is never written.
+    let makeCacheKeyFresh (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
+        let path = AbsFilePath.value filePath
+
+        let upstream = upstreamFingerprints.Fresh(path, options)
+
+        makeCacheKeyWith keyProvider (optionsHashOf options) upstream path
+
+    /// Report the registered working set to a scoped backend.
+    let ensureCacheCoversWorkingSet () =
+        match cacheBackend with
+        | Some(:? IScopedCheckCache as scoped) ->
+            projectOptionsByProject
+            |> Seq.map (fun kv -> kv.Value.ProjectFileName, kv.Value.SourceFiles.Length)
+            |> Seq.toList
+            |> scoped.ObserveWorkingSet
+        | _ -> ()
+
+    /// The backend to use for `options`' project: None when it does not admit it.
+    let backendFor (options: FSharpProjectOptions) =
+        match cacheBackend with
+        | Some(:? IScopedCheckCache as scoped) when not (scoped.Admits options.ProjectFileName) -> None
+        | other -> other
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
+
+    /// Start a generation — one scan or one change batch. Upstream fingerprints are
+    /// then computed once per project for the generation instead of once per file;
+    /// see `CheckCache.UpstreamFingerprints`. Call it after preprocessors have
+    /// rewritten files and before dispatching the generation's checks.
+    ///
+    /// Also where a cache too small for its working set says so: projects register
+    /// one at a time, so only once a generation starts is the count it names final.
+    /// Logged once per distinct warning.
+    member _.BeginGeneration() =
+        upstreamFingerprints.BeginGeneration()
+
+        match cacheBackend with
+        | Some(:? IScopedCheckCache as scoped) ->
+            match scoped.FitWarning with
+            | Some warning when Some warning <> Volatile.Read(&lastFitWarning) ->
+                Volatile.Write(&lastFitWarning, Some warning)
+                Logging.warn "cache" warning
+            | _ -> ()
+        | _ -> ()
+
+    /// The fit warning last logged, if any.
+    member _.LastFitWarning = Volatile.Read(&lastFitWarning)
+
+    /// Time spent computing upstream fingerprints since construction — the key's own
+    /// cost, to weigh against the checks the cache saves. Excludes waits.
+    member _.FingerprintTime = upstreamFingerprints.ComputeTime
+
+    /// Per-project fingerprint tables built since construction.
+    member _.FingerprintTablesBuilt = upstreamFingerprints.TablesBuilt
 
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
@@ -206,6 +268,8 @@ type CheckPipeline
                         filteredOptions :: existing
             )
             |> ignore
+
+        ensureCacheCoversWorkingSet ()
 
     /// Get project options by project path.
     member _.GetProjectOptions(projectPath: string) : FSharpProjectOptions option =
@@ -345,6 +409,8 @@ type CheckPipeline
         async {
             ct.ThrowIfCancellationRequested()
 
+            let cacheBackend = backendFor options
+
             let cacheKey =
                 cacheBackend
                 |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
@@ -360,7 +426,12 @@ type CheckPipeline
                 match result, cacheBackend, cacheKey with
                 | Some r, Some backend, Some key ->
                     match r.CheckResults with
-                    | FullCheck _ -> backend.Set key r
+                    | FullCheck _ when makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key ->
+                        backend.Set key r
+                    | FullCheck _ ->
+                        Logging.debug
+                            "check"
+                            $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
                     | ParseOnly -> ()
                 | _ -> ()
 

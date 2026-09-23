@@ -161,7 +161,30 @@ let serializeConfig (config: DaemonConfiguration) : string =
 
     // Cache
     match config.Cache with
-    | InMemoryOnly _ -> writer.WriteString("cache", "memory")
+    | InMemory settings when settings = defaultInMemoryCache -> writer.WriteString("cache", "memory")
+    | InMemory settings ->
+        writer.WritePropertyName("cache")
+        writer.WriteStartObject()
+
+        match settings.MaxEntries with
+        | CacheSize.All -> writer.WriteString("maxEntries", "all")
+        | CacheSize.Entries n -> writer.WriteNumber("maxEntries", n)
+
+        match settings.Scope with
+        | CacheScope.AllCheckouts -> writer.WriteString("scope", "all")
+        | CacheScope.DefaultWorkspaceOnly -> writer.WriteString("scope", "default-workspace")
+
+        for name, globs in [ "include", settings.Include; "exclude", settings.Exclude ] do
+            if not (List.isEmpty globs) then
+                writer.WritePropertyName(name)
+                writer.WriteStartArray()
+
+                for glob in globs do
+                    writer.WriteStringValue(glob)
+
+                writer.WriteEndArray()
+
+        writer.WriteEndObject()
     | NoCache -> writer.WriteBoolean("cache", false)
 
     // Tests

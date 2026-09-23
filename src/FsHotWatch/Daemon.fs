@@ -1463,6 +1463,8 @@ let private processBatchAttempt
 
         if not allSourceFiles.IsEmpty then
             let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            // After the preprocessors' rewrites, before any check. See `BeginGeneration`.
+            ctx.Pipeline.BeginGeneration()
 
             let newSuppressed =
                 Set.union remainingSuppressed (Set.ofList modifiedByPreprocessors)
@@ -2987,6 +2989,10 @@ let private performScan
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
+                // After the preprocessors' rewrites, before any check: one upstream
+                // fingerprint table per project for the whole scan.
+                pipeline.BeginGeneration()
+
                 publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
@@ -3412,6 +3418,8 @@ module Daemon =
                     )
                 | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink, repoRoot = repoRoot)
                 | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot)
+
+            Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache cacheBackend)
 
             let graph = ProjectGraph()
 

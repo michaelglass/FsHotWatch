@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Changed: the analyzer summary states its evidence. It read
+  `analyzed N files, M findings (…)`, and a run whose last file came from cache read
+  `M findings (…) (cached)` — the same whether the stage examined the tree or
+  replayed all of it, and naming no analyzer set. The summary now reads
+  `analyzed N files, replayed R from cache, M findings (…) — analyzer set <id>`,
+  where `<id>` is the head of the `analyzer-inputs` cache-key slot (or
+  `unidentified (cache off)` when the set has no identity). That slot is the
+  analyzer set's identity: a rebuilt analyzer with a new rule moves it and misses
+  every entry cached under the old set — the existing DLL-swap tests cover this.
+
 - Fixed: a phantom analyzer finding for a file the project model dropped. A
   rediscovery that removes a file clears that file's findings in every plugin
   ledger, and it clears them before the replacement model is published — so a

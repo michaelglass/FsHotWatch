@@ -478,18 +478,162 @@ let ``parseConfig cache false bool returns NoCache`` () =
     test <@ config.Cache = NoCache @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig cache true bool returns defaults cache`` () =
-    let defaultsWithMem =
-        { defaults with
-            Cache = InMemoryOnly 200 }
-
-    let config = parseConfig """{"cache": true}""" defaultsWithMem
-    test <@ config.Cache = InMemoryOnly 200 @>
+let ``parseConfig cache true bool enables the in-memory cache`` () =
+    // `true` used to mean "the defaults' cache", which is OFF: an explicit yes read as no.
+    let config = parseConfig """{"cache": true}""" defaults
+    test <@ config.Cache = InMemory defaultInMemoryCache @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig cache memory returns InMemoryOnly 500`` () =
+let ``parseConfig cache memory holds the whole working set`` () =
+    // "memory" used to mean 500 entries, which a sequential scan of a larger tree
+    // turns into ~0 hits. The shorthand now means the setting that works.
     let config = parseConfig """{"cache": "memory"}""" defaults
-    test <@ config.Cache = InMemoryOnly 500 @>
+    test <@ config.Cache = InMemory defaultInMemoryCache @>
+    test <@ defaultInMemoryCache.MaxEntries = CacheSize.All @>
+    test <@ defaultInMemoryCache.Scope = CacheScope.AllCheckouts @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig cache object reads maxEntries as a number`` () =
+    let config = parseConfig """{"cache": {"maxEntries": 800}}""" defaults
+
+    test
+        <@
+            config.Cache = InMemory
+                { defaultInMemoryCache with
+                    MaxEntries = CacheSize.Entries 800 }
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig cache object reads maxEntries all`` () =
+    let config = parseConfig """{"cache": {"maxEntries": "all"}}""" defaults
+    test <@ config.Cache = InMemory defaultInMemoryCache @>
+
+[<Theory>]
+[<InlineData("""{"cache": {"maxEntries": 0}}""")>]
+[<InlineData("""{"cache": {"maxEntries": -5}}""")>]
+[<InlineData("""{"cache": {"maxEntries": "lots"}}""")>]
+[<InlineData("""{"cache": {"scope": "some-workspaces"}}""")>]
+[<InlineData("""{"cache": {"include": "src/"}}""")>]
+let ``parseConfig cache object refuses a value it cannot honour`` (json: string) =
+    // A cache setting read wrong is a cache silently off or silently unbounded.
+    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig cache object reads scope and include exclude globs`` () =
+    let config =
+        parseConfig
+            """{"cache": {"scope": "default-workspace", "include": ["src/App/"], "exclude": ["src/App/Legacy/"]}}"""
+            defaults
+
+    test
+        <@
+            config.Cache = InMemory
+                { defaultInMemoryCache with
+                    Scope = CacheScope.DefaultWorkspaceOnly
+                    Include = [ "src/App/" ]
+                    Exclude = [ "src/App/Legacy/" ] }
+        @>
+
+// --- cache scope: which checkouts cache ---
+
+[<Fact(Timeout = 15000)>]
+let ``scope all caches in a secondary workspace and says what it detected`` () =
+    let on, message =
+        resolveCacheScope CacheScope.AllCheckouts FsHotWatch.RepoIdentity.CheckoutKind.JjSecondaryWorkspace
+
+    test <@ on @>
+    test <@ message.Contains "secondary jj workspace" @>
+
+[<Fact(Timeout = 15000)>]
+let ``scope default-workspace turns the cache OFF in a secondary checkout, and says why`` () =
+    // A silent "off because you look like a task workspace" is an invisible
+    // substitution; the log names the scope and the evidence.
+    for kind in
+        [ FsHotWatch.RepoIdentity.CheckoutKind.JjSecondaryWorkspace
+          FsHotWatch.RepoIdentity.CheckoutKind.GitWorktree ] do
+        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly kind
+        test <@ not on @>
+        test <@ message.Contains "OFF" && message.Contains "default-workspace" @>
+
+[<Fact(Timeout = 15000)>]
+let ``scope default-workspace keeps the cache ON in the default checkout`` () =
+    for kind in
+        [ FsHotWatch.RepoIdentity.CheckoutKind.JjDefaultWorkspace
+          FsHotWatch.RepoIdentity.CheckoutKind.GitMainCheckout
+          FsHotWatch.RepoIdentity.CheckoutKind.PlainDirectory ] do
+        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly kind
+        test <@ on @>
+        test <@ message.Contains "default-workspace" @>
+
+// --- cache include / exclude: which projects cache ---
+
+[<Fact(Timeout = 15000)>]
+let ``cacheAdmits with no globs admits every project`` () =
+    let admits = cacheAdmits "/repo" [] []
+    test <@ admits "/repo/src/Libs/Lib/Lib.fsproj" @>
+
+[<Fact(Timeout = 15000)>]
+let ``cacheAdmits include narrows to matching projects`` () =
+    let admits = cacheAdmits "/repo" [ "src/App/" ] []
+    test <@ admits "/repo/src/App/App.fsproj" @>
+    test <@ not (admits "/repo/src/Libs/Lib/Lib.fsproj") @>
+
+[<Fact(Timeout = 15000)>]
+let ``cacheAdmits exclude drops matching projects and wins over include`` () =
+    let admits = cacheAdmits "/repo" [ "src/" ] [ "src/Libs/"; "**/Legacy.fsproj" ]
+    test <@ admits "/repo/src/App/App.fsproj" @>
+    test <@ not (admits "/repo/src/Libs/Lib/Lib.fsproj") @>
+    test <@ not (admits "/repo/src/App/Legacy/Legacy.fsproj") @>
+
+[<Fact(Timeout = 15000)>]
+let ``createCacheComponents builds no cache in a secondary workspace under default-workspace scope`` () =
+    withTempDir "cfg-cc-scope" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, ".jj", "repo"), "../../.jj/repo")
+
+        let backend, keyProvider =
+            createCacheComponents
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        Scope = CacheScope.DefaultWorkspaceOnly })
+
+        test <@ backend.IsNone @>
+        test <@ keyProvider.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``createCacheComponents builds a cache in the default workspace under default-workspace scope`` () =
+    withTempDir "cfg-cc-scope-default" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj", "repo")) |> ignore
+
+        let backend, _ =
+            createCacheComponents
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        Scope = CacheScope.DefaultWorkspaceOnly })
+
+        test <@ backend.IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``createCacheComponents passes maxEntries and the project filter to the cache`` () =
+    withTempDir "cfg-cc-settings" (fun tmpDir ->
+        let backend, _ =
+            createCacheComponents
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        MaxEntries = CacheSize.Entries 42
+                        Exclude = [ "src/Libs/" ] })
+
+        match backend with
+        | Some(:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache) ->
+            test <@ cache.Capacity = 42 @>
+            let scoped = cache :> FsHotWatch.CheckCache.IScopedCheckCache
+            test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
+            test <@ scoped.Admits(Path.Combine(tmpDir, "src", "App", "App.fsproj")) @>
+        | other -> failwith $"expected an InMemoryCheckCache, got %A{other}")
 
 // `"cache": "file"` / `"jj"` selected an on-disk FCS check cache that could never
 // produce a hit. A warning was not enough — it scrolls past in a 10-minute gate, and the
@@ -880,7 +1024,7 @@ let ``parseConfig with full configuration`` () =
 
     test <@ config.Format = Off @>
     test <@ config.Lint = false @>
-    test <@ config.Cache = InMemoryOnly 500 @>
+    test <@ config.Cache = InMemory defaultInMemoryCache @>
 
     test
         <@
@@ -903,9 +1047,11 @@ let ``createCacheComponents NoCache returns None None`` () =
         test <@ keyProvider = None @>)
 
 [<Fact(Timeout = 15000)>]
-let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
+let ``createCacheComponents InMemory returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
+        let (backend, keyProvider) =
+            createCacheComponents tmpDir (InMemory defaultInMemoryCache)
+
         test <@ backend.IsSome @>
         test <@ keyProvider.IsSome @>)
 

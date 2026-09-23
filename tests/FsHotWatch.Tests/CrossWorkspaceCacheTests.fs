@@ -1002,3 +1002,64 @@ let ``an analyzer whose source drifted after its build has no analyzers key at a
 
         File.AppendAllText(Path.Combine(b, rulesSourceRel), "\n// edited, not rebuilt\n")
         test <@ analyzersKeyOf b dllB (Path.Combine(b, "src", "A.fs")) = None @>)
+
+// ---------------------------------------------------------------------------
+// Checkout kind: which checkout of a repository is this? Read from the filesystem,
+// because `.fshw.json` is tracked and shared by every workspace.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``a jj default workspace has a .jj/repo DIRECTORY`` () =
+    withTempDir "kind-jj-default" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, ".jj", "repo")) |> ignore
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjDefaultWorkspace @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a jj secondary workspace has a .jj/repo FILE`` () =
+    withTempDir "kind-jj-secondary" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(root, ".jj", "repo"), "../../../.jj/repo")
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjSecondaryWorkspace @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a git main checkout has a .git DIRECTORY`` () =
+    withTempDir "kind-git-main" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.GitMainCheckout @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a git worktree has a .git FILE`` () =
+    withTempDir "kind-git-worktree" (fun root ->
+        File.WriteAllText(Path.Combine(root, ".git"), "gitdir: /elsewhere/.git/worktrees/w")
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.GitWorktree @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a colocated jj secondary workspace is read as jj, not by its git file`` () =
+    // A colocated repo carries both; jj's own pointer is the one that says which
+    // workspace this is.
+    withTempDir "kind-colocated" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(root, ".jj", "repo"), "../../../.jj/repo")
+        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjSecondaryWorkspace @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a plain directory is neither`` () =
+    withTempDir "kind-plain" (fun root ->
+        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.PlainDirectory @>)
+
+[<Fact(Timeout = 15000)>]
+let ``only jj secondary workspaces and git worktrees are secondary checkouts`` () =
+    let secondary =
+        [ RepoIdentity.CheckoutKind.JjDefaultWorkspace
+          RepoIdentity.CheckoutKind.JjSecondaryWorkspace
+          RepoIdentity.CheckoutKind.GitMainCheckout
+          RepoIdentity.CheckoutKind.GitWorktree
+          RepoIdentity.CheckoutKind.PlainDirectory ]
+        |> List.filter RepoIdentity.isSecondaryCheckout
+
+    test
+        <@
+            secondary = [ RepoIdentity.CheckoutKind.JjSecondaryWorkspace
+                          RepoIdentity.CheckoutKind.GitWorktree ]
+        @>

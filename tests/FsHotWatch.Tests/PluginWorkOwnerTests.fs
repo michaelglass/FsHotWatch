@@ -972,3 +972,47 @@ let ``owner transitions retain their result until actual store publication`` ope
             release.Set()
             held.Wait(TimeSpan.FromSeconds 5.0) |> ignore
     }
+
+[<Fact>]
+let ``a finished run owes its verdict until its result fold commits, except to that fold`` () =
+    let owner = Owner(0)
+    Assert.False(owner.Snapshot.OwesRunVerdict None)
+
+    let run = claim owner "tests"
+    Assert.True(owner.Snapshot.OwesRunVerdict None)
+
+    // The worker has finished; its result fold is queued. The run is not live, but its
+    // verdict is still owed to every event except the fold that carries it.
+    let fold = complete owner run
+    Assert.False(owner.Snapshot.IsRunning "tests")
+    Assert.True(owner.Snapshot.OwesRunVerdict None)
+    Assert.True(owner.Snapshot.OwesRunVerdict(Some(owner.AdmitEvent())))
+    Assert.False(owner.Snapshot.OwesRunVerdict(Some fold))
+
+    owner.CommitEvent(fold, 1)
+    Assert.False(owner.Snapshot.OwesRunVerdict None)
+
+[<Fact>]
+let ``a result fold that launched the next run owes that run's verdict, even to itself`` () =
+    // The successor is live, so its Running stands against every report, including the
+    // fold that launched it: that fold's terminal would describe the finished run.
+    let owner = Owner(0)
+    let fold = complete owner (claim owner "tests")
+    let successor = owner.TryClaim("tests", after = fold) |> Option.get
+    Assert.True(owner.Snapshot.IsRunning "tests")
+    Assert.True(owner.Snapshot.OwesRunVerdict(Some fold))
+
+    owner.CommitEvent(fold, 1)
+    Assert.True(owner.Snapshot.OwesRunVerdict None)
+    owner.CommitEvent(complete owner successor, 2)
+    Assert.False(owner.Snapshot.OwesRunVerdict None)
+
+[<Fact>]
+let ``a delivered intent holds its key without owing a run verdict`` () =
+    let owner = Owner(0)
+    let delivered = ResizeArray<WorkId>()
+    let _receipt = owner.EnqueueIntent("tests", None, delivered.Add)
+    let intent = Assert.Single delivered
+    Assert.True owner.Snapshot.IsBusy
+    Assert.False(owner.Snapshot.OwesRunVerdict None)
+    owner.CommitEvent(intent, 1)

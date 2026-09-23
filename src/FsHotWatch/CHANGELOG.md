@@ -2,6 +2,114 @@
 
 ## Unreleased
 
+- feat: exclusive work carries consumer leases, so a run nobody is waiting for any
+  more stops holding the box. A plugin command runs under its requester's token (the
+  IPC server's per-connection token), and every intent it enqueues is held by that
+  client; the daemon's own wants (the watcher, a plugin's own event, a result fold)
+  hold a lease no client can release. Coalescing merges the consumers, and the
+  daemon's lease absorbs any client's. When the LAST lease is released: a queued
+  intent is withdrawn (its receipt fails; it never folds), and a running run is
+  cancelled only if its work was declared `PluginWork.cooperativeSafe`. Its process
+  scope is reaped, no result folds and no failure is recorded (a result it returns
+  after its processes were killed is dropped too), a shared resource goes back in the
+  state the run was handed, and the status its `Running` displaced is reported
+  again. Undeclared work still runs to completion. One client leaving never cancels
+  work another client or the daemon still needs.
+
+- fix: a client that disconnects mid-call no longer leaves its RPC running for
+  nobody. The IPC server builds one RPC target per connection and cancels it when the
+  connection drops: the call is released and retired from the operation watchdog at
+  once (it no longer shows as in flight), and a `RunCommand` handler's own async runs
+  under that token, so work it does inline stops at its next cancellation point. Work
+  the call only WAITS on is shared and keeps running: plugin runs (including a run a
+  command queued on a plugin's key, e.g. `run-tests`), the daemon-wide terminal and
+  scan waits, triggered builds and re-runs, and formatting on the change agent. One
+  waiter leaving never cancels what another client or the watcher still depends on.
+
+- fix: a finished run keeps its `Running` status until its result fold commits. The
+  status funnel dropped an unrelated terminal only while a worker was live. Once the
+  worker finished, its result fold could sit in the mailbox behind a long fold, and a
+  per-file `Completed` reported in that window replaced the run's `Running` while the
+  plugin still owned the run. The verdict wait then saw owned work with nothing Running
+  and declared a false WEDGED the moment a declared bounded fold ended. The funnel now
+  drops such a terminal until the run's verdict is folded (`Snapshot.OwesRunVerdict`);
+  the result fold's own report still lands.
+- feat: `RepositoryIdentity` — distinct, stable identities for a repository host that
+  serves many worktrees. `RepositoryId` digests the canonical COMMON metadata store and
+  its provider, so every jj workspace (primary or secondary) and every git worktree of
+  one repository share it, a `git worktree add` made from a colocated jj repository
+  joins that repository (proven by jj's `git_target` pointing back), and two
+  independent clones never collide, even with the same origin URL. `WorktreeId` is one
+  canonical physical root within the repository: a worktree deleted and recreated at
+  the same path keeps it. `SessionIncarnation` is a host-minted nonce, so a recreated
+  worktree cannot accept its previous life's completions. Roots are canonicalized
+  component by component — every symlink resolved, `..` applied physically, each name
+  spelled as stored on disk — so symlinked and case-variant spellings are one worktree.
+  Git's common directory is read from the `commondir` file git writes rather than
+  guessed from a `/worktrees/` path segment. Unlike the cache namespace
+  (`RepoIdentity`), an unreadable, malformed or dangling VCS pointer is an
+  `IdentityError`, never a guess. `repositoryControlPaths` puts a repository's lock,
+  pid, identity, host log and endpoint name under `FsHwPaths.stateHome ()`
+  (`$FSHW_STATE_HOME`, else `$XDG_STATE_HOME/fshw`, else `~/.local/state/fshw`) keyed
+  by `RepositoryId` — never inside a worktree, so it survives the deletion of any one.
+
+- feat: `AttachHandshake` — the versioned attach handshake (`fshw.attach`, protocol 1)
+  carrying repository id, worktree id and canonical root, session-incarnation
+  expectation, configuration digest and binary/protocol identity. The host re-derives
+  the worktree's identity from the claimed root and checks every claim; `decide` is
+  pure. Mixed incompatible clients FAIL LOUDLY: a protocol or binary mismatch, a wrong
+  repository, a claim the host's derivation contradicts, an unknown session or a stale
+  incarnation is a typed refusal with an explanation — never a restart, which with one
+  host serving many worktrees would tear down every sibling session. A request of
+  another protocol version, or a malformed one, is still answered with a refusal. No
+  host serves this yet.
+
+- `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
+  overran — its tree read from `ps` before the kill (afterwards a survivor has been
+  re-parented and cannot be found from the root), the kill's outcome and duration, and the
+  members still alive after it, polled with `kill(pid, 0)` for up to ~2s and stopping as soon
+  as the tree is gone (not `ps -p`, whose exit code is 1 for some live pids on macOS).
+  Survivors are booked with `ProcessRegistry` as leaks. An unreadable table or an unanswered
+  probe is reported as unknown, never as none.
+  `runProcessTo` / `runProcess` are unchanged.
+
+- Changed: a per-file cache replay's summary carries a tally. It was the plugin's
+  ledger counts plus `(cached)`, which read the same whether every file had been
+  examined or every file had been served from cache. It now reads
+  `M findings (…); E files examined, R replayed from cache (cached)`, counted per
+  registered plugin: `E` is per-file results produced by running the handler, `R`
+  is per-file results replayed.
+
+- fix: the check-result cache served stale diagnostics, and could not help the scan it
+  sits in front of.
+  - **Unsound key.** Entries were keyed on a file's own bytes and its project's
+    options, not on the sources it is type-checked against. Change a signature in
+    project A and a cached file in C (C → B → A) kept its old, clean result on every
+    rescan and change batch — including the from-disk rescan `check`/`confirm` force.
+    The key now carries `CheckCache.upstreamFingerprints`: the files before it in
+    compile order, every source file of every TRANSITIVELY referenced project, and
+    in-repo non-project `-r:` assemblies. Unchanged files are re-read only when their
+    (mtime, length) stamp moves (`FileContentHasher`).
+  - **Fingerprint cost.** Computed once per project per generation
+    (`CheckPipeline.BeginGeneration`, called by each scan and change batch) instead of
+    per file: 213 (file, project) pairs cost 4 ms as per-project tables vs 126–305 ms
+    per lookup; a warm scan of this repository spends 9–21 ms on it. A result is
+    stored only if the key re-derived from disk after the check still matches, so a
+    check that ran against an upstream edited mid-generation is never written.
+  - **Sized below the working set.** A 500-entry LRU against a sequential scan of a
+    larger tree evicts each entry just before it is needed: measured **0 of 208**
+    hits at the same 27% ratio. `InMemoryCheckCache` now takes a
+    `CacheCapacity` — `Entries n` (a fixed budget) or `WorkingSet` (grows to what it
+    admits: **208 of 208** hits, warm-rescan CPU 6.7–15.7 s → 0.3–0.5 s, ~250 KB held
+    per entry) — and a project filter; the pipeline skips non-admitted projects
+    entirely (`IScopedCheckCache`). A fixed bound below the working set is warned
+    about once the generation starts, naming the final count.
+  - **Unbounded by edits.** A new result for a (file, project) replaces the old one.
+- feat: `RepoIdentity.checkoutKind` reads whether a directory is the jj default
+  workspace (`.jj/repo` is a directory), a secondary jj workspace (a file), a git main
+  checkout, a git worktree, or neither.
+- The daemon logs the cache's state at startup (`describeCheckCache`), including
+  `OFF`, so an inert cache no longer reads as a working one.
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that

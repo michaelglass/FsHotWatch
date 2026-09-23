@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- fix: classifying verification debt costs one grouped query per pass, not one graph walk
+  per queued symbol. The impact-selection flush, the test launch and the run's completion
+  each ask which test projects cover every symbol they handle; each asked
+  `QueryAffectedTests` once per symbol, so a queue of thousands of symbols held the plugin
+  in one flush for minutes, finishing no event, with a finished run's result waiting
+  behind it. They now ask TestPrune.Core 11's `QueryCoveringProjectsBySeed` once per pass,
+  which answers every symbol with one walk. The answers are unchanged.
+
+- Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14). A signature-file (`.fsi`)
+  declaration is now an occurrence of the symbol its implementation defines, so editing
+  only a signature selects the tests that use that symbol. The first open of an older
+  index recreates it and clears the FCS check cache, as for every schema bump.
+- Fixed: analysis results are flushed to the index one per file, not merged per project.
+  TestPrune.Core credits each edge, test method and attribute to the file whose result
+  carried it. A merged result that held a signature and its implementation credited the
+  signature's facts to the implementation, and a later flush of the implementation alone
+  deleted them.
+- Fixed for TestPrune.Core 10: the per-project coverage ratchet anchors covered lines to
+  a symbol's occurrence in the covered file (`symbol_occurrences`), not to the `symbols`
+  row. `symbols` no longer carries a file or line, so the old queries failed with
+  "no such column".
+
+- fix: a forced `run-tests` that is cancelled — its daemon shutting down, or every
+  client that asked for it gone — now closes the run it opened. Its `finally` emits
+  the `Aborted` `TestRunCompleted` for the `TestRunStarted` it emitted. Before, the
+  RunId stayed in Build's live-run set forever and every later build was deferred.
+  `Aborted` with no results is evidence of nothing: Coverage skips it, a FileCommand
+  `afterTests` trigger matches no results, and TestPrune folds nothing from it.
+- feat: the forced `run-tests` run is declared `PluginWork.cooperativeSafe`, so when
+  every client that asked for it has gone the framework cancels it and reaps its test
+  hosts instead of running the suite to completion for nobody. A cancelled run earns
+  no evidence and removes none: whatever an earlier completed run earned stands.
+
 - Fixed: a source file created while the daemon was warm could run zero tests. Its first
   check has no freshness record and no index rows, the pair `trustStoredRows` answered
   with "contribute no changed symbols" on the premise that only a cold scan produces it

@@ -31,6 +31,20 @@ type ICheckCacheBackend =
     /// Clear all cache entries
     abstract member Clear: unit -> unit
 
+/// A backend that caches only some projects, and whose useful size depends on the
+/// working set. `CheckPipeline` asks `Admits` before computing a key (an excluded
+/// project costs no fingerprint and no lookup) and reports the registered working set
+/// — (project, source-file count) for every project — as projects register. A bound
+/// below the ADMITTED working set gets ~0% hits on a repeated scan.
+type IScopedCheckCache =
+    abstract member Admits: projectPath: string -> bool
+    abstract member ObserveWorkingSet: filesPerProject: (string * int) list -> unit
+
+    /// A warning when the bound cannot hold the admitted working set (the thrash
+    /// case), or None. Read once registration has settled — see
+    /// `CheckPipeline.BeginGeneration` — so the count it names is the final one.
+    abstract member FitWarning: string option
+
 /// Pluggable strategy for computing file hashes (cache keys).
 /// Returns None when the file cannot be read — callers must treat this as a
 /// cache miss (no key produced, no cache write) so a transient lock that
@@ -122,6 +136,209 @@ let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpPr
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     getProjectOptionsHashRelativeTo None options
 
+/// Content hash of a file, re-read only when its (last-write time, length) stamp moves.
+///
+/// `upstreamFingerprint` hashes every file a check result depends on, for every
+/// lookup; re-reading them each time would turn one scan into O(files²) reads. The
+/// stamp check is one `stat` per file. A missing or unreadable file hashes to a fixed
+/// marker, which is what FCS sees too (it reports the file as missing).
+type FileContentHasher() =
+    let memo =
+        System.Collections.Concurrent.ConcurrentDictionary<string, struct (int64 * int64 * string)>()
+
+    member _.Hash(path: string) : string =
+        try
+            let info = FileInfo(path)
+
+            if not info.Exists then
+                "missing"
+            else
+                let ticks = info.LastWriteTimeUtc.Ticks
+                let length = info.Length
+
+                match memo.TryGetValue path with
+                | true, struct (t, l, hash) when t = ticks && l = length -> hash
+                | _ ->
+                    let hash =
+                        System.Convert.ToHexString(SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+
+                    memo[path] <- struct (ticks, length, hash)
+                    hash
+        with ex ->
+            Logging.debug "cache" $"Could not hash %s{path}: %s{ex.Message}"
+            "unreadable"
+
+let private isUnderRoot (repoRoot: string option) (path: string) =
+    match repoRoot with
+    | None -> true
+    | Some root ->
+        let full = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar)
+        path.StartsWith(full + string Path.DirectorySeparatorChar, StringComparison.Ordinal)
+
+/// The fingerprint of everything a file's check result depends on besides its own
+/// bytes and its project's options, for EVERY file of one project at once:
+///
+/// - the files BEFORE it in its project's compile order (F# sees only those);
+/// - every source file of every project it references, TRANSITIVELY — C referencing
+///   B referencing A is type-checked against A's sources too;
+/// - the bytes of each `-r:` assembly inside the repository that is not the output of
+///   a referenced F# project (a C# project's output, a vendored dll). Assemblies
+///   outside the repository — NuGet, the SDK — live at version-qualified paths, so the
+///   path in the options hash already identifies them, and hashing hundreds of them
+///   per lookup would spend the CPU the cache exists to save.
+///
+/// SOURCE content, not referenced projects' outputs: the checker (TransparentCompiler)
+/// type-checks a file against its references' in-memory sources, so those are what
+/// its diagnostics depend on.
+///
+/// The closure is hashed once, then a running hash walks the compile order, so a
+/// whole project costs one pass. Returns each source file's fingerprint and the
+/// fingerprint of the complete project (for a file not in `SourceFiles`).
+///
+/// Without this a cached result survives a change to a file it was type-checked
+/// against, and the cache serves diagnostics FCS would no longer produce.
+let upstreamFingerprints
+    (hashFile: string -> string)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    let relativize = relativizeOption repoRoot
+    let parts = System.Collections.Generic.List<string>()
+    let visited = System.Collections.Generic.HashSet<string>()
+
+    let hashAssemblyRefs (opts: FSharpProjectOptions) =
+        let projectOutputs =
+            opts.ReferencedProjects |> Array.map (fun r -> r.OutputFile) |> Set.ofArray
+
+        for opt in opts.OtherOptions do
+            if opt.StartsWith("-r:", StringComparison.Ordinal) then
+                let path = opt.Substring 3
+
+                if not (projectOutputs.Contains path) && isUnderRoot repoRoot path then
+                    parts.Add $"ref:%s{relativize path}=%s{hashFile path}"
+
+    let rec addProject (opts: FSharpProjectOptions) =
+        if visited.Add opts.ProjectFileName then
+            parts.Add $"project:%s{relativize opts.ProjectFileName}"
+
+            for source in opts.SourceFiles do
+                parts.Add $"%s{relativize source}=%s{hashFile source}"
+
+            hashAssemblyRefs opts
+            addReferences opts
+
+    and addReferences (opts: FSharpProjectOptions) =
+        for reference in opts.ReferencedProjects do
+            match reference with
+            | FSharpReferencedProject.FSharpReference(_, referenced) -> addProject referenced
+            | other -> parts.Add $"other-ref:%s{relativize other.OutputFile}"
+
+    visited.Add options.ProjectFileName |> ignore
+    hashAssemblyRefs options
+    addReferences options
+
+    let table = System.Collections.Generic.Dictionary<string, string>()
+    let mutable running = sha256Hex (String.concat "\n" parts)
+
+    for source in options.SourceFiles do
+        // First occurrence wins: a file listed twice is checked at its first position.
+        if not (table.ContainsKey source) then
+            table[source] <- running
+
+        running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{hashFile source}"
+
+    table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, running
+
+/// `upstreamFingerprints` for one file.
+let upstreamFingerprint
+    (hashFile: string -> string)
+    (repoRoot: string option)
+    (filePath: string)
+    (options: FSharpProjectOptions)
+    : string =
+    let table, whole = upstreamFingerprints hashFile repoRoot options
+
+    match table.TryGetValue filePath with
+    | true, fingerprint -> fingerprint
+    | false, _ -> whole
+
+/// `upstreamFingerprints`, computed once per project per GENERATION and reused.
+///
+/// Per lookup, the fingerprint stats every file in the project's closure: for a scan
+/// that is O(files × closure). A generation is one scan or one change batch
+/// (`CheckPipeline.BeginGeneration`), so a project's table is built once per scan
+/// instead of once per file. Inside a generation the table is a SNAPSHOT: an edit
+/// landing mid-scan is seen by the next generation, which the watcher's change batch
+/// (and every `check`'s forced rescan) starts. Nothing computed against a moved
+/// snapshot is stored — `CheckPipeline` re-derives the key with `Fresh` before it
+/// writes.
+///
+/// Until the first `BeginGeneration` every lookup is fresh: a caller that never
+/// declares generations gets correct keys, just not the memo.
+type UpstreamFingerprints(repoRoot: string option) =
+    let hasher = FileContentHasher()
+
+    let memo =
+        System.Collections.Concurrent.ConcurrentDictionary<
+            string,
+            Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
+         >()
+
+    let mutable generations = false
+    let mutable computeTicks = 0L
+    let mutable tablesBuilt = 0L
+
+    /// Time only the computation, never a wait on another thread's table.
+    let timed (compute: unit -> 'T) =
+        let started = System.Diagnostics.Stopwatch.GetTimestamp()
+        let result = compute ()
+
+        System.Threading.Interlocked.Add(&computeTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started)
+        |> ignore
+
+        result
+
+    let lookup (table: System.Collections.Generic.IReadOnlyDictionary<string, string>, whole) filePath =
+        match table.TryGetValue filePath with
+        | true, fingerprint -> fingerprint
+        | false, _ -> whole
+
+    /// Drop every memoized table; the next lookup per project rebuilds it.
+    member _.BeginGeneration() =
+        memo.Clear()
+        System.Threading.Volatile.Write(&generations, true)
+
+    /// Fingerprint for `filePath`, from this generation's table for its project.
+    /// `optionsHash` distinguishes two option sets for one project file.
+    member this.For(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+        if System.Threading.Volatile.Read(&generations) then
+            let table =
+                memo.GetOrAdd(
+                    $"%s{options.ProjectFileName}|%s{optionsHash}",
+                    fun _ ->
+                        lazy
+                            (System.Threading.Interlocked.Increment(&tablesBuilt) |> ignore
+                             timed (fun () -> upstreamFingerprints hasher.Hash repoRoot options))
+                )
+
+            lookup table.Value filePath
+        else
+            this.Fresh(filePath, options)
+
+    /// Fingerprint for `filePath` from disk now, bypassing the generation memo.
+    member _.Fresh(filePath: string, options: FSharpProjectOptions) : string =
+        timed (fun () -> upstreamFingerprint hasher.Hash repoRoot filePath options)
+
+    /// Time spent computing fingerprints (tables and fresh lookups), excluding waits.
+    member _.ComputeTime =
+        System.TimeSpan(
+            System.Threading.Volatile.Read(&computeTicks) * System.TimeSpan.TicksPerSecond
+            / System.Diagnostics.Stopwatch.Frequency
+        )
+
+    /// Per-project tables built across all generations.
+    member _.TablesBuilt = System.Threading.Volatile.Read(&tablesBuilt)
+
 /// Compact tuple representation of an FCS diagnostic — what the hash actually
 /// depends on. Extracted from fcsCheckSignature so the hashing/sorting logic
 /// can be unit-tested without constructing a real FSharpCheckFileResults
@@ -191,10 +408,22 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
                   Message = d.Message })
             :> DiagnosticSignature seq)
 
-/// Compute a CacheKey for a file using the given provider. Returns None when
-/// the file cannot be read — callers must treat this as a cache miss.
-let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
+/// The check-result cache key: the file's own bytes, and — in the options half — its
+/// project's options hash combined with its upstream fingerprint
+/// (`upstreamFingerprints`). The one definition `CheckPipeline` looks results up by.
+/// Returns None when the file cannot be read — callers must treat this as a miss.
+let makeCacheKeyWith
+    (provider: ICacheKeyProvider)
+    (optionsHash: string)
+    (upstream: string)
+    (filePath: string)
+    : CacheKey option =
     provider.GetFileHash(filePath)
     |> Option.map (fun fileHash ->
         { FileHash = ContentHash.create fileHash
-          ProjectOptionsHash = ContentHash.create (getProjectOptionsHash options) })
+          ProjectOptionsHash = ContentHash.create (sha256Hex $"%s{optionsHash}|%s{upstream}") })
+
+/// `makeCacheKeyWith` with no repository root: every path hashed as written.
+let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
+    let upstream = upstreamFingerprint (FileContentHasher().Hash) None filePath options
+    makeCacheKeyWith provider (getProjectOptionsHash options) upstream filePath

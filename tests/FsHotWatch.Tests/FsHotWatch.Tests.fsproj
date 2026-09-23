@@ -13,6 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- First: registers the xUnit pipeline startup that initialises FSharp.Core's
+         quotation statics on one thread before tests run in parallel. See the file. -->
+    <Compile Include="QuotationStaticInit.fs" />
     <Compile Include="TestHelpers.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
          that watches a directory. -->
@@ -30,6 +33,7 @@
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
+    <Compile Include="RunStatusHandoffTests.fs" />
     <Compile Include="LifecycleTests.fs" />
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="FileErrorReporterTests.fs" />
@@ -49,6 +53,7 @@
     <Compile Include="PluginFrameworkFixtures.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
     <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
+    <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
@@ -62,6 +67,8 @@
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
+    <Compile Include="RepositoryIdentityTests.fs" />
+    <Compile Include="AttachHandshakeTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />
@@ -82,7 +89,9 @@
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
     <Compile Include="TestPruneRatchetTransactionTests.fs" />
+    <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />
+    <Compile Include="TestPruneImpactQueryCountTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
@@ -121,6 +130,7 @@
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
+    <Compile Include="BuildOverrunTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="RunLevelHookGapTests.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />

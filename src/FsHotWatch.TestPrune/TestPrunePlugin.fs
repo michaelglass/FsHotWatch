@@ -383,8 +383,11 @@ let private ProjectRatchetMetadataTable = "fshw_project_ratchet_metadata"
 [<Literal>]
 let private ProjectRatchetSchemaVersion = 1
 
+/// A covered line, stored relative to the TestPrune.Core symbol OCCURRENCE (one per
+/// declaring file) that it falls under, so the point follows that declaration's moves
+/// and is deleted with it.
 type private ProjectRatchetCoveragePoint =
-    { SymbolId: int64
+    { OccurrenceId: int64
       LineOffset: int
       Hits: int }
 
@@ -399,13 +402,13 @@ let private ensureProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.Sqlit
     cmd.CommandText <-
         $"""CREATE TABLE IF NOT EXISTS %s{ProjectRatchetCoverageTable} (
                 project TEXT NOT NULL,
-                symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                occurrence_id INTEGER NOT NULL REFERENCES symbol_occurrences(id) ON DELETE CASCADE,
                 line_offset INTEGER NOT NULL,
                 hits INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (project, symbol_id, line_offset)
+                PRIMARY KEY (project, occurrence_id, line_offset)
             );
-            CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_symbol
-                ON %s{ProjectRatchetCoverageTable} (symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_occurrence
+                ON %s{ProjectRatchetCoverageTable} (occurrence_id);
             CREATE TABLE IF NOT EXISTS %s{ProjectRatchetMetadataTable} (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 schema_version INTEGER NOT NULL,
@@ -475,10 +478,12 @@ let private mapProjectRatchetCoverage
             .Replace('\\', '/')
 
     // Match TestPrune.Core's line-to-symbol anchor: the nearest declaration at
-    // or before the covered line. The stored offset then follows symbol moves.
+    // or before the covered line, in THIS file (a symbol declared in a signature and
+    // an implementation has one occurrence in each). The stored offset then follows
+    // that occurrence's moves.
     lookup.CommandText <-
         """SELECT id, @line - line_start
-           FROM symbols
+           FROM symbol_occurrences
            WHERE source_file = @file AND line_start <= @line
            ORDER BY line_start DESC
            LIMIT 1;"""
@@ -503,8 +508,8 @@ let private mapProjectRatchetCoverage
     { Points =
         points
         |> Map.toList
-        |> List.map (fun ((symbolId, lineOffset), hits) ->
-            { SymbolId = symbolId
+        |> List.map (fun ((occurrenceId, lineOffset), hits) ->
+            { OccurrenceId = occurrenceId
               LineOffset = lineOffset
               Hits = hits })
       Ingested = ingested
@@ -519,10 +524,11 @@ let internal persistProjectRatchetCoverageWithMapped
     =
     use conn = db.OpenConnection()
     ensureProjectRatchetCoverageTable conn
-    // The ids `mapProjectRatchetCoverage` returns are foreign keys into `symbols`. Look
-    // them up inside the same IMMEDIATE (write-locked) transaction that persists them: on
-    // a separate read, a concurrent graph rebuild could delete a mapped symbol before the
-    // write, and the insert then fails with SQLite error 19 (FOREIGN KEY constraint).
+    // The ids `mapProjectRatchetCoverage` returns are foreign keys into
+    // `symbol_occurrences`. Look them up inside the same IMMEDIATE (write-locked)
+    // transaction that persists them: on a separate read, a concurrent graph rebuild
+    // could delete a mapped occurrence before the write, and the insert then fails with
+    // SQLite error 19 (FOREIGN KEY constraint).
     use transaction = conn.BeginTransaction(deferred = false)
     let mapped = mapProjectRatchetCoverage conn transaction repoRoot xml
     afterMapped ()
@@ -544,15 +550,15 @@ let internal persistProjectRatchetCoverageWithMapped
         upsert.Transaction <- transaction
 
         upsert.CommandText <-
-            $"""INSERT INTO %s{ProjectRatchetCoverageTable} (project, symbol_id, line_offset, hits)
-                VALUES (@project, @symbol, @offset, @hits)
-                ON CONFLICT(project, symbol_id, line_offset)
+            $"""INSERT INTO %s{ProjectRatchetCoverageTable} (project, occurrence_id, line_offset, hits)
+                VALUES (@project, @occurrence, @offset, @hits)
+                ON CONFLICT(project, occurrence_id, line_offset)
                 DO UPDATE SET hits = MAX(hits, excluded.hits);"""
 
         for point in mapped.Points do
             upsert.Parameters.Clear()
             upsert.Parameters.AddWithValue("@project", input.Project) |> ignore
-            upsert.Parameters.AddWithValue("@symbol", point.SymbolId) |> ignore
+            upsert.Parameters.AddWithValue("@occurrence", point.OccurrenceId) |> ignore
             upsert.Parameters.AddWithValue("@offset", point.LineOffset) |> ignore
             upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
             upsert.ExecuteNonQuery() |> ignore
@@ -599,13 +605,13 @@ let private projectRatchetCobertura (db: Database) : string option =
     use cmd = conn.CreateCommand()
 
     cmd.CommandText <-
-        $"""SELECT s.source_file,
-                   s.line_start + c.line_offset AS absolute_line,
+        $"""SELECT o.source_file,
+                   o.line_start + c.line_offset AS absolute_line,
                    MAX(c.hits)
             FROM %s{ProjectRatchetCoverageTable} c
-            JOIN symbols s ON s.id = c.symbol_id
-            GROUP BY s.source_file, s.line_start + c.line_offset
-            ORDER BY s.source_file, absolute_line;"""
+            JOIN symbol_occurrences o ON o.id = c.occurrence_id
+            GROUP BY o.source_file, o.line_start + c.line_offset
+            ORDER BY o.source_file, absolute_line;"""
 
     use reader = cmd.ExecuteReader()
     let points = ResizeArray<string * int * int>()
@@ -4841,6 +4847,13 @@ let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: 
 
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
 /// call. Pure function: takes state, returns updated state.
+///
+/// The results go to `RebuildProjects` ONE PER FILE, never merged per project.
+/// TestPrune.Core attributes each edge, test method and attribute to the file whose
+/// `AnalysisResult` carried it, so re-indexing a file replaces exactly that file's facts.
+/// A merged result carrying a signature (`.fsi`) and its implementation would credit the
+/// signature's facts to whichever file declared the shared name last, and a later flush
+/// of that file alone would delete them.
 let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
     let allResults = ResizeArray<AnalysisResult>()
 
@@ -4850,27 +4863,8 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         match Map.tryFind projectName newPending with
         | Some items ->
             newPending <- Map.remove projectName newPending
-
-            // Use a full record literal (not AnalysisResult.Create) so per-file
-            // Attributes and ParentLinks survive the per-project merge.
-            // Create defaults both to []; the per-file results above carry them
-            // and we'd silently drop them on every flush. Single fold over
-            // items to avoid 5 separate passes.
-            let syms, deps, tms, attrs, pls =
-                (([], [], [], [], []), items)
-                ||> List.fold (fun (s, d, t, a, p) r ->
-                    (r.Symbols :: s, r.Dependencies :: d, r.TestMethods :: t, r.Attributes :: a, r.ParentLinks :: p))
-
-            let combined =
-                { Symbols = syms |> List.rev |> List.concat
-                  Dependencies = deps |> List.rev |> List.concat
-                  TestMethods = tms |> List.rev |> List.concat
-                  Attributes = attrs |> List.rev |> List.concat
-                  ParentLinks = pls |> List.rev |> List.concat
-                  Diagnostics = AnalysisDiagnostics.Zero }
-
             Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
-            allResults.Add(combined)
+            allResults.AddRange(items)
         | None -> ()
 
     if allResults.Count > 0 then
@@ -5171,12 +5165,29 @@ let internal cacheKeyFor
             )
     | _ -> None
 
+/// The impact queries the plugin runs against its index, in one place, so a test can
+/// count them per handler instance.
+type internal ImpactQueries =
+    {
+        /// The tests `QueryAffectedTests` selects for a set of changed symbols.
+        AffectedTests: string list -> TestMethodInfo list
+        /// For each symbol, the test projects its single-seed query would select from.
+        CoveringProjectsBySeed: string list -> Map<string, Set<string>>
+    }
+
+module internal ImpactQueries =
+    let ofDatabase (db: Database) : ImpactQueries =
+        { AffectedTests = db.QueryAffectedTests
+          CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
-/// to a different DB than the plugin's.
-let internal createWithLaunchDeadline
+/// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
+/// same DB.
+let internal createWithQueries
+    (queriesOf: Database -> ImpactQueries)
     (launchDeadline: TimeSpan)
     // The declared exclusions: indexed test-project name -> written reason. Called once
     // per debt classification (flush, launch, completion), so a caller can re-resolve
@@ -5198,6 +5209,7 @@ let internal createWithLaunchDeadline
     (dependsOn: string list)
     =
     let db = Database.create dbPath
+    let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
     /// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
@@ -5539,28 +5551,42 @@ let internal createWithLaunchDeadline
     ///
     /// `excluded` is lazy so a classification that never meets an unconfigured coverer
     /// never resolves the declarations. Analysis-only daemons make no test claim, so every
-    /// covering project counts and the declarations are never consulted.
-    let debtScope (excluded: Lazy<Map<string, string>>) : string -> Set<string> =
+    /// covering project counts and the declarations are never consulted. `covering` is a
+    /// pass's `coveringOf`.
+    let debtScope (excluded: Lazy<Map<string, string>>) (covering: string -> Set<string>) : string -> Set<string> =
         let declaredExcluded (project: string) =
             match Map.tryFind project excluded.Value with
             | Some reason -> not (String.IsNullOrWhiteSpace reason)
             | None -> false
 
         fun symbol ->
-            let covering =
-                db.QueryAffectedTests [ symbol ]
-                |> List.map (fun t -> t.TestProject)
-                |> Set.ofList
+            let projects = covering symbol
 
             if Set.isEmpty runnableProjects then
-                covering
+                projects
             else
-                covering
+                projects
                 |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
 
     /// `debtScope` resolving the declarations only if a classification needs them.
-    let lazyDebtScope () =
-        debtScope (lazy (resolveExcludedProjects ()))
+    let lazyDebtScope (covering: string -> Set<string>) =
+        debtScope (lazy (resolveExcludedProjects ())) covering
+
+    /// The test projects covering each symbol a classification pass is about: what its
+    /// single-seed `QueryAffectedTests` would select from. One grouped query answers all
+    /// of `symbols`, run the first time any symbol is asked about and never when none is.
+    /// A symbol outside `symbols` is answered by a grouped query of its own.
+    let coveringOf (symbols: string seq) : string -> Set<string> =
+        let known = symbols |> Seq.distinct |> List.ofSeq
+        let grouped = lazy (queries.CoveringProjectsBySeed known)
+
+        fun symbol ->
+            match Map.tryFind symbol grouped.Value with
+            | Some projects -> projects
+            | None ->
+                queries.CoveringProjectsBySeed [ symbol ]
+                |> Map.tryFind symbol
+                |> Option.defaultValue Set.empty
 
     /// The unconfigured projects `owedTo` still waits on for `symbols`, for a message
     /// that has to name them.
@@ -5674,7 +5700,7 @@ let internal createWithLaunchDeadline
                 // execute — and make `allChangesUncovered` (and so the zero-affected
                 // skip) disagree with the commit rule. See `debtScope`.
                 let queryRunnable (seeds: string list) =
-                    db.QueryAffectedTests(seeds)
+                    queries.AffectedTests seeds
                     |> fun ts ->
                         if Set.isEmpty runnableProjects then
                             ts
@@ -5833,7 +5859,8 @@ let internal createWithLaunchDeadline
         //    declares excluded. Nothing here can discharge it, and dropping it would let a
         //    configured-suite green retire tests that never ran. It STAYS owed; the verdict
         //    stays red and names the project until the config lists or excludes it.
-        let owedTo = lazyDebtScope ()
+        let covering = coveringOf symbols
+        let owedTo = lazyDebtScope covering
         let owing = symbols |> List.map (fun s -> s, owedTo s) |> Map.ofList
 
         let uncovered =
@@ -5849,7 +5876,7 @@ let internal createWithLaunchDeadline
                 uncovered
                 |> Set.toList
                 |> List.choose (fun s ->
-                    match db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    match covering s with
                     | projects when Set.isEmpty projects -> None
                     | projects -> Some(s, projects))
                 |> Map.ofList
@@ -6179,7 +6206,7 @@ let internal createWithLaunchDeadline
                 // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
                 // disagree. An unconfigured, undeclared coverer blocks the commit on
                 // purpose: its tests never ran, so they verified nothing.
-                let owedTo = lazyDebtScope ()
+                let owedTo = lazyDebtScope (coveringOf launchedSymbols)
 
                 let coveringProjectsBySymbol =
                     launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
@@ -6618,14 +6645,23 @@ let internal createWithLaunchDeadline
                             JsonSerializer.Serialize({| error = ex.Message |})
                         )
             finally
-                // Cancellation (daemon teardown) skips `with` but runs `finally`, and
-                // no completion will fold: never leave the IPC client awaiting a reply
-                // that cannot come.
+                // Cancellation — daemon teardown, or every client that asked for this run
+                // has gone — skips `with` but runs `finally`, and no completion will fold.
                 if not returned then
-                    reply.TrySetResult(
-                        JsonSerializer.Serialize({| error = "daemon shut down before the run completed" |})
-                    )
-                    |> ignore
+                    let reason = "the run was cancelled before it completed"
+
+                    // Close the run this work opened. Subscribers track every started run
+                    // until its completion (Build defers every build while one is live),
+                    // so a started run must end. `Aborted` with no results is evidence of
+                    // nothing: it is never a pass.
+                    match emittedStart with
+                    | Some started ->
+                        let _, completed = abortedRunLifecycle (Some started) reason
+                        ctx.EmitTestRunCompleted completed
+                    | None -> ()
+
+                    // Never leave a client that is still waiting on a reply that cannot come.
+                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
         }
 
     let commands =
@@ -6641,7 +6677,7 @@ let internal createWithLaunchDeadline
                       if symbols.IsEmpty then
                           []
                       else
-                          db.QueryAffectedTests(symbols)
+                          queries.AffectedTests symbols
 
                   let testsData =
                       tests
@@ -7156,8 +7192,15 @@ let internal createWithLaunchDeadline
     // Launched from the mailbox so it is serialised with every other launch site and
     // holds the "tests" key for its whole duration — see the `RunTestsRequested` case
     // for why that matters.
+    //
+    // Cooperative-safe: a force-run exists only for the client that asked for it, so the
+    // framework may cancel it once that client is gone. Its test hosts run in its own
+    // process scope (reaped), its result publishes only through the fold it returns
+    // (never folded when cancelled), and its `finally` closes the run it opened.
     let requestTestRun (ctx: PluginCtx<TestPruneMsg>) state configs filter reply =
-        match runTestHostExclusive ctx Set.empty (Some reply) (commandForceRun ctx configs filter reply) with
+        let work = PluginWork.cooperativeSafe (commandForceRun ctx configs filter reply)
+
+        match runTestHostExclusive ctx Set.empty (Some reply) work with
         | Claimed -> { state with EvidenceReceipt = None }
         | SlotBusy ->
             // A busy key QUEUES the run, never refuses it: a refusal that reads as
@@ -8014,11 +8057,22 @@ let internal createWithLaunchDeadline
                     // unobserved excluded project) fails this handler before it has emitted,
                     // recorded or committed anything, so the framework settles the work as a
                     // failure and every symbol stays owed.
+                    // Every symbol this completion can ask about: what the run launched,
+                    // what BootScan attached to it, and what is queued. One grouped query,
+                    // and only if something asks.
+                    let covering =
+                        coveringOf (
+                            Seq.concat
+                                [ Set.toSeq launch.Symbols
+                                  Map.keys state.BootScanDebtDuringFullRun
+                                  Set.toSeq state.Debt.PendingQueue ]
+                        )
+
                     let owedTo =
                         if Set.isEmpty runnableProjects then
-                            lazyDebtScope ()
+                            lazyDebtScope covering
                         else
-                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ()))
+                            debtScope (Lazy<_>.CreateFromValue(resolveExcludedProjects ())) covering
 
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
@@ -8973,6 +9027,32 @@ let internal createWithLaunchDeadline
 
         Some cacheKey
       Teardown = None }
+
+/// `createWithQueries` over the plugin's own index.
+let internal createWithLaunchDeadline
+    (launchDeadline: TimeSpan)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    createWithQueries
+        ImpactQueries.ofDatabase
+        launchDeadline
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
 
 /// Create a TestPrune handler that honors declared test-scope exclusions.
 ///

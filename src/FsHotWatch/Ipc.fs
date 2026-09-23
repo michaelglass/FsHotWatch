@@ -199,7 +199,20 @@ let WedgeStatusKey = "fshw-wedge"
 /// (the IPC server keeps several acceptors running) and reads the watchdog, so
 /// `GetStatus`/`ScanStatus` report the wedge + stuck op + recovery instead of the
 /// consumer blindly timing out on the socket.
-type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog, ?deadline: TimeSpan) =
+///
+/// `disconnected`: fires when the client this target serves has gone away. The IPC
+/// server builds one target per connection and cancels it when that connection drops,
+/// so a killed client does not leave behind work that existed only for it (see
+/// `trackedTask`). Absent, nothing is ever cancelled.
+type DaemonRpcTarget
+    (
+        config: DaemonRpcConfig,
+        ?watchdog: OperationWatchdog.Watchdog,
+        ?deadline: TimeSpan,
+        ?disconnected: CancellationToken
+    ) =
+
+    let disconnected = defaultArg disconnected CancellationToken.None
 
     /// The seam deadline. A caller-supplied one is honoured only when it is a
     /// real, finite bound — `Infinite`/zero/negative would reintroduce exactly the
@@ -229,7 +242,13 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// a callback can block before it ever returns its Task (a `task { }` body runs
     /// inline up to its first real await), and calling it inline would leave that
     /// synchronous prefix outside the deadline.
-    let trackedTask (name: string) (f: unit -> Task<'a>) : Task<'a> =
+    ///
+    /// A client that disconnects ends the RPC the same way: the call is released and
+    /// retired from the watchdog at once, because nobody is left to read its reply. The
+    /// callback receives the disconnect token so it can cancel what it started SOLELY
+    /// for this client; anything it merely waits on that others share (a plugin run,
+    /// the daemon-wide terminal wait) must be left running — see each method.
+    let trackedTask (name: string) (f: CancellationToken -> Task<'a>) : Task<'a> =
         let token = watchdog |> Option.map (fun w -> w.Begin name)
 
         task {
@@ -238,10 +257,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
                 use timeoutCts = new CancellationTokenSource()
                 let expiry = Task.Delay(d, timeoutCts.Token)
-                let work = Task.Run<'a>(Func<Task<'a>>(f))
-                let! winner = Task.WhenAny(work :> Task, expiry)
+                let dropped = Task.Delay(Timeout.Infinite, disconnected)
+                let work = Task.Run<'a>(Func<Task<'a>>(fun () -> f disconnected))
+                let! winner = Task.WhenAny(work :> Task, expiry, dropped)
 
-                if obj.ReferenceEquals(winner, expiry) then
+                if obj.ReferenceEquals(winner, dropped) then
+                    timeoutCts.Cancel()
+                    // Observe the abandoned work's eventual fault: nobody awaits it now.
+                    work.ContinueWith(fun (t: Task<'a>) -> t.Exception |> ignore) |> ignore
+
+                    return
+                        raise (OperationCanceledException($"%s{name} abandoned: its client disconnected", disconnected))
+                elif obj.ReferenceEquals(winner, expiry) then
                     return
                         raise (
                             TimeoutException(
@@ -298,7 +325,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// Runs a registered command by name and returns the result, or the
     /// `unknownCommandReply` sentinel when the plugin host doesn't recognize it.
     member _.RunCommand(name: string, argsJson: string) : Task<string> =
-        trackedTask $"RunCommand:%s{name}" (fun () ->
+        // The command's own async runs under the disconnect token, so whatever it does
+        // inline stops at its next cancellation point once its client is gone. Work it
+        // hands to a plugin (an owned run, a queued intent) belongs to the plugin, is
+        // shared with the watcher and other clients, and is not cancelled here.
+        trackedTask $"RunCommand:%s{name}" (fun disconnected ->
             task {
                 let args =
                     if String.IsNullOrEmpty(argsJson) then
@@ -306,7 +337,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                     else
                         [| argsJson |]
 
-                let! result = config.Host.RunCommand(name, args) |> Async.StartAsTask
+                let! result = Async.StartAsTask(config.Host.RunCommand(name, args), cancellationToken = disconnected)
 
                 match result with
                 | Some r -> return r
@@ -449,7 +480,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// clock — the scan has no meaningful per-scan budget of its own. Its boundedness
     /// comes from the `trackedTask` seam instead.
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
-        trackedTask "WaitForScan" (fun () ->
+        // The scan is the daemon's, shared by every waiter: a dropped client only stops
+        // waiting on it.
+        trackedTask "WaitForScan" (fun _ ->
             task {
                 Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
                 do! config.WaitForScanGeneration(afterGeneration)
@@ -461,7 +494,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// hard bound (`resolveVerdictDeadline`), so the wait is never unbounded: a wedged
     /// plugin surfaces as a TimeoutException naming the still-running plugin.
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
-        trackedTask "WaitForComplete" (fun () ->
+        // Plugin runs are the daemon's, shared by every waiter and the watcher: a dropped
+        // client only stops waiting on them.
+        trackedTask "WaitForComplete" (fun _ ->
             task {
                 let statuses = config.Host.GetAllStatuses()
 
@@ -492,7 +527,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
     /// Trigger a build by emitting SourceChanged for all registered files, then wait for completion.
     member this.TriggerBuild() : Task<string> =
-        trackedTask "TriggerBuild" (fun () ->
+        // The build it triggers is a plugin run, shared like any other.
+        trackedTask "TriggerBuild" (fun _ ->
             task {
                 do! config.TriggerBuild() |> Async.StartAsTask
                 let! _ = this.WaitForComplete(0)
@@ -505,7 +541,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// returns the status JSON (or an error payload if the plugin has no
     /// registered pattern).
     member this.RerunPlugin(name: string) : Task<string> =
-        trackedTask $"RerunPlugin:%s{name}" (fun () ->
+        // The re-run is a plugin run, shared like any other.
+        trackedTask $"RerunPlugin:%s{name}" (fun _ ->
             task {
                 match! config.RerunPlugin name |> Async.StartAsTask with
                 | Result.Ok() ->
@@ -518,7 +555,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// The shared RPC seam supplies the hard deadline and keeps a wedged cache
     /// backend from holding the caller forever; the FCS process stays warm.
     member _.Invalidate() : Task<string> =
-        trackedTask "Invalidate" (fun () ->
+        trackedTask "Invalidate" (fun _ ->
             task {
                 do! config.InvalidateCache()
                 return "invalidated"
@@ -540,7 +577,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
     /// Run all preprocessors on all registered files and return a summary.
     member _.FormatAll() : Task<string> =
-        trackedTask "FormatAll" (fun () ->
+        // Formatting runs on the daemon's change agent, in order with watcher input.
+        trackedTask "FormatAll" (fun _ ->
             task {
                 let! result = config.FormatAll() |> Async.StartAsTask
                 return result
@@ -589,7 +627,7 @@ module IpcServer =
     /// for it or close it.
     let private acceptOne
         (pipeName: string)
-        (target: DaemonRpcTarget)
+        (target: CancellationToken -> DaemonRpcTarget)
         (connections: Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>)
         (ct: CancellationToken)
         : Async<unit> =
@@ -608,13 +646,25 @@ module IpcServer =
 
                 let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
 
-                let rpc = new JsonRpc(handler, target)
+                // One target per connection, cancelled when this client goes away, so
+                // its calls stop rather than run on for nobody.
+                let clientGone = new CancellationTokenSource()
+                let rpc = new JsonRpc(handler, target clientGone.Token)
+
+                rpc.Disconnected.Add(fun _ ->
+                    try
+                        clientGone.Cancel()
+                    with :? ObjectDisposedException ->
+                        // Torn down already: nothing is left running to cancel.
+                        ())
+
                 rpc.StartListening()
 
                 let teardown =
                     rpc.Completion.ContinueWith(fun (_: Task) ->
                         rpc.Dispose()
-                        pipeServer.Dispose())
+                        pipeServer.Dispose()
+                        clientGone.Dispose())
 
                 connections[pipeServer] <- teardown
 
@@ -636,25 +686,19 @@ module IpcServer =
     /// so clients don't have to wait for the accept loop to cycle. On shutdown,
     /// connections still open after `drainBound` are closed.
     ///
-    /// Owns the `OperationWatchdog.Watchdog` (see `DaemonRpcTarget`): a background
-    /// timer logs the structured "operation exceeded Ns" record plus a periodic
-    /// heartbeat. Disposed when the server loop exits (daemon shutdown).
-    let internal startWithin
+    /// Every RPC it serves is tracked on `watchdog` (see `DaemonRpcTarget`), whose
+    /// background timer logs the structured "operation exceeded Ns" record plus a
+    /// periodic heartbeat. The caller owns and disposes it.
+    let internal serveWith
+        (watchdog: OperationWatchdog.Watchdog)
         (drainBound: TimeSpan)
         (pipeName: string)
         (config: DaemonRpcConfig)
         (cts: CancellationTokenSource)
         : Async<unit> =
         async {
-            use watchdog =
-                new OperationWatchdog.Watchdog(
-                    OperationWatchdog.DefaultThreshold,
-                    heartbeatEvery = TimeSpan.FromSeconds(30.0),
-                    now = (fun () -> DateTime.UtcNow),
-                    log = Logging.info "watchdog"
-                )
-
-            let target = DaemonRpcTarget(config, watchdog)
+            let target (disconnected: CancellationToken) =
+                DaemonRpcTarget(config, watchdog, disconnected = disconnected)
 
             let connections =
                 Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>(HashIdentity.Reference)
@@ -734,6 +778,26 @@ module IpcServer =
                 Logging.warn
                     "ipc"
                     $"IPC pipe %s{pipeName} still accepts connections %g{ReleaseBound.TotalSeconds}s after shutdown — another server may own it"
+        }
+
+    /// Serve with a watchdog this server creates, and disposes when the server loop
+    /// exits (daemon shutdown); see `serveWith`.
+    let internal startWithin
+        (drainBound: TimeSpan)
+        (pipeName: string)
+        (config: DaemonRpcConfig)
+        (cts: CancellationTokenSource)
+        : Async<unit> =
+        async {
+            use watchdog =
+                new OperationWatchdog.Watchdog(
+                    OperationWatchdog.DefaultThreshold,
+                    heartbeatEvery = TimeSpan.FromSeconds(30.0),
+                    now = (fun () -> DateTime.UtcNow),
+                    log = Logging.info "watchdog"
+                )
+
+            return! serveWith watchdog drainBound pipeName config cts
         }
 
     /// Start the IPC server; see `startWithin`. When this returns, the pipe name no

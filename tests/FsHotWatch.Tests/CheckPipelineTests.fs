@@ -661,3 +661,231 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
                 Some(Path.GetFileName path, hits))
 
     test <@ List.isEmpty callers @>
+
+// --- Check-result cache soundness and sizing ---
+
+[<Fact(Timeout = 120000)>]
+let ``a cached check is not served after a file it depends on changes`` () =
+    // The cache key used to be (own bytes, project options). B's bytes and options do
+    // not change when A's signature does, so B was served its old, clean result while
+    // FCS would now report a type error — on every rescan, which is exactly the
+    // from-disk recheck `fshw check` forces to catch what the watcher missed.
+    withTempDir "cache-upstream" (fun tmpDir ->
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+
+        let a = Path.Combine(tmpDir, "A.fs")
+        let b = Path.Combine(tmpDir, "B.fsx")
+        File.WriteAllLines(a, [| "module A"; "let x = 1" |])
+        File.WriteAllLines(b, [| "#load \"A.fs\""; "let y : int = A.x + 1" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                b,
+                SourceText.ofString (File.ReadAllText b),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
+        let pipeline = CheckPipeline(checker, cacheBackend = cache)
+        pipeline.RegisterProject(Path.Combine(tmpDir, "B.fsproj"), options)
+
+        let errorsOf () =
+            match pipeline.CheckFile(AbsFilePath.create b) |> Async.RunSynchronously with
+            | Some { CheckResults = FullCheck r } ->
+                r.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.length
+            | other -> failwith $"expected a full check, got %A{other}"
+
+        // Positive control: B is clean against the original A, and was cached.
+        test <@ errorsOf () = 0 @>
+        test <@ cache.Count >= 1 @>
+
+        File.WriteAllLines(a, [| "module A"; "let x = \"no longer an int\"" |])
+
+        test <@ errorsOf () > 0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``registering projects grows a working-set cache to the working set`` () =
+    // A cache below the working set gets ~0% hits on a sequential scan (see
+    // CheckCacheTests), so the pipeline — the one place that knows the working set —
+    // reports it.
+    let cache =
+        FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet)
+
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+    let files = [ for i in 1..5 -> $"/tmp/ws/F%d{i}.fs" ]
+    pipeline.RegisterProject("/tmp/ws/P.fsproj", dummyOptions "/tmp/ws/P.fsproj" files)
+    pipeline.RegisterProject("/tmp/ws/Q.fsproj", dummyOptions "/tmp/ws/Q.fsproj" (List.take 2 files))
+    // 5 + 2: a file compiled into two projects is two entries (different options).
+    test <@ cache.Capacity = 7 @>
+
+/// Counts lookups; admits only the projects `admits` allows.
+type private ScopedCountingCache(admits: string -> bool) =
+    member val Lookups = 0 with get, set
+
+    interface ICheckCacheBackend with
+        member this.TryGet _ =
+            this.Lookups <- this.Lookups + 1
+            None
+
+        member _.Set _ _ = ()
+        member _.Invalidate _ = ()
+        member _.Clear() = ()
+
+    interface IScopedCheckCache with
+        member _.Admits project = admits project
+        member _.ObserveWorkingSet _ = ()
+        member _.FitWarning = None
+
+[<Fact(Timeout = 15000)>]
+let ``a project the cache does not admit is never looked up`` () =
+    // An excluded slice must cost nothing: no fingerprint, no lookup, no entry.
+    withTempDir "cache-admit" (fun tmpDir ->
+        let file = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(file, "module Lib")
+        let proj = Path.Combine(tmpDir, "Lib.fsproj")
+        let cache = ScopedCountingCache(fun p -> p <> proj)
+        let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+        pipeline.RegisterProject(proj, dummyOptions proj [ file ])
+
+        // The null checker makes the FCS call fail; only the lookup count matters.
+        pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously |> ignore
+        test <@ cache.Lookups = 0 @>)
+
+[<Fact(Timeout = 180000)>]
+let ``a cached check is not served after a TRANSITIVE upstream project changes a signature`` () =
+    // C references B, B references A; C never names A. Changing A.f's parameter type
+    // changes B.g's inferred type, which breaks C's call. C's own bytes, C's options
+    // and even C's direct reference are untouched — only A's source moved, so only a
+    // fingerprint over the transitive upstream SOURCES can tell the entry is stale.
+    withTempDir "cache-transitive" (fun tmpDir ->
+        // The daemon's own checker: TransparentCompiler, which checks C against B's and
+        // A's in-memory sources — the production configuration this key must match.
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+
+        let write name (lines: string array) =
+            File.WriteAllLines(Path.Combine(tmpDir, name), lines)
+
+        write "A.fs" [| "module A"; "let f (x: int) = x + 1" |]
+        write "B.fs" [| "module B"; "let g x = A.f x" |]
+        write "C.fs" [| "module C"; "let h : int = B.g 1" |]
+        write "Base.fsx" [| "let placeholder = 0" |]
+
+        // Framework references and flags, borrowed from a script's options.
+        let baseOptions, _ =
+            let script = Path.Combine(tmpDir, "Base.fsx")
+
+            checker.GetProjectOptionsFromScript(
+                script,
+                SourceText.ofString (File.ReadAllText script),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let frameworkOptions =
+            baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
+
+        let project name (refs: (string * FSharpProjectOptions) list) =
+            { baseOptions with
+                ProjectFileName = Path.Combine(tmpDir, $"%s{name}.fsproj")
+                SourceFiles = [| Path.Combine(tmpDir, $"%s{name}.fs") |]
+                OtherOptions = Array.append frameworkOptions [| for out, _ in refs -> $"-r:%s{out}" |]
+                ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
+                UseScriptResolutionRules = false
+                ProjectId = None
+                Stamp = None }
+
+        let outOf name =
+            Path.Combine(tmpDir, "obj", $"%s{name}.dll")
+
+        let a = project "A" []
+        let b = project "B" [ outOf "A", a ]
+        let c = project "C" [ outOf "B", b ]
+
+        let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
+        let pipeline = CheckPipeline(checker, cacheBackend = cache)
+        pipeline.RegisterProject(c.ProjectFileName, c)
+        let cFile = AbsFilePath.create (Path.Combine(tmpDir, "C.fs"))
+
+        let errorsOfC () =
+            match pipeline.CheckFile cFile |> Async.RunSynchronously with
+            | Some { CheckResults = FullCheck r } ->
+                r.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.map (fun d -> d.Message)
+            | other -> failwith $"expected a full check, got %A{other}"
+
+        // Positive control: C is clean against the original A, and that result is cached.
+        test <@ errorsOfC () |> Array.isEmpty @>
+        test <@ cache.Count >= 1 @>
+
+        write "A.fs" [| "module A"; "let f (x: string) = x + \"!\"" |]
+
+        test <@ not (errorsOfC () |> Array.isEmpty) @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a check whose upstream moved during the generation is not stored`` () =
+    // Inside a generation the lookup key comes from a per-project snapshot. A check
+    // that ran after the snapshot went stale was type-checked against DIFFERENT
+    // upstream content than its key names; storing it would hand those diagnostics to
+    // a later generation whose tree matches the snapshot again (an undo).
+    withTempDir "cache-generation" (fun tmpDir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let a = Path.Combine(tmpDir, "A.fs")
+        let c = Path.Combine(tmpDir, "C.fs")
+        let d = Path.Combine(tmpDir, "D.fsx")
+        File.WriteAllLines(a, [| "module A"; "let x = 1" |])
+        File.WriteAllLines(c, [| "module C"; "let y = A.x" |])
+        File.WriteAllLines(d, [| "#load \"A.fs\" \"C.fs\""; "let z : int = A.x" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                d,
+                SourceText.ofString (File.ReadAllText d),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
+        let pipeline = CheckPipeline(checker, cacheBackend = cache)
+        pipeline.RegisterProject(Path.Combine(tmpDir, "D.fsproj"), options)
+        pipeline.BeginGeneration()
+
+        let check path =
+            pipeline.CheckFile(AbsFilePath.create path) |> Async.RunSynchronously |> ignore
+
+        // Snapshot taken with the original A; C's result stored under it.
+        check c
+        test <@ cache.Count = 1 @>
+
+        // A moves mid-generation. D's lookup still uses the snapshot, misses, and FCS
+        // checks D against the NEW A — so that result must not be written.
+        File.WriteAllLines(a, [| "module A"; "let x = \"moved\"" |])
+        check d
+        test <@ cache.Count = 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the too-small-cache warning names the whole working set, not a mid-registration count`` () =
+    // Projects register one at a time. Warning on the first registration that fell
+    // short named a partial count (measured: "below the 72 files" of 213).
+    let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(3)
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    pipeline.RegisterProject(
+        "/tmp/fit/P.fsproj",
+        dummyOptions "/tmp/fit/P.fsproj" [ for i in 1..4 -> $"/tmp/fit/P%d{i}.fs" ]
+    )
+
+    pipeline.RegisterProject(
+        "/tmp/fit/Q.fsproj",
+        dummyOptions "/tmp/fit/Q.fsproj" [ for i in 1..6 -> $"/tmp/fit/Q%d{i}.fs" ]
+    )
+
+    test <@ pipeline.LastFitWarning = None @>
+    pipeline.BeginGeneration()
+
+    match pipeline.LastFitWarning with
+    | Some warning -> test <@ warning.Contains "below the 10 files" @>
+    | None -> failwith "expected a fit warning once the generation started"
