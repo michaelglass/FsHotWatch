@@ -1745,8 +1745,8 @@
       },
       {
         "coveredLines": 119,
-        "coveredBranches": 51,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 47,
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact; lowered to 47 on 2026-09-23 because 6bb9d731 deleted the dead `StatusView.isQuiescent` (its only caller `isAllTerminal` had no production callers), taking its covered branches with it (Linux CI run 35923311462: 47) from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
