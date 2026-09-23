@@ -55,6 +55,15 @@
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "default"
+      },
+      {
+        "project": "FsHotWatch.Bench.Tests",
+        "command": "dotnet",
+        "args": "run --project bench/FsHotWatch.Bench.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "default",
+        "coverage": false
       }
     ],
     "excluded": [

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests for the benchmark harness's pure parts. Not part of the coverage
+       ratchet: the harness is measurement tooling, not shipped code. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="InstrumentParsingTests.fs" />
+    <Compile Include="DaemonLogTests.fs" />
+    <Compile Include="RecordAndSummaryTests.fs" />
+    <Compile Include="HeapGraphTests.fs" />
+    <Compile Include="RetentionTests.fs" />
+    <Compile Include="SleepTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../FsHotWatch.Bench/FsHotWatch.Bench.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.0" />
+    <PackageReference Include="Unquote" Version="7.0.1" />
+  </ItemGroup>
+</Project>

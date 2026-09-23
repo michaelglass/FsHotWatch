@@ -19,4 +19,8 @@
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
   <Project Path="analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj" />
   <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
+  <Folder Name="/bench/">
+    <Project Path="bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj" />
+    <Project Path="bench/FsHotWatch.Bench.Tests/FsHotWatch.Bench.Tests.fsproj" />
+  </Folder>
 </Solution>

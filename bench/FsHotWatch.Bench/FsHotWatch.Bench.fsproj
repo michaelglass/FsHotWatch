@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The repository-host memory / scan / throughput benchmark (see bench/README.md).
+       Not a package: a measurement harness that drives real daemons and appends
+       one JSON line per sample. The pure parts (instrument parsing, log windowing,
+       record format, heap classification) are unit-tested by
+       bench/FsHotWatch.Bench.Tests; the orchestration is exercised by running it. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>fshw-bench</AssemblyName>
+    <RootNamespace>FsHotWatch.Bench</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Footprint.fs" />
+    <Compile Include="HeapHistogram.fs" />
+    <Compile Include="HeapGraph.fs" />
+    <Compile Include="Retention.fs" />
+    <Compile Include="DaemonLog.fs" />
+    <Compile Include="Load.fs" />
+    <Compile Include="Sleep.fs" />
+    <Compile Include="Record.fs" />
+    <Compile Include="Summary.fs" />
+    <Compile Include="Instruments.fs" />
+    <Compile Include="GraphReport.fs" />
+    <Compile Include="Scenario.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.Bench.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <!-- The heap walk is our own EventPipe session rather than `dotnet-gcdump report`:
+         that report's per-type byte column is not a per-type total (measured: 9,397
+         byte[] of 124 B each reported as 24 B), so it cannot carry a size histogram. -->
+    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.607501" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.21" />
+  </ItemGroup>
+</Project>

@@ -147,6 +147,16 @@ description = "Run integration tests (FCS / analyzers / lint / format / build en
 run = "dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj"
 depends = ["restore"]
 
+[tasks.test-bench]
+description = "Unit-test the benchmark harness's pure parts (bench/). No coverage: measurement tooling, not shipped code."
+run = "dotnet test --project bench/FsHotWatch.Bench.Tests/FsHotWatch.Bench.Tests.fsproj"
+depends = ["restore"]
+
+[tasks.bench-memory]
+description = "Repository-host memory/scan benchmark: 1, 2 and 4 concurrent worktree daemons, 5 reps. Run on a QUIET box; see bench/README.md. Extra args pass through (e.g. -- --tests)."
+run = "dotnet build bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj && dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll run --repo ."
+depends = ["build"]
+
 [tasks.coverage-check]
 description = "Check per-file coverage meets minimum threshold"
 run = "dotnet tool run coverageratchet check coverage-ratchet-FsHotWatch.json"
