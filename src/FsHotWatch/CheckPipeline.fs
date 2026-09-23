@@ -46,6 +46,16 @@ let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
     | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
     | FSharpCheckFileAnswer.Aborted -> Seq.empty
 
+/// The line logged when a file's FCS check begins, so the log shows whether a slow
+/// result was slow to start or slow to finish.
+let internal checkStartLine (fileName: string) : string = $"check start %s{fileName}"
+
+/// The line logged when a file's FCS check succeeds: its total time, split between
+/// building the project snapshot and the checker's parse and type-check.
+let internal checkedLine (fileName: string) (total: TimeSpan) (snapshot: TimeSpan) (fcs: TimeSpan) : string =
+    let ms (span: TimeSpan) = int64 span.TotalMilliseconds
+    $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms)"
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -327,9 +337,12 @@ type CheckPipeline
 
             try
                 ct.ThrowIfCancellationRequested()
+                let fileName = Path.GetFileName absPath
+                activity.Log(checkStartLine fileName)
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
                 let snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
+                let snapshotTime = sw.Elapsed
                 let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
@@ -370,11 +383,11 @@ type CheckPipeline
                 ct.ThrowIfCancellationRequested()
 
                 if sw.Elapsed.TotalSeconds > 2.0 then
-                    Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                    Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                 match checkAnswer with
                 | FSharpCheckFileAnswer.Succeeded checkResults ->
-                    activity.Log($"checked {Path.GetFileName absPath}")
+                    activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
 
                     return
                         Some

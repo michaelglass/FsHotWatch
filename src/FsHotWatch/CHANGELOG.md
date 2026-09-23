@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Each per-file FCS check now logs `check start <file>` when it begins, and
+  `checked <file> in Nms (snapshot Xms, fcs Yms)` when it succeeds. The split shows
+  whether a slow check is spent building the project snapshot or in the checker itself.
+  A change batch that waits 100 ms or longer for a settled project model says so at
+  debug level.
+
 - feat: a repository host can serve many worktrees from one process, each as its own
   session of today's `Daemon`.
   - `SessionRegistry` builds each session in its own scope: a log sink, the client's

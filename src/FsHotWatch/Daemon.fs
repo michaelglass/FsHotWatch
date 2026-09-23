@@ -1257,6 +1257,14 @@ type private ChangeRequest =
 let internal settledLine (epoch: int64) (after: TimeSpan) (files: int) : string =
     $"settled epoch=%d{epoch} after=%d{int64 after.TotalMilliseconds}ms files=%d{files}"
 
+/// How long a change batch waited for a settled project model before checking
+/// anything, when that wait is long enough to explain a slow settle.
+let internal captureWaitLine (waited: TimeSpan) : string option =
+    if waited >= TimeSpan.FromMilliseconds 100.0 then
+        Some $"change batch waited %d{int64 waited.TotalMilliseconds}ms for the project model"
+    else
+        None
+
 /// The reply `fshw format` prints. It names the set that was offered, and the formatter
 /// that ran over it — or the reason none did. `formatted 0 files` on its own was the
 /// defect: the same text for "every registered file is clean" and "no
@@ -1296,7 +1304,9 @@ let private processBatchAttempt
         // The cohort reads the live graph, and publishes only while the model it
         // captured is still current. An in-batch rediscovery captures its own result.
         let captureModel () = ctx.Discovery.Capture id
+        let captureStarted = System.Diagnostics.Stopwatch.StartNew()
         let! initialModel = captureModel ()
+        captureWaitLine captureStarted.Elapsed |> Option.iter (Logging.debug "daemon")
         let mutable batchModel = initialModel
 
         let publishCurrent write =

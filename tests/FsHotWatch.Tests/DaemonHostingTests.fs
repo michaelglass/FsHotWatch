@@ -146,3 +146,13 @@ let ``RunWith waits for serve no longer than its bound`` () =
 [<Fact(Timeout = 5000)>]
 let ``a checked cohort's settle line keeps the shape benchmarks parse`` () =
     test <@ settledLine 7L (TimeSpan.FromMilliseconds 1234.9) 3 = "settled epoch=7 after=1234ms files=3" @>
+
+[<Fact(Timeout = 5000)>]
+let ``a change batch names a model wait long enough to explain a slow settle`` () =
+    test
+        <@ captureWaitLine (TimeSpan.FromMilliseconds 1500.7) = Some "change batch waited 1500ms for the project model" @>
+
+    test
+        <@ captureWaitLine (TimeSpan.FromMilliseconds 100.0) = Some "change batch waited 100ms for the project model" @>
+
+    test <@ captureWaitLine (TimeSpan.FromMilliseconds 99.0) = None @>
