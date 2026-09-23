@@ -134,10 +134,10 @@ let ``scan validity flags a truncated scan, a foreign window and log-metrics dis
           Gen2Collections = 0
           SampledAt = System.DateTime.UtcNow }
 
-    test <@ List.isEmpty (Scenario.scanProblems 87070 (Some(sample 207 0)) window) @>
-    test <@ List.length (Scenario.scanProblems 87070 (Some(sample 200 7)) window) = 2 @>
-    test <@ List.length (Scenario.scanProblems 1 (Some(sample 207 0)) window) = 1 @>
-    test <@ List.length (Scenario.scanProblems 87070 None window) = 1 @>
+    test <@ List.isEmpty (Scenario.scanProblems (Scenario.Owner.Process 87070) (Some(sample 207 0)) window) @>
+    test <@ List.length (Scenario.scanProblems (Scenario.Owner.Process 87070) (Some(sample 200 7)) window) = 2 @>
+    test <@ List.length (Scenario.scanProblems (Scenario.Owner.Process 1) (Some(sample 207 0)) window) = 1 @>
+    test <@ List.length (Scenario.scanProblems (Scenario.Owner.Process 87070) None window) = 1 @>
 
 [<Fact>]
 let ``sessions that checked different file counts are a parity failure`` () =
@@ -182,3 +182,71 @@ let ``current ISO-8601 UTC timestamps window and count the same as the older clo
             |> List.choose DaemonLog.scanCounts
             |> List.map _.Checked = [ 209 ]
         @>
+
+// Host mode: each session's own daemon.log, as the repository host writes it.
+let private hostedLog pid session =
+    [ "  [config] 2026-09-23T08:00:00.000Z verdictInputs: 5 declared, 6 file(s) folded into the tree hash, 0 absent"
+      $"  [host] 2026-09-23T08:00:00.100Z Attached to repository host pid=%d{pid} session=%s{session}"
+      "  [scan] 2026-09-23T08:00:01.000Z 13 projects, 207 files registered"
+      "  [scan] 2026-09-23T08:01:00.000Z Checked 207 files (5 tiers), skipped 32, unchecked 0"
+      "  [check] 2026-09-23T08:02:00.000Z settled epoch=3 after=2392ms files=1"
+      "  [test-prune] 2026-09-23T08:02:01.000Z   |   [check] 08:02:01.000 settled epoch=9 after=1ms files=1"
+      "  [check] 2026-09-23T08:03:00.000Z settled epoch=4 after=2515ms files=2" ]
+
+[<Fact>]
+let ``a hosted session's log names its host pid and session`` () =
+    test <@ DaemonLog.attachedHost (hostedLog 4242 "r1.w2.7") = Some(4242, "r1.w2.7") @>
+    test <@ DaemonLog.attachedHost (DaemonLog.sinceLastStart log) = None @>
+
+[<Fact>]
+let ``settle lines parse epoch, latency and files, and relayed ones do not count`` () =
+    let got =
+        DaemonLog.settled (hostedLog 1 "s")
+        |> List.map (fun (x: DaemonLog.Settle) -> x.Epoch, x.AfterMs, x.Files)
+
+    test <@ got = [ 3L, 2392.0, 1; 4L, 2515.0, 2 ] @>
+
+let private scanOf checkedFiles : FsHotWatch.ScanMetrics.ScanSample =
+    { Generation = 1L
+      Kind = "cold"
+      DurationMs = 1.0
+      FilesRegistered = 207
+      FilesChecked = checkedFiles
+      FilesUnchecked = 0
+      FilesSkipped = 0
+      FilesDepsGated = 0
+      FilesUncovered = 0
+      RetryRounds = 0
+      RssBytes = 0L
+      ManagedBytes = 0L
+      ForcedGc = false
+      Gen2Collections = 0
+      SampledAt = System.DateTime.UtcNow }
+
+[<Fact>]
+let ``a hosted session is owned when its log names the measured host, not its own pid`` () =
+    let window = DaemonLog.sinceLastStart (hostedLog 4242 "r1.w2.7")
+    test <@ List.isEmpty (Scenario.scanProblems (Scenario.Owner.Host 4242) (Some(scanOf 207)) window) @>
+
+    test
+        <@
+            Scenario.scanProblems (Scenario.Owner.Host 5000) (Some(scanOf 207)) window = [ "session attached to host pid 4242, not the measured host 5000" ]
+        @>
+    // A legacy-owned check of a hosted log fails: there is no per-process announcement.
+    test <@ List.length (Scenario.scanProblems (Scenario.Owner.Process 4242) (Some(scanOf 207)) window) = 1 @>
+
+[<Fact>]
+let ``host sessions must be distinct, and every session must have attached`` () =
+    test <@ List.isEmpty (Scenario.hostSessionProblems [ 1, Some "a"; 2, Some "b" ]) @>
+
+    test
+        <@ Scenario.hostSessionProblems [ 1, Some "a"; 2, Some "a" ] = [ "sessions share a host session id: s1=a s2=a" ] @>
+
+    test <@ Scenario.hostSessionProblems [ 1, Some "a"; 2, None ] = [ "s2 never attached to the repository host" ] @>
+
+[<Fact>]
+let ``an edit appends a marker line and restoring returns the original bytes`` () =
+    let original = "module M\n\nlet x = 1\n"
+    let edited = Scenario.editedContent original 3
+    test <@ edited.StartsWith original && edited.Contains "fshw-bench edit 3" @>
+    test <@ Scenario.editedContent original 3 <> Scenario.editedContent original 4 @>

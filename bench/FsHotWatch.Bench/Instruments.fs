@@ -33,11 +33,21 @@ open Microsoft.Diagnostics.Tracing.Parsers
 open Microsoft.Diagnostics.Tracing.Parsers.Clr
 open FsHotWatch
 
-/// Run a command to completion; `Ok stdout+stderr` on exit 0.
-let run (command: string) (args: string) (workDir: string) (timeout: TimeSpan) : Result<string, string> =
-    match ProcessHelper.runProcess command args workDir [] (ProcessHelper.ProcessBounds.silent timeout) with
+/// Run a command to completion with extra environment; `Ok stdout+stderr` on exit 0.
+let runWith
+    (env: (string * string) list)
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (timeout: TimeSpan)
+    : Result<string, string> =
+    match ProcessHelper.runProcess command args workDir env (ProcessHelper.ProcessBounds.silent timeout) with
     | ProcessHelper.ProcessOutcome.Succeeded out -> Ok(ProcessHelper.ProcessOutput.text out)
     | outcome -> Error(ProcessHelper.outputOf outcome)
+
+/// Run a command to completion; `Ok stdout+stderr` on exit 0.
+let run (command: string) (args: string) (workDir: string) (timeout: TimeSpan) : Result<string, string> =
+    runWith [] command args workDir timeout
 
 /// Liveness by `kill -0`. On this box `ps -p <pid>` exits 1 for a LIVE pid, so it is
 /// never used for this.

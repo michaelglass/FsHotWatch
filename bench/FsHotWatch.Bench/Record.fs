@@ -131,8 +131,11 @@ type BenchRecord =
     {
         RunId: string
         RecordedAt: DateTime
-        /// Free-form: which binary / mode this is (`per-worktree`, later `repository-host`).
+        /// Free-form: which binary / variant this is.
         Label: string
+        /// `legacy` (one daemon per worktree) or `host` (one repository host; its
+        /// session-0 record carries the N-session total).
+        Mode: string
         Position: Position
         Worktree: string
         Pid: int
@@ -312,6 +315,7 @@ let toJsonLine (r: BenchRecord) : string =
               "runId", ns r.RunId
               "recordedAt", ns (r.RecordedAt.ToString("o"))
               "label", ns r.Label
+              "mode", ns r.Mode
               "sessions", ni r.Position.Sessions
               "rep", ni r.Position.Rep
               "session", ni r.Position.Session
@@ -355,6 +359,8 @@ type Row =
     {
         RunId: string
         Label: string
+        /// `legacy` or `host`; lines written before the field existed read as `legacy`.
+        Mode: string
         Position: Position
         PhysFootprint: int64 option
         PhysFootprintPeak: int64 option
@@ -433,6 +439,10 @@ let tryParseLine (line: string) : Row option =
                 Some
                     { RunId = (path node [ "runId" ]).Value.GetValue<string>()
                       Label = (path node [ "label" ]).Value.GetValue<string>()
+                      Mode =
+                        path node [ "mode" ]
+                        |> Option.map (fun v -> v.GetValue<string>())
+                        |> Option.defaultValue "legacy"
                       Position =
                         { Sessions = (intAt node [ "sessions" ]).Value
                           Rep = (intAt node [ "rep" ]).Value
