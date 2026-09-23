@@ -217,6 +217,27 @@ let decodeReply (json: string) : Result<PreambleReply, string> =
 /// serving, before the connection is refused.
 let PreambleBound = TimeSpan.FromSeconds 10.0
 
+/// How long a refused connection's unread bytes are drained before it closes.
+let RefusalDrainBound = TimeSpan.FromSeconds 1.0
+
+/// Read and discard what the client has still to send, until it stops (end of stream)
+/// or `bound` passes.
+let private drainUnread (stream: Stream) (bound: TimeSpan) : Task =
+    task {
+        use timeout = new CancellationTokenSource(bound)
+        let buffer = Array.zeroCreate<byte> 4096
+
+        try
+            let mutable reading = true
+
+            while reading do
+                let! n = stream.ReadAsync(buffer.AsMemory(), timeout.Token)
+                reading <- n > 0
+        with
+        | :? OperationCanceledException
+        | :? IOException -> ()
+    }
+
 /// What the host does with each kind of connection.
 [<NoComparison; NoEquality>]
 type EndpointHandlers =
@@ -253,6 +274,10 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
                 return None
             | Error(FrameError.TooLarge bytes) ->
                 do! refuse "malformed-preamble" $"a %d{bytes}-byte preamble exceeds %d{MaxFrameBytes} bytes"
+                // The only refusal sent before the client's frame is read. Closing with
+                // its bytes unread resets the connection on Linux, discarding the refusal
+                // before the client reads it, so discard them first.
+                do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
                 return None
             | Ok text ->
 

@@ -581,7 +581,9 @@ let ``a malformed preamble is refused, and the host keeps serving`` () =
                 | _ -> false
             @>
 
-        // An oversized preamble is refused without reading it.
+        // An oversized preamble is refused without reading it. The client has sent more
+        // than the host reads, and must still receive the refusal: closing with those
+        // bytes unread would reset the connection on Linux before it could.
         use big =
             new Pipes.NamedPipeClientStream(".", settings.Control.Endpoint, Pipes.PipeDirection.InOut)
 
@@ -591,6 +593,7 @@ let ``a malformed preamble is refused, and the host keeps serving`` () =
             BitConverter.GetBytes(Net.IPAddress.HostToNetworkOrder(MaxFrameBytes + 1))
 
         big.Write(header, 0, header.Length)
+        big.Write(Array.create 1024 (byte 'x'), 0, 1024)
         big.Flush()
 
         test
