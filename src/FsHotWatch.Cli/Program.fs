@@ -2360,6 +2360,10 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
     | Ok launchRoot ->
         let pool = FsHotWatch.SharedWatchPool.WatchPool()
 
+        // Sessions of one checker configuration check through one checker.
+        let partitions =
+            FsHotWatch.CheckerPartitions.Partitions Daemon.createCheckerWithCacheSizes
+
         let sinkFor (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             let logDir =
                 try
@@ -2401,9 +2405,9 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             | None -> ()
 
             let hosting =
-                FsHotWatch.DaemonHosting.hostedBy (
-                    pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree)
-                )
+                FsHotWatch.DaemonHosting.hostedBy
+                    (pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
+                    partitions.For
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 

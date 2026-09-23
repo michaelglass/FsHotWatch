@@ -60,6 +60,7 @@ let private writeWorktree (root: string) =
 [<NoComparison; NoEquality>]
 type private World =
     { Host: RepositoryHost
+      Partitions: CheckerPartitions.Partitions<FSharp.Compiler.CodeAnalysis.FSharpChecker>
       Endpoint: string
       A: ResolvedWorktree
       B: ResolvedWorktree
@@ -120,11 +121,16 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
               SessionResources = fun _ -> []
               Describe = fun () -> JsonObject() }
 
+        // One partition for both sessions, as the host builds it: every test here is
+        // then also a test that a shared checker keeps the sessions apart.
+        let partitions =
+            CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
+
         let factory (spec: SessionSpec) =
             Daemon.Daemon.create
                 spec.Worktree.Root.Value
                 { Daemon.Daemon.DaemonOptions.defaults with
-                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher }
+                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher partitions.For }
 
         use registry = new SessionRegistry(factory, run)
         let host = RepositoryHost(settings, registry, ignore, TimeSpan.FromSeconds 60.0)
@@ -136,6 +142,7 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
 
             let world =
                 { Host = host
+                  Partitions = partitions
                   Endpoint = settings.Control.Endpoint
                   A = a
                   B = b
@@ -201,6 +208,15 @@ let private plantVerdict (world: World) =
     File.WriteAllText(Path.Combine(FsHwPaths.root world.B.Root.Value, "verdict.json"), "{\"sentinel\":true}")
 
 // ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 300000)>]
+let ``T0: both sessions check through one checker`` () =
+    // The premise of every test below: a shared checker, not one each.
+    withWorld defaultRun (fun world ->
+        let a = (world.Host.Registry.TryGet world.SessionA).Value.Daemon
+        let b = (world.Host.Registry.TryGet world.SessionB).Value.Daemon
+        test <@ world.Partitions.Count = 1 @>
+        test <@ obj.ReferenceEquals(a.Checker, b.Checker) @>)
 
 [<Fact(Timeout = 300000)>]
 let ``T1: an edit in A is checked in A, and B sees nothing of it`` () =

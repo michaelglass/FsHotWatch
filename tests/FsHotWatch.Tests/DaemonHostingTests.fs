@@ -3,6 +3,9 @@
 /// through the host's shared stream, and leaves process-wide state alone.
 module FsHotWatch.Tests.DaemonHostingTests
 
+// TransparentCompiler.CacheSizes is marked experimental; it is the checker's configuration.
+#nowarn "57"
+
 open System
 open System.IO
 open System.Threading
@@ -24,6 +27,26 @@ let private inertWatcher: Watcher.FileWatcher =
 let private throwingFactory: Daemon.WatcherFactory =
     fun _ _ _ _ _ -> failwith "a hosted session must watch through the host's stream"
 
+let private hostWatcher: Daemon.WatcherFactory = fun _ _ _ _ _ -> inertWatcher
+
+/// Where a test is not about the checker: a daemon given its checker directly never asks.
+let private unaskedCheckers: DaemonHosting.CheckerFactory =
+    fun _ -> failwith "this daemon was given its checker"
+
+let private sizes =
+    FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create 100
+
+/// A checker factory that counts its calls. The checker is a stand-in no test checks with.
+let private countingCheckers () =
+    let calls = ref 0
+
+    let factory: DaemonHosting.CheckerFactory =
+        fun _ ->
+            Interlocked.Increment &calls.contents |> ignore
+            nullChecker
+
+    factory, calls
+
 [<Fact(Timeout = 20000)>]
 let ``a hosted session watches through the host's factory, never its own`` () =
     withTempDir "hosted-watcher" (fun tmpDir ->
@@ -41,7 +64,7 @@ let ``a hosted session watches through the host's factory, never its own`` () =
                 nullChecker
                 tmpDir
                 { Daemon.DaemonOptions.defaults with
-                    Hosting = DaemonHosting.hostedBy shared }
+                    Hosting = DaemonHosting.hostedBy shared unaskedCheckers }
                 throwingFactory
 
         test <@ calls.Value = 1 @>)
@@ -66,12 +89,51 @@ let ``a hosted session subtracts exactly the process-wide behaviours, and watche
             calls.Value <- calls.Value + 1
             inertWatcher
 
-    let seams = DaemonHosting.seams (DaemonHosting.hostedBy shared)
+    let seams = DaemonHosting.seams (DaemonHosting.hostedBy shared unaskedCheckers)
     test <@ seams.ResourceScope = DaemonHosting.ResourceScope.Host @>
     test <@ not seams.MayForceGc && not seams.ClearsProcessCaches @>
     // The session's own factory is never asked; the host's is.
     seams.Watcher throwingFactory "/r" ignore None [] 0.25 |> ignore
     test <@ calls.Value = 1 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a standalone daemon builds its own checker, and may drop all of it`` () =
+    let own, ownCalls = countingCheckers ()
+    let seams = DaemonHosting.seams (DaemonHosting.standalone ())
+    seams.Checker own sizes |> ignore
+    test <@ ownCalls.Value = 1 @>
+    test <@ seams.InvalidatesWholeChecker @>
+
+[<Fact(Timeout = 5000)>]
+let ``a hosted session checks through the host's partition, and drops only its own projects`` () =
+    // The partition's checker is shared with sibling sessions: dropping all of it would
+    // throw away their state as well as this session's.
+    let own, ownCalls = countingCheckers ()
+    let shared, sharedCalls = countingCheckers ()
+    let seams = DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher shared)
+    seams.Checker own sizes |> ignore
+    test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
+    test <@ not seams.InvalidatesWholeChecker @>
+
+[<Fact(Timeout = 20000)>]
+let ``a hosted daemon is built on its partition's checker, a standalone one on its own`` () =
+    withTempDir "hosted-checker" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let own, ownCalls = countingCheckers ()
+        let shared, sharedCalls = countingCheckers ()
+
+        using
+            (Daemon.createUsing
+                own
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    Hosting = DaemonHosting.hostedBy hostWatcher shared })
+            ignore
+
+        test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
+
+        using (Daemon.createUsing own tmpDir Daemon.DaemonOptions.defaults) ignore
+        test <@ ownCalls.Value = 1 && sharedCalls.Value = 1 @>)
 
 [<Fact(Timeout = 5000)>]
 let ``hosting defaults to standalone`` () =
@@ -146,3 +208,64 @@ let ``RunWith waits for serve no longer than its bound`` () =
 [<Fact(Timeout = 5000)>]
 let ``a checked cohort's settle line keeps the shape benchmarks parse`` () =
     test <@ settledLine 7L (TimeSpan.FromMilliseconds 1234.9) 3 = "settled epoch=7 after=1234ms files=3" @>
+
+// ---------------------------------------------------------------------------
+// What a full rediscovery drops from the checker
+// ---------------------------------------------------------------------------
+
+/// A script project at `dir/name.fsx`, its options as the checker gives them.
+let private scriptProject (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker) (dir: string) (name: string) =
+    let path = Path.Combine(dir, $"%s{name}.fsx")
+    let source = $"module %s{name}\nlet value = 42\n"
+    File.WriteAllText(path, source)
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript(path, FSharp.Compiler.Text.SourceText.ofString source)
+        |> Async.RunSynchronously
+
+    path, options
+
+let private contentHash (path: string) =
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path))
+
+/// The check result for `path` in `options`. On a cache hit the checker hands back the
+/// very object it computed before, so reference equality says whether the entry survived.
+let private checkedResult checker (path: string) options =
+    let openFile = ProjectSnapshots.readOpenFile contentHash path
+    let snapshot = ProjectSnapshots.build contentHash None openFile options
+
+    match ProjectSnapshots.parseAndCheck checker path snapshot |> Async.RunSynchronously with
+    | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results -> box results
+    | _, other -> failwith $"check of %s{path} did not complete: %A{other}"
+
+[<Fact(Timeout = 120000)>]
+let ``a hosted session's rediscovery drops its own projects and leaves its siblings' cached`` () =
+    withTempDir "rediscovery-drop" (fun dir ->
+        let checker = Daemon.createChecker ()
+        let ownPath, own = scriptProject checker dir "Own"
+        let siblingPath, sibling = scriptProject checker dir "Sibling"
+        let ownBefore = checkedResult checker ownPath own
+        let siblingBefore = checkedResult checker siblingPath sibling
+        // The observation works: an untouched entry is served again.
+        test <@ obj.ReferenceEquals(checkedResult checker siblingPath sibling, siblingBefore) @>
+
+        Daemon.dropForRediscovery
+            (DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher unaskedCheckers))
+            checker
+            [ own ]
+
+        test <@ not (obj.ReferenceEquals(checkedResult checker ownPath own, ownBefore)) @>
+        test <@ obj.ReferenceEquals(checkedResult checker siblingPath sibling, siblingBefore) @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a standalone daemon's rediscovery drops everything its checker holds`` () =
+    withTempDir "rediscovery-drop-all" (fun dir ->
+        let checker = Daemon.createChecker ()
+        let ownPath, own = scriptProject checker dir "Own"
+        let otherPath, other = scriptProject checker dir "Other"
+        let otherBefore = checkedResult checker otherPath other
+        checkedResult checker ownPath own |> ignore
+
+        Daemon.dropForRediscovery (DaemonHosting.seams (DaemonHosting.standalone ())) checker [ own ]
+
+        test <@ not (obj.ReferenceEquals(checkedResult checker otherPath other, otherBefore)) @>)
