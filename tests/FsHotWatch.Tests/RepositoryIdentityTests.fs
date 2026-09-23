@@ -450,12 +450,13 @@ let ``a root that is missing, a file, or a symlink loop fails with its own reaso
         Directory.CreateSymbolicLink(Path.Combine(dir, "loopB"), loopA) |> ignore
         test <@ failure loopA = IdentityError.SymlinkLoop loopA @>
 
-        test
-            <@
-                match failure "" with
-                | IdentityError.InvalidPath _ -> true
-                | _ -> false
-            @>)
+        for unusable in [ ""; null ] do
+            test
+                <@
+                    match failure unusable with
+                    | IdentityError.InvalidPath(_, reason) -> reason = "empty"
+                    | _ -> false
+                @>)
 
 [<Fact(Timeout = 15000)>]
 let ``every identity error describes itself with the path it is about`` () =

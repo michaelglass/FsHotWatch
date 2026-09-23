@@ -440,6 +440,15 @@ let ``malformed requests are answered with a refusal, never dropped`` () =
               withField good "repository" (JsonValue.Create "XYZ")
               withField good "worktree" (JsonValue.Create 7)
               withoutField good "root"
+              withField good "root" (JsonValue.Create "   ")
+              withField
+                  good
+                  "binary"
+                  (JsonObject(
+                      dict
+                          [ "version", JsonValue.Create "" :> JsonNode
+                            "contentHash", JsonValue.Create "abc" :> JsonNode ]
+                  ))
               withField good "config" (JsonValue.Create "short")
               withField good "expect" (JsonObject(dict [ "kind", JsonValue.Create "sideways" :> JsonNode ]))
               withField good "expect" (JsonObject(dict [ "kind", JsonValue.Create "resume" :> JsonNode ])) ]
