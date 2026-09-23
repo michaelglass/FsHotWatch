@@ -79,7 +79,22 @@ let private classifyFcs (name: string) : Share =
     let segments = name.Split([| '+'; '.' |])
     let anySegment (p: string -> bool) = segments |> Array.exists p
 
-    if
+    // Syntax-namespace types the TYPED tree also carries for every member, imported ones
+    // included (`ValMemberInfo` holds `SynMemberFlags`; `ValReprInfo` holds `Ident`s;
+    // entity lookup tables are keyed by `PrettyNaming.NameArityPair`). The heap graph of a
+    // real daemon found 15 MB of them hanging off imported assemblies, so they are not
+    // evidence of a session's own source: ambiguous, like the rest of the typed tree.
+    let typedTreeSyntax =
+        anySegment (fun seg ->
+            seg = "SynMemberFlags"
+            || seg = "SynMemberKind"
+            || seg = "Ident"
+            || seg.StartsWith("Ident`", StringComparison.Ordinal)
+            || seg = "PrettyNaming")
+
+    if typedTreeSyntax && not (name.Contains("AbstractIL", StringComparison.Ordinal)) then
+        Share.TypedTree
+    elif
         name.Contains("AbstractIL", StringComparison.Ordinal)
         || anySegment (fun seg -> seg.StartsWith("IL", StringComparison.Ordinal) && isUpperAt 2 seg)
         || l.StartsWith("ByteMemory", StringComparison.Ordinal)

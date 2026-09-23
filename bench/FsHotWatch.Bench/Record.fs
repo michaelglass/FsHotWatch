@@ -131,6 +131,8 @@ type BenchRecord =
         FootprintBeforeWalk: Footprint.Reading option
         Gc: GcReading option
         Heap: (HeapHistogram.ShareEstimate * HeapHistogram.TypeStat list) option
+        /// The heap-graph partition that narrows the type-based shareable range.
+        Retention: Retention.Reading option
         Scan: FsHotWatch.ScanMetrics.ScanSample option
         Tests: DaemonLog.TestTotals option
         /// Wall time of the phase the sample closes (scan, test run), ms.
@@ -233,6 +235,38 @@ let private heapNode (estimate: HeapHistogram.ShareEstimate, top: HeapHistogram.
                         "share", ns (HeapHistogram.shareKey (HeapHistogram.classify t.TypeName t.Module)) ])
           ) ]
 
+let private reachNode (r: HeapGraph.ReachBytes) : JsonNode =
+    obj
+        [ "importOnly", n64 r.ImportOnly
+          "overlap", n64 r.Overlap
+          "sessionOnly", n64 r.SessionOnly
+          "unreached", n64 r.Unreached ]
+
+let private retentionNode (r: Retention.Reading) : JsonNode =
+    obj
+        [ "rootSet", ns r.Set.Name
+          "rootTypes", arr (r.Set.Types |> List.map ns)
+          "barriers", arr (r.Set.Barriers |> List.map ns)
+          "owners", arr (r.Set.Owners |> List.map ns)
+          "roots", ni r.Result.Roots
+          "graph",
+          obj
+              [ "nodes", ni r.Graph.Nodes
+                "edges", ni r.Graph.Edges
+                "unresolvedEdges", ni r.Graph.UnresolvedEdges
+                "unresolvedRoots", ni r.Graph.UnresolvedRoots
+                "edgeCountMismatch", n64 r.Graph.EdgeCountMismatch ]
+          "all", reachNode r.Result.All
+          "byShare",
+          obj [ for KeyValue(share, bytes) in r.Result.ByShare -> HeapHistogram.shareKey share, reachNode bytes ]
+          "shareableLow", nf r.Narrowed.Low
+          "shareableHigh", nf r.Narrowed.High
+          "typedTreeShareableLow", nf r.Narrowed.TypedTreeLow
+          "typedTreeShareableHigh", nf r.Narrowed.TypedTreeHigh
+          "perSessionOnImportSide", n64 r.Narrowed.PerSessionOnImportSide
+          "accountingError", nf r.Narrowed.AccountingError
+          "problems", arr (r.Problems |> List.map ns) ]
+
 let private loadNode (l: Load.Snapshot) : JsonNode =
     obj
         [ "load1", nf l.Load1
@@ -269,6 +303,7 @@ let toJsonLine (r: BenchRecord) : string =
                | Some fp, Some gc -> splitNode (split fp gc)
                | _ -> null)
               "heap", opt heapNode r.Heap
+              "retention", opt retentionNode r.Retention
               "scan",
               opt
                   (fun (s: FsHotWatch.ScanMetrics.ScanSample) -> JsonNode.Parse(FsHotWatch.ScanMetrics.toJsonLine s))
@@ -289,23 +324,29 @@ let toJsonLine (r: BenchRecord) : string =
 
 /// The fields the summary scores, read back from one line.
 type Row =
-    { RunId: string
-      Label: string
-      Position: Position
-      PhysFootprint: int64 option
-      PhysFootprintPeak: int64 option
-      Resident: int64 option
-      Managed: int64 option
-      ManagedLive: int64 option
-      Native: int64 option
-      ShareableLow: float option
-      ShareableHigh: float option
-      FilesChecked: int option
-      FilesUnchecked: int option
-      TestsTotal: int option
-      PhaseMs: float option
-      Contended: bool
-      Invalid: string list }
+    {
+        RunId: string
+        Label: string
+        Position: Position
+        PhysFootprint: int64 option
+        PhysFootprintPeak: int64 option
+        Resident: int64 option
+        Managed: int64 option
+        ManagedLive: int64 option
+        Native: int64 option
+        ShareableLow: float option
+        ShareableHigh: float option
+        /// From the heap-graph partition, only when its reading has no problems.
+        RetentionLow: float option
+        RetentionHigh: float option
+        RetentionTypedTreeHigh: float option
+        FilesChecked: int option
+        FilesUnchecked: int option
+        TestsTotal: int option
+        PhaseMs: float option
+        Contended: bool
+        Invalid: string list
+    }
 
 let private path (node: JsonNode) (keys: string list) : JsonNode option =
     keys
@@ -352,6 +393,13 @@ let tryParseLine (line: string) : Row option =
             match path node [ "schema" ] |> Option.map (fun v -> v.GetValue<string>()) with
             | Some s when s = Schema ->
                 let managed = int64At node [ "split"; "managed" ]
+
+                let trusted (v: float option) =
+                    if List.isEmpty (strings node [ "retention"; "problems" ]) then
+                        v
+                    else
+                        None
+
                 let phys = int64At node [ "footprint"; "physFootprint" ]
 
                 Some
@@ -370,6 +418,9 @@ let tryParseLine (line: string) : Row option =
                       Native = Option.map2 (fun p m -> p - m) phys managed
                       ShareableLow = floatAt node [ "heap"; "shareableLow" ]
                       ShareableHigh = floatAt node [ "heap"; "shareableHigh" ]
+                      RetentionLow = trusted (floatAt node [ "retention"; "shareableLow" ])
+                      RetentionHigh = trusted (floatAt node [ "retention"; "shareableHigh" ])
+                      RetentionTypedTreeHigh = trusted (floatAt node [ "retention"; "typedTreeShareableHigh" ])
                       FilesChecked = intAt node [ "scan"; "filesChecked" ]
                       FilesUnchecked = intAt node [ "scan"; "filesUnchecked" ]
                       TestsTotal = intAt node [ "tests"; "total" ]

@@ -113,6 +113,7 @@ let private record sessions rep session phase phys contended invalid : Record.Be
                     Count = 1L } ],
             []
         )
+      Retention = None
       Scan = None
       Tests =
         Some

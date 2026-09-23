@@ -188,22 +188,95 @@ The harness does not rely on `TMPDIR` matching between the two processes:
 ## Shareable fraction
 
 A repository host saves memory only on state that more than one session could hold as
-a single copy. The heap histogram classifies every type into one of four groups:
+one copy. Each walk record carries two estimates.
 
-- **metadata**: FCS AbstractIL (`IL*`), the binary readers, and
-  System.Reflection.Metadata. These exist because a referenced assembly was read, so one
-  host could keep them once.
-- **perSession**: syntax trees (`Syn*`, `Parsed*`), name resolution, check results,
-  FsHotWatch's own state, and the MSBuild/NuGet project model. These are per worktree.
-- **typedTree**: FCS typed-tree nodes. Imported assemblies and checked sources both
-  produce them, and the type alone cannot say which.
+**By type (`heap.shareableLow`/`High`).** Types are sorted into four groups:
+- **metadata**: FCS AbstractIL (`IL*`), the binary readers, System.Reflection.Metadata;
+- **perSession**: syntax trees, name resolution, check results, the daemon's own
+  state, the MSBuild/NuGet project model;
+- **typedTree**: FCS typed-tree nodes;
 - **unattributed**: BCL strings, arrays and containers.
 
-`shareableLow` is `metadata / live`. `shareableHigh` is
-`(metadata + typedTree + unattributed) / live`. The true fraction lies between the two.
-A retained-size (dominator) analysis from `TcImports` roots would narrow the range, and
-the heap walk can be extended to capture edges for it. Each record keeps the four group
-totals so the fractions can be recomputed if the classification changes.
+This estimate is a wide range (7%–90% on this repository), because type alone cannot
+say whether a typed-tree node came from an imported assembly or from checked source.
+
+**By heap graph (`retention`).** This is the estimate that narrows the range. The walk
+also records every reference and GC root. The harness partitions every live object by
+reachability from the **import roots**:
+
+| class | meaning |
+|---|---|
+| `importOnly` | reachable from an import root; not reachable from a GC root without passing an import root or owner |
+| `overlap` | import contents that a session's checked state *references* (e.g. an `EntityRef` in a `TcState`) |
+| `sessionOnly` | reachable from GC roots only by paths that avoid the imports |
+| `unreached` | reachable only through an owner (`TcImports`) or a barrier |
+
+The fraction that counts as shareable is `importOnly + overlap`, because a host holds an
+imported entity once however many sessions point at it. Overlap is still reported
+separately, so the reader can see it. On this repository nearly all import contents are
+also referenced by some session, so `importOnly` is ~0 and overlap carries the import
+side.
+
+### How the roots were chosen (evidence from this repository's daemon: 40.5M objects, 85.2M references, all resolved)
+
+`fshw-bench graph <trace> --path-from A --path-to B [--block C,D]` prints the shortest
+reference chain between two types. `graph <trace> --top N` prints the types whose
+instances retain the most, measured with dominators (Lengauer–Tarjan).
+
+1. Dominance alone does not answer the question. The 16 `TcImports` *dominate* only
+   1.5 MB, while import-created `MaybeLazy.Lazy[ModuleOrNamespaceType]` module types
+   (94,594 instances) retain 868 MB. Imported entities are also referenced from check
+   results, so no import object dominates them.
+2. `TcImports` is a hub, not contents. Rooted at `TcImports`, 97% of the heap read as
+   import-reachable, including 192 MB of syntax trees and check results. The path is
+   `TcImports → TcAssemblyResolutions → TcConfig → TcConfigBuilder → IProjectReference
+   closure → TransparentCompiler → CompilerCaches → parsed files`.
+3. `ImportedAssembly` is the unit of imported contents. Its only route back to session
+   state is the same hub, reached through its lazy optimisation-data closure
+   (`optdata → TcImports`). With `TcImports` and `TcConfig` as **barriers** there is no
+   path from any `ImportedAssembly` to `TransparentCompiler`, `ParsedImplFileInput`,
+   `CheckedImplFile`, `TcIntermediate`, `FSharpCheckFileResults` or
+   `CapturedNameResolution`.
+4. `TcImports` also **owns** import contents directly, so the flood from the GC roots
+   must not pass through it. Without that, 993 MB read as overlap.
+5. `TcGlobals` is import state too, built from the framework references. The flood from
+   the GC roots reached imported entities through `CompilerCaches → framework-imports
+   memo → TcGlobals → EntityRef → Entity`. It is a root and an owner, and it has no path
+   to the checker.
+6. What remains in overlap is genuine reference. The next shortest route from the checker
+   into import contents is `TcInfo → TcState → OpenDeclaration → EntityRef → Entity`.
+7. Every import here is a DLL read from disk: 1,003 `ImportedAssembly` and 1,003
+   `RawFSharpAssemblyDataBackedByFileOnDisk`. So project-to-project references come in
+   from each worktree's own `bin/`: identical bytes at the same revision, different
+   paths. They are shareable only for a host that keys imports **by content**. The walk
+   carries no string contents, so their share of the import side cannot be separated
+   here.
+8. `FrameworkImportsCache` reaches no `TcImports` under the TransparentCompiler, so a
+   "framework imports only" root set would be empty.
+
+The root set is roots `[ImportedAssembly, TcGlobals]`, barriers `[TcImports, TcConfig]`,
+and owners `[TcImports, TcGlobals]`.
+
+### Controls (a reading that fails one is recorded but never scored)
+
+- **Leak control:** certainly-per-session types found on the import side must stay
+  under 1% of live. On this repository it first read 15 MB. Those turned out to be
+  `Syntax`-namespace types that the typed tree also uses for imported members
+  (`SynMemberFlags`, `Ident`, `PrettyNaming` maps). They are now classified as ambiguous,
+  and the control reads 2.4 KB.
+- **Accounting:** the partition must cover the live total to within 1%. It measured
+  exactly 0, and the typed-tree part of the partition equals the histogram's typed-tree
+  total to the byte.
+- **Graph integrity:** node/edge pairing must match, and at most 0.1% of edges may
+  point at no walked object. Measured: mismatch 0, unresolved edges 0.
+
+### Cost
+
+Rebuilding the graph of a 40M-object heap takes about 30 s and **~9.6 GB in the
+harness**. `run` therefore keeps each walk's trace and analyses it only after that
+repetition's daemons have stopped. `probe` analyses inline. `--no-retention` turns the
+analysis off. `--keep-traces <dir>` keeps the traces so a larger heap can be analysed
+later (`fshw-bench graph`) on a machine with the memory for it.
 
 ## Contention
 
@@ -266,14 +339,16 @@ heap over the same EventPipe path that dropped most of this walk until the buffe
 raised. An undercounted live set is therefore a plausible explanation for ADR-003's
 figure. Only the quiet-box matrix on the ~775- and ~1,900-file solutions can settle it.
 
-The shareable range on that sample was 7%–88%, which is too wide to decide anything.
-1.21 GB of the 1.72 GB live set is FCS typed-tree nodes, and the type alone cannot say
-whether a node came from an imported assembly or from checked source.
+By type alone, the shareable range was 7%–88% of that sample. The heap graph narrows it
+to **58% of live, and 64% of the typed tree**. The rest (42% of live) is reachable only
+from session state. That figure assumes project-reference imports are keyed by content;
+see the Shareable fraction section above.
 
 ## Not built yet
 
 - The one-file-edit phase and its p95 settle latency.
 - Diagnostics-count parity. File-count parity is checked, and it would not catch a run
   that checked every file but reported fewer diagnostics.
-- The retained-size (dominator) refinement of the shareable fraction. On the sample
-  above it is what decides the answer: typed-tree nodes were 70% of live bytes.
+- The split of project-reference imports from package and framework imports inside the
+  import side. It needs assembly names, and the heap walk does not carry string
+  contents.

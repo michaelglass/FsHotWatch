@@ -43,6 +43,9 @@ type Group =
         ManagedLiveMedian: float option
         ShareableLowMedian: float option
         ShareableHighMedian: float option
+        /// Heap-graph shareable fraction (import-only + overlap), trusted readings only.
+        RetentionHighMedian: float option
+        RetentionTypedTreeHighMedian: float option
         PhaseMsMedian: float option
         PhaseMsP95: float option
         /// Distinct `filesChecked` values seen: more than one means sessions did not
@@ -111,6 +114,8 @@ let summarize (allowContended: bool) (rows: Record.Row list) : Report =
               ManagedLiveMedian = median (floats _.ManagedLive float rs)
               ShareableLowMedian = median (floats _.ShareableLow id rs)
               ShareableHighMedian = median (floats _.ShareableHigh id rs)
+              RetentionHighMedian = median (floats _.RetentionHigh id rs)
+              RetentionTypedTreeHighMedian = median (floats _.RetentionTypedTreeHigh id rs)
               PhaseMsMedian = median ms
               PhaseMsP95 = percentile 95.0 ms
               FilesCheckedSeen = rs |> List.choose _.FilesChecked |> List.distinct |> List.sort
@@ -157,7 +162,7 @@ let render (report: Report) : string =
           yield $"excluded: %d{report.ExcludedInvalid} invalid, %d{report.ExcludedContended} contended"
           yield ""
           yield
-              "label | phase | N | reps | fp/session med | p95 | total med | x of N=1 | peak max | managed | native | live | shareable lo-hi | phase s med/p95 | files | tests"
+              "label | phase | N | reps | fp/session med | p95 | total med | x of N=1 | peak max | managed | native | live | shareable by type lo-hi | shareable by graph (typed tree) | phase s med/p95 | files | tests"
           for g in report.Groups do
               let ratio =
                   report.Ratios
@@ -172,6 +177,6 @@ let render (report: Report) : string =
                       xs |> List.map string |> String.concat "/"
 
               yield
-                  $"%s{g.Label} | %s{g.Phase} | %d{g.Sessions} | %d{g.CompleteReps} | %s{mb g.SessionFootprintMedian} | %s{mb g.SessionFootprintP95} | %s{mb g.TotalFootprintMedian} | %s{ratio} | %s{mb g.PeakMax} | %s{mb g.ManagedMedian} | %s{mb g.NativeMedian} | %s{mb g.ManagedLiveMedian} | %s{pct g.ShareableLowMedian}-%s{pct g.ShareableHighMedian} | %s{secs g.PhaseMsMedian}/%s{secs g.PhaseMsP95} | %s{seen g.FilesCheckedSeen} | %s{seen g.TestsTotalSeen}" ]
+                  $"%s{g.Label} | %s{g.Phase} | %d{g.Sessions} | %d{g.CompleteReps} | %s{mb g.SessionFootprintMedian} | %s{mb g.SessionFootprintP95} | %s{mb g.TotalFootprintMedian} | %s{ratio} | %s{mb g.PeakMax} | %s{mb g.ManagedMedian} | %s{mb g.NativeMedian} | %s{mb g.ManagedLiveMedian} | %s{pct g.ShareableLowMedian}-%s{pct g.ShareableHighMedian} | %s{pct g.RetentionHighMedian} (%s{pct g.RetentionTypedTreeHighMedian}) | %s{secs g.PhaseMsMedian}/%s{secs g.PhaseMsP95} | %s{seen g.FilesCheckedSeen} | %s{seen g.TestsTotalSeen}" ]
 
     String.Join("\n", lines)

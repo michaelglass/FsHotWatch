@@ -16,11 +16,14 @@
   <ItemGroup>
     <Compile Include="Footprint.fs" />
     <Compile Include="HeapHistogram.fs" />
+    <Compile Include="HeapGraph.fs" />
+    <Compile Include="Retention.fs" />
     <Compile Include="DaemonLog.fs" />
     <Compile Include="Load.fs" />
     <Compile Include="Record.fs" />
     <Compile Include="Summary.fs" />
     <Compile Include="Instruments.fs" />
+    <Compile Include="GraphReport.fs" />
     <Compile Include="Scenario.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -12,10 +12,12 @@ let private usage =
                  [--prepare "<shell cmd>"] [--strip <key>]... [--tests] [--no-heap]
                  [--warm-cache] [--settle-sec 60] [--sample-sec 5]
                  [--scan-timeout-min 60] [--test-timeout-min 120]
-                 [--keep-worktrees] [--allow-contended]
-  fshw-bench probe --pid <pid> [--port <socket>] [--worktree <path>] [--no-heap]
+                 [--keep-worktrees] [--allow-contended] [--keep-traces <dir>] [--no-retention]
+  fshw-bench probe --pid <pid> [--port <socket>] [--worktree <path>] [--no-heap] [--no-retention]
                    [--out <jsonl>] [--label <text>]
   fshw-bench port --pid <pid>
+  fshw-bench graph <kept.nettrace> [--roots TypeA,TypeB] [--top 40]
+                   [--path-from TypeA --path-to TypeB [--block TypeC,…]]
   fshw-bench summarize <jsonl> [--allow-contended]
 """
 
@@ -96,7 +98,9 @@ let main argv =
                   TestTimeout =
                     TimeSpan.FromMinutes(one opts "test-timeout-min" |> Option.map float |> Option.defaultValue 120.0)
                   KeepWorktrees = flag opts "keep-worktrees"
-                  AllowContended = flag opts "allow-contended" }
+                  AllowContended = flag opts "allow-contended"
+                  KeepTraces = one opts "keep-traces"
+                  Retention = not (flag opts "no-retention") }
     | "probe" ->
         match one opts "pid" with
         | None ->
@@ -120,6 +124,7 @@ let main argv =
                 (one opts "port")
                 worktree
                 (not (flag opts "no-heap"))
+                (not (flag opts "no-retention"))
     | "port" ->
         match one opts "pid" |> Option.map int with
         | None ->
@@ -133,6 +138,38 @@ let main argv =
             | Error e ->
                 eprintfn "%s" e
                 1
+    | "graph" ->
+        match positional with
+        | [ trace ] ->
+            match Instruments.readTrace trace true with
+            | Error e ->
+                eprintfn "%s" e
+                1
+            | Ok { Graph = Some(g, report) } ->
+                let roots =
+                    one opts "roots"
+                    |> Option.map (fun r -> r.Split(',') |> Array.toList)
+                    |> Option.defaultValue []
+
+                let top = one opts "top" |> Option.map int |> Option.defaultValue 40
+
+                match one opts "path-from", one opts "path-to" with
+                | Some from, Some target ->
+                    let block =
+                        one opts "block"
+                        |> Option.map (fun b -> b.Split(',') |> Array.toList)
+                        |> Option.defaultValue []
+
+                    printfn "%s" (GraphReport.path g from target block)
+                | _ -> printfn "%s" (GraphReport.render g report roots top)
+
+                0
+            | Ok _ ->
+                eprintfn "no graph in %s" trace
+                1
+        | _ ->
+            eprintf "%s" usage
+            2
     | "summarize" ->
         match positional with
         | [ file ] ->

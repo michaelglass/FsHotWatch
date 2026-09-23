@@ -17,6 +17,8 @@
     <Compile Include="InstrumentParsingTests.fs" />
     <Compile Include="DaemonLogTests.fs" />
     <Compile Include="RecordAndSummaryTests.fs" />
+    <Compile Include="HeapGraphTests.fs" />
+    <Compile Include="RetentionTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -52,6 +52,10 @@ type Config =
         TestTimeout: TimeSpan
         KeepWorktrees: bool
         AllowContended: bool
+        /// Keep each walk's raw trace in this directory, for offline graph analysis.
+        KeepTraces: string option
+        /// Partition each walked heap by import reachability (see `Retention`).
+        Retention: bool
     }
 
 let private log (msg: string) =
@@ -251,14 +255,22 @@ let testTotals (window: string list) : DaemonLog.TestTotals option =
 
 /// Everything needed to write one record.
 type Sample =
-    { Phase: string
-      Footprint: Footprint.Reading option
-      FootprintBeforeWalk: Footprint.Reading option
-      Walk: Instruments.HeapWalk option
-      Scan: ScanMetrics.ScanSample option
-      Tests: DaemonLog.TestTotals option
-      PhaseMs: float option
-      Invalid: string list }
+    {
+        Phase: string
+        Footprint: Footprint.Reading option
+        FootprintBeforeWalk: Footprint.Reading option
+        Walk: Instruments.HeapWalk option
+        Scan: ScanMetrics.ScanSample option
+        Tests: DaemonLog.TestTotals option
+        PhaseMs: float option
+        Invalid: string list
+        /// The box and the daemon's liveness AT SAMPLE TIME, for records written later
+        /// (a deferred retention analysis runs after the daemons stop). `None` = read now.
+        Stamp: (Load.Snapshot * bool) option
+        /// The walk's kept raw trace, for the retention analysis.
+        Trace: string option
+        Retention: Retention.Reading option
+    }
 
 /// Take one sample of a daemon: footprint, and with `heap` a heap walk first (the
 /// footprint is then read straight after the walk's collection).
@@ -266,6 +278,7 @@ let measure
     (heap: bool)
     (pid: int)
     (port: string option)
+    (keepTrace: string option)
     : Footprint.Reading option * Footprint.Reading option * Instruments.HeapWalk option * string list =
     let before =
         if heap then
@@ -278,7 +291,7 @@ let measure
             match Instruments.diagnosticPort pid port with
             | Error e -> None, [ e ]
             | Ok p ->
-                match Instruments.walkHeap p (TimeSpan.FromMinutes 10.0) with
+                match Instruments.walkHeap p (TimeSpan.FromMinutes 10.0) false keepTrace with
                 | Ok w -> Some w, (w.Gc.WalkProblem |> Option.toList)
                 | Error e -> None, [ e ]
         else
@@ -300,7 +313,10 @@ let write
     (preflight: string list)
     (s: Sample)
     =
-    let load = Instruments.loadSnapshot ours
+    let load, alive =
+        match s.Stamp with
+        | Some stamp -> stamp
+        | None -> Instruments.loadSnapshot ours, Instruments.isAlive pid
     // At sample time only a FOREIGN daemon counts as contention: load and memory are
     // recorded, but this harness's own daemons are what is being measured, so judging
     // them here would call every cold scan contended. The box itself was judged by
@@ -318,7 +334,7 @@ let write
           Position = position
           Worktree = worktree
           Pid = pid
-          Alive = Instruments.isAlive pid
+          Alive = alive
           Load = load
           Contended = contended
           Footprint = s.Footprint
@@ -327,6 +343,7 @@ let write
           Heap =
             s.Walk
             |> Option.map (fun w -> HeapHistogram.estimate w.Stats, HeapHistogram.top 40 w.Stats)
+          Retention = s.Retention
           Scan = s.Scan
           Tests = s.Tests
           PhaseMs = s.PhaseMs
@@ -354,8 +371,43 @@ let write
         else
             " INVALID: " + String.concat "; " s.Invalid
 
+    let retentionText =
+        match s.Retention with
+        | Some r when List.isEmpty r.Problems ->
+            $" shareable %.1f{r.Narrowed.High * 100.0}%% (typed tree %.1f{r.Narrowed.TypedTreeHigh * 100.0}%%)"
+        | Some r -> " retention UNTRUSTED: " + String.concat "; " r.Problems
+        | None -> ""
+
     log
-        $"N=%d{position.Sessions} rep %d{position.Rep} s%d{position.Session} %s{position.Phase}: %s{fpText}%s{gcText}%s{bad}"
+        $"N=%d{position.Sessions} rep %d{position.Rep} s%d{position.Session} %s{position.Phase}: %s{fpText}%s{gcText}%s{retentionText}%s{bad}"
+
+/// Attach the heap-graph retention reading to a sample from its kept trace, then delete
+/// the trace unless `keep`. Runs with the daemons already stopped: rebuilding a 40M-node
+/// graph took ~9.6 GB and ~30 s in the harness on this repository's own daemon, and that
+/// must not compete with the processes being measured.
+let withRetention (keep: bool) (s: Sample) : Sample =
+    match s.Trace, s.Walk with
+    | Some path, Some walk when File.Exists path ->
+        let reading, problem =
+            match Instruments.readTrace path true with
+            | Ok { Graph = Some(g, report) } ->
+                Some(Retention.evaluate g report walk.Gc.LiveBytes Retention.importedAssemblies), []
+            | Ok _ -> None, [ "retention: the kept trace held no graph" ]
+            | Error e -> None, [ $"retention: %s{e}" ]
+
+        if not keep then
+            try
+                File.Delete path
+            with _ ->
+                ()
+
+        // A retention failure does not invalidate the MEMORY sample: it is logged, and
+        // the record simply carries no retention reading.
+        if not (List.isEmpty problem) then
+            log (String.concat "; " problem)
+
+        { s with Retention = reading }
+    | _ -> s
 
 /// Run the whole matrix.
 let runMatrix (cfg: Config) : int =
@@ -418,6 +470,16 @@ let runMatrix (cfg: Config) : int =
 
                 let ours = daemons |> List.map _.Pid
 
+                let deferred = ResizeArray<Record.Position * Daemon * Sample>()
+
+                let tracePath (session: int) (phase: string) =
+                    let file = $"%s{runId}-n%d{sessions}-r%d{rep}-s%d{session}-%s{phase}.nettrace"
+
+                    match cfg.KeepTraces with
+                    | Some dir -> Some(Path.Combine(dir, file))
+                    | None when cfg.Retention -> Some(Path.Combine(runDir, file))
+                    | None -> None
+
                 let pos session phase : Record.Position =
                     { Sessions = sessions
                       Rep = rep
@@ -439,7 +501,7 @@ let runMatrix (cfg: Config) : int =
                         for d in finished do
                             let scan = scanSampleSince d.Worktree d.Started
                             let window = readLog d.Worktree
-                            let fp, before, _, problems = measure false d.Pid None
+                            let fp, before, _, problems = measure false d.Pid None None
 
                             write
                                 cfg.Out
@@ -457,7 +519,10 @@ let runMatrix (cfg: Config) : int =
                                   Scan = scan
                                   Tests = None
                                   PhaseMs = scan |> Option.map _.DurationMs
-                                  Invalid = problems @ scanProblems d.Pid scan window }
+                                  Invalid = problems @ scanProblems d.Pid scan window
+                                  Stamp = None
+                                  Trace = None
+                                  Retention = None }
 
                         for d in still do
                             if not (Instruments.isAlive d.Pid) then
@@ -481,7 +546,7 @@ let runMatrix (cfg: Config) : int =
                     Thread.Sleep(TimeSpan.FromSeconds(float cfg.SettleSec))
 
                     for d in daemons do
-                        let fp, before, _, problems = measure false d.Pid None
+                        let fp, before, _, problems = measure false d.Pid None None
 
                         write
                             cfg.Out
@@ -499,22 +564,20 @@ let runMatrix (cfg: Config) : int =
                               Scan = scanSampleSince d.Worktree d.Started
                               Tests = None
                               PhaseMs = None
-                              Invalid = problems @ parity }
+                              Invalid = problems @ parity
+                              Stamp = None
+                              Trace = None
+                              Retention = None }
 
                     // Phase 3: post-GC, one session at a time so walks do not overlap.
                     if cfg.Heap then
                         for d in daemons do
-                            let fp, before, walk, problems = measure true d.Pid (Some d.Port)
+                            let fp, before, walk, problems =
+                                measure true d.Pid (Some d.Port) (tracePath d.Session "post-gc")
 
-                            write
-                                cfg.Out
-                                runId
-                                cfg.Label
-                                (pos d.Session "post-gc")
-                                d.Worktree
-                                d.Pid
-                                ours
-                                preflight
+                            deferred.Add(
+                                (pos d.Session "post-gc"),
+                                d,
                                 { Phase = "post-gc"
                                   Footprint = fp
                                   FootprintBeforeWalk = before
@@ -522,7 +585,11 @@ let runMatrix (cfg: Config) : int =
                                   Scan = scanSampleSince d.Worktree d.Started
                                   Tests = None
                                   PhaseMs = None
-                                  Invalid = problems @ parity }
+                                  Invalid = problems @ parity
+                                  Stamp = Some(Instruments.loadSnapshot ours, Instruments.isAlive d.Pid)
+                                  Trace = tracePath d.Session "post-gc"
+                                  Retention = None }
+                            )
 
                     // Phase 4: a full check in every worktree at once, then post-GC again.
                     if cfg.Tests then
@@ -539,7 +606,10 @@ let runMatrix (cfg: Config) : int =
 
                         for d, ms, result in checks do
                             let window = readLog d.Worktree
-                            let fp, before, walk, problems = measure cfg.Heap d.Pid (Some d.Port)
+
+                            let fp, before, walk, problems =
+                                measure cfg.Heap d.Pid (Some d.Port) (tracePath d.Session "after-tests")
+
                             let totals = testTotals window
 
                             let checkProblem =
@@ -555,15 +625,9 @@ let runMatrix (cfg: Config) : int =
                                 else
                                     []
 
-                            write
-                                cfg.Out
-                                runId
-                                cfg.Label
-                                (pos d.Session "after-tests")
-                                d.Worktree
-                                d.Pid
-                                ours
-                                preflight
+                            deferred.Add(
+                                (pos d.Session "after-tests"),
+                                d,
                                 { Phase = "after-tests"
                                   Footprint = fp
                                   FootprintBeforeWalk = before
@@ -571,10 +635,25 @@ let runMatrix (cfg: Config) : int =
                                   Scan = scanSampleSince d.Worktree d.Started
                                   Tests = totals
                                   PhaseMs = Some ms
-                                  Invalid = problems @ checkProblem @ noTests }
+                                  Invalid = problems @ checkProblem @ noTests
+                                  Stamp = Some(Instruments.loadSnapshot ours, Instruments.isAlive d.Pid)
+                                  Trace = tracePath d.Session "after-tests"
+                                  Retention = None }
+                            )
                 finally
                     for d in daemons do
                         stop cfg d
+
+                    // Walk records are written now, with the daemons gone, so the graph
+                    // analysis never competes with what it measures.
+                    for position, d, sample in deferred do
+                        let enriched =
+                            if cfg.Retention then
+                                withRetention cfg.KeepTraces.IsSome sample
+                            else
+                                sample
+
+                        write cfg.Out runId cfg.Label position d.Worktree d.Pid ours preflight enriched
 
         0
     finally
@@ -583,13 +662,28 @@ let runMatrix (cfg: Config) : int =
                 removeWorktree cfg name path
 
 /// One sample of an arbitrary running daemon (phase `probe`).
-let probe (out: string) (label: string) (pid: int) (port: string option) (worktree: string option) (heap: bool) : int =
+let probe
+    (out: string)
+    (label: string)
+    (pid: int)
+    (port: string option)
+    (worktree: string option)
+    (heap: bool)
+    (retention: bool)
+    : int =
     if not (Instruments.isAlive pid) then
         eprintfn "pid %d is not alive" pid
         2
     else
         let runId = "probe-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmss")
-        let fp, before, walk, problems = measure heap pid port
+
+        let trace =
+            if heap && retention then
+                Some(Path.Combine(Path.GetTempPath(), $"fshw-bench-probe-%d{pid}-%s{runId}.nettrace"))
+            else
+                None
+
+        let fp, before, walk, problems = measure heap pid port trace
 
         let scan, window =
             match worktree with
@@ -600,6 +694,21 @@ let probe (out: string) (label: string) (pid: int) (port: string option) (worktr
             match worktree, DaemonLog.announcedPid window with
             | Some _, Some p when p <> pid -> [ $"daemon.log window belongs to pid %d{p}, not %d{pid}" ]
             | _ -> []
+
+        let sample =
+            withRetention
+                false
+                { Phase = "probe"
+                  Footprint = fp
+                  FootprintBeforeWalk = before
+                  Walk = walk
+                  Scan = scan
+                  Tests = if Option.isSome worktree then testTotals window else None
+                  PhaseMs = None
+                  Invalid = problems @ pidProblem
+                  Stamp = Some(Instruments.loadSnapshot [ pid ], true)
+                  Trace = trace
+                  Retention = None }
 
         write
             out
@@ -613,13 +722,6 @@ let probe (out: string) (label: string) (pid: int) (port: string option) (worktr
             pid
             [ pid ]
             []
-            { Phase = "probe"
-              Footprint = fp
-              FootprintBeforeWalk = before
-              Walk = walk
-              Scan = scan
-              Tests = if Option.isSome worktree then testTotals window else None
-              PhaseMs = None
-              Invalid = problems @ pidProblem }
+            sample
 
         if List.isEmpty problems then 0 else 1

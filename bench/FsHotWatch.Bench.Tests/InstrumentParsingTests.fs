@@ -71,6 +71,25 @@ let ``bare nested FCS type names classify by the module they came from`` () =
     test <@ share "CapturedNameResolution" "FSharp.Compiler.Service.dll" = HeapHistogram.Share.PerSession @>
 
 [<Fact>]
+let ``syntax-namespace types the typed tree carries for imported members are ambiguous, not per session`` () =
+    test
+        <@ share "FSharp.Compiler.Syntax.SynMemberFlags" "FSharp.Compiler.Service.dll" = HeapHistogram.Share.TypedTree @>
+
+    test
+        <@
+            share "Microsoft.FSharp.Core.FSharpOption`1[FSharp.Compiler.Syntax.Ident]" "FSharp.Core.dll" = HeapHistogram.Share.TypedTree
+        @>
+
+    test
+        <@
+            share
+                "Microsoft.FSharp.Collections.MapTreeNode`2[FSharp.Compiler.Syntax.PrettyNaming+NameArityPair,FSharp.Compiler.TypedTree+Entity]"
+                "FSharp.Core.dll" = HeapHistogram.Share.TypedTree
+        @>
+    // A syntax TREE node is still the session's own source.
+    test <@ share "FSharp.Compiler.Syntax.SynBinding" "FSharp.Compiler.Service.dll" = HeapHistogram.Share.PerSession @>
+
+[<Fact>]
 let ``a type named IL-something only counts as metadata when IL begins a word`` () =
     // `Ilist`-like leaf names must not be swept into metadata by the prefix rule.
     test <@ share "Illegal" "FSharp.Compiler.Service.dll" = HeapHistogram.Share.TypedTree @>
