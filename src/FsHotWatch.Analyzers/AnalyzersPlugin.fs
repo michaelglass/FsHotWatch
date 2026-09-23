@@ -329,23 +329,25 @@ let internal isFcsBinaryMismatch (ex: exn) : bool =
 /// `keepAssemblyContents`, so the access is guarded: such a host still analyzes,
 /// with typed-tree rules quiet and every other rule running, rather than losing the
 /// whole analyzer stage to an exception it cannot act on.
-/// Set once an analyzer has proved it cannot take a typed tree (see
-/// `isFcsBinaryMismatch`). 0 = offer the typed tree, 1 = withhold it. Latched for the
-/// process because the incompatibility is a property of the LOADED ASSEMBLIES, not of
-/// the file being analyzed, so re-testing it per file would re-break every file.
-let private typedTreeWithheld = ref 0
+/// Whether an analyzer set has proved it cannot take a typed tree (see
+/// `isFcsBinaryMismatch`). Once withheld, it stays withheld: the incompatibility is a
+/// property of the LOADED ASSEMBLIES, not of the file being analyzed, so re-testing it
+/// per file would re-break every file.
+///
+/// One per handler, not one per process: sessions sharing a repository host each load
+/// their own analyzer set, and one set's incompatibility says nothing about another's.
+type internal TypedTreeLatch() =
+    let mutable withheld = 0
 
-/// True once the loaded analyzer set has proved it cannot walk a typed tree.
-let internal isTypedTreeWithheld () =
-    Volatile.Read(&typedTreeWithheld.contents) = 1
+    member _.IsWithheld = Volatile.Read(&withheld) = 1
 
-/// Latch the withholding. Returns true the FIRST time, so the caller logs once rather
-/// than once per file.
-let internal withholdTypedTree () : bool =
-    Threading.Interlocked.Exchange(&typedTreeWithheld.contents, 1) = 0
+    /// Latch the withholding. Returns true the FIRST time, so the caller logs once
+    /// rather than once per file.
+    member _.Withhold() : bool =
+        Threading.Interlocked.Exchange(&withheld, 1) = 0
 
-let internal typedTreeOf (checkResults: FileCheckState) : obj =
-    if isTypedTreeWithheld () then
+let internal typedTreeOf (latch: TypedTreeLatch) (checkResults: FileCheckState) : obj =
+    if latch.IsWithheld then
         noTypedTree
     else
         match checkResults with
@@ -387,6 +389,7 @@ let internal createWithSlowHook
     // FileChecked delivery is serialized already; this fence matters after a
     // timeout, when a token-ignoring callback can outlive its event handler.
     let executionFence = new SemaphoreSlim(1, 1)
+    let typedTreeLatch = TypedTreeLatch()
     let cts = new CancellationTokenSource()
 
 
@@ -563,7 +566,7 @@ let internal createWithSlowHook
                                 debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                                 null
 
-                        let typedTreeObj = typedTreeOf result.CheckResults
+                        let typedTreeObj = typedTreeOf typedTreeLatch result.CheckResults
 
                         // Run analysis inline (awaited) so the framework's per-event
                         // cache-write window sees the final terminal status. Semaphore
@@ -636,7 +639,7 @@ let internal createWithSlowHook
                                                         if not mismatched then
                                                             results
                                                         else
-                                                            if withholdTypedTree () then
+                                                            if typedTreeLatch.Withhold() then
                                                                 warn
                                                                     "analyzers"
                                                                     "An analyzer could not walk the typed tree (compiled against a different FSharp.Compiler.Service). Withholding CliContext.TypedTree for the rest of this session; typed-tree rules will report nothing. Rebuild the analyzer package against this FCS to enable them."

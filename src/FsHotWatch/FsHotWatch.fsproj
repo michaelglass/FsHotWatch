@@ -63,6 +63,7 @@
 
   <ItemGroup>
     <Compile Include="Logging.fs" />
+    <Compile Include="SessionScope.fs" />
     <Compile Include="OperationWatchdog.fs" />
 <Compile Include="Lifecycle.fs" />
     <Compile Include="ProjectModel.fs" />
@@ -107,6 +108,7 @@
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="SharedWatchPool.fs" />
+    <Compile Include="DaemonHosting.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="OutputCopyFreshness.fs" />
@@ -114,12 +116,15 @@
     <Compile Include="ProjectSnapshots.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
+    <Compile Include="RepositoryIpc.fs" />
     <Compile Include="ScanActivity.fs" />
     <Compile Include="IdleExit.fs" />
     <Compile Include="Heartbeat.fs" />
     <Compile Include="PluginWedge.fs" />
     <Compile Include="ScanMetrics.fs" />
     <Compile Include="Daemon.fs" />
+    <Compile Include="SessionRegistry.fs" />
+    <Compile Include="RepositoryHost.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -621,13 +621,18 @@ module IpcServer =
             return not accepting
         }
 
+    /// Decides what serves a newly connected client: the RPC target for it, or `None`
+    /// when the connection has already been answered in full and should close. Given
+    /// the connected pipe and a token cancelled when the client goes away.
+    type internal ConnectionOpener = NamedPipeServerStream -> CancellationToken -> Async<obj option>
+
     /// Accept a single connection, handle it, and clean up when done. Until its
     /// teardown has finished — the pipe disposed, not merely the RPC completed — the
     /// connection stays in `connections`, keyed to that teardown, so shutdown can wait
     /// for it or close it.
     let private acceptOne
         (pipeName: string)
-        (target: CancellationToken -> DaemonRpcTarget)
+        (opener: ConnectionOpener)
         (connections: Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>)
         (ct: CancellationToken)
         : Async<unit> =
@@ -644,32 +649,38 @@ module IpcServer =
             try
                 do! pipeServer.WaitForConnectionAsync(ct) |> Async.AwaitTask
 
-                let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
-
                 // One target per connection, cancelled when this client goes away, so
                 // its calls stop rather than run on for nobody.
                 let clientGone = new CancellationTokenSource()
-                let rpc = new JsonRpc(handler, target clientGone.Token)
 
-                rpc.Disconnected.Add(fun _ ->
-                    try
-                        clientGone.Cancel()
-                    with :? ObjectDisposedException ->
-                        // Torn down already: nothing is left running to cancel.
-                        ())
+                match! opener pipeServer clientGone.Token with
+                | None ->
+                    pipeServer.Dispose()
+                    clientGone.Dispose()
+                | Some target ->
 
-                rpc.StartListening()
+                    let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
+                    let rpc = new JsonRpc(handler, target)
 
-                let teardown =
-                    rpc.Completion.ContinueWith(fun (_: Task) ->
-                        rpc.Dispose()
-                        pipeServer.Dispose()
-                        clientGone.Dispose())
+                    rpc.Disconnected.Add(fun _ ->
+                        try
+                            clientGone.Cancel()
+                        with :? ObjectDisposedException ->
+                            // Torn down already: nothing is left running to cancel.
+                            ())
 
-                connections[pipeServer] <- teardown
+                    rpc.StartListening()
 
-                teardown.ContinueWith(fun (_: Task) -> connections.TryRemove pipeServer |> ignore)
-                |> ignore
+                    let teardown =
+                        rpc.Completion.ContinueWith(fun (_: Task) ->
+                            rpc.Dispose()
+                            pipeServer.Dispose()
+                            clientGone.Dispose())
+
+                    connections[pipeServer] <- teardown
+
+                    teardown.ContinueWith(fun (_: Task) -> connections.TryRemove pipeServer |> ignore)
+                    |> ignore
             with
             | :? OperationCanceledException ->
                 // Normal shutdown: the daemon's CancellationToken fired while
@@ -682,24 +693,18 @@ module IpcServer =
                 Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
         }
 
-    /// Start the IPC server. Keeps multiple accept tasks running concurrently
-    /// so clients don't have to wait for the accept loop to cycle. On shutdown,
-    /// connections still open after `drainBound` are closed.
-    ///
-    /// Every RPC it serves is tracked on `watchdog` (see `DaemonRpcTarget`), whose
-    /// background timer logs the structured "operation exceeded Ns" record plus a
-    /// periodic heartbeat. The caller owns and disposes it.
-    let internal serveWith
-        (watchdog: OperationWatchdog.Watchdog)
+    /// Serve `pipeName` until `cts` is cancelled, handing every connection to
+    /// `opener`. Keeps multiple accept tasks running concurrently so clients don't
+    /// have to wait for the accept loop to cycle. On shutdown, connections still open
+    /// after `drainBound` are closed, and this returns once the name no longer accepts
+    /// connections (or `ReleaseBound` has passed, logged).
+    let internal serveConnections
         (drainBound: TimeSpan)
         (pipeName: string)
-        (config: DaemonRpcConfig)
+        (opener: ConnectionOpener)
         (cts: CancellationTokenSource)
         : Async<unit> =
         async {
-            let target (disconnected: CancellationToken) =
-                DaemonRpcTarget(config, watchdog, disconnected = disconnected)
-
             let connections =
                 Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, Task>(HashIdentity.Reference)
 
@@ -707,7 +712,7 @@ module IpcServer =
             let mutable acceptTasks: Task list = []
 
             let startAccept () =
-                Async.StartAsTask(acceptOne pipeName target connections cts.Token) :> Task
+                Async.StartAsTask(acceptOne pipeName opener connections cts.Token) :> Task
 
             acceptTasks <- [ startAccept (); startAccept (); startAccept () ]
 
@@ -779,6 +784,27 @@ module IpcServer =
                     "ipc"
                     $"IPC pipe %s{pipeName} still accepts connections %g{ReleaseBound.TotalSeconds}s after shutdown — another server may own it"
         }
+
+    /// Start the IPC server. Keeps multiple accept tasks running concurrently
+    /// so clients don't have to wait for the accept loop to cycle. On shutdown,
+    /// connections still open after `drainBound` are closed.
+    ///
+    /// Every RPC it serves is tracked on `watchdog` (see `DaemonRpcTarget`), whose
+    /// background timer logs the structured "operation exceeded Ns" record plus a
+    /// periodic heartbeat. The caller owns and disposes it.
+    let internal serveWith
+        (watchdog: OperationWatchdog.Watchdog)
+        (drainBound: TimeSpan)
+        (pipeName: string)
+        (config: DaemonRpcConfig)
+        (cts: CancellationTokenSource)
+        : Async<unit> =
+        serveConnections
+            drainBound
+            pipeName
+            (fun _ disconnected ->
+                async { return Some(box (DaemonRpcTarget(config, watchdog, disconnected = disconnected))) })
+            cts
 
     /// Serve with a watchdog this server creates, and disposes when the server loop
     /// exits (daemon shutdown); see `serveWith`.

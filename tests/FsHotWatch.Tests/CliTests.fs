@@ -57,7 +57,7 @@ let ``parse start returns Start`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parse stop returns Stop`` () =
-    test <@ CommandTree.parse tree [| "stop" |] = Ok Stop @>
+    test <@ CommandTree.parse tree [| "stop" |] = Ok(Stop []) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse check returns Check with no flags`` () =
@@ -117,11 +117,11 @@ let ``parse format returns Format with no flags`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parse status returns Status None`` () =
-    test <@ CommandTree.parse tree [| "status" |] = Ok(Status None) @>
+    test <@ CommandTree.parse tree [| "status" |] = Ok(Status(None, [])) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse status with plugin returns Status Some`` () =
-    test <@ CommandTree.parse tree [| "status"; "lint" |] = Ok(Status(Some "lint")) @>
+    test <@ CommandTree.parse tree [| "status"; "lint" |] = Ok(Status(Some "lint", [])) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse scan returns Scan`` () =
@@ -391,7 +391,7 @@ let ``globalSpec parse with --verbose returns Verbose flag`` () =
 [<Fact(Timeout = 15000)>]
 let ``globalSpec parse with -v returns Verbose flag`` () =
     match spec.Parse [| "-v"; "stop" |] with
-    | Ok(globals, Stop) -> test <@ globals = [ Verbose ] @>
+    | Ok(globals, Stop []) -> test <@ globals = [ Verbose ] @>
     | other -> failwith $"Expected Ok(Verbose, Stop), got %A{other}"
 
 [<Fact(Timeout = 15000)>]
@@ -858,7 +858,7 @@ let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
                 ipc
                 tmpDir
                 "pipe"
-                Stop
+                (Stop [])
                 defaultGlobalOptions
                 fakeConfig
                 30.0
@@ -881,7 +881,7 @@ let ``parse config check returns Config ConfigCommand.Check`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Status returns 0`` () =
-    let result = exec (fakeIpc ()) (Status None)
+    let result = exec (fakeIpc ()) (Status(None, []))
 
     test <@ result = 0 @>
 
@@ -1017,7 +1017,7 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
                             """{"count": 0, "files": {}, "statuses": {"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null, "diagnostics": {"errors": 0, "warnings": 0}}}, "projectModel": {"schema": "fshw-project-model-v1", "status": "available", "generation": 7, "counts": {"discovered": 3, "loaded": 3, "optionsMapped": 3, "registered": 3}, "reasonCode": null}}"""
                     } }
 
-    let result = exec ipc (Status(Some "lint"))
+    let result = exec ipc (Status(Some "lint", []))
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
@@ -1258,7 +1258,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
         { fakeIpc () with
             GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
-    let result = exec ipc (Status None)
+    let result = exec ipc (Status(None, []))
 
     test <@ result = 1 @>
 
@@ -2298,7 +2298,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
                     ipc
                     tmpDir
                     "pipe"
-                    (Status None)
+                    (Status(None, []))
                     defaultGlobalOptions
                     fakeConfig
                     30.0)
@@ -2343,7 +2343,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                     ipc
                     tmpDir
                     "pipe"
-                    (Status None)
+                    (Status(None, []))
                     defaultGlobalOptions
                     fakeConfig
                     30.0)
@@ -2392,7 +2392,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                     ipc
                     tmpDir
                     "pipe"
-                    (Status None)
+                    (Status(None, []))
                     defaultGlobalOptions
                     fakeConfig
                     30.0)
@@ -2410,7 +2410,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                 ipc
                 tmpDir
                 "pipe"
-                (Status None)
+                (Status(None, []))
                 defaultGlobalOptions
                 fakeConfig
                 30.0
@@ -2436,7 +2436,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
             (fakeDaemonIpc tmpDir d)
             tmpDir
             "pipe"
-            (Status None)
+            (Status(None, []))
             defaultGlobalOptions
             fakeConfig
             30.0
@@ -2488,7 +2488,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
                     (fakeDaemonIpc tmpDir d)
                     tmpDir
                     "pipe"
-                    (Status None)
+                    (Status(None, []))
                     defaultGlobalOptions
                     fakeConfig
                     30.0)

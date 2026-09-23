@@ -791,6 +791,52 @@ let splitArgs (args: string) : string[] option =
             flush ()
             Some(tokens.ToArray())
 
+/// True when `path` is a file this user may execute.
+let private isExecutableFile (path: string) =
+    let execute =
+        IO.UnixFileMode.UserExecute
+        ||| IO.UnixFileMode.GroupExecute
+        ||| IO.UnixFileMode.OtherExecute
+
+    IO.File.Exists path
+    && (OperatingSystem.IsWindows()
+        || IO.File.GetUnixFileMode path &&& execute <> IO.UnixFileMode.None)
+
+/// The executable a bare `command` names on `path` (a PATH value): the first
+/// directory holding an executable file of that name. `None` when `command` is bare and
+/// nothing on `path` matches; a command that names a location is its own answer.
+let tryResolveOnPath (path: string) (command: string) : string option =
+    if IO.Path.GetFileName command <> command then
+        Some command
+    else
+        path.Split(IO.Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        |> Array.map (fun dir -> IO.Path.Combine(dir, command))
+        |> Array.tryFind isExecutableFile
+
+/// `tryResolveOnPath`, leaving an unresolved command as it was.
+let resolveOnPath (path: string) (command: string) : string =
+    tryResolveOnPath path command |> Option.defaultValue command
+
+/// The command a child is started with. Inside a session of a repository host, a bare
+/// command is looked up on the SESSION's PATH: the runtime would look it up on this
+/// process's own, which belongs to whichever worktree launched the host, and a
+/// worktree's wrappers (its toolchain-bin, say) would silently be another's.
+let private sessionCommand (command: string) : string =
+    match SessionScope.SessionEnvironment.current () with
+    | None -> command
+    | Some session ->
+        let path =
+            SessionScope.SessionEnvironment.variables session
+            |> Map.tryFind "PATH"
+            |> Option.defaultValue ""
+
+        match tryResolveOnPath path command with
+        | Some resolved -> resolved
+        | None ->
+            raise (
+                System.ComponentModel.Win32Exception(2, $"%s{command}: not found on this worktree's PATH (%s{path})")
+            )
+
 /// Build the `ProcessStartInfo` for a spawned child: redirected stdio, the
 /// working directory, the sanitized+overlaid environment, and the realpath'd
 /// `DOTNET_HOST_PATH`. Shared by every spawn path (`runProcessWithTimeout` and
@@ -801,11 +847,21 @@ let private makeChildProcessStartInfo
     (workDir: string)
     (env: (string * string) list)
     : ProcessStartInfo =
-    let psi = ProcessStartInfo(command, args)
+    let psi = ProcessStartInfo(sessionCommand command, args)
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
+
+    // A session of a repository host spawns from ITS client's environment, not from
+    // the host process's, which belongs to whichever worktree launched the host.
+    match SessionScope.SessionEnvironment.current () with
+    | Some session ->
+        psi.Environment.Clear()
+
+        for KeyValue(key, value) in SessionScope.SessionEnvironment.variables session do
+            psi.Environment[key] <- value
+    | None -> ()
 
     // Strip before overlay so a caller-supplied entry in `env` survives.
     for key in sanitizedChildEnvKeys do

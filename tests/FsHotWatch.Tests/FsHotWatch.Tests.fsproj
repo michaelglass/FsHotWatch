@@ -21,6 +21,7 @@
          that watches a directory. -->
     <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
+    <Compile Include="ImpactDbPoolTests.fs" />
     <!-- RepoTasks and AnalyzerFixtures read the repository itself (mise.toml, the
          built house-rules analyzer); BCL-only, so they sit before every test file
          that relocates an analyzer into a temp checkout. -->
@@ -61,7 +62,16 @@
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="SharedWatchPoolTests.fs" />
+    <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="DaemonHostingTests.fs" />
+    <Compile Include="HostingSeamTests.fs" />
+    <Compile Include="SessionRegistryTests.fs" />
+    <Compile Include="RepositoryIpcTests.fs" />
+    <Compile Include="RepositoryHostTests.fs" />
+    <Compile Include="RepositoryHostModeTests.fs" />
+    <Compile Include="RepositoryHostIsolationTests.fs" />
+    <Compile Include="RepositoryHostParityTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
