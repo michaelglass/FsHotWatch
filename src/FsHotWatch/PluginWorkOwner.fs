@@ -586,12 +586,11 @@ type Snapshot<'State> =
         obligations this.Work
         |> snd
         |> Map.exists (fun _ lane ->
-            holdsWorker lane.Holder
-            || match lane.Holder with
-               | Folding(first, later, _) ->
-                   first :: later
-                   |> List.exists (fun fold -> fold.IsWorkerResult && Some fold.Id <> reporter)
-               | Worker _ -> false)
+            match lane.Holder with
+            | Folding(first, later, None) ->
+                first :: later
+                |> List.exists (fun fold -> fold.IsWorkerResult && Some fold.Id <> reporter)
+            | holder -> holdsWorker holder)
 
 // ---------------------------------------------------------------------------------------
 // Pure transitions
