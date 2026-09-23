@@ -2126,7 +2126,9 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
                 test <@ json.IsSome @>
                 test <@ json.Value.Contains("\"busy\"") @>
                 test <@ not (json.Value.Contains("\"projects\"")) @>
-                test <@ File.Exists started @>
+                // `busy` must describe a run that is really in flight. Its process may start
+                // after the 1-second budget on a loaded machine, so wait for it, bounded.
+                test <@ waitUntilTrue (fun () -> File.Exists started) 15000 @>
             finally
                 // Let the daemon-side run finish so the temp dir can be cleaned.
                 File.WriteAllText(release, "")
