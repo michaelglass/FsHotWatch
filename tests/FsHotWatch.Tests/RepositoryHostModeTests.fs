@@ -408,3 +408,28 @@ let ``an SDK probe whose dotnet fails says how`` () =
                 SessionScope.SessionEnvironment.create root (Map.ofList [ "PATH", $"%s{bin}:/usr/bin:/bin" ])
 
             test <@ RepositoryHostMode.sdkVersion root env = "unresolved (`dotnet --version` exited 3)" @>)
+
+// ---------------------------------------------------------------------------
+// Plugin passthrough
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``a plugin command in host mode is refused, naming the gap, never sent to a per-worktree pipe`` () =
+    let noEnv (_: string) : string = null
+    let on = "{ \"repositoryHost\": true }"
+
+    match passthroughRefusal on noEnv false "coverage-report" with
+    | Some message ->
+        test <@ message.Contains "coverage-report" @>
+        test <@ message.Contains "repository host" && message.Contains "FSHW_REPOSITORY_HOST=0" @>
+    | None -> failwith "an opted-in worktree must refuse plugin passthrough"
+
+    // A worktree the host serves refuses too, even from a shell that has not opted in.
+    test <@ (passthroughRefusal "" noEnv true "coverage-report").IsSome @>
+    // Its own daemon still takes plugin commands.
+    test <@ (passthroughRefusal "" noEnv false "coverage-report").IsNone @>
+
+    let off (name: string) =
+        if name = RepositoryHostMode.EnvVar then "0" else null
+
+    test <@ (passthroughRefusal on off false "coverage-report").IsNone @>

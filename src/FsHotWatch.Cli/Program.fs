@@ -3339,6 +3339,26 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
+/// Why a root-level plugin command must not run here, or `None` when it may.
+///
+/// Plugin commands do not reach a repository-host session yet. In a worktree that uses
+/// the host (it opts in, or the host already serves it), sending one to the
+/// per-worktree pipe would talk to a daemon that is not the one serving the worktree,
+/// so the command is refused and says so.
+let internal passthroughRefusal
+    (configText: string)
+    (getEnv: string -> string)
+    (servedByHost: bool)
+    (command: string)
+    : string option =
+    if servedByHost || RepositoryHostMode.enabled configText getEnv then
+        Some
+            $"fshw: `%s{command}` is a plugin command, and plugin commands do not reach a repository host \
+              session yet. Run it in a shell with %s{RepositoryHostMode.EnvVar}=0 against this worktree's own \
+              daemon (`fshw stop` first if the repository host serves it)."
+    else
+        None
+
 /// Launch the repository host detached, from its control directory.
 let private launchHost (repoRoot: string) (control: FsHotWatch.RepositoryIdentity.RepositoryControlPaths) =
     let entryDll =
@@ -3530,7 +3550,22 @@ let private runCli (args: string array) : int =
                         AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
                         CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
 
-                forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
+                let configText =
+                    let path = Path.Combine(repoRoot, ".fshw.json")
+                    if File.Exists path then File.ReadAllText path else ""
+
+                let servedByHost =
+                    (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                        FsHotWatch.RepositoryHost.processAlive
+                        repoRoot)
+                        .IsSome
+
+                match passthroughRefusal configText Environment.GetEnvironmentVariable servedByHost input with
+                | Some refusal ->
+                    eprintfn "%s" refusal
+                    2
+                | None ->
+                    forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
 
