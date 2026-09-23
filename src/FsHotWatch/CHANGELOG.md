@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- feat: a repository host checks every worktree under one virtual root, so a project
+  whose content is the same in several worktrees is checked once and its results serve
+  them all. `ProjectSnapshots.buildFramed` checks each project under the frame its
+  session chooses (`PathFrame`, `SessionFrames`); `CanonicalProjects` keeps one content
+  per project shared, and a session whose project differs checks it at its own paths.
+  A project that reads its own location (`__SOURCE_DIRECTORY__`, `__SOURCE_FILE__`,
+  `#line`, a type provider, `--version:@`, `--load`, `--use`, a response file) is never
+  shared (`FrameExclusions`), and the host's log says which and why. Diagnostics, and
+  analyzer and TestPrune results, are rebased to the worktree's paths.
+  `FileCheckResult.Frame` names the frame a result was checked under. A host refuses to
+  start while its virtual root exists (`HostRun.VirtualRootExists`).
+
 - feat!: a repository host's sessions of one checker configuration check through one
   checker (`CheckerPartitions`), so they hold one copy of the framework imports and
   `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and

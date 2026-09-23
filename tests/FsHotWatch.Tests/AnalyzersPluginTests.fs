@@ -186,7 +186,8 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
-          ModelGeneration = Some fixtureModelGeneration }
+          ModelGeneration = Some fixtureModelGeneration
+          Frame = None }
 
     host.EmitFileChecked(fakeResult)
 

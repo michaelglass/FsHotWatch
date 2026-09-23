@@ -174,3 +174,27 @@ let ``the drop guard refuses a drop no condition asks the seam about`` () =
     test <@ dropsTheWholeChecker.IsMatch "checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()" @>
     // A comment that names the call is documentation, not a drop.
     test <@ not (dropsTheWholeChecker.IsMatch(codeOf "            // checker.InvalidateAll() drops siblings' state")) @>
+
+/// The one place a checker's project state is invalidated.
+let private invalidator = "src/FsHotWatch/ProjectSnapshots.fs"
+
+[<Fact>]
+let ``a project is invalidated only by its real identity, never a shared virtual one`` () =
+    // `ProjectSnapshots.invalidate` names the project by its own paths. Under a virtual
+    // root those are not the identity FCS keyed the shared entries by, so an
+    // invalidation there can never clear what a sibling session holds. An invalidation
+    // anywhere else could name the virtual identity.
+    let found =
+        matchesIn (repoRoot ()) (Regex(@"\.InvalidateConfiguration\s*\("))
+        |> List.map (fun (file, i, lines) -> file, i + 1, lines[i].Trim())
+
+    test <@ found |> List.exists (fun (file, _, _) -> file = invalidator) @>
+    let stray = found |> List.filter (fun (file, _, _) -> file <> invalidator)
+
+    if not (List.isEmpty stray) then
+        Assert.Fail(
+            "A project's checker state is invalidated outside "
+            + invalidator
+            + ". Use `ProjectSnapshots.invalidate`, which names it by its real identity:\n"
+            + String.Join("\n", stray |> List.map (fun (f, n, code) -> $"%s{f}:%d{n}: %s{code}"))
+        )

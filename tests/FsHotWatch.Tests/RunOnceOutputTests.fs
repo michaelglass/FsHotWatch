@@ -735,7 +735,8 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                           CheckResults = FullCheck(Unchecked.defaultof<_>)
                           ProjectOptions = Unchecked.defaultof<_>
                           Version = 0L
-                          ModelGeneration = None }
+                          ModelGeneration = None
+                          Frame = None }
                     )
 
             daemon.Host.GetAllStatuses()

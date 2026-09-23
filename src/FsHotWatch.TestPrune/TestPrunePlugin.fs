@@ -7658,11 +7658,21 @@ let internal createWithQueries
                         // being handled. TestPrune 8.1 accepts the existing parse/check
                         // results directly. ParseOnly is not analysable: spelling that as
                         // Error keeps the established fail-closed full-suite fallback.
+                        // Checked under a virtual root, the results name the file and
+                        // every symbol by virtual path: analysis asks for the file by that
+                        // name, and repository-relative paths come from the virtual root,
+                        // the same in every worktree.
+                        let analysisRoot =
+                            result.Frame
+                            |> Option.fold (fun _ (frame: PathFrame.PathFrame) -> frame.Virtual) repoRoot
+
+                        let analysisFile = PathFrame.nameIn result.Frame fileStr
+
                         let analysisResult =
                             match result.CheckResults with
                             | FullCheck checkResults ->
                                 analyzeSourceFromResults
-                                    fileStr
+                                    analysisFile
                                     result.Source
                                     result.ParseResults
                                     checkResults
@@ -7673,7 +7683,7 @@ let internal createWithQueries
 
                         match analysisResult with
                         | Ok analysisResult ->
-                            let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
+                            let normalizedSymbols = normalizeSymbolPaths analysisRoot analysisResult.Symbols
 
                             let fileAnalysis =
                                 { Symbols = normalizedSymbols

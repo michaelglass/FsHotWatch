@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The repository host checks every worktree under one virtual root: identical projects
+  in several worktrees are checked once. `fshw host` exits 2 if that root exists.
+
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).
 

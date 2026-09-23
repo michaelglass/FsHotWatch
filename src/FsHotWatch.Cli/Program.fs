@@ -2364,6 +2364,13 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let partitions =
             FsHotWatch.CheckerPartitions.Partitions Daemon.createCheckerWithCacheSizes
 
+        // Every worktree is checked under one virtual root, so identical projects share
+        // FCS's work. Which content of each project is shared, and by which sessions.
+        let canonical = FsHotWatch.CanonicalProjects.Registry()
+
+        let control =
+            FsHotWatch.RepositoryIdentity.repositoryControlPaths (FsHwPaths.stateHome ()) launchRoot.Repository
+
         let sinkFor (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             let logDir =
                 try
@@ -2404,10 +2411,18 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             | Some _ -> invalidOp $"no F# projects were discovered under %s{worktreeRoot}"
             | None -> ()
 
+            let frames =
+                FsHotWatch.SessionFrames.choice
+                    canonical
+                    worktreeRoot
+                    control.VirtualRoot
+                    (FsHotWatch.Logging.info "host")
+
             let hosting =
-                FsHotWatch.DaemonHosting.hostedBy
+                FsHotWatch.DaemonHosting.hostedUnderFrames
                     (pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
                     partitions.For
+                    frames
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 
@@ -2421,7 +2436,10 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let sessionResources (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             [ { new IDisposable with
                   member _.Dispose() =
-                      FsHotWatch.TestPrune.ImpactDbPool.clear (DaemonConfig.testImpactDbPath worktree.Root.Value) } ]
+                      FsHotWatch.TestPrune.ImpactDbPool.clear (DaemonConfig.testImpactDbPath worktree.Root.Value) }
+              // An ended session checks nothing: another may take its projects' content over.
+              { new IDisposable with
+                  member _.Dispose() = canonical.Release worktree.Root.Value } ]
 
         let settings =
             RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig sessionResources describe

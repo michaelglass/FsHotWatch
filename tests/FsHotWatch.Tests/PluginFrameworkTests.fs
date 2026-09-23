@@ -424,7 +424,8 @@ let ``registered plugin skips unsubscribed events`` () =
               CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L
-              ModelGeneration = None }
+              ModelGeneration = None
+              Frame = None }
     )
 
     reg.Dispatch(DispatchBuildCompleted BuildSucceeded)

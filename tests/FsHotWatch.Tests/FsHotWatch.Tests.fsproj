@@ -67,12 +67,16 @@
     <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="CheckerPartitionsTests.fs" />
     <Compile Include="PathFrameTests.fs" />
+    <Compile Include="CanonicalProjectsTests.fs" />
+    <Compile Include="FrameExclusionsTests.fs" />
+    <Compile Include="SessionFramesTests.fs" />
     <Compile Include="HostingSeamTests.fs" />
     <Compile Include="SessionRegistryTests.fs" />
     <Compile Include="RepositoryIpcTests.fs" />
     <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="RepositoryHostModeTests.fs" />
     <Compile Include="RepositoryHostIsolationTests.fs" />
+    <Compile Include="RepositoryHostSharingTests.fs" />
     <Compile Include="RepositoryHostParityTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />

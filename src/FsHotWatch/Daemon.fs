@@ -98,6 +98,15 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let diagnostics, selfIncompatible =
             classifyFcsDiagnostics allSuppressed checkResults.Diagnostics
 
+        // Checked under a virtual root, a diagnostic can name a path in its text: the
+        // reader gets the worktree's.
+        let diagnostics =
+            diagnostics
+            |> List.map (fun entry ->
+                { entry with
+                    Message = PathFrame.textFrom checkResult.Frame entry.Message
+                    Detail = entry.Detail |> Option.map (PathFrame.textFrom checkResult.Frame) })
+
         // Anything the compiler could not tell apart from itself survived a
         // re-check in `CheckPipeline` and is still here, so it is a fault in THIS
         // process. Say so, loudly enough to be counted — the point of the guard
@@ -3504,10 +3513,18 @@ module Daemon =
                         cacheBackend = b,
                         cacheKeyProvider = kp,
                         activity = fcsSink,
-                        repoRoot = repoRoot
+                        repoRoot = repoRoot,
+                        frames = seams.Frames
                     )
-                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink, repoRoot = repoRoot)
-                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot)
+                | Some b, None ->
+                    CheckPipeline(
+                        checker,
+                        cacheBackend = b,
+                        activity = fcsSink,
+                        repoRoot = repoRoot,
+                        frames = seams.Frames
+                    )
+                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot, frames = seams.Frames)
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache cacheBackend)
 

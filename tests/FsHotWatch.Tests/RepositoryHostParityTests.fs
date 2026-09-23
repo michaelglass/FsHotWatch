@@ -503,7 +503,8 @@ let private runHosted (root: string) =
     test <@ registry.Detach id @>
     observed
 
-/// A hosted session whose checker is shared with a sibling: a second worktree of the
+/// A hosted session whose checker, and whose projects' results, are shared with a
+/// sibling under one virtual root: a second worktree of the
 /// same repository, the same content at another path, that has checked everything once
 /// and then sits idle while the observed session runs the scenario. Sharing is then
 /// exercised, not merely configured: the sibling's projects are in the checker the
@@ -529,6 +530,10 @@ let private runHostedBesideASibling (root: string) =
                 Daemon.Daemon.DefaultCheckerCacheSizeFactor
         )
 
+    // Both worktrees under one virtual root: the observed session's projects are the
+    // sibling's, so its checks are served from the sibling's.
+    let canonicalProjects = CanonicalProjects.Registry()
+    let virtualRoot = Path.Combine(Path.GetDirectoryName root, "state", "virtual")
     let transitions = ConcurrentQueue()
     // The sibling's own statuses: never part of what the observed session is compared on.
     let siblingTransitions = ConcurrentQueue()
@@ -543,7 +548,9 @@ let private runHostedBesideASibling (root: string) =
                 else
                     siblingTransitions
 
-            build (DaemonHosting.hostedBy inertWatcher partitions.For) shared queue worktreeRoot)
+            let frames = SessionFrames.choice canonicalProjects worktreeRoot virtualRoot ignore
+
+            build (DaemonHosting.hostedUnderFrames inertWatcher partitions.For frames) shared queue worktreeRoot)
 
     // The sibling keeps its own shared task cache: lint's content-keyed results would
     // otherwise replay from it into the observed session's summary. That sharing is the
@@ -558,6 +565,8 @@ let private runHostedBesideASibling (root: string) =
 
     let id, session = startSession registry root
     test <@ obj.ReferenceEquals(session.Daemon.Checker, siblingSession.Daemon.Checker) @>
+    // The observed session's project is the canonical content the sibling claimed.
+    test <@ (canonicalProjects.CanonicalHash "src/Lib/Lib.fsproj").IsSome @>
     let config = session.Serving.Result
     let phases = drive root config session.Daemon.GetScanGeneration transitions
     let observed = observe root config phases

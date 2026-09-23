@@ -68,6 +68,7 @@
 <Compile Include="Lifecycle.fs" />
     <Compile Include="ProjectModel.fs" />
     <Compile Include="ProjectModelWire.fs" />
+    <Compile Include="PathFrame.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="CachePathIdentity.fs" />
     <Compile Include="PathFilter.fs" />
@@ -109,13 +110,15 @@
     <Compile Include="Watcher.fs" />
     <Compile Include="SharedWatchPool.fs" />
     <Compile Include="CheckerPartitions.fs" />
-    <Compile Include="PathFrame.fs" />
+    <Compile Include="CanonicalProjects.fs" />
     <Compile Include="DaemonHosting.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="OutputCopyFreshness.fs" />
     <Compile Include="DepsFreshness.fs" />
     <Compile Include="ProjectSnapshots.fs" />
+    <Compile Include="FrameExclusions.fs" />
+    <Compile Include="SessionFrames.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
     <Compile Include="RepositoryIpc.fs" />

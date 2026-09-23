@@ -54,9 +54,13 @@ type CheckPipeline
         ?cacheKeyProvider: ICacheKeyProvider,
         ?activity: PluginActivity.IActivitySink,
         ?repoRoot: string,
-        ?recheckCooldown: TimeSpan
+        ?recheckCooldown: TimeSpan,
+        ?frames: PathFrame.FrameChoice
     ) =
     let activity = defaultArg activity noopSink
+    // Which frame each project is checked under: its own paths unless a repository host
+    // checks its worktrees under one virtual root.
+    let frames = defaultArg frames PathFrame.realPaths
 
     /// See `FcsDiagnosticFilter.shouldRecheckProject`. Injectable so the
     /// cooldown can be collapsed in tests without waiting five minutes.
@@ -329,8 +333,16 @@ type CheckPipeline
                 ct.ThrowIfCancellationRequested()
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
-                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
+                let framed = ProjectSnapshots.buildFramed hashFile repoRoot frames openFile options
+                let snapshot = framed.Snapshot
+
+                // The name FCS knows the file by: under the virtual root when its project is.
+                let checkedPath =
+                    match framed.Frame with
+                    | Some frame -> PathFrame.toVirtual frame absPath
+                    | None -> absPath
+
+                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker checkedPath snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
@@ -363,7 +375,7 @@ type CheckPipeline
                         FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
                         budgetAllows
                         onRecheck
-                        (fun () -> ProjectSnapshots.parseAndCheck checker absPath snapshot)
+                        (fun () -> ProjectSnapshots.parseAndCheck checker checkedPath snapshot)
                         (firstParse, firstAnswer)
 
                 sw.Stop()
@@ -384,7 +396,8 @@ type CheckPipeline
                               CheckResults = FullCheck checkResults
                               ProjectOptions = options
                               Version = version
-                              ModelGeneration = None }
+                              ModelGeneration = None
+                              Frame = framed.Frame }
                 | FSharpCheckFileAnswer.Aborted ->
                     return
                         Some
@@ -394,7 +407,8 @@ type CheckPipeline
                               CheckResults = ParseOnly
                               ProjectOptions = options
                               Version = version
-                              ModelGeneration = None }
+                              ModelGeneration = None
+                              Frame = framed.Frame }
             with ex ->
                 Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                 return None

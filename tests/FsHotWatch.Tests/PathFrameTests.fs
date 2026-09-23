@@ -51,3 +51,17 @@ let ``a message's virtual paths are made real, and nothing else`` () =
         <@
             PathFrame.textToReal frame message = "The type 'X' in '/r/.workspaces/b/src/Lib/Lib.fs' is obsolete; see /state/repositories/abc/virtual2/notes and /r/.workspaces/b."
         @>
+
+[<Fact>]
+let ``with no frame, names and text are the worktree's own`` () =
+    test <@ PathFrame.nameIn None "/r/.workspaces/b/src/X.fs" = "/r/.workspaces/b/src/X.fs" @>
+    test <@ PathFrame.textFrom None "/state/repositories/abc/virtual/X.fs" = "/state/repositories/abc/virtual/X.fs" @>
+
+[<Fact>]
+let ``with a frame, names are virtual and text is made real`` () =
+    test <@ PathFrame.nameIn (Some frame) "/r/.workspaces/b/src/X.fs" = "/state/repositories/abc/virtual/src/X.fs" @>
+
+    test
+        <@
+            PathFrame.textFrom (Some frame) "see /state/repositories/abc/virtual/src/X.fs" = "see /r/.workspaces/b/src/X.fs"
+        @>

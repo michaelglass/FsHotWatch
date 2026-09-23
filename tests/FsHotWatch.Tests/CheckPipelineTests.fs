@@ -483,7 +483,8 @@ let private fullCheckResult path options =
       CheckResults = FullCheck Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
       ProjectOptions = options
       Version = 1L
-      ModelGeneration = None }
+      ModelGeneration = None
+      Frame = None }
 
 let private parseOnlyResult path options =
     { File = AbsFilePath.create path
@@ -492,7 +493,8 @@ let private parseOnlyResult path options =
       CheckResults = ParseOnly
       ProjectOptions = options
       Version = 1L
-      ModelGeneration = None }
+      ModelGeneration = None
+      Frame = None }
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when backend is None`` () =
