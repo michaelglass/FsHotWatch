@@ -60,6 +60,7 @@
     <Compile Include="PluginHostActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
+    <Compile Include="SharedWatchPoolTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
@@ -69,6 +70,7 @@
     <Compile Include="DaemonIdentityTests.fs" />
     <Compile Include="RepositoryIdentityTests.fs" />
     <Compile Include="AttachHandshakeTests.fs" />
+    <Compile Include="WatchRouterTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />

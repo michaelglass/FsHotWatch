@@ -115,6 +115,10 @@ let private record sessions rep session phase phys contended invalid : Record.Be
             []
         )
       Retention = None
+      Config =
+        { Strip = [ "tests" ]
+          Set = [ "checker.cacheSizeFactor", "10" ]
+          Echo = Some [ "checker.cacheSizeFactor", "10" ] }
       Scan = None
       Tests =
         Some
@@ -216,3 +220,13 @@ let ``invalid samples are never scored and contended ones only when allowed, whi
     test <@ loose.ContendedIncluded && loose.ExcludedContended = 0 @>
     test <@ (Summary.render loose).StartsWith "WARNING: contended" @>
     test <@ not ((Summary.render strict).Contains "WARNING") @>
+
+[<Fact>]
+let ``every record carries the config overrides it ran under and the daemon's echo`` () =
+    let node =
+        System.Text.Json.Nodes.JsonNode.Parse(Record.toJsonLine (record 1 1 1 "cold-scan" 1000L [] []))
+
+    let config = node.["config"]
+    test <@ config.["strip"].[0].GetValue<string>() = "tests" @>
+    test <@ config.["set"].["checker.cacheSizeFactor"].GetValue<int>() = 10 @>
+    test <@ config.["echo"].["checker.cacheSizeFactor"].GetValue<string>() = "10" @>

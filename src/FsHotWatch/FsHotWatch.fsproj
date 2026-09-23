@@ -78,6 +78,7 @@
     <Compile Include="DaemonIdentity.fs" />
     <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="AttachHandshake.fs" />
+    <Compile Include="WatchRouter.fs" />
     <Compile Include="CheckCache.fs" />
     <Compile Include="CacheInputs.fs" />
     <Compile Include="StructureFiles.fs" />
@@ -105,6 +106,7 @@
     <Compile Include="VerdictInputs.fs" />
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
+    <Compile Include="SharedWatchPool.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="OutputCopyFreshness.fs" />

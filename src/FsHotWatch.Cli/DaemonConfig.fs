@@ -339,6 +339,10 @@ type DaemonConfiguration =
         /// lower fseventsd load per change, at the cost of slightly higher
         /// change-to-rebuild latency. Only affects the macOS FSEvents watcher.
         FsEventsLatencyMs: int
+        /// TransparentCompiler cache size factor, from `checker.cacheSizeFactor`.
+        /// A positive integer; anything else is a `ConfigError`. Absent →
+        /// `Daemon.DefaultCheckerCacheSizeFactor` (FCS's own default, 100).
+        CheckerCacheSizeFactor: int
         /// Run-level `beforeRun` hook, from the top-level
         /// `beforeRun` key. A shell command run ONCE at the very start of a
         /// `check`/`confirm` run — BEFORE the daemon is contacted — as a
@@ -401,6 +405,7 @@ let private defaultConfigFor (repoRoot: string) =
       IdleExitMin = IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
       FsEventsLatencyMs = 250
+      CheckerCacheSizeFactor = FsHotWatch.Daemon.Daemon.DefaultCheckerCacheSizeFactor
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
@@ -963,6 +968,25 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             defaults.FsEventsLatencyMs
 
+    // `checker.cacheSizeFactor`: a positive integer, else a hard ConfigError — a
+    // mistyped factor silently falling back would make a benchmark row measure the
+    // default while claiming otherwise.
+    let checkerCacheSizeFactor =
+        let refuse () =
+            raise (ConfigError "checker.cacheSizeFactor must be a positive whole number, e.g. 10")
+
+        match root.TryGetProperty("checker") with
+        | false, _ -> defaults.CheckerCacheSizeFactor
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            match v.TryGetProperty("cacheSizeFactor") with
+            | false, _ -> defaults.CheckerCacheSizeFactor
+            | true, f when f.ValueKind = JsonValueKind.Number ->
+                match f.TryGetInt32() with
+                | true, n when n > 0 -> n
+                | _ -> refuse ()
+            | true, _ -> refuse ()
+        | true, _ -> raise (ConfigError "checker must be an object, e.g. {\"cacheSizeFactor\": 10}")
+
     // Parse a `number | false` tristate, shared by the two idle-exit windows:
     // positive N → `minutes N`; a non-positive number / `false` / `true` →
     // `disabled` (`true` is rejected rather than treated as an implicit window —
@@ -1094,6 +1118,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       IdleExitMin = idleExitMin
       PressureIdleFloorMin = pressureIdleFloorMin
       FsEventsLatencyMs = fsEventsLatencyMs
+      CheckerCacheSizeFactor = checkerCacheSizeFactor
       BeforeRun = beforeRun
       AfterRun = afterRun
       RunHookTimeoutSec = runHookTimeoutSec

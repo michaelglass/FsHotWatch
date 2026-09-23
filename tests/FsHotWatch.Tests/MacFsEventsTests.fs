@@ -269,6 +269,52 @@ type MacFsEventsTests() =
             test <@ ex.Message.Contains("At least one directory") @>
 
     [<Fact(Timeout = 15000)>]
+    member _.``FsEventStream rejects more exclusion paths than FSEvents accepts``() =
+        if not isMacOS then
+            Assert.Skip("macOS only")
+        else
+            withTempDir "fsevents-excl" (fun tmpDir ->
+                let tooMany =
+                    [ for i in 0 .. FsHotWatch.MacFsEvents.MaxExclusionPaths -> Path.Combine(tmpDir, $"x%d{i}") ]
+
+                let ex =
+                    Assert.Throws<System.ArgumentException>(fun () ->
+                        use _stream =
+                            FsHotWatch.MacFsEvents.createExcluding [ tmpDir ] tooMany ignore ignore 0.05
+
+                        ())
+
+                test <@ ex.Message.Contains("at most") @>)
+
+    [<Fact(Timeout = 150000)>]
+    member _.``FsEventStream never delivers an event under an excluded path``() =
+        if not isMacOS then
+            Assert.Skip("macOS only")
+        else
+            withTempDir "fsevents-excl" (fun tmpDir ->
+                let kept = Path.Combine(tmpDir, "kept")
+                let excluded = Path.Combine(tmpDir, "excluded")
+                Directory.CreateDirectory kept |> ignore
+                Directory.CreateDirectory excluded |> ignore
+                let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+                use _stream =
+                    FsHotWatch.MacFsEvents.createExcluding [ tmpDir ] [ excluded ] seen.Enqueue ignore 0.05
+
+                // Write to both on every probe; the kept write arriving proves the
+                // stream is live, and by then the excluded writes were dispatched too.
+                probeLoop
+                    (fun n ->
+                        File.WriteAllText(Path.Combine(excluded, $"E%d{n}.fs"), "e")
+                        File.WriteAllText(Path.Combine(kept, $"K%d{n}.fs"), "k"))
+                    (fun () -> seen |> Seq.exists (fun p -> p.Contains("/kept/")))
+                    60000
+
+                Thread.Sleep 500
+                test <@ seen |> Seq.exists (fun p -> p.Contains("/kept/")) @>
+                test <@ seen |> Seq.forall (fun p -> not (p.Contains("/excluded/"))) @>)
+
+    [<Fact(Timeout = 15000)>]
     member _.``FsEventStream create and dispose without crash``() =
         if not isMacOS then
             Assert.Skip("macOS only")

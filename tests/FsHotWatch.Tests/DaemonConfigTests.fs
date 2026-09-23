@@ -135,6 +135,35 @@ let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
     let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
     test <@ config.FsEventsLatencyMs = 250 @>
 
+// --- parseConfig: checker.cacheSizeFactor ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checker cacheSizeFactor absent yields the FCS default 100`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.CheckerCacheSizeFactor = 100 @>
+    test <@ config.CheckerCacheSizeFactor = Daemon.DefaultCheckerCacheSizeFactor @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checker without cacheSizeFactor yields the default`` () =
+    let config = parseConfig """{"checker": {}}""" defaults
+    test <@ config.CheckerCacheSizeFactor = 100 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checker cacheSizeFactor positive value is used`` () =
+    let config = parseConfig """{"checker": {"cacheSizeFactor": 10}}""" defaults
+    test <@ config.CheckerCacheSizeFactor = 10 @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"checker": {"cacheSizeFactor": 0}}""")>]
+[<InlineData("""{"checker": {"cacheSizeFactor": -5}}""")>]
+[<InlineData("""{"checker": {"cacheSizeFactor": 2.5}}""")>]
+[<InlineData("""{"checker": {"cacheSizeFactor": "10"}}""")>]
+[<InlineData("""{"checker": {"cacheSizeFactor": 99999999999}}""")>]
+[<InlineData("""{"checker": 10}""")>]
+let ``parseConfig checker cacheSizeFactor that is not a positive integer is a ConfigError`` (json: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "checker" @>
+
 // --- parseConfig: run-level hooks ---
 
 [<Fact(Timeout = 15000)>]

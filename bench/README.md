@@ -40,6 +40,7 @@ cannot find the runtime without `DOTNET_ROOT`.
 |---|---|
 | `--tests` | adds the `after-tests` phase: `fshw check` runs in every worktree at once |
 | `--strip <key>` | removes a top-level `.fshw.json` key in the throwaway bench worktrees, e.g. `--strip tests` for a scan-only run. Name it in `--label` |
+| `--set <dotted.path>=<json>` | writes a value into the bench worktrees' `.fshw.json` after any `--strip`, creating intermediate objects. It can be repeated; the last write wins. Strings must be quoted JSON (`--set build.args='"build -c Release"'`). A value that is not JSON, or a path through a non-object, is refused before any worktree is created |
 | `--warm-cache` | keeps caches between repetitions. Without it, every repetition starts `--no-cache` with a fresh `FSHW_CACHE_HOME` and no `.fshw/cache` |
 | `--no-heap` | skips the heap walk (footprint only) |
 | `--allow-contended` | records on a busy box. Records are marked `contended`, and `summarize` leaves them out unless also given `--allow-contended` |
@@ -74,6 +75,11 @@ The checks are:
 - the log's `Checked N files` agrees with `scan-metrics.jsonl`;
 - every session of a repetition checked the same number of files (parity);
 - with `--tests`, `fshw check` succeeded and a complete test cycle with a summary exists.
+- every `--set` under a section the daemon echoes at startup
+  (`[config] checker: cacheSizeFactor=N`) shows up in that echo with exactly the value
+  that was set. A run where the daemon ignored the setting can therefore never be scored
+  under it. Every record carries `config: { strip, set, echo }`, and `cold-scan`
+  records carry the echo read from the log.
 - the machine did not sleep or dark-wake since the repetition began. A laptop with its
   lid closed on battery sleeps whatever `caffeinate` says. The .NET `Stopwatch` on macOS
   does not advance during sleep and the wall clock does. On this box they differed by
