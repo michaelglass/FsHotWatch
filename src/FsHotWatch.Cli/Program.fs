@@ -3060,7 +3060,8 @@ let private runCli (args: string array) : int =
                             ExtraWatchPatterns = fileCommandPatterns
                             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
                             IdleExitMin = idleExitMin
-                            PressureIdleFloorMin = pressureIdleFloorMin }
+                            PressureIdleFloorMin = pressureIdleFloorMin
+                            CheckerCacheSizeFactor = config.CheckerCacheSizeFactor }
 
                 let loadedIdentity = configContentHash configSource
                 executeCommand loadedIdentity createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0

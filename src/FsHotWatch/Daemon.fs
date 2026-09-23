@@ -1,5 +1,8 @@
 module FsHotWatch.Daemon
 
+// FS0057: `TransparentCompiler.CacheSizes` is marked experimental in FCS 43.*.
+#nowarn "57"
+
 open System
 open System.IO
 open System.Threading
@@ -3250,6 +3253,17 @@ module Daemon =
     /// `OneShot` host never calls it.
     type WatcherFactory = string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher
 
+    /// The TransparentCompiler cache size factor when `.fshw.json` sets none: FCS's
+    /// own default (its internal `TransparentCompiler.CacheSizes.Default` is `Create 100`), so
+    /// leaving the key out changes nothing.
+    ///
+    /// The factor scales ENTRY counts, not bytes. At 100 the checker keeps roughly
+    /// 2,000 type-check intermediates strongly held, 5,000 parse results, and 100
+    /// strong plus 200 weak full check results. A smaller factor holds less and
+    /// re-typechecks more, so it trades memory for CPU. FsAutoComplete runs at 10.
+    [<Literal>]
+    let DefaultCheckerCacheSizeFactor = 100
+
     /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
     /// and modify only what they need.
     [<NoComparison; NoEquality>]
@@ -3291,6 +3305,9 @@ module Daemon =
             /// `pressureIdleFloorMin` config is done by the caller
             /// (`IdleExit.resolvePressureFloor`).
             PressureIdleFloorMin: int option
+            /// TransparentCompiler cache size factor, from the `checker.cacheSizeFactor`
+            /// config key. See `DefaultCheckerCacheSizeFactor`.
+            CheckerCacheSizeFactor: int
         }
 
     module DaemonOptions =
@@ -3303,7 +3320,8 @@ module Daemon =
               ExtraWatchPatterns = []
               FsEventsLatencySeconds = 0.25
               IdleExitMin = None
-              PressureIdleFloorMin = None }
+              PressureIdleFloorMin = None
+              CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -3790,15 +3808,37 @@ module Daemon =
     /// If a future feature needs symbol uses — a rename, a find-references, a
     /// semantic highlight — turn this back on WITH that feature, and measure it
     /// then. It is cheap to restore and expensive to leave on speculatively.
-    let createChecker () =
+    ///
+    /// `cacheSizes` bounds the TransparentCompiler's caches; see
+    /// `DefaultCheckerCacheSizeFactor`.
+    let createCheckerWithCacheSizes (cacheSizes: TransparentCompiler.CacheSizes) =
         FSharpChecker.Create(
             keepAssemblyContents = true,
             keepAllBackgroundResolutions = false,
             parallelReferenceResolution = true,
-            useTransparentCompiler = true
+            useTransparentCompiler = true,
+            transparentCompilerCacheSizes = cacheSizes
         )
+
+    /// `createCheckerWithCacheSizes` at `DefaultCheckerCacheSizeFactor`.
+    let createChecker () =
+        createCheckerWithCacheSizes (TransparentCompiler.CacheSizes.Create DefaultCheckerCacheSizeFactor)
+
+    /// `create` with the checker constructor as a parameter, so a test can see the
+    /// cache sizes that `opts.CheckerCacheSizeFactor` turns into.
+    let internal createUsing
+        (makeChecker: TransparentCompiler.CacheSizes -> FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        =
+        Logging.info "config" $"checker: cacheSizeFactor=%d{opts.CheckerCacheSizeFactor}"
+
+        let checker =
+            makeChecker (TransparentCompiler.CacheSizes.Create opts.CheckerCacheSizeFactor)
+
+        createWith checker repoRoot opts
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.
     let create (repoRoot: string) (opts: DaemonOptions) =
-        createWith (createChecker ()) repoRoot opts
+        createUsing createCheckerWithCacheSizes repoRoot opts

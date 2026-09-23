@@ -1,6 +1,9 @@
 [<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.DaemonTests
 
+// FS0057: `TransparentCompiler.CacheSizes` is marked experimental in FCS 43.*.
+#nowarn "57"
+
 open System
 open System.IO
 open System.Threading
@@ -677,6 +680,80 @@ let ``Daemon.create creates a working daemon with real checker`` () =
 
         test <@ task.IsCompleted @>
         test <@ daemon.RepoRoot = tmpDir @>)
+
+[<Fact(Timeout = 15000)>]
+let ``Daemon.create hands the configured cache size factor to the checker`` () =
+    withTempDir "daemon-cache-sizes" (fun tmpDir ->
+        let mutable captured = None
+
+        let make (sizes: FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes) =
+            captured <- Some sizes
+            nullChecker
+
+        use daemon =
+            Daemon.createUsing
+                make
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    CheckerCacheSizeFactor = 10 }
+
+        test <@ daemon.RepoRoot = tmpDir @>
+        test <@ captured = Some(FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create 10) @>
+
+        test
+            <@
+                captured
+                <> Some(FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create 100)
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``Daemon.create logs the effective cache size factor as one key=value config line`` () =
+    // The bench harness scrapes this exact line from daemon.log to prove which factor
+    // a record ran at, so its wording is an interface: `checker:` then `key=value` pairs.
+    withTempDir "daemon-cache-sizes-log" (fun tmpDir ->
+        let originalErr = Console.Error
+        let originalLevel = Logging.logLevel
+        use sw = new StringWriter()
+        Console.SetError sw
+        Logging.setLogLevel Logging.LogLevel.Info
+
+        try
+            use _daemon =
+                Daemon.createUsing
+                    (fun _ -> nullChecker)
+                    tmpDir
+                    { Daemon.DaemonOptions.defaults with
+                        CheckerCacheSizeFactor = 20 }
+
+            ()
+        finally
+            Console.SetError originalErr
+            Logging.setLogLevel originalLevel
+
+        let lines =
+            sw.ToString().Split('\n')
+            |> Array.filter (fun l ->
+                Text.RegularExpressions.Regex.IsMatch(l, @"^  \[config\] \S+ checker: cacheSizeFactor=20\r?$"))
+
+        test <@ lines.Length = 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``DaemonOptions default cache size factor is the FCS default`` () =
+    test <@ Daemon.DaemonOptions.defaults.CheckerCacheSizeFactor = Daemon.DefaultCheckerCacheSizeFactor @>
+
+    // FCS's own default (`CacheSizes.Default`, used when no sizes are passed) is
+    // hidden by its signature file, so read it reflectively: leaving the key out must
+    // change nothing, and this fails if an FCS upgrade moves the default.
+    let fcsDefault =
+        typeof<FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes>
+            .GetProperty("Default", Reflection.BindingFlags.Static ||| Reflection.BindingFlags.NonPublic)
+            .GetValue(null)
+        :?> FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes
+
+    test
+        <@
+            FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create Daemon.DefaultCheckerCacheSizeFactor = fcsDefault
+        @>
 
 [<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
