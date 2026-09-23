@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- feat: exclusive work carries consumer leases, so a run nobody is waiting for any
+  more stops holding the box. A plugin command runs under its requester's token (the
+  IPC server's per-connection token), and every intent it enqueues is held by that
+  client; the daemon's own wants (the watcher, a plugin's own event, a result fold)
+  hold a lease no client can release. Coalescing merges the consumers, and the
+  daemon's lease absorbs any client's. When the LAST lease is released: a queued
+  intent is withdrawn (its receipt fails; it never folds), and a running run is
+  cancelled only if its work was declared `PluginWork.cooperativeSafe`. Its process
+  scope is reaped, no result folds and no failure is recorded (a result it returns
+  after its processes were killed is dropped too), a shared resource goes back in the
+  state the run was handed, and the status its `Running` displaced is reported
+  again. Undeclared work still runs to completion. One client leaving never cancels
+  work another client or the daemon still needs.
+
+- fix: a client that disconnects mid-call no longer leaves its RPC running for
+  nobody. The IPC server builds one RPC target per connection and cancels it when the
+  connection drops: the call is released and retired from the operation watchdog at
+  once (it no longer shows as in flight), and a `RunCommand` handler's own async runs
+  under that token, so work it does inline stops at its next cancellation point. Work
+  the call only WAITS on is shared and keeps running: plugin runs (including a run a
+  command queued on a plugin's key, e.g. `run-tests`), the daemon-wide terminal and
+  scan waits, triggered builds and re-runs, and formatting on the change agent. One
+  waiter leaving never cancels what another client or the watcher still depends on.
+
 - fix: a finished run keeps its `Running` status until its result fold commits. The
   status funnel dropped an unrelated terminal only while a worker was live. Once the
   worker finished, its result fold could sit in the mailbox behind a long fold, and a
@@ -10,7 +34,6 @@
   and declared a false WEDGED the moment a declared bounded fold ended. The funnel now
   drops such a terminal until the run's verdict is folded (`Snapshot.OwesRunVerdict`);
   the result fold's own report still lands.
-
 - `runProcessAccounted` (internal): `runProcess` plus a `TreeTeardown` for a child that
   overran — its tree read from `ps` before the kill (afterwards a survivor has been
   re-parented and cannot be found from the root), the kill's outcome and duration, and the
@@ -57,7 +80,6 @@
   checkout, a git worktree, or neither.
 - The daemon logs the cache's state at startup (`describeCheckCache`), including
   `OFF`, so an inert cache no longer reads as a working one.
-
 - fix: every agent round-trip in the daemon is bounded. `PostAndReply` with no
   timeout waits FOREVER, and all nine call sites in `src/` — seven in the error
   ledger, two in the plugin host's status agent — passed no timeout. A mailbox that

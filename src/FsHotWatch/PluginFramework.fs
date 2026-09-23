@@ -135,6 +135,25 @@ type SharedRunScheduler() =
 
         handOff resourceState
 
+/// Declarations about exclusive work handed to `RunExclusive`/`RunExclusiveShared`.
+module PluginWork =
+    let private safe = System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+
+    /// Declare `work` cooperative-safe: cancelling it part-way leaves nothing behind that
+    /// anyone can observe. Its processes run in the run's own child scope (reaped on
+    /// cancellation), it publishes only through the result message it returns (which a
+    /// cancelled run never folds), and any lifecycle it opens it also closes on
+    /// cancellation. Only such work is cancelled when every consumer that asked for it
+    /// has gone; undeclared work always runs to completion.
+    let cooperativeSafe (work: Async<'Msg>) : Async<'Msg> =
+        safe.AddOrUpdate(work, null)
+        work
+
+    /// Whether `work` was declared with `cooperativeSafe`.
+    let isCooperativeSafe (work: Async<'Msg>) : bool =
+        let mutable marker = null
+        safe.TryGetValue(work, &marker)
+
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -575,6 +594,15 @@ let internal registerHandlerForOwner
     let mutable perFileExamined = 0
     let mutable perFileReplayed = 0
 
+    // The last status this plugin reported to the host, written under `statusLock`. A
+    // claim remembers the one its `Running` displaced, so a run cancelled because nobody
+    // needs it can put that back: it produced no verdict of its own.
+    let mutable lastReported = Idle
+
+    let reportToHost (status: PluginStatus) =
+        services.ReportStatus handler.Name status
+        lastReported <- status
+
     /// The one funnel every status a plugin reports, a cache replay reports, or a fault
     /// forces passes through. A terminal is dropped while an exclusive run owes its
     /// verdict: from its claim until its result fold commits, the run owns the status and
@@ -597,7 +625,7 @@ let internal registerHandlerForOwner
 
                 false
             else
-                services.ReportStatus handler.Name (status ())
+                reportToHost (status ())
                 true)
 
     let reportPluginStatus (reporter: PluginWorkOwner.WorkId option) (status: PluginStatus) =
@@ -611,15 +639,15 @@ let internal registerHandlerForOwner
             error pluginName $"RunExclusive '%s{key}' %s{stage}: %s{failure.ToString()}"
 
             lock statusLock (fun () ->
-                services.ReportStatus
-                    handler.Name
-                    (PluginStatus.Failed(
+                reportToHost (
+                    PluginStatus.Failed(
                         $"RunExclusive '%s{key}' %s{stage}: %s{failure.ToString()}",
                         DateTime.UtcNow,
                         RunVerdict.create
                             $"RunExclusive '%s{key}' %s{stage}: %s{failure.Message}"
                             (DateTime.UtcNow - startedAt)
-                    )))
+                    )
+                ))
         with reportingFailure ->
             error pluginName $"Reporting the failure of '%s{key}' also failed: %s{reportingFailure.ToString()}"
 
@@ -635,12 +663,63 @@ let internal registerHandlerForOwner
     // reachable before `registerHandlerForOwner` returns.
     let mutable deliver: PluginEvent<'Msg> * PluginWorkOwner.WorkId -> unit = ignore
 
+    // The consumers of each delivered intent that clients alone hold, from its delivery
+    // until its fold has been processed. A claim that fold makes, and an intent it
+    // enqueues, is held by the same consumers. Every other event is held by the daemon.
+    let clientHeld =
+        System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, PluginWorkOwner.ConsumerLeases>()
+
+    let leasesOf (event: PluginWorkOwner.WorkId option) =
+        match event with
+        | Some identity ->
+            match clientHeld.TryGetValue identity with
+            | true, leases -> leases
+            | _ -> PluginWorkOwner.HeldByDaemon
+        | None -> PluginWorkOwner.HeldByDaemon
+
     let post (message: 'Msg) =
         let identity = admit owner.AdmitEvent
         deliver (Custom message, identity)
 
-    let enqueueExclusiveIntent (key: string) (coalescingKey: string option) (message: 'Msg) =
-        admit (fun () -> owner.EnqueueIntent(key, coalescingKey, fun identity -> deliver (Custom message, identity)))
+    /// Enqueue an intent on behalf of `leases`. When clients alone hold it, it is
+    /// withdrawn the moment the last of them goes while it is still queued.
+    let enqueueExclusiveIntentFor
+        (leases: PluginWorkOwner.ConsumerLeases)
+        (key: string)
+        (coalescingKey: string option)
+        (message: 'Msg)
+        =
+        let carrier, receipt =
+            admit (fun () ->
+                owner.EnqueueLeasedIntent(
+                    key,
+                    coalescingKey,
+                    leases,
+                    fun identity held ->
+                        match held with
+                        | PluginWorkOwner.HeldByClients _ -> clientHeld[identity] <- held
+                        | PluginWorkOwner.HeldByDaemon -> ()
+
+                        deliver (Custom message, identity)
+                ))
+
+        match leases with
+        | PluginWorkOwner.HeldByClients tokens ->
+            for token in tokens do
+                // A token that has already fired runs this at once, outside any store
+                // change. Withdrawal is total: it refuses what it may not withdraw.
+                token.Register(fun () ->
+                    try
+                        if owner.WithdrawReleased carrier then
+                            info pluginName $"'%s{key}' intent withdrawn: every client that wanted it has gone"
+                    with failure ->
+                        error pluginName $"withdrawing '%s{key}' intent failed: %s{failure.ToString()}")
+                |> ignore
+        | PluginWorkOwner.HeldByDaemon -> ()
+
+        receipt
+
+    let enqueueExclusiveIntent = enqueueExclusiveIntentFor PluginWorkOwner.HeldByDaemon
 
     /// Retire a finished run. A successful result becomes the run's result fold, which
     /// keeps the key until the result's `Update` commits. Shared-resource classification
@@ -649,14 +728,14 @@ let internal registerHandlerForOwner
     let finishRun
         (key: string)
         (identity: PluginWorkOwner.WorkId)
-        (sharedRun: (string * ('Msg -> SharedResourceState)) option)
+        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
         (startedAt: DateTime)
         (outcome: Result<'Msg, exn>)
         =
         let completion =
             match sharedRun with
             | None -> outcome
-            | Some(sharedKey, classify) ->
+            | Some(sharedKey, classify, _) ->
                 let classified, resourceState =
                     match outcome with
                     | Result.Ok message ->
@@ -686,53 +765,135 @@ let internal registerHandlerForOwner
             finally
                 owner.FailRun(identity, failure)
 
+    /// Retire a run every consumer abandoned. Nothing is published: no result folds, no
+    /// failure is recorded, the shared resource goes back in the state the run was handed
+    /// (a cancelled run learned nothing about it), and the status the run's `Running`
+    /// displaced is reported again.
+    let retireAbandoned
+        (key: string)
+        (identity: PluginWorkOwner.WorkId)
+        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
+        (startedAt: DateTime)
+        (displaced: PluginStatus)
+        =
+        info pluginName $"RunExclusive '%s{key}' cancelled: every client that wanted it has gone; nothing is published"
+
+        let released =
+            try
+                sharedRun
+                |> Option.iter (fun (sharedKey, _, handed) -> services.ReleaseSharedRun sharedKey handed)
+
+                Result.Ok()
+            with failure ->
+                Result.Error failure
+
+        match released with
+        | Result.Ok() ->
+            try
+                lock statusLock (fun () -> reportToHost displaced)
+            with failure ->
+                error pluginName $"Reporting the cancellation of '%s{key}' failed: %s{failure.ToString()}"
+
+            owner.AbandonRun identity
+        | Result.Error failure ->
+            try
+                reportRunFailure key startedAt "shared release after cancellation failed" failure
+            finally
+                owner.FailRun(identity, failure)
+
     /// The worker body. Children the work spawns belong to its own process scope and are
     /// torn down before the run can retire.
+    ///
+    /// `abandoned` fires when every consumer of cooperative-safe work has gone. The work
+    /// is then cancelled, its process scope reaped, and it retires with nothing
+    /// published — even if it managed to return a result, since that result is only what
+    /// was left once its processes were killed.
     let runOne
         (key: string)
         (identity: PluginWorkOwner.WorkId)
-        (sharedRun: (string * ('Msg -> SharedResourceState)) option)
+        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
         (startedAt: DateTime)
+        (displaced: PluginStatus)
+        (abandoned: (System.Threading.CancellationTokenSource * IDisposable) option)
         (work: Async<'Msg>)
         =
         async {
-            let! outcome =
-                async {
-                    try
-                        let! message = ProcessRegistry.withChildScopeAsync System.Threading.CancellationToken.None work
-                        return Result.Ok message
-                    with failure ->
-                        return Result.Error failure
-                }
+            match abandoned with
+            | None ->
+                let! outcome =
+                    async {
+                        try
+                            let! message =
+                                ProcessRegistry.withChildScopeAsync System.Threading.CancellationToken.None work
 
-            // Total: every plugin callback inside is guarded, and only this run retires
-            // its own worker.
-            finishRun key identity sharedRun startedAt outcome
+                            return Result.Ok message
+                        with failure ->
+                            return Result.Error failure
+                    }
+
+                // Total: every plugin callback inside is guarded, and only this run retires
+                // its own worker.
+                finishRun key identity sharedRun startedAt outcome
+            | Some(source, watch) ->
+                let token = source.Token
+
+                // Run as a task and read its outcome from a continuation: awaiting a
+                // cancelled task directly would cancel THIS async too, and then nothing
+                // would retire the worker.
+                let running =
+                    Async.StartAsTask(ProcessRegistry.withChildScopeAsync token work, cancellationToken = token)
+
+                let! settled =
+                    running.ContinueWith(fun (finished: System.Threading.Tasks.Task<'Msg>) -> finished)
+                    |> Async.AwaitTask
+
+                watch.Dispose()
+                let cancelled = token.IsCancellationRequested
+                source.Dispose()
+
+                if cancelled then
+                    retireAbandoned key identity sharedRun startedAt displaced
+                elif settled.IsFaulted then
+                    finishRun key identity sharedRun startedAt (Result.Error(settled.Exception.GetBaseException()))
+                elif settled.IsCanceled then
+                    finishRun key identity sharedRun startedAt (Result.Error(OperationCanceledException()))
+                else
+                    finishRun key identity sharedRun startedAt (Result.Ok settled.Result)
         }
 
     /// Claim `key` and report the `Running` the claim earns as one step against the
     /// status funnel. `after` names the event making the claim, so a result fold can
-    /// launch its successor before it commits.
+    /// launch its successor before it commits. Answers the status `Running` displaced.
     let claim (after: PluginWorkOwner.WorkId option) (key: string) =
         lock statusLock (fun () ->
             match admit (fun () -> owner.TryClaim(key, ?after = after)) with
             | None -> None
             | Some identity ->
                 let startedAt = DateTime.UtcNow
+                let displaced = lastReported
 
                 try
-                    services.ReportStatus handler.Name (Running(since = startedAt))
+                    reportToHost (Running(since = startedAt))
                 with failure ->
                     owner.FailRun(identity, failure)
                     System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw()
 
-                Some(identity, startedAt))
+                Some(identity, startedAt, displaced))
+
+    /// What cancels `work` once its consumers have gone: nothing unless it is
+    /// cooperative-safe and clients alone hold the event that launched it. `leases` are
+    /// read when the claim is made: a shared run can start after its fold is done.
+    let abandonmentOf (leases: PluginWorkOwner.ConsumerLeases) (work: Async<'Msg>) =
+        if PluginWork.isCooperativeSafe work then
+            PluginWorkOwner.ConsumerLeases.whenAllReleased leases
+        else
+            None
 
     let runExclusive (after: PluginWorkOwner.WorkId option) (key: string) (work: Async<'Msg>) : RunClaim =
         match claim after key with
-        | Some(identity, startedAt) ->
+        | Some(identity, startedAt, displaced) ->
             try
-                startOwned (runOne key identity None startedAt work)
+                startOwned (runOne key identity None startedAt displaced (abandonmentOf (leasesOf after) work) work)
             with failure ->
                 try
                     reportRunFailure key startedAt "failed to start" failure
@@ -757,20 +918,45 @@ let internal registerHandlerForOwner
         : SharedRunClaim =
         match claim after key with
         | None -> LocalSlotBusy
-        | Some(identity, startedAt) ->
+        | Some(identity, startedAt, displaced) ->
+            let leases = leasesOf after
+
             let start resourceState =
                 // The plugin's factory runs inside the worker, so a synchronous throw
                 // while building the work is a work failure like any other.
                 try
+                    let produced =
+                        try
+                            Result.Ok(workFor resourceState)
+                        with failure ->
+                            Result.Error failure
+
                     let guardedWork =
                         async {
                             try
-                                return! workFor resourceState
+                                match produced with
+                                | Result.Ok work -> return! work
+                                | Result.Error failure -> return raise failure
                             with failure ->
                                 return failureMessage failure
                         }
 
-                    startOwned (runOne key identity (Some(sharedKey, classify)) startedAt guardedWork)
+                    let abandonment =
+                        match produced with
+                        | Result.Ok work -> abandonmentOf leases work
+                        | Result.Error _ -> None
+
+                    startOwned (
+                        runOne
+                            key
+                            identity
+                            (Some(sharedKey, classify, resourceState))
+                            startedAt
+                            displaced
+                            abandonment
+                            guardedWork
+                    )
+
                     SharedStarted
                 with launchFailure ->
                     // The scheduler hands the resource on before this runs, and the run
@@ -832,7 +1018,7 @@ let internal registerHandlerForOwner
           Checker = services.Checker
           RepoRoot = services.RepoRoot
           Post = post
-          EnqueueExclusiveIntent = enqueueExclusiveIntent
+          EnqueueExclusiveIntent = enqueueExclusiveIntentFor (leasesOf event)
           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
           UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
           EndSubtask = fun key -> services.EndSubtask handler.Name key
@@ -1194,7 +1380,7 @@ let internal registerHandlerForOwner
                                       Checker = services.Checker
                                       RepoRoot = services.RepoRoot
                                       Post = post
-                                      EnqueueExclusiveIntent = enqueueExclusiveIntent
+                                      EnqueueExclusiveIntent = enqueueExclusiveIntentFor (leasesOf (Some identity))
                                       StartSubtask = fun key label -> services.StartSubtask handler.Name key label
                                       UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                                       EndSubtask = fun key -> services.EndSubtask handler.Name key
@@ -1370,6 +1556,10 @@ let internal registerHandlerForOwner
                                 | Result.Ok(candidate, cacheWrite, updated) ->
                                     commit identity state candidate cacheWrite updated
 
+                            // The fold has made every claim and intent it will: its
+                            // consumers now live on in those.
+                            clientHeld.TryRemove identity |> ignore
+
                             match committed with
                             | Result.Ok() -> ()
                             | Result.Error(what, failure) ->
@@ -1421,7 +1611,20 @@ let internal registerHandlerForOwner
             commandName,
             fun args ->
                 match command with
-                | PluginCommand.Request request -> request commandCtx args
+                | PluginCommand.Request request ->
+                    // A request runs under its requester's token — the IPC server's
+                    // per-connection token for a client — so the intents it enqueues are
+                    // held by that client, and released when it goes away.
+                    async {
+                        let! requester = Async.CancellationToken
+                        let leases = PluginWorkOwner.ConsumerLeases.ofClient requester
+
+                        return!
+                            request
+                                { commandCtx with
+                                    EnqueueExclusiveIntent = enqueueExclusiveIntentFor leases }
+                                args
+                    }
                 | PluginCommand.Observe read ->
                     async {
                         let snapshot = owner.Snapshot

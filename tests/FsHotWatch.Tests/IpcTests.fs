@@ -1747,3 +1747,233 @@ let ``scan waiters retain their request when recovery is queued before failure s
     test <@ not recoveryWaiter.IsCompleted @>
     recovery.SetResult(())
     recoveryWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()
+
+/// Open a raw client connection and start `methodName` on it without awaiting the reply.
+/// Disposing the returned connection drops it abruptly, as a killed CLI does.
+let private startAbandonableCall (pipeName: string) (methodName: string) (args: obj array) =
+    let stream =
+        new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
+
+    stream.Connect(5000)
+
+    let rpc =
+        new StreamJsonRpc.JsonRpc(new StreamJsonRpc.HeaderDelimitedMessageHandler(stream))
+
+    rpc.StartListening()
+    let reply = rpc.InvokeAsync<string>(methodName, args)
+    // The reply of an abandoned call faults with the connection; observe it so it is
+    // not reported as an unobserved task exception.
+    reply.ContinueWith(fun (t: Task<string>) -> t.Exception |> ignore) |> ignore
+
+    let drop () =
+        rpc.Dispose()
+        stream.Dispose()
+
+    drop, reply
+
+let private quietWatchdog () =
+    new FsHotWatch.OperationWatchdog.Watchdog(
+        TimeSpan.FromHours 1.0,
+        heartbeatEvery = TimeSpan.FromHours 1.0,
+        now = (fun () -> DateTime.UtcNow),
+        log = ignore
+    )
+
+let private inFlightNames (watchdog: FsHotWatch.OperationWatchdog.Watchdog) =
+    watchdog.State.InFlight |> List.map (fun op -> op.Name) |> List.sort
+
+/// A killed client must not leave work running that existed only on its behalf: the
+/// command's own async is cancelled when the connection drops, and the daemon stops
+/// reporting it in flight.
+[<Fact(Timeout = 30000)>]
+let ``a dropped client cancels the command it alone was waiting on`` () =
+    let pipeName = $"fshw-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    use watchdog = quietWatchdog ()
+
+    let started =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let cancelled =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    host.RegisterHandler(
+        { Name = PluginName.create "slow-cmd"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands =
+            [ "slow",
+              PluginCommand.Request(fun _ctx _args ->
+                  async {
+                      use! _onCancel = Async.OnCancel(fun () -> cancelled.TrySetResult(()) |> ignore)
+                      started.TrySetResult(()) |> ignore
+                      // Stands in for a long run: ends only by cancellation.
+                      do! Async.Sleep Timeout.Infinite
+                      return "finished"
+                  }) ]
+          Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+    )
+
+    let server =
+        Async.StartAsTask(
+            IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName (defaultRpcConfig host) cts
+        )
+
+    try
+        waitForServer pipeName
+
+        let drop, _reply =
+            startAbandonableCall pipeName "RunCommand" [| box "slow"; box "" |]
+
+        test <@ started.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ inFlightNames watchdog = [ "RunCommand:slow" ] @>
+        test <@ not cancelled.Task.IsCompleted @>
+
+        // The client goes away mid-call.
+        drop ()
+
+        test <@ cancelled.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) 10000 @>
+    finally
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
+
+/// Control: work another waiter still depends on is NOT cancelled because one waiter
+/// left. Two clients wait on the same daemon-wide completion; dropping one retires
+/// only that client's RPC, leaves the shared wait running and the other client's
+/// reply owed — and then delivered.
+[<Fact(Timeout = 30000)>]
+let ``a dropped client does not cancel shared work another client still waits on`` () =
+    let pipeName = $"fshw-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    use watchdog = quietWatchdog ()
+
+    let shared =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let waiters = ref 0
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForAllTerminal =
+                fun _ ->
+                    Interlocked.Increment(&waiters.contents) |> ignore
+                    shared.Task }
+
+    let server =
+        Async.StartAsTask(IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName config cts)
+
+    try
+        waitForServer pipeName
+        let dropA, _replyA = startAbandonableCall pipeName "WaitForComplete" [| box 0 |]
+        let dropB, replyB = startAbandonableCall pipeName "WaitForComplete" [| box 0 |]
+
+        let bothWaiting =
+            waitUntilTrue (fun () -> Volatile.Read(&waiters.contents) = 2) 10000
+
+        test <@ bothWaiting @>
+        test <@ inFlightNames watchdog = [ "WaitForComplete"; "WaitForComplete" ] @>
+
+        dropA ()
+
+        // The server has retired A's RPC — and only A's.
+        test <@ waitUntilTrue (fun () -> List.length (inFlightNames watchdog) = 1) 10000 @>
+        test <@ not shared.Task.IsCompleted @>
+        test <@ not replyB.IsCompleted @>
+
+        shared.TrySetResult(()) |> ignore
+        test <@ replyB.Wait(TimeSpan.FromSeconds 10.0) @>
+        dropB ()
+    finally
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
+
+type private E2eMsg =
+    | E2eWanted
+    | E2eDone
+
+/// End to end: a client asks a plugin for a run over a real pipe and is killed while the
+/// run is in flight. The run existed only for that client, so the daemon cancels it —
+/// not merely the RPC waiting on it — and the plugin stops being busy.
+[<Fact(Timeout = 30000)>]
+let ``a dropped client cancels the plugin run it alone asked for`` () =
+    let pipeName = $"fshw-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    use watchdog = quietWatchdog ()
+
+    let started =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let cancelled =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let run =
+        PluginWork.cooperativeSafe (
+            async {
+                use! _onCancel = Async.OnCancel(fun () -> cancelled.TrySetResult(()) |> ignore)
+                started.TrySetResult(()) |> ignore
+                do! Async.Sleep Timeout.Infinite
+                return E2eDone
+            }
+        )
+
+    host.RegisterHandler(
+        { Name = PluginName.create "e2e-leased"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | Custom E2eWanted ->
+                        match ctx.RunExclusive "work" run with
+                        | Claimed -> ()
+                        | SlotBusy -> failwith "the delivered intent holds the key"
+                    | _ -> ()
+
+                    return state
+                }
+          Commands =
+            [ "want",
+              PluginCommand.Request(fun ctx _args ->
+                  async {
+                      do! ctx.EnqueueExclusiveIntent "work" None E2eWanted |> Async.AwaitTask
+                      // Waits for the run's result, as `run-tests` does.
+                      do! Async.Sleep Timeout.Infinite
+                      return "finished"
+                  }) ]
+          Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+    )
+
+    let server =
+        Async.StartAsTask(
+            IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName (defaultRpcConfig host) cts
+        )
+
+    try
+        waitForServer pipeName
+
+        let drop, _reply =
+            startAbandonableCall pipeName "RunCommand" [| box "want"; box "" |]
+
+        test <@ started.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+
+        drop ()
+
+        test <@ cancelled.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) 10000 @>
+        test <@ waitUntilTrue (fun () -> host.GetStatus "e2e-leased" = Some Idle) 10000 @>
+    finally
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        host.Teardown()
