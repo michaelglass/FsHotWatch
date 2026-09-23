@@ -1195,6 +1195,22 @@ let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, 
             return Result.Error ex
     }
 
+/// What a full rediscovery drops from the compiler service.
+[<RequireQualifiedAccess>]
+type internal FcsInvalidation =
+    /// Every project's checker state, plus FCS's process-wide caches and a full
+    /// blocking collection.
+    | CheckerAndProcessCaches
+    /// Every project's checker state only. A session of a repository host must not
+    /// clear its siblings' caches or pause the collector under them.
+    | CheckerOnly
+
+/// The invalidation a daemon whose resources are `scope` may perform.
+let internal fcsInvalidationFor (scope: ScanMetrics.ResourceScope) : FcsInvalidation =
+    match scope with
+    | ScanMetrics.ResourceScope.Process -> FcsInvalidation.CheckerAndProcessCaches
+    | ScanMetrics.ResourceScope.Host -> FcsInvalidation.CheckerOnly
+
 /// Dependencies for processBatch, bundled to avoid a long closure capture list.
 [<NoComparison; NoEquality>]
 type internal BatchContext =
@@ -1237,13 +1253,26 @@ type internal BatchContext =
         /// analysis. `None` disables the gate (test daemons with a null
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
+        /// Whose resources this daemon's scan metrics measure: its own process, or a
+        /// repository host it shares with sibling sessions.
+        ResourceScope: ScanMetrics.ResourceScope
     }
 
 /// One cohort of watcher changes, and the `fshw format` requests flushed with it.
 [<NoComparison; NoEquality>]
 type private ChangeRequest =
-    { Changes: FileChangeKind list
-      FormatReplies: TaskCompletionSource<string> list }
+    {
+        Changes: FileChangeKind list
+        FormatReplies: TaskCompletionSource<string> list
+        /// When the watcher reported the earliest change in this request.
+        SeenAt: DateTime
+    }
+
+/// The line a checked change cohort writes: its in-session epoch, how long after the
+/// watcher reported its first change it was checked, and how many files it checked.
+/// Benchmarks read settle latency from it, so its shape is kept stable.
+let internal settledLine (epoch: int64) (after: TimeSpan) (files: int) : string =
+    $"settled epoch=%d{epoch} after=%d{int64 after.TotalMilliseconds}ms files=%d{files}"
 
 /// The reply `fshw format` prints. It names the set that was offered, and the formatter
 /// that ran over it — or the reason none did. `formatted 0 files` on its own was the
@@ -1271,6 +1300,7 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 /// when a publication meets a model newer than the one the attempt captured.
 let private processBatchAttempt
     (ctx: BatchContext)
+    (seenAt: DateTime)
     (changes: FileChangeKind list)
     (suppressed: Set<string>)
     (hasContentChanged: string -> bool)
@@ -1570,13 +1600,17 @@ let private processBatchAttempt
                     let nextGen =
                         System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
 
+                    let completedAt = System.DateTime.UtcNow
+
                     ctx.Host.EmitBatchChecked
                         { Trigger = InSessionBatch changes
                           Files = dispatchedFiles |> List.ofSeq
                           Generation = nextGen
                           ModelGeneration = modelGenerationOf batchModel
                           StartedAt = batchStartedAt
-                          CompletedAt = System.DateTime.UtcNow })
+                          CompletedAt = completedAt }
+
+                    Logging.info "check" (settledLine nextGen (completedAt - seenAt) dispatchedFiles.Count))
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
@@ -1617,6 +1651,7 @@ type private ChangeWorkerState =
 /// `ModelKeptChangingException`, which carries what it owes.
 let internal processBatch
     (ctx: BatchContext)
+    (seenAt: DateTime)
     (changes: FileChangeKind list)
     (suppressed: Set<string>)
     (alreadyAdmitted: Set<string>)
@@ -1636,7 +1671,7 @@ let internal processBatch
             ctx.DaemonCt.Value.ThrowIfCancellationRequested()
 
             try
-                return! processBatchAttempt ctx changes suppressed hasContentChanged
+                return! processBatchAttempt ctx seenAt changes suppressed hasContentChanged
             with :? ModelSupersededException when attempt < changeBatchAttemptLimit ->
                 Logging.debug "changes" "model superseded; running the cohort against the current model"
                 return! completeCurrent (attempt + 1)
@@ -2379,7 +2414,21 @@ type Daemon
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
-    member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
+    /// Serve this daemon until `cts` is cancelled, then dispose it.
+    ///
+    /// `serve` is handed the daemon's RPC configuration and must run until `cts` is
+    /// cancelled: a per-worktree daemon serves its own pipe (`RunWithIpc`), a session
+    /// of a repository host registers with the host's endpoint. After cancellation the
+    /// daemon waits at most `serveBound` for `serve` to finish. `startedAt` is when this
+    /// daemon's start began — the process start for a per-worktree daemon, the attach
+    /// for a hosted session — and is what the Startup phase is measured from.
+    member this.RunWith
+        (
+            serve: DaemonRpcConfig -> CancellationTokenSource -> Async<unit>,
+            serveBound: TimeSpan,
+            startedAt: DateTime,
+            cts: CancellationTokenSource
+        ) =
         async {
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
@@ -2479,24 +2528,17 @@ type Daemon
                       GetUncheckedCount = getUncheckedCount
                       GetProjectModel = this.ProjectModel }
 
-                // Everything before the pipe listens — runtime
-                // boot, config and analyzer loading, the singleton lock — is wall time
-                // a cold `check` waits on. Measured from the process start, which is
-                // the earliest instant this process can vouch for.
-                let processStartedAt =
-                    try
-                        System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()
-                    with _ ->
-                        DateTime.UtcNow
-
+                // Everything before the daemon serves — runtime boot (per-worktree),
+                // config and analyzer loading, the singleton lock — is wall time a cold
+                // `check` waits on.
                 host.Phases.Record(
                     DaemonPhases.Phase.Startup,
-                    processStartedAt,
-                    DateTime.UtcNow - processStartedAt,
-                    Some "daemon process start to IPC pipe listening"
+                    startedAt,
+                    DateTime.UtcNow - startedAt,
+                    Some "daemon start to serving"
                 )
 
-                let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
+                let ipcTask = Async.StartAsTask(serve rpcConfig cts)
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
                 // timer that gracefully shuts the daemon down once it has been idle
@@ -2635,16 +2677,8 @@ type Daemon
 
                 do! tcs.Task |> Async.AwaitTask
 
-                // The server drains its connections, then waits for its pipe name to
-                // be released; a daemon disposed before that could hand a CLI a pipe
-                // that still accepts connections but has no daemon behind it.
-                let serverBound =
-                    IpcServer.ConnectionDrainBound
-                    + IpcServer.ReleaseBound
-                    + System.TimeSpan.FromSeconds(1.0)
-
                 let! _ =
-                    System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serverBound)
+                    System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serveBound)
                     |> Async.AwaitTask
 
                 if ipcTask.IsFaulted then
@@ -2653,6 +2687,26 @@ type Daemon
                 ready.Dispose()
                 (this :> IDisposable).Dispose()
         }
+
+    /// Serve this daemon on its own pipe until `cts` is cancelled.
+    member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
+        // Measured from the process start, the earliest instant this process can
+        // vouch for.
+        let processStartedAt =
+            try
+                System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()
+            with _ ->
+                DateTime.UtcNow
+
+        // The server drains its connections, then waits for its pipe name to be
+        // released; a daemon disposed before that could hand a CLI a pipe that still
+        // accepts connections but has no daemon behind it.
+        let serverBound =
+            IpcServer.ConnectionDrainBound
+            + IpcServer.ReleaseBound
+            + System.TimeSpan.FromSeconds(1.0)
+
+        this.RunWith(IpcServer.start pipeName, serverBound, processStartedAt, cts)
 
 /// What one tier's bounded check/retry loop settled on (`runChecksWithRetry`).
 ///
@@ -3161,7 +3215,7 @@ let private performScan
             // and compares; `ScanMetrics.fitRetention` turns the RSS series into a
             // slope. A write failure is logged, never fatal.
             let reading =
-                ScanMetrics.readResources (ScanMetrics.forceGcEnabled Environment.GetEnvironmentVariable)
+                ScanMetrics.readResources (ScanMetrics.forcesGc ctx.ResourceScope Environment.GetEnvironmentVariable)
 
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
@@ -3178,6 +3232,7 @@ let private performScan
                   ManagedBytes = reading.ManagedBytes
                   ForcedGc = reading.ForcedGc
                   Gen2Collections = reading.Gen2Collections
+                  Scope = ctx.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 
             match ScanMetrics.tryAppend (ScanMetrics.recordPath ctx.RepoRoot) sample with
@@ -3264,6 +3319,24 @@ module Daemon =
     [<Literal>]
     let DefaultCheckerCacheSizeFactor = 100
 
+    /// Whether this daemon owns its process or is one session of a repository host.
+    [<RequireQualifiedAccess; NoComparison; NoEquality>]
+    type Hosting =
+        /// One daemon per worktree, owning its process, its watcher and the process-wide
+        /// compiler caches.
+        | Standalone
+        /// One session of a repository host. It watches through the host's shared
+        /// stream (`watcherFactory`), records resources as host totals, and never clears
+        /// process-wide compiler caches or forces a collection under its siblings.
+        | Hosted of watcherFactory: WatcherFactory
+
+    module Hosting =
+        /// Whose resources a daemon hosted this way measures.
+        let resourceScope (hosting: Hosting) : ScanMetrics.ResourceScope =
+            match hosting with
+            | Hosting.Standalone -> ScanMetrics.ResourceScope.Process
+            | Hosting.Hosted _ -> ScanMetrics.ResourceScope.Host
+
     /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
     /// and modify only what they need.
     [<NoComparison; NoEquality>]
@@ -3308,6 +3381,9 @@ module Daemon =
             /// TransparentCompiler cache size factor, from the `checker.cacheSizeFactor`
             /// config key. See `DefaultCheckerCacheSizeFactor`.
             CheckerCacheSizeFactor: int
+            /// `Standalone` (the default) for a per-worktree daemon; `Hosted` for a
+            /// session of a repository host.
+            Hosting: Hosting
         }
 
     module DaemonOptions =
@@ -3321,7 +3397,8 @@ module Daemon =
               FsEventsLatencySeconds = 0.25
               IdleExitMin = None
               PressureIdleFloorMin = None
-              CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor }
+              CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
+              Hosting = Hosting.Standalone }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -3353,6 +3430,13 @@ module Daemon =
         // orphan.
         let processRegistry = ProcessRegistry.Registry()
         ProcessRegistry.install processRegistry |> ignore
+
+        let resourceScope = Hosting.resourceScope opts.Hosting
+
+        let watcherFactory =
+            match opts.Hosting with
+            | Hosting.Hosted shared -> shared
+            | Hosting.Standalone -> watcherFactory
 
         let cacheBackend = opts.CacheBackend
         let cacheKeyProvider = opts.CacheKeyProvider
@@ -3477,7 +3561,11 @@ module Daemon =
                     else
                         Some(fun () ->
                             checker.InvalidateAll()
-                            checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
+
+                            match fcsInvalidationFor resourceScope with
+                            | FcsInvalidation.CheckerAndProcessCaches ->
+                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+                            | FcsInvalidation.CheckerOnly -> ())
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
@@ -3499,6 +3587,7 @@ module Daemon =
                   ExcludePatterns = excludePatterns
                   ContentTracker = ContentDedup.Tracker()
                   InSessionBatchGen = ref 0L
+                  ResourceScope = resourceScope
                   DepsGate =
                     if isNull (box checker) then
                         // No FCS analysis happens with a null checker (test
@@ -3549,6 +3638,7 @@ module Daemon =
                                                 "processChanges"
                                                 (processBatch
                                                     { batchCtx with DaemonCt = ref ct }
+                                                    request.SeenAt
                                                     changes
                                                     state.Suppressed
                                                     owed.Admitted)
@@ -3583,7 +3673,8 @@ module Daemon =
                     changeWorker,
                     (fun earlier later ->
                         { Changes = earlier.Changes @ later.Changes
-                          FormatReplies = earlier.FormatReplies @ later.FormatReplies })
+                          FormatReplies = earlier.FormatReplies @ later.FormatReplies
+                          SeenAt = min earlier.SeenAt later.SeenAt })
                 )
 
             let onChange change =
@@ -3593,7 +3684,8 @@ module Daemon =
                     let receipt =
                         changeInput.Post(
                             { Changes = [ change ]
-                              FormatReplies = [] },
+                              FormatReplies = []
+                              SeenAt = DateTime.UtcNow },
                             TimeSpan.FromMilliseconds(float (delayForChange change))
                         )
 
@@ -3677,7 +3769,8 @@ module Daemon =
                         let receipt =
                             changeInput.Post(
                                 { Changes = []
-                                  FormatReplies = [ reply ] },
+                                  FormatReplies = [ reply ]
+                                  SeenAt = DateTime.UtcNow },
                                 TimeSpan.Zero
                             )
 

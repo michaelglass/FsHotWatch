@@ -1223,12 +1223,12 @@ let ``typedTreeOf supplies the typed tree when the checker retained it`` () =
     let checkResults, _, _ =
         checkResultsWith true "typedtree-retained" "module Typed\nlet answer = 42\n"
 
-    test <@ typedTreeOf checkResults |> asTypedTree |> Option.isSome @>
+    test <@ typedTreeOf (TypedTreeLatch()) checkResults |> asTypedTree |> Option.isSome @>
 
 [<Fact(Timeout = 15000)>]
 let ``typedTreeOf yields None for a parse-only result`` () =
     // No type-check happened, so there is no typed tree to offer.
-    test <@ typedTreeOf ParseOnly |> asTypedTree = None @>
+    test <@ typedTreeOf (TypedTreeLatch()) ParseOnly |> asTypedTree = None @>
 
 [<Fact(Timeout = 60000)>]
 let ``typedTreeOf yields None rather than raising when the checker kept no contents`` () =
@@ -1239,7 +1239,21 @@ let ``typedTreeOf yields None rather than raising when the checker kept no conte
     let checkResults, _, _ =
         checkResultsWith false "typedtree-not-retained" "module Typed\nlet answer = 42\n"
 
-    test <@ typedTreeOf checkResults |> asTypedTree = None @>
+    test <@ typedTreeOf (TypedTreeLatch()) checkResults |> asTypedTree = None @>
+
+[<Fact(Timeout = 60000)>]
+let ``a withheld latch withholds the typed tree, and only for its own handler`` () =
+    // Two sessions in one host each load their own analyzer set, so one set proving it
+    // cannot take a typed tree must not quietly disarm the other's typed-tree rules.
+    let checkResults, _, _ =
+        checkResultsWith true "typedtree-latch" "module Typed\nlet answer = 42\n"
+
+    let sessionA = TypedTreeLatch()
+    let sessionB = TypedTreeLatch()
+    test <@ sessionA.Withhold() @>
+    test <@ not (sessionA.Withhold()) @>
+    test <@ typedTreeOf sessionA checkResults |> asTypedTree = None @>
+    test <@ typedTreeOf sessionB checkResults |> asTypedTree |> Option.isSome @>
 
 [<Fact(Timeout = 60000)>]
 let ``createCliContext carries a real typed tree through the reflection constructor`` () =
@@ -1263,7 +1277,7 @@ let ``createCliContext carries a real typed tree through the reflection construc
             (box (FSharp.Compiler.Text.SourceText.ofString "module Typed\nlet answer = 42\n"))
             (box (dummyParseResults ()))
             checkResultsObj
-            (typedTreeOf checkResults)
+            (typedTreeOf (TypedTreeLatch()) checkResults)
             (box options)
 
     test <@ context.TypedTree |> Option.isSome @>
@@ -1304,8 +1318,7 @@ let ``the configured analyzer set cannot walk a typed tree from this FCS`` () =
         | FullCheck cr -> box cr
         | ParseOnly -> null
 
-    // NOT `typedTreeOf`: that consults a process-wide latch another test may already
-    // have set, which would make this assert nothing.
+    // NOT `typedTreeOf`: the real tree is wanted even if a latch would withhold it.
     let realTypedTree =
         match checkResults with
         | FullCheck cr -> box cr.ImplementationFile

@@ -29,8 +29,9 @@ open System.Collections.Generic
 /// invented at a call site and drift from the CLI's rendering.
 [<RequireQualifiedAccess>]
 type Phase =
-    /// Process start up to the IPC pipe listening: runtime boot, config load,
-    /// analyzer loading, the singleton lock.
+    /// Start up to serving: for a per-worktree daemon, process start to its pipe
+    /// listening (runtime boot, config load, analyzer loading, the singleton lock);
+    /// for a session of a repository host, the attach to the session serving.
     | Startup
     /// Project discovery — MSBuild evaluation and registration.
     | Discover
