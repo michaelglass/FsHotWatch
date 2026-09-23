@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `ImpactDbPool` clears the pooled SQLite connections of one test-impact
+  database, keyed exactly as TestPrune.Core opens it, and of no other.
+
 ## 0.13.0-alpha.44 - 2026-09-23
 
 - fix!: `confirm` runs TestPrune in pass-through mode, and a cold `confirm` runs the suite

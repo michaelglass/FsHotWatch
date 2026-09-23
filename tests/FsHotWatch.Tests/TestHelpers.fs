@@ -523,17 +523,14 @@ let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) 
 // caller's own temp dir, so no other class can be standing in it.
 // ----------------------------------------------------------------------------
 
-/// The connection string `TestPrune.Core` opens `dbPath` with, and therefore the key its
-/// pooled connections live under. Pinned by a test: a key that does not match the
-/// library's clears a different, empty pool, and the clear becomes a silent no-op.
-let sqliteConnectionString (dbPath: string) = $"Data Source=%s{dbPath}"
+/// The connection string `TestPrune.Core` opens `dbPath` with (`ImpactDbPool`'s key).
+let sqliteConnectionString (dbPath: string) =
+    FsHotWatch.TestPrune.ImpactDbPool.connectionString dbPath
 
 /// Drop the pooled SQLite connections for `dbPath`, and only for `dbPath`, so the next
 /// open of that database is a new connection.
 let clearSqlitePool (dbPath: string) =
-    use conn = new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString dbPath)
-
-    Microsoft.Data.Sqlite.SqliteConnection.ClearPool(conn)
+    FsHotWatch.TestPrune.ImpactDbPool.clear dbPath
 
 /// The same clear, for a caller holding the database rather than its path: the key comes
 /// from the library's own connection, so it cannot drift from the one it pools under.

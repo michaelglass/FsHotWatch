@@ -11,6 +11,7 @@ open FsHotWatch
 open FsHotWatch.AttachHandshake
 open FsHotWatch.DaemonIdentity
 open FsHotWatch.RepositoryIdentity
+open FsHotWatch.SessionScope
 open FsHotWatch.Tests.TestHelpers
 
 let private binary: BinaryIdentity =
@@ -333,7 +334,14 @@ let ``every refusal has a stable kind and a message`` () =
               AttachRefusal.UnresolvableWorktree(IdentityError.PathNotFound "/p")
               AttachRefusal.ClaimMismatch("f", "a", "b")
               AttachRefusal.UnknownSession s
-              AttachRefusal.StaleIncarnation(s, s) ]
+              AttachRefusal.StaleIncarnation(s, s)
+              AttachRefusal.WorktreeOwnedByDaemon(Some 42)
+              AttachRefusal.ToolchainMismatch("10.0.100", "10.0.200")
+              AttachRefusal.EnvironmentMismatch
+                  [ { Name = "Configuration"
+                      Host = Some "Debug"
+                      Client = None } ]
+              AttachRefusal.SessionStartFailed "no projects" ]
 
         test <@ refusals |> List.map AttachRefusal.kind |> List.distinct |> List.length = refusals.Length @>
 
@@ -511,3 +519,93 @@ let ``this process has a protocol identity`` () =
     let current = ProtocolIdentity.current ()
     test <@ current.Version = ProtocolVersion @>
     test <@ current.Binary = DaemonIdentity.currentIdentity () @>
+
+[<Fact(Timeout = 15000)>]
+let ``the client's environment travels with its request`` () =
+    withRepository (fun primary _ _ ->
+        let request =
+            { requestFor protocol primary IncarnationExpectation.Fresh configA with
+                Environment = Map.ofList [ "PATH", "/w/bin:/usr/bin"; "EMPTY", "" ] }
+
+        test <@ decodeRequest (encodeRequest request) = Ok request @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a request without an environment, or with a non-string value in it, is malformed`` () =
+    withRepository (fun primary _ _ ->
+        let json =
+            encodeRequest (requestFor protocol primary IncarnationExpectation.Fresh configA)
+
+        let number = JsonObject()
+        number["PATH"] <- JsonValue.Create 3
+        let nested = JsonObject()
+        nested["PATH"] <- JsonObject()
+
+        for broken in
+            [ withoutField json "environment"
+              withField json "environment" number
+              withField json "environment" nested ] do
+            test
+                <@
+                    match decodeRequest broken with
+                    | Error(DecodeError.Malformed _) -> true
+                    | _ -> false
+                @>)
+
+[<Fact(Timeout = 15000)>]
+let ``refusals that leave the worktree on its own daemon are exactly the ones a shared process cannot serve`` () =
+    let fallsBack refusal =
+        AttachRefusal.fallsBackToOwnDaemon (AttachRefusal.kind refusal)
+
+    test <@ fallsBack (AttachRefusal.WorktreeOwnedByDaemon None) @>
+    test <@ fallsBack (AttachRefusal.ToolchainMismatch("a", "b")) @>
+    test <@ fallsBack (AttachRefusal.EnvironmentMismatch []) @>
+
+    // Everything else is a stop: a client that disagrees with the host must never
+    // quietly go its own way, and a session that cannot start would not start alone
+    // either.
+    for refusal in
+        [ AttachRefusal.MalformedRequest "x"
+          AttachRefusal.ProtocolVersionMismatch(1, 2)
+          AttachRefusal.BinaryMismatch(binary, binary)
+          AttachRefusal.SessionStartFailed "no projects" ] do
+        test <@ not (fallsBack refusal) @>
+
+[<Fact(Timeout = 15000)>]
+let ``each host-side refusal names what differed and what to do`` () =
+    let owned = AttachRefusal.describe (AttachRefusal.WorktreeOwnedByDaemon(Some 42))
+    test <@ owned.Contains "42" && owned.Contains "fshw stop" @>
+    let ownedNoPid = AttachRefusal.describe (AttachRefusal.WorktreeOwnedByDaemon None)
+    test <@ ownedNoPid.Contains "fshw stop" @>
+
+    let toolchain =
+        AttachRefusal.describe (AttachRefusal.ToolchainMismatch("10.0.100", "10.0.200"))
+
+    test
+        <@
+            toolchain.Contains "10.0.100"
+            && toolchain.Contains "10.0.200"
+            && toolchain.Contains "global.json"
+        @>
+
+    let env =
+        AttachRefusal.describe (
+            AttachRefusal.EnvironmentMismatch
+                [ { Name = "Configuration"
+                    Host = Some "Debug"
+                    Client = Some "Release" }
+                  { Name = "NUGET_PACKAGES"
+                    Host = None
+                    Client = Some "/c" } ]
+        )
+
+    test
+        <@
+            env.Contains "Configuration"
+            && env.Contains "Release"
+            && env.Contains "NUGET_PACKAGES"
+        @>
+
+    let failed =
+        AttachRefusal.describe (AttachRefusal.SessionStartFailed "no projects discovered")
+
+    test <@ failed.Contains "no projects discovered" @>

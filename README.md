@@ -291,6 +291,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `runHookTimeoutSec` | `number \| false` | — | Timeout bounding **each** run-level hook. See [Run-level hooks](#run-level-hooks). |
 | `runHookCommands` | `string[]` | `["check","confirm"]` | Which verbs the run-level hooks bracket. See [Run-level hooks](#run-level-hooks). |
 | `verdictInputs` | `object` | — | The files that decide what a check concludes but that no walk of `src/`+`tests/` would find — your coverage floors, your analyzer rules, your baselines. Folded into the verdict's tree hash, so editing one stops a prior green from applying. See [What decides the verdict is what is hashed](#what-decides-the-verdict-is-what-is-hashed). |
+| `repositoryHost` | `bool` | `false` | Serve this worktree from the repository host: one process for every opted-in worktree of the repository. Opt-in and experimental. See [Repository host](#repository-host-opt-in). |
 | `includeOutsideRepo` | `bool` | `false` | Report on compile items that resolve **outside** the repo root — e.g. NuGet-injected `_content` source (xunit's `DefaultRunnerReporters.fs`), or files above/beside the repo. Default `false`: the report-producing plugins (analyzers, lint) skip such third-party source — it's compiled into your project, but not yours to lint, and a latent analyzer-crash surface. Set `true` to lint them anyway. |
 
 For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
@@ -556,6 +557,39 @@ Failure modes lean **safe**, because silently un-gating is the dangerous directi
   (`["comfirm"]`) can never un-gate a run.
 - **Explicitly `[]` → bracket nothing.** Legal — the config said so plainly — but
   warned about at load.
+
+### Repository host (opt-in)
+
+By default every worktree runs its own daemon. With `"repositoryHost": true` in a
+worktree's `.fshw.json`, or `FSHW_REPOSITORY_HOST=1` in a shell (`0` turns it off),
+that worktree is instead served by one **repository host** process shared by every
+opted-in worktree of the same repository. The first command launches it; it logs to
+`~/.local/state/fshw/repositories/<id>/host.log` (under `$FSHW_STATE_HOME` or
+`$XDG_STATE_HOME/fshw` when set) and exits after five minutes with
+no worktree attached. Each worktree is still its own session: its own compiler,
+plugins, `.fshw/` state, verdict and `logs/daemon.log`. A change, reload, cancel or
+failure in one session never touches another.
+
+Worth knowing before you opt in:
+
+- **One process for many worktrees.** A crash or an out-of-memory in the host ends
+  every attached session at once, where separate daemons would each have lost only
+  their own. The next command in each worktree starts a new host and reattaches: a
+  dead host's `.fshw/host-session.json` names a process that is gone, and the OS
+  released its locks with it.
+- **One worktree, one owner.** A worktree whose own daemon is running stays with that
+  daemon until `fshw stop`. A worktree the host serves refuses a per-worktree
+  `fshw start`, and a shell that has not opted in is told which host serves it.
+- **One SDK and one MSBuild environment per host.** A worktree whose `global.json`
+  selects another .NET SDK, or whose shell differs in an MSBuild-relevant variable
+  (`DOTNET_*`, `MSBuild*`, `NUGET_*`, `Configuration`, `Platform`, `CI`, …), keeps its
+  own daemon and is told why. Children a session starts (builds, tests) run with its
+  own shell's environment and `PATH`.
+- **A different fshw build is refused, never restarted.** Other worktrees may be
+  using the host; stop it deliberately with `fshw stop --repository`.
+
+`fshw status --repository` lists every session the host serves; `fshw stop` detaches
+this worktree; `fshw stop --repository` stops the host.
 
 ### Cache directory
 

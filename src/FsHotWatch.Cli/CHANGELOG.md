@@ -2,12 +2,27 @@
 
 ## Unreleased
 
+- **Repository host (opt-in).** `"repositoryHost": true` in `.fshw.json`, or
+  `FSHW_REPOSITORY_HOST=1`, serves the worktree from one host process shared by every
+  opted-in worktree of the repository, launched on demand (`fshw host <root>`).
+  - A worktree the host cannot serve keeps its own daemon, and the CLI says why:
+    another SDK, a different MSBuild-relevant environment, or its own daemon still
+    running.
+  - A different fshw build is refused, never restarted.
+  - `fshw status --repository` lists the host's sessions, `fshw stop` detaches this
+    worktree, and `fshw stop --repository` stops the host.
+  - A shell that has not opted in, in a worktree the host serves, exits 2 naming the
+    host.
+  - One host process means one blast radius: a crash ends every attached session, and
+    each reattaches on its next command.
+
 ## 0.14.0-alpha.61 - 2026-09-23
 
 - **The checker's TransparentCompiler cache size is configurable** with
   `"checker": { "cacheSizeFactor": N }` in `.fshw.json`. The default stays at FCS's 100, so
   behaviour is unchanged. A value that is not a positive integer is a config error. The
   effective factor is logged at startup.
+
 - Adopts TestPrune.Core 10.0.0 (`SchemaVersion` 14), in lockstep with
   FsHotWatch.TestPrune. `fshw dead-code` accepts a v14 index and refuses an older one,
   as it does for every schema bump. A symbol declared in a signature is reported once,

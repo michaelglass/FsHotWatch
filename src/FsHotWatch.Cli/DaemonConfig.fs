@@ -1708,6 +1708,10 @@ let internal buildTestExtensions
             :> TestPrune.Extensions.ITestPruneExtension)
 
 /// Register plugins on the daemon based on the loaded configuration.
+/// Where TestPrune keeps a worktree's test-impact index.
+let testImpactDbPath (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
+
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     // Format plugin. Both shapes run the repository's PINNED `dotnet fantomas`;
     // say which one at registration so the daemon log carries the
@@ -1853,7 +1857,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // TestPrune plugin
     match config.Tests with
     | Some t ->
-        let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
+        let dbPath = testImpactDbPath repoRoot
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
 
         let testConfigs =

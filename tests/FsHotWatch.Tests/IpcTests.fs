@@ -1977,3 +1977,61 @@ let ``a dropped client cancels the plugin run it alone asked for`` () =
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
         host.Teardown()
+
+/// Every server instance of a name shares one listening socket on Unix, and it closes
+/// when the last instance is disposed, dropping any connection still in its backlog
+/// (reset on Linux). So a waiting instance must exist even while every acceptor is busy:
+/// a client arriving then is served, not queued behind them.
+[<Fact(Timeout = 30000)>]
+let ``a client is served while every acceptor is busy with an earlier one`` () =
+    let suffix = Guid.NewGuid().ToString("N").Substring(0, 8)
+    let pipeName = $"fshw-acc-%s{suffix}"
+    let release = TaskCompletionSource()
+    let opened = ref 0
+
+    let opener: IpcServer.ConnectionOpener =
+        fun pipe _ ->
+            async {
+                if Interlocked.Increment &opened.contents <= 3 then
+                    do! release.Task |> Async.AwaitTask
+                else
+                    pipe.WriteByte 42uy
+                    pipe.Flush()
+
+                return None
+            }
+
+    use cts = new CancellationTokenSource()
+
+    let server =
+        Async.StartAsTask(IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) pipeName opener cts)
+
+    let connect () =
+        let client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)
+        client.Connect 5000
+        client
+
+    // As many held connections as the server starts acceptors.
+    let held = [ connect (); connect (); connect () ]
+
+    try
+        let allHeld = waitUntilTrue (fun () -> Volatile.Read &opened.contents = 3) 10000
+
+        test <@ allHeld @>
+
+        use later = connect ()
+        let answer = Array.zeroCreate<byte> 1
+        let read = later.ReadAsync(answer, 0, 1)
+
+        let served =
+            read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 1 && answer[0] = 42uy
+
+        test <@ served @>
+    finally
+        release.TrySetResult() |> ignore
+
+        for client in held do
+            client.Dispose()
+
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 10.0) |> ignore

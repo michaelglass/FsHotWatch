@@ -47,6 +47,7 @@
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="DaemonStartupFailure.fs" />
         <Compile Include="DetachedLaunch.fs" />
+        <Compile Include="RepositoryHostMode.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
         <Compile Include="IpcParsing.fs" />
