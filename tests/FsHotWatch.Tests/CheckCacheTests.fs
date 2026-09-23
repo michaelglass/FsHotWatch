@@ -489,6 +489,73 @@ let ``upstreamFingerprint does not hash assemblies outside the repository`` () =
     Assert.DoesNotContain("/nuget/pkg/1.0/Pkg.dll", hashed)
 
 [<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint follows references TRANSITIVELY`` () =
+    // C -> B -> A: C never names A, but is type-checked against A's sources.
+    let a = makeProjectOptions "/repo/A.fsproj" [ "/repo/A.fs" ] []
+
+    let b =
+        { makeProjectOptions "/repo/B.fsproj" [ "/repo/B.fs" ] [ "-r:/repo/obj/A.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/A.dll", a) |] }
+
+    let c =
+        { makeProjectOptions "/repo/C.fsproj" [ "/repo/C.fs" ] [ "-r:/repo/obj/B.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/B.dll", b) |] }
+
+    let fp aHash =
+        upstreamFingerprint
+            (fakeHasher (Map [ "/repo/A.fs", aHash; "/repo/B.fs", "b"; "/repo/C.fs", "c" ]))
+            None
+            "/repo/C.fs"
+            c
+
+    Assert.NotEqual<string>(fp "a1", fp "a2")
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprints table agrees with the single-file fingerprint`` () =
+    let contents =
+        fakeHasher (Map [ "/repo/A.fs", "a"; "/repo/B.fs", "b"; "/repo/C.fs", "c" ])
+
+    let table, _ = upstreamFingerprints contents None twoFileOptions
+
+    for file in twoFileOptions.SourceFiles do
+        Assert.Equal(upstreamFingerprint contents None file twoFileOptions, table[file])
+
+[<Fact(Timeout = 15000)>]
+let ``UpstreamFingerprints without generations sees every edit`` () =
+    // A caller that never declares generations must still get correct keys.
+    withTempDir "fp-nogen" (fun dir ->
+        let a = Path.Combine(dir, "A.fs")
+        let b = Path.Combine(dir, "B.fs")
+        File.WriteAllText(a, "module A")
+        File.WriteAllText(b, "module B")
+        let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ a; b ] []
+        let fps = UpstreamFingerprints(None)
+        let before = fps.For(b, opts, "h")
+        File.WriteAllText(a, "module A // edited")
+        Assert.NotEqual<string>(before, fps.For(b, opts, "h")))
+
+[<Fact(Timeout = 15000)>]
+let ``UpstreamFingerprints holds one snapshot per generation`` () =
+    withTempDir "fp-gen" (fun dir ->
+        let a = Path.Combine(dir, "A.fs")
+        let b = Path.Combine(dir, "B.fs")
+        File.WriteAllText(a, "module A")
+        File.WriteAllText(b, "module B")
+        let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ a; b ] []
+        let fps = UpstreamFingerprints(None)
+        fps.BeginGeneration()
+        let before = fps.For(b, opts, "h")
+        File.WriteAllText(a, "module A // edited")
+        // Same generation: the snapshot (computed once per project) is reused...
+        Assert.Equal(before, fps.For(b, opts, "h"))
+        // ...while Fresh reads the disk as it stands, which is what guards stores.
+        Assert.NotEqual<string>(before, fps.Fresh(b, opts))
+        fps.BeginGeneration()
+        Assert.NotEqual<string>(before, fps.For(b, opts, "h")))
+
+[<Fact(Timeout = 15000)>]
 let ``FileContentHasher re-hashes a file whose content changed`` () =
     withTempDir "content-hasher" (fun dir ->
         let path = Path.Combine(dir, "A.fs")
@@ -521,18 +588,60 @@ let ``an LRU smaller than the working set gets zero hits on a repeated sequentia
     Assert.Equal(0, scanPass cache 1835)
 
 [<Fact(Timeout = 15000)>]
-let ``EnsureCapacity grows the cache to the working set so a repeated scan hits every file`` () =
-    let cache = InMemoryCheckCache(500)
-    cache.EnsureCapacity 1835
+let ``a working-set cache grows to what it admits so a repeated scan hits every file`` () =
+    let cache = InMemoryCheckCache(CacheCapacity.WorkingSet)
+    (cache :> IScopedCheckCache).ObserveWorkingSet [ "/r/P.fsproj", 1835 ]
     let backend = cache :> ICheckCacheBackend
     scanPass backend 1835 |> ignore
     Assert.Equal(1835, scanPass backend 1835)
+    // It cannot be undersized, so it never warns about thrashing.
+    Assert.True(cache.ThrashWarning.IsNone)
 
 [<Fact(Timeout = 15000)>]
-let ``EnsureCapacity never shrinks a configured size`` () =
+let ``a fixed maxEntries is a real bound, not a floor`` () =
+    // A number is the user's memory budget; the working set must not override it.
     let cache = InMemoryCheckCache(500)
-    cache.EnsureCapacity 10
+    (cache :> IScopedCheckCache).ObserveWorkingSet [ "/r/P.fsproj", 1835 ]
     Assert.Equal(500, cache.Capacity)
+
+[<Fact(Timeout = 15000)>]
+let ``a fixed maxEntries below the admitted working set warns, naming both numbers`` () =
+    let cache = InMemoryCheckCache(500)
+    (cache :> IScopedCheckCache).ObserveWorkingSet [ "/r/P.fsproj", 1835 ]
+
+    match cache.ThrashWarning with
+    | Some text ->
+        Assert.Contains("500", text)
+        Assert.Contains("1835", text)
+        Assert.Contains("\"all\"", text)
+    | None -> Assert.Fail "expected a warning for 500 entries against 1835 files"
+
+[<Fact(Timeout = 15000)>]
+let ``no warning when maxEntries covers the admitted working set`` () =
+    let cache = InMemoryCheckCache(2000)
+    (cache :> IScopedCheckCache).ObserveWorkingSet [ "/r/P.fsproj", 1835 ]
+    Assert.True(cache.ThrashWarning.IsNone)
+
+[<Fact(Timeout = 15000)>]
+let ``the working set counts only admitted projects`` () =
+    // Excluding a large library is how a user fits the cache under a budget; the
+    // warning and the working-set bound must follow what is actually cached.
+    let cache =
+        InMemoryCheckCache(CacheCapacity.Entries 500, admits = (fun p -> p <> "/r/Lib.fsproj"))
+
+    let scoped = cache :> IScopedCheckCache
+    scoped.ObserveWorkingSet [ "/r/App.fsproj", 400; "/r/Lib.fsproj", 1435 ]
+    Assert.True(cache.ThrashWarning.IsNone)
+    Assert.False(scoped.Admits "/r/Lib.fsproj")
+    Assert.True(scoped.Admits "/r/App.fsproj")
+
+[<Fact(Timeout = 15000)>]
+let ``a working-set cache is sized to admitted projects only`` () =
+    let cache =
+        InMemoryCheckCache(CacheCapacity.WorkingSet, admits = (fun p -> p <> "/r/Lib.fsproj"))
+
+    (cache :> IScopedCheckCache).ObserveWorkingSet [ "/r/App.fsproj", 10; "/r/Lib.fsproj", 1000 ]
+    Assert.Equal(10, cache.Capacity)
 
 [<Fact(Timeout = 15000)>]
 let ``Set drops the superseded entry for the same file and project`` () =
@@ -555,11 +664,17 @@ let ``describeCheckCache says OFF when there is no backend`` () =
     Assert.Contains("OFF", describeCheckCache None)
 
 [<Fact(Timeout = 15000)>]
-let ``describeCheckCache names the in-memory bound and that it grows`` () =
+let ``describeCheckCache names a fixed bound`` () =
     let text = describeCheckCache (Some(InMemoryCheckCache(500) :> ICheckCacheBackend))
 
     Assert.Contains("in-memory", text)
     Assert.Contains("500", text)
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache says a working-set cache holds every admitted file`` () =
+    let text =
+        describeCheckCache (Some(InMemoryCheckCache(CacheCapacity.WorkingSet) :> ICheckCacheBackend))
+
     Assert.Contains("working set", text)
 
 type private ForeignBackend() =

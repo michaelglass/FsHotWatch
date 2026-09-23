@@ -222,11 +222,11 @@ let ``serializeConfig format Check writes check string`` () =
     test <@ parsed.Format = Check @>
 
 [<Fact(Timeout = 15000)>]
-let ``serializeConfig cache InMemoryOnly writes memory`` () =
+let ``serializeConfig cache with default settings writes memory`` () =
     let config =
         { defaultTestConfig () with
             Build = None
-            Cache = InMemoryOnly 100 }
+            Cache = InMemory defaultInMemoryCache }
 
 
     let json = serializeConfig config
@@ -251,6 +251,41 @@ let ``serializeConfig cache NoCache writes false`` () =
                 Lint = false }
 
     test <@ parsed.Cache = NoCache @>
+
+[<Fact(Timeout = 15000)>]
+let ``serializeConfig round-trips non-default cache settings`` () =
+    let settings =
+        { defaultInMemoryCache with
+            MaxEntries = CacheSize.Entries 800
+            Scope = CacheScope.DefaultWorkspaceOnly
+            Include = [ "src/App/" ]
+            Exclude = [ "src/App/Legacy/" ] }
+
+    let json =
+        serializeConfig
+            { defaultTestConfig () with
+                Build = None
+                Cache = InMemory settings }
+
+    let parsed = parseConfig json (defaultTestConfig ())
+    test <@ parsed.Cache = InMemory settings @>
+
+[<Fact(Timeout = 15000)>]
+let ``serializeConfig round-trips a narrowed cache that keeps the default size and scope`` () =
+    // Only `exclude` differs from the default, so the object form must still spell out
+    // `"all"` for both the size and the scope.
+    let settings =
+        { defaultInMemoryCache with
+            Exclude = [ "src/App/Legacy/" ] }
+
+    let json =
+        serializeConfig
+            { defaultTestConfig () with
+                Build = None
+                Cache = InMemory settings }
+
+    let parsed = parseConfig json (defaultTestConfig ())
+    test <@ parsed.Cache = InMemory settings @>
 
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with no tests omits tests section`` () =
