@@ -2494,13 +2494,8 @@ let private parseAttribution (root: JsonElement) : Attribution =
       InvocationId = tryString root "invocationId" }
 
 let private parseScope (el: JsonElement) : TestScope =
-    let ran = tryInt el "ranProjects"
-    let total = tryInt el "totalProjects"
-
-    match tryString el "kind", ran, total with
-    | Some "full", Some r, Some t when r > 0 && r = t -> FullSuite t
-    | Some "filtered", Some r, Some t -> ImpactFiltered(r, t)
-    | Some "none", _, _ ->
+    // The reason a `none` scope carries — read only for `none`.
+    let noTestsRan () =
         let symbols =
             match tryProp el "uncoveredSymbols" with
             | Some value when value.ValueKind = JsonValueKind.Array ->
@@ -2546,17 +2541,24 @@ let private parseScope (el: JsonElement) : TestScope =
                     |> Seq.toList
                 | _ -> [] }
 
-        NoTestsRun(NoTestsReason.ofToken token symbols total unrunnable)
-    | Some "unknown", _, _ -> ScopeUnknown
-    // Everything else — a kind from another version, a self-contradicting "full",
-    // outright garbage. The file said something about its scope and this build cannot
-    // read it: `ScopeUnreadable`, round-tripping the reason when there is one. Distinct
-    // from `ScopeUnknown` even though both fail closed — see the `ScopeUnreadable` docs.
-    | _ ->
+        NoTestsReason.ofToken token symbols total unrunnable
+
+    // A kind from another version, a label its counts contradict, outright garbage. The
+    // file said something about its scope and this build cannot read it:
+    // `ScopeUnreadable`, round-tripping the reason when there is one. Distinct from
+    // `ScopeUnknown` even though both fail closed — see the `ScopeUnreadable` docs.
+    let unrecognized () =
         ScopeUnreadable(
             tryString el "reason"
             |> Option.defaultValue "the recorded scope is not a shape this build recognizes"
         )
+
+    match tryString el "kind" with
+    | Some "unknown" -> ScopeUnknown
+    | Some kind ->
+        TestScope.tryOfCounts kind (tryInt el "ranProjects") (tryInt el "totalProjects") noTestsRan
+        |> Option.defaultWith unrecognized
+    | None -> unrecognized ()
 
 /// The solution-scope exclusions, read back from inside `scope`.
 ///

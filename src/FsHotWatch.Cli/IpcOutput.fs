@@ -626,9 +626,9 @@ let renderIpcResult
 /// reached its authoritative verdict. Pure of the scan trigger — the caller
 /// decides whether/when to wait for a scan first.
 ///
-/// SOUNDNESS: the loop termination is `isSettled`, NOT a status-map predicate like
-/// `isAllTerminal`. `isAllTerminal` treats `Idle` as quiescent and never consults the
-/// host's inflight/busy state, so it concludes "settled" while a downstream plugin
+/// SOUNDNESS: the loop termination is `isSettled`, NOT a predicate over the status map.
+/// Such a predicate treats `Idle` as quiescent and never consults the host's
+/// inflight/busy state, so it concludes "settled" while a downstream plugin
 /// (test-prune) still has a `BuildCompleted` event queued in its mailbox (status
 /// observably `Idle`, handler not yet run) or while it is mid-run with a non-empty
 /// pending-verification queue — which exits 0 having computed N affected tests BEFORE
@@ -1269,7 +1269,7 @@ let private publishVerdictWithReason
         if not UI.isInteractive then
             eprintfn ""
 
-            for line in ProgressRenderer.AgentHints.forVerdict priorVerdict v do
+            for line in ProgressRenderer.AgentHints.forVerdict (FsHotWatch.Ctrf.runExists repoRoot) priorVerdict v do
                 eprintfn "%s" line
 
         exitCode
@@ -1449,7 +1449,7 @@ let pollAndRenderForInvocation
     // Settle the host through its AUTHORITATIVE verdict (`WaitForComplete` →
     // `waitForVerdict`), rendering live status while it blocks. `WaitForComplete` runs on
     // a background task; the render loop terminates only when THAT task finishes, never
-    // on the Idle-tolerant `isAllTerminal` predicate — see `pollUntilSettled`.
+    // on an Idle-tolerant reading of the status map — see `pollUntilSettled`.
     let settle () : unit =
         let completeTask =
             System.Threading.Tasks.Task.Run(fun () -> waitForComplete () |> ignore)

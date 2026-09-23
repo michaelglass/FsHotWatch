@@ -707,8 +707,8 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 //
 // The scan signals its generation as soon as FCS check + BatchChecked finish; at that
 // instant test-prune can still be Idle (its queued `BuildCompleted` has not been handled,
-// so it has not transitioned Idle->Running). `isAllTerminal` treats Idle as quiescent and
-// never consults the host's inflight/busy state, so `check` concluded "settled", read
+// so it has not transitioned Idle->Running). A status-map predicate treats Idle as quiescent
+// and never consults the host's inflight/busy state, so `check` concluded "settled", read
 // diagnostics during that Idle window, and exited 0 while real test failures were still
 // pending. `pollAndRender` now blocks on `WaitForComplete` before reading diagnostics;
 // status polling is rendering-only.
@@ -800,7 +800,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
     // ...and exit 1 only happens if the check waited for the verdict before reading
-    // diagnostics. Settling on `isAllTerminal` reads the clean ledger during the Idle
+    // diagnostics. Settling on the status map reads the clean ledger during the Idle
     // window and returns 0 — the false green.
     test <@ exitCode = 1 @>
 
@@ -1310,7 +1310,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
         if forceCalls > 0 then
             BaselineFixtures.reportOf (FullSuite 1)
         else
-            BaselineFixtures.reportOf (ImpactFiltered(0, 1))
+            BaselineFixtures.reportOf (ImpactFiltered(1, 1))
 
     let exitCode =
         TestHelpers.withTempDir "ipcoutput-confirm-force" (fun repoRoot ->
@@ -1444,7 +1444,7 @@ let private offersNothing () : IpcParsing.CheckReachReading =
 [<Fact(Timeout = 15000)>]
 let ``an escalating confirm records the impact-scoped reading it escalated away from`` () =
     let v =
-        driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(0, 1)) offersNothing
+        driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(1, 1)) offersNothing
 
     // Both runs were clean, so this is the ordinary sample the feature exists to collect.
     test <@ v.Divergence = Verdict.Divergence.Agreed @>
@@ -1453,7 +1453,7 @@ let ``an escalating confirm records the impact-scoped reading it escalated away 
     // The scope the daemon reported BEFORE the force — not the full suite the verdict
     // itself rests on.
     | Some pre ->
-        test <@ pre.Scope = ImpactFiltered(0, 1) @>
+        test <@ pre.Scope = ImpactFiltered(1, 1) @>
         // It RAN. The projection is a different measurement and must not be able to
         // masquerade as this one.
         test <@ pre.Basis = Verdict.SampleBasis.Executed @>
@@ -1469,7 +1469,7 @@ let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "
         driveConfirmForVerdict
             CheckVerdict.Confirmation
             (FullSuite 1)
-            (offering IpcParsing.NoFailuresToReach (ImpactFiltered(0, 1)))
+            (offering IpcParsing.NoFailuresToReach (ImpactFiltered(1, 1)))
 
     test <@ projected.Divergence = Verdict.Divergence.Agreed @>
 
@@ -1477,7 +1477,7 @@ let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "
     | Some pre ->
         test <@ pre.Basis = Verdict.SampleBasis.ProjectedFromFullRun @>
         // The scope `check` WOULD have covered — not the full suite this verdict rests on.
-        test <@ pre.Scope = ImpactFiltered(0, 1) @>
+        test <@ pre.Scope = ImpactFiltered(1, 1) @>
     | None -> failwith "a non-escalating confirm must record the projected reading"
 
 [<Fact(Timeout = 15000)>]
@@ -1497,7 +1497,7 @@ let ``a confirm with no projection on offer says nothing was compared, and a che
     // `check` never escalates, so it never has a comparison to make — confirm-only, and
     // `Verdict.create` refuses a check that claims otherwise.
     let inner =
-        driveConfirmForVerdict CheckVerdict.InnerLoop (ImpactFiltered(0, 1)) offersNothing
+        driveConfirmForVerdict CheckVerdict.InnerLoop (ImpactFiltered(1, 1)) offersNothing
 
     test <@ inner.Command = Verdict.Check @>
     test <@ inner.Divergence = Verdict.Divergence.NotRecorded @>
@@ -2649,7 +2649,8 @@ let ``a receipt refusal is a recorded cause, so the summary names it instead of 
                 |> String.concat "\n"
 
             let summary =
-                ProgressRenderer.AgentHints.forVerdict None verdict |> String.concat "\n"
+                ProgressRenderer.AgentHints.forVerdict (FsHotWatch.Ctrf.runExists repoRoot) None verdict
+                |> String.concat "\n"
 
             test <@ not (List.isEmpty verdict.RedCauses) @>
             test <@ causes.Contains "receipt" @>

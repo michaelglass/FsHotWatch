@@ -289,6 +289,37 @@ module TestScope =
         | NoTestsRun _
         | ScopeUnknown -> false
 
+    /// Decode a COUNTED scope label — `full`, `filtered` or `none` — as every scope
+    /// encoding spells it: the plugin's `test-scope` and `check-reach` replies (`scope`)
+    /// and the verdict file (`kind`). `None` for any other label, which each reader
+    /// decodes by its own vocabulary.
+    ///
+    /// "No tests ran" has ONE meaning: no configured project executed. `none` is its only
+    /// spelling, and its run count, when one is sent, is zero — the plugin sends `0 of N`,
+    /// the verdict file sends no counts. The counts are the evidence and the label is not,
+    /// so a label its counts contradict is unreadable: `full` or `filtered` with nothing
+    /// run is "no tests ran" under another name, and reading it as a scope would let it
+    /// pass as one.
+    let tryOfCounts
+        (label: string)
+        (ran: int option)
+        (total: int option)
+        (noTestsRan: unit -> NoTestsReason)
+        : TestScope option =
+        let contradicted () =
+            let count (n: int option) =
+                n |> Option.map string |> Option.defaultValue "unstated"
+
+            ScopeUnreadable
+                $"a `%s{label}` scope whose counts contradict it (%s{count ran} of %s{count total} projects ran)"
+
+        match label, ran, total with
+        | "full", Some r, Some t when r > 0 && r = t -> Some(FullSuite t)
+        | "filtered", Some r, Some t when r > 0 && r <= t -> Some(ImpactFiltered(r, t))
+        | "none", (None | Some 0), _ -> Some(NoTestsRun(noTestsRan ()))
+        | ("full" | "filtered" | "none"), _, _ -> Some(contradicted ())
+        | _ -> None
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
@@ -362,7 +393,7 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
 /// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into the CLI-side
 /// `StatusView`. TOTAL — every way of not understanding the element is a
 /// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from the
-/// map (which would make `isAllTerminal` read true for a plugin it can no longer see).
+/// map (which would hide that plugin from every reader of the map).
 /// The verdict travels in `lastRun`, not here.
 ///
 /// The `running`/`since` arm bites hardest: `since` is the ONLY input to the wedge
@@ -716,14 +747,16 @@ let parseTestRunReport (json: string) : TestRunReport =
                 (readInt "uncoveredSymbolCount" |> Option.defaultValue (List.length symbols))
                 unrunnable
 
+        let unrecognized =
+            ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"
+
         let scope =
-            match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
-            | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
-            | Some "filtered", Some ran, Some total when ran > 0 && total > 0 && ran <= total ->
-                ImpactFiltered(ran, total)
-            | Some "none", _, _ -> NoTestsRun(noTestsReason ())
-            | Some "running", _, _ -> ScopeUnknown
-            | _ -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"
+            match tryGetStringProp root "scope" with
+            | Some "running" -> ScopeUnknown
+            | Some label ->
+                TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") noTestsReason
+                |> Option.defaultValue unrecognized
+            | None -> unrecognized
 
         let runId =
             tryGetStringProp root "runId"
@@ -968,11 +1001,13 @@ let parseCheckReach (json: string) : CheckReachReading =
                 | None -> ReachUnknown "the daemon's reply does not say what the selection reached"
 
             let scope =
-                match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
-                | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
-                | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
-                | Some "none", _, _ -> NoTestsRun NoTestsReason.Unstated
-                | _ -> ScopeUnreadable "the daemon reported no scope for the selection `check` would have used"
+                tryGetStringProp root "scope"
+                |> Option.bind (fun label ->
+                    TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") (fun () ->
+                        NoTestsReason.Unstated))
+                |> Option.defaultValue (
+                    ScopeUnreadable "the daemon reported no scope for the selection `check` would have used"
+                )
 
             let runId =
                 tryGetStringProp root "runId"
@@ -1035,12 +1070,6 @@ let parseCheckReach (json: string) : CheckReachReading =
                   Recall = recall }
     with ex ->
         ReachUnavailable $"the daemon's `%s{CheckReachCommand}` reply could not be parsed: %s{ex.Message}"
-
-/// Check if all statuses are quiescent (Completed, Failed, or Idle).
-/// Returns false for empty maps (no plugins registered yet).
-let isAllTerminal (statuses: Map<string, StatusView>) : bool =
-    not statuses.IsEmpty
-    && statuses |> Map.forall (fun _ s -> StatusView.isQuiescent s)
 
 // ---------------------------------------------------------------------------
 // Wall-time attribution rework. The daemon's OWN account of where its wall time went.

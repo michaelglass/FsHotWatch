@@ -18,6 +18,15 @@
     host.
   - One host process means one blast radius: a crash ends every attached session, and
     each reattaches on its next command.
+- **"No tests ran" has one meaning in every scope reader.** The `test-scope` and
+  `check-reach` replies and `verdict.json` now decode `full`/`filtered`/`none` through
+  one rule: `none` is the only spelling of "no tests ran", and a label whose counts
+  contradict it is unreadable. A `filtered` scope with nothing run used to read as an
+  impact-filtered scope in `check-reach` and `verdict.json`, which `check` accepts as
+  green.
+- **An absent run directory is no longer reported as an empty one.** When a verdict's
+  runs left no reports, the agent hints check each run directory: an empty one is a run
+  that tested nothing, and an absent one (pruned, or never written) is named as absent.
 
 ## 0.14.0-alpha.61 - 2026-09-23
 

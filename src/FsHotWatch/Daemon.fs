@@ -1720,6 +1720,38 @@ let formatPluginWait
 /// plugin is the point.
 let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(5.0)
 
+/// What the wedge detector knows about progress: how much work the host had FINISHED
+/// when that count last moved, and when that was.
+///
+/// Keyed on progress, NOT on busy-set identity: one plugin draining a long
+/// `FileChecked` backlog is busy continuously with nothing Running, and the busy set
+/// stays exactly `["test-prune"]` for the whole drain, so a clock keyed on that set
+/// never resets and fires on a healthy check of a large repo (observed: three
+/// uninterrupted minutes of it on a green run). `CompletedDispatches` moves on every
+/// event a plugin finishes, so a drain can never look stalled and a stopped agent
+/// always does.
+///
+/// Pure over its samples, so whether a sequence of samples is a stall does not depend on
+/// how quickly a scheduler delivers them.
+type internal StallWatch =
+    { Finished: int64
+      Since: System.DateTime }
+
+module internal StallWatch =
+    /// No count seen yet: the first sample always moves it.
+    let start (now: System.DateTime) : StallWatch = { Finished = -1L; Since = now }
+
+    /// Fold in one sample of the finished count. A count that moved restarts the clock.
+    let observe (finished: int64) (now: System.DateTime) (watch: StallWatch) : StallWatch =
+        if finished <> watch.Finished then
+            { Finished = finished; Since = now }
+        else
+            watch
+
+    /// Has nothing finished for `threshold`, as of `now`?
+    let stalled (threshold: System.TimeSpan) (now: System.DateTime) (watch: StallWatch) : bool =
+        now - watch.Since >= threshold
+
 /// Sentinel message for shutdown-driven cancellation. Anything that surfaces
 /// this is a daemon-teardown event, not a plugin failure.
 [<Literal>]
@@ -1801,9 +1833,10 @@ let private waitCoreWith
             let snapshot = host.WorkSnapshot
 
             if statuses.IsEmpty then
-                // The whole answer, and it implies the verdict reason below, which
-                // would otherwise be printed alongside it saying the same thing.
-                "nothing running, and no plugins are registered"
+                // A plugin-free host owes no evidence, so only work the host itself owns
+                // (a scan, a discovery) can hold it — name that work.
+                let owned = String.concat ", " snapshot.BusyNames
+                $"no plugins are registered, but the host still owns work: %s{owned}"
             else
                 let busyNames = String.concat ", " busy
 
@@ -1865,24 +1898,16 @@ let private waitCoreWith
         // dispatch fan-out until every recipient has admitted its event — so a handoff
         // from one owner to the next can never be read as rest between two reads, and
         // there is nothing left for a quiescence window to cover.
+        //
+        // A host with no plugins registered is at rest once it owns nothing: every
+        // caller registers its plugins before it can wait, so an empty registry is the
+        // configuration, not a host that has not started yet.
         let snapshot = host.WorkSnapshot
 
-        not (Map.isEmpty (host.GetAllStatuses()))
-        && not snapshot.IsBusy
-        && restRequires snapshot
+        not snapshot.IsBusy && restRequires snapshot
 
-    // Wedge detection state: how much work the host had FINISHED when we last
-    // saw progress, and when that was.
-    //
-    // Keyed on progress, NOT on busy-set identity: one plugin draining a long
-    // `FileChecked` backlog is busy continuously with nothing Running, and the busy
-    // set stays exactly `["test-prune"]` for the whole drain, so a clock keyed on
-    // that set never resets and fires on a healthy check of a large repo (observed:
-    // three uninterrupted minutes of it on a green run). `CompletedDispatches` moves
-    // on every event a plugin finishes, so a drain can never look stalled and a
-    // stopped agent always does.
-    let mutable lastProgress = -1L
-    let mutable lastProgressAt = System.DateTime.UtcNow
+    // Wedge detection state, keyed on `CompletedDispatches` — see `StallWatch`.
+    let mutable progress = StallWatch.start System.DateTime.UtcNow
 
     let checkForWedgedPlugin () =
         // A plugin whose message loop died reports work in flight forever, so
@@ -1908,11 +1933,8 @@ let private waitCoreWith
             // plugin's activity tail).
             let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
 
-            let progress = host.CompletedDispatches()
-
-            if progress <> lastProgress then
-                lastProgress <- progress
-                lastProgressAt <- System.DateTime.UtcNow
+            let now = System.DateTime.UtcNow
+            progress <- StallWatch.observe (host.CompletedDispatches()) now progress
 
             // Only meaningful when NOTHING is Running: a busy plugin that is also
             // Running is simply working. `anyRunning` is checked LAST because it is
@@ -1930,7 +1952,7 @@ let private waitCoreWith
             // and this fires as before.
             if
                 not busy.IsEmpty
-                && System.DateTime.UtcNow - lastProgressAt >= stallThreshold
+                && StallWatch.stalled stallThreshold now progress
                 && not (anyRunning ())
                 && not host.WorkSnapshot.SupervisedWorkInFlight
             then

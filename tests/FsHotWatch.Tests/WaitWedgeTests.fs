@@ -240,16 +240,15 @@ let ``a host with no busy plugins resolves instead of reporting a wedge`` () =
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
 
-/// Takes time per event but always finishes. The shape that matters: a plugin
-/// working through a QUEUE — busy the whole time, never `Running` (it reports no
-/// status), with an unchanging busy set.
-let private slowDrainingHandler (name: string) =
+/// Finishes one event per permit the test releases, so the drain runs at the test's
+/// pace rather than the scheduler's.
+let private gatedDrainingHandler (name: string) (permits: SemaphoreSlim) =
     { Name = PluginName.create name
       Init = ()
       Update =
         fun _ctx state _event ->
             async {
-                do! Async.Sleep 20
+                do! permits.WaitAsync() |> Async.AwaitTask
                 return state
             }
       Commands = []
@@ -259,34 +258,76 @@ let private slowDrainingHandler (name: string) =
       Teardown = None }
 
 [<Fact(Timeout = 60_000)>]
-let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
-    // Queue far more work than the stall threshold allows: the busy set is
-    // ["draining-plugin"] and NEVER changes, nothing is ever Running, and the drain
-    // runs many times longer than the threshold. A detector keyed on the busy set not
-    // changing would fail here — and would therefore fail every real check of a large
-    // repo, where one plugin drains thousands of FileChecked events. Keyed on events
-    // finished, this is plainly progress.
+let ``a draining backlog holds the wait until its last event finishes`` () =
+    // The claim is an ORDER: the backlog drains, THEN the wait resolves. The busy set is
+    // ["draining-plugin"] throughout and nothing is ever Running — the shape a real check
+    // of a large repo takes while one plugin drains thousands of FileChecked events.
+    // Whether a drain LONGER than the stall threshold reads as a wedge is `StallWatch`'s
+    // question, answered below without a clock.
+    use permits = new SemaphoreSlim(0)
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
-    host.RegisterHandler(slowDrainingHandler "draining-plugin")
+    host.RegisterHandler(gatedDrainingHandler "draining-plugin" permits)
 
-    // 500 events x 20ms = ~10s of continuous work, against a 5s threshold. Keeping
-    // the proof above the threshold without making it subsecond avoids asserting
-    // scheduler latency when the merge gate deliberately saturates the machine.
-    for _ in 1..500 do
+    let backlog = 500
+
+    for _ in 1..backlog do
         host.EmitBuildCompleted(BuildSucceeded)
 
+    // No deadline, and the production stall threshold: only the drain can end this wait.
+    let waiting =
+        Daemon.waitForAllTerminalCore
+            host
+            TimeSpan.MaxValue
+            Daemon.waitForAllTerminalBusyStallThreshold
+            CancellationToken.None
+
+    permits.Release(backlog - 1) |> ignore
+    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() = int64 (backlog - 1)) 30_000 @>
+
+    // One event is still owned, so the wait cannot have resolved.
     test <@ host.AnyPluginBusy() @>
+    test <@ not waiting.IsCompleted @>
 
-    // Busy is incremented when work is POSTED, before the mailbox is scheduled. Under
-    // full-suite load the first continuation can otherwise start after the stall
-    // window, making this a scheduler-startup test rather than a draining-backlog test.
-    // Establish one real completion first; about 499 events (~10s) still remain, so
-    // the drain remains continuously busy for roughly twice the 5s stall threshold.
-    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > 0L) 10_000 @>
+    permits.Release() |> ignore
+    waiting.GetAwaiter().GetResult()
 
-    // Must RESOLVE, not raise.
-    Daemon.waitForAllTerminalCore host (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 5.0) CancellationToken.None
-    |> fun t -> t.GetAwaiter().GetResult()
+    test <@ host.CompletedDispatches() = int64 backlog @>
+
+[<Fact>]
+let ``a drain however long is not a stall while each event finishes inside the threshold`` () =
+    let threshold = TimeSpan.FromSeconds 5.0
+    let step = TimeSpan.FromSeconds 4.0
+    let start = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    let events = 500L
+
+    // Sampled as the detector samples: the last reading before each event finishes still
+    // shows the previous count, one step after it last moved.
+    let drained =
+        [ 1L .. events ]
+        |> List.fold
+            (fun (watch: Daemon.StallWatch) finished ->
+                let before = watch.Since + step
+                let unmoved = Daemon.StallWatch.observe (finished - 1L) before watch
+                test <@ not (Daemon.StallWatch.stalled threshold before unmoved) @>
+                Daemon.StallWatch.observe finished before unmoved)
+            (Daemon.StallWatch.start start |> Daemon.StallWatch.observe 0L start)
+
+    // The drain spanned 400 thresholds and never once read as stalled.
+    let span = TimeSpan.FromTicks(step.Ticks * events)
+    test <@ drained.Since - start = span @>
+    test <@ drained.Finished = events @>
+
+[<Fact>]
+let ``a count that has not moved for the threshold is a stall`` () =
+    // The control for the drain above: the same watch, with the count held still.
+    let threshold = TimeSpan.FromSeconds 5.0
+    let start = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    let watch = Daemon.StallWatch.start start |> Daemon.StallWatch.observe 7L start
+    let justBefore = start + threshold - TimeSpan.FromTicks 1L
+    let at = start + threshold
+
+    test <@ not (Daemon.StallWatch.stalled threshold justBefore (Daemon.StallWatch.observe 7L justBefore watch)) @>
+    test <@ Daemon.StallWatch.stalled threshold at (Daemon.StallWatch.observe 7L at watch) @>
 
 [<Fact(Timeout = 60_000)>]
 let ``a plugin whose loop died fails the wait immediately, naming it`` () =
@@ -331,22 +372,20 @@ let ``CompletedDispatches counts events finished, not events posted`` () =
 let ``CompletedDispatches keeps moving while a plugin drains a queue`` () =
     // What distinguishes a drain from a stall: the count must advance repeatedly, not
     // once, so a detector sampling it twice across the threshold sees motion.
+    use permits = new SemaphoreSlim(0)
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
-    host.RegisterHandler(slowDrainingHandler "draining-plugin")
+    host.RegisterHandler(gatedDrainingHandler "draining-plugin" permits)
 
     for _ in 1..10 do
         host.EmitBuildCompleted(BuildSucceeded)
 
-    let firstMove = waitUntilTrue (fun () -> host.CompletedDispatches() >= 1L) 10_000
-    test <@ firstMove @>
+    // Each release finishes exactly one more event: the count advances step by step —
+    // the property a single sample cannot establish.
+    for released in 1L .. 10L do
+        permits.Release() |> ignore
+        test <@ waitUntilTrue (fun () -> host.CompletedDispatches() = released) 10_000 @>
 
-    let afterFirst = host.CompletedDispatches()
-
-    // It advances AGAIN — the property a single sample cannot establish.
-    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > afterFirst) 10_000 @>
-
-    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 20_000 @>
-    test <@ host.CompletedDispatches() = 10L @>
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
 
 // ---------------------------------------------------------------------------
 // Slow is not stuck: the cold-start false positive.

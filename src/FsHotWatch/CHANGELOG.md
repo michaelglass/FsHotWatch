@@ -30,6 +30,12 @@
   the process.
 - feat: `ProcessHelper` spawns from the session's environment when one is in scope,
   and looks a bare command up on that environment's `PATH`.
+- fix: a host with no plugins registered settles once it owns no work. A
+  configuration that turns every plugin off (`{"build": false, "format": false,
+  "lint": false}` and nothing else) used to leave `check` waiting out the whole
+  verdict deadline, and `--run-once` its 30-minute settle. The `WaitForComplete` log
+  line now names the bound it applied, and a plugin-free host that times out names
+  the work it still owns.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

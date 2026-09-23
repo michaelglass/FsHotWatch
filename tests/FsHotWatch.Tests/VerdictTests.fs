@@ -317,7 +317,8 @@ let ``zero-test verdict summary names hook timing and unattributed wall time`` (
             | other -> failwith $"expected zero-test verdict, got %A{other}"
 
         let summary =
-            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+            ProgressRenderer.AgentHints.forVerdict (Ctrf.runExists root) None readBack
+            |> String.concat "\n"
 
         test <@ summary.Contains "NO TEST RUN — nothing was verified" @>
         test <@ summary.Contains "tests.beforeRun step 1/1" @>
@@ -441,9 +442,15 @@ let ``concurrent invocations attach hooks only to the winning verdict in both or
     drive "invocation-a" "invocation-b"
     drive "invocation-b" "invocation-a"
 
+/// A spec verdict names run ids no test created a directory for.
+let private noRunDirectory (_: Guid) = false
+
+/// A spec verdict whose runs executed and tested nothing: each directory is there, empty.
+let private everyRunDirectoryEmpty (_: Guid) = true
+
 /// No prior verdict — the default for tests that are not about prior evidence.
 let private hintsFor (s: Spec) : string list =
-    ProgressRenderer.AgentHints.forVerdict None (build s)
+    ProgressRenderer.AgentHints.forVerdict noRunDirectory None (build s)
 
 /// A verdict FILE that claims a DIFFERENT fshw produced it.
 ///
@@ -993,6 +1000,67 @@ let ``no run id means NO RUN HAPPENED — and there is no directory to find`` ()
         test <@ not (Ctrf.runExists root (Guid.NewGuid())) @>
         test <@ List.isEmpty (Verdict.suiteVerdicts root None) @>)
 
+/// A check verdict graded from `runs`, none of which produced a report.
+let private noSuiteVerdict (runs: Guid list) =
+    build
+        { greenVerdict "sha256:abc" 1 with
+            Command = Verdict.Check
+            RunId = List.tryHead runs
+            Runs = runs |> List.map (fun id -> { RunId = Some id; Suites = [] }) }
+
+/// The no-suite report for `v`, reading the run directories under `root`.
+let private noSuiteReport (root: string) (v: Verdict.Verdict) =
+    ProgressRenderer.AgentHints.forVerdict (Ctrf.runExists root) None v
+    |> String.concat "\n"
+
+[<Fact>]
+let ``a run whose directory is ABSENT is not reported as a run that tested nothing`` () =
+    // No report reads the same from a pruned directory as from an empty one, and only the
+    // empty one says what the run tested. An absent directory is its own fact.
+    withTempDir "hint-absent-run" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = runId.ToString("N")
+
+        let text = noSuiteReport root (noSuiteVerdict [ runId ])
+
+        test <@ not (text.Contains "executed no tests") @>
+        test <@ not (text.Contains "is empty") @>
+        test <@ text.Contains "ABSENT" @>
+        test <@ text.Contains $".fshw/test-runs/%s{dir}/" @>)
+
+[<Fact>]
+let ``a run whose directory is there and empty is reported as a run that tested nothing`` () =
+    // The control for the test above: the same verdict, with the directory on disk.
+    withTempDir "hint-empty-run" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = runId.ToString("N")
+        emptyRun root runId
+
+        let text = noSuiteReport root (noSuiteVerdict [ runId ])
+
+        test <@ text.Contains $"executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)" @>
+        test <@ not (text.Contains "ABSENT") @>)
+
+[<Fact>]
+let ``a check with one empty and one absent run directory names each for what it is`` () =
+    withTempDir "hint-mixed-runs" (fun root ->
+        makeRepo root
+        let empty = Guid.NewGuid()
+        let absent = Guid.NewGuid()
+        emptyRun root empty
+
+        let text = noSuiteReport root (noSuiteVerdict [ empty; absent ])
+        let emptyDir = empty.ToString("N")
+        let absentDir = absent.ToString("N")
+
+        // Not "every one of its run directories is empty": one of them is not there.
+        test <@ not (text.Contains "every one of") @>
+        test <@ text.Contains "ABSENT (pruned, or never written), so what ran there cannot be read" @>
+        test <@ text.Contains $"tests: .fshw/test-runs/%s{absentDir}/" @>
+        test <@ text.Contains $"no tests ran there: .fshw/test-runs/%s{emptyDir}/" @>)
+
 [<Fact>]
 let ``failing counts survive into the suites — the verdict answers "how many failed" INLINE`` () =
     // The number must not depend on the CTRF file still being readable — a count that
@@ -1466,7 +1534,7 @@ let ``a no-suite run names the prior verdict that DID verify this same tree`` ()
                 RunId = Some(Guid.NewGuid()) }
 
     let text =
-        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        ProgressRenderer.AgentHints.forVerdict everyRunDirectoryEmpty (Some prior) current
         |> String.concat "\n"
 
     test <@ text.Contains "tree unchanged since" @>
@@ -1496,7 +1564,7 @@ let ``a no-suite run does NOT name a prior verdict from a different tree`` () =
                 RunId = Some(Guid.NewGuid()) }
 
     let text =
-        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        ProgressRenderer.AgentHints.forVerdict everyRunDirectoryEmpty (Some prior) current
         |> String.concat "\n"
 
     test <@ not (text.Contains "tree unchanged since") @>
@@ -1526,7 +1594,7 @@ let ``a no-suite run names the CHANGE that triggered the prior run`` () =
                 RunId = Some(Guid.NewGuid()) }
 
     let text =
-        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        ProgressRenderer.AgentHints.forVerdict everyRunDirectoryEmpty (Some prior) current
         |> String.concat "\n"
 
     test <@ text.Contains "triggered by Lib.Config.deployVars" @>
@@ -1557,7 +1625,7 @@ let ``a truncated trigger says how many seeds it is not showing`` () =
                 RunId = Some(Guid.NewGuid()) }
 
     let text =
-        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        ProgressRenderer.AgentHints.forVerdict everyRunDirectoryEmpty (Some prior) current
         |> String.concat "\n"
 
     test <@ text.Contains "Lib.A.one, Lib.B.two" @>
@@ -1580,7 +1648,7 @@ let ``a no-suite run does NOT name a prior verdict that itself ran no tests`` ()
                 RunId = Some(Guid.NewGuid()) }
 
     let text =
-        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        ProgressRenderer.AgentHints.forVerdict everyRunDirectoryEmpty (Some prior) current
         |> String.concat "\n"
 
     test <@ not (text.Contains "tree unchanged since") @>
@@ -1740,6 +1808,79 @@ let ``a scope this build cannot read is ScopeUnreadable — distinct from "no sc
         // ...and none of them is full-suite, which is the property that actually guards
         // the merge door.
         test <@ not (TestScope.isFullSuite (write """{"kind":"cosmic"}""")) @>)
+
+[<Fact>]
+let ``every scope reader gives "no tests ran" one meaning, and never reads it as a pass`` () =
+    withTempDir "verdict-no-tests-ran" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        // The three readers of a scope, each given the same label and counts in its own
+        // encoding: the plugin's `test-scope` and `check-reach` replies, and the verdict
+        // file.
+        let testScope (label: string) (counts: string) =
+            (parseTestRunReport $$"""{"scope":"{{label}}"{{counts}}}""").Scope
+
+        let checkReach (label: string) (counts: string) =
+            match
+                parseCheckReach
+                    $$"""{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"no-failures-to-reach","scope":"{{label}}"{{counts}}}"""
+            with
+            | ReachRecorded r -> r.Scope
+            | other -> failwith $"expected a recorded projection, got %A{other}"
+
+        let verdictFile (label: string) (counts: string) =
+            let scopeJson = "{\"kind\":\"" + label + "\"" + counts + "}"
+
+            File.WriteAllText(
+                Verdict.path root,
+                $$"""{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },"scope":{{scopeJson}}}"""
+            )
+
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v.Scope
+            | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        let everyReader (label: string) (counts: string) =
+            [ testScope label counts; checkReach label counts; verdictFile label counts ]
+
+        let noTestsRan (scope: TestScope) =
+            match scope with
+            | NoTestsRun _ -> true
+            | FullSuite _
+            | ImpactFiltered _
+            | ScopeUnknown
+            | ScopeUnreadable _ -> false
+
+        // "No tests ran" is spelled `none`: the plugin sends `0 of N`, the verdict file no
+        // counts at all. Every reader reads both spellings as the same fact.
+        for counts in [ ""","ranProjects":0,"totalProjects":3"""; "" ] do
+            test <@ everyReader "none" counts |> List.forall noTestsRan @>
+
+        // Nothing ran, under a label that claims something did. The counts are the
+        // evidence: no reader may turn this into a scope, least of all an impact-filtered
+        // one, which `check` accepts as green.
+        for label in [ "filtered"; "full" ] do
+            test
+                <@
+                    everyReader label ""","ranProjects":0,"totalProjects":3"""
+                    |> List.forall TestScope.isUnreadable
+                @>
+
+        // And `none` beside counts that say projects ran is no reading at all.
+        test
+            <@
+                everyReader "none" ""","ranProjects":2,"totalProjects":3"""
+                |> List.forall TestScope.isUnreadable
+            @>
+
+        // CONTROL: a real filtered scope still reads as one everywhere, so the refusals
+        // above are about the counts and not a reader that stopped recognizing `filtered`.
+        test
+            <@
+                everyReader "filtered" ""","ranProjects":2,"totalProjects":3""" = List.replicate
+                    3
+                    (ImpactFiltered(2, 3))
+            @>)
 
 [<Fact>]
 let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not ok`` () =
@@ -4248,7 +4389,8 @@ let ``named selection misses survive the verdict file and render as actionable e
             test <@ reread.ImpactScopedRun.Value.Missed = Verdict.MissedFailures.Enumerated misses @>
 
             let rendered =
-                ProgressRenderer.AgentHints.forVerdict None reread |> String.concat "\n"
+                ProgressRenderer.AgentHints.forVerdict (Ctrf.runExists root) None reread
+                |> String.concat "\n"
 
             test <@ rendered.Contains "Jobs.ReflectionGuard — project was not selected" @>
             test <@ rendered.Contains "Api.ContractTests — class was not in the generated filter" @>
@@ -5569,7 +5711,8 @@ let ``spans covering 10 percent of the observed window derive an incompleteness 
 
         // And the printed percentage matches the reason's percentage.
         let summary =
-            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+            ProgressRenderer.AgentHints.forVerdict (Ctrf.runExists root) None readBack
+            |> String.concat "\n"
 
         test <@ summary.Contains "100ms attributed / 1000ms observed (10.0%, 900ms unattributed)" @>
         test <@ summary.Contains "timing evidence incomplete: timing spans cover 10.0%" @>
@@ -5599,7 +5742,8 @@ let ``spans covering at least 95 percent of the observed window report complete 
         test <@ List.isEmpty (readBack.TimingIncompleteReasons) @>
 
         let summary =
-            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+            ProgressRenderer.AgentHints.forVerdict (Ctrf.runExists root) None readBack
+            |> String.concat "\n"
 
         test <@ summary.Contains "950ms attributed / 1000ms observed (95.0%, 50ms unattributed)" @>
         test <@ summary.Contains "timing evidence complete" @>

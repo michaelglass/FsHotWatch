@@ -229,31 +229,6 @@ let ``parseDiagnosticsResponse handles tagged status field`` () =
     let resp = parseDiagnosticsResponse json
     test <@ resp.Statuses.["build"].Status = StatusView.Idle @>
 
-// --- isAllTerminal ---
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal false when any running`` () =
-    let m =
-        Map.ofList
-            [ "a", StatusView.Completed DateTime.UtcNow
-              "b", StatusView.Running DateTime.UtcNow ]
-
-    test <@ not (isAllTerminal m) @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal true when mix of Idle, Completed, Failed`` () =
-    let m =
-        Map.ofList
-            [ "a", StatusView.Completed DateTime.UtcNow
-              "b", StatusView.Failed("x", DateTime.UtcNow)
-              "c", StatusView.Idle ]
-
-    test <@ isAllTerminal m @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal false on empty map`` () =
-    test <@ not (isAllTerminal Map.empty) @>
-
 // --- Coverage parsing (unchecked field on the diagnostics response) ---
 
 [<Fact(Timeout = 15000)>]
@@ -287,7 +262,7 @@ let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
 // The verdict (summary + elapsed) travels exclusively in `lastRun`; the tagged
 // status is state + timestamps only. The parse stays TOTAL over recognized tags,
 // extra fields included, so a plugin can never drop out of the status map — which
-// would make `isAllTerminal` read true for a plugin it can no longer see.
+// would hide that plugin from every reader of the map.
 
 [<Fact(Timeout = 15000)>]
 let ``parseTaggedStatus parses completed carrying only its timestamp`` () =
