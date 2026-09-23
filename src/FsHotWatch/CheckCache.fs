@@ -168,7 +168,7 @@ type FileContentHasher() =
             Logging.debug "cache" $"Could not hash %s{path}: %s{ex.Message}"
             "unreadable"
 
-let private isUnderRoot (repoRoot: string option) (path: string) =
+let internal isUnderRoot (repoRoot: string option) (path: string) =
     match repoRoot with
     | None -> true
     | Some root ->
@@ -302,6 +302,9 @@ type UpstreamFingerprints(repoRoot: string option) =
         match table.TryGetValue filePath with
         | true, fingerprint -> fingerprint
         | false, _ -> whole
+
+    /// The content hash of one file, from the same memo the tables are built from.
+    member _.HashFile(path: string) : string = hasher.Hash path
 
     /// Drop every memoized table; the next lookup per project rebuilds it.
     member _.BeginGeneration() =
