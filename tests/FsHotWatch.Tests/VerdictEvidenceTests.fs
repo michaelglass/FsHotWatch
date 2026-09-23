@@ -425,3 +425,96 @@ let ``a plugin that mints only analysis evidence still offers receipts`` () =
         test <@ List.isEmpty host.WorkSnapshot.AnalysisEvidence @>
         test <@ List.isEmpty host.WorkSnapshot.Evidence @>
         test <@ List.isEmpty host.WorkSnapshot.CompletedFailures @>)
+
+/// A TestPrune host running `GatedTests`, a suite that passes once `release` exists and
+/// blocks until then.
+let private gatedTestHost (repoRoot: string) (release: string) =
+    let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+    host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
+
+    host.RegisterHandler(
+        FsHotWatch.TestPrune.TestPrunePlugin.create
+            (System.IO.Path.Combine(repoRoot, "verdict.db"))
+            repoRoot
+            (Some
+                [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                    Command = "sh"
+                    Args = "-c \"" + gatedWait repoRoot release 1500 + "\""
+                    Group = "default"
+                    Environment = []
+                    FilterTemplate = None
+                    ClassJoin = " "
+                    TimeoutSec = None
+                    ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+            None
+            None
+            None
+            None
+            []
+    )
+
+    host
+
+/// Start a forced run for a client, wait until it is running, then let the client go.
+let private cancelForcedRun (host: FsHotWatch.PluginHost.PluginHost) =
+    use client = new CancellationTokenSource()
+
+    let run =
+        Async.StartAsTask(host.RunCommand("run-tests", [| "{}" |]), cancellationToken = client.Token)
+
+    run.ContinueWith(fun (t: System.Threading.Tasks.Task<string option>) -> t.Exception |> ignore)
+    |> ignore
+
+    let running () =
+        match host.GetStatus "test-prune" with
+        | Some(Running _) -> true
+        | _ -> false
+
+    Assert.True(waitUntilTrue running 10000, "the forced run never started")
+    client.Cancel()
+    Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 20000, "the host must come to rest")
+
+/// A forced run cancelled because its client went away earns nothing: with no earlier
+/// evidence, a verdict asked for afterwards finds no receipt to grade and refuses.
+[<Fact(Timeout = 60000)>]
+let ``a verdict after a cancelled forced run refuses when nothing else vouches for a green`` () =
+    withTempDir "verdict-after-cancelled-run" (fun repoRoot ->
+        withReleaseGate repoRoot "test-host" (fun release ->
+            let host = gatedTestHost repoRoot release
+
+            cancelForcedRun host
+
+            Assert.True(host.WorkSnapshot.OffersEvidence)
+            Assert.Empty host.WorkSnapshot.Evidence
+
+            let waiting =
+                FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 1.0) CancellationToken.None
+
+            Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+            |> ignore))
+
+/// A cancelled forced run adds nothing to the evidence and takes nothing from it: the
+/// receipt an earlier completed run earned is exactly what remains.
+[<Fact(Timeout = 60000)>]
+let ``a cancelled forced run leaves the evidence exactly as it found it`` () =
+    withTempDir "evidence-after-cancelled-run" (fun repoRoot ->
+        withReleaseGate repoRoot "test-host" (fun release ->
+            let host = gatedTestHost repoRoot release
+
+            // Positive control: an uncancelled forced run DOES earn a receipt here.
+            System.IO.File.WriteAllText(release, "")
+            host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+            waitForQuiescent host 20000
+
+            let earned =
+                host.WorkSnapshot.Evidence |> List.map (fun e -> e.RunId, e.FailureReasons)
+
+            Assert.NotEmpty earned
+
+            System.IO.File.Delete release
+            cancelForcedRun host
+
+            let remaining =
+                host.WorkSnapshot.Evidence |> List.map (fun e -> e.RunId, e.FailureReasons)
+
+            Assert.Equal<(Guid * string list) list>(earned, remaining)))

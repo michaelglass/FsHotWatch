@@ -468,6 +468,75 @@ let ``file changes observed during a test host defer the build until that run co
             test <@ System.IO.File.Exists marker @>
             test <@ (committed ()).PendingFiles.IsEmpty @>))
 
+/// A force-run cancelled after its `TestRunStarted` must still close the run: Build keeps
+/// every started run in `ActiveTestRuns` until its `TestRunCompleted`, and defers every
+/// later build while any is there. A cancelled run that emitted no completion would leave
+/// its RunId behind and defer every build for the rest of the session.
+[<Fact(Timeout = 30000)>]
+let ``a force-run cancelled after it started still releases the build deferral`` () =
+    withTempDir "build-after-cancelled-run" (fun tmpDir ->
+        let marker = System.IO.Path.Combine(tmpDir, "build-ran")
+
+        withReleaseGate tmpDir "test-host" (fun release ->
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+            let tests =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    ":memory:"
+                    tmpDir
+                    (Some
+                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                            Command = "sh"
+                            Args = "-c \"" + gatedWait tmpDir release 1500 + "\""
+                            Group = "default"
+                            Environment = []
+                            FilterTemplate = None
+                            ClassJoin = " "
+                            TimeoutSec = None
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                    None
+                    None
+                    None
+                    None
+                    []
+
+            let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
+
+            host.RegisterHandler(tests)
+            let committed = registerBuildObserver host build
+
+            // The only client that asked for this run; cancelling it cancels the run.
+            use client = new System.Threading.CancellationTokenSource()
+
+            let runTask =
+                Async.StartAsTask(host.RunCommand("run-tests", [| "{}" |]), cancellationToken = client.Token)
+
+            runTask.ContinueWith(fun (t: System.Threading.Tasks.Task<string option>) -> t.Exception |> ignore)
+            |> ignore
+
+            Assert.True(
+                waitUntilTrue (fun () -> not (committed ()).ActiveTestRuns.IsEmpty) 10000,
+                "build never observed the live test run"
+            )
+
+            client.Cancel()
+
+            Assert.True(
+                waitUntilTrue (fun () -> (committed ()).ActiveTestRuns.IsEmpty) 10000,
+                "the cancelled run never closed: Build still counts it as live"
+            )
+
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10000, "the host must come to rest")
+            test <@ not (System.IO.File.Exists marker) @>
+
+            // With no live run, a change builds at once instead of being deferred.
+            host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
+
+            Assert.True(
+                waitUntilTrue (fun () -> System.IO.File.Exists marker) 10000,
+                "the change was deferred behind a run that no longer exists"
+            )))
+
 let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
     withTempDir "build-test-overlap" (fun tmpDir ->
         let countFile = System.IO.Path.Combine(tmpDir, "build-count")
