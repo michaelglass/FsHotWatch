@@ -705,6 +705,14 @@
         "platform": "linux"
       }
     ],
+    "RepositoryIdentity.fs": [
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "Linux floor from CI run 35818884692 on 583d2a54 (2026-09-23): line 100 percent, branch 98.2 percent (112/114 branches), rounded down. Of the two unreached branches, the null arm of `string path` in canonicalize's empty-path error is now covered by a test, which leaves one: the `answering.Length = 1` arm of storedName. That arm is taken only when a name resolves on disk but no directory entry matches its exact bytes, which happens on a case- or normalization-insensitive volume (APFS). On Linux's exact-bytes filesystems it cannot be reached. macOS covers every branch and stays on the ratchet default.",
+        "platform": "linux"
+      }
+    ],
     "RunClaim.fs": [
       {
         "line": 83,
