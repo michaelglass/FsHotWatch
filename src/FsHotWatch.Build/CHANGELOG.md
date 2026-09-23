@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.39 - 2026-09-23
+
 - A build that overruns its `timeoutSec` budget now reports what it was doing instead of
   "timed out after Ns". The status line names the command (or the `buildTemplate` root),
   the budget, and whether the tree is gone, LEAKED (naming the survivors) or UNKNOWN. The

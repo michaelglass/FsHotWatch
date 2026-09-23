@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.44 - 2026-09-23
+
 - fix!: `confirm` runs TestPrune in pass-through mode, and a cold `confirm` runs the suite
   once. `set-scope full` now sets `TestPruneState.Mode = PassThrough` (replacing the
   `FullSuiteRequested` bool; `ScopeRequested` carries a `TestMode`). Every launch already
@@ -79,6 +81,7 @@
   wrong culprit — until a build actually ran and released the lease as valid again. A
   host that would not start now releases the lease unchanged. A launch that really did
   find the artifacts unusable still carries that invalidity forward.
+- build(deps): bump TestPrune.Core from 9.0.0 to 11.0.0
 
 ## 0.13.0-alpha.43 - 2026-09-22
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-09-23
+
 - Fixed: a phantom lint finding for a file the project model dropped. A
   rediscovery that removes a file clears that file's findings in every plugin
   ledger, and it clears them before the replacement model is published — so a

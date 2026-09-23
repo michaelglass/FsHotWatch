@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.44 - 2026-09-23
+
 - fix: a per-file result a plugin finishes while an exclusive run owns its status is
   still written to the task cache. The funnel withholds the status publication, as
   before, but a per-file entry carries no summary and replays through the same funnel,

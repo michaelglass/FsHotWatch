@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.61 - 2026-09-23
+
 - **The checker's TransparentCompiler cache size is configurable** with
   `"checker": { "cacheSizeFactor": N }` in `.fshw.json`. The default stays at FCS's 100, so
   behaviour is unchanged. A value that is not a positive integer is a config error. The
@@ -41,6 +43,7 @@
   forced-run commands, and the copies had drifted (e.g. "could not put the daemon in
   full-suite scope" vs "could not disable impact filtering"). One body each now, shared
   by both; the refusals name the missing command rather than the transport.
+- build(deps): bump TestPrune.Core from 9.0.0 to 11.0.0
 
 ## 0.14.0-alpha.60 - 2026-09-22
 

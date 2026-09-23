@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.25 - 2026-09-23
+
 - **fix: a coverage check trigger refused by a busy slot is no longer dropped.**
   The "coverage-check" key is held until a finished check's RESULT FOLD commits,
   so a `TestRunCompleted` folded in that window was refused and discarded — the

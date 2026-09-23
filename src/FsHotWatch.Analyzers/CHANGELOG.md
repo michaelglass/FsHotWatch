@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.36 - 2026-09-23
+
 - Changed: the analyzer summary states its evidence. It read
   `analyzed N files, M findings (…)`, and a run whose last file came from cache read
   `M findings (…) (cached)` — the same whether the stage examined the tree or
