@@ -6612,14 +6612,23 @@ let internal createWithLaunchDeadline
                             JsonSerializer.Serialize({| error = ex.Message |})
                         )
             finally
-                // Cancellation (daemon teardown) skips `with` but runs `finally`, and
-                // no completion will fold: never leave the IPC client awaiting a reply
-                // that cannot come.
+                // Cancellation — daemon teardown, or every client that asked for this run
+                // has gone — skips `with` but runs `finally`, and no completion will fold.
                 if not returned then
-                    reply.TrySetResult(
-                        JsonSerializer.Serialize({| error = "daemon shut down before the run completed" |})
-                    )
-                    |> ignore
+                    let reason = "the run was cancelled before it completed"
+
+                    // Close the run this work opened. Subscribers track every started run
+                    // until its completion (Build defers every build while one is live),
+                    // so a started run must end. `Aborted` with no results is evidence of
+                    // nothing: it is never a pass.
+                    match emittedStart with
+                    | Some started ->
+                        let _, completed = abortedRunLifecycle (Some started) reason
+                        ctx.EmitTestRunCompleted completed
+                    | None -> ()
+
+                    // Never leave a client that is still waiting on a reply that cannot come.
+                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
         }
 
     let commands =
@@ -7150,8 +7159,15 @@ let internal createWithLaunchDeadline
     // Launched from the mailbox so it is serialised with every other launch site and
     // holds the "tests" key for its whole duration — see the `RunTestsRequested` case
     // for why that matters.
+    //
+    // Cooperative-safe: a force-run exists only for the client that asked for it, so the
+    // framework may cancel it once that client is gone. Its test hosts run in its own
+    // process scope (reaped), its result publishes only through the fold it returns
+    // (never folded when cancelled), and its `finally` closes the run it opened.
     let requestTestRun (ctx: PluginCtx<TestPruneMsg>) state configs filter reply =
-        match runTestHostExclusive ctx Set.empty (Some reply) (commandForceRun ctx configs filter reply) with
+        let work = PluginWork.cooperativeSafe (commandForceRun ctx configs filter reply)
+
+        match runTestHostExclusive ctx Set.empty (Some reply) work with
         | Claimed -> { state with EvidenceReceipt = None }
         | SlotBusy ->
             // A busy key QUEUES the run, never refuses it: a refusal that reads as

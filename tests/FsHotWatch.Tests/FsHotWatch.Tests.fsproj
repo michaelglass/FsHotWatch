@@ -33,6 +33,7 @@
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
+    <Compile Include="RunStatusHandoffTests.fs" />
     <Compile Include="LifecycleTests.fs" />
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="FileErrorReporterTests.fs" />
@@ -52,6 +53,7 @@
     <Compile Include="PluginFrameworkFixtures.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
     <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
+    <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
@@ -65,6 +67,8 @@
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
+    <Compile Include="RepositoryIdentityTests.fs" />
+    <Compile Include="AttachHandshakeTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />

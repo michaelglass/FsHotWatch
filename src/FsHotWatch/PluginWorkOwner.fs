@@ -442,14 +442,78 @@ type Store() =
 // Plugin owner state
 // ---------------------------------------------------------------------------------------
 
+/// Who still needs a piece of exclusive work: its consumer leases.
+///
+/// Work has one producer and any number of consumers. A consumer the daemon itself
+/// stands for — the watcher, a plugin's own event, a result fold — holds a lease nothing
+/// releases. A client that asked for the work holds a lease for as long as it is
+/// connected; its token fires when the client goes away. Cancelling one consumer never
+/// cancels the producer while another still needs it: only when EVERY lease has been
+/// released may the work be withdrawn (queued) or cancelled (running, cooperative-safe).
+[<NoComparison; NoEquality>]
+type ConsumerLeases =
+    /// Some consumer the daemon stands for needs this work. Never released.
+    | HeldByDaemon
+    /// Only these clients need it; each token fires when its client goes away. Never empty.
+    | HeldByClients of released: CancellationToken list
+
+module ConsumerLeases =
+    /// The lease of one client, released when `released` fires. A token that can never
+    /// fire stands for no client at all, so the daemon holds the work instead.
+    let ofClient (released: CancellationToken) =
+        if released.CanBeCanceled then
+            HeldByClients [ released ]
+        else
+            HeldByDaemon
+
+    /// Both sets of consumers need the work. The daemon's lease absorbs any client's.
+    let merge (first: ConsumerLeases) (second: ConsumerLeases) =
+        match first, second with
+        | HeldByClients mine, HeldByClients theirs -> HeldByClients(mine @ theirs)
+        | _ -> HeldByDaemon
+
+    /// Every consumer has gone: nobody is left to read the work's result.
+    let allReleased (leases: ConsumerLeases) =
+        match leases with
+        | HeldByDaemon -> false
+        | HeldByClients tokens -> tokens |> List.forall (fun token -> token.IsCancellationRequested)
+
+    /// A source cancelled once every lease is released, with the registrations that
+    /// watch for it. `None` when the daemon holds the work: it is never abandoned.
+    let whenAllReleased (leases: ConsumerLeases) : (CancellationTokenSource * IDisposable) option =
+        match leases with
+        | HeldByDaemon -> None
+        | HeldByClients tokens ->
+            let abandoned = new CancellationTokenSource()
+
+            let check () =
+                if allReleased leases then
+                    try
+                        abandoned.Cancel()
+                    with :? ObjectDisposedException ->
+                        // The work finished and let go of its source first.
+                        ()
+
+            let registrations = tokens |> List.map (fun token -> token.Register(Action check))
+
+            let watch =
+                { new IDisposable with
+                    member _.Dispose() =
+                        for registration in registrations do
+                            registration.Dispose() }
+
+            Some(abandoned, watch)
+
 /// A command waiting for an exclusive key. It is owned from the moment it is accepted:
-/// its receipt settles only after the fold it becomes has been published.
+/// its receipt settles only after the fold it becomes has been published, or when it is
+/// withdrawn because every consumer released its lease.
 [<NoComparison; NoEquality>]
 type Intent =
     private
         { Id: WorkId
           Coalescing: string option
-          Deliver: WorkId -> unit
+          Leases: ConsumerLeases
+          Deliver: WorkId -> ConsumerLeases -> unit
           Receipt: TaskCompletionSource<unit> }
 
 /// The intents queued behind whatever holds an exclusive key, oldest first.
@@ -577,6 +641,20 @@ type Snapshot<'State> =
         obligations this.Work
         |> snd
         |> Map.exists (fun _ lane -> holdsWorker lane.Holder)
+
+    /// Does an exclusive run still owe its verdict? A live worker does, and so does a
+    /// finished worker whose result fold has not committed: the run's `Running` stands
+    /// until that fold reports the run's terminal. `reporter` is the event asking. A
+    /// worker's result fold reporting is that verdict, so it does not count against itself.
+    member this.OwesRunVerdict(reporter: WorkId option) =
+        obligations this.Work
+        |> snd
+        |> Map.exists (fun _ lane ->
+            match lane.Holder with
+            | Folding(first, later, None) ->
+                first :: later
+                |> List.exists (fun fold -> fold.IsWorkerResult && Some fold.Id <> reporter)
+            | holder -> holdsWorker holder)
 
 // ---------------------------------------------------------------------------------------
 // Pure transitions
@@ -735,8 +813,9 @@ let private tryClaim key after fresh snapshot =
 
 /// Accept a command for `key`. A free key delivers it at once as the key's fold. A held key
 /// queues it, or, when a queued intent has the same coalescing key, replaces that intent's
-/// payload and keeps its place and receipt.
-let private enqueueIntent key coalescing deliver receipt fresh snapshot =
+/// payload and keeps its place and receipt; its consumers then include this one's. The
+/// result names the intent that now carries the command, with its receipt.
+let private enqueueIntent key coalescing leases deliver receipt fresh snapshot =
     admission snapshot
     |> Result.bind (fun () ->
         let events, lanes = obligations snapshot.Work
@@ -744,6 +823,7 @@ let private enqueueIntent key coalescing deliver receipt fresh snapshot =
         let intent =
             { Id = fresh
               Coalescing = coalescing
+              Leases = leases
               Deliver = deliver
               Receipt = receipt }
 
@@ -758,7 +838,7 @@ let private enqueueIntent key coalescing deliver receipt fresh snapshot =
                     withLane
                         { Holder = Folding(intentFold intent, [], None)
                           Slot = Running }
-                  Result = receipt.Task
+                  Result = fresh, receipt.Task
                   Delivery = Some intent
                   Settlements = [] }
         | Some lane ->
@@ -775,17 +855,46 @@ let private enqueueIntent key coalescing deliver receipt fresh snapshot =
                     pending
                     |> List.map (fun candidate ->
                         if candidate.Id = prior.Id then
-                            { prior with Deliver = deliver }
+                            { prior with
+                                Deliver = deliver
+                                Leases = ConsumerLeases.merge prior.Leases leases }
                         else
                             candidate)
 
-                publish (withLane { lane with Slot = slotOf replaced }) prior.Receipt.Task
+                publish (withLane { lane with Slot = slotOf replaced }) (prior.Id, prior.Receipt.Task)
             | None ->
                 publish
                     (withLane
                         { lane with
                             Slot = slotOf (pending @ [ intent ]) })
-                    receipt.Task)
+                    (fresh, receipt.Task))
+
+/// Withdraw a queued intent every consumer has released. Its receipt fails: it will
+/// never fold. An intent already delivered, or one some consumer still holds, stays.
+let private withdrawReleased id snapshot =
+    let events, lanes = obligations snapshot.Work
+
+    let found =
+        lanes
+        |> Map.toList
+        |> List.tryPick (fun (key, lane) ->
+            queued lane.Slot
+            |> List.tryFind (fun intent -> intent.Id = id)
+            |> Option.map (fun intent -> key, lane, intent))
+
+    match found with
+    | Some(key, lane, intent) when ConsumerLeases.allReleased intent.Leases ->
+        let remaining = queued lane.Slot |> List.filter (fun other -> other.Id <> id)
+
+        Ok
+            { Next =
+                { snapshot with
+                    Work = phaseOf events (Map.add key { lane with Slot = slotOf remaining } lanes) }
+              Result = true
+              Delivery = None
+              Settlements =
+                [ Fail(intent.Receipt, OperationCanceledException("withdrawn: every consumer released its lease")) ] }
+    | _ -> publish snapshot false
 
 let private rewritten snapshot (events, lanes, delivery) =
     { snapshot with
@@ -895,6 +1004,19 @@ let private failRun id failure fresh snapshot =
                     match snapshot.Failed with
                     | Some { Failure = ExecutorFailure _ | CommitFailure _ } -> snapshot.Failed
                     | _ -> record (RunFailure failure) fresh }
+          Result = ()
+          Delivery = delivery
+          Settlements = [] })
+
+/// Retire a worker every consumer abandoned, with no result fold and no failure: the run
+/// was cancelled because nobody needed it, which says nothing about the work. The key
+/// passes on exactly as it would after a result.
+let private abandonRun id snapshot =
+    workerAt id snapshot
+    |> Result.map (fun rewrite ->
+        let next, delivery = rewrite None |> rewritten snapshot
+
+        { Next = next
           Result = ()
           Delivery = delivery
           Settlements = [] })
@@ -1047,7 +1169,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
             match step.Delivery with
             | Some intent ->
                 try
-                    intent.Deliver intent.Id
+                    intent.Deliver intent.Id intent.Leases
                 with failure ->
                     stopExecutor failure
                     reraise ()
@@ -1070,7 +1192,25 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
     member _.TryClaim(key: string, ?after: WorkId) : WorkId option = perform (tryClaim key after)
 
     member _.EnqueueIntent(key: string, coalescingKey: string option, deliver: WorkId -> unit) : Task<unit> =
-        perform (enqueueIntent key coalescingKey deliver (receipt ()))
+        perform (enqueueIntent key coalescingKey HeldByDaemon (fun id _ -> deliver id) (receipt ()))
+        |> snd
+
+    /// Enqueue on behalf of `leases`. Answers the intent that now carries the command —
+    /// an older one when it coalesced — so its consumers can withdraw it; `deliver` is
+    /// told the consumers the delivered intent carries.
+    member _.EnqueueLeasedIntent
+        (key: string, coalescingKey: string option, leases: ConsumerLeases, deliver: WorkId -> ConsumerLeases -> unit)
+        : WorkId * Task<unit> =
+        perform (enqueueIntent key coalescingKey leases deliver (receipt ()))
+
+    /// Withdraw the queued intent `id` if every consumer has released it. True when it
+    /// was withdrawn.
+    member _.WithdrawReleased(id: WorkId) : bool =
+        perform (fun _ snapshot -> withdrawReleased id snapshot)
+
+    /// Retire the live worker `id` that every consumer abandoned: no fold, no failure.
+    member _.AbandonRun(id: WorkId) =
+        perform (fun _ snapshot -> abandonRun id snapshot)
 
     /// Publish a candidate state without settling the event.
     member _.PublishEventState(id: WorkId, state: 'State) =
