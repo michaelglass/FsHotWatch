@@ -29,13 +29,9 @@ let internal AdmissionBound = TimeSpan.FromSeconds 5.0
 /// timer whose callback runs on the thread pool, so with every pool thread busy the
 /// caller waited until the pool freed one: a bounded wait that is not bounded.
 let internal waitWithin (bound: TimeSpan) (task: Task<'T>) : 'T =
-    let settled =
-        try
-            task.Wait bound
-        with :? AggregateException ->
-            true
-
-    if settled then
+    // The handle's wait raises nothing: a failed task is settled like any other, and
+    // `GetResult` raises its failure unwrapped.
+    if (task :> IAsyncResult).AsyncWaitHandle.WaitOne bound then
         task.GetAwaiter().GetResult()
     else
         raise (TimeoutException($"gave up after %O{bound}"))
