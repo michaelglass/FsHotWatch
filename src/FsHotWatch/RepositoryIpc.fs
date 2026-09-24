@@ -291,7 +291,11 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
                     return None
                 | Ok(Preamble.Repository invocation) ->
                     do! reply (encodeReply PreambleReply.Accepted)
-                    return Some(handlers.Repository invocation)
+
+                    return
+                        Some
+                            { IpcServer.Served.Target = handlers.Repository invocation
+                              IpcServer.Served.Context = None }
                 | Ok(Preamble.Session(session, invocation)) ->
                     match! handlers.Session session invocation |> Async.AwaitTask with
                     | Error(kind, message) ->
@@ -299,7 +303,7 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
                         return None
                     | Ok config ->
                         do! reply (encodeReply PreambleReply.Accepted)
-                        return Some(box (DaemonRpcTarget(config, watchdog, disconnected = disconnected)))
+                        return Some(IpcServer.servedDaemon config watchdog disconnected)
         }
 
 /// Serve the repository endpoint until `cts` is cancelled.

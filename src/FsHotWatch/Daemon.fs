@@ -2547,7 +2547,11 @@ type Daemon
                         fun () ->
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount
-                      GetProjectModel = this.ProjectModel }
+                      GetProjectModel = this.ProjectModel
+                      // Captured here, with this daemon's process scope installed: in a
+                      // repository host the session's endpoint is served from the host's
+                      // context, and the session's RPCs still run in the session's.
+                      Context = Option.ofObj (ExecutionContext.Capture()) }
 
                 // Everything before the daemon serves — runtime boot (per-worktree),
                 // config and analyzer loading, the singleton lock — is wall time a cold

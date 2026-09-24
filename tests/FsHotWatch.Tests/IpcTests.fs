@@ -40,7 +40,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0
-      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved }
+      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+      Context = None }
 
 /// A CLI that sees the pipe listening decides a daemon is there. So once the server's
 /// own task has returned, nothing may still accept a connection on its name: the probe

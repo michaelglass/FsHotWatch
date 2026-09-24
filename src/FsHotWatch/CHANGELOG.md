@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a repository host's session serves its RPCs in the session's context: its
+  process scope, log sink and client environment, as a daemon on its own pipe does.
+  The host's endpoint served them in the host's own context, so what a plugin command
+  spawned while handling a call was not reaped with its session, and what the call
+  logged went to the host's log. `DaemonRpcConfig` gains `Context`.
+
 - fix: a daemon's process registry is the daemon's. Building a daemon in-process no
   longer leaves its registry installed in the caller's context, so a spawn the caller
   makes afterwards is the caller's, and is not refused once the daemon is disposed. A
