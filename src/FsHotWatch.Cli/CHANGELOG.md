@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the run-level `beforeRun`/`afterRun` hooks run inside a process scope owned by the
+  run. A run that ends, or is interrupted (Ctrl-C, SIGTERM) in the middle of a hook, kills
+  the hook's process tree instead of leaving it orphaned; `afterRun` runs in a scope of
+  its own and what it leaves running is reaped once it returns. This covers the
+  bracketing path and `confirm`'s fast path.
+
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).
 

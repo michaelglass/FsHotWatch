@@ -1889,6 +1889,35 @@ let private verdictCommandOf (verb: RunHookCommand) : Verdict.Command =
     | RunHookCommand.Check -> Verdict.Check
     | RunHookCommand.Confirm -> Verdict.Confirm
 
+/// The processes a run-level bracket starts in the CLI's own process: its hooks. The
+/// daemon reaps what its plugins start; nothing reaps what the CLI starts unless the
+/// run does, so a run owns a process scope for its whole length.
+[<Sealed>]
+type internal RunProcessScope() =
+    let processes = ProcessRegistry.Registry()
+    let installed = ProcessRegistry.install processes
+    let reap = makeRunOnce (fun () -> processes.KillAll())
+
+    /// Kill whatever the run still has running, such as a hook it was interrupted in.
+    /// Once; the run starts nothing after it.
+    member _.Reap() : unit = reap ()
+
+    /// Run `teardown` (afterRun) in a scope of its own, and reap what it leaves
+    /// running. Its own scope, because the run's is shut by then, and because on a
+    /// signal this runs on the handler's thread, which the run's scope does not reach.
+    member _.Teardown(teardown: unit -> unit) : unit =
+        let scope = ProcessRegistry.Registry()
+
+        try
+            using (ProcessRegistry.install scope) (fun _ -> teardown ())
+        finally
+            scope.KillAll()
+
+    interface IDisposable with
+        member _.Dispose() =
+            reap ()
+            installed.Dispose()
+
 /// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun` hooks.
 /// See the section header above for the full contract.
 ///
@@ -1940,9 +1969,14 @@ let internal withRunHooksCommandUsingSignals
         { new IDisposable with
             member _.Dispose() = releaseClaim () }
 
+    // The run's own processes: its hooks, which run here in the CLI rather than in the
+    // daemon. A run that ends, or is interrupted in one of them, reaps them.
+    use processes = new RunProcessScope()
+
     let runner = makeRunHookRunner repoRoot config invocation
     let evidence = runner.Collected
     let afterRun = makeAfterRunHook config runner
+
 
     // Attach the wrapper's evidence — hook steps, their spans, the observed wall time
     // — to the verdict THIS invocation produced. Latched: the ordinary finalizer and a
@@ -1975,7 +2009,10 @@ let internal withRunHooksCommandUsingSignals
     // file). Publishing the terminal record is best-effort like every other verdict
     // write: a `.fshw/` that cannot be written must not turn into a second failure.
     let finalize (reason: string) (downgrade: bool) : unit =
-        afterRun ()
+        // Whatever the run still has running goes first: interrupted in a hook, that
+        // hook's tree must not outlive the run, and it must not race the teardown.
+        processes.Reap()
+        processes.Teardown afterRun
 
         try
             Verdict.tryPublishTerminal repoRoot config.Exclude command invocation reason downgrade
@@ -2142,10 +2179,15 @@ let internal withRunHooksUnclaimedUsingSignals
     // nothing and publishes nothing UNLESS beforeRun refuses, which is the one outcome
     // that must leave a record.
     let invocation = Verdict.Invocation.start ()
+    use processes = new RunProcessScope()
     let runner = makeRunHookRunner repoRoot config invocation
     let afterRun = makeAfterRunHook config runner
 
-    use _signals = installSignals afterRun exit
+    let finish () =
+        processes.Reap()
+        processes.Teardown afterRun
+
+    use _signals = installSignals finish exit
 
     if not (runBeforeRunHook config runner) then
         // Fail-closed, exit 2 and NOT 1, exactly as the bracketing path fails: afterRun
@@ -2169,7 +2211,7 @@ let internal withRunHooksUnclaimedUsingSignals
         try
             action ()
         finally
-            afterRun ()
+            finish ()
 
 /// `withRunHooksUnclaimedUsingSignals` under the SAME verb policy the bracketing path
 /// obeys: a verb the config does not select is a straight `action ()`.
