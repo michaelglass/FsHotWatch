@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 12.0.0 - 2026-09-24
+
+- Read the package version and run pragmas without branches to keep Database.fs above its branch floor
+- Refuse an index newer than this schema instead of running older DDL on it
+
+
 ## 11.0.0 - 2026-09-23
 
 - fix!: `index` stores one analysis result per source file instead of one merged

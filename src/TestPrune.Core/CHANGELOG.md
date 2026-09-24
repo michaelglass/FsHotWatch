@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 12.0.0 - 2026-09-24
+
 - fix!: `Database.create` refuses a database whose `user_version` is newer than its own
   `SchemaVersion`, raising `SchemaNewerThanConsumerException` (public: `dbPath`,
   `foundVersion`, `supportedVersion`) before any DDL runs and leaving the file untouched,
