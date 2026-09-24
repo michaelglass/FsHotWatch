@@ -2534,3 +2534,243 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
         test <@ cached = cold @>
     }
     |> Async.RunSynchronously
+
+// --- The plugin context forwards every activity call ---
+
+[<Fact(Timeout = 20000)>]
+let ``a plugin's subtask updates reach the host under the plugin's name`` () =
+    let updates =
+        System.Collections.Concurrent.ConcurrentQueue<string * string * string>()
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "subtasks"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.UpdateSubtask "k" "halfway"
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                UpdateSubtask = fun name key label -> updates.Enqueue(PluginName.value name, key, label) }
+            handler
+
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+    test <@ List.ofSeq updates = [ "subtasks", "k", "halfway" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``the no-op project graph answers every query with nothing`` () =
+    let graph = ProjectGraphAccessor.none
+    test <@ graph.ObserveModel() = FsHotWatch.ProjectModel.Observation.Unobserved @>
+    test <@ graph.ObserveCheckableFiles() = None @>
+    test <@ List.isEmpty (graph.GetAllProjects()) @>
+    test <@ List.isEmpty (graph.GetTransitiveDependentProjects "/r/A.fsproj") @>
+    test <@ List.isEmpty (graph.GetProjectReferences "/r/A.fsproj") @>
+    test <@ graph.GetCanonicalDllPath "/r/A.fsproj" = None @>
+
+// --- A cached failure replays as a failure ---
+
+[<Fact(Timeout = 20000)>]
+let ``a cached failure replays as Failed, whole-run and per file, without re-running the plugin`` () =
+    // The first dispatch of each event fails and is cached; the second is a hit and
+    // must stay red — a replayed failure that came back green would pass `check` on
+    // an unchanged broken tree.
+    let cache = TaskCache.InMemoryTaskCache()
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let updates = ref 0
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "cached-red"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    System.Threading.Interlocked.Increment(updates) |> ignore
+
+                    match event with
+                    | FileChanged _
+                    | FileChecked _ -> ctx.ReportStatus(PluginStatus.failedNow "red" "1 failed" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeFileChecked ]
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    let failures () =
+        statuses
+        |> Seq.filter (function
+            | Failed("red", _, _) -> true
+            | _ -> false)
+        |> Seq.length
+
+    for event in
+        [ DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ])
+          DispatchFileChecked(fakeFileCheckResult "/tmp/repo/A.fs") ] do
+        dispatchAndSettle reg event
+        let ranBefore = updates.Value
+        let failedBefore = failures ()
+        dispatchAndSettle reg event
+        test <@ updates.Value = ranBefore @>
+        test <@ failures () = failedBefore + 1 @>
+
+// --- A shared run whose work cannot even be built ---
+
+type private FactoryMsg = FactoryFailed of string
+
+[<Fact(Timeout = 20000)>]
+let ``a shared run whose work factory throws folds the plugin's failure message`` () =
+    let folded = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let handler: PluginHandler<unit, FactoryMsg> =
+        { Name = PluginName.create "factory"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        let claim =
+                            ctx.RunExclusiveShared
+                                "work"
+                                "artifacts"
+                                (fun _ -> failwith "factory boom")
+                                (fun _ -> Ready)
+                                (fun failure -> FactoryFailed failure.Message)
+
+                        test <@ claim = SharedClaimed @>
+                    | Custom(FactoryFailed message) -> folded.Enqueue message
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    let reg = registerHandler defaultServices handler
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+    test <@ waitUntilTrue (fun () -> not folded.IsEmpty) 10000 @>
+    test <@ List.ofSeq folded = [ "factory boom" ] @>
+
+// --- Everything a cached plugin reports is captured for its entry ---
+
+[<Fact(Timeout = 20000)>]
+let ``a cached plugin's error reports and emitted events are captured into its entry in order`` () =
+    // A replay can only re-fire what the capture recorded, so each report and emission
+    // must land in the entry, in the order the plugin made them, and still reach the host.
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let runId = System.Guid.NewGuid()
+    let startedAt = System.DateTime.UtcNow
+    let hostCalls = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let emitted: TaskCache.CachedEvent list =
+        [ TaskCache.CachedBuildCompleted BuildSucceeded
+          TaskCache.CachedTestRunStarted { RunId = runId; StartedAt = startedAt }
+          TaskCache.CachedTestProgress
+              { RunId = runId
+                NewResults = Map.empty }
+          TaskCache.CachedTestRunCompleted
+              { RunId = runId
+                TotalElapsed = System.TimeSpan.Zero
+                Outcome = TestRunOutcome.Normal
+                Results = Map.empty
+                Verification = Ran RunScope.FullSuite }
+          TaskCache.CachedCommandCompleted
+              { Name = "noop"
+                Outcome = CommandSucceeded "ok" } ]
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "capturer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ClearAllErrors()
+                        ctx.ClearErrors "/tmp/clear-me.fs"
+                        ctx.ReportErrors "/tmp/has-errors.fs" [ ErrorEntry.error "x" ]
+
+                        for event in emitted do
+                            match event with
+                            | TaskCache.CachedBuildCompleted r -> ctx.EmitBuildCompleted r
+                            | TaskCache.CachedTestRunStarted r -> ctx.EmitTestRunStarted r
+                            | TaskCache.CachedTestProgress r -> ctx.EmitTestProgress r
+                            | TaskCache.CachedTestRunCompleted r -> ctx.EmitTestRunCompleted r
+                            | TaskCache.CachedCommandCompleted r -> ctx.EmitCommandCompleted r
+
+                        ctx.ReportStatus(PluginStatus.completedNow "done" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ClearPlugin = fun _ -> hostCalls.Enqueue "clear-plugin"
+                ClearErrors = fun _ file -> hostCalls.Enqueue $"clear %s{file}"
+                ReportErrors = fun _ file _ -> hostCalls.Enqueue $"report %s{file}"
+                EmitBuildCompleted = fun _ -> hostCalls.Enqueue "build"
+                EmitTestRunStarted = fun _ -> hostCalls.Enqueue "test-started"
+                EmitTestProgress = fun _ -> hostCalls.Enqueue "test-progress"
+                EmitTestRunCompleted = fun _ -> hostCalls.Enqueue "test-completed"
+                EmitCommandCompleted = fun _ -> hostCalls.Enqueue "command"
+                TaskCache = Some cache }
+            handler
+
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+
+    let entry =
+        cache.TryGet { Plugin = "capturer"; File = None } (ContentHash.create "k")
+
+    test <@ entry.IsSome @>
+
+    test
+        <@
+            entry.Value.Errors = [ "*", []
+                                   "/tmp/clear-me.fs", []
+                                   "/tmp/has-errors.fs", [ ErrorEntry.error "x" ] ]
+        @>
+
+    test <@ entry.Value.EmittedEvents = emitted @>
+
+    for call in
+        [ "clear-plugin"
+          "clear /tmp/clear-me.fs"
+          "report /tmp/has-errors.fs"
+          "build"
+          "test-started"
+          "test-progress"
+          "test-completed"
+          "command" ] do
+        test <@ hostCalls |> Seq.contains call @>

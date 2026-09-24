@@ -22,7 +22,7 @@ let private dummyOptions projectName sourceFiles =
 /// In-memory cache backend for testing
 type private InMemoryCache() =
     let store =
-        System.Collections.Concurrent.ConcurrentDictionary<string, FileCheckResult>()
+        System.Collections.Concurrent.ConcurrentDictionary<string, CachedCheck>()
 
     member val InvalidateCalls = System.Collections.Generic.List<CacheKey>()
     member val ClearCalls = ref 0
@@ -532,6 +532,13 @@ let private dummyKey suffix =
     { FileHash = ContentHash.create $"file-%s{suffix}"
       ProjectOptionsHash = ContentHash.create $"opts-%s{suffix}" }
 
+/// The output check for entries whose recorded outputs all still hold.
+let private outputsHold (_: (string * string) list) = true
+
+/// An entry for `result` that referenced no project outputs.
+let private recorded result =
+    { Result = result; ProjectOutputs = [] }
+
 let private fullCheckResult path options =
     { File = AbsFilePath.create path
       Source = "module M"
@@ -554,19 +561,19 @@ let private parseOnlyResult path options =
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when backend is None`` () =
-    let result = tryGetCachedFullCheck None (Some(dummyKey "a"))
+    let result = tryGetCachedFullCheck outputsHold None (Some(dummyKey "a"))
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when key is None`` () =
     let cache = InMemoryCache() :> ICheckCacheBackend
-    let result = tryGetCachedFullCheck (Some cache) None
+    let result = tryGetCachedFullCheck outputsHold (Some cache) None
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None on cache miss`` () =
     let cache = InMemoryCache() :> ICheckCacheBackend
-    let result = tryGetCachedFullCheck (Some cache) (Some(dummyKey "miss"))
+    let result = tryGetCachedFullCheck outputsHold (Some cache) (Some(dummyKey "miss"))
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
@@ -574,10 +581,28 @@ let ``tryGetCachedFullCheck returns Some on FullCheck hit`` () =
     let cache = InMemoryCache() :> ICheckCacheBackend
     let key = dummyKey "hit"
     let opts = dummyOptions "/tmp/Hit.fsproj" [ "/tmp/Hit.fs" ]
-    cache.Set key (fullCheckResult "/tmp/Hit.fs" opts)
-    let result = tryGetCachedFullCheck (Some cache) (Some key)
+    cache.Set key (recorded (fullCheckResult "/tmp/Hit.fs" opts))
+    let result = tryGetCachedFullCheck outputsHold (Some cache) (Some key)
     test <@ result.IsSome @>
     test <@ AbsFilePath.value result.Value.File = "/tmp/Hit.fs" @>
+
+[<Fact(Timeout = 15000)>]
+let ``tryGetCachedFullCheck misses an entry whose recorded outputs no longer hold`` () =
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let key = dummyKey "moved"
+    let opts = dummyOptions "/tmp/App.fsproj" [ "/tmp/App.fs" ]
+    let outputs = [ "${repo}/obj/Lib.dll", "bytes-when-checked" ]
+
+    cache.Set
+        key
+        { Result = fullCheckResult "/tmp/App.fs" opts
+          ProjectOutputs = outputs }
+
+    let holdWhen current (recordedOutputs: (string * string) list) =
+        recordedOutputs |> List.forall (fun (_, hash) -> hash = current)
+
+    test <@ (tryGetCachedFullCheck (holdWhen "bytes-when-checked") (Some cache) (Some key)).IsSome @>
+    test <@ tryGetCachedFullCheck (holdWhen "rebuilt") (Some cache) (Some key) = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
@@ -585,8 +610,8 @@ let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
     let cache = InMemoryCache() :> ICheckCacheBackend
     let key = dummyKey "parseonly"
     let opts = dummyOptions "/tmp/PO.fsproj" [ "/tmp/PO.fs" ]
-    cache.Set key (parseOnlyResult "/tmp/PO.fs" opts)
-    let result = tryGetCachedFullCheck (Some cache) (Some key)
+    cache.Set key (recorded (parseOnlyResult "/tmp/PO.fs" opts))
+    let result = tryGetCachedFullCheck outputsHold (Some cache) (Some key)
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
@@ -615,7 +640,7 @@ let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
             |> Option.defaultWith (fun () -> failwith "expected Some CacheKey for real file")
 
         let seeded = fullCheckResult hotFile opts
-        (cache :> ICheckCacheBackend).Set key seeded
+        (cache :> ICheckCacheBackend).Set key (recorded seeded)
 
         let result =
             pipeline.CheckFile(AbsFilePath.create hotFile) |> Async.RunSynchronously
@@ -649,16 +674,16 @@ let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () 
             makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) invFile opts
             |> Option.defaultWith (fun () -> failwith "expected Some CacheKey for real file")
 
-        (cache :> ICheckCacheBackend).Set key (fullCheckResult invFile opts)
+        (cache :> ICheckCacheBackend).Set key (recorded (fullCheckResult invFile opts))
 
         test
             <@
-                tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key)
+                tryGetCachedFullCheck outputsHold (Some(cache :> ICheckCacheBackend)) (Some key)
                 |> Option.isSome
             @>
 
         pipeline.InvalidateFile(AbsFilePath.create invFile)
-        test <@ tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
+        test <@ tryGetCachedFullCheck outputsHold (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
         test <@ cache.InvalidateCalls.Count = 1 @>
     finally
         try

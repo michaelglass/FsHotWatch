@@ -17,13 +17,29 @@ let sha256Hex (content: string) : string =
 let hashCacheKey (key: CacheKey) : string =
     sha256Hex $"%s{ContentHash.value key.FileHash}||%s{ContentHash.value key.ProjectOptionsHash}"
 
+/// A check-cache entry: the result, and what it was typed against beyond its key.
+///
+/// The key names sources and options, and cannot name a referenced project's output:
+/// whether FCS types against that output or the project's sources depends on the
+/// output's frame, decided only when the snapshot is built. So the entry records the
+/// bytes of every real-path project output its check referenced, and is served only
+/// while each still holds them.
+[<NoComparison>]
+type CachedCheck =
+    {
+        Result: FileCheckResult
+        /// Each real-path project output the check referenced, repository-relative, with
+        /// its content hash when the check ran. Empty when it referenced none.
+        ProjectOutputs: (string * string) list
+    }
+
 /// Backend interface for storing/retrieving cached results
 type ICheckCacheBackend =
-    /// Retrieve a cached result if it exists
-    abstract member TryGet: key: CacheKey -> FileCheckResult option
+    /// Retrieve a cached entry if it exists
+    abstract member TryGet: key: CacheKey -> CachedCheck option
 
-    /// Store a check result in the cache
-    abstract member Set: key: CacheKey -> result: FileCheckResult -> unit
+    /// Store a check-cache entry
+    abstract member Set: key: CacheKey -> entry: CachedCheck -> unit
 
     /// Invalidate a specific cache entry
     abstract member Invalidate: key: CacheKey -> unit
@@ -249,6 +265,16 @@ let upstreamFingerprints
 
     table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, running
 
+/// A file's fingerprint from its project's table: its own entry, or the whole
+/// project's fingerprint for a file not in `SourceFiles`.
+let private fingerprintIn
+    (table: System.Collections.Generic.IReadOnlyDictionary<string, string>, whole: string)
+    (filePath: string)
+    : string =
+    match table.TryGetValue filePath with
+    | true, fingerprint -> fingerprint
+    | false, _ -> whole
+
 /// `upstreamFingerprints` for one file.
 let upstreamFingerprint
     (hashFile: string -> string)
@@ -256,11 +282,7 @@ let upstreamFingerprint
     (filePath: string)
     (options: FSharpProjectOptions)
     : string =
-    let table, whole = upstreamFingerprints hashFile repoRoot options
-
-    match table.TryGetValue filePath with
-    | true, fingerprint -> fingerprint
-    | false, _ -> whole
+    fingerprintIn (upstreamFingerprints hashFile repoRoot options) filePath
 
 /// `upstreamFingerprints`, computed once per project per GENERATION and reused.
 ///
@@ -285,23 +307,6 @@ type UpstreamFingerprints(repoRoot: string option) =
          >()
 
     let mutable generations = false
-    let mutable computeTicks = 0L
-    let mutable tablesBuilt = 0L
-
-    /// Time only the computation, never a wait on another thread's table.
-    let timed (compute: unit -> 'T) =
-        let started = System.Diagnostics.Stopwatch.GetTimestamp()
-        let result = compute ()
-
-        System.Threading.Interlocked.Add(&computeTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started)
-        |> ignore
-
-        result
-
-    let lookup (table: System.Collections.Generic.IReadOnlyDictionary<string, string>, whole) filePath =
-        match table.TryGetValue filePath with
-        | true, fingerprint -> fingerprint
-        | false, _ -> whole
 
     /// The content hash of one file, from the same memo the tables are built from.
     member _.HashFile(path: string) : string = hasher.Hash path
@@ -318,29 +323,16 @@ type UpstreamFingerprints(repoRoot: string option) =
             let table =
                 memo.GetOrAdd(
                     $"%s{options.ProjectFileName}|%s{optionsHash}",
-                    fun _ ->
-                        lazy
-                            (System.Threading.Interlocked.Increment(&tablesBuilt) |> ignore
-                             timed (fun () -> upstreamFingerprints hasher.Hash repoRoot options))
+                    fun _ -> lazy (upstreamFingerprints hasher.Hash repoRoot options)
                 )
 
-            lookup table.Value filePath
+            fingerprintIn table.Value filePath
         else
             this.Fresh(filePath, options)
 
     /// Fingerprint for `filePath` from disk now, bypassing the generation memo.
     member _.Fresh(filePath: string, options: FSharpProjectOptions) : string =
-        timed (fun () -> upstreamFingerprint hasher.Hash repoRoot filePath options)
-
-    /// Time spent computing fingerprints (tables and fresh lookups), excluding waits.
-    member _.ComputeTime =
-        System.TimeSpan(
-            System.Threading.Volatile.Read(&computeTicks) * System.TimeSpan.TicksPerSecond
-            / System.Diagnostics.Stopwatch.Frequency
-        )
-
-    /// Per-project tables built across all generations.
-    member _.TablesBuilt = System.Threading.Volatile.Read(&tablesBuilt)
+        upstreamFingerprint hasher.Hash repoRoot filePath options
 
 /// Compact tuple representation of an FCS diagnostic — what the hash actually
 /// depends on. Extracted from fcsCheckSignature so the hashing/sorting logic

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- fix: a caller waiting for a supervised or debounced queue's admission or close,
+  or for the daemon's scan admission, gives up within its bound however busy the
+  thread pool is. The bound was kept by a timer whose callback needs a pool thread,
+  so with the pool saturated a 5s wait ran for as long as the pool stayed busy.
+
+- fix: `Daemon.Run`, `Daemon.RunWith` and a child process scope started on the
+  caller's thread (`Async.StartImmediate`) no longer leave their process registry in
+  the caller's context once they first wait. The caller's spawns stay the caller's,
+  and are not refused after the daemon or scope has shut down.
+
+++++++ tnkprxns 51d73165 "core: a bounded admission wait gives up within its bound under pool starvation"
+- Fix: the check cache no longer serves a result typed against a referenced project's
+  old build output. The compiler types a file against a referenced F# project's output
+  whenever that output is at a real path and at least as new as the project's
+  sources. A rebuild that changed the output and not the sources (sources restored
+  with their old timestamps, then rebuilt) served the old diagnostics. Each entry now
+  records the bytes of every real-path project output its check referenced, and is
+  served only while each output still holds them. A mismatch re-checks. Outputs under
+  a virtual root are typed from their sources, so they are not recorded, and framed
+  worktrees whose builds differ in bytes still share entries.
+
+- Fix: a project reference at a real path is stamped by its output assembly's bytes
+  again, in per-worktree daemons and for unframed host projects. A reference to a
+  framed project, under the virtual root, keeps its upstream's closure as its stamp:
+  nothing exists at that path, so the compiler types the upstream from its sources.
+  Since the virtual-root change, a real-path reference had been stamped by its
+  upstream's sources. The compiler types against a real-path output whenever it is
+  at least as new as those sources, so a rebuild that changed the output and not the
+  sources left results typed against the old output.
+
 ## 0.10.0-alpha.45 - 2026-09-24
 
 - fix: a repository host's session serves its RPCs in the session's context: its
@@ -145,6 +175,9 @@
   `/var` on macOS, and each name spelled as stored on disk) and git's `commondir`,
   and a checkout under no VCS is keyed as a standalone store. Wherever that moves a
   repository's store path, its namespace directory changes and starts cold.
+- refactor!: removed `CheckPipeline.FingerprintTime`, `CheckPipeline.FingerprintTablesBuilt`,
+  `UpstreamFingerprints.ComputeTime` and `UpstreamFingerprints.TablesBuilt`. Nothing read
+  them; the fingerprint memo no longer times or counts its own work.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

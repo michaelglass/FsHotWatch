@@ -344,3 +344,12 @@ let ``the report says which MSBuild node-reuse setting the child was given`` () 
             KillOutcome.Killed
 
     test <@ report.Contains "MSBUILDDISABLENODEREUSE=0" @>
+
+[<Fact>]
+let ``with no teardown record the report says the tree was not recorded and times nothing`` () =
+    let summary, report =
+        describe whole budget elapsed "" None (KillOutcome.KillFailed(System.ComponentModel.Win32Exception()))
+
+    test <@ summary.Contains "KILL FAILED" @>
+    test <@ report.Contains "process tree: not recorded" @>
+    test <@ report.Contains "  kill: KILL FAILED — " @>

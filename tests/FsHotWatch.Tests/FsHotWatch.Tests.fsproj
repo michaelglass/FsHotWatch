@@ -50,6 +50,7 @@
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
     <Compile Include="DebouncedWorkTests.fs" />
+    <Compile Include="AdmissionBoundTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginFrameworkFixtures.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
@@ -135,6 +136,7 @@
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
+    <Compile Include="CheckCacheReferencedOutputTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />

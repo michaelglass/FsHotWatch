@@ -317,6 +317,35 @@ let ``a cancelled shared run hands the resource back in the state it was handed`
     test <@ List.ofSeq releases = [ Invalid "stale before the run" ] @>
 
 [<Fact(Timeout = 30000)>]
+let ``a cancelled shared run whose resource cannot be handed back fails instead of vanishing`` () =
+    // The run is abandoned, but the host-wide resource it held is still owed back. When
+    // handing it back fails, that failure is the run's verdict — a silent abandonment
+    // would leave the resource held with nothing saying why.
+    let probe = newProbe ()
+
+    let services =
+        { defaultServices with
+            ReleaseSharedRun = fun _ _ -> failwith "release refused" }
+
+    let harness = registerWithServices services probe true true
+    use client = new CancellationTokenSource()
+    harness.Want client.Token |> observe |> ignore
+    test <@ probe.RunStarted.Task.Wait bound @>
+
+    client.Cancel()
+
+    test <@ probe.RunCancelled.Task.Wait bound @>
+    test <@ idle harness @>
+
+    test
+        <@
+            probe.Statuses
+            |> Seq.exists (function
+                | Failed(message, _, _) -> message.Contains "shared release after cancellation failed"
+                | _ -> false)
+        @>
+
+[<Fact(Timeout = 30000)>]
 let ``a shared run whose client goes while it waits for the resource never starts`` () =
     let probe = newProbe ()
     let releases = Collections.Concurrent.ConcurrentQueue<SharedResourceState>()

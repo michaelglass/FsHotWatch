@@ -1171,11 +1171,8 @@ let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
 let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
 
 let private setScanStatus (ScanAgent(owner, _)) state =
-    owner
-        .Submit(SetScanState state, CancellationToken.None)
-        .WaitAsync(SupervisedWork.AdmissionBound)
-        .GetAwaiter()
-        .GetResult()
+    owner.Submit(SetScanState state, CancellationToken.None)
+    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
 
 let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
@@ -2408,7 +2405,6 @@ type Daemon
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {
-            use _processScope = ProcessRegistry.install processRegistry
             ready.Set()
 
             try
@@ -2421,6 +2417,7 @@ type Daemon
                 ready.Dispose()
                 (this :> IDisposable).Dispose()
         }
+        |> ProcessRegistry.withRegistryAsync processRegistry
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
     member _.DiscoverAndRegisterProjects() =
@@ -2465,17 +2462,16 @@ type Daemon
             startedAt: DateTime,
             cts: CancellationTokenSource
         ) =
+        // What this starts runs in the daemon's process scope, and the caller's is
+        // untouched however it is started.
         async {
-            // Called from the caller's context: what this starts runs in the daemon's
-            // process scope, and the caller's is untouched.
-            use _processScope = ProcessRegistry.install processRegistry
-
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
                 // sends next is bound to this request rather than to an earlier one
                 // that failed. The scan itself runs on without the caller.
                 let onScan () =
-                    this.AdmitScan().WaitAsync(SupervisedWork.AdmissionBound).GetAwaiter().GetResult()
+                    this.AdmitScan()
+                    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
                     |> ignore
 
                 let triggerBuild () =
@@ -2735,6 +2731,7 @@ type Daemon
                 ready.Dispose()
                 (this :> IDisposable).Dispose()
         }
+        |> ProcessRegistry.withRegistryAsync processRegistry
 
     /// Serve this daemon on its own pipe until `cts` is cancelled.
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =

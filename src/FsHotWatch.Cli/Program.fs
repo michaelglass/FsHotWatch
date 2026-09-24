@@ -2743,7 +2743,6 @@ let executeCommandWith
                     createDaemon
                     repoRoot
                     config
-                    None
             with ConfigError msg ->
                 eprintfn $"fshw: config error: %s{msg}"
                 2

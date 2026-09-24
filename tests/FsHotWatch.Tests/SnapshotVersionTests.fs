@@ -1006,3 +1006,90 @@ let ``a project reached twice is snapshotted once, and non-F# references pass th
             | other -> failwith $"unexpected %A{other}"
 
         test <@ obj.ReferenceEquals(aDirect, aThroughB) @>)
+
+// A project reference is stamped by what FCS types against. At a real path FCS reads
+// the upstream's output whenever it is at least as new as the upstream's sources
+// (TransparentCompiler's ComputeAssemblyData), so the output's bytes are the stamp.
+// Under a virtual root the output path never exists, FCS always types the upstream
+// from its in-memory snapshot, and the upstream's closure is the stamp.
+
+/// `Lib` (Lib.fs, built to obj/Lib.dll) and `App` (App.fs) referencing it, under `root`.
+let private libAndApp (root: string) =
+    Directory.CreateDirectory(Path.Combine(root, "obj")) |> ignore
+    let libSource = Path.Combine(root, "Lib.fs")
+    let appSource = Path.Combine(root, "App.fs")
+    let libDll = Path.Combine(root, "obj", "Lib.dll")
+    File.WriteAllText(libSource, "module Lib")
+    File.WriteAllText(appSource, "module App")
+
+    let lib =
+        makeProjectOptions (Path.Combine(root, "Lib.fsproj")) [ libSource ] [ "--noframework" ]
+
+    let app =
+        { makeProjectOptions (Path.Combine(root, "App.fsproj")) [ appSource ] [ $"-r:%s{libDll}"; "--noframework" ] with
+            ReferencedProjects = [| FSharpReferencedProject.FSharpReference(libDll, lib) |] }
+
+    appSource, libDll, app
+
+[<Fact>]
+let ``a real-path project reference is stamped by its output's bytes`` () =
+    withTempDir "snapshot-real-output" (fun root ->
+        let appSource, libDll, app = libAndApp root
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let stamp () =
+            (FsHotWatch.ProjectSnapshots.build
+                firstGeneration
+                hasher.Hash
+                (Some root)
+                (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash appSource)
+                app)
+                .ReferencesOnDisk
+            |> List.map (fun r -> r.Path, r.LastModified)
+
+        File.WriteAllText(libDll, "built once")
+        let firstBytes = hasher.Hash libDll
+        let first = stamp ()
+
+        // Rebuilt from the same sources: only the output's bytes change.
+        File.WriteAllText(libDll, "built again, differently")
+        let second = stamp ()
+
+        test <@ first = [ libDll, FsHotWatch.ProjectSnapshots.contentStamp firstBytes ] @>
+        test <@ second = [ libDll, FsHotWatch.ProjectSnapshots.contentStamp (hasher.Hash libDll) ] @>
+        test <@ first <> second @>)
+
+[<Fact>]
+let ``framed worktrees share a project reference's stamp whatever their outputs hold`` () =
+    withTempDir "snapshot-framed-output" (fun worktrees ->
+        let virtualRoot = Path.Combine(worktrees, "virtual")
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let references (name: string) (output: string option) =
+            let root = Path.Combine(worktrees, name)
+            let appSource, libDll, app = libAndApp root
+            output |> Option.iter (fun bytes -> File.WriteAllText(libDll, bytes))
+            let frame = FsHotWatch.PathFrame.create root virtualRoot
+
+            (FsHotWatch.ProjectSnapshots.buildFramed
+                firstGeneration
+                hasher.Hash
+                (Some root)
+                (fun _ _ -> Some frame)
+                (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash appSource)
+                app)
+                .Snapshot.ReferencesOnDisk
+            |> List.map (fun r -> r.Path, r.LastModified)
+
+        // Two builds whose bytes differ (a per-worktree PDB path, a stamped revision), and
+        // a worktree that has not built at all.
+        let a = references "a" (Some "built in a")
+        let b = references "b" (Some "built in b, differently")
+        let c = references "c" None
+
+        test <@ a = b && b = c @>
+        // The closure stamp is sound only because FCS finds no output at a virtual path,
+        // so it cannot type against bytes the stamp does not describe. This checks the
+        // fixture; production relies on the host refusing to start while its virtual
+        // root exists (`HostRun.VirtualRootExists`, RepositoryHost.fs).
+        test <@ a |> List.forall (fun (path, _) -> not (File.Exists path)) @>)

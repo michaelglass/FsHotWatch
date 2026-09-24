@@ -97,6 +97,18 @@ let ``completeWith reports a Completed status carrying the verdict`` () =
     | other -> failwithf "expected Completed carrying a verdict, got %A" other
 
 [<Fact(Timeout = 15000)>]
+let ``completeVerifyingNothing reports a Completed status whose verdict verified nothing`` () =
+    let ctx, calls, statuses = makeRecordingCtx ()
+
+    PluginCtxHelpers.completeVerifyingNothing ctx "no tests selected" (TimeSpan.FromSeconds 2.0)
+
+    test <@ calls.Count = 1 @>
+
+    match List.ofSeq statuses with
+    | [ Completed(_, v) ] -> test <@ v = RunVerdict.verifiedNothing "no tests selected" (TimeSpan.FromSeconds 2.0) @>
+    | other -> failwithf "expected one Completed that verified nothing, got %A" other
+
+[<Fact(Timeout = 15000)>]
 let ``failedWith reports a Failed status carrying BOTH the diagnosis and the verdict`` () =
     let ctx, calls, statuses = makeRecordingCtx ()
 

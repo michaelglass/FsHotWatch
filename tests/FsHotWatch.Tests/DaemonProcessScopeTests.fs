@@ -1,11 +1,14 @@
 /// A daemon's process registry is the daemon's. Building one in-process (a test, a
 /// run-once check, a repository host's session) leaves the caller's process scope as
 /// it was: a spawn the caller makes afterwards is the caller's, never the daemon's, and
-/// never refused by a daemon that has since shut down.
+/// never refused by a daemon that has since shut down. However the caller starts the
+/// daemon's work, and however busy the thread pool is.
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.DaemonProcessScopeTests
 
 open System
 open System.IO
+open System.Threading
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
@@ -34,28 +37,161 @@ let ``a spawn after a daemon is created and disposed is not refused by its shut 
 
             test <@ isSucceeded outcome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 60000)>]
 let ``a spawn after a daemon is created and disposed belongs to the caller's scope`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "daemon-scope-caller" (fun dir ->
-            let finished =
+            let pidFile = Path.Combine(dir, "child.pid")
+            let outcome = ref None
+
+            let started =
                 isolated (fun () ->
                     let caller = ProcessRegistry.Registry()
                     use _ = ProcessRegistry.install caller
                     createAndDispose dir
 
-                    // Flows the caller's context, so the spawn resolves whatever registry
-                    // the caller has in scope now.
-                    let run =
-                        Task.Run(fun () ->
-                            runProcess "sleep" "30" dir [] (ProcessBounds.silent (TimeSpan.FromSeconds 60.0)))
+                    // A thread of its own carries the caller's context, so the spawn
+                    // resolves whatever registry the caller has in scope now, and its
+                    // admission never waits for the pool.
+                    let spawner =
+                        Thread(fun () ->
+                            outcome.Value <-
+                                try
+                                    Some(
+                                        Ok(
+                                            runProcess
+                                                "sh"
+                                                $"-c \"echo $$ > '%s{pidFile}'; exec sleep 30\""
+                                                dir
+                                                []
+                                                (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+                                        )
+                                    )
+                                with ex ->
+                                    Some(Error ex.Message))
 
-                    Threading.Thread.Sleep 500
-                    // The caller's scope reaps it: it was admitted there.
-                    caller.KillAll()
-                    run.Wait(TimeSpan.FromSeconds 10.0) && not run.IsFaulted)
+                    let started =
+                        withEveryPoolThreadBusy (fun () ->
+                            spawner.Start()
+                            // Reaped only once it runs: the caller's scope has admitted it.
+                            let running = waitUntilTrue (fun () -> File.Exists pidFile) 20000
+                            caller.KillAll()
+                            running)
 
-            test <@ finished @>)
+                    spawner.Join(TimeSpan.FromSeconds 30.0) |> ignore
+                    started)
+
+            test <@ started @>
+
+            test
+                <@
+                    match outcome.Value with
+                    | Some(Ok _) -> true
+                    | _ -> false
+                @>)
+
+/// Start the daemon's work on the caller's thread with `start`, which returns once it
+/// has ended; then spawn. The spawn is the caller's, not refused by the daemon's scope.
+let private spawnAfter (dir: string) (start: unit -> unit) =
+    isolated (fun () ->
+        let caller = ProcessRegistry.Registry()
+        use _ = ProcessRegistry.install caller
+        start ()
+        runProcess "sh" "-c true" dir [] (ProcessBounds.silent (TimeSpan.FromSeconds 10.0)))
+
+let private daemonIn (dir: string) =
+    Directory.CreateDirectory(Path.Combine(dir, "src")) |> ignore
+    Daemon.createWith (Unchecked.defaultof<_>) dir Daemon.DaemonOptions.defaults
+
+[<Fact(Timeout = 60000)>]
+let ``a daemon served on the caller's thread leaves the caller's scope as it was`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "daemon-scope-serve" (fun dir ->
+            let outcome =
+                spawnAfter dir (fun () ->
+                    let daemon = daemonIn dir
+                    use cts = new CancellationTokenSource()
+
+                    let serving =
+                        Async.StartImmediateAsTask(daemon.RunWithIpc(FsHotWatch.Cli.Program.computePipeName dir, cts))
+
+                    cts.Cancel()
+                    serving.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
+
+            test <@ isSucceeded outcome @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a daemon run started on the caller's thread leaves the caller's scope as it was`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "daemon-scope-run" (fun dir ->
+            let outcome =
+                spawnAfter dir (fun () ->
+                    let daemon = daemonIn dir
+                    use cts = new CancellationTokenSource()
+                    let run = Async.StartImmediateAsTask(daemon.Run cts.Token)
+                    cts.Cancel()
+                    run.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
+
+            test <@ isSucceeded outcome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a child scope started on the caller's thread leaves the caller's scope as it was`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "daemon-scope-child" (fun dir ->
+            let outcome =
+                spawnAfter dir (fun () ->
+                    let child =
+                        Async.StartImmediateAsTask(
+                            ProcessRegistry.withChildScopeAsync CancellationToken.None (Async.Sleep 50)
+                        )
+
+                    child.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
+
+            test <@ isSucceeded outcome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``with context flow suppressed, work runs in its registry and the caller's is restored`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "daemon-scope-suppressed" (fun dir ->
+            let shut = ProcessRegistry.Registry()
+            shut.KillAll()
+
+            let inWork, afterwards =
+                isolated (fun () ->
+                    let inWork =
+                        using (ExecutionContext.SuppressFlow()) (fun _ ->
+                            // Completes before any wait: the spawn sees the shut registry.
+                            Async.StartImmediateAsTask(
+                                ProcessRegistry.withRegistryAsync
+                                    shut
+                                    (async {
+                                        return
+                                            try
+                                                runProcess
+                                                    "sh"
+                                                    "-c true"
+                                                    dir
+                                                    []
+                                                    (ProcessBounds.silent (TimeSpan.FromSeconds 10.0))
+                                                |> Ok
+                                            with ex ->
+                                                Error ex.Message
+                                    })
+                            ))
+
+                    let afterwards =
+                        runProcess "sh" "-c true" dir [] (ProcessBounds.silent (TimeSpan.FromSeconds 10.0))
+
+                    inWork.Result, afterwards)
+
+            test
+                <@
+                    match inWork with
+                    | Error message -> message.Contains "process scope has shut down"
+                    | Ok _ -> false
+                @>
+
+            test <@ isSucceeded afterwards @>)
 
 let private alive (pid: int) =
     try

@@ -1725,9 +1725,9 @@
     ],
     "RunOnceCheck.fs": [
       {
-        "coveredLines": 175,
-        "coveredBranches": 12,
-        "reason": "2026-09-23: re-baselined for the same move — the scope commands now live in ScopeCommands.fs. Measured 175 lines / 12 branches by a full local coverage run on the merged tree. Deterministic unit coverage, so pinned at the observed count.",
+        "coveredLines": 154,
+        "coveredBranches": 8,
+        "reason": "2026-09-24: re-baselined for deliberately deleted covered code, measured 154 lines / 8 branches by a full local coverage run on the formatted tree (4294 tests). The run-once driver's `pluginName` parameter was always None in production (`check`/`confirm --run-once` pass None; the per-plugin verbs were folded into `check`), so it was removed with the four `match pluginName` ledger reads it fed: their covered `None` arms and match heads went with them, and each read is now `GetErrors()`. The file-command staleness block moved to `RunOnceOutput.runInfoOfFileCommands`, shared with `runOnceAndReport`. Line and branch percentages rose (93.1% / 100%).",
         "platform": "macos"
       },
       {

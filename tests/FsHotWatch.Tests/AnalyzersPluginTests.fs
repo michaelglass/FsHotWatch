@@ -1426,6 +1426,40 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
 
+// A result captured while no model was observable describes no model, so it cannot
+// describe the one in force either.
+[<Fact(Timeout = 20000)>]
+let ``analyzers refuse a FileChecked captured against no model`` () =
+    let repoRoot = "/my/repo"
+    let unmodelled = "/my/repo/src/Unmodelled.fs"
+    let present = "/my/repo/src/Present.fs"
+    let host = createModelHost (Unchecked.defaultof<_>) repoRoot
+    let mutable analyzedCount = 0
+
+    let hook () =
+        Threading.Interlocked.Increment(&analyzedCount) |> ignore
+        failwith "analyzer boom"
+
+    let handler =
+        createWithSlowHook (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook)
+
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(
+        { fakeResult unmodelled with
+            ModelGeneration = None }
+    )
+
+    // Positive control, stamped with the model in force, emitted second as the sync point.
+    host.EmitFileChecked(fakeResult present)
+    waitForTerminalStatus host "analyzers" 15000
+
+    let analyzed = Threading.Volatile.Read(&analyzedCount)
+    test <@ analyzed = 1 @>
+    let errors = host.GetErrorsByPlugin("analyzers")
+    test <@ errors |> Map.containsKey unmodelled |> not @>
+    test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+
 // ---------------------------------------------------------------------------
 // Evidence, not just a result. `0 findings (cached)` read the same whether the stage
 // examined every file or replayed every file from cache, and named no analyzer set.
@@ -1449,6 +1483,10 @@ let ``analyzerSetLabel says so when the set has no identity and the cache is off
         Result.Error [ FsHotWatch.Analyzers.AnalyzerIdentity.Refusal.MissingPdb "/x/Rules.dll" ]
 
     test <@ analyzerSetLabel refused = "analyzer set unidentified (cache off)" @>
+
+[<Fact>]
+let ``analyzerSetLabel names a key shorter than its head in full`` () =
+    test <@ analyzerSetLabel (Result.Ok "0123abc") = "analyzer set 0123abc" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a summary counts the files replayed from cache between the files it analyzed`` () =

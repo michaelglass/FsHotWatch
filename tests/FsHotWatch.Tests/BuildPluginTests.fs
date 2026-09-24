@@ -2849,6 +2849,38 @@ let ``input retained behind a finished build is built by that build's result fol
         Assert.Equal<Set<string>>(Set.singleton secondProject, builtRoots))
 
 [<Fact(Timeout = 15000)>]
+let ``a change that arrives while a build runs is kept for that build's result to launch`` () =
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
+
+    let mutable running = true
+    let claims = ResizeArray<string * string>()
+
+    let ctx =
+        stubBuildCtx
+            (fun (key, resource) ->
+                claims.Add(key, resource)
+                running <- true
+                SharedClaimed)
+            (fun key -> key = "build" && running)
+
+    let update state event =
+        handler.Update ctx state event |> Async.RunSynchronously
+
+    let change = SourceChanged [ "/tmp/edited-mid-build.fs" ]
+    let buffered = update handler.Init (FileChanged change)
+    Assert.Equal<FileChangeKind list>([ change ], buffered.PendingFiles)
+    Assert.Empty claims
+
+    running <- false
+
+    let drained =
+        update buffered (Custom(BuildDone(BuildPassed("first", None), [], TimeSpan.Zero)))
+
+    Assert.Empty drained.PendingFiles
+    Assert.Equal<(string * string) list>([ "build", "build-artifacts" ], Seq.toList claims)
+
+[<Fact(Timeout = 15000)>]
 let ``dependency success preserves queued input while the build slot is held`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None

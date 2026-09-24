@@ -119,6 +119,24 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 
     ok
 
+/// Run `body` while every thread pool thread is held, then let them go. Process-wide:
+/// a test class using it belongs to the serialized `LogGlobalCollectionName` collection.
+let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
+    use gate = new ManualResetEventSlim(false)
+
+    // More than the pool has threads now, however many an earlier starved test left it.
+    let held =
+        [ for _ in 1 .. ThreadPool.ThreadCount + Environment.ProcessorCount * 4 -> Tasks.Task.Run(fun () -> gate.Wait()) ]
+
+    // Long enough for the held work to take every thread the pool has.
+    Thread.Sleep 200
+
+    try
+        body ()
+    finally
+        gate.Set()
+        Tasks.Task.WaitAll(held |> Array.ofList, TimeSpan.FromSeconds 10.0) |> ignore
+
 /// Poll until condition is true or timeout (default 50ms poll interval).
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     waitUntilTrue condition timeoutMs |> ignore

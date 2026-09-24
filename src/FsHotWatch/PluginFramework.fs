@@ -695,13 +695,10 @@ let internal registerHandlerForOwner
     let clientHeld =
         System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, PluginWorkOwner.ConsumerLeases>()
 
-    let leasesOf (event: PluginWorkOwner.WorkId option) =
-        match event with
-        | Some identity ->
-            match clientHeld.TryGetValue identity with
-            | true, leases -> leases
-            | _ -> PluginWorkOwner.HeldByDaemon
-        | None -> PluginWorkOwner.HeldByDaemon
+    let leasesOf (event: PluginWorkOwner.WorkId) =
+        match clientHeld.TryGetValue event with
+        | true, leases -> leases
+        | _ -> PluginWorkOwner.HeldByDaemon
 
     let post (message: 'Msg) =
         let identity = admit owner.AdmitEvent
@@ -890,9 +887,9 @@ let internal registerHandlerForOwner
     /// Claim `key` and report the `Running` the claim earns as one step against the
     /// status funnel. `after` names the event making the claim, so a result fold can
     /// launch its successor before it commits. Answers the status `Running` displaced.
-    let claim (after: PluginWorkOwner.WorkId option) (key: string) =
+    let claim (after: PluginWorkOwner.WorkId) (key: string) =
         lock statusLock (fun () ->
-            match admit (fun () -> owner.TryClaim(key, ?after = after)) with
+            match admit (fun () -> owner.TryClaim(key, after = after)) with
             | None -> None
             | Some identity ->
                 let startedAt = DateTime.UtcNow
@@ -915,7 +912,7 @@ let internal registerHandlerForOwner
         else
             None
 
-    let runExclusive (after: PluginWorkOwner.WorkId option) (key: string) (work: Async<'Msg>) : RunClaim =
+    let runExclusive (after: PluginWorkOwner.WorkId) (key: string) (work: Async<'Msg>) : RunClaim =
         match claim after key with
         | Some(identity, startedAt, displaced) ->
             try
@@ -935,7 +932,7 @@ let internal registerHandlerForOwner
             SlotBusy
 
     let runExclusiveShared
-        (after: PluginWorkOwner.WorkId option)
+        (after: PluginWorkOwner.WorkId)
         (key: string)
         (sharedKey: string)
         (workFor: SharedResourceState -> Async<'Msg>)
@@ -958,14 +955,15 @@ let internal registerHandlerForOwner
                             Result.Error failure
 
                     let guardedWork =
-                        async {
-                            try
-                                match produced with
-                                | Result.Ok work -> return! work
-                                | Result.Error failure -> return raise failure
-                            with failure ->
-                                return failureMessage failure
-                        }
+                        match produced with
+                        | Result.Ok work ->
+                            async {
+                                try
+                                    return! work
+                                with failure ->
+                                    return failureMessage failure
+                            }
+                        | Result.Error failure -> async { return failureMessage failure }
 
                     let abandonment =
                         match produced with
@@ -1031,8 +1029,8 @@ let internal registerHandlerForOwner
 
     /// The context `Update` receives for one event. `event` names that event, so a claim
     /// it makes can follow the key's result fold.
-    let contextFor (event: PluginWorkOwner.WorkId option) : PluginCtx<'Msg> =
-        { ReportStatus = reportPluginStatus event
+    let contextFor (event: PluginWorkOwner.WorkId) : PluginCtx<'Msg> =
+        { ReportStatus = reportPluginStatus (Some event)
           ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
           ClearErrors = fun file -> services.ClearErrors handler.Name file
           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
@@ -1369,93 +1367,82 @@ let internal registerHandlerForOwner
                                 // while a run is in flight is replayed like any other.
                                 let perFile = (compositeKey event).File.IsSome
 
+                                // The event's own context, with every report and run it
+                                // makes also captured for the cache entry.
                                 let capturingCtx =
-                                    { ReportStatus =
-                                        fun status ->
-                                            // A whole-run entry replays its verdict, so it captures
-                                            // only a report that landed: a terminal the funnel
-                                            // dropped was never observable, and must not become a
-                                            // cached verdict either.
-                                            let landed =
-                                                reportStatus
-                                                    (Some identity)
-                                                    (PluginStatus.isTerminal status)
-                                                    (fun () -> status)
-                                                    "status report"
+                                    { contextFor identity with
+                                        ReportStatus =
+                                            fun status ->
+                                                // A whole-run entry replays its verdict, so it captures
+                                                // only a report that landed: a terminal the funnel
+                                                // dropped was never observable, and must not become a
+                                                // cached verdict either.
+                                                let landed =
+                                                    reportStatus
+                                                        (Some identity)
+                                                        (PluginStatus.isTerminal status)
+                                                        (fun () -> status)
+                                                        "status report"
 
-                                            if landed || perFile then
-                                                capturedStatus <- Some status
-                                      ReportErrors =
-                                        fun file entries ->
-                                            capturedErrors.Add(file, entries)
-                                            services.ReportErrors handler.Name file entries
-                                      ClearErrors =
-                                        fun file ->
-                                            capturedErrors.Add(file, [])
-                                            services.ClearErrors handler.Name file
-                                      ClearAllErrors =
-                                        fun () ->
-                                            capturedErrors.Add("*", [])
-                                            services.ClearPlugin handler.Name
-                                      EmitBuildCompleted =
-                                        fun r ->
-                                            capturedEvents.Add(TaskCache.CachedBuildCompleted r)
-                                            services.EmitBuildCompleted r
-                                      EmitTestRunStarted =
-                                        fun r ->
-                                            capturedEvents.Add(TaskCache.CachedTestRunStarted r)
-                                            services.EmitTestRunStarted r
-                                      EmitTestProgress =
-                                        fun r ->
-                                            capturedEvents.Add(TaskCache.CachedTestProgress r)
-                                            services.EmitTestProgress r
-                                      EmitTestRunCompleted =
-                                        fun r ->
-                                            capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
-                                            services.EmitTestRunCompleted r
-                                      EmitCommandCompleted =
-                                        fun r ->
-                                            capturedEvents.Add(TaskCache.CachedCommandCompleted r)
-                                            services.EmitCommandCompleted r
-                                      Checker = services.Checker
-                                      RepoRoot = services.RepoRoot
-                                      Post = post
-                                      EnqueueExclusiveIntent = enqueueExclusiveIntentFor (leasesOf (Some identity))
-                                      StartSubtask = fun key label -> services.StartSubtask handler.Name key label
-                                      UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
-                                      EndSubtask = fun key -> services.EndSubtask handler.Name key
-                                      Log = fun msg -> services.Log handler.Name msg
-                                      CompleteWithTimeout =
-                                        fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-                                      RunExclusive =
-                                        fun key work ->
-                                            match runExclusive (Some identity) key work with
-                                            | Claimed ->
-                                                launchedRunInWindow <- true
-                                                Claimed
-                                            | SlotBusy -> SlotBusy
-                                      RunExclusiveShared =
-                                        fun key sharedKey workFor classify failureMessage ->
-                                            match
-                                                runExclusiveShared
-                                                    (Some identity)
-                                                    key
-                                                    sharedKey
-                                                    workFor
-                                                    classify
-                                                    failureMessage
-                                            with
-                                            | SharedClaimed ->
-                                                launchedRunInWindow <- true
-                                                SharedClaimed
-                                            | SharedQueued ->
-                                                launchedRunInWindow <- true
-                                                SharedQueued
-                                            | LocalSlotBusy -> LocalSlotBusy
-                                      IsRunning = isRunning
-                                      DeclareBoundedWork = declareBoundedWork
-                                      FcsSuppressedCodes = services.FcsSuppressedCodes
-                                      ProjectGraph = services.ProjectGraph }
+                                                if landed || perFile then
+                                                    capturedStatus <- Some status
+                                        ReportErrors =
+                                            fun file entries ->
+                                                capturedErrors.Add(file, entries)
+                                                services.ReportErrors handler.Name file entries
+                                        ClearErrors =
+                                            fun file ->
+                                                capturedErrors.Add(file, [])
+                                                services.ClearErrors handler.Name file
+                                        ClearAllErrors =
+                                            fun () ->
+                                                capturedErrors.Add("*", [])
+                                                services.ClearPlugin handler.Name
+                                        EmitBuildCompleted =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedBuildCompleted r)
+                                                services.EmitBuildCompleted r
+                                        EmitTestRunStarted =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedTestRunStarted r)
+                                                services.EmitTestRunStarted r
+                                        EmitTestProgress =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedTestProgress r)
+                                                services.EmitTestProgress r
+                                        EmitTestRunCompleted =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
+                                                services.EmitTestRunCompleted r
+                                        EmitCommandCompleted =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedCommandCompleted r)
+                                                services.EmitCommandCompleted r
+                                        RunExclusive =
+                                            fun key work ->
+                                                match runExclusive identity key work with
+                                                | Claimed ->
+                                                    launchedRunInWindow <- true
+                                                    Claimed
+                                                | SlotBusy -> SlotBusy
+                                        RunExclusiveShared =
+                                            fun key sharedKey workFor classify failureMessage ->
+                                                match
+                                                    runExclusiveShared
+                                                        identity
+                                                        key
+                                                        sharedKey
+                                                        workFor
+                                                        classify
+                                                        failureMessage
+                                                with
+                                                | SharedClaimed ->
+                                                    launchedRunInWindow <- true
+                                                    SharedClaimed
+                                                | SharedQueued ->
+                                                    launchedRunInWindow <- true
+                                                    SharedQueued
+                                                | LocalSlotBusy -> LocalSlotBusy }
 
                                 let! attempted = safeUpdate capturingCtx state event
 
@@ -1497,7 +1484,7 @@ let internal registerHandlerForOwner
 
                                 return attempted |> Result.map (fun candidate -> candidate, cacheWrite)
                             | _ ->
-                                let! attempted = safeUpdate (contextFor (Some identity)) state event
+                                let! attempted = safeUpdate (contextFor identity) state event
                                 return attempted |> Result.map (fun candidate -> candidate, None)
                         }
 

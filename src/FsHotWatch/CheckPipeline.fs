@@ -25,17 +25,21 @@ let private noopSink =
         member _.Log _ = ()
         member _.SetSummary _ = () }
 
-/// Pure cache-lookup decision: returns Some only when the cached entry is a
-/// FullCheck. ParseOnly entries are treated as misses so the file is re-checked.
-/// Exposed so cache-invalidation logic can be tested without disk or FCS.
-let tryGetCachedFullCheck (backend: ICheckCacheBackend option) (key: CacheKey option) : FileCheckResult option =
+/// Pure cache-lookup decision: returns Some only when the cached entry is a FullCheck
+/// whose recorded project outputs all still hold the bytes it was typed against
+/// (`outputsHold`). ParseOnly entries are misses so the file is re-checked. Exposed so
+/// cache-invalidation logic can be tested without disk or FCS.
+let tryGetCachedFullCheck
+    (outputsHold: (string * string) list -> bool)
+    (backend: ICheckCacheBackend option)
+    (key: CacheKey option)
+    : FileCheckResult option =
     match backend, key with
     | Some b, Some k ->
         match b.TryGet k with
-        | Some r ->
-            match r.CheckResults with
-            | FullCheck _ -> Some r
-            | ParseOnly -> None
+        | Some { Result = { CheckResults = FullCheck _ } as r
+                 ProjectOutputs = outputs } when outputsHold outputs -> Some r
+        | Some _
         | None -> None
     | _ -> None
 
@@ -133,6 +137,19 @@ type CheckPipeline
 
         makeCacheKeyWith keyProvider (optionsHashOf options) upstream path
 
+    /// A project output as an entry records it: repository-relative, so a sibling
+    /// worktree's identical output verifies it too.
+    let outputName (path: string) = relativizeOption repoRoot path
+
+    /// The path an entry's recorded output names in this worktree.
+    let outputPath (name: string) =
+        repoRoot
+        |> Option.fold (fun (path: string) root -> path.Replace(RepoRootPlaceholder, Path.GetFullPath root)) name
+
+    /// Whether every output an entry recorded still holds the bytes it was typed against.
+    let outputsHold (outputs: (string * string) list) =
+        outputs |> List.forall (fun (name, hash) -> hashFile (outputPath name) = hash)
+
     /// Report the registered working set to a scoped backend.
     let ensureCacheCoversWorkingSet () =
         match cacheBackend with
@@ -177,13 +194,6 @@ type CheckPipeline
 
     /// The fit warning last logged, if any.
     member _.LastFitWarning = Volatile.Read(&lastFitWarning)
-
-    /// Time spent computing upstream fingerprints since construction — the key's own
-    /// cost, to weigh against the checks the cache saves. Excludes waits.
-    member _.FingerprintTime = upstreamFingerprints.ComputeTime
-
-    /// Per-project fingerprint tables built since construction.
-    member _.FingerprintTablesBuilt = upstreamFingerprints.TablesBuilt
 
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
@@ -336,7 +346,7 @@ type CheckPipeline
     /// implicit token differs from the per-file token.
     member private this.CheckFileCore
         (openFile: ProjectSnapshots.OpenFile, options: FSharpProjectOptions, ct: CancellationToken)
-        : Async<FileCheckResult option> =
+        : Async<(FileCheckResult * (string * string) list) option> =
         async {
             ct.ThrowIfCancellationRequested()
             let absPath = openFile.Path
@@ -362,6 +372,10 @@ type CheckPipeline
 
                 let framed = framedNow ()
                 let snapshotTime = sw.Elapsed
+
+                // What FCS may type against beyond the snapshot's versions, read before it does.
+                let outputs =
+                    framed.RealProjectOutputs |> List.map (fun output -> output, hashFile output)
 
                 // The name FCS knows the file by: under the virtual root when its project is.
                 let checkedPath =
@@ -424,7 +438,7 @@ type CheckPipeline
                     activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
 
                     return
-                        Some
+                        Some(
                             { File = AbsFilePath.create absPath
                               Source = source
                               ParseResults = parseResults
@@ -432,10 +446,12 @@ type CheckPipeline
                               ProjectOptions = options
                               Version = version
                               ModelGeneration = None
-                              Frame = framed.Frame }
+                              Frame = framed.Frame },
+                            outputs
+                        )
                 | FSharpCheckFileAnswer.Aborted ->
                     return
-                        Some
+                        Some(
                             { File = AbsFilePath.create absPath
                               Source = source
                               ParseResults = parseResults
@@ -443,7 +459,9 @@ type CheckPipeline
                               ProjectOptions = options
                               Version = version
                               ModelGeneration = None
-                              Frame = framed.Frame }
+                              Frame = framed.Frame },
+                            outputs
+                        )
             with ex ->
                 Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                 return None
@@ -463,7 +481,7 @@ type CheckPipeline
                 cacheBackend
                 |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
-            match tryGetCachedFullCheck cacheBackend cacheKey with
+            match tryGetCachedFullCheck outputsHold cacheBackend cacheKey with
             | Some cached ->
                 Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                 return Some cached
@@ -472,10 +490,17 @@ type CheckPipeline
                 let! result = this.CheckFileCore(openFile, options, ct)
 
                 match result, cacheBackend, cacheKey with
-                | Some r, Some backend, Some key ->
+                | Some(r, outputs), Some backend, Some key ->
+                    let inputsHeld =
+                        makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key
+                        && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
+
                     match r.CheckResults with
-                    | FullCheck _ when makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key ->
-                        backend.Set key r
+                    | FullCheck _ when inputsHeld ->
+                        backend.Set
+                            key
+                            { Result = r
+                              ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
                     | FullCheck _ ->
                         Logging.debug
                             "check"
@@ -483,7 +508,7 @@ type CheckPipeline
                     | ParseOnly -> ()
                 | _ -> ()
 
-                return result
+                return result |> Option.map fst
         }
 
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.

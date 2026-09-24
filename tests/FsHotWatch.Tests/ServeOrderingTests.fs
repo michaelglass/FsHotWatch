@@ -20,23 +20,6 @@ open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 open FsHotWatch.Tests.TestHelpers
 
-/// Run `body` while every thread pool thread is held, then let them go. Process-wide,
-/// hence the serialized collection.
-let private withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
-    use gate = new ManualResetEventSlim(false)
-
-    let held =
-        [ for _ in 1 .. Environment.ProcessorCount * 4 -> Task.Run(fun () -> gate.Wait()) ]
-
-    // Long enough for the held work to take every thread the pool has.
-    Thread.Sleep 200
-
-    try
-        body ()
-    finally
-        gate.Set()
-        Task.WaitAll(held |> Array.ofList, TimeSpan.FromSeconds 10.0) |> ignore
-
 [<Fact(Timeout = 60000)>]
 let ``a daemon accepts connections once RunWith has started serving, however busy the thread pool`` () =
     withTempDir "serve-ordering" (fun dir ->

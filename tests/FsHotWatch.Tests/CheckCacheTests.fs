@@ -180,15 +180,18 @@ let ``makeCacheKey produces different keys for different files`` () =
 
 // --- InMemoryCheckCache tests ---
 
-let private makeTestResult (file: string) (version: int64) : FileCheckResult =
-    { File = AbsFilePath.create file
-      Source = "test"
-      ParseResults = Unchecked.defaultof<_>
-      CheckResults = ParseOnly
-      ProjectOptions = Unchecked.defaultof<_>
-      Version = version
-      ModelGeneration = None
-      Frame = None }
+/// An entry for `file` that referenced no project outputs.
+let private makeTestResult (file: string) (version: int64) : CachedCheck =
+    { Result =
+        { File = AbsFilePath.create file
+          Source = "test"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = version
+          ModelGeneration = None
+          Frame = None }
+      ProjectOutputs = [] }
 
 let private makeKey (fileHash: string) : CacheKey =
     { FileHash = ContentHash.create fileHash
@@ -203,7 +206,7 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     cache.Set key result
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.File)
+    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.Result.File)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]
@@ -264,7 +267,7 @@ let ``InMemoryCheckCache updates existing key with new value`` () =
     cache.Set key (makeTestResult "test.fs" 2L)
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal(2L, r.Version)
+    | Some r -> Assert.Equal(2L, r.Result.Version)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]
@@ -566,6 +569,57 @@ let ``FileContentHasher re-hashes a file whose content changed`` () =
         File.WriteAllText(path, "let x = \"changed\"")
         Assert.NotEqual<string>(first, hasher.Hash path))
 
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher hashes a file it cannot read to a fixed marker`` () =
+    // An unreadable file is what FCS sees as unreadable too: a fixed marker, never an
+    // exception out of the cache key.
+    withTempDir "content-hasher-unreadable" (fun dir ->
+        let path = Path.Combine(dir, "A.fs")
+        File.WriteAllText(path, "let x = 1")
+        File.SetUnixFileMode(path, UnixFileMode.None)
+
+        try
+            Assert.Equal("unreadable", FileContentHasher().Hash path)
+        finally
+            File.SetUnixFileMode(path, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact(Timeout = 15000)>]
+let ``a non-F# project reference is fingerprinted by its output path, not its sources`` () =
+    // FCS reads an IL or PE reference as metadata; which one it is lives in its path,
+    // and it has no sources to walk.
+    let withReference (output: string) =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.ILModuleReference(
+                       output,
+                       (fun () -> DateTime(2020, 1, 1)),
+                       fun () -> failwith "a fingerprint never reads the module"
+                   ) |] }
+
+    let fp output =
+        upstreamFingerprint (fakeHasher (Map [ "/repo/App.fs", "app" ])) None "/repo/App.fs" (withReference output)
+
+    Assert.Equal(fp "/repo/obj/Cs.dll", fp "/repo/obj/Cs.dll")
+    Assert.NotEqual<string>(fp "/repo/obj/Cs.dll", fp "/repo/obj/Other.dll")
+
+[<Fact(Timeout = 15000)>]
+let ``a file outside the project gets the whole project's fingerprint from a generation's table`` () =
+    // A file not in `SourceFiles` (a script, a file just removed) depends on every
+    // source of the project, so any edit moves it.
+    withTempDir "fp-outside" (fun dir ->
+        let a = Path.Combine(dir, "A.fs")
+        let outside = Path.Combine(dir, "Outside.fsx")
+        File.WriteAllText(a, "module A")
+        let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ a ] []
+        let fps = UpstreamFingerprints(None)
+        fps.BeginGeneration()
+        let before = fps.For(outside, opts, "h")
+        Assert.Equal(fps.Fresh(outside, opts), before)
+        Assert.NotEqual<string>(fps.For(a, opts, "h"), before)
+        File.WriteAllText(a, "module A // edited")
+        fps.BeginGeneration()
+        Assert.NotEqual<string>(before, fps.For(outside, opts, "h")))
+
 // --- InMemoryCheckCache under a sequential scan ---
 
 let private scanKey (i: int) = makeKey $"file-%d{i}"
@@ -587,6 +641,16 @@ let ``an LRU smaller than the working set gets zero hits on a repeated sequentia
     let cache = InMemoryCheckCache(500) :> ICheckCacheBackend
     scanPass cache 1835 |> ignore
     Assert.Equal(0, scanPass cache 1835)
+
+[<Fact(Timeout = 15000)>]
+let ``a working-set cache stores nothing until a working set is observed`` () =
+    // Its bound IS the observed working set, which starts at zero: a result stored
+    // before the first observation has no room, rather than an unbounded one.
+    let cache = InMemoryCheckCache(CacheCapacity.WorkingSet)
+    let backend = cache :> ICheckCacheBackend
+    backend.Set (scanKey 0) (makeTestResult "f0.fs" 1L)
+    Assert.True((backend.TryGet(scanKey 0)).IsNone)
+    Assert.Equal(0, cache.Capacity)
 
 [<Fact(Timeout = 15000)>]
 let ``a working-set cache grows to what it admits so a repeated scan hits every file`` () =

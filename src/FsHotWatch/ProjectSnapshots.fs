@@ -87,7 +87,8 @@ let private diskFile (hashFile: string -> string) (version: string) (name: strin
 /// A reference stamp named by content. The checker does one thing with a reference's
 /// `LastModified`: hash it into the project's version. Which of an upstream project's
 /// dll and sources it type-checks against is decided from the real filesystem, so
-/// this stamp cannot change that choice.
+/// this stamp cannot change that choice. It must therefore name what that choice
+/// reads: a real path's bytes, or a framed upstream's closure (see `buildFramed`).
 let contentStamp (contentHash: string) : DateTime =
     let digest = SHA256.HashData(Encoding.UTF8.GetBytes contentHash)
     let ticks = BitConverter.ToUInt64(digest, 0) % uint64 (DateTime.MaxValue.Ticks + 1L)
@@ -149,18 +150,22 @@ let private referenceOnDisk (hashFile: string -> string) (repoRoot: string optio
 
     { Path = path; LastModified = stamp }
 
-/// A snapshot, and the frame its project was checked under.
+/// A snapshot, the frame its project was checked under, and the real-path project
+/// outputs anywhere in its reference tree: the ones FCS may type against, since it
+/// reads such an output whenever it is at least as new as its project's sources.
 [<NoComparison; NoEquality>]
 type Framed =
     { Snapshot: FSharpProjectSnapshot
-      Frame: PathFrame.PathFrame option }
+      Frame: PathFrame.PathFrame option
+      RealProjectOutputs: string list }
 
 /// A project's snapshot, the frame it was built under, and its closure hash.
 [<NoComparison; NoEquality>]
 type private Built =
     { Snapshot: FSharpProjectSnapshot
       Frame: PathFrame.PathFrame option
-      Closure: string }
+      Closure: string
+      RealProjectOutputs: string list }
 
 /// The snapshot for checking `openFile` in `options`, with content versions, each
 /// project under the frame `choose` gives it. `generation` is the generation each
@@ -168,10 +173,14 @@ type private Built =
 /// `repoRoot`, when present, bounds the references stamped by content.
 ///
 /// A framed project names its project file, sources and output under the virtual root,
-/// and reads its sources from the worktree. A reference to another project's output
-/// takes that project's frame, since FCS matches the two by exact string; its stamp is
-/// derived from that project's closure, so two worktrees whose builds differ in bytes
-/// still agree. Every other in-repository reference keeps its real path: FCS opens it.
+/// and reads its sources from the worktree. A reference to a framed project's output
+/// takes that project's frame, since FCS matches the two by exact string. Nothing exists
+/// at that virtual path, so FCS types the upstream from its snapshot, never from a dll,
+/// and the stamp is derived from the upstream's closure: two worktrees whose builds
+/// differ in bytes still agree. Every other in-repository reference, an unframed
+/// project's output included, keeps its real path and is stamped by its bytes: FCS
+/// opens it, and types against it whenever it is at least as new as the upstream's
+/// sources (FCS 43.12.401, TransparentCompiler `ComputeAssemblyData`). See ADR-037.
 ///
 /// A project's generation is looked up by the name the checker knows it by (virtual
 /// when framed), and reaches only its reference stamps, never its closure, so a new
@@ -211,6 +220,16 @@ let buildFramed
                 referenced
                 |> List.choose (fun (output, upstream) -> upstream |> Option.map (fun u -> output, snd u))
                 |> Map.ofList
+
+            // A framed upstream's references are framed too, so its tree has none.
+            let realProjectOutputs =
+                referenced
+                |> List.collect (fun (_, upstream) ->
+                    match upstream with
+                    | Some(output, ({ Frame = None } as u)) -> output :: u.RealProjectOutputs
+                    | Some _
+                    | None -> [])
+                |> List.distinct
 
             let references, otherOptions =
                 opts.OtherOptions
@@ -290,12 +309,14 @@ let buildFramed
                 |> List.map (fun path ->
                     let reference =
                         match Map.tryFind path upstreamByOutput with
-                        | Some upstream ->
-                            { Path =
-                                (match upstream.Frame with
-                                 | Some f -> PathFrame.toVirtual f path
-                                 | None -> path)
+                        // Under a virtual root the output path never exists, so FCS types
+                        // the upstream from its snapshot: the closure is what it read.
+                        | Some({ Frame = Some f } as upstream) ->
+                            { Path = PathFrame.toVirtual f path
                               LastModified = contentStamp upstream.Closure }
+                        // At a real path FCS types against the output whenever it is at
+                        // least as new as the upstream's sources: its bytes are an input.
+                        | Some { Frame = None }
                         | None -> referenceOnDisk hashFile repoRoot path
 
                     { reference with
@@ -345,7 +366,8 @@ let buildFramed
             let b =
                 { Snapshot = snapshot
                   Frame = frame
-                  Closure = closure }
+                  Closure = closure
+                  RealProjectOutputs = realProjectOutputs }
 
             built[opts] <- b
             b
@@ -353,7 +375,8 @@ let buildFramed
     let top = snapshotOf options
 
     { Snapshot = top.Snapshot
-      Frame = top.Frame }
+      Frame = top.Frame
+      RealProjectOutputs = top.RealProjectOutputs }
 
 /// The snapshot for checking `openFile` in `options`, every project at its own paths.
 let build
