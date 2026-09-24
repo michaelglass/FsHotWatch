@@ -21,12 +21,22 @@ module SqlCoupling =
 
     /// For each (table, column) pair, connect every writer to every reader.
     /// Wildcard columns ("*") match any specific column.
-    let buildEdges (facts: SqlFact list) : Dependency list =
+    ///
+    /// A test method in `testMethods` is never a writer. A test that seeds its own rows
+    /// writes them only for itself: no reader outside that test observes them. Coupling
+    /// the table's readers to it would make them depend on a test, and the impact walk,
+    /// reaching that test through anything it calls, would go on from it into every
+    /// reader of every table it seeds and all of their tests. A test method is still a
+    /// reader: a test that reads a table depends on that table's writers.
+    let buildEdges (testMethods: Set<string>) (facts: SqlFact list) : Dependency list =
         let byTable = facts |> List.groupBy (fun f -> f.Table)
 
         byTable
         |> List.collect (fun (_, tableFacts) ->
-            let writers = tableFacts |> List.filter (fun f -> f.Access = Write)
+            let writers =
+                tableFacts
+                |> List.filter (fun f -> f.Access = Write && not (testMethods.Contains f.Symbol))
+
             let readers = tableFacts |> List.filter (fun f -> f.Access = Read)
 
             [ for w in writers do

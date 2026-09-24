@@ -4,7 +4,9 @@
 Add explicit database shared-state dependencies to a TestPrune symbol graph.
 When one symbol writes a table or column and another reads it, the extension
 adds a `SharedState` edge so a writer change selects tests that reach the
-reader.
+reader. A test method is never a writer: rows a test seeds exist only inside that
+test, so no reader depends on them. A test that reads a table still depends on its
+writers.
 
 ```bash
 dotnet add package TestPrune.Sql

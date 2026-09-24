@@ -621,3 +621,85 @@ module ``SqlHydra under-selection`` =
 
             let affected = db.QueryAffectedTests([ "Repo.upsertArticle" ])
             test <@ affected |> List.map (fun t -> t.TestMethod) = [ "testListsArticles" ] @>)
+
+module ``SqlHydra test writers`` =
+
+    let private testMethod (fullName: string) (project: string) : TestMethodInfo =
+        { SymbolFullName = fullName
+          TestProject = project
+          TestClass = "Tests"
+          TestMethod = fullName.Substring(fullName.LastIndexOf '.' + 1) }
+
+    /// A test that seeds its own rows WRITES a table, but those rows exist only inside
+    /// that test: no reader outside it ever observes them. `Tests.testDelivery` calls
+    /// `Queries.getBrief` and inserts its own `users` rows; `Queries.getUser` reads
+    /// `users` and `Tests.testUser` calls it. Changing `Queries.getBrief` selects the
+    /// test that calls it, and must stop there — not continue through that test's
+    /// inserts into every reader of `users` and all of their tests.
+    [<Fact>]
+    let ``a test's own inserts do not make the table's readers depend on it`` () =
+        withDb (fun db ->
+            let symbols =
+                [ fn "Tests.testDelivery" "tests/DeliveryTests.fs"
+                  fn "Tests.testUser" "tests/UserTests.fs"
+                  fn "Queries.getBrief" "src/BriefQueries.fs"
+                  fn "Queries.getUser" "src/UserQueries.fs"
+                  dsl "SqlHydra.Query.selectTask"
+                  dsl "SqlHydra.Query.insertTask"
+                  table "Generated.public.users" ]
+
+            let coreDeps =
+                [ calls "Tests.testDelivery" "Queries.getBrief"
+                  calls "Tests.testDelivery" "SqlHydra.Query.insertTask"
+                  calls "Tests.testDelivery" "Generated.public.users"
+                  calls "Tests.testUser" "Queries.getUser"
+                  calls "Queries.getUser" "SqlHydra.Query.selectTask"
+                  calls "Queries.getUser" "Generated.public.users" ]
+
+            let testMethods =
+                [ testMethod "Tests.testDelivery" "Delivery.Tests"
+                  testMethod "Tests.testUser" "User.Tests" ]
+
+            let store =
+                InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
+
+            let sqlEdges =
+                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+
+            test <@ sqlEdges |> List.forall (fun edge -> edge.ToSymbol <> "Tests.testDelivery") @>
+
+            db.RebuildProjects([ AnalysisResult.Create(symbols, coreDeps @ sqlEdges, testMethods) ])
+
+            let affected = db.QueryAffectedTests([ "Queries.getBrief" ])
+            test <@ affected |> List.map (fun t -> t.TestMethod) = [ "testDelivery" ] @>)
+
+    /// The other direction is untouched: a test that READS a table directly still
+    /// depends on the table's production writers, so changing a writer selects it.
+    [<Fact>]
+    let ``a test reading a table still depends on the table's writers`` () =
+        withDb (fun db ->
+            let symbols =
+                [ fn "Tests.testReadsUsers" "tests/UserTests.fs"
+                  fn "Commands.createUser" "src/UserCommands.fs"
+                  dsl "SqlHydra.Query.selectTask"
+                  dsl "SqlHydra.Query.insertTask"
+                  table "Generated.public.users" ]
+
+            let coreDeps =
+                [ calls "Tests.testReadsUsers" "SqlHydra.Query.selectTask"
+                  calls "Tests.testReadsUsers" "Generated.public.users"
+                  calls "Commands.createUser" "SqlHydra.Query.insertTask"
+                  calls "Commands.createUser" "Generated.public.users" ]
+
+            let testMethods = [ testMethod "Tests.testReadsUsers" "User.Tests" ]
+
+            let store =
+                InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
+
+            let sqlEdges =
+                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+
+            db.RebuildProjects([ AnalysisResult.Create(symbols, coreDeps @ sqlEdges, testMethods) ])
+
+            let affected = db.QueryAffectedTests([ "Commands.createUser" ])
+            test <@ affected |> List.map (fun t -> t.TestMethod) = [ "testReadsUsers" ] @>)

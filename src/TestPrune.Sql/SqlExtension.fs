@@ -10,8 +10,8 @@ type SqlExtension(facts: SqlFact list) =
     interface ITestPruneExtension with
         member _.Name = "SQL Coupling"
 
-        member _.AnalyzeEdges (_symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
-            SqlCoupling.buildEdges facts
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
+            SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames()) facts
 
 /// Extension that auto-discovers ReadsFrom/WritesTo attributes from the symbol store
 /// and produces SharedState edges based on shared table access.
@@ -58,4 +58,4 @@ type AutoSqlExtension() =
 
         member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
             let facts = AutoSqlExtension.ExtractFacts(symbolStore)
-            SqlCoupling.buildEdges facts
+            SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames()) facts

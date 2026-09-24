@@ -22,7 +22,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.Length = 1 @>
         test <@ edges[0].FromSymbol = "Queries.getArticle" @>
         test <@ edges[0].ToSymbol = "Queries.saveArticle" @>
@@ -45,7 +45,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "status"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.Length = 1 @>
         test <@ edges[0].FromSymbol = "R.loadStatus" @>
         test <@ edges[0].ToSymbol = "W.save" @>
@@ -66,7 +66,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "status"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.Length = 2 @>
 
     [<Fact>]
@@ -85,7 +85,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.Length = 2 @>
 
     [<Fact>]
@@ -100,7 +100,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.IsEmpty @>
 
     [<Fact>]
@@ -115,7 +115,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Write } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.IsEmpty @>
 
     [<Fact>]
@@ -130,7 +130,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.IsEmpty @>
 
     [<Fact>]
@@ -145,7 +145,7 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         test <@ edges.IsEmpty @>
 
     [<Fact>]
@@ -168,9 +168,46 @@ module ``SqlCoupling buildEdges`` =
                 Column = "*"
                 Access = Read } ]
 
-        let edges = SqlCoupling.buildEdges facts
+        let edges = SqlCoupling.buildEdges Set.empty facts
         // 2 writers x 2 readers = 4 edges
         test <@ edges.Length = 4 @>
+
+    [<Fact>]
+    let ``a test method that writes a table is not a writer the table's readers depend on`` () =
+        let facts =
+            [ { Symbol = "Tests.seedsArticles"
+                Table = "articles"
+                Column = "*"
+                Access = Write }
+              { Symbol = "Queries.getArticle"
+                Table = "articles"
+                Column = "*"
+                Access = Read } ]
+
+        test
+            <@
+                SqlCoupling.buildEdges (Set.singleton "Tests.seedsArticles") facts
+                |> List.isEmpty
+            @>
+        // The same facts without the test marked: the edge the marking removes.
+        test <@ (SqlCoupling.buildEdges Set.empty facts).Length = 1 @>
+
+    [<Fact>]
+    let ``a test method that reads a table still depends on the table's writers`` () =
+        let facts =
+            [ { Symbol = "Commands.saveArticle"
+                Table = "articles"
+                Column = "*"
+                Access = Write }
+              { Symbol = "Tests.readsArticles"
+                Table = "articles"
+                Column = "*"
+                Access = Read } ]
+
+        let edges = SqlCoupling.buildEdges (Set.singleton "Tests.readsArticles") facts
+
+        test
+            <@ edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) = [ "Tests.readsArticles", "Commands.saveArticle" ] @>
 
 module ``SQL coupling end-to-end`` =
 
@@ -302,7 +339,7 @@ module ``SqlExtension as ITestPruneExtension`` =
         let extension = SqlExtension(facts)
 
         let edges =
-            (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) [] ""
 
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
@@ -313,7 +350,7 @@ module ``SqlExtension as ITestPruneExtension`` =
         let extension = SqlExtension([])
 
         let edges =
-            (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) [] ""
 
         test <@ edges.IsEmpty @>
 
