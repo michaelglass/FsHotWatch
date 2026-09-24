@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a daemon's process registry is the daemon's. Building a daemon in-process no
+  longer leaves its registry installed in the caller's context, so a spawn the caller
+  makes afterwards is the caller's, and is not refused once the daemon is disposed. A
+  plugin's work, inline or exclusive, runs in the context it was registered in, whoever
+  dispatches to it, and `Daemon.RegisterHandler` registers in the daemon's scope, so
+  what a plugin spawns is still reaped when its daemon stops.
+
 - fix: `Daemon.RunWith` and `RepositoryHost.run` start their IPC server on their own
   thread, so a daemon or host accepts connections before its startup goes on. Queued to
   the thread pool, a loaded box could leave a client probing for it with nothing

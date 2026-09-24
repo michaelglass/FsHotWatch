@@ -1,9 +1,9 @@
 /// The worktree sessions a repository host holds.
 ///
 /// Each session wraps today's `Daemon` unchanged: its own checker, plugin host and
-/// `.fshw` state. It is built with `SessionScope.isolated`, so its log sink, its
-/// client's environment and the process registry `Daemon` installs belong to it alone
-/// and flow with everything it starts. A session ends when its run ends for any
+/// `.fshw` state. It is built with `SessionScope.isolated`, so its log sink and its
+/// client's environment belong to it alone and flow with everything it starts; its
+/// daemon's process registry scopes the daemon's own work (construction, plugins, run). A session ends when its run ends for any
 /// reason — a stop, its own `Shutdown`, idle-exit, a wedge restart, a fault — and is
 /// removed at that moment. Its incarnation is then void, and what it owned (the
 /// worktree's lock, its watchers) is released. Nothing a session does on the way in or

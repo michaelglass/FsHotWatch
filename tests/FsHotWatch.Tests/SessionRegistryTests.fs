@@ -316,10 +316,10 @@ let ``stopping one session never reaps a sibling's children`` () =
     withTwoWorktrees (fun a b ->
         let children = ConcurrentDictionary<string, Process>()
 
-        // Spawned from inside each session's construction, so each child is tracked
-        // by the registry in THAT session's scope.
+        // Each child is tracked by THAT session's daemon's registry.
         let factory =
-            daemonFactory (fun spec _ ->
+            daemonFactory (fun spec daemon ->
+                use _ = ProcessRegistry.install daemon.ProcessRegistry
                 let p = Process.Start("sleep", "60")
                 ProcessRegistry.track p
                 children[spec.Worktree.Root.Value] <- p)

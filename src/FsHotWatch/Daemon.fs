@@ -2320,7 +2320,12 @@ type Daemon
                 watcher |> Option.iter (fun w -> (w :> IDisposable).Dispose())
 
     /// Register a declarative framework-managed plugin handler.
+    ///
+    /// Registration starts the plugin's worker, which captures the current context: the
+    /// daemon's process scope is installed for it, so what the plugin spawns is the
+    /// daemon's to reap, whoever registers it.
     member _.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
+        use _processScope = ProcessRegistry.install processRegistry
         host.RegisterHandler(handler)
 
     /// Register a preprocessor (e.g., formatter) that runs before events are dispatched.
@@ -2384,6 +2389,7 @@ type Daemon
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {
+            use _processScope = ProcessRegistry.install processRegistry
             ready.Set()
 
             try
@@ -2441,6 +2447,10 @@ type Daemon
             cts: CancellationTokenSource
         ) =
         async {
+            // Called from the caller's context: what this starts runs in the daemon's
+            // process scope, and the caller's is untouched.
+            use _processScope = ProcessRegistry.install processRegistry
+
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
                 // sends next is bound to this request rather than to an earlier one
@@ -3425,7 +3435,9 @@ module Daemon =
             for options in ownProjects do
                 ProjectSnapshots.invalidate checker options
 
-    let private createWithCore
+    /// Build the daemon, with `processRegistry` installed (see `createWithCore`).
+    let private constructDaemon
+        (processRegistry: ProcessRegistry.Registry)
         (checker: FSharpChecker)
         (repoRoot: string)
         (opts: DaemonOptions)
@@ -3434,21 +3446,6 @@ module Daemon =
         (watcherIsMacOSOverride: bool option)
         (watcherFactory: WatcherFactory)
         =
-        // This MUST be the first thing that happens.
-        //
-        // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
-        // value is only visible to ExecutionContexts captured AFTER it is set.
-        // Everything below captures a context: the PluginHost's agents, the
-        // change/scan supervisors, the plugin handlers registered later. Whichever
-        // of them eventually DISPATCHES to a plugin decides the context that
-        // plugin's `runProcess` runs in, so installing the registry any later
-        // means a plugin's spawned child resolves NO registry,
-        // `ProcessRegistry.track` drops it silently, `KillAll` reaps nothing, and
-        // a wedged plugin's process outlives the daemon as an init-reparented
-        // orphan.
-        let processRegistry = ProcessRegistry.Registry()
-        ProcessRegistry.install processRegistry |> ignore
-
         let seams = DaemonHosting.seams opts.Hosting
         let watcherFactory = seams.Watcher watcherFactory
 
@@ -3819,6 +3816,41 @@ module Daemon =
         with _ ->
             lifetime.Dispose()
             reraise ()
+
+    /// Build a daemon, its process registry installed while it is built and not after.
+    ///
+    /// The registry is scoped by an `AsyncLocal`, and an AsyncLocal value is only
+    /// visible to ExecutionContexts captured AFTER it is set. Construction captures
+    /// every context the daemon works in: the PluginHost's agents, the change/scan
+    /// supervisors, the plugin handlers registered later. So the registry is installed
+    /// first, and a plugin's spawned child resolves to it; installed any later, the
+    /// child would resolve NO registry, `KillAll` would reap nothing, and a wedged
+    /// plugin's process would outlive the daemon as an init-reparented orphan.
+    ///
+    /// Once built, the caller's own registry is back. The daemon's is the daemon's: left
+    /// in the caller's context, a spawn the caller makes later would land in it, and
+    /// after the daemon is disposed be refused by a registry that has shut down.
+    let private createWithCore
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (workspaceLoader: IWorkspaceLoader option)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherIsMacOSOverride: bool option)
+        (watcherFactory: WatcherFactory)
+        =
+        let processRegistry = ProcessRegistry.Registry()
+
+        using (ProcessRegistry.install processRegistry) (fun _ ->
+            constructDaemon
+                processRegistry
+                checker
+                repoRoot
+                opts
+                workspaceLoader
+                mapProjectOptions
+                watcherIsMacOSOverride
+                watcherFactory)
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =

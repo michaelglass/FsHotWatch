@@ -563,21 +563,27 @@ let internal registerHandlerForOwner
 
     let pluginName = PluginName.value handler.Name
 
-    // Dispatch may arrive from a short-lived scan or batch scope. An exclusive worker
-    // belongs to this registered plugin and can outlive that trigger, so it runs in the
-    // context the plugin was registered in. `Capture` is null when flow was suppressed at
-    // registration; the worker then runs in the host launcher's own context.
+    // Dispatch may arrive from a short-lived scan or batch scope, or from whoever holds
+    // the host. The plugin's work belongs to this registered plugin, not to that trigger,
+    // so it runs in the context the plugin was registered in: its process scope, its log
+    // sink. That covers both what the mailbox loop runs inline (a posted message resumes
+    // the loop in the poster's context) and an exclusive worker, which can also outlive
+    // the trigger. `Capture` is null when flow was suppressed at registration; the work
+    // then runs in the context it was started from.
     let ownerContext = System.Threading.ExecutionContext.Capture()
 
-    let startOwned (work: Async<unit>) =
+    let inOwnerContext (start: unit -> unit) =
         if isNull ownerContext then
-            services.StartAsync work
+            start ()
         else
             System.Threading.ExecutionContext.Run(
                 ownerContext.CreateCopy(),
-                System.Threading.ContextCallback(fun _ -> services.StartAsync work),
+                System.Threading.ContextCallback(fun _ -> start ()),
                 null
             )
+
+    let startOwned (work: Async<unit>) =
+        inOwnerContext (fun () -> services.StartAsync work)
 
     // Orders status reports against the claims that publish `Running`. Whether a live
     // run owns the status is read from the owner snapshot; the lock only makes that
@@ -1612,7 +1618,7 @@ let internal registerHandlerForOwner
         finally
             error pluginName $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
-    deliver <- agent.Post
+    deliver <- fun message -> inOwnerContext (fun () -> agent.Post message)
 
     // Register commands. An observation reads one published snapshot and never waits
     // behind running work; a request is the plugin's own code with a posting context.
