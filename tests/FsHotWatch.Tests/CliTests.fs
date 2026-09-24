@@ -3221,6 +3221,12 @@ module ``beforeRun failure reporting`` =
         Directory.CreateDirectory dir |> ignore
         dir
 
+    /// A tracker that holds nothing: these tests read the chain's outcome, not its steps.
+    let private untracked: FsHotWatch.HookStep.Tracker =
+        fun _ ->
+            { new IDisposable with
+                member _.Dispose() = () }
+
     let private cleanup dir =
         try
             Directory.Delete(dir, true)
@@ -3289,7 +3295,7 @@ module ``beforeRun failure reporting`` =
             let steps =
                 [ "echo first-ok"; "echo the-failing-output && exit 3"; "echo never-reached" ]
 
-            match runShellSteps "beforeRun" (Some 60) repo steps with
+            match runShellSteps "beforeRun" (Some 60) repo untracked steps with
             | HookOk _ -> failwith "expected the chain to fail"
             | HookFailed(ran, failure) ->
                 // The steps that RAN are timed — the passing one and the
@@ -3323,7 +3329,7 @@ module ``beforeRun failure reporting`` =
         let repo = tmpRepo ()
 
         try
-            match runShellSteps "beforeRun" (Some 60) repo [ "exit 7" ] with
+            match runShellSteps "beforeRun" (Some 60) repo untracked [ "exit 7" ] with
             | HookOk _ -> failwith "expected the chain to fail"
             | HookFailed(_, failure) ->
                 let message = HookFailure.describe failure
@@ -3346,7 +3352,7 @@ module ``beforeRun failure reporting`` =
 
             let steps = [ "echo one > ran.txt"; "echo two >> ran.txt"; "echo three >> ran.txt" ]
 
-            match runShellSteps "beforeRun" (Some 60) repo steps with
+            match runShellSteps "beforeRun" (Some 60) repo untracked steps with
             | HookFailed(_, f) -> failwith $"expected success, got: %s{HookFailure.describe f}"
             | HookOk timings ->
                 // Every step is timed, in chain order, as itself.

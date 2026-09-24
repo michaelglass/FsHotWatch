@@ -209,7 +209,8 @@ daemon.RegisterHandler(
               TimeoutSec = None }
         ])
         None                      // buildExtensions: Database -> ITestPruneExtension list
-        None                      // beforeRun callback
+        None                      // beforeRun: run id -> HookStep.Tracker -> unit; hand
+                                  //   each running step to the tracker so a wait names it
         None                      // afterRun callback
         None                      // coveragePaths: project -> CoveragePaths option
         []                        // dependsOn: repo-root-relative globs naming external

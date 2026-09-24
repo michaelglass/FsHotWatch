@@ -1683,18 +1683,21 @@ type internal HookOutcome =
 /// Run an ordered chain of shell steps, stopping at the first failure and
 /// reporting WHICH one broke. One step is the degenerate case of the same path,
 /// so the string and array config forms share every line of this.
+///
+/// Each step is handed to `track` once its child is running and released once the
+/// child has exited, however it exits, so a wait that falls inside the chain names
+/// the step it is on.
 let internal runShellSteps
     (label: string)
     (timeoutSec: int option)
     (repoRoot: string)
+    (track: HookStep.Tracker)
     (steps: string list)
     : HookOutcome =
+    let bound = timeoutSec |> Option.map (fun s -> TimeSpan.FromSeconds(float s))
+
     let bounds =
-        ProcessBounds.silent (
-            match timeoutSec with
-            | Some s -> TimeSpan.FromSeconds(float s)
-            | None -> Threading.Timeout.InfiniteTimeSpan
-        )
+        ProcessBounds.silent (bound |> Option.defaultValue Threading.Timeout.InfiniteTimeSpan)
 
     let count = List.length steps
 
@@ -1710,7 +1713,26 @@ let internal runShellSteps
                 let (command, args) = shellInvocation cmd
                 let startedAt = DateTime.UtcNow
                 let stopwatch = Diagnostics.Stopwatch.StartNew()
-                let outcome = runProcess command args repoRoot [] bounds
+                let held: IDisposable option ref = ref None
+
+                let onStarted pid =
+                    let step: HookStep.Running =
+                        { Label = label
+                          StepIndex = i + 1
+                          StepCount = count
+                          Command = cmd
+                          Pid = pid
+                          Bound = bound }
+
+                    Logging.info label $"Started %s{HookStep.describe step}"
+                    held.Value <- Some(track step)
+
+                let outcome =
+                    try
+                        runProcessObserved onStarted command args repoRoot [] bounds
+                    finally
+                        held.Value |> Option.iter _.Dispose()
+
                 stopwatch.Stop()
 
                 let timing =
@@ -1748,17 +1770,29 @@ let internal makeShellHookWithResult
     (repoRoot: string)
     (cmd: string)
     : unit -> bool * string =
+    let bound = timeoutSec |> Option.map (fun s -> TimeSpan.FromSeconds(float s))
+
     let bounds =
-        ProcessBounds.silent (
-            match timeoutSec with
-            | Some s -> TimeSpan.FromSeconds(float s)
-            | None -> Threading.Timeout.InfiniteTimeSpan
-        )
+        ProcessBounds.silent (bound |> Option.defaultValue Threading.Timeout.InfiniteTimeSpan)
 
     fun () ->
         Logging.info label $"Running %s{label}: %s{cmd}"
         let (command, args) = shellInvocation cmd
-        let result = runProcess command args repoRoot [] bounds
+
+        // The pid and bound, logged the moment the child runs: this hook runs outside
+        // any plugin, so its start line is what a hang inside it is traced from.
+        let onStarted pid =
+            let step: HookStep.Running =
+                { Label = label
+                  StepIndex = 1
+                  StepCount = 1
+                  Command = cmd
+                  Pid = pid
+                  Bound = bound }
+
+            Logging.info label $"Started %s{HookStep.describe step}"
+
+        let result = runProcessObserved onStarted command args repoRoot [] bounds
         let success = isSucceeded result
         let output = outputOf result
 
@@ -2020,8 +2054,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let beforeRun =
             t.BeforeRun
             |> Option.map (fun steps ->
-                fun (runId: Guid) ->
-                    match runShellSteps "beforeRun" config.TimeoutSec repoRoot steps with
+                fun (runId: Guid) (track: HookStep.Tracker) ->
+                    match runShellSteps "beforeRun" config.TimeoutSec repoRoot track steps with
                     | HookOk timings -> HookTimings.record repoRoot runId timings
                     | HookFailed(timings, failure) ->
                         HookTimings.record repoRoot runId timings

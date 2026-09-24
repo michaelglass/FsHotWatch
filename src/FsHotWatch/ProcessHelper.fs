@@ -1156,9 +1156,15 @@ let internal killIfUndecided (kill: unit -> 'Killed) (decide: unit -> 'T) : 'T =
 /// `accounted`: when true, a timeout's teardown also snapshots the process tree before
 /// the kill and names its survivors after it (`accountTeardown`), returned alongside
 /// the outcome. `runProcessTo` passes false; `runProcessAccounted` passes true.
+///
+/// `onStarted` receives the child's pid once it is admitted, before the call waits on
+/// it: the one moment a caller can say which process it is waiting on while it waits.
+/// A throwing observer is logged and otherwise ignored, like a throwing sink — the child
+/// is already running and must stay watched.
 let internal runProcessCore
     (accounted: bool)
     (sink: (string -> unit) option)
+    (onStarted: int -> unit)
     (command: string)
     (args: string)
     (workDir: string)
@@ -1184,6 +1190,13 @@ let internal runProcessCore
     // Register so shutdown can tear down in-flight children. A scope that shut down
     // while this child was starting has already reaped it, and refuses it here.
     ProcessRegistry.admitOrRefuse proc $"`%s{command} %s{args}` (pid %d{pid})"
+
+    try
+        onStarted pid
+    with ex ->
+        Logging.warn
+            "process"
+            $"start observer for `%s{command}` (pid %d{pid}) failed: %s{ex.GetType().Name}: %s{ex.Message}"
 
     // Incremental output capture via explicit stream pumps. The event API
     // (`BeginOutputReadLine`) is not usable here: draining it requires the
@@ -1389,7 +1402,7 @@ let runProcessTo
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome =
-    runProcessCore false sink command args workDir env bounds |> fst
+    runProcessCore false sink ignore command args workDir env bounds |> fst
 
 /// `runProcess`, plus — when the child overran and was torn down — WHICH tree the
 /// kill was aimed at and which of its members survived (`TreeTeardown`). For callers
@@ -1401,7 +1414,7 @@ let internal runProcessAccounted
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome * TreeTeardown option =
-    runProcessCore true None command args workDir env bounds
+    runProcessCore true None ignore command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
@@ -1414,6 +1427,18 @@ let runProcess
     (bounds: ProcessBounds)
     : ProcessOutcome =
     runProcessTo None command args workDir env bounds
+
+/// `runProcess`, telling `onStarted` the child's pid as soon as it is running — for a
+/// caller that has to name the process it is waiting on while it waits.
+let runProcessObserved
+    (onStarted: int -> unit)
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (bounds: ProcessBounds)
+    : ProcessOutcome =
+    runProcessCore false None onStarted command args workDir env bounds |> fst
 
 /// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait
 /// injected: `awaitWork task` returns true iff the work finished inside the deadline,

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the
+  daemon's `[wait]` and `[wedge]` lines name it by index, command, pid and bound. Every
+  hook step, run-level ones included, logs its start with its pid and bound.
+
 - feat: a `preprocessors` array in `.fshw.json`: commands that rewrite files in place
   before the build and the checks see them (`name`, `command`, `args`, `cwd`,
   `triggers`, `writes`, `timeoutSec`). Entries run in config order, before the built-in
