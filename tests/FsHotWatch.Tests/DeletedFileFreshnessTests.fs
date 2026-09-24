@@ -214,3 +214,38 @@ let ``PositiveControl: a file one project dropped stays registered for the proje
     )
 
     test <@ pipeline.GetAllRegisteredFiles() |> List.contains (AbsFilePath.create shared) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a sidecar that is blank, null, or holds malformed entries loads as far as it can`` () =
+    // The sidecar is derivative: whatever cannot be read is treated as never checked
+    // clean, and the next clean check rewrites it. Nothing here may throw.
+    withTempDir "freshness-malformed" (fun tmpDir ->
+        let sidecar = FileFreshness.sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName sidecar) |> ignore
+
+        for present in [ "Partial.fsx"; "BadDate.fsx"; "NotAnObject.fsx" ] do
+            File.WriteAllText(Path.Combine(tmpDir, present), "")
+
+        File.WriteAllText(sidecar, "   ")
+        test <@ FileFreshness.load tmpDir = Map.empty @>
+
+        File.WriteAllText(sidecar, "null")
+        test <@ FileFreshness.load tmpDir = Map.empty @>
+
+        File.WriteAllText(
+            sidecar,
+            """{ "Partial.fsx": {}, "BadDate.fsx": { "fcsClean": true, "lastCleanCheckAt": "not a date" }, "NotAnObject.fsx": 7 }"""
+        )
+
+        let loaded = FileFreshness.load tmpDir
+
+        test
+            <@
+                loaded = Map
+                    [ "Partial.fsx",
+                      { FileFreshness.FcsClean = false
+                        FileFreshness.LastCleanCheckAt = None }
+                      "BadDate.fsx",
+                      { FileFreshness.FcsClean = true
+                        FileFreshness.LastCleanCheckAt = None } ]
+            @>)

@@ -143,6 +143,9 @@
   `/var` on macOS, and each name spelled as stored on disk) and git's `commondir`,
   and a checkout under no VCS is keyed as a standalone store. Wherever that moves a
   repository's store path, its namespace directory changes and starts cold.
+- refactor!: removed `CheckPipeline.FingerprintTime`, `CheckPipeline.FingerprintTablesBuilt`,
+  `UpstreamFingerprints.ComputeTime` and `UpstreamFingerprints.TablesBuilt`. Nothing read
+  them; the fingerprint memo no longer times or counts its own work.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

@@ -178,13 +178,6 @@ type CheckPipeline
     /// The fit warning last logged, if any.
     member _.LastFitWarning = Volatile.Read(&lastFitWarning)
 
-    /// Time spent computing upstream fingerprints since construction — the key's own
-    /// cost, to weigh against the checks the cache saves. Excludes waits.
-    member _.FingerprintTime = upstreamFingerprints.ComputeTime
-
-    /// Per-project fingerprint tables built since construction.
-    member _.FingerprintTablesBuilt = upstreamFingerprints.TablesBuilt
-
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
     /// `clearCheckCache` (default `true`) controls whether the check-result cache is

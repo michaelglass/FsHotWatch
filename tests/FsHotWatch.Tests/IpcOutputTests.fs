@@ -440,6 +440,40 @@ let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     test <@ output.Contains("No errors") @>
 
 [<Fact(Timeout = 15000)>]
+let ``agent output puts each diagnostic line before the trailing next hint`` () =
+    // An agent reads the hint as the last thing to do, so the findings go above it.
+    let json =
+        """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":3,"detail":null}]},"statuses":{}}"""
+
+    let output =
+        formatDiagnosticsResponse
+            ProgressRenderer.Agent
+            (fun _ -> [ "banner"; "lint: 1 warning"; "next: fshw check" ])
+            (parseDiagnosticsResponse json)
+
+    test
+        <@
+            output.Split '\n' = [| "banner"
+                                   "lint: 1 warning"
+                                   "lint:src/Foo.fs:17:3: warning bad name"
+                                   "next: fshw check" |]
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a busy rerun with no message still refuses a green, naming a default reason`` () =
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"busy"}""" = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a rerun whose project entry carries no name or status is never a green`` () =
+    // An entry the CLI cannot read is rendered as "(unnamed)" / "unknown" and is not
+    // counted as having executed anything, so the reply fails closed.
+    test
+        <@
+            renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[{}]}"""
+            <> 0
+        @>
+
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse with errors shows file and message`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
