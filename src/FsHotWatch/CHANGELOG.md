@@ -57,9 +57,10 @@
   replace the TransparentCompiler's caches under the running checks: the same race
   as removing one project's entries. `Daemon.dropForRediscovery checker projects`
   now moves every project it is handed to a new generation, in both hosting modes,
-  and removes nothing. The previous generation's entries are released as FCS's
-  count-bounded caches turn over, not at once, and no full collection is forced on
-  rediscovery. `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and
+  and removes nothing. FCS keeps one version of each cache entry strongly (per
+  project, and per file of a project), so each entry the new generation computes
+  demotes the previous generation's version to a weak reference, and the next
+  collection releases it. No full collection is forced on rediscovery. `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and
   a source guard refuses `InvalidateAll`, `ClearCaches`, `InvalidateConfiguration`
   and `ClearLanguageServiceRootCaches*` anywhere in `src/`.
 

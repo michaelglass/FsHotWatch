@@ -3409,8 +3409,9 @@ module Daemon =
     /// finish against the entries they started with. Nothing is removed from the
     /// checker's caches — `InvalidateAll` and
     /// `ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients` both replace
-    /// them under the running checks — so the previous generation's entries are
-    /// released as the checker's count-bounded caches turn over. A hosted session is
+    /// them under the running checks. The previous generation's entries are demoted to
+    /// weak references as the new generation recomputes them, and released by the next
+    /// collection (see `ProjectSnapshots.invalidate`). A hosted session is
     /// handed only its own projects, so its siblings' entries stay warm.
     let internal dropForRediscovery (checker: FSharpChecker) (projects: FSharpProjectOptions list) =
         for options in projects do

@@ -409,6 +409,85 @@ let ``a rediscovery leaves the checks already under way coherent`` () =
     test <@ Array.isEmpty errorsOfC @>
     test <@ Array.isEmpty errorsOfD @>
 
+/// The compiler unit a check result imported for the referenced project A: FCS's
+/// internal `CcuThunk`, which the importing project's bootstrap owns. Framework units
+/// are shared between bootstraps, so they would prove nothing here.
+let private importsOf (results: FSharpCheckFileResults) : obj =
+    let a =
+        results.ProjectContext.GetReferencedAssemblies()
+        |> List.find (fun assembly -> assembly.SimpleName = "A")
+
+    a.GetType().GetFields(Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.NonPublic)
+    |> Array.tryPick (fun field ->
+        if field.FieldType.Name = "CcuThunk" then
+            Some(field.GetValue a)
+        else
+            None)
+    |> Option.defaultWith (fun () -> failwith "FSharpAssembly holds no CcuThunk")
+
+/// Check B2.fs through the snapshot path and return its imports, weakly, so nothing
+/// here keeps the check alive.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private checkB2Imports (tree: Tree) : obj =
+    let path = Path.Combine(tree.Dir, "B2.fs")
+    let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+    let snapshot =
+        FsHotWatch.ProjectSnapshots.build
+            (FsHotWatch.ProjectSnapshots.generationOf tree.Checker)
+            hasher.Hash
+            (Some tree.Dir)
+            (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash path)
+            tree.BOptions
+
+    match
+        FsHotWatch.ProjectSnapshots.parseAndCheck tree.Checker path snapshot
+        |> Async.RunSynchronously
+    with
+    | _, FSharpCheckFileAnswer.Succeeded results -> importsOf results
+    | _, other -> failwith $"check of B2.fs did not complete: %A{other}"
+
+/// `checkB2Imports`, held only weakly.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private checkB2ImportsWeakly (tree: Tree) = WeakReference(checkB2Imports tree)
+
+let private collect () =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+
+/// After `supersede` and a check in the new generation, the previous generation's
+/// imports are collected while the new generation's are alive.
+let private supersededImportsAreCollected (supersede: Tree -> unit) =
+    withTempDir "snapshot-generation-reclaim" (fun dir ->
+        let tree = makeTree dir
+        let before = checkB2ImportsWeakly tree
+        supersede tree
+        let current = checkB2Imports tree
+        collect ()
+
+        test <@ not before.IsAlive @>
+        GC.KeepAlive current)
+
+[<Fact(Timeout = 120000)>]
+let ``a generation still in use is not released by a collection`` () =
+    // Positive control for the two below: the same observation of a generation
+    // nothing superseded sees it held.
+    withTempDir "snapshot-generation-held" (fun dir ->
+        let tree = makeTree dir
+        let before = checkB2ImportsWeakly tree
+        collect ()
+        test <@ before.IsAlive @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a project's superseded generation is released by a collection`` () =
+    supersededImportsAreCollected (fun tree -> FsHotWatch.ProjectSnapshots.invalidate tree.Checker tree.BOptions)
+
+[<Fact(Timeout = 120000)>]
+let ``a rediscovery's superseded generation is released by a collection`` () =
+    supersededImportsAreCollected (fun tree ->
+        FsHotWatch.Daemon.Daemon.dropForRediscovery tree.Checker [ tree.AOptions; tree.BOptions ])
+
 [<Fact(Timeout = 120000)>]
 let ``two checkouts with identical content get identical snapshot versions`` () =
     withTempDir "snapshot-checkout-1" (fun dir1 ->

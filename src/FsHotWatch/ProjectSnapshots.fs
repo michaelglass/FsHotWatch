@@ -228,7 +228,9 @@ let parseAndCheck
 /// removed entry, or takes one another check recomputed, against type-check results
 /// it obtained before the removal. Two computations of one file then declare two
 /// copies of each of its types, and FCS reports a type as incompatible with itself.
-/// The previous generation's entries age out of the checker's bounded caches.
+/// The checker keeps one version of each cache entry strongly — per project, and per
+/// file of a project — so each entry the new generation computes demotes the previous
+/// generation's version of it to a weak reference, which the next collection releases.
 ///
 /// A project with no references on disk has no stamps to carry a generation; every
 /// project the daemon loads references at least FSharp.Core.
