@@ -289,6 +289,23 @@ type RunHookCommand =
 let DefaultRunHookCommands: Set<RunHookCommand> =
     Set.ofList [ RunHookCommand.Check; RunHookCommand.Confirm ]
 
+/// One `preprocessors` entry as written: paths still repo-relative, the timeout still
+/// unresolved against the global default. `registerPlugins` resolves both.
+[<NoComparison>]
+type PreprocessorConfig =
+    {
+        Name: string
+        Command: string
+        Args: string
+        /// `cwd`: repo-relative or absolute. Absent → the repository root.
+        WorkDir: string option
+        /// `triggers`: absent → before every run.
+        Trigger: FsHotWatch.CommandPreprocessor.Trigger
+        /// `writes`: repo-relative paths the command may rewrite.
+        Writes: string list
+        TimeoutSec: int option
+    }
+
 /// Parsed daemon configuration from .fshw.json.
 type DaemonConfiguration =
     {
@@ -320,6 +337,10 @@ type DaemonConfiguration =
                Command: string
                Args: string
                TimeoutSec: int option |} list
+        /// The `preprocessors` array: commands that rewrite files in place before the
+        /// build and the checks see them, run in this order, ahead of the built-in
+        /// formatter. See `FsHotWatch.CommandPreprocessor`.
+        Preprocessors: PreprocessorConfig list
         Coverage:
             {| ConfigPath: string
                SearchDir: string |} option
@@ -412,6 +433,7 @@ let private defaultConfigFor (repoRoot: string) =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Preprocessors = []
       Coverage = None
       Exclude = []
       IncludeOutsideRepo = false
@@ -907,6 +929,80 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             |> Seq.toList
         | _ -> []
 
+    // `preprocessors`: every shape mistake is a `ConfigError`, because an entry that
+    // silently did not register is a generator that silently did not run.
+    let preprocessors =
+        let entry (index: int) (e: JsonElement) : PreprocessorConfig =
+            let at = $"preprocessors[%d{index}]"
+
+            let requiredString (key: string) =
+                match e.TryGetProperty(key) with
+                | true, v when v.ValueKind = JsonValueKind.String && v.GetString().Trim() <> "" -> v.GetString()
+                | _ -> raise (ConfigError $"%s{at} must have a non-empty string `%s{key}`")
+
+            let optionalString (key: string) =
+                match e.TryGetProperty(key) with
+                | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                | true, _ -> raise (ConfigError $"%s{at}.%s{key} must be a string")
+                | _ -> None
+
+            let stringList (key: string) =
+                match e.TryGetProperty(key) with
+                | true, v when v.ValueKind = JsonValueKind.Array ->
+                    v.EnumerateArray()
+                    |> Seq.map (fun item ->
+                        if item.ValueKind = JsonValueKind.String then
+                            item.GetString()
+                        else
+                            raise (ConfigError $"%s{at}.%s{key} must be an array of strings"))
+                    |> Seq.toList
+                    |> Some
+                | true, _ -> raise (ConfigError $"%s{at}.%s{key} must be an array of strings")
+                | _ -> None
+
+            let trigger =
+                match stringList "triggers" with
+                | None
+                | Some [] -> FsHotWatch.CommandPreprocessor.Trigger.Always
+                | Some patterns ->
+                    patterns
+                    |> List.map (fun pattern ->
+                        try
+                            FsHotWatch.Watcher.FilePattern.parse pattern
+                        with :? System.ArgumentException as ex ->
+                            raise (ConfigError $"%s{at}.triggers pattern invalid: %s{ex.Message}"))
+                    |> FsHotWatch.CommandPreprocessor.Trigger.Matching
+
+            let timeoutSec =
+                match e.TryGetProperty("timeoutSec") with
+                | true, t when t.ValueKind = JsonValueKind.Number && t.GetInt32() > 0 -> Some(t.GetInt32())
+                | true, _ -> raise (ConfigError $"%s{at}.timeoutSec must be a positive whole number")
+                | _ -> None
+
+            { Name = requiredString "name"
+              Command = requiredString "command"
+              Args = optionalString "args" |> Option.defaultValue ""
+              WorkDir = optionalString "cwd"
+              Trigger = trigger
+              Writes = stringList "writes" |> Option.defaultValue []
+              TimeoutSec = timeoutSec }
+
+        match root.TryGetProperty("preprocessors") with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            let entries = arr.EnumerateArray() |> Seq.mapi entry |> Seq.toList
+
+            entries
+            |> List.countBy (fun p -> p.Name)
+            |> List.iter (fun (name, count) ->
+                if count > 1 then
+                    raise (
+                        ConfigError $"preprocessors: the name '%s{name}' is used %d{count} times; names must be unique"
+                    ))
+
+            entries
+        | true, _ -> raise (ConfigError "preprocessors must be an array of entries")
+        | _ -> []
+
     let coverage =
         match root.TryGetProperty("coverage") with
         | true, v when v.ValueKind = JsonValueKind.Object ->
@@ -1125,6 +1221,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands
+      Preprocessors = preprocessors
       Coverage = coverage
       Exclude = exclude
       IncludeOutsideRepo = includeOutsideRepo
@@ -1728,6 +1825,32 @@ let testImpactDbPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
 
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
+    // Configured preprocessors, in config order, BEFORE the built-in formatter: what a
+    // generator writes is then formatted by the pinned formatter in the same pass.
+    let absoluteUnder (p: string) =
+        if Path.IsPathRooted(p) then
+            p
+        else
+            Path.GetFullPath(Path.Combine(repoRoot, p))
+
+    for p in config.Preprocessors do
+        let timeoutSec =
+            p.TimeoutSec
+            |> Option.orElse config.TimeoutSec
+            |> Option.defaultValue DefaultGlobalTimeoutSec
+
+        let spec: FsHotWatch.CommandPreprocessor.Spec =
+            { Name = p.Name
+              Command = p.Command
+              Args = p.Args
+              WorkDir = p.WorkDir |> Option.map absoluteUnder |> Option.defaultValue repoRoot
+              Trigger = p.Trigger
+              Writes = p.Writes |> List.map absoluteUnder
+              Timeout = TimeSpan.FromSeconds(float timeoutSec) }
+
+        Logging.info "config" $"Registering preprocessor %s{p.Name}: %s{p.Command} %s{p.Args}"
+        daemon.RegisterPreprocessor(FsHotWatch.CommandPreprocessor.create spec)
+
     // Format plugin. Both shapes run the repository's PINNED `dotnet fantomas`;
     // say which one at registration so the daemon log carries the
     // version before any file is touched, and say loudly when there is none — the

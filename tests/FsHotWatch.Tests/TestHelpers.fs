@@ -411,6 +411,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Preprocessors = []
       Coverage = None
       Exclude = []
       IncludeOutsideRepo = false

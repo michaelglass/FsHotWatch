@@ -2011,3 +2011,57 @@ let ``a plugin's Running to Completed interval is recorded on the host's phase l
         test <@ record.Detail = Some "7 passed" @>
         test <@ record.Elapsed >= TimeSpan.FromMilliseconds 50.0 @>
     | other -> failwith $"expected one ledger record for the plugin run, got %A{other}"
+
+// ---------------------------------------------------------------------------
+// Preprocessor ordering: registration order is run order, and each pass sees what
+// the passes before it rewrote.
+// ---------------------------------------------------------------------------
+
+/// A preprocessor that records the batch it was handed and reports `writes` as Modified.
+let private recordingPreprocessor (name: string) (writes: string list) (seen: ResizeArray<string * string list>) =
+    { new IFsHotWatchPreprocessor with
+        member _.Name = name
+
+        member _.Process files _ =
+            lock seen (fun () -> seen.Add((name, files)))
+
+            Ok
+                { Modified = writes
+                  Considered = files.Length
+                  Evidence = name }
+
+        member _.Dispose() = () }
+
+[<Fact(Timeout = 15000)>]
+let ``preprocessors run in registration order`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let seen = ResizeArray()
+
+    for name in [ "first"; "second"; "third" ] do
+        host.RegisterPreprocessor(recordingPreprocessor name [] seen)
+
+    let run = host.RunPreprocessors([ "/repo/src/Lib.fs" ])
+
+    test <@ (seen |> Seq.map fst |> List.ofSeq) = [ "first"; "second"; "third" ] @>
+    test <@ run.Evidence = [ "first"; "second"; "third" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a later preprocessor sees the files an earlier one rewrote`` () =
+    // A generator that writes `Gen.fs` runs before the formatter; the formatter must be
+    // offered `Gen.fs` even though the batch never held it.
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let seen = ResizeArray()
+    host.RegisterPreprocessor(recordingPreprocessor "generator" [ "/repo/src/Gen.fs" ] seen)
+    host.RegisterPreprocessor(recordingPreprocessor "formatter" [] seen)
+
+    let run = host.RunPreprocessors([ "/repo/src/Lib.fs" ])
+
+    let batches = seen |> Seq.map (fun (n, files) -> n, List.sort files) |> List.ofSeq
+
+    test
+        <@
+            batches = [ "generator", [ "/repo/src/Lib.fs" ]
+                        "formatter", [ "/repo/src/Gen.fs"; "/repo/src/Lib.fs" ] ]
+        @>
+
+    test <@ run.Modified = [ "/repo/src/Gen.fs" ] @>

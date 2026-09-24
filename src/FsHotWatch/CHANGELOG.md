@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: `CommandPreprocessor` — an `IFsHotWatchPreprocessor` over a configured command,
+  for a generator that rewrites files in place before the build and the checks see
+  them. Its writes are attributed by content (each declared path hashed before and
+  after), so its own echo never re-triggers it, and are reported in the watcher's path
+  form. A non-zero exit, a timeout or a command that cannot start is a refusal.
+- feat: preprocessors run in registration order, and each is offered the files the
+  ones before it rewrote. The files a preprocessor rewrites join the batch the plugins
+  receive, whether or not the batch held them. `PluginHost.PreprocessorNames` lists
+  them in run order.
+
 - fix: a caller waiting for a supervised or debounced queue's admission or close,
   or for the daemon's scan admission, gives up within its bound however busy the
   thread pool is. The bound was kept by a timer whose callback needs a pool thread,
@@ -12,7 +22,6 @@
   the caller's context once they first wait. The caller's spawns stay the caller's,
   and are not refused after the daemon or scope has shut down.
 
-++++++ tnkprxns 51d73165 "core: a bounded admission wait gives up within its bound under pool starvation"
 - Fix: the check cache no longer serves a result typed against a referenced project's
   old build output. The compiler types a file against a referenced F# project's output
   whenever that output is at a real path and at least as new as the project's

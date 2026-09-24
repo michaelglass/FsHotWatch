@@ -406,6 +406,79 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
         cts.Cancel())
 
 [<Fact(Timeout = 150000)>]
+let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
+    // A generator rewrites `Gen.fs` when `New.fs` changes. `Gen.fs` was never in the
+    // batch, but it is what the build must now see, so it is dispatched with the batch.
+    withTempDir "daemon-pre-join" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let genFile = Path.Combine(srcDir, "Gen.fs")
+        let mutable receivedBatches: string list list = []
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "generator"
+
+                member _.Process files _ =
+                    File.WriteAllText(genFile, $"module Gen // {Guid.NewGuid():N}")
+
+                    Ok
+                        { Modified = [ FsHotWatch.CommandPreprocessor.realPathOf genFile ]
+                          Considered = files.Length
+                          Evidence = "generator" }
+
+                member _.Dispose() = () }
+        )
+
+        let handler =
+            { Name = PluginName.create "batch-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged files) -> receivedBatches <- files :: receivedBatches
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              PrepareCommit = None
+              CacheKey = None
+              Teardown = None }
+
+        daemon.RegisterHandler(handler)
+
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        waitForDaemonReady srcDir (fun () -> receivedBatches.Length)
+        receivedBatches <- []
+
+        let newFile = Path.Combine(srcDir, "New.fs")
+
+        // The watcher names paths in their real form (`/private/var/…` on macOS).
+        let real = FsHotWatch.CommandPreprocessor.realPathOf
+
+        let joined () =
+            receivedBatches
+            |> List.exists (fun batch ->
+                let batch = batch |> List.map real
+                List.contains (real newFile) batch && List.contains (real genFile) batch)
+
+        probeLoop (fun n -> File.WriteAllText(newFile, $"module New // v{n}")) joined 60000
+
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        Assert.True(joined (), $"no batch held both %s{newFile} and %s{genFile}; batches: %A{receivedBatches}"))
+
+[<Fact(Timeout = 150000)>]
 let ``daemon dispatches file change events to plugins`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

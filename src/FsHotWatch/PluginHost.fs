@@ -62,7 +62,13 @@ type PluginHost
     let ledger = ErrorLedger(?reporters = reporters)
     let normalizedRepoRoot = System.IO.Path.GetFullPath(repoRoot)
     let commands = ConcurrentDictionary<string, CommandHandler>()
-    let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
+    // Registration order is run order: a generator registered before the formatter runs
+    // before it, and the formatter is offered what the generator wrote.
+    let preprocessors = ResizeArray<IFsHotWatchPreprocessor>()
+
+    let preprocessorsSnapshot () =
+        lock preprocessors (fun () -> List.ofSeq preprocessors)
+
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
     // Wall-time attribution rework. Every phase the daemon spends wall time in — its own
@@ -314,9 +320,15 @@ type PluginHost
     /// Register a preprocessor (runs before events are dispatched).
     member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
         setStatus preprocessor.Name Idle
-        preprocessors.Add(preprocessor)
+        lock preprocessors (fun () -> preprocessors.Add(preprocessor))
 
-    /// Run all preprocessors on the given files.
+    /// The registered preprocessors' names, in run order.
+    member _.PreprocessorNames() : string list =
+        preprocessorsSnapshot () |> List.map (fun p -> p.Name)
+
+    /// Run all preprocessors on the given files, in registration order. Each pass is
+    /// offered the files plus every file an earlier pass rewrote, so a formatter
+    /// registered last formats what a generator produced.
     ///
     /// Each preprocessor's status line is its own evidence — `formatted 0 of 12 files —
     /// dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)` — and a pass that
@@ -333,16 +345,17 @@ type PluginHost
             let mutable evidence = []
             let mutable refused = []
 
-            for preprocessor in preprocessors do
+            for preprocessor in preprocessorsSnapshot () do
                 let operation = workStore.BeginOperation preprocessor.Name
 
                 try
                     let startedAt = System.DateTime.UtcNow
                     setStatus preprocessor.Name (Running(since = startedAt))
+                    let offered = (files @ modifiedFiles) |> List.distinct
 
                     // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
                     try
-                        match preprocessor.Process files repoRoot with
+                        match preprocessor.Process offered repoRoot with
                         | Result.Ok result ->
                             modifiedFiles <- result.Modified @ modifiedFiles
                             let finishedAt = System.DateTime.UtcNow
@@ -736,7 +749,8 @@ type PluginHost
                 registeredPlugins
                 |> Seq.tryFind (fun p -> PluginFramework.PluginName.value p.Name = name)
 
-            let isPreprocessor = preprocessors |> Seq.exists (fun p -> p.Name = name)
+            let isPreprocessor =
+                preprocessorsSnapshot () |> List.exists (fun p -> p.Name = name)
 
             match registered with
             | Some p when p.Subscriptions.Contains PluginFramework.SubscribeFileChanged ->
