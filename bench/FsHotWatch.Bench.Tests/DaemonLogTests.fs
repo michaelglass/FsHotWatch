@@ -280,3 +280,80 @@ let ``a host session attaches with start, as a legacy daemon starts, never with 
     // `start` does not: the modes would not be doing the same work.
     test <@ Scenario.hostAttachArgs false = "--no-cache start" @>
     test <@ Scenario.hostAttachArgs true = "start" @>
+
+[<Fact>]
+let ``the virtualRoot echo is read from a session's log, and relayed lines do not count`` () =
+    let window =
+        [ "  [config] 2026-09-24T01:00:00.000Z verdictInputs: 1 declared, 1 file(s) folded into the tree hash, 0 absent"
+          "  [config] 2026-09-24T01:00:00.100Z virtualRoot=off"
+          "  [test-prune] 2026-09-24T01:00:01.000Z   |   [config] 01:00:01.000 virtualRoot=on" ]
+
+    test <@ DaemonLog.virtualRootEcho window = Some "off" @>
+    test <@ DaemonLog.virtualRootEcho [] = None @>
+
+[<Fact>]
+let ``a session must echo the virtual-root setting its host was launched with`` () =
+    let off = [ "FSHW_VIRTUAL_ROOT", "0" ]
+    test <@ List.isEmpty (Scenario.virtualRootProblems off (Some "off")) @>
+    test <@ List.isEmpty (Scenario.virtualRootProblems [] (Some "on")) @>
+    // An older binary echoes nothing: fine when nothing was asked of it.
+    test <@ List.isEmpty (Scenario.virtualRootProblems [] None) @>
+
+    test
+        <@
+            Scenario.virtualRootProblems off (Some "on") = [ "FSHW_VIRTUAL_ROOT=0 was set but the session echoed virtualRoot=on" ]
+        @>
+
+    test
+        <@
+            Scenario.virtualRootProblems off None = [ "FSHW_VIRTUAL_ROOT=0 was set but the session echoed no virtualRoot" ]
+        @>
+
+[<Fact>]
+let ``--env parses KEY=VALUE and refuses anything else`` () =
+    test <@ Scenario.parseEnv "FSHW_VIRTUAL_ROOT=0" = Ok("FSHW_VIRTUAL_ROOT", "0") @>
+    test <@ Scenario.parseEnv "A=b=c" = Ok("A", "b=c") @>
+    test <@ Result.isError (Scenario.parseEnv "NOVALUE") @>
+    test <@ Result.isError (Scenario.parseEnv "=x") @>
+
+// A hosted session in a repository that declares no verdictInputs (CommandTree has no
+// .fshw.json at all): no `verdictInputs:` line is written, so the window must start at
+// the `Loaded .fshw.json` line every start writes.
+let private hostedNoVerdictInputs =
+    [ "  [scan] 2026-09-24T01:00:00.000Z Checked 99 files (1 tiers), skipped 0, unchecked 0"
+      "Daemon stopped."
+      "  [config] 2026-09-24T01:18:40.569Z Loaded .fshw.json"
+      "  [config] 2026-09-24T01:18:40.573Z virtualRoot=on"
+      "  [config] 2026-09-24T01:18:40.574Z checker: cacheSizeFactor=100"
+      "  [task-cache] 2026-09-24T01:18:40.601Z Workspace cache: 0 entries, 0.0 MB"
+      "  [host] 2026-09-24T01:18:40.749Z Attached to repository host pid=48568 session=a.b.c"
+      "  [scan] 2026-09-24T01:18:41.666Z 4 projects, 22 files registered"
+      "  [scan] 2026-09-24T01:18:49.852Z Checked 22 files (2 tiers), skipped 12, unchecked 0" ]
+
+[<Fact>]
+let ``with no verdictInputs the window starts at the Loaded config line every start writes`` () =
+    let window = DaemonLog.sinceLastStart hostedNoVerdictInputs
+    test <@ List.length window = 7 @>
+    test <@ DaemonLog.attachedHost window = Some(48568, "a.b.c") @>
+    test <@ DaemonLog.virtualRootEcho window = Some "on" @>
+
+    test
+        <@
+            DaemonLog.scanCycles window
+            |> List.choose DaemonLog.scanCounts
+            |> List.map _.Checked = [ 22 ]
+        @>
+
+[<Fact>]
+let ``with verdictInputs the window still begins at the verdictInputs line before Loaded`` () =
+    let window =
+        DaemonLog.sinceLastStart (
+            hostedNoVerdictInputs
+            @ [ "Daemon stopped."
+                "  [config] 2026-09-24T02:00:00.000Z verdictInputs: 1 declared, 1 file(s) folded into the tree hash, 0 absent"
+                "  [config] 2026-09-24T02:00:00.010Z NOT RUN — tests/X: reason"
+                "  [config] 2026-09-24T02:00:00.020Z Loaded .fshw.json"
+                "  [scan] 2026-09-24T02:00:01.000Z 1 projects, 1 files registered" ]
+        )
+
+    test <@ window.Head.Contains "verdictInputs:" && List.length window = 4 @>

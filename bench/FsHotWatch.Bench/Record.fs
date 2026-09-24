@@ -101,6 +101,9 @@ let split (fp: Footprint.Reading) (gc: GcReading) : Split =
 /// The config overrides a record ran under, and what the daemon echoed back.
 type ConfigProvenance =
     {
+        /// `--env` variables set on every launched process (the host inherits the first
+        /// attach's environment), in order.
+        Env: (string * string) list
         /// `--strip` keys, in order.
         Strip: string list
         /// `--set` paths and their JSON values, in order.
@@ -111,7 +114,11 @@ type ConfigProvenance =
     }
 
 /// No overrides (a probe, or a run without `--strip`/`--set`).
-let noConfig = { Strip = []; Set = []; Echo = None }
+let noConfig =
+    { Env = []
+      Strip = []
+      Set = []
+      Echo = None }
 
 /// Where in a scenario a record was taken.
 type Position =
@@ -296,7 +303,8 @@ let private retentionNode (r: Retention.Reading) : JsonNode =
 
 let private configNode (c: ConfigProvenance) : JsonNode =
     obj
-        [ "strip", arr (c.Strip |> List.map ns)
+        [ "env", obj [ for k, v in c.Env -> k, ns v ]
+          "strip", arr (c.Strip |> List.map ns)
           "set", obj [ for path, json in c.Set -> path, JsonNode.Parse(json) ]
           "echo", opt (fun (pairs: (string * string) list) -> obj [ for k, v in pairs -> k, ns v ]) c.Echo ]
 

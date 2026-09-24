@@ -210,3 +210,18 @@ let ``a sample on battery is contended even when the load bar is off`` () =
         <@ Load.contention noLoadBar onBattery = [ "on Battery Power, not AC: throttling and sleep invalidate latency" ] @>
     // An unreadable power source (a desktop with no battery report) is not contention.
     test <@ List.isEmpty (Load.contention Load.defaultBar { onBattery with PowerSource = None }) @>
+
+[<Fact>]
+let ``--max-load sets the load1 ceiling and keeps every other quiet check`` () =
+    test <@ Load.barFor None 12 = Load.defaultBar @>
+    let loose = Load.barFor (Some 8.0) 12
+
+    test
+        <@
+            loose.MaxLoadPerCpu * 12.0 = 8.0
+            && loose.MinMemFreePercent = Load.defaultBar.MinMemFreePercent
+        @>
+
+    test <@ List.isEmpty (Load.contention loose (snapshot 7.5 (Some 60) [])) @>
+    test <@ List.length (Load.contention loose (snapshot 8.5 (Some 60) [])) = 1 @>
+    test <@ List.length (Load.contention loose (snapshot 7.5 (Some 60) [ 42 ])) = 1 @>

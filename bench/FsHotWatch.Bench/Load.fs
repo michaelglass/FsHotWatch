@@ -98,6 +98,15 @@ let defaultBar =
     { MaxLoadPerCpu = 0.5
       MinMemFreePercent = 30 }
 
+/// The default bar with an absolute load1 ceiling (`--max-load`) in place of half the
+/// cores; memory, power and foreign-daemon checks are unchanged.
+let barFor (maxLoad1: float option) (cpus: int) : QuietBar =
+    match maxLoad1 with
+    | None -> defaultBar
+    | Some l ->
+        { defaultBar with
+            MaxLoadPerCpu = l / float cpus }
+
 /// Why a snapshot is contended; empty means quiet. Battery power is contention under
 /// any bar: a laptop on battery throttles and sleeps, and either one invalidates a
 /// latency or a footprint taken across it.

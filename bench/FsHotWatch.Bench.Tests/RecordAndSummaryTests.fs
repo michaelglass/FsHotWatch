@@ -118,7 +118,8 @@ let private record sessions rep session phase phys contended invalid : Record.Be
         )
       Retention = None
       Config =
-        { Strip = [ "tests" ]
+        { Env = [ "FSHW_VIRTUAL_ROOT", "0" ]
+          Strip = [ "tests" ]
           Set = [ "checker.cacheSizeFactor", "10" ]
           Echo = Some [ "checker.cacheSizeFactor", "10" ] }
       Scan = None
@@ -320,3 +321,10 @@ let ``host(1) settle p95 is judged against legacy(1) with the 10 percent abandon
 
     test <@ over.SettleP95.Head.OverBar @>
     test <@ (Summary.render over).Contains "OVER the 10% bar" @>
+
+[<Fact>]
+let ``a record carries the environment its processes were launched with`` () =
+    let node =
+        System.Text.Json.Nodes.JsonNode.Parse(Record.toJsonLine (record 1 1 1 "cold-scan" 1000L [] []))
+
+    test <@ node.["config"].["env"].["FSHW_VIRTUAL_ROOT"].GetValue<string>() = "0" @>
