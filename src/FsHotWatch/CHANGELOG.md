@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a caller waiting for a supervised or debounced queue's admission or close,
+  or for the daemon's scan admission, gives up within its bound however busy the
+  thread pool is. The bound was kept by a timer whose callback needs a pool thread,
+  so with the pool saturated a 5s wait ran for as long as the pool stayed busy.
+
 - fix: `Daemon.Run`, `Daemon.RunWith` and a child process scope started on the
   caller's thread (`Async.StartImmediate`) no longer leave their process registry in
   the caller's context once they first wait. The caller's spawns stay the caller's,

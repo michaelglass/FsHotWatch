@@ -1171,11 +1171,8 @@ let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
 let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
 
 let private setScanStatus (ScanAgent(owner, _)) state =
-    owner
-        .Submit(SetScanState state, CancellationToken.None)
-        .WaitAsync(SupervisedWork.AdmissionBound)
-        .GetAwaiter()
-        .GetResult()
+    owner.Submit(SetScanState state, CancellationToken.None)
+    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
 
 let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
@@ -2473,7 +2470,8 @@ type Daemon
                 // sends next is bound to this request rather than to an earlier one
                 // that failed. The scan itself runs on without the caller.
                 let onScan () =
-                    this.AdmitScan().WaitAsync(SupervisedWork.AdmissionBound).GetAwaiter().GetResult()
+                    this.AdmitScan()
+                    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
                     |> ignore
 
                 let triggerBuild () =

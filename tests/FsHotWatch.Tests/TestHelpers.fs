@@ -124,8 +124,9 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
     use gate = new ManualResetEventSlim(false)
 
+    // More than the pool has threads now, however many an earlier starved test left it.
     let held =
-        [ for _ in 1 .. Environment.ProcessorCount * 4 -> Tasks.Task.Run(fun () -> gate.Wait()) ]
+        [ for _ in 1 .. ThreadPool.ThreadCount + Environment.ProcessorCount * 4 -> Tasks.Task.Run(fun () -> gate.Wait()) ]
 
     // Long enough for the held work to take every thread the pool has.
     Thread.Sleep 200

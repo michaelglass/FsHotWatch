@@ -50,6 +50,7 @@
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
     <Compile Include="DebouncedWorkTests.fs" />
+    <Compile Include="AdmissionBoundTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginFrameworkFixtures.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />

@@ -22,6 +22,24 @@ open FsHotWatch.PluginWorkOwner
 /// cancellation stay attached to the publication, not to the caller.
 let internal AdmissionBound = TimeSpan.FromSeconds 5.0
 
+/// Block this thread until `task` settles, at most `bound`, then raise its failure
+/// unwrapped, or `TimeoutException` once the bound passes.
+///
+/// The bound is kept by this thread's own wait. `task.WaitAsync(bound)` keeps it with a
+/// timer whose callback runs on the thread pool, so with every pool thread busy the
+/// caller waited until the pool freed one: a bounded wait that is not bounded.
+let internal waitWithin (bound: TimeSpan) (task: Task<'T>) : 'T =
+    let settled =
+        try
+            task.Wait bound
+        with :? AggregateException ->
+            true
+
+    if settled then
+        task.GetAwaiter().GetResult()
+    else
+        raise (TimeoutException($"gave up after %O{bound}"))
+
 let private requireBounded (deadline: TimeSpan) =
     if deadline <= TimeSpan.Zero || deadline = TimeSpan.MaxValue then
         invalidArg (nameof deadline) "Supervised work needs a finite positive deadline"
@@ -305,7 +323,7 @@ type Queue<'State, 'Request>
             if marked then
                 Logging.error name failure.Message
         }
-        |> fun pending -> pending.WaitAsync(AdmissionBound).GetAwaiter().GetResult()
+        |> waitWithin AdmissionBound
 
     // A worker task can only fault inside `finish`, before its request retires: a
     // `failed` or successor `beginWork` that throws in the writer. Nothing runs under the
@@ -483,7 +501,7 @@ type Queue<'State, 'Request>
     /// `SubmitAsync`, waiting at most `AdmissionBound` for the admission and raising its
     /// refusal. A timed-out caller does not withdraw the request.
     member this.Submit(value: 'Request, ct: CancellationToken) : Task<unit> =
-        match this.SubmitAsync(value, ct).WaitAsync(AdmissionBound).GetAwaiter().GetResult() with
+        match this.SubmitAsync(value, ct) |> waitWithin AdmissionBound with
         | Ok receipt -> receipt
         | Error failure -> raise failure
 
@@ -510,4 +528,4 @@ type Queue<'State, 'Request>
                 |> Option.iter (fun request -> requestCancellation name request.Cancellation)
             }
 
-        closing.WaitAsync(AdmissionBound).GetAwaiter().GetResult()
+        closing |> waitWithin AdmissionBound
