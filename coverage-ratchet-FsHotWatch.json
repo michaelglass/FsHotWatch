@@ -929,6 +929,12 @@
         "branch": 93,
         "reason": "(2026-09-24): new file. Measured line=100% branch=93.7% (15/16 branches) by a coverage run of CommandPreprocessorTests on the a59 workspace. The one uncovered branch is the compiler's rethrow arm of `with :? Win32Exception` around `runProcess`: it is taken only when the spawn raises something other than a Win32Exception, which `runProcess` does not do for any input a test can hand it, and the type test is the only way to turn a missing binary into a refusal. Every other arm has a test naming it (rewrite, no-op, created, undeclared, untriggered, triggered, empty batch, exit code with output tail, timeout, unstartable, real-path form, outside-root write, own-real root).",
         "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 96,
+        "reason": "2026-09-24: Linux CI run 35990854779 (main 0ef05b1d) measured line=100% branch=96.7% (29/30 branches). The one uncovered branch is the compiler's rethrow arm of the `with :? Win32Exception` type test around runProcess: a spawn raises nothing else for any input a test can hand it, and the type test is the only way to turn a missing binary into a refusal. Linux counts 30 branch slots where macOS counts 16 for the same source.",
+        "platform": "linux"
       }
     ]
   },
