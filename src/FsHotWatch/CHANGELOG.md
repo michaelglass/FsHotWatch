@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix: a project reference at a real path is stamped by its output assembly's bytes
+  again, in per-worktree daemons and for unframed host projects. A reference to a
+  framed project, under the virtual root, keeps its upstream's closure as its stamp:
+  nothing exists at that path, so the compiler types the upstream from its sources.
+  Since the virtual-root change, a real-path reference had been stamped by its
+  upstream's sources. The compiler types against a real-path output whenever it is
+  at least as new as those sources, so a rebuild that changed the output and not the
+  sources left results typed against the old output.
+
 ## 0.10.0-alpha.45 - 2026-09-24
 
 - fix: a repository host's session serves its RPCs in the session's context: its

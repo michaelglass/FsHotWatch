@@ -87,7 +87,8 @@ let private diskFile (hashFile: string -> string) (version: string) (name: strin
 /// A reference stamp named by content. The checker does one thing with a reference's
 /// `LastModified`: hash it into the project's version. Which of an upstream project's
 /// dll and sources it type-checks against is decided from the real filesystem, so
-/// this stamp cannot change that choice.
+/// this stamp cannot change that choice. It must therefore name what that choice
+/// reads: a real path's bytes, or a framed upstream's closure (see `buildFramed`).
 let contentStamp (contentHash: string) : DateTime =
     let digest = SHA256.HashData(Encoding.UTF8.GetBytes contentHash)
     let ticks = BitConverter.ToUInt64(digest, 0) % uint64 (DateTime.MaxValue.Ticks + 1L)
@@ -168,10 +169,14 @@ type private Built =
 /// `repoRoot`, when present, bounds the references stamped by content.
 ///
 /// A framed project names its project file, sources and output under the virtual root,
-/// and reads its sources from the worktree. A reference to another project's output
-/// takes that project's frame, since FCS matches the two by exact string; its stamp is
-/// derived from that project's closure, so two worktrees whose builds differ in bytes
-/// still agree. Every other in-repository reference keeps its real path: FCS opens it.
+/// and reads its sources from the worktree. A reference to a framed project's output
+/// takes that project's frame, since FCS matches the two by exact string. Nothing exists
+/// at that virtual path, so FCS types the upstream from its snapshot, never from a dll,
+/// and the stamp is derived from the upstream's closure: two worktrees whose builds
+/// differ in bytes still agree. Every other in-repository reference, an unframed
+/// project's output included, keeps its real path and is stamped by its bytes: FCS
+/// opens it, and types against it whenever it is at least as new as the upstream's
+/// sources (FCS 43.12.401, TransparentCompiler `ComputeAssemblyData`). See ADR-037.
 ///
 /// A project's generation is looked up by the name the checker knows it by (virtual
 /// when framed), and reaches only its reference stamps, never its closure, so a new
@@ -290,12 +295,14 @@ let buildFramed
                 |> List.map (fun path ->
                     let reference =
                         match Map.tryFind path upstreamByOutput with
-                        | Some upstream ->
-                            { Path =
-                                (match upstream.Frame with
-                                 | Some f -> PathFrame.toVirtual f path
-                                 | None -> path)
+                        // Under a virtual root the output path never exists, so FCS types
+                        // the upstream from its snapshot: the closure is what it read.
+                        | Some({ Frame = Some f } as upstream) ->
+                            { Path = PathFrame.toVirtual f path
                               LastModified = contentStamp upstream.Closure }
+                        // At a real path FCS types against the output whenever it is at
+                        // least as new as the upstream's sources: its bytes are an input.
+                        | Some { Frame = None }
                         | None -> referenceOnDisk hashFile repoRoot path
 
                     { reference with
