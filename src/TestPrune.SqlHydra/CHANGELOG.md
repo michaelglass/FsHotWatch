@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-09-24
+
 - fix: a test method that inserts, updates or deletes through SqlHydra is no longer
   a writer the table's readers depend on (TestPrune.Sql's `SqlCoupling.buildEdges`
   with the store's test methods). A test seeding its own rows made every reader of
