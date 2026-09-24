@@ -933,6 +933,17 @@ let ``a session's own invalidation leaves a shared virtual identity where it is`
             test <@ stamps checker b = before @>))
 
 [<Fact>]
+let ``a shared invalidation of a project never checked under a virtual root advances only that project`` () =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+    let p = makeProjectOptions "/repo/P.fsproj" [] []
+    let generation = FsHotWatch.ProjectSnapshots.generationOf
+
+    FsHotWatch.ProjectSnapshots.invalidateShared checker p
+
+    test <@ generation checker p.ProjectFileName = FsHotWatch.ProjectSnapshots.Generation 1L @>
+    test <@ generation checker "/repo/Q.fsproj" = FsHotWatch.ProjectSnapshots.Generation 0L @>
+
+[<Fact>]
 let ``content stamps are equal exactly when the content hashes are`` () =
     let stamp = FsHotWatch.ProjectSnapshots.contentStamp
     test <@ stamp "abc" = stamp "abc" @>
