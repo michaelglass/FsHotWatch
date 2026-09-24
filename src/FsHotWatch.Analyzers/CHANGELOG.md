@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.37 - 2026-09-24
+
+- host: check identical worktrees once, under one virtual root
+- host: scope logs, child environments and process-wide effects to a session
+
+
 ## 0.7.0-alpha.36 - 2026-09-23
 
 - Changed: the analyzer summary states its evidence. It read

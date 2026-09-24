@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.62 - 2026-09-24
+
 - fix: the run-level `beforeRun`/`afterRun` hooks run inside a process scope owned by the
   run. A run that ends, or is interrupted (Ctrl-C, SIGTERM) in the middle of a hook, kills
   the hook's process tree instead of leaving it orphaned; `afterRun` runs in a scope of
@@ -59,6 +61,7 @@
   layout reader as the repository identity. A checkout whose layout cannot be read
   (a dangling or malformed jj/git pointer) is not provably the default workspace, so
   the cache stays off there, and the startup line names the unreadable file.
+- build(deps): bump CommandTree from 0.11.0 to 0.11.2
 
 ## 0.14.0-alpha.61 - 2026-09-23
 

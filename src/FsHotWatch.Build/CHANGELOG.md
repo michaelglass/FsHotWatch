@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.40 - 2026-09-24
+
 - (breaking) A passed build no longer reports "built N projects" for every project
   MSBuild visited. It says `rebuilt R of N projects`, or `N projects up to date` when it
   re-emitted nothing. R counts the outputs named in the build's `Project -> path.dll` lines

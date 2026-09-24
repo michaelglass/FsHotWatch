@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.45 - 2026-09-24
+
 - fix: a repository host's session serves its RPCs in the session's context: its
   process scope, log sink and client environment, as a daemon on its own pipe does.
   The host's endpoint served them in the host's own context, so what a plugin command

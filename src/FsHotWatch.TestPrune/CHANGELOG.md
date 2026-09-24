@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.45 - 2026-09-24
+
 - feat: `ImpactDbPool` clears the pooled SQLite connections of one test-impact
   database, keyed exactly as TestPrune.Core opens it, and of no other.
 
