@@ -159,6 +159,50 @@ let ``detectStalePluginInputs omits plugins with no stale files`` () =
             ()
 
 [<Fact(Timeout = 15000)>]
+let ``runInfoOfFileCommands describes the file commands that ran, and skips the ones that did not`` () =
+    let config =
+        { defaultTestConfig () with
+            FileCommands =
+                [ {| PluginName = "ratchet"
+                     Pattern = None
+                     AfterTests = None
+                     Command = "true"
+                     Args = "--check cfg.json"
+                     TimeoutSec = None |}
+                  {| PluginName = "never-ran"
+                     Pattern = None
+                     AfterTests = None
+                     Command = "true"
+                     Args = "x.json"
+                     TimeoutSec = None |} ] }
+
+    let started = DateTime(2026, 9, 24, 8, 0, 0, DateTimeKind.Utc)
+
+    let ran: ParsedPluginStatus =
+        { Status = StatusView.Completed started
+          Subtasks = []
+          ActivityTail = []
+          LastRun =
+            Some
+                { StartedAt = started
+                  Elapsed = TimeSpan.FromSeconds 1.0
+                  Outcome = CompletedRun
+                  Summary = None
+                  ActivityTail = [] }
+          Diagnostics = DiagnosticCounts.empty }
+
+    let statuses =
+        Map.ofList [ "ratchet", ran; "never-ran", { ran with LastRun = None } ]
+
+    let expected =
+        [ { Name = "ratchet"
+            LastRunStarted = started
+            RepoRoot = "/repo"
+            Args = "--check cfg.json" } ]
+
+    test <@ runInfoOfFileCommands "/repo" config statuses = expected @>
+
+[<Fact(Timeout = 15000)>]
 let ``formatStalenessWarning is empty for no stale plugins`` () =
     test <@ formatStalenessWarning [] = "" @>
 
@@ -239,6 +283,36 @@ let ``formatErrors shows count summary`` () =
 
     let result = formatErrors errors
     test <@ result.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatErrors labels a deferral and an abort, and counts neither as an error`` () =
+    let errors =
+        Map.ofList
+            [ "src/A.fs",
+              [ ("build",
+                 { Message = "re-run once the build succeeds"
+                   Severity = Deferred
+                   Line = 1
+                   Column = 0
+                   Detail = None })
+                ("test-prune",
+                 { Message = "the test host died"
+                   Severity = HostAborted
+                   Line = 2
+                   Column = 0
+                   Detail = None })
+                ("lint",
+                 { Message = "an info note is not actionable"
+                   Severity = Info
+                   Line = 3
+                   Column = 0
+                   Detail = None }) ] ]
+
+    let result = formatErrors errors
+    test <@ result.Contains "waiting on build" @>
+    test <@ result.Contains "ABORTED (nothing verified)" @>
+    test <@ not (result.Contains "an info note is not actionable") @>
+    test <@ result.EndsWith "No errors in 1 file(s)" @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatErrors with no errors shows clean message`` () =
@@ -542,7 +616,27 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         createDaemon
         repoRoot
         (noTestProjectsConfig ())
-        None
+
+[<Fact(Timeout = 60000)>]
+let ``runOnceAndReport renders the statuses of the plugins the run registered`` () =
+    withProjectOnlyRepo "run-once-report-summary" (fun repoRoot ->
+        let createDaemon (root: string) =
+            Daemon.createWith
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+
+        let rendered = ResizeArray<string list>()
+
+        let render (statuses: Map<string, ParsedPluginStatus>) =
+            rendered.Add(statuses |> Map.toList |> List.map fst)
+            "format: clean"
+
+        let exitCode =
+            runOnceAndReport render false createDaemon repoRoot (noTestProjectsConfig ()) (Some "format")
+
+        test <@ exitCode = 0 @>
+        test <@ rendered |> Seq.exactlyOne |> List.contains "format-check" @>)
 
 // ---------------------------------------------------------------------------
 // `--run-once` scans, settles, publishes and exits; it must never
@@ -586,7 +680,6 @@ let ``check and confirm --run-once complete without constructing a file watcher`
                 (hostFor command)
                 repoRoot
                 (noTestProjectsConfig ())
-                None
 
         // The exit codes are the ones the watcher-backed tests above establish for this
         // tree: `check` tolerates the unknown scope, `confirm` refuses it. A one-shot host
@@ -619,7 +712,6 @@ let ``check and confirm --run-once with no plugins registered return a verdict``
                 repoRoot
                 { noTestProjectsConfig () with
                     Format = FsHotWatch.Cli.DaemonConfig.Off }
-                None
 
         // The same verdicts as the format-only config above: no tests configured is a
         // green for `check` and an unearned scope for `confirm`.
@@ -676,7 +768,6 @@ let ``check run-once prunes a late vanished diagnostic before grading`` () =
                 daemonWithLateVanishedDiagnostic
                 repoRoot
                 (noTestProjectsConfig ())
-                None
 
         test <@ exitCode = 0 @>)
 
@@ -778,7 +869,6 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                 createDaemon
                 repoRoot
                 (noTestProjectsConfig ())
-                None
 
         // This drive used to prove retention ACROSS a convergence re-scan: the first scan
         // left `Pending.fs` unchecked, the loop scanned again, and the second scan's
@@ -844,7 +934,6 @@ let ``run-once overwrites a current green before surfacing total discovery failu
                     createDaemon
                     repoRoot
                     (noTestProjectsConfig ())
-                    None
                 |> ignore)
 
         test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
@@ -897,8 +986,7 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
                     false
                     createDaemon
                     repoRoot
-                    (noTestProjectsConfig ())
-                    None)
+                    (noTestProjectsConfig ()))
 
         try
             test <@ loader.Entered(0).Wait(TimeSpan.FromSeconds(10.0)) @>
@@ -987,7 +1075,6 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                 createDaemon
                 repoRoot
                 (noTestProjectsConfig ())
-                None
 
         test <@ exitCode = 0 @>
         test <@ scanCount = 1 @>)
@@ -1049,7 +1136,6 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
         createDaemon
         repoRoot
         (noTestProjectsConfig ())
-        None
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once REFUSES a scope read that faulted — and records WHY on disk`` () =
@@ -1141,7 +1227,6 @@ let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.Che
         createDaemon
         repoRoot
         (noTestProjectsConfig ())
-        None
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once goes RED on a plugin that FAILED without writing a diagnostic`` () =
@@ -1487,7 +1572,6 @@ let private runOnceWithTreeMovedMidCheck (moveTree: bool) (repoRoot: string) : i
         createDaemon
         repoRoot
         (noTestProjectsConfig ())
-        None
 
 /// The verdict the drive above left on disk, read inside the temp repo's lifetime.
 let private verdictOnDisk (repoRoot: string) : FsHotWatch.Cli.Verdict.Verdict =
@@ -1553,7 +1637,6 @@ let private runOnceWithAnalysisOnlyTestPrune (repoRoot: string) : int =
         createDaemon
         repoRoot
         (noTestProjectsConfig ())
-        None
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once accepts completed analysis without a test suite`` () =

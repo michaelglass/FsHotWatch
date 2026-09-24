@@ -96,6 +96,23 @@ let detectStalePluginInputs (plugins: PluginRunInfo list) : (string * string lis
 
         if stale.IsEmpty then None else Some(p.Name, stale))
 
+/// The run info of each configured file command whose plugin has a last run in
+/// `statuses`. A file command that never ran has no run for its inputs to be newer than.
+let runInfoOfFileCommands
+    (repoRoot: string)
+    (config: DaemonConfig.DaemonConfiguration)
+    (statuses: Map<string, ParsedPluginStatus>)
+    : PluginRunInfo list =
+    config.FileCommands
+    |> List.choose (fun fc ->
+        Map.tryFind fc.PluginName statuses
+        |> Option.bind (fun p -> p.LastRun)
+        |> Option.map (fun lastRun ->
+            { Name = fc.PluginName
+              LastRunStarted = lastRun.StartedAt
+              RepoRoot = repoRoot
+              Args = fc.Args }))
+
 /// Returns "" for an empty input so callers can `if s <> "" then eprintfn "%s" s`.
 let formatStalenessWarning (stale: (string * string list) list) : string =
     if List.isEmpty stale then
@@ -114,6 +131,20 @@ let formatStalenessWarning (stale: (string * string list) list) : string =
 
         sb.ToString().TrimEnd('\n', '\r')
 
+/// The label a rendered entry carries, or `None` for a severity that is not rendered.
+let private actionableLabel (severity: DiagnosticSeverity) : string option =
+    match severity with
+    | Error -> Some $"%s{Color.red}error%s{Color.reset}: "
+    | Warning -> Some $"%s{Color.yellow}warning%s{Color.reset}: "
+    // A "waiting on build" deferral is actionable context worth showing (it explains a
+    // non-green run), so render it too — and an abort all the more so: it is the whole
+    // reason the run has no verdict. It has its own label, never `error`, so a reader
+    // can tell a dead runner from a broken test at a glance.
+    | Deferred -> Some $"%s{Color.yellow}waiting on build%s{Color.reset}: "
+    | HostAborted -> Some $"%s{Color.yellow}ABORTED (nothing verified)%s{Color.reset}: "
+    | Info
+    | Hint -> None
+
 /// Format the errors section with colored severity labels.
 /// Groups errors by file with colored severity.
 let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
@@ -121,17 +152,8 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         errors
         |> Map.map (fun _ entries ->
             entries
-            |> List.filter (fun (_, e) ->
-                match e.Severity with
-                | Error
-                | Warning
-                // A "waiting on build" deferral is actionable context worth
-                // showing (it explains a non-green run), so render it too — and an
-                // abort all the more so: it is the whole reason the run has no verdict.
-                | Deferred
-                | HostAborted -> true
-                | Info
-                | Hint -> false))
+            |> List.choose (fun (pluginName, e) ->
+                actionableLabel e.Severity |> Option.map (fun label -> pluginName, e, label)))
         |> Map.filter (fun _ entries -> not entries.IsEmpty)
 
     if actionable.IsEmpty then
@@ -145,23 +167,11 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
 
-            for (pluginName, entry) in entries do
+            for (pluginName, entry, severityLabel) in entries do
                 match entry.Severity with
                 | Error -> errorCount <- errorCount + 1
                 | Warning -> warnCount <- warnCount + 1
                 | _ -> ()
-
-                let severityLabel =
-                    match entry.Severity with
-                    | Error -> $"%s{Color.red}error%s{Color.reset}: "
-                    | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
-                    | Deferred -> $"%s{Color.yellow}waiting on build%s{Color.reset}: "
-                    // Its own label, never `error`: the point of the whole change is
-                    // that a reader can tell a dead runner from a broken test at a
-                    // glance.
-                    | HostAborted -> $"%s{Color.yellow}ABORTED (nothing verified)%s{Color.reset}: "
-                    | Info
-                    | Hint -> ""
 
                 sb.AppendLine(
                     $"  %s{Color.dim}[%s{pluginName}]%s{Color.reset} L%d{entry.Line}: %s{severityLabel}%s{entry.Message}"
@@ -280,17 +290,7 @@ let runOnceAndReport
 
         // Defense-in-depth against cache-key gaps — see `detectStalePluginInputs`.
         let staleInputs =
-            config.FileCommands
-            |> List.choose (fun fc ->
-                match Map.tryFind fc.PluginName parsed |> Option.bind (fun p -> p.LastRun) with
-                | Some lastRun ->
-                    Some
-                        { Name = fc.PluginName
-                          LastRunStarted = lastRun.StartedAt
-                          RepoRoot = repoRoot
-                          Args = fc.Args }
-                | None -> None)
-            |> detectStalePluginInputs
+            runInfoOfFileCommands repoRoot config parsed |> detectStalePluginInputs
 
         let stalenessWarning = formatStalenessWarning staleInputs
 

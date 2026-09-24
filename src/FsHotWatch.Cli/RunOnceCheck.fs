@@ -59,19 +59,8 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
 /// ONE traversal, feeding both `failingCount` (which decides the exit code) and
 /// `redCauses` (which the verdict file records), so the number and the reasons cannot
 /// disagree — "exit 1 with nothing named" is what disagreement looks like from outside
-let private failingEntries
-    (daemon: Daemon.Daemon)
-    (noWarnFail: bool)
-    (pluginName: string option)
-    : (string * (string * ErrorEntry)) list =
-    let allErrors =
-        match pluginName with
-        | Some name ->
-            daemon.Host.GetErrorsByPlugin(name)
-            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
-        | None -> daemon.Host.GetErrors()
-
-    allErrors
+let private failingEntries (daemon: Daemon.Daemon) (noWarnFail: bool) : (string * (string * ErrorEntry)) list =
+    daemon.Host.GetErrors()
     |> Map.toList
     |> List.collect (fun (file, entries) ->
         entries
@@ -83,8 +72,8 @@ let private failingEntries
 /// can reach `Failed` without writing a single `ErrorEntry` (the framework's
 /// crash-nets force exactly that), so both terms are needed. Never used alone; see
 /// `reread` below.
-let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
-    failingEntries daemon noWarnFail pluginName |> List.length
+let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) : int =
+    failingEntries daemon noWarnFail |> List.length
 
 /// The failing ledger entries with the KIND each classifies as — the in-process twin of
 /// `IpcOutput.failingEntriesWithKind`. One traversal and one classifier feeding both the
@@ -92,17 +81,16 @@ let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName:
 let private failingEntriesWithKind
     (daemon: Daemon.Daemon)
     (noWarnFail: bool)
-    (pluginName: string option)
     : (string * string * ErrorEntry * Verdict.RedCauseKind) list =
-    failingEntries daemon noWarnFail pluginName
+    failingEntries daemon noWarnFail
     |> List.map (fun (file, (source, e)) -> file, source, e, Verdict.RedCause.classify source file e.Message)
 
 /// The in-process twin of `IpcOutput.redCausesOf`: the failing ledger
 /// entries the exit code was computed from, as the verdict records them. Derived from
 /// the SAME traversal as the count, so the two transports — and the file and the exit
 /// code — cannot disagree about what reddened the run.
-let private redCauses (daemonLog: string) (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) =
-    failingEntriesWithKind daemon noWarnFail pluginName
+let private redCauses (daemonLog: string) (daemon: Daemon.Daemon) (noWarnFail: bool) =
+    failingEntriesWithKind daemon noWarnFail
     |> List.map (fun (file, source, e, kind) ->
         { Verdict.Source = source
           Verdict.File = file
@@ -114,11 +102,11 @@ let private redCauses (daemonLog: string) (daemon: Daemon.Daemon) (noWarnFail: b
 /// in-process twin of `IpcOutput.unattributableCountOf`, off the same traversal as
 /// `redCauses` AND through the same `RedCause.classify` / `RedCauseKind.isAboutThisTree`
 /// selection, so the two transports classify identically.
-let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
+let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) : int =
     // Off the same traversal and the same classifier as `redCauses`. It asks only about
     // the KIND, so it needs no log pointer: `RedCause.classify` reads the LEDGER's
     // message, not the rendered one.
-    failingEntriesWithKind daemon noWarnFail pluginName
+    failingEntriesWithKind daemon noWarnFail
     |> List.filter (fun (_, _, _, kind) -> not (Verdict.RedCauseKind.isAboutThisTree kind))
     |> List.length
 
@@ -127,15 +115,8 @@ let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (plug
 /// the SAME condition (a deferred diagnostic) and hand it to the SAME classifier, so the
 /// two transports cannot disagree either about what a defer means or about which of its
 /// two causes this run has.
-let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) : CheckVerdict.BuildWait =
-    let allErrors =
-        match pluginName with
-        | Some name ->
-            daemon.Host.GetErrorsByPlugin(name)
-            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
-        | None -> daemon.Host.GetErrors()
-
-    allErrors
+let private waitingOnBuild (daemon: Daemon.Daemon) : CheckVerdict.BuildWait =
+    daemon.Host.GetErrors()
     |> Map.toList
     |> List.collect snd
     |> List.filter (fun (_, e) -> ErrorEntry.isWaitingOnBuild e)
@@ -146,15 +127,8 @@ let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) :
 /// finish) — and with what diagnosis? The in-process twin of `IpcOutput.runnerAborted`:
 /// both read the SAME condition and hand it to the SAME classifier, so the two
 /// transports cannot disagree about what an abort means.
-let private runnerAborted (daemon: Daemon.Daemon) (pluginName: string option) : CheckVerdict.RunnerAbort =
-    let allErrors =
-        match pluginName with
-        | Some name ->
-            daemon.Host.GetErrorsByPlugin(name)
-            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
-        | None -> daemon.Host.GetErrors()
-
-    allErrors
+let private runnerAborted (daemon: Daemon.Daemon) : CheckVerdict.RunnerAbort =
+    daemon.Host.GetErrors()
     |> Map.toList
     |> List.collect snd
     |> List.filter (fun (_, e) -> ErrorEntry.isRunnerAbort e)
@@ -194,7 +168,6 @@ let private runOnceAndVerdictIn
     (createDaemon: string -> Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfiguration)
-    (pluginName: string option)
     : int =
     match failIfNoProjects repoRoot config.Exclude with
     | Some _ ->
@@ -300,10 +273,10 @@ let private runOnceAndVerdictIn
             let run = readTestRun daemon.Host |> observeTestRun
 
             { PluginStatuses = finalStatuses.Value
-              FailingDiagnostics = failingCount daemon noWarnFail pluginName
-              UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
-              WaitingOnBuild = waitingOnBuild daemon pluginName
-              RunnerAborted = runnerAborted daemon pluginName
+              FailingDiagnostics = failingCount daemon noWarnFail
+              UnattributableDiagnostics = unattributableCount daemon noWarnFail
+              WaitingOnBuild = waitingOnBuild daemon
+              RunnerAborted = runnerAborted daemon
               Coverage = liveCoverage daemon
               Scope = run.Scope
               Baseline = run.Baseline
@@ -352,30 +325,11 @@ let private runOnceAndVerdictIn
         if summary <> "" then
             eprintfn "%s" summary
 
-        let allErrors =
-            match pluginName with
-            | Some name ->
-                daemon.Host.GetErrorsByPlugin(name)
-                |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
-            | None -> daemon.Host.GetErrors()
-
-        eprintfn "%s" (formatErrors allErrors)
+        eprintfn "%s" (formatErrors (daemon.Host.GetErrors()))
 
         // Defense-in-depth against cache-key gaps — see `detectStalePluginInputs`.
         let staleInputs =
-            config.FileCommands
-            |> List.choose (fun fc ->
-                match
-                    Map.tryFind fc.PluginName finalStatuses.Value
-                    |> Option.bind (fun p -> p.LastRun)
-                with
-                | Some lastRun ->
-                    Some
-                        { Name = fc.PluginName
-                          LastRunStarted = lastRun.StartedAt
-                          RepoRoot = repoRoot
-                          Args = fc.Args }
-                | None -> None)
+            runInfoOfFileCommands repoRoot config finalStatuses.Value
             |> detectStalePluginInputs
 
         let stalenessWarning = formatStalenessWarning staleInputs
@@ -411,7 +365,7 @@ let private runOnceAndVerdictIn
                 checkScoped
                 finalStatuses.Value
                 (IpcParsing.DaemonEvidence.ofHost daemon.Host)
-                (redCauses (DaemonConfig.DaemonLog.under config.LogDir) daemon noWarnFail pluginName)
+                (redCauses (DaemonConfig.DaemonLog.under config.LogDir) daemon noWarnFail)
                 finalModel.Value
                 settledTree.Value
                 outcome
@@ -435,7 +389,6 @@ let runOnceAndVerdictWith
     (createDaemon: string -> Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfiguration)
-    (pluginName: string option)
     : int =
     runOnceAndVerdictIn
         (Verdict.Invocation.start ())
@@ -446,7 +399,6 @@ let runOnceAndVerdictWith
         createDaemon
         repoRoot
         config
-        pluginName
 
 /// The production `--run-once` driver: the verdict it publishes is owned by the CLI
 /// invocation that bracketed it, so the wrapper's hook timing can be attached to it.
@@ -458,18 +410,8 @@ let runOnceAndVerdictForInvocation
     (createDaemon: string -> Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfiguration)
-    (pluginName: string option)
     : int =
-    runOnceAndVerdictIn
-        invocation
-        runOnceWithProgress
-        renderSummary
-        checkMode
-        noWarnFail
-        createDaemon
-        repoRoot
-        config
-        pluginName
+    runOnceAndVerdictIn invocation runOnceWithProgress renderSummary checkMode noWarnFail createDaemon repoRoot config
 
 /// `runOnceAndVerdictForInvocation` for a run that no CLI bracket wraps.
 let runOnceAndVerdict
@@ -479,7 +421,6 @@ let runOnceAndVerdict
     (createDaemon: string -> Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfiguration)
-    (pluginName: string option)
     : int =
     runOnceAndVerdictForInvocation
         (Verdict.Invocation.start ())
@@ -489,4 +430,3 @@ let runOnceAndVerdict
         createDaemon
         repoRoot
         config
-        pluginName

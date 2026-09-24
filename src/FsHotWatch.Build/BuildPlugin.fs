@@ -781,12 +781,12 @@ let createWith
     let buildBounds = ProcessBounds.silent buildTimeout
 
     // What `runProcess` puts in the child's env for this key: the caller's own value, or
-    // the `1` fshw injects into every spawn. Named in the overrun report.
+    // the `1` fshw injects into every spawn. `mergeDotnetEnv` always sets it, so the
+    // lookup cannot miss. Named in the overrun report.
     let nodeReuse =
         mergeDotnetEnv buildCommand environment
-        |> List.tryFind (fun (key, _) -> key = "MSBUILDDISABLENODEREUSE")
-        |> Option.map snd
-        |> Option.defaultValue "1"
+        |> List.find (fun (key, _) -> key = "MSBUILDDISABLENODEREUSE")
+        |> snd
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
     // (callers inject `AbsFilePath.create` per file).
