@@ -308,12 +308,21 @@ separate build step — can own a table inside TestPrune's cache database
 via `Ports.toPluginStore db`, which hands it a connection. Core never
 learns what the table means.
 
-The contract runs both ways. Core owns the file: opening it checks the
-schema version and, on a mismatch, deletes and recreates it — dropping
-extension tables with it, because core cannot migrate a table it knows
-nothing about. So an extension owns its tables but must never assume they
-exist: issue `CREATE TABLE IF NOT EXISTS` before every read and write, and
-store only what you can re-derive (Falco re-seeds its routes each run).
+The contract runs both ways. Core owns the file: opening it as a `Database`
+checks the schema version and, on a file older than its own, deletes and
+recreates it — dropping extension tables with it, because core cannot
+migrate a table it knows nothing about. A file newer than its own it
+refuses to open (`SchemaNewerThanConsumerException`, naming the version to
+upgrade to) rather than run its DDL against a schema it does not know. So
+an extension owns its tables but must never assume they exist: issue
+`CREATE TABLE IF NOT EXISTS` before every read and write, and store only
+what you can re-derive (Falco re-seeds its routes each run).
+
+A process that only touches its extension table — a route-seeding build
+step, say — has no stake in core's schema and should not inherit that
+check: `Ports.pluginStoreAt dbPath` opens the file with no version check
+and no core DDL, so it works on a database of any core schema version,
+including one written by a newer TestPrune.Core than the process links.
 
 ## Dependency-change fanout
 

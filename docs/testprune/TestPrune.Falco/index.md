@@ -27,7 +27,7 @@ Routes are the one thing TestPrune cannot read out of your code — they
 live in a route DU plus runtime wiring, not in the symbol graph — so you
 seed them. `RouteStore` owns that table: it lives inside TestPrune's cache
 database, but TestPrune.Core knows nothing about it (it just hands out a
-connection, via `toPluginStore`).
+connection, via `toPluginStore` or `pluginStoreAt`).
 
 Each entry is a `RouteHandlerEntry`; `Rebuild` clears and rewrites the
 whole route table, so re-seed it on every indexing run. Set
@@ -37,10 +37,17 @@ multi-route file selects only that route's tests); `None` falls back to a
 whole-file match (every function in the file):
 
 ```fsharp
-open TestPrune.Ports  // toPluginStore
+open TestPrune.Ports  // toPluginStore, pluginStoreAt
 open TestPrune.Falco  // RouteStore, RouteHandlerEntry
 
+// Seeding alongside indexing, with the `Database` already open:
 let routeStore = RouteStore(toPluginStore db)
+
+// Seeding on its own, from a process that never opens the core index
+// (a build step, or a tool linking a different TestPrune.Core than the
+// indexer): no schema-version check, no core DDL, so a database of any
+// core schema version works, including one newer than this package's.
+let seedOnlyStore = RouteStore(pluginStoreAt dbPath)
 
 routeStore.Rebuild [
     { UrlPattern = "/api/users/{id}"

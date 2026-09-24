@@ -1869,28 +1869,53 @@ module ``Schema version migration`` =
             cleanupDb path
 
     [<Fact>]
-    let ``preserves database when schema version is newer than SchemaVersion`` () =
-        // Forward-compat: a newer daemon stamped v999 on the same DB file.
-        // An older consumer MUST NOT wipe it — the newer schema has additive
-        // columns the older code doesn't know about but doesn't need.
+    let ``refuses a database stamped newer than SchemaVersion and leaves it untouched`` () =
+        // A newer TestPrune.Core stamped v999 on this file. This version's DDL was written
+        // against an older schema, so running it here can only fail on a column the newer
+        // schema moved, or silently pass and leave two versions writing one file. Refuse
+        // before any DDL runs, and change nothing: not the rows, not the version marker a
+        // newer process relies on to detect older clients.
         let path = tempDbPath ()
 
         try
             let db = Database.create path
             db.RebuildProjects([ standardGraph ])
-            let symbols = db.GetSymbolsInFile "src/Lib.fs"
-            test <@ symbols.Length = 1 @>
+
+            let symbolRows () =
+                use conn = openRawConnection path
+                use count = conn.CreateCommand()
+                count.CommandText <- "SELECT COUNT(*) FROM symbols"
+                count.ExecuteScalar() :?> int64
+
+            let indexed = symbolRows ()
+            test <@ indexed > 0L @>
 
             setUserVersion path 999
 
-            let db2 = Database.create path
-            // Symbols must survive the open-and-create-if-needed path.
-            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
-            test <@ symbols2.Length = 1 @>
+            let ex =
+                Assert.Throws<SchemaNewerThanConsumerException>(fun () -> Database.create path |> ignore)
 
-            // And the future-version marker must NOT be silently downgraded
-            // — a newer process relies on it to detect older clients.
+            test <@ ex.dbPath = path @>
+            test <@ ex.foundVersion = 999 @>
+            test <@ ex.supportedVersion = SchemaVersion @>
             test <@ getUserVersion path = 999 @>
+            test <@ symbolRows () = indexed @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``initializes an existing empty file in place`` () =
+        // A zero-byte file at the path reads `user_version = 0` with no tables: not a
+        // pre-versioning database to recreate, just an index that has not been created
+        // yet. It is initialized where it is, not deleted first.
+        let path = tempDbPath ()
+
+        try
+            File.WriteAllBytes(path, [||])
+            let db = Database.create path
+            test <@ not db.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ db.GetAllSymbolNames() |> Set.isEmpty @>
         finally
             cleanupDb path
 
@@ -2416,59 +2441,84 @@ module ``Cache file cleanup`` =
 
 module ``Schema forward compatibility`` =
 
-    /// Regression: a NEWER daemon/process writes a DB stamped at
-    /// user_version = SchemaVersion + 1 (or higher). An OLDER consumer
-    /// opening the same DB path must NOT nuke it — its new schema likely
-    /// contains additive columns the older code doesn't understand but
-    /// doesn't need. Nuking would cause data loss across version skew
-    /// (observed with a consumer's build tool pinned to v3.0.2 clobbering
-    /// a v3.1.0 daemon's DB before every test run).
+    /// A NEWER TestPrune.Core writes a DB stamped above this version's `SchemaVersion`.
+    /// An OLDER consumer opening the same path must neither delete it (a consumer's
+    /// build tool pinned behind a daemon would wipe the daemon's index before every
+    /// run) nor run its own DDL against it: `CREATE ... IF NOT EXISTS` is only a no-op
+    /// while the newer schema is a superset of the older one, and a schema that MOVES a
+    /// column (v14 took `symbols.source_file` into `symbol_occurrences`) makes the older
+    /// version's `CREATE INDEX ... ON symbols (source_file)` fail with "no such column".
     ///
-    /// Policy: version > SchemaVersion → leave the DB alone; ALTER TABLE
-    /// IF NOT EXISTS via CREATE TABLE is a no-op on pre-existing tables, so
-    /// CREATE TABLE IF NOT EXISTS in the constructor won't overwrite
-    /// anything. The older code uses its own columns; the newer columns
-    /// simply sit unused.
+    /// Policy: version > SchemaVersion -> refuse with `SchemaNewerThanConsumerException`
+    /// before any DDL, naming both versions, and leave the file byte-for-byte alone.
 
-    [<Fact>]
-    let ``opening a DB stamped at a future version does not recreate it`` () =
+    let private withFutureDb (setup: string) (f: string -> unit) =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
-
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "future.db")
 
-        // Create a DB with tables and user_version = 99 (much newer than our SchemaVersion).
         use conn = new SqliteConnection($"Data Source=%s{dbPath}")
         conn.Open()
-        use cmd1 = conn.CreateCommand()
-        cmd1.CommandText <- "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, note TEXT); PRAGMA user_version = 99;"
-        cmd1.ExecuteNonQuery() |> ignore
-        use insert = conn.CreateCommand()
-        insert.CommandText <- "INSERT INTO sentinel(note) VALUES ('do-not-delete')"
-        insert.ExecuteNonQuery() |> ignore
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- setup
+        cmd.ExecuteNonQuery() |> ignore
         conn.Close()
         SqliteConnection.ClearPool(conn)
 
         try
-            // Now open via Database — must not wipe the sentinel row.
-            let db = Database.create dbPath
-            db |> ignore
-
-            use verify = new SqliteConnection($"Data Source=%s{dbPath}")
-            verify.Open()
-            use q = verify.CreateCommand()
-            q.CommandText <- "SELECT note FROM sentinel WHERE id = 1"
-
-            let result =
-                try
-                    q.ExecuteScalar() :?> string
-                with _ ->
-                    ""
-
-            test <@ result = "do-not-delete" @>
+            f dbPath
         finally
             if Directory.Exists tmpDir then
                 Directory.Delete(tmpDir, true)
+
+    let private tableExists (dbPath: string) (table: string) =
+        use conn = openRawConnection dbPath
+        use q = conn.CreateCommand()
+        q.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $name"
+        q.Parameters.AddWithValue("$name", table) |> ignore
+        q.ExecuteScalar() :?> int64 = 1L
+
+    [<Fact>]
+    let ``opening a DB stamped at a future version fails before any core DDL runs`` () =
+        withFutureDb """
+            CREATE TABLE sentinel (id INTEGER PRIMARY KEY, note TEXT);
+            INSERT INTO sentinel(note) VALUES ('do-not-delete');
+            PRAGMA user_version = 99;
+            """ (fun dbPath ->
+            let ex =
+                Assert.Throws<SchemaNewerThanConsumerException>(fun () -> Database.create dbPath |> ignore)
+
+            test <@ ex.foundVersion = 99 @>
+            test <@ ex.supportedVersion = SchemaVersion @>
+            test <@ ex.Message.Contains "schema v99" @>
+            test <@ ex.Message.Contains $"schema v%d{SchemaVersion}" @>
+            test <@ ex.Message.Contains "TestPrune.Core" @>
+
+            // No DDL ran: none of this version's tables appeared next to the sentinel.
+            test <@ not (tableExists dbPath "symbols") @>
+
+            use conn = openRawConnection dbPath
+            use q = conn.CreateCommand()
+            q.CommandText <- "SELECT note FROM sentinel WHERE id = 1"
+            test <@ q.ExecuteScalar() :?> string = "do-not-delete" @>
+
+            use v = conn.CreateCommand()
+            v.CommandText <- "PRAGMA user_version;"
+            test <@ v.ExecuteScalar() :?> int64 = 99L @>)
+
+    [<Fact>]
+    let ``a future schema that moved a column this version indexes is refused, not crashed`` () =
+        // The observed failure: a consumer on schema v13 opened a v14 index, whose
+        // `symbols` no longer has `source_file`, and died inside its own DDL with
+        // `SQLite Error 1: no such column: source_file`. The version check must fire
+        // first, so the consumer sees which version to upgrade to instead of a SQL error.
+        withFutureDb $"""
+            CREATE TABLE symbols (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL);
+            PRAGMA user_version = %d{SchemaVersion + 1};
+            """ (fun dbPath ->
+            let ex = Assert.ThrowsAny<exn>(fun () -> Database.create dbPath |> ignore)
+            test <@ (ex :? SchemaNewerThanConsumerException) @>
+            test <@ not (ex :? SqliteException) @>)
 
 /// `symbols.full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so two different things
 /// sharing a name silently become ONE row. An unqualified name is never one real thing:
@@ -2553,3 +2603,55 @@ module ``Unqualified symbol names are rejected`` =
             db.RebuildProjects([ resultWith syms ])
 
             test <@ (db.GetAllSymbolNames()).Count = 7 @>)
+
+/// The runtime-coverage writers take a sequence of files; an empty one is a run that
+/// executed nothing, and each writer has one meaning for it.
+module ``Runtime coverage with empty inputs`` =
+
+    [<Fact>]
+    let ``RecordCoverageBatch with no rows ingests and skips nothing`` () =
+        withDb (fun db -> test <@ db.RecordCoverageBatch [] = (0, 0) @>)
+
+    [<Fact>]
+    let ``ReplaceRuntimeCoverage with no files clears the project and records the run`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>
+
+            db.ReplaceRuntimeCoverage("A.Tests", "run-2", Seq.empty)
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [] @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ "A.Tests", "run-2" ] @>)
+
+    [<Fact>]
+    let ``MergeRuntimeCoverage with no files keeps what the project already covers`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            db.MergeRuntimeCoverage("A.Tests", Seq.empty)
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>)
+
+/// `GetProjectKey` answers two reserved names besides project names, so a caller holding
+/// only the project-key lookup can ask about the index as a whole: whether the last
+/// attempt left it incomplete, and which completed attempt produced it.
+module ``GetProjectKey reserved lookup keys`` =
+
+    [<Fact>]
+    let ``incomplete-index key is set until an attempt completes, then absent`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = None @>)
+
+    [<Fact>]
+    let ``generation key is the token of the attempt that completed the index`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexGenerationLookupKey = Some token @>)

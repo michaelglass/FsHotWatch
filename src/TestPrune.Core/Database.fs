@@ -219,24 +219,36 @@ let private nameSet = nameSetNamed "p"
 
 let private bindNameSet (cmd: SqliteCommand) (names: string list) = bindNameSetNamed "p" cmd names
 
+/// Run `sql` on `conn` for its effect.
+let private execute (conn: SqliteConnection) (sql: string) =
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- sql
+    cmd.ExecuteNonQuery() |> ignore
+
+/// Run `sql` on `conn` and read the integer it selects.
+let private scalarInt64 (conn: SqliteConnection) (sql: string) : int64 =
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- sql
+    cmd.ExecuteScalar() :?> int64
+
+let private readUserVersion (conn: SqliteConnection) : int =
+    scalarInt64 conn "PRAGMA user_version;" |> int
+
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
     let conn = new SqliteConnection(connStr)
 
     try
         conn.Open()
-
-        use pragmaCmd = conn.CreateCommand()
-        pragmaCmd.CommandText <- "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
-        pragmaCmd.ExecuteNonQuery() |> ignore
-
+        execute conn "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
         conn
     with ex ->
         conn.Dispose()
         raise ex
 
 /// Increment this whenever the schema changes in a backwards-incompatible way.
-/// A mismatch causes the database file to be deleted and recreated.
+/// An OLDER file is deleted and recreated; a NEWER one (written by a later
+/// TestPrune.Core) is refused with `SchemaNewerThanConsumerException` before any DDL.
 ///
 /// Every added column or table needs a bump: `CREATE TABLE IF NOT EXISTS` does not
 /// migrate an existing table, so without one a stale DB survives open and throws
@@ -319,12 +331,34 @@ let private openConnection (dbPath: string) =
 ///
 /// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`) can probe
 /// a live DB's `PRAGMA user_version` for compatibility BEFORE opening via
-/// `Database.create`, whose recreate-on-mismatch would wipe a daemon's symbol graph. A
+/// `Database.create`, whose recreate-on-older would wipe a daemon's symbol graph. A
 /// consumer hardcoding this value instead would have its protection silently invert on
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
-/// the newer open path.
+/// the newer open path. A consumer that only needs its own plugin table needs no probe:
+/// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
 let SchemaVersion = 14
+
+/// The TestPrune.Core package version this process links, for the schema-skew message: a
+/// consumer reading "upgrade TestPrune.Core" needs to know which one it is running. The
+/// assembly version is the package's `<Version>` with a fourth `.0`, so its first three
+/// fields are the package version.
+let private packageVersion =
+    System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3)
+
+/// Raised by `Database.create` when the file at `dbPath` carries a `PRAGMA user_version`
+/// above this TestPrune.Core's `SchemaVersion`: a newer TestPrune.Core wrote it. This
+/// version's DDL was written against an older schema, so it is never run against such a
+/// file (`CREATE ... IF NOT EXISTS` fails outright once the newer schema has moved a
+/// column the older DDL indexes), and the file is left exactly as it was found. The
+/// remedy is on the consumer's side, so the message names both versions and the package
+/// to upgrade.
+exception SchemaNewerThanConsumerException of dbPath: string * foundVersion: int * supportedVersion: int with
+    override this.Message =
+        $"%s{this.dbPath} was written by TestPrune.Core schema v%d{this.foundVersion}; "
+        + $"this TestPrune.Core (%s{packageVersion}) supports schema v%d{this.supportedVersion} and did not open it. "
+        + $"Upgrade TestPrune.Core to the release that introduced schema v%d{this.foundVersion}, or newer: "
+        + $"the TestPrune.Core CHANGELOG names it under \"SchemaVersion %d{this.foundVersion - 1} -> %d{this.foundVersion}\"."
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -343,42 +377,42 @@ let deleteCacheFiles (dbPath: string) =
             File.Delete(p)
 
 let private hasUserTables (conn: SqliteConnection) =
-    use cmd = conn.CreateCommand()
+    scalarInt64 conn "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';" > 0L
 
-    cmd.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-
-    cmd.ExecuteScalar() :?> int64 > 0L
-
-/// Open a connection, deleting and recreating the database if the schema version is
-/// incompatible. Returns `(connection, wasFresh)`; see `Database.WasRecreated` for what
-/// `wasFresh` obliges a caller with a derived cache to do.
+/// Open a connection, deleting and recreating the database if its schema is older than
+/// this version's, and refusing it if newer. Returns `(connection, wasFresh)`; see
+/// `Database.WasRecreated` for what `wasFresh` obliges a caller with a derived cache to do.
 let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "PRAGMA user_version;"
-        let version = cmd.ExecuteScalar() :?> int64 |> int
+        let version = readUserVersion conn
+
+        let release () =
+            SqliteConnection.ClearPool(conn)
+            conn.Dispose()
+
+        // `version > SchemaVersion` means a NEWER TestPrune.Core wrote this DB. This
+        // version must neither delete it (a consumer's build tool pinned behind a daemon
+        // would wipe the daemon's index before every run) nor run its own DDL against it:
+        // `CREATE ... IF NOT EXISTS` is a no-op only while the newer schema is a superset
+        // of this one, and a schema that MOVES a column (v14 took `symbols.source_file`
+        // into `symbol_occurrences`) fails this version's `CREATE INDEX` with "no such
+        // column". Refuse before any DDL, naming the version to upgrade to.
+        if version > SchemaVersion then
+            release ()
+            raise (SchemaNewerThanConsumerException(dbPath, version, SchemaVersion))
 
         // `user_version = 0` on a file with existing tables is a pre-versioning stale
         // DB — CREATE TABLE IF NOT EXISTS won't migrate its schema, so recreate.
-        //
-        // `version > SchemaVersion` means a NEWER process wrote this DB. Older
-        // code opening it must not clobber: the newer schema likely has
-        // additive columns we don't know about but don't need. Nuking causes
-        // data loss across version skew (e.g. a consumer's build tool
-        // pinned to v3.0.2 clobbering a v3.1 daemon's DB before every test run
-        // — then the daemon hits "no such column" on the next flush).
         let isIncompatible =
             if version = SchemaVersion then false
-            elif version > SchemaVersion then false // forward-compat
             elif version = 0 then hasUserTables conn
             else true
 
         if isIncompatible then
             eprintfn $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
 
-            SqliteConnection.ClearPool(conn)
-            conn.Dispose()
+            release ()
             deleteCacheFiles dbPath
             (openConnection dbPath, true)
         else
@@ -386,6 +420,15 @@ let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
     else
         // First-ever creation: no prior symbols, so any sibling cache is stale too.
         (openConnection dbPath, true)
+
+/// Open a connection to the cache file at `dbPath` (WAL, foreign keys on) with no
+/// schema-version check and no core DDL, creating the file when it is absent. The caller
+/// disposes it. This is the seam behind `Ports.pluginStoreAt`: a plugin's table has no
+/// stake in core's schema, so a process that only touches its own table can open a file of
+/// ANY core schema version, including one newer than this TestPrune.Core, which
+/// `Database.create` refuses. Core tables are not for this connection; nothing here checks
+/// that they exist or match this version.
+let openPluginConnection (dbPath: string) : SqliteConnection = openConnection dbPath
 
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
@@ -400,21 +443,14 @@ type Database(dbPath: string) =
         let openedConn, fresh = openCheckedConnection dbPath
         wasRecreated <- fresh
         use conn = openedConn
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- schema
-        cmd.ExecuteNonQuery() |> ignore
+        execute conn schema
+        let currentVersion = readUserVersion conn
 
-        use versionCmd = conn.CreateCommand()
-        versionCmd.CommandText <- "PRAGMA user_version;"
-        let currentVersion = versionCmd.ExecuteScalar() :?> int64 |> int
-
-        // Only stamp when our schema is newer (or the file was unversioned).
-        // Never downgrade a future version — that would erase the marker a
-        // newer process relies on to detect older clients touching its DB.
+        // Stamp when the file was unversioned or just recreated. A file stamped newer
+        // than `SchemaVersion` never reaches this point: `openCheckedConnection` refuses
+        // it, so the marker a newer process relies on is never downgraded.
         if currentVersion < SchemaVersion then
-            use setCmd = conn.CreateCommand()
-            setCmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion};"
-            setCmd.ExecuteNonQuery() |> ignore
+            execute conn $"PRAGMA user_version = %d{SchemaVersion};"
 
     /// True when this DB had no usable prior state when opened — the file did not exist,
     /// or an incompatible schema (a `SchemaVersion` bump) forced a delete+recreate. A
@@ -429,9 +465,11 @@ type Database(dbPath: string) =
     /// Open a fresh connection to the cache database (WAL, foreign keys on); the caller
     /// disposes it. This is the storage seam for extensions that must persist facts core
     /// knows nothing about — data the AST cannot see and that is seeded from outside
-    /// (e.g. TestPrune.Falco's HTTP route table). Reach it through `Ports.toPluginStore`,
-    /// never by constructing a connection string: a plugin store obtained from a live
-    /// `Database` is guaranteed to have gone through the `SchemaVersion` check first.
+    /// (e.g. TestPrune.Falco's HTTP route table). Reach it through `Ports.toPluginStore`
+    /// (a plugin store obtained from a live `Database` has gone through the
+    /// `SchemaVersion` check first) or `Ports.pluginStoreAt` (no check, no core DDL, for
+    /// a process that never touches core's tables), never by constructing a connection
+    /// string.
     ///
     /// A plugin owns its tables; core owns the FILE. Core will delete and recreate the
     /// file on a `SchemaVersion` mismatch, dropping plugin tables with it, so a plugin
@@ -1354,15 +1392,13 @@ type Database(dbPath: string) =
     /// Whether the last index attempt failed before producing a complete graph.
     member internal this.IsIndexIncomplete() : bool =
         use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
 
-        cmd.CommandText <-
+        scalarInt64
+            conn
             """SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete')
                    OR NOT EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_completed')
-                 THEN 1 ELSE 0 END"""
-
-        cmd.ExecuteScalar() :?> int64 = 1L
+                 THEN 1 ELSE 0 END""" = 1L
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
