@@ -109,6 +109,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                    CoverageDir = "coverage"
                    DependsOn = [] |}
       FileCommands = []
+      Preprocessors = []
       Coverage = None
       Exclude = []
       IncludeOutsideRepo = false

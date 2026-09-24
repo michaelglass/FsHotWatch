@@ -108,6 +108,7 @@
     <Compile Include="VerdictInputs.fs" />
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
+    <Compile Include="CommandPreprocessor.fs" />
     <Compile Include="SharedWatchPool.fs" />
     <Compile Include="CheckerPartitions.fs" />
     <Compile Include="CanonicalProjects.fs" />

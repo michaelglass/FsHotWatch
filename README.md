@@ -266,6 +266,15 @@ hand. Every field is optional — sensible defaults apply when omitted.
       "args": "fsi --typecheck-only"
     }
   ],
+  "preprocessors": [
+    {
+      "name": "dbtypes-sync",
+      "command": "dotnet",
+      "args": "fsi build.fsx dbtypes-sync",
+      "triggers": ["*.sql"],
+      "writes": ["src/App/Database/DbTypes.fs"]
+    }
+  ],
   "coverage": {
     "configPath": "coverage-ratchet.json",
     "searchDir": "coverage"
@@ -285,6 +294,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `coverage` | `object` | — | Coverage threshold checking. |
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
+| `preprocessors` | `array` | `[]` | Commands that rewrite files in place **before** the build and the checks see them. See [Preprocessors](#preprocessors). |
 | `exclude` | `string[]` | `[]` | Gitignore-style globs (repo-root-relative) for paths to skip entirely — watching, building, checking. (`obj/` + `bin/` are always skipped, independent of this.) |
 | `beforeRun` | `string \| false` | — | Shell command run **once** at the very start of a `check`/`confirm` run, before the daemon is contacted. Fail-closed preflight. See [Run-level hooks](#run-level-hooks). |
 | `afterRun` | `string \| false` | — | Shell command run **once** at the end of the run, as a `finally`. Best-effort — never changes the verdict. See [Run-level hooks](#run-level-hooks). |
@@ -498,12 +508,64 @@ merge verdict without one.
 | `command` | `string` | `"echo"` | Command to run when a matching file changes. |
 | `args` | `string` | `""` | Arguments to the command. |
 
+**`preprocessors[]` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | required | The status line's name, and the name a red verdict reports the failure under. Unique. |
+| `command` | `string` | required | The program to run. |
+| `args` | `string` | `""` | Its arguments. |
+| `cwd` | `string` | repo root | Working directory, repo-relative or absolute. |
+| `triggers` | `string[]` | — | Patterns (`"*.sql"`, or a literal file name) a changed file must match for the command to run. Absent: runs before **every** run. Trigger patterns are watched, so an edit to a file the built-in filters ignore still reaches a batch. |
+| `writes` | `string[]` | `[]` | Repo-relative files the command may rewrite. Its writes are attributed by content, so its own echo never re-triggers it. |
+| `timeoutSec` | `number` | global `timeoutSec` | Bound on one run. |
+
 **`coverage` fields:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `configPath` | `string` | `"coverage-ratchet.json"` | Path to the coverage-ratchet thresholds file (relative to repo root or absolute). |
 | `searchDir` | `string` | `"."` | Directory tree to search for `coverage.cobertura.xml` files after each test run. |
+
+### Preprocessors
+
+A preprocessor rewrites files in place **before** anything reads them: it runs inside
+the change batch and inside the scan, ahead of the build, the checks and every plugin,
+so the tree they see is the one it produced. The built-in formatter is one; the
+`preprocessors` array adds your own — a generator that regenerates a source file from
+an input the compiler never reads, for instance.
+
+```json
+"preprocessors": [
+  {
+    "name": "dbtypes-sync",
+    "command": "dotnet",
+    "args": "fsi build.fsx dbtypes-sync",
+    "triggers": ["*.sql"],
+    "writes": ["src/App/Database/DbTypes.fs"]
+  }
+]
+```
+
+- **Order.** Entries run in the order written, and the built-in formatter runs last,
+  over the batch plus everything the earlier entries rewrote — so what a generator
+  writes is formatted by the pinned formatter in the same pass. Each entry sees what
+  the ones before it produced.
+- **Its own write is not a change.** Each `writes` path is hashed before and after the
+  run; the ones whose bytes changed are the command's own, their watcher echo is
+  suppressed, and they join the batch the build and the checks receive. A run that
+  changes nothing suppresses nothing, so a later real edit to a generated file is never
+  swallowed. A file the command rewrites without declaring is an ordinary change: it
+  re-triggers a batch, and a command that is a no-op when its inputs are unchanged
+  converges on the next one.
+- **Failure is a red run.** A non-zero exit, a timeout, or a command that cannot start
+  is a failed status under the entry's `name`, and `check` / `confirm` are red. A run
+  is never silently skipped: an entry whose `triggers` match nothing in the batch
+  reports `not triggered`.
+- **Every mode.** The daemon, `check --run-once`, and `confirm` register the same
+  entries through the same code; one-shot runs have no watcher and scan the whole
+  tree, so an `always` entry runs once before that scan.
+- The child runs under the run's process scope and is reaped with it.
 
 ### Run-level hooks
 

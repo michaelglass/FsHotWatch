@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: `CommandPreprocessor` — an `IFsHotWatchPreprocessor` over a configured command,
+  for a generator that rewrites files in place before the build and the checks see
+  them. Its writes are attributed by content (each declared path hashed before and
+  after), so its own echo never re-triggers it, and are reported in the watcher's path
+  form. A non-zero exit, a timeout or a command that cannot start is a refusal.
+- feat: preprocessors run in registration order, and each is offered the files the
+  ones before it rewrote. The files a preprocessor rewrites join the batch the plugins
+  receive, whether or not the batch held them. `PluginHost.PreprocessorNames` lists
+  them in run order.
+
 ## 0.10.0-alpha.45 - 2026-09-24
 
 - fix: a repository host's session serves its RPCs in the session's context: its

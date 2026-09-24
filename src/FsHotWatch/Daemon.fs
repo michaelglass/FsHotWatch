@@ -1498,6 +1498,9 @@ let private processBatchAttempt
 
         if not allSourceFiles.IsEmpty then
             let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            // A file a preprocessor rewrote is what the build must now see, whether or not
+            // the batch held it: a generated source joins the batch it was produced for.
+            allSourceFiles <- (allSourceFiles @ modifiedByPreprocessors) |> List.distinct
             // After the preprocessors' rewrites, before any check. See `BeginGeneration`.
             ctx.Pipeline.BeginGeneration()
 

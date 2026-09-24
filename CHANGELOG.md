@@ -4,6 +4,17 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### core, cli: a configured command can rewrite files before the build sees them
+
+- **`preprocessors` in `.fshw.json`** — commands that rewrite files in place *before*
+  the build and the checks see them, in the slot the built-in formatter already used.
+  A generator that regenerates a source file from a migrations directory can now be a
+  configured step: it runs ahead of every plugin, in every mode, its own write is
+  attributed to it (by content) rather than re-triggering it, the rewritten file joins
+  the batch, and a non-zero exit is a red run under the entry's name. Configured
+  entries run in order and the built-in formatter runs last, over what they wrote.
+  Core `FsHotWatch` gains `CommandPreprocessor`; preprocessors are now ordered.
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —

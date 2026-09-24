@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: a `preprocessors` array in `.fshw.json`: commands that rewrite files in place
+  before the build and the checks see them (`name`, `command`, `args`, `cwd`,
+  `triggers`, `writes`, `timeoutSec`). Entries run in config order, before the built-in
+  formatter, in every mode (daemon, `check --run-once`, `confirm`); their `triggers`
+  patterns are watched; a failing entry reddens the run under its name. A malformed
+  entry is a config error.
+
 ## 0.14.0-alpha.62 - 2026-09-24
 
 - fix: the run-level `beforeRun`/`afterRun` hooks run inside a process scope owned by the

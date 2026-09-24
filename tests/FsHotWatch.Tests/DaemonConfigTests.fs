@@ -2240,3 +2240,134 @@ let ``registered test owner honors the actual declared project identity`` () =
             | _ -> ()
         finally
             daemon.Host.Teardown())
+
+// --- parseConfig: preprocessors (mutating pre-build commands) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig preprocessors absent is an empty list`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.Preprocessors = [] @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig preprocessors reads every field`` () =
+    let json =
+        """{"preprocessors": [
+              {"name": "dbtypes-sync", "command": "dotnet", "args": "fsi build.fsx dbtypes-sync",
+               "cwd": "tools", "triggers": ["*.sql", "schema.json"],
+               "writes": ["src/Db/DbTypes.fs"], "timeoutSec": 120}
+            ]}"""
+
+    let config = parseConfig json defaults
+
+    match config.Preprocessors with
+    | [ p ] ->
+        test <@ p.Name = "dbtypes-sync" @>
+        test <@ p.Command = "dotnet" @>
+        test <@ p.Args = "fsi build.fsx dbtypes-sync" @>
+        test <@ p.WorkDir = Some "tools" @>
+
+        test
+            <@
+                p.Trigger = FsHotWatch.CommandPreprocessor.Trigger.Matching
+                    [ FsHotWatch.Watcher.FilePattern.Wildcard ".sql"
+                      FsHotWatch.Watcher.FilePattern.Literal "schema.json" ]
+            @>
+
+        test <@ p.Writes = [ "src/Db/DbTypes.fs" ] @>
+        test <@ p.TimeoutSec = Some 120 @>
+    | other -> failwith $"expected one preprocessor, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig preprocessors defaults: no triggers is Always, no cwd, no writes, no timeout`` () =
+    let json =
+        """{"preprocessors": [{"name": "gen", "command": "make", "args": "gen"}]}"""
+
+    let config = parseConfig json defaults
+
+    match config.Preprocessors with
+    | [ p ] ->
+        test <@ p.Trigger = FsHotWatch.CommandPreprocessor.Trigger.Always @>
+        test <@ p.WorkDir = None @>
+        test <@ p.Writes = [] @>
+        test <@ p.TimeoutSec = None @>
+        test <@ p.Args = "gen" @>
+    | other -> failwith $"expected one preprocessor, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig preprocessors keeps config order`` () =
+    let json =
+        """{"preprocessors": [{"name": "a", "command": "a"}, {"name": "b", "command": "b"}, {"name": "c", "command": "c"}]}"""
+
+    let config = parseConfig json defaults
+    test <@ (config.Preprocessors |> List.map (fun p -> p.Name)) = [ "a"; "b"; "c" ] @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"preprocessors": [{"command": "make"}]}""", "name")>]
+[<InlineData("""{"preprocessors": [{"name": "gen"}]}""", "command")>]
+[<InlineData("""{"preprocessors": [{"name": "gen", "command": "make"}, {"name": "gen", "command": "make"}]}""", "gen")>]
+[<InlineData("""{"preprocessors": [{"name": "gen", "command": "make", "triggers": ["a*b"]}]}""", "triggers")>]
+[<InlineData("""{"preprocessors": {"name": "gen", "command": "make"}}""", "array")>]
+let ``parseConfig preprocessors refuses a malformed entry`` (json: string, expected: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.Message.Contains expected @>
+
+[<Fact(Timeout = 15000)>]
+let ``registerPlugins registers configured preprocessors, in order, and the formatter last`` () =
+    withTempDir "cfg-preprocessors-reg" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        let entry name : PreprocessorConfig =
+            { Name = name
+              Command = "true"
+              Args = ""
+              WorkDir = None
+              Trigger = FsHotWatch.CommandPreprocessor.Trigger.Always
+              Writes = []
+              TimeoutSec = None }
+
+        let config =
+            { stripConfig defaults with
+                Format = Auto
+                Preprocessors = [ entry "gen-a"; entry "gen-b" ] }
+
+        registerPlugins daemon tmpDir config
+        test <@ daemon.Host.PreprocessorNames() = [ "gen-a"; "gen-b"; "format" ] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``registerPlugins with no preprocessors registers only the formatter`` () =
+    withTempDir "cfg-preprocessors-none" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        registerPlugins
+            daemon
+            tmpDir
+            { stripConfig defaults with
+                Format = Auto }
+
+        test <@ daemon.Host.PreprocessorNames() = [ "format" ] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``preprocessors are registered in registerPlugins and nowhere else`` () =
+    // Every entry point — daemon start, hosted session, `check --run-once`, `confirm` —
+    // registers through `registerPlugins`. A second registration site would be a mode
+    // that runs a different preprocessor set, so any other call is refused here.
+    let root = FsHotWatch.Tests.RepoTasks.repoRoot ()
+    let cliDir = Path.Combine(root, "src", "FsHotWatch.Cli")
+
+    let sites =
+        Directory.EnumerateFiles(cliDir, "*.fs", SearchOption.TopDirectoryOnly)
+        |> Seq.collect (fun path ->
+            File.ReadAllLines path
+            |> Seq.mapi (fun i line -> Path.GetFileName path, i + 1, line)
+            |> Seq.filter (fun (_, _, line) -> line.Contains "RegisterPreprocessor("))
+        |> Seq.map (fun (file, _, _) -> file)
+        |> Seq.distinct
+        |> List.ofSeq
+
+    test <@ sites = [ "DaemonConfig.fs" ] @>

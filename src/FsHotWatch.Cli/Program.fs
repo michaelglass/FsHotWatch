@@ -2360,10 +2360,19 @@ let internal daemonWith
     let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
     let backend, keyProvider = DaemonConfig.createCacheComponents root cacheConfig
 
-    let fileCommandPatterns =
-        config.FileCommands
-        |> List.choose (fun fc -> fc.Pattern)
-        |> List.map FsHotWatch.Watcher.FilePattern.parse
+    // Files the built-in filters ignore but a plugin or preprocessor is triggered by:
+    // `fileCommands[].pattern`, and every `preprocessors[].triggers` pattern, so an
+    // edit to a generator's input reaches a batch at all.
+    let extraWatchPatterns =
+        (config.FileCommands
+         |> List.choose (fun fc -> fc.Pattern)
+         |> List.map FsHotWatch.Watcher.FilePattern.parse)
+        @ (config.Preprocessors
+           |> List.collect (fun p ->
+               match p.Trigger with
+               | FsHotWatch.CommandPreprocessor.Trigger.Always -> []
+               | FsHotWatch.CommandPreprocessor.Trigger.Matching patterns -> patterns))
+        |> List.distinct
 
     // Resolve the idle-exit threshold from the `idleExitMin` config + this daemon's
     // repo path (AUTO-on for `/.workspaces/` checkouts). `None` leaves the timer off. A
@@ -2384,7 +2393,7 @@ let internal daemonWith
             CacheBackend = backend
             CacheKeyProvider = keyProvider
             ExcludePatterns = config.Exclude
-            ExtraWatchPatterns = fileCommandPatterns
+            ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
             IdleExitMin = idleExitMin
             PressureIdleFloorMin = pressureIdleFloorMin
