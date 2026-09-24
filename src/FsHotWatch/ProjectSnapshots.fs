@@ -95,18 +95,56 @@ let contentStamp (contentHash: string) : DateTime =
     let ticks = BitConverter.ToUInt64(digest, 0) % uint64 (DateTime.MaxValue.Ticks + 1L)
     DateTime(int64 ticks, DateTimeKind.Utc)
 
-let private referenceOnDisk (hashFile: string -> string) (repoRoot: string option) (path: string) =
+/// How many times a checker's state for one project has been invalidated. The
+/// project's snapshots carry it, so each generation has cache keys of its own.
+[<Struct>]
+type Generation = Generation of int64
+
+/// The generation a checker is in for each project, by project file.
+let private generations =
+    System.Runtime.CompilerServices.ConditionalWeakTable<
+        FSharpChecker,
+        System.Collections.Concurrent.ConcurrentDictionary<string, int64>
+     >()
+
+let private generationsOf (checker: FSharpChecker) =
+    generations.GetValue(checker, fun _ -> System.Collections.Concurrent.ConcurrentDictionary<string, int64>())
+
+/// The generation `checker` is in for the project `projectFileName`.
+let generationOf (checker: FSharpChecker) (projectFileName: string) : Generation =
+    match (generationsOf checker).TryGetValue projectFileName with
+    | true, n -> Generation n
+    | false, _ -> Generation 0L
+
+/// `stamp` as generation `generation` of a project writes it. Generation 0 writes
+/// every stamp as it is, so two checkouts of one revision still agree on every
+/// version; each later generation derives different stamps from the same ones.
+let private inGeneration (Generation n) (stamp: DateTime) =
+    if n = 0L then
+        stamp
+    else
+        contentStamp $"%d{stamp.Ticks}@%d{n}"
+
+let private referenceOnDisk
+    (hashFile: string -> string)
+    (repoRoot: string option)
+    (generation: Generation)
+    (path: string)
+    =
     let stamp =
         match repoRoot with
         | Some _ when CheckCache.isUnderRoot repoRoot path -> contentStamp (hashFile path)
         | _ -> FileSystem.GetLastWriteTimeShim path
 
-    { Path = path; LastModified = stamp }
+    { Path = path
+      LastModified = inGeneration generation stamp }
 
 /// The snapshot for checking `openFile` in `options`: `FromOptions`' snapshot, with
-/// content versions. `hashFile` is the content hash of one file; `repoRoot`, when
+/// content versions. `generation` is the generation each project is in (see
+/// `generationOf`); `hashFile` is the content hash of one file; `repoRoot`, when
 /// present, bounds the references stamped by content.
 let build
+    (generation: string -> Generation)
     (hashFile: string -> string)
     (repoRoot: string option)
     (openFile: OpenFile)
@@ -153,7 +191,8 @@ let build
                     referencesOnDisk =
                         (references
                          |> List.ofArray
-                         |> List.map (fun r -> referenceOnDisk hashFile repoRoot (r.Substring 3))),
+                         |> List.map (fun r ->
+                             referenceOnDisk hashFile repoRoot (generation opts.ProjectFileName) (r.Substring 3))),
                     otherOptions = List.ofArray otherOptions,
                     referencedProjects = referencedProjects,
                     isIncompleteTypeCheckEnvironment = opts.IsIncompleteTypeCheckEnvironment,
@@ -177,31 +216,22 @@ let parseAndCheck
     : Async<FSharpParseFileResults * FSharpCheckFileAnswer> =
     checker.ParseAndCheckFileInProject(path, snapshot)
 
-/// Drop everything the checker holds for `options`' project.
+/// Start a new generation of `checker`'s state for `options`' project.
 ///
-/// The options overload of `InvalidateConfiguration` clears nothing on the
-/// TransparentCompiler — it forwards to the background compiler the daemon does not
-/// use. The snapshot overload clears by the snapshot's identifier, which is the
-/// project file and its `-o:` output alone, so the snapshot names those and no files.
+/// Snapshots built afterwards stamp the project's references differently, and the
+/// references' stamps are part of the project's version. So the checker type-checks
+/// the project again, and every project downstream of it, whose versions include
+/// it, under cache keys nothing has used.
+///
+/// Nothing the checker holds is dropped. `InvalidateConfiguration` removes cache
+/// entries that checks already running go on to request: such a check recomputes a
+/// removed entry, or takes one another check recomputed, against type-check results
+/// it obtained before the removal. Two computations of one file then declare two
+/// copies of each of its types, and FCS reports a type as incompatible with itself.
+/// The previous generation's entries age out of the checker's bounded caches.
+///
+/// A project with no references on disk has no stamps to carry a generation; every
+/// project the daemon loads references at least FSharp.Core.
 let invalidate (checker: FSharpChecker) (options: FSharpProjectOptions) : unit =
-    let identity =
-        FSharpProjectSnapshot.Create(
-            projectFileName = options.ProjectFileName,
-            outputFileName = None,
-            projectId = options.ProjectId,
-            sourceFiles = [],
-            referencesOnDisk = [],
-            otherOptions =
-                (options.OtherOptions
-                 |> Array.filter (fun o -> o.StartsWith("-o:", StringComparison.Ordinal))
-                 |> List.ofArray),
-            referencedProjects = [],
-            isIncompleteTypeCheckEnvironment = options.IsIncompleteTypeCheckEnvironment,
-            useScriptResolutionRules = options.UseScriptResolutionRules,
-            loadTime = options.LoadTime,
-            unresolvedReferences = None,
-            originalLoadReferences = [],
-            stamp = None
-        )
-
-    checker.InvalidateConfiguration(identity)
+    (generationsOf checker).AddOrUpdate(options.ProjectFileName, 1L, fun _ n -> n + 1L)
+    |> ignore

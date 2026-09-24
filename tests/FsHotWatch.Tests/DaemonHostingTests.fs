@@ -232,7 +232,9 @@ let private contentHash (path: string) =
 /// very object it computed before, so reference equality says whether the entry survived.
 let private checkedResult checker (path: string) options =
     let openFile = ProjectSnapshots.readOpenFile contentHash path
-    let snapshot = ProjectSnapshots.build contentHash None openFile options
+
+    let snapshot =
+        ProjectSnapshots.build (ProjectSnapshots.generationOf checker) contentHash None openFile options
 
     match ProjectSnapshots.parseAndCheck checker path snapshot |> Async.RunSynchronously with
     | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results -> box results

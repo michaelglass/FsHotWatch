@@ -329,15 +329,21 @@ type CheckPipeline
                 ct.ThrowIfCancellationRequested()
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
-                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
+                // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
+                // project's new generation.
+                let check () =
+                    ProjectSnapshots.build (ProjectSnapshots.generationOf checker) hashFile repoRoot openFile options
+                    |> ProjectSnapshots.parseAndCheck checker absPath
+
+                let! firstParse, firstAnswer = check ()
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
                 // apart, so an identical render means it found no difference to tell.
                 // What produces it is not known (see `FcsDiagnosticFilter`), so
-                // dropping this project's checker state and asking again is a guess
-                // at the class of thing that might clear it: cheap, bounded to ONCE
+                // asking again in a new generation of this project's checker state
+                // (`ProjectSnapshots.invalidate`) is a guess at the class of thing
+                // that might clear it: cheap, bounded to ONCE
                 // per project per cooldown so a pathological tree cannot turn every
                 // file into a project re-typecheck, and never trusted to have worked
                 // — a survivor is reported as our fault, not swallowed.
@@ -363,7 +369,7 @@ type CheckPipeline
                         FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
                         budgetAllows
                         onRecheck
-                        (fun () -> ProjectSnapshots.parseAndCheck checker absPath snapshot)
+                        check
                         (firstParse, firstAnswer)
 
                 sw.Stop()

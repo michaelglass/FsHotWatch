@@ -36,6 +36,21 @@
   verdict deadline, and `--run-once` its 30-minute settle. The `WaitForComplete` log
   line now names the bound it applied, and a plugin-free host that times out names
   the work it still owns.
+- fix!: invalidating a project no longer makes the checks already under way report its
+  types as incompatible with themselves (`The type 'X' is not compatible with the
+  type 'X'`). `ProjectSnapshots.invalidate` removed the project's entries from the
+  checker's caches while other checks of the project were still running. Such a check
+  then type-checked a removed file again, or took another check's new result for it,
+  against results it already held, so one file's types existed twice. A scan that
+  re-checked one self-incompatible diagnostic that way produced more of them in the
+  project's other files. `invalidate` now moves the project to a new generation
+  instead: the snapshots `ProjectSnapshots.build` makes afterwards stamp its
+  references differently, so the project and everything downstream of it are
+  type-checked again under new cache keys, and nothing a running check depends on is
+  removed. Breaking: `ProjectSnapshots.build` takes a new first argument, the
+  generation of each project (`ProjectSnapshots.generationOf checker`), and
+  `ProjectSnapshots.Generation` is new. The self-incompatible re-check builds its
+  snapshot again after invalidating.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

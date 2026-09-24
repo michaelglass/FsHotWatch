@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A scan no longer reports types in a project as incompatible with themselves (`The
+  type 'X' is not compatible with the type 'X'`) after it re-checks one such
+  diagnostic. Re-checking removed the project from the checker's caches under the
+  project's other running checks, and each of those could then see two copies of one
+  type. Code that `dotnet build` compiles no longer fails `check` this way.
+
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).
 

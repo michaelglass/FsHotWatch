@@ -3406,7 +3406,8 @@ module Daemon =
     /// What a full rediscovery drops from the checker. A daemon that owns its checker
     /// drops everything it holds (and, owning its process, the language service's
     /// process-wide caches). A hosted session's checker is shared with its partition's
-    /// other sessions, so it drops only `ownProjects`, and nothing its siblings hold.
+    /// other sessions, so it moves only `ownProjects` to a new generation
+    /// (`ProjectSnapshots.invalidate`), and leaves what its siblings hold untouched.
     let internal dropForRediscovery
         (seams: DaemonHosting.HostingSeams)
         (checker: FSharpChecker)
