@@ -1359,8 +1359,8 @@ let ``repeated scan force via IPC increments generation each time`` () =
     let daemon =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
-    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForServer pipeName
+    let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     // Wait for initial scan to complete (gen=1)
     let waitResult = IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously
@@ -1412,8 +1412,8 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
     let daemon =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
-    let serverTask = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForServer pipeName
+    let serverTask = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     // Let the initial scan settle so the next WaitForScan genuinely blocks.
     IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously |> ignore

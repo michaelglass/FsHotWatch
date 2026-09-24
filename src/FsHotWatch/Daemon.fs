@@ -2549,7 +2549,11 @@ type Daemon
                     Some "daemon start to serving"
                 )
 
-                let ipcTask = Async.StartAsTask(serve rpcConfig cts)
+                // Started on this thread: a server creates its listening instances
+                // before its first wait, so the daemon accepts connections before this
+                // method goes on. Queued to the thread pool instead, a loaded box could
+                // hold the start back while a client probing for the daemon finds none.
+                let ipcTask = Async.StartImmediateAsTask(serve rpcConfig cts)
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
                 // timer that gracefully shuts the daemon down once it has been idle

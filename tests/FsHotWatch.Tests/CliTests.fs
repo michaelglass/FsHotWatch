@@ -18,16 +18,6 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Tests.TestHelpers
 
 /// Poll until IPC server is accepting connections.
-let private waitForIpcServer (pipeName: string) =
-    waitUntil
-        (fun () ->
-            try
-                IpcClient.getStatus pipeName |> Async.RunSynchronously |> ignore
-                true
-            with _ ->
-                false)
-        5000
-
 // --- CommandTree.parse tests ---
 
 let tree = FsHotWatch.Cli.Program.commandTree
@@ -551,8 +541,8 @@ let ``shutdown via IPC stops the daemon`` () =
     let daemon =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
-    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForIpcServer pipeName
+    let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     try
         let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
@@ -619,8 +609,8 @@ let ``CLI status query works against running daemon`` () =
           Teardown = None }
 
     daemon.RegisterHandler(handler)
-    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForIpcServer pipeName
+    let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
@@ -667,8 +657,8 @@ let ``CLI plugin status query works against running daemon`` () =
 
     daemon.RegisterHandler(handler)
     daemon.Host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForIpcServer pipeName
+    let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     waitUntil
         (fun () ->
@@ -722,8 +712,8 @@ let ``CLI command proxying works against running daemon`` () =
           Teardown = None }
 
     daemon.RegisterHandler(handler)
-    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    waitForIpcServer pipeName
+    let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
+    test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     try
         let result =

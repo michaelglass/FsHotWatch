@@ -376,8 +376,10 @@ let run
                     "host"
                     $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
 
+                // Started on this thread, so the endpoint accepts attaches before the host
+                // goes on (see `Daemon.RunWith`).
                 let serving =
-                    Async.StartAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
+                    Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
                 // Idle exit: no session attached for the whole grace period.
                 let mutable idleSince = DateTime.UtcNow

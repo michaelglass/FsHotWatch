@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `Daemon.RunWith` and `RepositoryHost.run` start their IPC server on their own
+  thread, so a daemon or host accepts connections before its startup goes on. Queued to
+  the thread pool, a loaded box could leave a client probing for it with nothing
+  listening.
+
 - feat!: a repository host's sessions of one checker configuration check through one
   checker (`CheckerPartitions`), so they hold one copy of the framework imports and
   `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and

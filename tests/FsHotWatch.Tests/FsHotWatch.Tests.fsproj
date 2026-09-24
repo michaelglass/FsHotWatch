@@ -85,6 +85,7 @@
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />
+    <Compile Include="ServeOrderingTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
     <!-- The TestPrune plugin suite, split across four files so no single one exceeds
          TestPrune's 32,768-node symbol-traversal budget (past it a file gets no symbol
