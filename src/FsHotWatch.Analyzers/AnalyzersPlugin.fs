@@ -22,9 +22,27 @@ type AnalyzersMsg =
     | AnalysisComplete of file: string * entries: ErrorEntry list
     | AnalysisFailed of file: string * error: string
 
+/// An analyzer that raised instead of returning findings. The SDK hands the exception
+/// back as that analyzer's result; folded to "no findings" it would read as a clean
+/// file with the rule silently off.
+type AnalyzerCrash =
+    {
+        /// The analyzer's name as the SDK reports it.
+        Analyzer: string
+        /// Exception type and message, e.g. `MissingMethodException: Method not found: …`.
+        Cause: string
+        /// The full exception, stack included.
+        Trace: string
+    }
+
 type AnalyzersState =
     {
+        /// Every entry this plugin reported to the ledger for each file: the analyzers'
+        /// findings and one Error finding per analyzer that crashed on the file.
         DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
+        /// The analyzers that crashed on each file, replaced per file like
+        /// `DiagnosticsByFile` so a file that stops crashing drops out of the tally.
+        CrashesByFile: Map<AbsFilePath, AnalyzerCrash list>
         LoadedCount: int
         /// Per-path analyzer load result, in the order paths were configured. The
         /// count is 0 when the path doesn't exist OR exists but contains no
@@ -45,19 +63,76 @@ type AnalyzersState =
 /// It also states its evidence: how many files this handler analyzed, how many were
 /// replayed from cache instead, and which analyzer set ran. `0 findings` over files
 /// nobody examined must not read like `0 findings` over files that were.
+///
+/// Crashes are counted per (file, analyzer) and are included in `findings`, since each
+/// is an Error finding in the ledger. Each crashed analyzer is then named ONCE, with the
+/// number of files it crashed on and its first cause: an analyzer that raises on every
+/// file is one fact, and a thousand copies of it would bury the rest of the line.
 let internal summarize
     (analyzed: int)
     (replayed: int)
     (analyzerSet: string)
     (diagnosticsByFile: Map<AbsFilePath, ErrorEntry list>)
+    (crashesByFile: Map<AbsFilePath, AnalyzerCrash list>)
     : string =
     // `findings` is the total across ALL severities (incl. Info/Hint), so it stays
     // its own count rather than being derived from the severity tally.
     let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
     let counts = DiagnosticCounts.ofEntries allEntries
     let findings = List.length allEntries
+    let crashes = crashesByFile |> Map.toList |> List.collect snd
 
-    $"analyzed %d{analyzed} files, replayed %d{replayed} from cache, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings) — %s{analyzerSet}"
+    let crashed =
+        match crashes with
+        | [] -> "0 analyzer crashes"
+        | _ ->
+            let perAnalyzer =
+                crashes
+                |> List.groupBy _.Analyzer
+                |> List.map (fun (analyzer, occurrences) ->
+                    $"%s{analyzer} on %d{List.length occurrences} files: %s{(List.head occurrences).Cause}")
+                |> String.concat "; "
+
+            $"%d{List.length crashes} analyzer crashes (%s{perAnalyzer})"
+
+    $"analyzed %d{analyzed} files, replayed %d{replayed} from cache, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings), %s{crashed} — %s{analyzerSet}"
+
+/// Name the crash of `analyzer` by exception type and message.
+let internal crashOf (analyzer: string) (ex: exn) : AnalyzerCrash =
+    { Analyzer = analyzer
+      Cause = $"%s{ex.GetType().Name}: %s{ex.Message}"
+      Trace = ex.ToString() }
+
+/// The ledger entry for a crash: an Error at line 1 of the file, which no failure
+/// threshold demotes, naming the analyzer so the verdict says which rule is off.
+let internal crashFinding (crash: AnalyzerCrash) : ErrorEntry =
+    { Message = $"analyzer %s{crash.Analyzer} crashed: %s{crash.Cause}"
+      Severity = DiagnosticSeverity.Error
+      Line = 1
+      Column = 0
+      Detail = Some crash.Trace }
+
+/// Split one file's analyzer results into what the analyzers found and which of them
+/// crashed. `toEntry` renders a message; the crashes are left to `crashFinding`.
+let internal foldResults
+    (toEntry: Message -> ErrorEntry)
+    (results: AnalysisResult list)
+    : ErrorEntry list * AnalyzerCrash list =
+    let findings =
+        results
+        |> List.collect (fun r ->
+            match r.Output with
+            | Result.Ok messages -> List.map toEntry messages
+            | Result.Error _ -> [])
+
+    let crashes =
+        results
+        |> List.choose (fun r ->
+            match r.Output with
+            | Result.Ok _ -> None
+            | Result.Error ex -> Some(crashOf r.AnalyzerName ex))
+
+    findings, crashes
 
 /// Assembly-name prefixes we always skip when loading analyzers. Analyzer
 /// packages (e.g. FSharpLintAnalyzerShim) ship bundled BCL/FCS deps that aren't
@@ -234,11 +309,6 @@ let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry
 ///
 /// CliContext is constructed by REFLECTION to bypass the FCS 43.10 vs 43.12 type
 /// mismatch at compile time (the types are structurally identical).
-///
-/// Internal constructor with a test seam: `slowHook` is invoked inside the
-/// timeout-guarded region before the real analyzer call so tests can force the
-/// timeout branch without a real slow analyzer DLL. The public `create` passes
-/// `None`.
 // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
 // but the SDK assembly may not be fully loaded at plugin construction time in tests)
 let internal cachedReflection =
@@ -369,12 +439,24 @@ let private currentModelGeneration (ctx: PluginCtx<'Msg>) =
     | FsHotWatch.ProjectModel.Observation.Rediscovering _
     | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
 
-let internal createWithSlowHook
+/// Runs the loaded analyzer set over one file's context. Production uses the SDK's
+/// `RunAnalyzersSafely`, which hands a raising analyzer's exception back as that
+/// analyzer's result instead of throwing.
+type internal AnalyzerRunner = Client<CliAnalyzerAttribute, CliContext> -> CliContext -> Async<AnalysisResult list>
+
+let internal runSafely: AnalyzerRunner =
+    fun client context -> client.RunAnalyzersSafely context
+
+/// The handler, with two test seams: `slowHook` is invoked inside the
+/// timeout-guarded region before the analyzers run, and `runAnalyzersOver` stands in
+/// for the SDK's run so a test can supply analyzers without loading an assembly.
+let internal createWithSeams
     (repoRoot: string option)
     (analyzerPaths: string list)
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     (slowHook: (unit -> unit) option)
+    (runAnalyzersOver: AnalyzerRunner)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     // The SDK Client holds the loaded analyzer set in private state. A reload swaps
     // in a FRESH Client rather than re-loading the existing one: a fresh Client
@@ -452,12 +534,22 @@ let internal createWithSlowHook
             Volatile.Write(&replayedFiles, Volatile.Read(&replayedFiles) + 1)
             Volatile.Write(&replayPending, false)
 
-    let summarizeRun analyzed diagnosticsByFile =
+    let summarizeRun analyzed diagnosticsByFile crashesByFile =
         summarize
             analyzed
             (Volatile.Read(&replayedFiles))
             (analyzerSetLabel (Volatile.Read(&snapshot)).Inputs)
             diagnosticsByFile
+            crashesByFile
+
+    // Each crashing analyzer is logged the first time it raises, not once per file:
+    // an analyzer that raises on every file is one fact.
+    let mutable loggedCrashes: Set<string> = Set.empty
+
+    let logCrashOnce (fileStr: string) (crash: AnalyzerCrash) =
+        if not (Volatile.Read(&loggedCrashes) |> Set.contains crash.Analyzer) then
+            Volatile.Write(&loggedCrashes, Volatile.Read(&loggedCrashes) |> Set.add crash.Analyzer)
+            error "analyzers" $"Analyzer %s{crash.Analyzer} crashed on %s{fileStr}: %s{crash.Trace}"
 
     let warnOnce (refusals: AnalyzerIdentity.Refusal list) =
         let signature = describeRefusals refusals
@@ -507,6 +599,7 @@ let internal createWithSlowHook
     { Name = PluginName.create "analyzers"
       Init =
         { DiagnosticsByFile = Map.empty
+          CrashesByFile = Map.empty
           LoadedCount = loadedCount
           LoadedByPath = loadedByPath
           RunAnalyzed = 0 }
@@ -621,7 +714,7 @@ let internal createWithSlowHook
                                                                     (box result.ProjectOptions)
 
                                                             Async.RunSynchronously(
-                                                                activeClient.RunAnalyzersSafely(context),
+                                                                runAnalyzersOver activeClient context,
                                                                 cancellationToken = workCt
                                                             )
 
@@ -693,40 +786,33 @@ let internal createWithSlowHook
                                                         )
 
                                                         return Choice1Of3()
-                                                    | WorkCompleted messages ->
+                                                    | WorkCompleted results ->
+                                                        let toEntry (m: Message) : ErrorEntry =
+                                                            { Message =
+                                                                FsHotWatch.PathFrame.textFrom result.Frame m.Message
+                                                              Severity =
+                                                                match m.Severity with
+                                                                | Severity.Error -> DiagnosticSeverity.Error
+                                                                | Severity.Warning -> DiagnosticSeverity.Warning
+                                                                | Severity.Info -> DiagnosticSeverity.Info
+                                                                | Severity.Hint -> DiagnosticSeverity.Hint
+                                                              Line = m.Range.StartLine
+                                                              Column = m.Range.StartColumn
+                                                              Detail = None }
+
+                                                        let findings, crashes = foldResults toEntry results
+
+                                                        crashes |> List.iter (logCrashOnce fileStr)
 
                                                         let entries =
-                                                            messages
-                                                            |> List.collect (fun ar ->
-                                                                match ar.Output with
-                                                                | Ok msgs ->
-                                                                    msgs
-                                                                    |> List.map (fun m ->
-                                                                        { Message =
-                                                                            FsHotWatch.PathFrame.textFrom
-                                                                                result.Frame
-                                                                                m.Message
-                                                                          Severity =
-                                                                            match m.Severity with
-                                                                            | Severity.Error ->
-                                                                                DiagnosticSeverity.Error
-                                                                            | Severity.Warning ->
-                                                                                DiagnosticSeverity.Warning
-                                                                            | Severity.Info -> DiagnosticSeverity.Info
-                                                                            | Severity.Hint -> DiagnosticSeverity.Hint
-                                                                          Line = m.Range.StartLine
-                                                                          Column = m.Range.StartColumn
-                                                                          Detail = None })
-                                                                | Result.Error _ -> [])
-
-                                                        let entries =
-                                                            entries |> List.map (promoteIfFailing failOnSeverity)
+                                                            (findings |> List.map (promoteIfFailing failOnSeverity))
+                                                            @ (crashes |> List.map crashFinding)
 
                                                         debug
                                                             "analyzers"
-                                                            $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics"
+                                                            $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics, %d{crashes.Length} analyzer crashes"
 
-                                                        return Choice2Of3 entries
+                                                        return Choice2Of3(entries, crashes)
                                                 // Analyzers are third-party assemblies and may
                                                 // raise anything. The broad catch keeps one buggy
                                                 // analyzer from taking down the whole pass;
@@ -748,26 +834,28 @@ let internal createWithSlowHook
                         | Choice1Of3() ->
                             // Timed out — terminal status already reported, state unchanged.
                             return state
-                        | Choice2Of3 entries ->
+                        | Choice2Of3(entries, crashes) ->
                             // completeWith must run inside this event's window so the
                             // framework writes the cache for FileChecked.
                             PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
-                            // Replace (not merge) this file's entry so a re-check that
+                            // Replace (not merge) this file's entries so a re-check that
                             // passes drops to []; see `summarize`.
                             let updated = state.DiagnosticsByFile |> Map.add result.File entries
+                            let crashesByFile = state.CrashesByFile |> Map.add result.File crashes
                             let analyzed = state.RunAnalyzed + 1
 
                             ctx.EndSubtask PrimarySubtaskKey
 
                             PluginCtxHelpers.completeWith
                                 ctx
-                                (summarizeRun analyzed updated)
+                                (summarizeRun analyzed updated crashesByFile)
                                 (DateTime.UtcNow - runStarted)
 
                             return
                                 { state with
                                     DiagnosticsByFile = updated
+                                    CrashesByFile = crashesByFile
                                     RunAnalyzed = analyzed }
                         | Choice3Of3 errMsg ->
                             ctx.ReportErrors fileStr [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
@@ -785,6 +873,7 @@ let internal createWithSlowHook
                     PluginCtxHelpers.reportOrClearFile ctx file entries
 
                     let updated = state.DiagnosticsByFile |> Map.add (AbsFilePath.create file) entries
+                    let crashesByFile = state.CrashesByFile |> Map.remove (AbsFilePath.create file)
                     let analyzed = state.RunAnalyzed + 1
 
                     ctx.EndSubtask PrimarySubtaskKey
@@ -792,11 +881,12 @@ let internal createWithSlowHook
                     // Legacy test-driving arm: the analysis ran outside this
                     // handler, so there is no duration to swear to — Zero renders
                     // as "no timing shown", never a fabricated measurement.
-                    PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated) TimeSpan.Zero
+                    PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated crashesByFile) TimeSpan.Zero
 
                     return
                         { state with
                             DiagnosticsByFile = updated
+                            CrashesByFile = crashesByFile
                             RunAnalyzed = analyzed }
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
@@ -910,4 +1000,4 @@ let create
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    createWithSlowHook repoRoot analyzerPaths timeoutSec failOnSeverity None
+    createWithSeams repoRoot analyzerPaths timeoutSec failOnSeverity None runSafely

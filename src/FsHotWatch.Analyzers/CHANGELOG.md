@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Changed: an analyzer that raises is a FAILURE, no longer a clean file. The SDK
+  hands a raising analyzer's exception back as that analyzer's result, and the
+  host folded it to "no findings" — so the gate went green with the rule silently
+  off (g-research 0.23.0 raising `MissingMethodException` on every file under an
+  FCS mismatch looked exactly like a clean tree). Each crash is now an Error
+  finding at line 1 of the file, `analyzer <name> crashed: <exception type>:
+  <message>` with the full exception as its detail; no failure threshold demotes
+  it, so it reddens the verdict and names the analyzer in `reddenedBy`. The
+  summary gains a crash tally that names each crashed analyzer once, with the
+  number of files it crashed on and its first cause:
+  `…, M findings (…), K analyzer crashes (<name> on N files: <cause>) — analyzer set <id>`,
+  or `0 analyzer crashes` when none did. Crash findings are among the `M`
+  findings. The daemon log records each crashed analyzer once, not once per file.
+
 ## 0.7.0-alpha.37 - 2026-09-24
 
 - host: check identical worktrees once, under one virtual root

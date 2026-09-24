@@ -790,7 +790,7 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     let slowHook () = System.Threading.Thread.Sleep 3000
 
     let handler =
-        createWithSlowHook None [] (Some 1) DiagnosticSeverity.Hint (Some slowHook)
+        createWithSeams None [] (Some 1) DiagnosticSeverity.Hint (Some slowHook) runSafely
 
     host.RegisterHandler(handler)
     host.EmitFileChecked(fakeResult "/tmp/slow/File.fs")
@@ -841,7 +841,7 @@ let ``timed-out synchronous analyzer cannot overlap the next file`` () =
         failwith "late analyzer failure"
 
     let handler =
-        createWithSlowHook None [] (Some 1) DiagnosticSeverity.Hint (Some slowHook)
+        createWithSeams None [] (Some 1) DiagnosticSeverity.Hint (Some slowHook) runSafely
 
     host.RegisterHandler(handler)
 
@@ -882,7 +882,7 @@ let ``analyzers skip compile items outside the repo`` () =
         System.Threading.Interlocked.Increment(&analyzedCount) |> ignore
 
     let handler =
-        createWithSlowHook (Some "/my/repo") [] None DiagnosticSeverity.Hint (Some hook)
+        createWithSeams (Some "/my/repo") [] None DiagnosticSeverity.Hint (Some hook) runSafely
 
     host.RegisterHandler(handler)
 
@@ -1048,7 +1048,7 @@ let ``summarize derives findings from the live map, not an accumulator`` () =
 
     test
         <@
-            summarize 2 0 "analyzer set x" map = "analyzed 2 files, replayed 0 from cache, 3 findings (2 errors, 1 warnings) — analyzer set x"
+            summarize 2 0 "analyzer set x" map Map.empty = "analyzed 2 files, replayed 0 from cache, 3 findings (2 errors, 1 warnings), 0 analyzer crashes — analyzer set x"
         @>
 
 [<Fact>]
@@ -1059,7 +1059,7 @@ let ``summarize reads 0 findings when every file's entry is empty`` () =
 
     test
         <@
-            summarize 2 0 "analyzer set x" map = "analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings) — analyzer set x"
+            summarize 2 0 "analyzer set x" map Map.empty = "analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings), 0 analyzer crashes — analyzer set x"
         @>
 
 /// Recording PluginCtx: captures the run summaries carried by each terminal status, and
@@ -1133,7 +1133,7 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
 
     test
         <@
-            summaries |> Seq.last = $"analyzed 1 files, replayed 0 from cache, 2 findings (2 errors, 0 warnings) — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
+            summaries |> Seq.last = $"analyzed 1 files, replayed 0 from cache, 2 findings (2 errors, 0 warnings), 0 analyzer crashes — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
         @>
 
     test <@ ledger.ContainsKey file && ledger.[file].Length = 2 @>
@@ -1146,7 +1146,7 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
     // 0, not the stale 2 from the first cycle — and the ledger entry is cleared too.
     test
         <@
-            summaries |> Seq.last = $"analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings) — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
+            summaries |> Seq.last = $"analyzed 2 files, replayed 0 from cache, 0 findings (0 errors, 0 warnings), 0 analyzer crashes — %s{analyzerSetLabel (snapshotAnalyzerSet None knownNonAnalyzerPrefixes []).Inputs}"
         @>
 
     test <@ not (ledger.ContainsKey file) @>
@@ -1393,7 +1393,7 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
         failwith "analyzer boom"
 
     let handler =
-        createWithSlowHook (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook)
+        createWithSeams (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook) runSafely
 
     host.RegisterHandler(handler)
 
@@ -1441,7 +1441,7 @@ let ``analyzers refuse a FileChecked captured against no model`` () =
         failwith "analyzer boom"
 
     let handler =
-        createWithSlowHook (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook)
+        createWithSeams (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook) runSafely
 
     host.RegisterHandler(handler)
 
@@ -1506,7 +1506,7 @@ let ``a summary counts the files replayed from cache between the files it analyz
     handler.Update ctx handler.Init analyzedMsg |> Async.RunSynchronously |> ignore
 
     let expected =
-        $"analyzed 1 files, replayed 2 from cache, 0 findings (0 errors, 0 warnings) — %s{setLabelOf []}"
+        $"analyzed 1 files, replayed 2 from cache, 0 findings (0 errors, 0 warnings), 0 analyzer crashes — %s{setLabelOf []}"
 
     test <@ summaries |> Seq.last = expected @>
 
@@ -1613,3 +1613,260 @@ let ``a run's summary counts only that run's files, not every file since start``
     waitForQuiescent host 15000
 
     test <@ (summary ()).EndsWith("; 0 files examined, 2 replayed from cache (cached)") @>
+
+// ---------------------------------------------------------------------------
+// A raising analyzer is a failure, never a clean file. The SDK hands the exception
+// back as that analyzer's result; folded to "no findings" the gate went green with
+// the rule silently off (g-research 0.23.0 raising MissingMethodException on every
+// file under an FCS mismatch looked exactly like a clean tree).
+// ---------------------------------------------------------------------------
+
+let private sdkMessage (text: string) : FSharp.Analyzers.SDK.Message =
+    { Type = "Fixture"
+      Message = text
+      Code = "FIX-001"
+      Severity = FSharp.Analyzers.SDK.Severity.Warning
+      Range =
+        FSharp.Compiler.Text.Range.mkRange
+            "Fixture.fs"
+            (FSharp.Compiler.Text.Position.mkPos 3 4)
+            (FSharp.Compiler.Text.Position.mkPos 3 9)
+      Fixes = [] }
+
+let private clean
+    (analyzer: string)
+    (messages: FSharp.Analyzers.SDK.Message list)
+    : FSharp.Analyzers.SDK.AnalysisResult =
+    { AnalyzerName = analyzer
+      Output = Result.Ok messages }
+
+let private raising (analyzer: string) (ex: exn) : FSharp.Analyzers.SDK.AnalysisResult =
+    { AnalyzerName = analyzer
+      Output = Result.Error ex }
+
+let private plainEntry (m: FSharp.Analyzers.SDK.Message) : ErrorEntry =
+    { Message = m.Message
+      Severity = DiagnosticSeverity.Warning
+      Line = m.Range.StartLine
+      Column = m.Range.StartColumn
+      Detail = None }
+
+[<Fact>]
+let ``foldResults reports a raising analyzer as a crash, not as no findings`` () =
+    let findings, crashes =
+        foldResults
+            plainEntry
+            [ raising "TypedRule" (MissingMethodException "Method not found: get_BasicQualifiedName") ]
+
+    test <@ List.isEmpty findings @>
+    test <@ crashes |> List.map _.Analyzer = [ "TypedRule" ] @>
+    test <@ crashes |> List.map _.Cause = [ "MissingMethodException: Method not found: get_BasicQualifiedName" ] @>
+
+[<Fact>]
+let ``foldResults leaves a non-raising analyzer's findings untouched`` () =
+    let message = sdkMessage "wildcard on a DU"
+
+    let findings, crashes =
+        foldResults plainEntry [ clean "Fine" [ message ]; clean "Quiet" [] ]
+
+    test <@ findings = [ plainEntry message ] @>
+    test <@ List.isEmpty crashes @>
+
+[<Fact>]
+let ``a crash finding is an Error at line 1 naming the analyzer and the exception`` () =
+    let crash = crashOf "TypedRule" (InvalidOperationException "boom")
+    let entry = crashFinding crash
+
+    test <@ entry.Severity = DiagnosticSeverity.Error @>
+    test <@ (entry.Line, entry.Column) = (1, 0) @>
+    test <@ entry.Message = "analyzer TypedRule crashed: InvalidOperationException: boom" @>
+
+    test
+        <@
+            entry.Detail
+            |> Option.exists (fun d -> d.Contains "System.InvalidOperationException: boom")
+        @>
+
+[<Fact>]
+let ``a crash finding is not demoted by any failure threshold`` () =
+    let entry = crashFinding (crashOf "TypedRule" (exn "boom"))
+    test <@ promoteIfFailing DiagnosticSeverity.Error entry = entry @>
+
+[<Fact>]
+let ``summarize names an analyzer that crashed on every file once, with its file count`` () =
+    let crash = crashOf "TypedRule" (MissingMethodException "gone")
+    let files = [ "/tmp/A.fs"; "/tmp/B.fs"; "/tmp/C.fs" ] |> List.map AbsFilePath.create
+
+    let diagnostics =
+        files |> List.map (fun f -> f, [ crashFinding crash ]) |> Map.ofList
+
+    let crashes = files |> List.map (fun f -> f, [ crash ]) |> Map.ofList
+
+    test
+        <@
+            summarize 3 0 "analyzer set x" diagnostics crashes = "analyzed 3 files, replayed 0 from cache, 3 findings (3 errors, 0 warnings), 3 analyzer crashes (TypedRule on 3 files: MissingMethodException: gone) — analyzer set x"
+        @>
+
+/// Project options the SDK's context accepts. The runner seam ignores the context, so
+/// nothing is checked; the options only have to be there for the context to be built.
+let private fixtureProjectOptions: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions =
+    { ProjectFileName = "/my/repo/Fixture.fsproj"
+      ProjectId = None
+      SourceFiles = [||]
+      OtherOptions = [||]
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = DateTime.UtcNow
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
+let private analyzable (file: string) =
+    { fakeResult file with
+        ProjectOptions = fixtureProjectOptions }
+
+/// Analyzes `files` through a handler whose analyzer set is `results`, and returns the
+/// host after the last file's terminal status.
+let private analyzeWith (results: string -> FSharp.Analyzers.SDK.AnalysisResult list) (files: string list) =
+    let host = createModelHost (Unchecked.defaultof<_>) "/my/repo"
+
+    let runner: AnalyzerRunner =
+        fun _client context -> async { return results context.FileName }
+
+    host.RegisterHandler(createWithSeams (Some "/my/repo") [] None DiagnosticSeverity.Error None runner)
+
+    for file in files do
+        host.EmitFileChecked(analyzable file)
+
+    waitForQuiescent host 15000
+    host
+
+let private summaryOf (host: PluginHost) =
+    match host.GetStatus "analyzers" with
+    | Some(Completed(_, v)) -> v.Summary
+    | other -> failwith $"expected a completed analyzers status, got %A{other}"
+
+[<Fact(Timeout = 30000)>]
+let ``a raising analyzer reddens the verdict and is named in it`` () =
+    let file = "/my/repo/src/Crashed.fs"
+
+    let host =
+        analyzeWith
+            (fun _ ->
+                [ clean "Fine" [ sdkMessage "a real finding" ]
+                  raising "TypedRule" (MissingMethodException "Method not found: get_BasicQualifiedName") ])
+            [ file ]
+
+    let entries =
+        host.GetErrorsByPlugin "analyzers" |> Map.tryFind file |> Option.defaultValue []
+
+    // The crash is a finding against the file, at line 1, as an Error...
+    test
+        <@
+            entries
+            |> List.exists (fun e ->
+                e.Severity = DiagnosticSeverity.Error
+                && e.Line = 1
+                && e.Message = "analyzer TypedRule crashed: MissingMethodException: Method not found: get_BasicQualifiedName")
+        @>
+
+    // ...beside the non-raising analyzer's finding, which is unaffected.
+    test <@ entries |> List.exists (fun e -> e.Message = "a real finding" && e.Line = 3) @>
+
+    test <@ (summaryOf host).Contains "1 analyzer crashes (TypedRule on 1 files: MissingMethodException" @>
+
+    // The verdict: the ledger reddens the exit code, and the cause it records names the
+    // crashed analyzer rather than a generic failure.
+    let response: FsHotWatch.Cli.IpcParsing.DiagnosticsResponse =
+        { Count = entries.Length
+          Files =
+            Map.ofList
+                [ file,
+                  entries
+                  |> List.map (fun e ->
+                      { FsHotWatch.Cli.IpcParsing.DiagnosticEntry.Plugin = "analyzers"
+                        Message = e.Message
+                        Severity = e.Severity
+                        Line = e.Line
+                        Column = e.Column
+                        Detail = e.Detail }) ]
+          Statuses = Map.empty
+          Coverage = FsHotWatch.Cli.IpcParsing.Complete
+          ProjectModel = ProjectModelFixtures.available }
+
+    test <@ FsHotWatch.Cli.IpcOutput.exitCodeFromResponse false response = 1 @>
+
+    let daemonLog =
+        FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir
+
+    let causes = FsHotWatch.Cli.IpcOutput.redCausesOf daemonLog false response
+
+    test
+        <@
+            causes
+            |> List.exists (fun c ->
+                c.Source = "analyzers"
+                && (FsHotWatch.Cli.Verdict.RedCauseMessage.value c.Message).Contains "analyzer TypedRule crashed")
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``a non-raising analyzer set reports no crash`` () =
+    let file = "/my/repo/src/Fine.fs"
+
+    let host =
+        analyzeWith (fun _ -> [ clean "Fine" [ sdkMessage "a real finding" ] ]) [ file ]
+
+    let entries =
+        host.GetErrorsByPlugin "analyzers" |> Map.tryFind file |> Option.defaultValue []
+
+    test <@ entries |> List.map _.Message = [ "a real finding" ] @>
+    test <@ (summaryOf host).Contains "0 analyzer crashes" @>
+
+[<Fact(Timeout = 30000)>]
+let ``an analyzer that crashes on every file is named once, with the count`` () =
+    let files = [ "/my/repo/src/A.fs"; "/my/repo/src/B.fs"; "/my/repo/src/C.fs" ]
+
+    let host =
+        analyzeWith (fun _ -> [ raising "TypedRule" (MissingMethodException "gone") ]) files
+
+    let summary = summaryOf host
+    test <@ summary.Contains "3 analyzer crashes (TypedRule on 3 files: MissingMethodException: gone)" @>
+    // Named once, not once per file.
+    test <@ summary.Split("TypedRule").Length = 2 @>
+    let errors = host.GetErrorsByPlugin "analyzers"
+    test <@ files |> List.forall (fun f -> errors |> Map.containsKey f) @>
+
+[<Fact(Timeout = 30000)>]
+let ``a file that stops crashing drops out of the crash tally`` () =
+    let file = "/my/repo/src/Flaky.fs"
+    let crash = ref true
+
+    let host =
+        analyzeWith
+            (fun _ ->
+                if crash.Value then
+                    [ raising "TypedRule" (exn "boom") ]
+                else
+                    [ clean "TypedRule" [] ])
+            [ file ]
+
+    test <@ (summaryOf host).Contains "1 analyzer crashes" @>
+
+    crash.Value <- false
+
+    host.EmitFileChecked(
+        { analyzable file with
+            Source = "let x = 2" }
+    )
+
+    waitForQuiescent host 15000
+
+    test <@ (summaryOf host).Contains "0 analyzer crashes" @>
+
+    test
+        <@
+            host.GetErrorsByPlugin "analyzers"
+            |> Map.tryFind file
+            |> Option.forall List.isEmpty
+        @>
