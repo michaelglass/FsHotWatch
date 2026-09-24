@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.1.6 - 2026-09-24
+
 - docs: `RouteStore` can be built over `TestPrune.Ports.pluginStoreAt dbPath` when the
   process only seeds or reads routes and never opens the core index, so route seeding no
   longer depends on the seeding process and the indexing process agreeing on core's

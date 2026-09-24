@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-24
+
 - fix!: a test method is never a shared-state writer. A test that seeds its own rows
   writes them only for itself, yet every reader of the table was coupled to it, so the
   impact walk, reaching the test through anything it calls, went on from it into every
