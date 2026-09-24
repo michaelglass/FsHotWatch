@@ -56,7 +56,7 @@ let ``a declared file the command leaves as it was is not Modified`` () =
 
         match run spec [ Path.Combine(dir, "Trigger.fs") ] with
         | Ok result ->
-            test <@ result.Modified = [] @>
+            test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 1 @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
@@ -77,7 +77,7 @@ let ``a file the command rewrites without declaring it is not attributed`` () =
 
         match run spec [ Path.Combine(dir, "Trigger.fs") ] with
         | Ok result ->
-            test <@ result.Modified = [] @>
+            test <@ List.isEmpty result.Modified @>
             test <@ File.Exists(Path.Combine(dir, "Other.fs")) @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
@@ -90,7 +90,7 @@ let ``a trigger that matches nothing in the batch does not run the command`` () 
 
         match run spec [ Path.Combine(dir, "src", "Lib.fs") ] with
         | Ok result ->
-            test <@ result.Modified = [] @>
+            test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 0 @>
             test <@ result.Evidence.Contains "not triggered" @>
             test <@ not (File.Exists(Path.Combine(dir, "Gen.fs"))) @>
@@ -119,7 +119,7 @@ let ``an empty batch never runs the command, even when the trigger is Always`` (
 
         match run spec [] with
         | Ok result ->
-            test <@ result.Modified = [] @>
+            test <@ List.isEmpty result.Modified @>
             test <@ not (File.Exists(Path.Combine(dir, "Gen.fs"))) @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 

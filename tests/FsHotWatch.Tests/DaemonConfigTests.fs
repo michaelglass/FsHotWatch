@@ -2246,7 +2246,7 @@ let ``registered test owner honors the actual declared project identity`` () =
 [<Fact(Timeout = 15000)>]
 let ``parseConfig preprocessors absent is an empty list`` () =
     let config = parseConfig "{}" defaults
-    test <@ config.Preprocessors = [] @>
+    test <@ List.isEmpty config.Preprocessors @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig preprocessors reads every field`` () =
@@ -2288,7 +2288,7 @@ let ``parseConfig preprocessors defaults: no triggers is Always, no cwd, no writ
     | [ p ] ->
         test <@ p.Trigger = FsHotWatch.CommandPreprocessor.Trigger.Always @>
         test <@ p.WorkDir = None @>
-        test <@ p.Writes = [] @>
+        test <@ List.isEmpty p.Writes @>
         test <@ p.TimeoutSec = None @>
         test <@ p.Args = "gen" @>
     | other -> failwith $"expected one preprocessor, got %A{other}"
