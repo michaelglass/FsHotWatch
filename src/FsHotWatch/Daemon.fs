@@ -1704,6 +1704,18 @@ let formatElapsed (ts: System.TimeSpan) = PluginWedge.formatElapsed ts
 /// diagnosable from a single log line.
 ///
 /// Example output: `test-prune (25m 12s) [Intelligence.Tests.Unit 12m 3s, Intelligence.Tests.Database 10m 1s]`
+/// The bounded work `plugin` declared over itself and still has in flight, by the label
+/// it declared (`SupervisedWork.declare` names it `<plugin>: <label>`).
+let boundedWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
+    let prefix = $"%s{plugin}: "
+
+    work.OperationsInFlight
+    |> List.choose (fun (name, startedAt, deadline) ->
+        if name.StartsWith(prefix, System.StringComparison.Ordinal) then
+            Some(name.Substring prefix.Length, startedAt, deadline)
+        else
+            None)
+
 let formatPluginWait
     (now: System.DateTime)
     (pluginName: string)
@@ -1816,6 +1828,7 @@ let private waitCoreWith
 
     let getRunningPlugins () =
         let now = System.DateTime.UtcNow
+        let work = host.WorkSnapshot
 
         host.GetAllStatuses()
         |> Map.toList
@@ -1826,7 +1839,24 @@ let private waitCoreWith
                     host.GetActivitySnapshot(name).Subtasks
                     |> List.map (fun t -> t.Key, t.StartedAt)
 
-                Some(formatPluginWait now name since subtasks)
+                // The subtasks are already in the wait form; the bounded work and the
+                // backlog are what the form did not say, and what a reader of a long
+                // wait needs to see the plugin is on.
+                let beyondSubtasks =
+                    PluginWedge.describeAwaiting
+                        now
+                        []
+                        (boundedWorkOf work name)
+                        (work.PendingEventsOf name)
+
+                let rendered = formatPluginWait now name since subtasks
+
+                Some(
+                    if beyondSubtasks = "" then
+                        rendered
+                    else
+                        $"%s{rendered} — %s{beyondSubtasks}"
+                )
             | _ -> None)
 
     /// Is anything Running? `getRunningPlugins` answers this too, but pays for a
@@ -2674,6 +2704,7 @@ type Daemon
                 use _wedgeMonitor: IDisposable =
                     PluginWedge.createMonitor
                         { Bound = PluginWedge.ambientBound ()
+                          ResultQueuedBound = PluginWedge.DefaultResultQueuedBound
                           EscalateEvery = PluginWedge.DefaultEscalateEvery
                           Now = fun () -> System.DateTime.UtcNow
                           RunningPlugins =
@@ -2684,6 +2715,26 @@ type Daemon
                                     match s with
                                     | Running since -> Some(name, since)
                                     | _ -> None)
+                          QueuedResults =
+                            fun () ->
+                                host.GetAllStatuses()
+                                |> Map.toList
+                                |> List.collect (fun (name, s) ->
+                                    match s with
+                                    | Running _ ->
+                                        host.GetActivitySnapshot(name).Subtasks
+                                        |> List.filter (fun t -> PluginFramework.QueuedResult.isSubtaskKey t.Key)
+                                        |> List.map (fun t -> name, t.StartedAt)
+                                    | _ -> [])
+                          Awaiting =
+                            fun name ->
+                                let work = host.WorkSnapshot
+
+                                PluginWedge.describeAwaiting
+                                    System.DateTime.UtcNow
+                                    (host.GetActivitySnapshot(name).Subtasks |> List.map (fun t -> t.Key, t.StartedAt))
+                                    (boundedWorkOf work name)
+                                    (work.PendingEventsOf name)
                           AnyBusy = fun () -> host.AnyPluginBusy()
                           LastActivityAt = host.LastActivityAt
                           Log = Logging.info "wedge"

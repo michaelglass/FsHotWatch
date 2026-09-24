@@ -776,6 +776,34 @@ let ``foreign and duplicate host completions leave admitted work owned`` () =
 // declared bounded one is, for exactly as long as its deadline has not spoken; and once
 // that deadline records a failure it stops being one, so the detector names it.
 [<Fact>]
+let ``an operation in flight is published with its name, start and declared deadline`` () =
+    let store = Store()
+    let before = DateTime.UtcNow
+
+    let unbounded = store.BeginOperation "dispatch"
+    let bounded = store.BeginOperation("test-prune: impact selection", TimeSpan.FromMinutes 20.0)
+
+    let inFlight = store.Snapshot.OperationsInFlight |> List.sortBy (fun (name, _, _) -> name)
+    Assert.Equal(2, inFlight.Length)
+
+    let (dispatchName, dispatchStarted, dispatchDeadline) = inFlight.[0]
+    Assert.Equal("dispatch", dispatchName)
+    Assert.True(dispatchStarted >= before && dispatchStarted <= DateTime.UtcNow)
+    Assert.Equal<TimeSpan option>(None, dispatchDeadline)
+
+    let (boundedName, _, boundedDeadline) = inFlight.[1]
+    Assert.Equal("test-prune: impact selection", boundedName)
+    Assert.Equal(Some(TimeSpan.FromMinutes 20.0), boundedDeadline)
+    Assert.True store.Snapshot.SupervisedWorkInFlight
+
+    // A failed operation is no longer something to wait on; an ended one is gone.
+    Assert.True(store.FailOperation(bounded, TimeoutException("deadline expired")))
+    Assert.Equal<string list>([ "dispatch" ], store.Snapshot.OperationsInFlight |> List.map (fun (n, _, _) -> n))
+    store.EndOperation unbounded
+    store.EndOperation bounded
+    Assert.Empty store.Snapshot.OperationsInFlight
+
+[<Fact>]
 let ``only live bounded work counts as supervised work in flight`` () =
     let store = Store()
 

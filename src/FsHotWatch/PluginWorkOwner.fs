@@ -73,6 +73,9 @@ type RowStatus =
         /// ever time it out, so a fold that never returns is indistinguishable from one
         /// that is merely slow, and the stall detector is the only thing that names it.
         Supervised: bool
+        /// Events admitted to this row and not yet committed: the backlog its next fold
+        /// waits behind. A result handed to a plugin's mailbox waits behind exactly these.
+        Pending: int
     }
 
 module RowStatus =
@@ -86,7 +89,8 @@ module RowStatus =
           Analysis = None
           BuildFailure = None
           OffersEvidence = false
-          Supervised = false }
+          Supervised = false
+          Pending = 0 }
 
     /// The projection of a row whose work runs under a finite deadline. Live work here is
     /// WORKING, not stalled: if it overruns, its own deadline records the failure.
@@ -109,6 +113,10 @@ type private Operation =
         /// fail it if it overruns? An ordinary host operation (a dispatch fan-out, a
         /// preprocessor pass) is not.
         Bounded: bool
+        /// When the operation began, so a reader can say how long it has been in flight.
+        StartedAt: DateTime
+        /// The deadline a bounded operation declared over itself, when it declared one.
+        Deadline: TimeSpan option
     }
 
 /// A typed capability for one row. Only `Store.Register` creates one.
@@ -166,6 +174,21 @@ type HostSnapshot =
     /// evidence-minting plugin — offers no receipts, which is not the same as owing one.
     member this.OffersEvidence =
         this.Rows |> Map.exists (fun _ row -> row.Status.OffersEvidence)
+
+    /// Every host operation still in flight and not failed: its name, when it began,
+    /// and the deadline it declared, if any. What a wait or a wedge line names as the
+    /// thing being waited on.
+    member this.OperationsInFlight: (string * DateTime * TimeSpan option) list =
+        this.Operations
+        |> Map.toList
+        |> List.filter (fun (_, operation) -> operation.Failure.IsNone)
+        |> List.map (fun (_, operation) -> operation.Name, operation.StartedAt, operation.Deadline)
+
+    /// Events admitted to the rows named `name` and not yet committed.
+    member this.PendingEventsOf(name: string) : int =
+        this.Rows
+        |> Map.toList
+        |> List.sumBy (fun (_, row) -> if row.Name = name then row.Status.Pending else 0)
 
     /// The project model this publication was made under.
     member this.ProjectModel = this.Model
@@ -394,7 +417,17 @@ type Store() =
     /// deadline that will fail it if it overruns. Live bounded work is WORKING however
     /// quiet it looks, so the stall detector waits on it; once its deadline records a
     /// failure it stops counting as in flight and the detector names it as before.
-    member _.BeginOperation(name: string, bounded: bool) : WorkId =
+    member this.BeginOperation(name: string, bounded: bool) : WorkId =
+        this.BeginOperation(name, bounded, None)
+
+    /// Begin a bounded operation that declares `deadline` over itself, so a reader can
+    /// say how far into its bound it is.
+    member this.BeginOperation(name: string, deadline: TimeSpan) : WorkId =
+        this.BeginOperation(name, true, Some deadline)
+
+    member private _.BeginOperation(name: string, bounded: bool, deadline: TimeSpan option) : WorkId =
+        let startedAt = DateTime.UtcNow
+
         change (fun fresh snapshot ->
             { snapshot with
                 Operations =
@@ -402,7 +435,9 @@ type Store() =
                         fresh
                         { Name = name
                           Failure = None
-                          Bounded = bounded }
+                          Bounded = bounded
+                          StartedAt = startedAt
+                          Deadline = deadline }
                         snapshot.Operations
                 SettledFailures = snapshot.SettledFailures |> Map.filter (fun _ (failed, _) -> failed <> name) },
             fresh)
@@ -1140,6 +1175,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     | _ -> false
                   // A plugin's event folds run under no deadline: see `Supervised`.
                   Supervised = false
+                  Pending = obligations snapshot.Work |> fst |> Map.count
                   Completed = snapshot.Committed
                   Failure = snapshot.Failure }
         )
