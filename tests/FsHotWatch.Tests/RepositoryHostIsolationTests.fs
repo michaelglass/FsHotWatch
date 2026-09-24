@@ -135,10 +135,12 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
         use registry = new SessionRegistry(factory, run)
         let host = RepositoryHost(settings, registry, ignore, TimeSpan.FromSeconds 60.0)
         use cts = new CancellationTokenSource()
-        let serving = Async.StartAsTask(serve settings.Control.Endpoint host.Handlers cts)
+
+        let serving =
+            Async.StartImmediateAsTask(serve settings.Control.Endpoint host.Handlers cts)
 
         try
-            test <@ waitUntilTrue (fun () -> isRunning settings.Control.Endpoint) 20000 @>
+            test <@ isRunning settings.Control.Endpoint @>
 
             let world =
                 { Host = host

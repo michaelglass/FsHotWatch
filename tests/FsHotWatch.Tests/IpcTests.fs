@@ -58,7 +58,9 @@ let ``daemon probe follows a listening server through shutdown`` () =
                 let pipeName = $"fp-{Guid.NewGuid():N}"
                 use cts = new CancellationTokenSource()
                 test <@ not (IpcClient.isRunning pipeName) @>
-                let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+                let server =
+                    Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
                 try
                     // A served RPC witnesses readiness before the lightweight probe is trusted.
@@ -81,10 +83,12 @@ let ``server shutdown closes a connection that never finishes`` () =
     use cts = new CancellationTokenSource()
 
     let server =
-        Async.StartAsTask(IpcServer.startWithin (TimeSpan.FromMilliseconds 100.0) pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(
+            IpcServer.startWithin (TimeSpan.FromMilliseconds 100.0) pipeName (defaultRpcConfig host) cts
+        )
 
     try
-        waitForServer pipeName
+        test <@ IpcServer.acceptsConnection pipeName @>
         // Connected, and silent: its RPC never completes on its own.
         use idle =
             new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
@@ -116,10 +120,11 @@ let ``a single connection attempt tells a listening pipe from an absent one`` ()
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     use cts = new CancellationTokenSource()
     test <@ not (IpcServer.acceptsConnection pipeName) @>
-    let server = Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    let server =
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     try
-        waitForServer pipeName
         test <@ IpcServer.acceptsConnection pipeName @>
     finally
         cts.Cancel()
@@ -164,9 +169,11 @@ let ``a stopping server gives up waiting on a name another live server still ser
         { defaultRpcConfig host with
             GetScanStatus = fun () -> marker }
 
-    let first = Async.StartAsTask(IpcServer.start pipeName (named "stopping") stopping)
+    let first =
+        Async.StartImmediateAsTask(IpcServer.start pipeName (named "stopping") stopping)
 
-    let second = Async.StartAsTask(IpcServer.start pipeName (named "staying") staying)
+    let second =
+        Async.StartImmediateAsTask(IpcServer.start pipeName (named "staying") staying)
 
     try
         waitForServer pipeName
@@ -238,9 +245,9 @@ let ``server responds to GetStatus`` () =
     host.RegisterHandler(handler)
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
@@ -272,9 +279,9 @@ let ``server responds to RunCommand`` () =
     host.RegisterHandler(handler)
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result = IpcClient.runCommand pipeName "greet" "" |> Async.RunSynchronously
@@ -306,9 +313,9 @@ let ``GetPluginStatus returns specific plugin's status`` () =
     host.RegisterHandler(handler)
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result =
@@ -332,9 +339,9 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
     let cts = new CancellationTokenSource()
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result =
@@ -375,9 +382,9 @@ let ``RunCommand with plugin that returns a result`` () =
     host.RegisterHandler(handler)
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result =
@@ -399,9 +406,9 @@ let ``RunCommand returns unknown command for non-existent command`` () =
     let cts = new CancellationTokenSource()
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result =
@@ -469,9 +476,9 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         5000
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
@@ -620,8 +627,8 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
           Teardown = None }
     )
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
-    waitForServer pipeName
+    let serverTask = Async.StartImmediateAsTask(IpcServer.start pipeName config cts)
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         // Park a client in WaitForComplete — this occupies one accept task and
@@ -1297,8 +1304,8 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
                     waitEntered.TrySetResult(()) |> ignore
                     pending }
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
-    waitForServer pipeName
+    let serverTask = Async.StartImmediateAsTask(IpcServer.start pipeName config cts)
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         let clientTask =
@@ -1492,9 +1499,9 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
     host.RegisterHandler(handler)
 
     let serverTask =
-        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    waitForServer pipeName
+    test <@ IpcServer.acceptsConnection pipeName @>
 
     try
         // Sanity: server is up and answering well-formed traffic.
@@ -1819,12 +1826,12 @@ let ``a dropped client cancels the command it alone was waiting on`` () =
     )
 
     let server =
-        Async.StartAsTask(
+        Async.StartImmediateAsTask(
             IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName (defaultRpcConfig host) cts
         )
 
     try
-        waitForServer pipeName
+        test <@ IpcServer.acceptsConnection pipeName @>
 
         let drop, _reply =
             startAbandonableCall pipeName "RunCommand" [| box "slow"; box "" |]
@@ -1867,10 +1874,10 @@ let ``a dropped client does not cancel shared work another client still waits on
                     shared.Task }
 
     let server =
-        Async.StartAsTask(IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName config cts)
+        Async.StartImmediateAsTask(IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName config cts)
 
     try
-        waitForServer pipeName
+        test <@ IpcServer.acceptsConnection pipeName @>
         let dropA, _replyA = startAbandonableCall pipeName "WaitForComplete" [| box 0 |]
         let dropB, replyB = startAbandonableCall pipeName "WaitForComplete" [| box 0 |]
 
@@ -1956,12 +1963,12 @@ let ``a dropped client cancels the plugin run it alone asked for`` () =
     )
 
     let server =
-        Async.StartAsTask(
+        Async.StartImmediateAsTask(
             IpcServer.serveWith watchdog IpcServer.ConnectionDrainBound pipeName (defaultRpcConfig host) cts
         )
 
     try
-        waitForServer pipeName
+        test <@ IpcServer.acceptsConnection pipeName @>
 
         let drop, _reply =
             startAbandonableCall pipeName "RunCommand" [| box "want"; box "" |]
@@ -2004,7 +2011,7 @@ let ``a client is served while every acceptor is busy with an earlier one`` () =
     use cts = new CancellationTokenSource()
 
     let server =
-        Async.StartAsTask(IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) pipeName opener cts)
+        Async.StartImmediateAsTask(IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) pipeName opener cts)
 
     let connect () =
         let client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)

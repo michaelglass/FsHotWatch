@@ -455,11 +455,18 @@ let ``an attach reply the host cannot have written is a stop, naming why`` () =
 
         use cts = new CancellationTokenSource()
 
+        // Started on this thread: the server creates its listening instances before its
+        // first wait, so it is listening when this returns. Queued to the thread pool
+        // instead, it can wait behind a loaded runner's other work for longer than any
+        // poll allows.
         let server =
-            Async.StartAsTask(Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) control.Endpoint opener cts)
+            Async.StartImmediateAsTask(
+                Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) control.Endpoint opener cts
+            )
 
         try
-            test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning control.Endpoint) 10000 @>
+            // Listening the moment it has started, not at some later point a poll must catch.
+            test <@ Ipc.IpcServer.acceptsConnection control.Endpoint @>
 
             match RepositoryHostMode.attach stateHome ignore (TimeSpan.FromSeconds 10.0) root "" with
             | RepositoryHostMode.Attach.Refused reason -> test <@ reason.Contains "could not be read" @>
