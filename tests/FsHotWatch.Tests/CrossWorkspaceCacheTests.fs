@@ -810,6 +810,12 @@ let ``an unusable repository root never throws`` () =
     test <@ CheckCache.relativizeOption (Some unusable) "-r:/nuget/x.dll" = "-r:/nuget/x.dll" @>
 
 [<Fact(Timeout = 15000)>]
+let ``a checkout with no directory name of its own is labelled repo`` () =
+    // An empty root cannot be resolved, and has no name to read off either: the
+    // namespace still gets the plain `repo` label rather than a leading dash.
+    test <@ (RepoIdentity.namespaceOf "").StartsWith "repo-" @>
+
+[<Fact(Timeout = 15000)>]
 let ``the shared cache home prefers the override, then XDG, then the home directory`` () =
     test <@ FsHwPaths.sharedCacheHomeFrom "/explicit" "/xdg" "/home/u" = "/explicit" @>
     test <@ FsHwPaths.sharedCacheHomeFrom "" "/xdg" "/home/u" = Path.Combine("/xdg", "fshw") @>
