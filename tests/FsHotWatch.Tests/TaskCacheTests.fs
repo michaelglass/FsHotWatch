@@ -227,48 +227,6 @@ let ``merkleCacheKey distinguishes "ab","" from "a","b"`` () =
     let b = merkleCacheKey [ "x", "a"; "y", "b" ]
     test <@ a <> b @>
 
-[<Fact(Timeout = 30000); Trait("Category", "Benchmark")>]
-let ``BENCH merkleCacheKey on representative .fs file`` () =
-    // Per-FileChecked hashing cost, against a worst-case proxy (repo avg .fs is ~12KB).
-    let testSrc =
-        let typical =
-            String.replicate 240 "let aReasonablyLongIdentifier = someValue + otherValue\n"
-
-        typical // ~12KB
-
-    let inputs =
-        [ "plugin-version", "lint-merkle-v1"
-          "tool", "1.2.3.4"
-          "config", "abc123def456"
-          "file", "/Users/me/repo/src/SomeModule/SomeFile.fs"
-          "source", testSrc ]
-
-    let warmup = 100
-    let iterations = 1000
-
-    for _ in 1..warmup do
-        merkleCacheKey inputs |> ignore
-
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
-    for _ in 1..iterations do
-        merkleCacheKey inputs |> ignore
-
-    sw.Stop()
-    let perCallUs = sw.Elapsed.TotalMicroseconds / float iterations
-
-    // `printfn` rather than an xUnit sink: the Trait already lets a normal run filter this
-    // test out, so the raw number on stdout is the point.
-    printfn
-        "merkleCacheKey on %d-byte source: %.1f µs/call (%d iters in %d ms)"
-        testSrc.Length
-        perCallUs
-        iterations
-        sw.ElapsedMilliseconds
-
-    // A generous ceiling: this only fires if per-tick hashing cost has become real.
-    test <@ perCallUs < 1000.0 @>
-
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key is stable across runs for same file content`` () =
     // The key depends on file CONTENT, not on a jj commit_id that would change on every

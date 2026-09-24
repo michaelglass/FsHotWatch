@@ -35,6 +35,9 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
     FsHotWatch.RunLog.Ref.Unavailable "fixture: no run log"
 
+/// No project wrote a CTRF report in this test.
+let private noReport (_: string) : string list = []
+
 
 // =============================================================================
 // a run may clear ONLY what it COVERED.
@@ -579,7 +582,8 @@ let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on buil
         { Results = Map.ofList [ "ProjA", TestsDeferred "apphost not produced" ]
           Elapsed = TimeSpan.Zero }
 
-    let entry = (failuresOf noRunLog Map.empty deferred |> List.exactlyOne).Entry
+    let entry =
+        (failuresOf noRunLog noReport Map.empty deferred |> List.exactlyOne).Entry
 
     test <@ entry.Severity = FsHotWatch.ErrorLedger.Deferred @>
     test <@ FsHotWatch.ErrorLedger.ErrorEntry.isWaitingOnBuild entry @>
@@ -593,7 +597,7 @@ let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on buil
         { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let realFailures = failuresOf noRunLog Map.empty failed
+    let realFailures = failuresOf noRunLog noReport Map.empty failed
     test <@ not realFailures.IsEmpty @>
 
     test
@@ -2532,7 +2536,8 @@ let ``an apphost-missing defer still classifies as a build-ordering wait`` () =
           Elapsed = TimeSpan.Zero }
 
     let messages =
-        failuresOf noRunLog Map.empty deferred |> List.map (fun f -> f.Entry.Message)
+        failuresOf noRunLog noReport Map.empty deferred
+        |> List.map (fun f -> f.Entry.Message)
 
     test <@ not (List.isEmpty messages) @>
 
@@ -2877,7 +2882,7 @@ let ``failuresOf does not attach the whole project output to every parsed failur
         { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let entries = failuresOf noRunLog Map.empty results
+    let entries = failuresOf noRunLog noReport Map.empty results
 
     // Every failure is still FILED — this bound may not be bought by losing reds.
     test <@ entries.Length = failures @>
@@ -2902,7 +2907,9 @@ let ``failuresOf still carries the whole output when NO test could be named`` ()
         { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let entry = (failuresOf noRunLog Map.empty results |> List.exactlyOne).Entry
+    let entry =
+        (failuresOf noRunLog noReport Map.empty results |> List.exactlyOne).Entry
+
     test <@ entry.Detail = Some output @>
 
 [<Fact>]

@@ -90,7 +90,7 @@ let declare
     (deadline: TimeSpan)
     : IDisposable =
     requireBounded deadline
-    let identity = store.BeginOperation(name, true)
+    let identity = store.BeginOperation(name, deadline)
 
     let timer =
         schedule deadline (fun () ->

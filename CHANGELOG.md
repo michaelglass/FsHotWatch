@@ -4,6 +4,64 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### tests, bench: a benchmark is a number, never a verdict
+
+- **`fshw-bench hash-cost`** (`mise run bench-hash-cost`) reports `merkleCacheKey`'s
+  per-call cost on a representative source file. The measurement used to be a unit test
+  asserting an absolute µs/call ceiling; a throughput bound measured on a shared box is a
+  function of machine load, and fails under a landing gate's parallel builds while passing
+  every time it runs by itself. The suite now refuses that shape outright
+  (`BenchmarkPlacementTests`): no gated test project may carry a `Category=Benchmark`
+  trait or a `BENCH`-named test. Filtering such a trait out of `check`/`confirm` was
+  considered and rejected — TestPrune's debt ledger credits a configured project's run
+  with every test its index sees there, so a test present but filtered out is a test the
+  gate vouches for and never runs.
+- Two remaining wall-clock assertions became RELATIVE bounds, so box load cancels out:
+  the streaming-output test compares the first chunk's arrival with the same run's end,
+  and the wedged-restore barrier test compares a killed run against a control run of the
+  same script taken moments before.
+
+### test-prune: a red run names its test even when the runner coloured the line
+
+- **`reddenedBy` names the failing test of a coloured MTP run.** A CI `confirm` in which
+  one test failed an assertion and the run completed was reported as `run failed but no
+  per-test 'failed' line was parsed`, framed as a killed or wedged run, because the runner
+  had printed `ESC[31mfailed ESC[m <name>` and the matcher read the escape, not the word.
+  The console line is now read with its colour removed; when it still names nothing, the
+  CTRF report the run wrote beside its output log names the tests; and the "output
+  begins…" head is quoted only for a run that never reached its summary.
+
+### core: a finished run's queued result is visible, and the wedge monitor names the mailbox
+
+- **A result waiting to fold is a subtask, not a bare `Running`.** An exclusive run's
+  result is folded into the plugin's state through the plugin's mailbox, behind every
+  event admitted ahead of it. Until now the plugin reported the same `Running since
+  <run start>` for the whole wait, so a client blocked on it read `test-prune (56m)`
+  with nothing executing, and the wedge monitor could only measure the run against
+  the verdict-deadline bound. The framework now starts a `<key> result queued` subtask
+  the moment the result is handed to the mailbox and ends it when the plugin picks the
+  result up, so a wait line reads `test-prune (17m) [tests result queued 16m]`.
+- **The wedge monitor names a queued result on its own, shorter bound.** A running
+  host keeps the wedge bound (verdict deadline plus grace), because a long suite is
+  not a wedge. A result that is already computed has nothing left to wait for but the
+  plugin's own folds, so past `DefaultResultQueuedBound` (5 min) the monitor logs, and
+  escalates every 5 min, that the mailbox, not the run, is what is not progressing.
+  Naming only: recovery stays at the wedge bound, because a restart discards the
+  result that is waiting. `PluginWedge.TickInputs`, `MonitorDeps` and `decideTick`
+  gain the queued-result inputs and bound.
+- **Every line about a duration names what the duration is spent on.** The `[wait]`
+  line, each `[wedge]` escalation and the recovery message end with ` — on: …`: the
+  plugin's live subtasks (a test host by project, a result waiting to fold), the
+  bounded work it declared over itself with how far into its bound it is (`bounded
+  work: impact selection 12m 0s of 20m 0s`), and the events admitted to it and not
+  yet folded. `PluginWorkOwner.HostSnapshot` gains `OperationsInFlight` (name, start,
+  declared deadline) and `PendingEventsOf`; `RowStatus` gains `Pending`;
+  `SupervisedWork.declare` publishes its deadline.
+- **A slow fold is logged when it commits.** A plugin fold of 30 s or more logs
+  `<event> fold took <elapsed>; <n> event(s) queued behind it, among them <key> result
+  queued`, so a mailbox whose folds are minutes long is visible in the daemon log
+  without a debug flag.
+
 ### core, cli: a configured command can rewrite files before the build sees them
 
 - **`preprocessors` in `.fshw.json`** — commands that rewrite files in place *before*

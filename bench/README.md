@@ -30,6 +30,16 @@ $B summarize results.jsonl
 `mise run bench-memory` runs the matrix against this repository, and
 `mise run test-bench` runs the harness's unit tests.
 
+```bash
+# Per-FileChecked hashing cost: merkleCacheKey on a ~12 KB source, µs/call.
+$B hash-cost [--iterations 1000] [--warmup 100]     # or: mise run bench-hash-cost
+```
+
+`hash-cost` is a number, not a gate. A throughput bound measured on a shared box fails on
+load rather than on code, which is why this is a harness command and not a unit test.
+Take the reading on a quiet box and compare it with the last one you took; nothing
+asserts it.
+
 Run the harness through `dotnet <dll>`, and point `--cli` at a `.dll`. That is the
 default: the CLI built in this checkout. An apphost under a mise- or nix-installed SDK
 cannot find the runtime without `DOTNET_ROOT`.

@@ -157,6 +157,11 @@ description = "Repository-host memory/scan benchmark: 1, 2 and 4 concurrent work
 run = "dotnet build bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj && dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll run --repo ."
 depends = ["build"]
 
+[tasks.bench-hash-cost]
+description = "Report merkleCacheKey's per-call cost on a representative source file. A NUMBER, not a gate: a µs/call bound asserted on a shared box fails on load, not on code. Run on a quiet box and compare with your last reading."
+run = "dotnet build bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj && dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll hash-cost"
+depends = ["restore"]
+
 [tasks.coverage-check]
 description = "Check per-file coverage meets minimum threshold"
 run = "dotnet tool run coverageratchet check coverage-ratchet-FsHotWatch.json"

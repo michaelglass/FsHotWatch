@@ -419,6 +419,20 @@ let ``a wedged restore is killed at the process timeout and cleanup still runs``
     scratch (fun _ project fakeDotnet probeParent _ countFile ->
         writeProject project [ "Example.Package" ] [ "1.0.0" ]
 
+        // The control: the same script, the same box, moments before. Its elapsed time is
+        // almost entirely `dotnet fsi` compiling the barrier, which is the cost the wedged
+        // run below shares and the one that moves with machine load.
+        let control =
+            runBarrier
+                (repoRoot ())
+                fakeDotnet
+                probeParent
+                project
+                "Example.Package"
+                [ "FAKE_MODE", "success"; "FAKE_COUNT_FILE", countFile ]
+
+        test <@ control.ExitCode = 0 @>
+
         let result =
             runBarrier
                 (repoRoot ())
@@ -432,12 +446,12 @@ let ``a wedged restore is killed at the process timeout and cleanup still runs``
 
         test <@ result.ExitCode = 1 @>
         // The claim is "the wedged child was killed at the timeout, not waited out" — the
-        // fake sleeps 120s and the probe's own budget is 100ms. The bound is nowhere near
-        // that tight because the elapsed time is dominated by `dotnet fsi` COMPILING the
-        // barrier script, which on a loaded box is seconds. A bound drawn just above the
-        // observed startup goes red on machine load rather than on behaviour, which is what
-        // an 8s bound did once this script grew.
-        test <@ result.Elapsed < TimeSpan.FromSeconds 30. @>
+        // fake sleeps 120 s and the probe's own budget is 100 ms. Measured against the
+        // control rather than the clock: a waited-out child adds the full 120 s over the
+        // control whatever the box is doing, while the compile that dominates both runs
+        // cancels out. An absolute bound here is a bound on that compile, and goes red on
+        // machine load rather than on behaviour.
+        test <@ result.Elapsed < control.Elapsed + TimeSpan.FromSeconds 30. @>
         test <@ result.Stderr.Contains("restore timed out") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
 

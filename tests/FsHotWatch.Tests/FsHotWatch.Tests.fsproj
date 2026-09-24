@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Byte-exact console captures of real MTP runs, for the output parsers. -->
+    <Content Include="MtpOutput/*.output.log" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -55,6 +57,7 @@
     <Compile Include="PluginFrameworkFixtures.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
     <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
+    <Compile Include="PluginFrameworkQueuedResultTests.fs" />
     <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
@@ -165,6 +168,7 @@
     <Compile Include="ReleaseOrchestrationTests.fs" />
     <Compile Include="AnalyzerMaterializationTests.fs" />
     <Compile Include="GatePurityTests.fs" />
+    <Compile Include="BenchmarkPlacementTests.fs" />
     <Compile Include="AnalyzerIdentityTests.fs" />
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />

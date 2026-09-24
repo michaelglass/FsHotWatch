@@ -2480,6 +2480,91 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
     // The actual cause IS surfaced (not swallowed).
     test <@ report.Contains("AccessViolationException") @>
 
+// --- the coloured MTP run: the bytes a terminal-aware runner actually prints ---
+//
+// A CI `confirm --run-once` in which ONE test failed an assertion and the run completed
+// normally was reported as "no per-test 'failed' line was parsed", framed as a killed or
+// wedged run, and the test went unnamed. The runner had coloured the line:
+// `ESC[31mfailed ESC[m <name> ESC[90m(10s 112ms)ESC[m`, and the summary
+// `ESC[31m  failed: 1`. The matcher read the escape, not the word.
+
+/// The console output of that run, byte for byte where it matters: its first sixty lines
+/// (the daemon banner a killed run would be quoted by), the failed line with its
+/// assertion and stack, and the last twelve (the artifacts and the coloured summary).
+/// The four thousand lines of passing tests between them are left out.
+let private ciRunOutput () =
+    File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "MtpOutput", "ci-confirm-one-assertion-failure.output.log"))
+
+let private ciFailingClass = "FsHotWatch.Tests.TestPrunePluginTests"
+
+let private ciFailingMethod =
+    "full run (no filter) produces TestResult with WasFiltered = false"
+
+[<Fact(Timeout = 15000)>]
+let ``parseFailedTests names the failing test of a coloured MTP run, byte for byte`` () =
+    let parsed = parseFailedTests (ciRunOutput ()) |> List.map (fun (c, m, _) -> c, m)
+
+    test <@ parsed = [ ciFailingClass, ciFailingMethod ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseFailedTests reads the coloured, cancelled and multi-unit-duration shapes alike`` () =
+    let esc = "\u001b"
+
+    let output =
+        [ $"{esc}[31mfailed{esc}[m A.B.c {esc}[90m(10s 112ms){esc}[m"
+          $"{esc}[31mfailed (canceled){esc}[m A.B.d {esc}[90m(1ms){esc}[m"
+          "failed (canceled) A.B.e (2m 3s 4ms)"
+          "  failed A.B.f (7ms)"
+          "failed A.B.g"
+          $"{esc}[31mTest run summary: Failed!{esc}[90m - {esc}[m/x/T.dll (net10.0|x64)"
+          $"{esc}[m  total: 5"
+          $"{esc}[31m  failed: 5" ]
+        |> String.concat "\n"
+
+    let parsed = parseFailedTests output
+
+    let expected = [ "A.B", "c"; "A.B", "d"; "A.B", "e"; "A.B", "f"; "A.B", "g" ]
+
+    test <@ parsed |> List.map (fun (c, m, _) -> c, m) = expected @>
+
+    // The line a red is filed under carries the words, never the colour codes.
+    test <@ parsed |> List.forall (fun (_, _, line) -> not (line.Contains esc)) @>
+
+    test
+        <@
+            parsed
+            |> List.exists (fun (_, _, line) -> line = "failed (canceled) A.B.d (1ms)")
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport names the test and the summary of a coloured MTP run`` () =
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog (ciRunOutput ())
+        |> String.concat "\n"
+
+    test <@ report.Contains("1 test(s) failed") @>
+    test <@ report.Contains($"%s{ciFailingClass}.%s{ciFailingMethod}") @>
+    test <@ report.Contains("failed: 1") @>
+    test <@ report.Contains("total: 4352") @>
+    test <@ not (report.Contains("no per-test 'failed' line was parsed")) @>
+    test <@ not (report.Contains "\u001b") @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport does not dump the head of a run that completed with a summary`` () =
+    // The head is quoted for a run that never reached its summary — killed, wedged or
+    // refused. A run that printed `Test run summary:` finished; dumping its first twenty
+    // lines (the daemon's banner) says nothing about why it is red.
+    let output =
+        "Discovering...\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+
+    test <@ report.Contains("ran to completion") @>
+    test <@ report.Contains("failed: 1") @>
+    test <@ not (report.Contains("HEAD is where a killed")) @>
+    test <@ not (report.Contains("| Discovering...")) @>
+
 // --- the backstop message must name a log that EXISTS ---
 //
 // The message told its reader the failure was visible "without the saved log" — and
@@ -2577,7 +2662,7 @@ let ``failuresOf: a run with no per-test failure carries the HEAD of its output,
           Elapsed = TimeSpan.Zero }
 
     let entry =
-        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) Map.empty failed
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) noReport Map.empty failed
          |> List.exactlyOne)
             .Entry
 
@@ -2606,7 +2691,11 @@ let ``failuresOf: a run whose projects PASSED carries the excerpt NOWHERE`` () =
           Elapsed = TimeSpan.Zero }
 
     let causes =
-        failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/abc123/P.output.log") Map.empty passed
+        failuresOf
+            (fun _ -> FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/abc123/P.output.log")
+            noReport
+            Map.empty
+            passed
 
     test <@ List.isEmpty causes @>
 
@@ -2624,7 +2713,7 @@ let ``failuresOf: the head excerpt is bounded in bytes, not only in lines`` () =
           Elapsed = TimeSpan.Zero }
 
     let entry =
-        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written "/r/P.output.log") Map.empty failed
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written "/r/P.output.log") noReport Map.empty failed
          |> List.exactlyOne)
             .Entry
 
@@ -2665,12 +2754,69 @@ let ``FailureCause.ofOutput on a blank output falls back to the pointer sentence
           Elapsed = TimeSpan.Zero }
 
     let entry =
-        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) Map.empty failed
+        (failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) noReport Map.empty failed
          |> List.exactlyOne)
             .Entry
 
     test <@ not (String.IsNullOrWhiteSpace entry.Message) @>
     test <@ entry.Message.Contains("no cause captured") @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: the CTRF report names the reds when the console named none`` () =
+    // The report is written per run beside the output log; a console the parser could
+    // not read is no reason to file a project-level red when the report has the rows.
+    let output = "Test run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let fromReport (project: string) =
+        if project = "P" then [ "FsHotWatch.Tests.Foo.bar" ] else []
+
+    let red =
+        failuresOf (fun _ -> savedLog) fromReport Map.empty failed |> List.exactlyOne
+
+    test <@ red.Class = Some "FsHotWatch.Tests.Foo" @>
+    test <@ red.Method = Some "bar" @>
+    test <@ red.Entry.Message.Contains "FsHotWatch.Tests.Foo.bar" @>
+    test <@ red.Entry.Message.Contains "CTRF" @>
+    test <@ not (red.Entry.Message.Contains "output begins") @>
+    test <@ red.Entry.Severity = FsHotWatch.ErrorLedger.Error @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: the console's own failed lines are filed once, not again from the report`` () =
+    let output = "failed A.b (1ms)\nTest run summary: Failed!\n  total: 1\n  failed: 1"
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let reds = failuresOf (fun _ -> savedLog) (fun _ -> [ "A.b" ]) Map.empty failed
+
+    test <@ reds |> List.map (fun r -> r.Class, r.Method) = [ Some "A", Some "b" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: a completed run nobody could name quotes the runner's summary, not the head`` () =
+    let path = "/repo/.fshw/test-runs/abc123/P.output.log"
+
+    let output =
+        "Discovering...\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let red =
+        failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) (fun _ -> []) Map.empty failed
+        |> List.exactlyOne
+
+    test <@ red.Class = None @>
+    test <@ red.Entry.Message.Contains "failed: 1" @>
+    test <@ red.Entry.Message.Contains "ran to completion" @>
+    test <@ not (red.Entry.Message.Contains "output begins") @>
+    test <@ not (red.Entry.Message.Contains "Discovering...") @>
+    test <@ red.Entry.Message.Contains path @>
 
 // --- isZeroTestsUnderFilter ---
 //

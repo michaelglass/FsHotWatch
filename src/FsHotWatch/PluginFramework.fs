@@ -285,6 +285,66 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
         GetCanonicalDllPath: string -> string option
     }
 
+/// The subtask a plugin shows from the moment a finished exclusive run's result is
+/// handed to its mailbox until the plugin picks that result up to fold it. While it is
+/// live, the plugin is still `Running` — the result is not committed — but nothing is
+/// executing any more: the result waits only for the plugin's own folds of the events
+/// admitted ahead of it. A wait line renders subtasks by key, so a client blocked on
+/// the plugin reads `test-prune (17m) [tests result queued 16m]` instead of a bare
+/// elapsed time, and the wedge monitor reads the same subtask to name the mailbox
+/// rather than the run.
+module QueuedResult =
+    [<Literal>]
+    let private Suffix = " result queued"
+
+    /// The subtask key for a result of the exclusive run under `exclusiveKey`.
+    let subtaskKey (exclusiveKey: string) = exclusiveKey + Suffix
+
+    /// Whether `key` is a queued-result subtask key.
+    let isSubtaskKey (key: string) =
+        key.EndsWith(Suffix, StringComparison.Ordinal)
+
+    /// The subtask's label: what a status reader should understand from it.
+    let label (exclusiveKey: string) =
+        $"the '%s{exclusiveKey}' run has finished; its result is queued behind the plugin's own events"
+
+/// A fold that took longer than this is logged when it commits, with the event it
+/// folded and the backlog that waited behind it. Always on: a plugin whose folds are
+/// minutes long is the one whose queued result nobody can see from the outside.
+let SlowFoldThreshold = TimeSpan.FromSeconds 30.0
+
+/// The name of an event as a slow-fold line reports it.
+let eventKind (event: PluginEvent<'Msg>) : string =
+    match event with
+    | FileChanged _ -> "FileChanged"
+    | FileChecked _ -> "FileChecked"
+    | BatchChecked _ -> "BatchChecked"
+    | BuildCompleted _ -> "BuildCompleted"
+    | TestRunStarted _ -> "TestRunStarted"
+    | TestProgress _ -> "TestProgress"
+    | TestRunCompleted _ -> "TestRunCompleted"
+    | CommandCompleted _ -> "CommandCompleted"
+    | Custom _ -> "Custom"
+
+/// The slow-fold line: what was folded, how long it took, and what waited behind it —
+/// the queued events, and the finished runs' results among them.
+let slowFoldLine (kind: string) (elapsed: TimeSpan) (queuedBehind: int) (resultsQueued: string list) : string =
+    let took =
+        if elapsed.TotalMinutes >= 1.0 then
+            $"%d{int elapsed.TotalMinutes}m %d{elapsed.Seconds}s"
+        else
+            $"%d{int elapsed.TotalSeconds}s"
+
+    let behind =
+        match queuedBehind, resultsQueued with
+        | 0, [] -> "nothing queued behind it"
+        | n, [] -> $"%d{n} event(s) queued behind it"
+        | n, results ->
+            let named = String.concat ", " results
+            $"%d{n} event(s) queued behind it, among them %s{named}"
+
+    $"%s{kind} fold took %s{took}; %s{behind}"
+
 module BoundedWork =
     /// The declaration made by a context with no host behind it — test fixtures, and any
     /// embedder wiring a bare `PluginCtx`. Declaring nothing is the SAFE default, never a
@@ -689,6 +749,12 @@ let internal registerHandlerForOwner
     // reachable before `registerHandlerForOwner` returns.
     let mutable deliver: PluginEvent<'Msg> * PluginWorkOwner.WorkId -> unit = ignore
 
+    // Results handed to the mailbox and not yet picked up, by the fold's identity, each
+    // with the subtask that shows it waiting. `finishRun` adds one as it delivers the
+    // fold; the receive loop removes it as it takes the fold off the mailbox.
+    let queuedResults =
+        System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, string>()
+
     // The consumers of each delivered intent that clients alone hold, from its delivery
     // until its fold has been processed. A claim that fold makes, and an intent it
     // enqueues, is held by the same consumers. Every other event is held by the daemon.
@@ -780,7 +846,11 @@ let internal registerHandlerForOwner
             // `None`: the executor has stopped, so there is nothing to fold into. The
             // worker retires and its result is not published.
             match owner.CompleteRun identity with
-            | Some fold -> deliver (Custom message, fold)
+            | Some fold ->
+                let subtask = QueuedResult.subtaskKey key
+                queuedResults[fold] <- subtask
+                services.StartSubtask handler.Name subtask (QueuedResult.label key)
+                deliver (Custom message, fold)
             | None -> ()
         | Result.Error failure ->
             try
@@ -1536,6 +1606,11 @@ let internal registerHandlerForOwner
                         async {
                             let! event, identity = inbox.Receive()
                             beginRunOf identity
+
+                            match queuedResults.TryRemove identity with
+                            | true, subtask -> services.EndSubtask handler.Name subtask
+                            | _ -> ()
+
                             let dispatchStarted = DateTime.UtcNow
                             // Only this loop publishes domain state, so the snapshot holds
                             // exactly the state the previous event left.
@@ -1587,6 +1662,17 @@ let internal registerHandlerForOwner
                             // The fold has made every claim and intent it will: its
                             // consumers now live on in those.
                             clientHeld.TryRemove identity |> ignore
+
+                            let foldTook = DateTime.UtcNow - dispatchStarted
+
+                            if foldTook >= SlowFoldThreshold then
+                                info
+                                    pluginName
+                                    (slowFoldLine
+                                        (eventKind event)
+                                        foldTook
+                                        inbox.CurrentQueueLength
+                                        (queuedResults.Values |> List.ofSeq))
 
                             match committed with
                             | Result.Ok() -> ()

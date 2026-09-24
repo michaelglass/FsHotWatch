@@ -2997,6 +2997,49 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 /// elsewhere" are different facts, and an empty string states neither.
 type FailureCause = private FailureCause of string
 
+/// The runner's console output as words. A terminal-aware runner (MTP colours `failed`
+/// red and a duration grey) prints a failing line whose BYTES start with an escape
+/// sequence, not with `failed`; every matcher below reads the line with the colour
+/// removed, so what it matches is what a reader sees.
+module ConsoleText =
+    let private ansiSequence =
+        System.Text.RegularExpressions.Regex(
+            @"\u001b\[[0-9;?]*[ -/]*[@-~]",
+            System.Text.RegularExpressions.RegexOptions.Compiled
+        )
+
+    /// `text` with every ANSI CSI sequence (colour, cursor movement, erase) removed.
+    let stripAnsi (text: string) : string =
+        if isNull text then "" else ansiSequence.Replace(text, "")
+
+    /// The output's lines, colour removed, `\r` dropped.
+    let lines (output: string) : string[] =
+        (stripAnsi output).Split('\n') |> Array.map (fun l -> l.TrimEnd('\r'))
+
+    /// The runner's summary block — its `Test run summary:` line and the count lines
+    /// under it — when the output has one. A run that printed it ran to completion;
+    /// a run killed, wedged or refused never reaches it.
+    let summaryOf (output: string) : string list =
+        let all = lines output
+
+        match
+            all
+            |> Array.tryFindIndexBack (fun l -> l.TrimStart().StartsWith("Test run summary:"))
+        with
+        | None -> []
+        | Some index ->
+            let isCount (l: string) =
+                let t = l.TrimStart()
+
+                [ "total:"; "failed:"; "succeeded:"; "skipped:"; "duration:" ]
+                |> List.exists (fun prefix -> t.StartsWith prefix)
+
+            all.[index].Trim()
+            :: (all.[index + 1 ..]
+                |> Array.takeWhile isCount
+                |> Array.map (fun l -> l.Trim())
+                |> Array.toList)
+
 module FailureCause =
     /// How many non-blank lines of the head are quoted. Twenty: an MTP runner's banner
     /// (version, discovery, the first migrations) is under ten lines, so a cause stated
@@ -3045,23 +3088,33 @@ module FailureCause =
             $"%s{project}: run failed, no per-test 'failed' line was parsed, and no cause captured — the runner \
               produced no output to quote; %s{pointer runLog}"
 
-    /// The message for a run whose output named no failing test: its head, then the
-    /// pointer. Routes a blank output to `unknownPointing`, so this is the only door from
-    /// captured text and cannot yield an empty message.
+    /// Where the full output is, for a message that has just quoted part of it.
+    let private fullOutput (runLog: RunLog.Ref) : string =
+        match runLog with
+        | RunLog.Ref.Written path -> $"full output: %s{path}"
+        | RunLog.Ref.Unavailable reason ->
+            $"full output was NOT saved (%s{reason}); the lines above are all that was kept"
+
+    /// The message for a run whose output named no failing test, and whose CTRF report
+    /// named none either. A run that printed its summary ran to completion, so the
+    /// summary is quoted: the head of such a run is the daemon's banner and says nothing
+    /// about the red. A run with no summary was killed, wedged or refused, and the head
+    /// is where it stated its cause. Routes a blank output to `unknownPointing`, so this
+    /// is the only door from captured text and cannot yield an empty message.
     let ofOutput (project: string) (runLog: RunLog.Ref) (output: string) : FailureCause =
-        match headOf output with
-        | [] -> unknownPointing project runLog
-        | head ->
-            let quoted = head |> List.map (fun l -> "  | " + l) |> String.concat "\n"
+        let quote (excerpt: string list) =
+            excerpt |> List.map (fun l -> "  | " + l) |> String.concat "\n"
 
-            let where =
-                match runLog with
-                | RunLog.Ref.Written path -> $"full output: %s{path}"
-                | RunLog.Ref.Unavailable reason ->
-                    $"full output was NOT saved (%s{reason}); the lines above are all that was kept"
-
+        match ConsoleText.summaryOf output with
+        | _ :: _ as summary ->
             FailureCause
-                $"%s{project}: run failed but no per-test 'failed' line was parsed. The run's output begins (first %d{head.Length} non-blank lines; the head is where a killed, wedged or refused run states its cause):\n%s{quoted}\n%s{where}"
+                $"%s{project}: run failed and ran to completion, but neither the runner's console nor its CTRF report named a failing test. The runner's summary:\n%s{quote summary}\n%s{fullOutput runLog}"
+        | [] ->
+            match headOf output with
+            | [] -> unknownPointing project runLog
+            | head ->
+                FailureCause
+                    $"%s{project}: run failed but no per-test 'failed' line was parsed. The run's output begins (first %d{head.Length} non-blank lines; the head is where a killed, wedged or refused run states its cause):\n%s{quote head}\n%s{fullOutput runLog}"
 
     /// The sentence. Total; never empty by construction.
     let render (FailureCause s) : string = s
@@ -3100,28 +3153,39 @@ module FailureCause =
 /// got on the last line. The head is `FailureCause.headOf`, the same excerpt the ledger
 /// entry (and so `reddenedBy`) carries, so the daemon log and the verdict agree.
 let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (output: string) : string list =
-    let lines = output.Split('\n')
+    let lines = ConsoleText.lines output
 
     let isFailedLine (l: string) = l.TrimStart().StartsWith("failed ")
 
     let failedTests = lines |> Array.filter isFailedLine |> Array.toList
 
+    // The runner's own summary lines, by their leading word: a daemon-log line that
+    // happens to CONTAIN `failed:` (`P: 0 test(s) failed:`) is not one of them.
     let summaryLines =
         lines
         |> Array.filter (fun l ->
             let t = l.TrimStart()
 
             t.StartsWith("Test run summary:")
-            || t.Contains("total:")
-            || t.Contains("failed:")
-            || t.Contains("succeeded:"))
-        |> Array.filter (isFailedLine >> not)
+            || t.StartsWith("total:")
+            || t.StartsWith("failed:")
+            || t.StartsWith("succeeded:"))
         |> Array.toList
 
     [ $"%s{projectName}: %d{failedTests.Length} test(s) failed:"
       yield! failedTests |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       yield! summaryLines |> List.map (fun l -> $"  %s{l.TrimEnd()}")
-      if List.isEmpty failedTests then
+      if List.isEmpty failedTests && not (List.isEmpty (ConsoleText.summaryOf output)) then
+          // The summary above is the runner's own: the run ran to completion, so its
+          // head is a banner and its tail is the summary already printed.
+          match runLog with
+          | RunLog.Ref.Written path ->
+              $"%s{projectName}: run failed and ran to completion, but no per-test 'failed' line was parsed from \
+                its console; the CTRF report beside the output log names the tests. Full output: %s{path}"
+          | RunLog.Ref.Unavailable reason ->
+              $"%s{projectName}: run failed and ran to completion, but no per-test 'failed' line was parsed from \
+                its console, and NO output log was saved (%s{reason})"
+      elif List.isEmpty failedTests then
           let nonBlank =
               lines |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
 
@@ -3610,16 +3674,26 @@ let internal splitTestName (name: string) : string * string =
     else
         name, name
 
-/// Parse "failed Namespace.Class.Method (Xms)" lines from test output.
-/// Returns (className, methodName, fullLine) tuples.
+/// Parse "failed Namespace.Class.Method (Xms)" lines from test output, colour removed —
+/// `failed (canceled) <name> (Xms)` and a multi-unit duration `(10s 112ms)` included.
+/// Returns (className, methodName, fullLine) tuples; `fullLine` is the line as words.
 let parseFailedTests (output: string) : (string * string * string) list =
-    output.Split('\n')
+    ConsoleText.lines output
     |> Array.choose (fun line ->
         let trimmed = line.Trim()
 
         if trimmed.StartsWith("failed ") then
-            // Strip "failed " prefix and optional trailing timing "(Xms)"
-            let rest = trimmed.Substring(7).Trim()
+            // Strip the "failed " prefix, a parenthesised qualifier such as
+            // "(canceled)" that MTP puts before the name, and the trailing duration.
+            let rest =
+                let afterVerb = trimmed.Substring(7).Trim()
+
+                if afterVerb.StartsWith("(") then
+                    match afterVerb.IndexOf(')') with
+                    | -1 -> afterVerb
+                    | close -> afterVerb.Substring(close + 1).Trim()
+                else
+                    afterVerb
 
             let name =
                 match rest.LastIndexOf(" (") with
@@ -3763,6 +3837,15 @@ let internal failedTestsOfReport (json: string) : (string * string) list option 
             None
         else
             failed |> List.map (fun record -> splitTestName record.Name) |> Some
+
+/// Every failed row of a CTRF report, by fully-qualified name, whether or not the rows
+/// reconcile to the summary. Naming is not counting: a report that omitted a raw-throw
+/// row still names the assertions that failed, and each name is a red the console did
+/// not spell out.
+let internal failedRowsOfReport (json: string) : string list =
+    Flakiness.parseCtrfTests json
+    |> List.filter (fun record -> record.Outcome = Flakiness.Failed)
+    |> List.map (fun record -> record.Name)
 
 let internal sharedInfrastructureFailureOfReport (json: string) : string option =
     try
@@ -3913,6 +3996,7 @@ let internal failedTestsOfRun
 /// what the tool knows and where the rest is.
 let internal failuresOf
     (runLogOf: string -> RunLog.Ref)
+    (reportFailuresOf: string -> string list)
     (classFiles: Map<string, string>)
     (results: TestResults)
     : OutstandingFailure list =
@@ -3933,7 +4017,22 @@ let internal failuresOf
         | TestsTimedOut(output, _, _, _) ->
             // A timeout is never attributable to one class (see above).
             let isTimeout = TestResult.isTimedOut result
-            let parsed = parseFailedTests output
+
+            // The console names the reds; when it names none, the CTRF report the
+            // runner wrote beside the output log names them instead. The report row is
+            // the same fully-qualified name the console prints, so a red filed from it
+            // is retired by the same passing row.
+            let parsed =
+                match parseFailedTests output with
+                | [] ->
+                    reportFailuresOf project
+                    |> List.map (fun name ->
+                        let className, methodName = splitTestName name
+
+                        className,
+                        methodName,
+                        $"failed %s{name} — named by the run's CTRF report; the console printed no line the parser recognised")
+                | fromConsole -> fromConsole
 
             if parsed.IsEmpty then
                 // ONE entry for the project, so the whole captured output is carried
@@ -8286,7 +8385,26 @@ let internal createWithQueries
                         else
                             RunLog.Ref.Unavailable "no output log is on disk for this run"
 
-                    let foundFailures = failuresOf runLogOf state.TestClassFiles testResults
+                    // The failed rows of the CTRF report each project wrote in this run's
+                    // directory, for naming a red the console line did not.
+                    let reportFailuresOf =
+                        let reports =
+                            Ctrf.reportsForRun repoRoot completed.RunId
+                            |> List.map (fun report -> report.Project, report.Path)
+                            |> Map.ofList
+
+                        fun (project: string) ->
+                            match Map.tryFind project reports with
+                            | None -> []
+                            | Some path ->
+                                try
+                                    failedRowsOfReport (File.ReadAllText path)
+                                with
+                                | :? IOException
+                                | :? UnauthorizedAccessException -> []
+
+                    let foundFailures =
+                        failuresOf runLogOf reportFailuresOf state.TestClassFiles testResults
 
                     let checkReach, conditionalFailureRecall =
                         failedTestsOfRun repoRoot completed.RunId testResults

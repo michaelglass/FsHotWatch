@@ -15,13 +15,23 @@ open FsHotWatch.Tests.TestHelpers
 let private now = DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc)
 
 let private bound = TimeSpan.FromMinutes 60.0
+let private resultBound = TimeSpan.FromMinutes 5.0
 let private escalate = TimeSpan.FromMinutes 5.0
 
 let private inputs running busy lastActivity =
     { Now = now
       RunningPlugins = running
+      QueuedResults = []
       AnyBusy = busy
       LastActivityAt = lastActivity }
+
+/// A tick's inputs for one Running plugin whose result has been queued since `queuedAt`.
+let private queued plugin since queuedAt =
+    { Now = now
+      RunningPlugins = [ plugin, since ]
+      QueuedResults = [ plugin, queuedAt ]
+      AnyBusy = true
+      LastActivityAt = now }
 
 // ---------------------------------------------------------------------------
 // resolveBound — precedence, and no way to configure "never".
@@ -103,7 +113,9 @@ let ``unobservableWedgeMessage admits it cannot name the plugin`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``decideTick does nothing for a quiet idle host`` () =
-    let actions, buckets = decideTick bound escalate (inputs [] false now) Map.empty
+    let actions, buckets =
+        decideTick bound resultBound escalate (inputs [] false now) Map.empty
+
     test <@ List.isEmpty actions @>
     test <@ Map.isEmpty buckets @>
 
@@ -113,18 +125,23 @@ let ``decideTick logs one escalation per interval crossed, not one per tick`` ()
     let running = [ "test-prune", since ]
 
     let actions1, buckets1 =
-        decideTick bound escalate (inputs running false now) Map.empty
+        decideTick bound resultBound escalate (inputs running false now) Map.empty
 
     test <@ actions1 = [ TickAction.LogStillRunning("test-prune", TimeSpan.FromMinutes 6.0) ] @>
 
     // Same interval on the next tick: silent, the bucket is already logged.
-    let actions2, _ = decideTick bound escalate (inputs running false now) buckets1
+    let actions2, _ =
+        decideTick bound resultBound escalate (inputs running false now) buckets1
+
     test <@ List.isEmpty actions2 @>
 
 [<Fact(Timeout = 15000)>]
 let ``decideTick stays silent before the first escalation interval`` () =
     let running = [ "build", now - TimeSpan.FromMinutes 2.0 ]
-    let actions, _ = decideTick bound escalate (inputs running false now) Map.empty
+
+    let actions, _ =
+        decideTick bound resultBound escalate (inputs running false now) Map.empty
+
     test <@ List.isEmpty actions @>
 
 [<Fact(Timeout = 15000)>]
@@ -132,14 +149,14 @@ let ``decideTick resets escalations for a NEW run of the same plugin`` () =
     let oldSince = now - TimeSpan.FromMinutes 20.0
 
     let _, buckets =
-        decideTick bound escalate (inputs [ "build", oldSince ] false now) Map.empty
+        decideTick bound resultBound escalate (inputs [ "build", oldSince ] false now) Map.empty
 
     // A NEW run 6 minutes ago escalates afresh — the old run's bucket must not
     // suppress it.
     let newSince = now - TimeSpan.FromMinutes 6.0
 
     let actions, newBuckets =
-        decideTick bound escalate (inputs [ "build", newSince ] false now) buckets
+        decideTick bound resultBound escalate (inputs [ "build", newSince ] false now) buckets
 
     test <@ actions = [ TickAction.LogStillRunning("build", TimeSpan.FromMinutes 6.0) ] @>
     // ...and the retired run's bucket is pruned, not accumulated.
@@ -150,7 +167,7 @@ let ``decideTick declares a wedge past the bound`` () =
     let since = now - TimeSpan.FromMinutes 65.0
 
     let actions, _ =
-        decideTick bound escalate (inputs [ "analyzers", since ] false now) Map.empty
+        decideTick bound resultBound escalate (inputs [ "analyzers", since ] false now) Map.empty
 
     test <@ actions = [ TickAction.DeclareWedged("analyzers", since, TimeSpan.FromMinutes 65.0) ] @>
 
@@ -159,7 +176,9 @@ let ``decideTick fails closed on busy-with-no-running-plugin past the bound`` ()
     // Work in flight, nothing Running, host silent for the whole bound: the
     // detector cannot NAME the plugin — it says that, and still recovers.
     let lastActivity = now - TimeSpan.FromMinutes 70.0
-    let actions, _ = decideTick bound escalate (inputs [] true lastActivity) Map.empty
+
+    let actions, _ =
+        decideTick bound resultBound escalate (inputs [] true lastActivity) Map.empty
 
     test <@ actions = [ TickAction.DeclareUnobservableWedge(TimeSpan.FromMinutes 70.0) ] @>
 
@@ -167,7 +186,7 @@ let ``decideTick fails closed on busy-with-no-running-plugin past the bound`` ()
 let ``decideTick does NOT fail closed while busy host activity is recent`` () =
     // Busy with fresh activity is the normal dispatch window, not a wedge.
     let actions, _ =
-        decideTick bound escalate (inputs [] true (now - TimeSpan.FromSeconds 30.0)) Map.empty
+        decideTick bound resultBound escalate (inputs [] true (now - TimeSpan.FromSeconds 30.0)) Map.empty
 
     test <@ List.isEmpty actions @>
 
@@ -182,9 +201,12 @@ let private deps
     (wedges: ResizeArray<string>)
     : MonitorDeps =
     { Bound = bound
+      ResultQueuedBound = resultBound
       EscalateEvery = escalate
       Now = fun () -> DateTime.UtcNow
       RunningPlugins = running
+      QueuedResults = fun () -> []
+      Awaiting = fun _ -> ""
       AnyBusy = fun () -> false
       LastActivityAt = fun () -> DateTime.UtcNow
       Log = log.Add
@@ -292,9 +314,12 @@ let ``createMonitor fires the recovery on a wedged plugin and stops after dispos
 
     let deps: MonitorDeps =
         { Bound = TimeSpan.FromMinutes 60.0
+          ResultQueuedBound = TimeSpan.FromMinutes 5.0
           EscalateEvery = TimeSpan.FromMinutes 5.0
           Now = fun () -> DateTime.UtcNow
           RunningPlugins = fun () -> [ "analyzers", since ]
+          QueuedResults = fun () -> []
+          Awaiting = fun _ -> ""
           AnyBusy = fun () -> false
           LastActivityAt = fun () -> DateTime.UtcNow
           Log = ignore
@@ -324,9 +349,12 @@ let ``createMonitor leaves a healthy daemon completely alone`` () =
 
     let deps: MonitorDeps =
         { Bound = TimeSpan.FromMinutes 60.0
+          ResultQueuedBound = TimeSpan.FromMinutes 5.0
           EscalateEvery = TimeSpan.FromMinutes 5.0
           Now = fun () -> DateTime.UtcNow
           RunningPlugins = fun () -> []
+          QueuedResults = fun () -> []
+          Awaiting = fun _ -> ""
           AnyBusy = fun () -> false
           LastActivityAt = fun () -> DateTime.UtcNow
           Log = fun m -> lock logs (fun () -> logs.Add m)
@@ -344,3 +372,196 @@ let ``writeBreadcrumb never throws on an unwritable path`` () =
     // shutdown it is describing.
     writeBreadcrumb "/nonexistent-root-dir/nope" "wedged on 'x' — restarted it"
     test <@ consumeBreadcrumb "/nonexistent-root-dir/nope" = None @>
+
+// ---------------------------------------------------------------------------
+// A queued result — a run that has finished, whose result waits in the mailbox.
+// A running host is measured against the wedge bound; a result that is already
+// computed is measured against its own, shorter bound, and is named, not recovered.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``a result queued under its bound is not mentioned`` () =
+    let since = now - TimeSpan.FromMinutes 12.0
+    let queuedAt = now - TimeSpan.FromMinutes 4.0
+
+    let actions, _ =
+        decideTick bound resultBound escalate (queued "test-prune" since queuedAt) Map.empty
+
+    test
+        <@
+            actions
+            |> List.forall (function
+                | TickAction.LogResultQueued _ -> false
+                | _ -> true)
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a result queued past its bound is named once at the bound, then once per interval`` () =
+    let since = now - TimeSpan.FromMinutes 20.0
+    let queuedAt = now - resultBound
+
+    let inputsAt (later: TimeSpan) =
+        { queued "test-prune" since queuedAt with
+            Now = now + later }
+
+    let queuedLines actions =
+        actions
+        |> List.choose (function
+            | TickAction.LogResultQueued(plugin, queuedFor) -> Some(plugin, queuedFor)
+            | _ -> None)
+
+    let actions1, buckets1 =
+        decideTick bound resultBound escalate (inputsAt TimeSpan.Zero) Map.empty
+
+    test <@ queuedLines actions1 = [ "test-prune", resultBound ] @>
+
+    // Same interval, another tick: nothing new to say.
+    let actions2, buckets2 =
+        decideTick bound resultBound escalate (inputsAt (TimeSpan.FromMinutes 2.0)) buckets1
+
+    test <@ List.isEmpty (queuedLines actions2) @>
+
+    // The next interval past the bound earns one more line.
+    let actions3, _ = decideTick bound resultBound escalate (inputsAt escalate) buckets2
+
+    test <@ queuedLines actions3 = [ "test-prune", resultBound + escalate ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a queued result never declares a wedge by itself`` () =
+    // The run started well under the wedge bound; only its result is overdue. A restart
+    // here would discard the very result that is waiting.
+    let since = now - TimeSpan.FromMinutes 30.0
+    let queuedAt = now - TimeSpan.FromMinutes 25.0
+
+    let actions, _ =
+        decideTick bound resultBound escalate (queued "test-prune" since queuedAt) Map.empty
+
+    test
+        <@
+            actions
+            |> List.forall (function
+                | TickAction.DeclareWedged _
+                | TickAction.DeclareUnobservableWedge _ -> false
+                | _ -> true)
+        @>
+
+    test
+        <@
+            actions
+            |> List.exists (function
+                | TickAction.LogResultQueued("test-prune", _) -> true
+                | _ -> false)
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a queued result escalates on its own key, not the run's`` () =
+    // The run's own "still running" cadence and the result's are tracked apart, so
+    // logging one never silences the other.
+    let since = now - TimeSpan.FromMinutes 10.0
+    let queuedAt = now - TimeSpan.FromMinutes 6.0
+
+    let actions, buckets =
+        decideTick bound resultBound escalate (queued "test-prune" since queuedAt) Map.empty
+
+    test
+        <@
+            actions
+            |> List.exists (function
+                | TickAction.LogStillRunning("test-prune", _) -> true
+                | _ -> false)
+        @>
+
+    test
+        <@
+            actions
+            |> List.exists (function
+                | TickAction.LogResultQueued("test-prune", _) -> true
+                | _ -> false)
+        @>
+
+    test <@ Map.count buckets = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``resultQueuedText names the mailbox, not the run, and keeps the recovery bound`` () =
+    let text = resultQueuedText "test-prune" (TimeSpan.FromMinutes 17.0) bound
+    test <@ text.StartsWith "test-prune finished its run 17m 0s ago" @>
+    test <@ text.Contains "the plugin's mailbox, not its run" @>
+    test <@ text.Contains "treated as wedged at 1h 0m after the run started" @>
+
+[<Fact(Timeout = 15000)>]
+let ``runTick logs a queued result through the monitor's log sink`` () =
+    let log = ResizeArray<string>()
+    let wedges = ResizeArray<string>()
+    let since = DateTime.UtcNow - TimeSpan.FromMinutes 10.0
+    let queuedAt = DateTime.UtcNow - TimeSpan.FromMinutes 6.0
+
+    let d =
+        { deps bound (fun () -> [ "test-prune", since ]) log wedges with
+            QueuedResults = fun () -> [ "test-prune", queuedAt ] }
+
+    let fired = runTick d (FireLatch.create ()) (ref Map.empty)
+    test <@ not fired @>
+    test <@ wedges.Count = 0 @>
+
+    test
+        <@
+            log
+            |> Seq.exists (fun line -> line.Contains "result is still queued behind the plugin's own events")
+        @>
+
+// ---------------------------------------------------------------------------
+// What a Running plugin is on — every line about a duration names the thing the
+// duration was spent on, from the three things the host can see.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``describeAwaiting names subtasks, bounded work with its bound, and the backlog`` () =
+    let text =
+        describeAwaiting
+            now
+            [ "tests result queued", now - TimeSpan.FromMinutes 16.0 - TimeSpan.FromSeconds 40.0 ]
+            [ "impact selection", now - TimeSpan.FromMinutes 12.0, Some(TimeSpan.FromMinutes 20.0) ]
+            17
+
+    test
+        <@
+            text = "tests result queued 16m 40s; bounded work: impact selection 12m 0s of 20m 0s; 17 event(s) admitted and not yet folded"
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeAwaiting is empty when the host knows nothing more than Running`` () =
+    test <@ describeAwaiting now [] [] 0 = "" @>
+    test <@ awaitingSuffix "" = "" @>
+    test <@ awaitingSuffix "primary 3m 2s" = " — on: primary 3m 2s" @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeAwaiting reports bounded work without a declared deadline by elapsed alone`` () =
+    let text =
+        describeAwaiting now [] [ "dispatch", now - TimeSpan.FromSeconds 42.0, None ] 0
+
+    test <@ text = "bounded work: dispatch 42s" @>
+
+[<Fact(Timeout = 15000)>]
+let ``runTick appends what the plugin is on to its still-running and wedge lines`` () =
+    let log = ResizeArray<string>()
+    let wedges = ResizeArray<string>()
+    let since = DateTime.UtcNow - TimeSpan.FromMinutes 10.0
+
+    let d =
+        { deps bound (fun () -> [ "test-prune", since ]) log wedges with
+            Awaiting = fun plugin -> $"%s{plugin}: primary 9m 58s; 3 event(s) admitted and not yet folded" }
+
+    runTick d (FireLatch.create ()) (ref Map.empty) |> ignore
+    test <@ log.Count = 1 @>
+    test <@ log.[0].EndsWith " — on: test-prune: primary 9m 58s; 3 event(s) admitted and not yet folded" @>
+
+    let wedgedSince = DateTime.UtcNow - TimeSpan.FromMinutes 90.0
+
+    let w =
+        { deps bound (fun () -> [ "test-prune", wedgedSince ]) log wedges with
+            Awaiting = fun _ -> "tests result queued 80m 0s" }
+
+    runTick w (FireLatch.create ()) (ref Map.empty) |> ignore
+    test <@ wedges.Count = 1 @>
+    test <@ wedges.[0].Contains "wedged on 'test-prune'" @>
+    test <@ wedges.[0].EndsWith " — on: tests result queued 80m 0s" @>

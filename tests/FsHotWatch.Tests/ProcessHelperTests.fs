@@ -1498,10 +1498,15 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
                 $"fixture broken: the child was meant to live ~3s, ran %.1f{elapsedAtEnd.TotalSeconds}s"
             )
 
-            // Arrived at the START of the run, not at its end.
+            // Arrived at the START of the run, not at its end. RELATIVE to the run's own
+            // end, not to the clock: buffer-then-write delivers the chunk at exit, so it
+            // trails the end by nothing; streaming delivers it before the child's 3 s
+            // sleep, so it leads the end by roughly that sleep. Box load slows the spawn
+            // and the exit alike and cancels out of the difference, where an absolute
+            // "within 1.5 s of start" goes red on a slow spawn rather than on buffering.
             Assert.True(
-                firstChunkAt < TimeSpan.FromSeconds 1.5,
-                $"the first chunk reached the sink after %.1f{firstChunkAt.TotalSeconds}s of a \
+                firstChunkAt < elapsedAtEnd - TimeSpan.FromSeconds 1.5,
+                $"the first chunk reached the sink at %.1f{firstChunkAt.TotalSeconds}s of a \
                   %.1f{elapsedAtEnd.TotalSeconds}s run — that is buffer-then-write, not streaming"
             )
 
