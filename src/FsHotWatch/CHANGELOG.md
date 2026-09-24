@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A per-file plugin's replayed summary ("N files examined, M replayed from cache") now
+  counts the current run, not everything since the daemon started. A run is the set of
+  files one scan or change batch checked. A rescan that serves both of a repository's
+  files from cache used to read "3 files examined, 3 replayed" because of earlier runs,
+  and now reads "0 files examined, 2 replayed". Two sessions of one repository therefore
+  report the same run the same way, whichever of them filled the shared cache first.
+  The `task-cache` debug line for a hit or miss now names the file.
+
 - feat!: a repository host's sessions of one checker configuration check through one
   checker (`CheckerPartitions`), so they hold one copy of the framework imports and
   `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and

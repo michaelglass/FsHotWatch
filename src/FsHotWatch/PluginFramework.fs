@@ -586,13 +586,33 @@ let internal registerHandlerForOwner
     // into this plugin, and no owner transition waits on this lock.
     let statusLock = obj ()
 
-    // Per-file results this registration produced by running `Update`, and per-file
-    // results it served from cache instead. A per-file replay's summary is derived from
-    // the ledger, which reads the same whether every file was examined or every file was
-    // replayed; the tally is what tells those apart. Both move only on the plugin's own
-    // loop, one event at a time.
+    // Per-file results this registration produced by running `Update` in the current run,
+    // and per-file results it served from cache instead. A per-file replay's summary is
+    // derived from the ledger, which reads the same whether every file was examined or
+    // every file was replayed; the tally is what tells those apart. Both move only on the
+    // plugin's own loop, one event at a time.
     let mutable perFileExamined = 0
     let mutable perFileReplayed = 0
+
+    // A run is the cohort of per-file events one `BatchChecked` closes. `runEpoch` counts
+    // the closes, advanced where events are dispatched whether or not this plugin
+    // subscribes to `BatchChecked`. Each admitted `FileChecked` is stamped with the epoch
+    // it was dispatched in, and the loop starts a fresh tally at the first event of a
+    // newer epoch. Stamping at dispatch keeps a close from resetting the tally while an
+    // earlier run's events are still queued behind it.
+    let mutable runEpoch = 0L
+    let mutable tallyEpoch = 0L
+
+    let dispatchedInRun =
+        System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, int64>()
+
+    let beginRunOf (identity: PluginWorkOwner.WorkId) =
+        match dispatchedInRun.TryRemove identity with
+        | true, epoch when epoch > tallyEpoch ->
+            tallyEpoch <- epoch
+            System.Threading.Volatile.Write(&perFileExamined, 0)
+            System.Threading.Volatile.Write(&perFileReplayed, 0)
+        | _ -> ()
 
     // The last status this plugin reported to the host, written under `statusLock`. A
     // claim remembers the one its `Running` displaced, so a run cancelled because nobody
@@ -1081,6 +1101,7 @@ let internal registerHandlerForOwner
                         | Some cache, Some cacheKey ->
                             let compKey = compositeKey event
                             let pluginName = PluginName.value handler.Name
+                            let fileOfKey = compKey.File |> Option.defaultValue "-"
 
                             // The typed miss reason is the whole point of `Lookup` over
                             // `TryGet`: with content-addressed keys a cold start is
@@ -1090,12 +1111,15 @@ let internal registerHandlerForOwner
                             let lookupResult =
                                 match cache.Lookup compKey cacheKey with
                                 | TaskCache.CacheHit result ->
-                                    FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=true"
+                                    FsHotWatch.Logging.debug
+                                        "task-cache"
+                                        $"plugin=%s{pluginName} file=%s{fileOfKey} hit=true"
+
                                     Some result
                                 | TaskCache.CacheMiss reason ->
                                     FsHotWatch.Logging.debug
                                         "task-cache"
-                                        $"plugin=%s{pluginName} hit=false miss=%s{TaskCache.CacheMissReason.describe reason}"
+                                        $"plugin=%s{pluginName} file=%s{fileOfKey} hit=false miss=%s{TaskCache.CacheMissReason.describe reason}"
 
                                     None
 
@@ -1518,6 +1542,7 @@ let internal registerHandlerForOwner
                     let rec loop () =
                         async {
                             let! event, identity = inbox.Receive()
+                            beginRunOf identity
                             let dispatchStarted = DateTime.UtcNow
                             // Only this loop publishes domain state, so the snapshot holds
                             // exactly the state the previous event left.
@@ -1648,8 +1673,17 @@ let internal registerHandlerForOwner
         )
 
     let dispatchTracked (dispatched: PluginDispatchEvent) =
+        match dispatched with
+        | DispatchBatchChecked _ -> System.Threading.Interlocked.Increment(&runEpoch) |> ignore
+        | _ -> ()
+
         let admitted event =
             let identity, completion = admit owner.AdmitTrackedEvent
+
+            match event with
+            | FileChecked _ -> dispatchedInRun[identity] <- System.Threading.Volatile.Read(&runEpoch)
+            | _ -> ()
+
             deliver (event, identity)
             Some(DispatchReceipt completion)
 

@@ -1521,3 +1521,56 @@ let ``a replay-only run says it examined nothing; one that analyzed says how man
     waitForQuiescent host 15000
 
     test <@ (summary ()).EndsWith("; 1 files examined, 3 replayed from cache (cached)") @>
+
+[<Fact(Timeout = 30000)>]
+let ``a run's summary counts only that run's files, not every file since start`` () =
+    // A run is the cohort of `FileChecked` events a `BatchChecked` closes. A rescan that
+    // replays both files examined nothing, whatever earlier runs examined.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
+
+    let handler = create None [] None DiagnosticSeverity.Hint
+    host.RegisterHandler(handler)
+
+    let seed file =
+        let result = fakeResult file
+        let key = ((handler.CacheKey.Value handler.Init) (FileChecked result)).Value
+
+        cacheIface.Set
+            { Plugin = "analyzers"
+              File = Some(compositeFileKey "/tmp" file) }
+            key
+            { CacheKey = key
+              Errors = [ file, [] ]
+              Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 5.0)
+              EmittedEvents = [] }
+
+        result
+
+    let a = seed "/tmp/evidence/A.fs"
+    let b = seed "/tmp/evidence/B.fs"
+
+    let summary () =
+        match host.GetStatus "analyzers" with
+        | Some(Completed(_, v)) -> v.Summary
+        | Some(Failed(_, _, v)) -> v.Summary
+        | other -> failwith $"expected a terminal analyzers status, got %A{other}"
+
+    // First run: one file examined (no cache entry), then both seeded files replayed.
+    host.EmitFileChecked(fakeResult "/tmp/evidence/Fresh.fs")
+    host.EmitFileChecked a
+    host.EmitFileChecked b
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/evidence/Fresh.fs"; "/tmp/evidence/A.fs"; "/tmp/evidence/B.fs" ])
+    waitForQuiescent host 15000
+
+    test <@ (summary ()).EndsWith("; 1 files examined, 2 replayed from cache (cached)") @>
+
+    // Second run: a rescan that replays both files and examines none.
+    host.EmitFileChecked a
+    host.EmitFileChecked b
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/evidence/A.fs"; "/tmp/evidence/B.fs" ])
+    waitForQuiescent host 15000
+
+    test <@ (summary ()).EndsWith("; 0 files examined, 2 replayed from cache (cached)") @>

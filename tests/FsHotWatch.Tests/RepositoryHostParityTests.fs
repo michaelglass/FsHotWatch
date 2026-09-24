@@ -545,16 +545,21 @@ let private runHostedBesideASibling (root: string) =
 
             build (DaemonHosting.hostedBy inertWatcher partitions.For) shared queue worktreeRoot)
 
-    // The sibling keeps its own shared task cache: lint's content-keyed results would
-    // otherwise replay from it into the observed session's summary. That sharing is the
-    // host's by design; what this run isolates is the shared checker.
-    let siblingId, siblingSession =
-        withEnvValue "FSHW_CACHE_HOME" (Path.Combine(Path.GetDirectoryName root, "cache-sibling")) (fun () ->
-            startSession registry sibling)
-
-    siblingSession.Serving.Result |> ignore
+    // The sibling shares the observed session's task cache as well as its checker, so
+    // lint's content-keyed results reach the observed session from the sibling's run.
+    let siblingId, siblingSession = startSession registry sibling
+    let siblingConfig = siblingSession.Serving.Result
 
     test <@ waitUntilTrue (fun () -> siblingSession.Daemon.GetScanGeneration() > 0L) 300000 @>
+    (siblingConfig.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait()
+
+    // Sharing is exercised, not merely configured: before the observed session starts,
+    // the store it will read already holds the sibling's lint results. The parity
+    // assertions then show a run served from them reports what a cold run reports.
+    let sharedStore =
+        Path.Combine(FsHwPaths.sharedCacheHome (), "cache", "tasks", RepoIdentity.namespaceOf root)
+
+    test <@ FsHotWatch.FileTaskCache.FileTaskCache(sharedStore).Stats.EntryCount > 0 @>
 
     let id, session = startSession registry root
     test <@ obj.ReferenceEquals(session.Daemon.Checker, siblingSession.Daemon.Checker) @>
@@ -633,7 +638,23 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test <@ besideASibling.ProjectModel = legacy.ProjectModel @>
         test <@ besideASibling.Receipts = legacy.Receipts @>
         test <@ besideASibling.Statuses = legacy.Statuses @>
-        test <@ besideASibling.Phases = legacy.Phases @>
+        // The one observable difference is the sharing itself: the sibling already linted
+        // this content, so the observed session's first scan replays lint instead of
+        // running it. Every later phase, and every final status, is the legacy run's.
+        let lintRanFirst (phases: (string * string * bool) list list) =
+            phases |> List.head |> List.exists (fun (name, _, ran) -> name = "lint" && ran)
+
+        let lintReplayedFirst (phases: (string * string * bool) list list) =
+            phases
+            |> List.mapi (fun index phase ->
+                if index = 0 then
+                    phase |> List.map (fun (name, tag, ran) -> name, tag, ran && name <> "lint")
+                else
+                    phase)
+
+        test <@ lintRanFirst legacy.Phases @>
+        test <@ not (lintRanFirst besideASibling.Phases) @>
+        test <@ besideASibling.Phases = lintReplayedFirst legacy.Phases @>
         test <@ besideASibling.TestRuns = legacy.TestRuns @>
         test <@ besideASibling.Coverage = legacy.Coverage @>
         test <@ besideASibling.StateFiles = legacy.StateFiles @>
