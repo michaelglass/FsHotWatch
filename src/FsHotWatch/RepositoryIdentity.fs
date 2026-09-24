@@ -107,34 +107,36 @@ let private entryExists (path: string) =
     File.Exists path || Directory.Exists path || (linkTarget path).IsSome
 
 /// The name `name` is stored under inside the real directory `dir`, or None when
-/// nothing answers to it. An exact match wins; otherwise the one entry equal to it
-/// ignoring case and Unicode normalization (what a case-insensitive volume answered
-/// to). A directory that cannot be listed keeps the name as given — the entry exists,
-/// its stored spelling just cannot be learned.
-let private storedName (dir: string) (name: string) : string option =
-    let candidate = Path.Combine(dir, name)
+/// nothing answers to it. An exact match wins, and the listing stops there without
+/// normalizing anything; only when there is none is the directory listed again for the
+/// one entry equal to it ignoring case and Unicode normalization (what a
+/// case-insensitive volume answered to). A directory that cannot be listed keeps the
+/// name as given — the entry exists, its stored spelling just cannot be learned.
+let internal storedNameIn (listNames: string -> seq<string>) (dir: string) (name: string) : string option =
+    // The listing is lazy, so a directory that cannot be read throws while it is walked.
+    let scan (walk: seq<string> -> string option) =
+        try
+            walk (listNames dir)
+        with _ ->
+            None
 
-    if not (entryExists candidate) then
+    let equivalent (entry: string) =
+        String.Equals(nfc entry, nfc name, StringComparison.OrdinalIgnoreCase)
+
+    let theOneEquivalent (entries: seq<string>) =
+        match entries |> Seq.filter equivalent |> Seq.truncate 2 |> List.ofSeq with
+        | [ stored ] -> Some stored
+        | _ -> None
+
+    if not (entryExists (Path.Combine(dir, name))) then
         None
     else
-        let entries =
-            try
-                Directory.EnumerateFileSystemEntries(dir)
-                |> Seq.map Path.GetFileName
-                |> Array.ofSeq
-            with _ ->
-                [||]
+        scan (Seq.tryFind (fun entry -> String.Equals(entry, name, StringComparison.Ordinal)))
+        |> Option.orElseWith (fun () -> scan theOneEquivalent)
+        |> Option.orElse (Some name)
 
-        // `Array.IndexOf` (ordinal for strings) and `.Length`, not `Array.contains` /
-        // `Array.exists` and a `[| x |]` pattern: those compile a null-array guard that no
-        // array here can reach.
-        let answering =
-            entries
-            |> Array.filter (fun e -> String.Equals(nfc e, nfc name, StringComparison.OrdinalIgnoreCase))
-
-        if Array.IndexOf(entries, name) >= 0 then Some name
-        elif answering.Length = 1 then Some answering[0]
-        else Some name
+let private storedName =
+    storedNameIn (fun dir -> Directory.EnumerateFileSystemEntries dir |> Seq.map Path.GetFileName)
 
 let private parentOf (path: string) =
     match Path.GetDirectoryName path with

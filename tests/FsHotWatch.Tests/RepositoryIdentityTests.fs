@@ -243,6 +243,44 @@ let ``. segments, a relative path, and .. above the filesystem root all canonica
         test <@ (resolved (Path.GetRelativePath(Directory.GetCurrentDirectory(), primary))).Root = expected @>)
 
 [<Fact(Timeout = 15000)>]
+let ``an exactly spelled name stops the listing at its entry and normalizes nothing`` () =
+    // Canonicalizing lists each parent directory, and a temp directory can hold tens of
+    // thousands of entries. An exact match is the common case: it must cost a scan up to
+    // that entry, not a normalization of every name in the directory. Names are only
+    // normalized by the fallback, which lists the directory again, so two pulls means
+    // the scan stopped at the match and the fallback never ran. The case variant before
+    // it is not the stored spelling.
+    withTempDir "rid-stored-exact" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, "Name"), "")
+        let pulled = ref 0
+
+        let listNames (_: string) =
+            seq {
+                "name"
+                "Name"
+                "after-the-match"
+            }
+            |> Seq.map (fun entry ->
+                pulled.Value <- pulled.Value + 1
+                entry)
+
+        test <@ storedNameIn listNames dir "Name" = Some "Name" @>
+        test <@ pulled.Value = 2 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``without an exact entry, only a single equivalent entry is the stored spelling`` () =
+    // The fallback, on any volume: one entry equal ignoring case and normalization is
+    // what the name resolved to; none, or several, leaves the name as given.
+    withTempDir "rid-stored-fallback" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, "Name"), "")
+        let listing (entries: string list) (_: string) = Seq.ofList entries
+
+        test <@ storedNameIn (listing [ "other"; "NAME" ]) dir "Name" = Some "NAME" @>
+        test <@ storedNameIn (listing [ "other" ]) dir "Name" = Some "Name" @>
+        test <@ storedNameIn (listing [ "NAME"; "name" ]) dir "Name" = Some "Name" @>
+        test <@ storedNameIn (listing [ "Name" ]) dir "Absent" = None @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a directory that cannot be listed keeps the name as given`` () =
     // Search permission without read permission: the entry is reachable, its stored
     // spelling just cannot be learned by listing.
@@ -696,13 +734,17 @@ let ``the cache namespace is keyed by the same store as the RepositoryId`` () =
         let link = Path.Combine(dir, "link")
         File.CreateSymbolicLink(link, jjWs) |> ignore
 
-        let checkouts = [ jj; jjWs; git; gitWt; plain; link ]
+        // Each checkout is resolved once: resolving canonicalizes through the temp
+        // directory, so resolving inside the pairwise comparison multiplies that cost by
+        // the number of pairs.
+        let identities =
+            [ jj; jjWs; git; gitWt; plain; link ]
+            |> List.map (fun checkout -> (resolved checkout).Repository, RepoIdentity.namespaceOf checkout)
 
-        let sameRepository a b =
-            ((resolved a).Repository = (resolved b).Repository) = (RepoIdentity.namespaceOf a = RepoIdentity.namespaceOf
-                b)
+        let agree (repositoryA: RepositoryId, namespaceA: string) (repositoryB: RepositoryId, namespaceB: string) =
+            (repositoryA = repositoryB) = (namespaceA = namespaceB)
 
-        test <@ checkouts |> List.forall (fun a -> checkouts |> List.forall (sameRepository a)) @>)
+        test <@ identities |> List.forall (fun a -> identities |> List.forall (agree a)) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a checkout whose layout cannot be read gets a private cache namespace`` () =
