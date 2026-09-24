@@ -3403,24 +3403,18 @@ module Daemon =
     let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
         configured |> Option.defaultValue [] |> Set.ofList
 
-    /// What a full rediscovery drops from the checker. A daemon that owns its checker
-    /// drops everything it holds (and, owning its process, the language service's
-    /// process-wide caches). A hosted session's checker is shared with its partition's
-    /// other sessions, so it moves only `ownProjects` to a new generation
-    /// (`ProjectSnapshots.invalidate`), and leaves what its siblings hold untouched.
-    let internal dropForRediscovery
-        (seams: DaemonHosting.HostingSeams)
-        (checker: FSharpChecker)
-        (ownProjects: FSharpProjectOptions list)
-        =
-        if seams.InvalidatesWholeChecker then
-            checker.InvalidateAll()
-
-            if seams.ClearsProcessCaches then
-                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-        else
-            for options in ownProjects do
-                ProjectSnapshots.invalidate checker options
+    /// What a full rediscovery drops from the checker: every project it is handed moves
+    /// to a new generation (`ProjectSnapshots.invalidate`), so the checks after it
+    /// type-check them again under new cache keys while the checks already under way
+    /// finish against the entries they started with. Nothing is removed from the
+    /// checker's caches — `InvalidateAll` and
+    /// `ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients` both replace
+    /// them under the running checks — so the previous generation's entries are
+    /// released as the checker's count-bounded caches turn over. A hosted session is
+    /// handed only its own projects, so its siblings' entries stay warm.
+    let internal dropForRediscovery (checker: FSharpChecker) (projects: FSharpProjectOptions list) =
+        for options in projects do
+            ProjectSnapshots.invalidate checker options
 
     let private createWithCore
         (checker: FSharpChecker)
@@ -3573,15 +3567,14 @@ module Daemon =
                         Some(fun () ->
                             pipeline.GetRegisteredProjects()
                             |> List.choose pipeline.GetProjectOptions
-                            |> dropForRediscovery seams checker)
+                            |> dropForRediscovery checker)
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
                     else
                         Some(fun optsList ->
-                            // Per-project invalidation only. No global
-                            // ClearLanguageServiceRootCaches — that GC is what
-                            // makes the full path cold; scoping is the point.
+                            // The changed projects only; the full path hands
+                            // `dropForRediscovery` every registered project.
                             for opts in optsList do
                                 ProjectSnapshots.invalidate checker opts)
                   RepoRoot = repoRoot

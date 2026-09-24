@@ -7,6 +7,8 @@
   diagnostic. Re-checking removed the project from the checker's caches under the
   project's other running checks, and each of those could then see two copies of one
   type. Code that `dotnet build` compiles no longer fails `check` this way.
+  The same holds across a project or solution change that makes the daemon
+  rediscover every project.
 
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).

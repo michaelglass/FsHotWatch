@@ -287,8 +287,9 @@ let private holdFirst
             if not (release.Wait(TimeSpan.FromSeconds 60.0)) then
                 failwith $"%s{file} was held past its bound"
 
-[<Fact(Timeout = 120000)>]
-let ``invalidating a project leaves the checks already under way coherent`` () =
+/// Two checks of one project under way when `invalidate` runs, and the errors each
+/// reports.
+let private checksAcrossInvalidation (invalidate: FSharpChecker -> FSharpProjectOptions -> unit) =
     withTempDir "snapshot-invalidate-inflight" (fun dir ->
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
 
@@ -379,7 +380,7 @@ let ``invalidating a project leaves the checks already under way coherent`` () =
         let checkD = check "D.fs" "\n// being edited"
         test <@ dReached.Wait bound @>
 
-        FsHotWatch.ProjectSnapshots.invalidate checker options
+        invalidate checker options
 
         // If the invalidation dropped A, S and B, D's check type-checks all three
         // again and finishes, and C's check then receives D's B, whose signature
@@ -389,10 +390,24 @@ let ``invalidating a project leaves the checks already under way coherent`` () =
         Threading.Tasks.Task.WhenAny(checkD, Threading.Tasks.Task.Delay(TimeSpan.FromSeconds 5.0)).Wait()
         sRelease.Set()
 
-        let errorsOfC = checkC.Result
-        let errorsOfD = checkD.Result
-        test <@ Array.isEmpty errorsOfC @>
-        test <@ Array.isEmpty errorsOfD @>)
+        checkC.Result, checkD.Result)
+
+[<Fact(Timeout = 120000)>]
+let ``invalidating a project leaves the checks already under way coherent`` () =
+    let errorsOfC, errorsOfD =
+        checksAcrossInvalidation FsHotWatch.ProjectSnapshots.invalidate
+
+    test <@ Array.isEmpty errorsOfC @>
+    test <@ Array.isEmpty errorsOfD @>
+
+[<Fact(Timeout = 120000)>]
+let ``a rediscovery leaves the checks already under way coherent`` () =
+    let errorsOfC, errorsOfD =
+        checksAcrossInvalidation (fun checker options ->
+            FsHotWatch.Daemon.Daemon.dropForRediscovery checker [ options ])
+
+    test <@ Array.isEmpty errorsOfC @>
+    test <@ Array.isEmpty errorsOfD @>
 
 [<Fact(Timeout = 120000)>]
 let ``two checkouts with identical content get identical snapshot versions`` () =

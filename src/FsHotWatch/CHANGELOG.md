@@ -5,8 +5,8 @@
 - feat!: a repository host's sessions of one checker configuration check through one
   checker (`CheckerPartitions`), so they hold one copy of the framework imports and
   `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and
-  `HostingSeams` gains `Checker` and `InvalidatesWholeChecker`: a hosted session's full
-  rediscovery drops only its own projects, never its siblings'. `Daemon.Checker` exposes
+  `HostingSeams` gains `Checker`: a hosted session's full rediscovery drops only its
+  own projects, never its siblings'. `Daemon.Checker` exposes
   the checker a daemon checks through.
 
 - feat: a repository host can serve many worktrees from one process, each as its own
@@ -51,6 +51,17 @@
   generation of each project (`ProjectSnapshots.generationOf checker`), and
   `ProjectSnapshots.Generation` is new. The self-incompatible re-check builds its
   snapshot again after invalidating.
+- fix: a full rediscovery no longer makes the checks already under way report types
+  as incompatible with themselves. A standalone daemon called `InvalidateAll` and
+  `ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients`, which both
+  replace the TransparentCompiler's caches under the running checks: the same race
+  as removing one project's entries. `Daemon.dropForRediscovery checker projects`
+  now moves every project it is handed to a new generation, in both hosting modes,
+  and removes nothing. The previous generation's entries are released as FCS's
+  count-bounded caches turn over, not at once, and no full collection is forced on
+  rediscovery. `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and
+  a source guard refuses `InvalidateAll`, `ClearCaches`, `InvalidateConfiguration`
+  and `ClearLanguageServiceRootCaches*` anywhere in `src/`.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 
