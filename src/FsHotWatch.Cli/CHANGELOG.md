@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `FSHW_VIRTUAL_ROOT=0` in a repository host's environment checks every worktree at its
+  own paths instead of under the virtual root; each session logs
+  `[config] virtualRoot=on|off`.
+
 - The repository host checks every worktree under one virtual root: identical projects
   in several worktrees are checked once. `fshw host` exits 2 if that root exists.
 

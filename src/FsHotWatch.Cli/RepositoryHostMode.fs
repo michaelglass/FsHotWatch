@@ -26,6 +26,11 @@ open FsHotWatch.SessionScope
 [<Literal>]
 let EnvVar = "FSHW_REPOSITORY_HOST"
 
+/// `0` in a host's environment checks every worktree at its own paths instead of under
+/// the repository's virtual root.
+[<Literal>]
+let VirtualRootEnvVar = "FSHW_VIRTUAL_ROOT"
+
 /// True when `.fshw.json`'s text sets `"repositoryHost": true`.
 let configured (configText: string) : bool =
     try

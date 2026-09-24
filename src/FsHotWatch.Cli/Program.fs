@@ -2371,6 +2371,12 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let control =
             FsHotWatch.RepositoryIdentity.repositoryControlPaths (FsHwPaths.stateHome ()) launchRoot.Repository
 
+        // `FSHW_VIRTUAL_ROOT=0` in the host's environment checks every worktree at its own
+        // paths: one checker still, but no project shared between worktrees. It is the
+        // control a measurement of the virtual root runs against.
+        let virtualRootOn =
+            Environment.GetEnvironmentVariable RepositoryHostMode.VirtualRootEnvVar <> "0"
+
         let sinkFor (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             let logDir =
                 try
@@ -2411,12 +2417,20 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             | Some _ -> invalidOp $"no F# projects were discovered under %s{worktreeRoot}"
             | None -> ()
 
+            // Every session's log says whether it checks under the virtual root, so a
+            // measurement can prove which way it ran.
+            let virtualRootState = if virtualRootOn then "on" else "off"
+            FsHotWatch.Logging.info "config" $"virtualRoot=%s{virtualRootState}"
+
             let frames =
-                FsHotWatch.SessionFrames.choice
-                    canonical
-                    worktreeRoot
-                    control.VirtualRoot
-                    (FsHotWatch.Logging.info "host")
+                if virtualRootOn then
+                    FsHotWatch.SessionFrames.choice
+                        canonical
+                        worktreeRoot
+                        control.VirtualRoot
+                        (FsHotWatch.Logging.info "host")
+                else
+                    FsHotWatch.PathFrame.realPaths
 
             let hosting =
                 FsHotWatch.DaemonHosting.hostedUnderFrames

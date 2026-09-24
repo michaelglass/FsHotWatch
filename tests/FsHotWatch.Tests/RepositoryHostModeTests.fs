@@ -255,44 +255,55 @@ let ``a host killed outright leaves the worktree to the next command, which star
 /// the state home from the environment, so the test restores both).
 [<Collection(LogGlobalCollectionName)>]
 type HostVerbInProcess() =
-    [<Fact(Timeout = 300000)>]
-    member _.``the host verb serves a session end to end, and stops on request``() =
+    [<Theory(Timeout = 300000)>]
+    [<InlineData("", "on")>]
+    [<InlineData("0", "off")>]
+    member _.``the host verb serves a session end to end, and stops on request``(virtualRoot: string, logged: string) =
         withRepository (fun root stateHome ->
             let cwd = Directory.GetCurrentDirectory()
+            let switch = if virtualRoot = "" then None else Some virtualRoot
 
-            withEnv "FSHW_STATE_HOME" (Some stateHome) (fun () ->
-                try
-                    let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
+            withEnv RepositoryHostMode.VirtualRootEnvVar switch (fun () ->
+                withEnv "FSHW_STATE_HOME" (Some stateHome) (fun () ->
+                    try
+                        let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
 
-                    let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
+                        let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
 
-                    let endpoint, session =
-                        match RepositoryHostMode.attach stateHome ignore (TimeSpan.FromSeconds 60.0) root config with
-                        | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
-                        | other -> failwith $"%A{other}"
+                        let endpoint, session =
+                            match
+                                RepositoryHostMode.attach stateHome ignore (TimeSpan.FromSeconds 60.0) root config
+                            with
+                            | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
+                            | other -> failwith $"%A{other}"
 
-                    let link: HostLink =
-                        { Endpoint = endpoint
-                          Session = fun () -> session
-                          Reattach = fun () -> true }
+                        let link: HostLink =
+                            { Endpoint = endpoint
+                              Session = fun () -> session
+                              Reattach = fun () -> true }
 
-                    let ipc = sessionIpcOps link
-                    test <@ ipc.IsRunning "ignored" @>
-                    test <@ not (String.IsNullOrWhiteSpace(ipc.GetStatus "ignored" |> Async.RunSynchronously)) @>
-                    test <@ not (String.IsNullOrWhiteSpace(ipc.ScanStatus "ignored" |> Async.RunSynchronously)) @>
-                    test <@ repositoryStatus false root = 0 @>
-                    test <@ repositoryStatus true root = 0 @>
+                        let ipc = sessionIpcOps link
+                        test <@ ipc.IsRunning "ignored" @>
+                        test <@ not (String.IsNullOrWhiteSpace(ipc.GetStatus "ignored" |> Async.RunSynchronously)) @>
 
-                    // The session's own log names the host behind it.
-                    let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
-                    test <@ log.Contains $"session=%s{SessionId.render session}" @>
+                        test
+                            <@ not (String.IsNullOrWhiteSpace(ipc.ScanStatus "ignored" |> Async.RunSynchronously)) @>
 
-                    test <@ stopRepositoryHost root = 0 @>
-                    test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
-                    test <@ repositoryStatus false root = 0 @>
-                    test <@ stopRepositoryHost root = 0 @>
-                finally
-                    Directory.SetCurrentDirectory cwd))
+                        test <@ repositoryStatus false root = 0 @>
+                        test <@ repositoryStatus true root = 0 @>
+
+                        // The session's own log names the host behind it.
+                        let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
+                        test <@ log.Contains $"session=%s{SessionId.render session}" @>
+                        // …and whether it checks under the repository's virtual root.
+                        test <@ log.Contains $"virtualRoot=%s{logged}" @>
+
+                        test <@ stopRepositoryHost root = 0 @>
+                        test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
+                        test <@ repositoryStatus false root = 0 @>
+                        test <@ stopRepositoryHost root = 0 @>
+                    finally
+                        Directory.SetCurrentDirectory cwd)))
 
     [<Fact(Timeout = 60000)>]
     member _.``the host verb refuses a root it cannot resolve``() =
