@@ -1706,7 +1706,7 @@ let formatElapsed (ts: System.TimeSpan) = PluginWedge.formatElapsed ts
 /// Example output: `test-prune (25m 12s) [Intelligence.Tests.Unit 12m 3s, Intelligence.Tests.Database 10m 1s]`
 /// The bounded work `plugin` declared over itself and still has in flight, by the label
 /// it declared (`SupervisedWork.declare` names it `<plugin>: <label>`).
-let boundedWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
+let internal boundedWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
     let prefix = $"%s{plugin}: "
 
     work.OperationsInFlight
@@ -1843,11 +1843,7 @@ let private waitCoreWith
                 // backlog are what the form did not say, and what a reader of a long
                 // wait needs to see the plugin is on.
                 let beyondSubtasks =
-                    PluginWedge.describeAwaiting
-                        now
-                        []
-                        (boundedWorkOf work name)
-                        (work.PendingEventsOf name)
+                    PluginWedge.describeAwaiting now [] (boundedWorkOf work name) (work.PendingEventsOf name)
 
                 let rendered = formatPluginWait now name since subtasks
 
@@ -2732,7 +2728,8 @@ type Daemon
 
                                 PluginWedge.describeAwaiting
                                     System.DateTime.UtcNow
-                                    (host.GetActivitySnapshot(name).Subtasks |> List.map (fun t -> t.Key, t.StartedAt))
+                                    (host.GetActivitySnapshot(name).Subtasks
+                                     |> List.map (fun t -> t.Key, t.StartedAt))
                                     (boundedWorkOf work name)
                                     (work.PendingEventsOf name)
                           AnyBusy = fun () -> host.AnyPluginBusy()

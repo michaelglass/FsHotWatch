@@ -141,7 +141,8 @@ let describeAwaiting
           $"%s{key} %s{formatElapsed (elapsedSince startedAt)}"
       for (name, startedAt, deadline) in boundedWork do
           match deadline with
-          | Some bound -> $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)} of %s{formatElapsed bound}"
+          | Some bound ->
+              $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)} of %s{formatElapsed bound}"
           | None -> $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)}"
       if pendingEvents > 0 then
           $"%d{pendingEvents} event(s) admitted and not yet folded" ]
@@ -359,12 +360,22 @@ let runTick (deps: MonitorDeps) (latch: IdleExit.FireLatch) (buckets: Map<string
         for action in actions do
             match action with
             | TickAction.LogStillRunning(plugin, elapsed) ->
-                deps.Log(stillRunningText plugin elapsed deps.Bound + awaitingSuffix (deps.Awaiting plugin))
+                deps.Log(
+                    stillRunningText plugin elapsed deps.Bound
+                    + awaitingSuffix (deps.Awaiting plugin)
+                )
             | TickAction.LogResultQueued(plugin, queuedFor) ->
-                deps.Log(resultQueuedText plugin queuedFor deps.Bound + awaitingSuffix (deps.Awaiting plugin))
+                deps.Log(
+                    resultQueuedText plugin queuedFor deps.Bound
+                    + awaitingSuffix (deps.Awaiting plugin)
+                )
             | TickAction.DeclareWedged(plugin, since, elapsed) ->
                 if IdleExit.FireLatch.tryFire latch then
-                    deps.OnWedged(wedgeRecoveryMessage plugin since elapsed + awaitingSuffix (deps.Awaiting plugin))
+                    deps.OnWedged(
+                        wedgeRecoveryMessage plugin since elapsed
+                        + awaitingSuffix (deps.Awaiting plugin)
+                    )
+
                     fired <- true
             | TickAction.DeclareUnobservableWedge quietFor ->
                 if IdleExit.FireLatch.tryFire latch then

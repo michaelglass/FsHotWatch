@@ -104,8 +104,16 @@ let ``a queued-result subtask key names the run and is recognised as such`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a slow fold's line names the event, its duration, and what waited behind it`` () =
-    test <@ slowFoldLine "BatchChecked" (TimeSpan.FromSeconds 1085.0) 3 [ "tests result queued" ] = "BatchChecked fold took 18m 5s; 3 event(s) queued behind it, among them tests result queued" @>
-    test <@ slowFoldLine "BuildCompleted" (TimeSpan.FromSeconds 45.0) 2 [] = "BuildCompleted fold took 45s; 2 event(s) queued behind it" @>
+    test
+        <@
+            slowFoldLine "BatchChecked" (TimeSpan.FromSeconds 1085.0) 3 [ "tests result queued" ] = "BatchChecked fold took 18m 5s; 3 event(s) queued behind it, among them tests result queued"
+        @>
+
+    test
+        <@
+            slowFoldLine "BuildCompleted" (TimeSpan.FromSeconds 45.0) 2 [] = "BuildCompleted fold took 45s; 2 event(s) queued behind it"
+        @>
+
     test <@ slowFoldLine "Custom" (TimeSpan.FromSeconds 31.0) 0 [] = "Custom fold took 31s; nothing queued behind it" @>
     test <@ eventKind (FileChanged SolutionChanged) = "FileChanged" @>
     test <@ eventKind (Custom Finished) = "Custom" @>

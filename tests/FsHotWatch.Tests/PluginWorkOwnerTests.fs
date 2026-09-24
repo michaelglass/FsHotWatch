@@ -781,9 +781,13 @@ let ``an operation in flight is published with its name, start and declared dead
     let before = DateTime.UtcNow
 
     let unbounded = store.BeginOperation "dispatch"
-    let bounded = store.BeginOperation("test-prune: impact selection", TimeSpan.FromMinutes 20.0)
 
-    let inFlight = store.Snapshot.OperationsInFlight |> List.sortBy (fun (name, _, _) -> name)
+    let bounded =
+        store.BeginOperation("test-prune: impact selection", TimeSpan.FromMinutes 20.0)
+
+    let inFlight =
+        store.Snapshot.OperationsInFlight |> List.sortBy (fun (name, _, _) -> name)
+
     Assert.Equal(2, inFlight.Length)
 
     let (dispatchName, dispatchStarted, dispatchDeadline) = inFlight.[0]

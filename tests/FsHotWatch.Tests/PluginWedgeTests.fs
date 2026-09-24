@@ -536,7 +536,9 @@ let ``describeAwaiting is empty when the host knows nothing more than Running`` 
 
 [<Fact(Timeout = 15000)>]
 let ``describeAwaiting reports bounded work without a declared deadline by elapsed alone`` () =
-    let text = describeAwaiting now [] [ "dispatch", now - TimeSpan.FromSeconds 42.0, None ] 0
+    let text =
+        describeAwaiting now [] [ "dispatch", now - TimeSpan.FromSeconds 42.0, None ] 0
+
     test <@ text = "bounded work: dispatch 42s" @>
 
 [<Fact(Timeout = 15000)>]
