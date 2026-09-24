@@ -1,0 +1,89 @@
+  [task-cache] 2026-09-24T11:06:16.389Z Workspace cache: 0 entries, 0.0 MB
+  [task-cache] 2026-09-24T11:06:16.400Z Shared cache (/home/runner/.cache/fshw/cache/tasks/fshw-run-with-bound-a47959899e4f420ebacd6d9f4e992ae8-22ce69666e092ee1): 0 entries, 0.0 MB — shared plugins: analyzers, format-check, lint
+  [cache] 2026-09-24T11:06:16.409Z check-result cache: OFF — every scan re-asks FCS for every file ("cache": "memory" in .fshw.json enables it)
+  [safewalk] 2026-09-24T11:06:17.086Z depth cap (64) reached at /tmp/fshw-sw-walk-depth-d620d587dcdb4f4689738767a4a4811e/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/d12/d13/d14/d15/d16/d17/d18/d19/d20/d21/d22/d23/d24/d25/d26/d27/d28/d29/d30/d31/d32/d33/d34/d35/d36/d37/d38/d39/d40/d41/d42/d43/d44/d45/d46/d47/d48/d49/d50/d51/d52/d53/d54/d55/d56/d57/d58/d59/d60/d61/d62/d63/d64/d65 — subtree skipped (filesystem cycle?)
+  [safewalk] 2026-09-24T11:06:17.176Z depth cap (64) reached at /tmp/fshw-sw-depth-d8b212c4321e48d9b0929260d236ad67/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/d12/d13/d14/d15/d16/d17/d18/d19/d20/d21/d22/d23/d24/d25/d26/d27/d28/d29/d30/d31/d32/d33/d34/d35/d36/d37/d38/d39/d40/d41/d42/d43/d44/d45/d46/d47/d48/d49/d50/d51/d52/d53/d54/d55/d56/d57/d58/d59/d60/d61/d62/d63/d64/d65 — subtree skipped (filesystem cycle?)
+  [scan] 2026-09-24T11:06:17.366Z 0 projects, 0 files registered
+  [test-prune] 2026-09-24T11:06:17.819Z freshness gate for Tests: 2 projects in closure, scanned in 21ms — fresh
+  [test-prune] 2026-09-24T11:06:18.903Z TestPrune DB was recreated (schema change) — cleared 0 FCS check-cache entries so every file re-indexes on this scan.
+  [test-prune] 2026-09-24T11:06:22.320Z Dependency fanout: none — 0 project fingerprint(s) computed, 0 project(s) in the graph, 0 prior fingerprint(s) to compare against
+  [test-prune] 2026-09-24T11:06:22.326Z BuildSucceeded: starting test run
+  [test-prune] 2026-09-24T11:06:22.387Z Scope: FULL SUITE (no valid full-suite baseline) — no full-suite run has been recorded on this ledger yet — a cold repository must earn one before an impact-filtered run can be green relative to it. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project.
+  [test-prune] 2026-09-24T11:06:22.443Z No affected classes, but the zero-affected skip is refused — no run has completed in this session yet (no baseline to be equivalent to); no full-suite run has been recorded on this ledger yet — a cold repository must earn one before an impact-filtered run can be green relative to it; running 1 force-run project(s)
+  [test-prune] 2026-09-24T11:06:22.444Z Selectivity: 1 project(s) selected, 1 of them UNFILTERED (whole-project), 0 class(es) named in total
+  [test-prune] 2026-09-24T11:06:22.446Z executeTests starting with 1 configs
+  [test-prune] 2026-09-24T11:06:22.461Z stale-artifact preflight examined 0 of 1 project(s) that are about to run — no build-output target could be derived for ANY of them (Post), so this run is NOT protected against stale build output. If those runners take a `--project` argument this is a defect in the gate, not in your tree.
+  [test-prune] 2026-09-24T11:06:22.462Z stale-artifact preflight examined 0 of 1 project(s) that are about to run — no build-output target could be derived for ANY of them (Post), so this run is NOT protected against stale build output. If those runners take a `--project` argument this is a defect in the gate, not in your tree.
+  [test-prune] 2026-09-24T11:06:22.475Z Running: echo ok
+  [test-prune] 2026-09-24T11:06:22.477Z Post: streaming run output to /tmp/fshw-tp-item3-post-build-clean-9c47c3cb468c47c99f7fd44234b58939/.fshw/test-runs/64e4ac5a55474c4986b6420bc7e19119/Post.output.log
+  [test-prune] 2026-09-24T11:06:22.517Z Post: passed
+  [test-prune] 2026-09-24T11:06:22.517Z Post: PASSED
+  [test-prune] 2026-09-24T11:06:22.540Z Tests complete: 1 projects, 0.1s
+  [test-prune] 2026-09-24T11:06:22.633Z Full-suite baseline recorded: run 64e4ac5a55474c4986b6420bc7e19119 accounted for every configured project (1); impact-filtered greens are now relative to it
+  [task-cache] 2026-09-24T11:06:22.741Z Workspace cache: 0 entries, 0.0 MB
+  [task-cache] 2026-09-24T11:06:22.742Z Shared cache (/home/runner/.cache/fshw/cache/tasks/fshw-run-with-a6b4f7206ee044338a5fd9c04d57dcf2-1f3dcfba8a219932): 0 entries, 0.0 MB — shared plugins: analyzers, format-check, lint
+  [cache] 2026-09-24T11:06:22.742Z check-result cache: OFF — every scan re-asks FCS for every file ("cache": "memory" in .fshw.json enables it)
+  [scan] 2026-09-24T11:06:23.079Z 0 projects, 0 files registered
+  [task-cache] 2026-09-24T11:06:23.106Z Workspace cache: 0 entries, 0.0 MB
+  [task-cache] 2026-09-24T11:06:23.106Z Shared cache (/home/runner/.cache/fshw/cache/tasks/fshw-hosted-watcher-05d3198ac2604ef6bfcdcd43fef3749f-82fe7109e0ba4e9b): 0 entries, 0.0 MB — shared plugins: analyzers, format-check, lint
+  [cache] 2026-09-24T11:06:23.106Z check-result cache: OFF — every scan re-asks FCS for every file ("cache": "memory" in .fshw.json enables it)
+  [test-prune] 2026-09-24T11:06:23.271Z detectChanges for Post.fsx (stored=Unknown, rows=NoRows, trust=EverySymbolIsNew, baseline=AgainstNothing): 2 changes, 0 diffed against, 2 current
+  [test-prune] 2026-09-24T11:06:23.272Z Changed symbols: 2 [Post; Post.n]
+  [test-prune] 2026-09-24T11:06:23.338Z freshness gate for Tests: 2 projects in closure, scanned in 6ms — /tmp/fshw-tp-stale-depcopy-65aebd91d0434366b4c3a4fa29881a29/Common/bin/Debug/net10.0/Common.dll has not been copied into the test output since it changed — /tmp/fshw-tp-stale-depcopy-65aebd91d0434366b4c3a4fa29881a29/Tests/bin/Debug/net10.0/Common.dll holds different bytes
+  [test-prune] 2026-09-24T11:06:23.378Z TestPrune DB was recreated (schema change) — cleared 0 FCS check-cache entries so every file re-indexes on this scan.
+  [test-prune] 2026-09-24T11:06:23.388Z Dependency fanout: none — 0 project fingerprint(s) computed, 0 project(s) in the graph, 0 prior fingerprint(s) to compare against
+  [test-prune] 2026-09-24T11:06:23.388Z BuildSucceeded: starting test run
+  [test-prune] 2026-09-24T11:06:23.400Z Scope: FULL SUITE (no valid full-suite baseline) — no full-suite run has been recorded on this ledger yet — a cold repository must earn one before an impact-filtered run can be green relative to it. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project.
+  [test-prune] 2026-09-24T11:06:23.401Z No affected classes, but the zero-affected skip is refused — no run has completed in this session yet (no baseline to be equivalent to); no full-suite run has been recorded on this ledger yet — a cold repository must earn one before an impact-filtered run can be green relative to it; running 1 force-run project(s)
+  [test-prune] 2026-09-24T11:06:23.401Z Selectivity: 1 project(s) selected, 1 of them UNFILTERED (whole-project), 0 class(es) named in total
+  [test-prune] 2026-09-24T11:06:23.401Z executeTests starting with 1 configs
+  [test-prune] 2026-09-24T11:06:23.417Z freshness gate for Unit: 1 projects in closure, scanned in 9ms — Unit was compiled at 09/24/2026 10:56:23 but its source /tmp/fshw-tp-stale-defer-f33593bf2fe44979bac69b3425ff6a92/Unit/Tests.fs was edited at 09/24/2026 11:06:23 — the build has not run since the edit
+  [test-prune] 2026-09-24T11:06:23.427Z Unit: stale build output — Unit was compiled at 09/24/2026 10:56:23 but its source /tmp/fshw-tp-stale-defer-f33593bf2fe44979bac69b3425ff6a92/Unit/Tests.fs was edited at 09/24/2026 11:06:23 — the build has not run since the edit; would run --no-build on stale code. Remedy: run `dotnet fshw rerun build` — the compile has not run since that edit, so there is nothing on disk to copy from, and `rerun` is what clears the cached build result that let the compile be skipped
+  [test-prune] 2026-09-24T11:06:23.427Z Unit: waiting on build (stale build output — Unit was compiled at 09/24/2026 10:56:23 but its source /tmp/fshw-tp-stale-defer-f33593bf2fe44979bac69b3425ff6a92/Unit/Tests.fs was edited at 09/24/2026 11:06:23 — the build has not run since the edit; would run --no-build on stale code. Remedy: run `dotnet fshw rerun build` — the compile has not run since that edit, so there is nothing on disk to copy from, and `rerun` is what clears the cached build result that let the compile be skipped)
+  [test-prune] 2026-09-24T11:06:23.428Z Tests complete: 1 projects, 0.0s
+  [test-prune] 2026-09-24T11:06:23.430Z   ↳ test evidence receipt revoked: the run executed no project to a verdict
+  [config] 2026-09-24T11:06:23.436Z checker: cacheSizeFactor=100
+  [task-cache] 2026-09-24T11:06:23.436Z Workspace cache: 0 entries, 0.0 MB
+  [task-cache] 2026-09-24T11:06:23.436Z Shared cache (/home/runner/.cache/fshw/cache/tasks/fshw-hosted-checker-950d5c8b145a4f2ebf99448cea29e165-aef96beb6e8263cf): 0 entries, 0.0 MB — shared plugins: analyzers, format-check, lint
+  [cache] 2026-09-24T11:06:23.436Z check-result cache: OFF — every scan re-asks FCS for every file ("cache": "memory" in .fshw.json enables it)
+  [config] 2026-09-24T11:06:23.714Z checker: cacheSizeFactor=100
+  [task-cache] 2026-09-24T11:06:23.715Z Workspace cache: 0 entries, 0.0 MB
+  [task-cache] 2026-09-24T11:06:23.715Z Shared cache (/home/runner/.cache/fshw/cache/tasks/fshw-hosted-checker-950d5c8b145a4f2ebf99448cea29e165-aef96beb6e8263cf): 0 entries, 0.0 MB — shared plugins: analyzers, format-check, lint
+  [cache] 2026-09-24T11:06:23.715Z check-result cache: OFF — every scan re-asks FCS for every file ("cache": "memory" in .fshw.json enables it)
+  [test-prune] 2026-09-24T11:06:23.766Z freshness gate for Tests: 2 projects in closure, scanned in 2ms — Common was compiled at 09/24/2026 10:06:23 but its source /tmp/fshw-tp-stale-inside-db0d38b0bcb840febc095053eaeb1472/Common/Common.fs was edited at 09/24/2026 10:36:23 — the build has not run since the edit
+  [check] 2026-09-24T11:06:23.768Z Failed to check /tmp/fshw-cache-admit-5cf7657de7e749048297429b0d3c2405/Lib.fs: Value cannot be null. (Parameter 'key')
+  [test-prune] 2026-09-24T11:06:23.872Z freshness gate for Tests: 2 projects in closure, scanned in 0ms — fresh
+  [test-prune] 2026-09-24T11:06:23.966Z freshness gate for Tests: 2 projects in closure, scanned in 0ms — fresh
+  [test-prune] 2026-09-24T11:06:23.976Z freshness gate for Tests: 2 projects in closure, scanned in 9ms — Common: cannot determine what this test run's inputs are (/tmp/fshw-tp-stale-unreadable-dep-bin-6f65add4b4f946d49b5ca90014af48f2/Common/bin/Debug could not be read (Access to the path '/tmp/fshw-tp-stale-unreadable-dep-bin-6f65add4b4f946d49b5ca90014af48f2/Common/bin/Debug' is denied.) — its contents were never seen) — refusing to call it fresh; build it and let the build report the error
+  [test-prune] 2026-09-24T11:06:23.994Z freshness gate for Tests: 2 projects in closure, scanned in 4ms — fresh
+  [test-prune] 2026-09-24T11:06:23.996Z freshness gate for Tests: 2 projects in closure, scanned in 0ms — /tmp/fshw-tp-stale-empty-tfmdir-73fdbe03b563435e86c9f6bf89859ca8/Common/Fixtures/data.json has not been copied into the test output since it changed — /tmp/fshw-tp-stale-empty-tfmdir-73fdbe03b563435e86c9f6bf89859ca8/Tests/bin/Debug/net10.0/Fixtures/data.json holds different bytes
+  [cache] 2026-09-24T11:06:24.168Z check-result cache: maxEntries 3 is below the 10 files it caches. A scan visits every file in the same order, so each entry is evicted just before it is needed again: expect ~0 hits, not a partial win. Set cache.maxEntries to "all", or narrow cache.include/cache.exclude to what you are working on.
+  [process-registry] 2026-09-24T11:08:00.019Z spawned pid 9488 with no registry in scope — it cannot be reaped on shutdown and will be orphaned
+  [test-prune] 2026-09-24T11:08:09.292Z   ↳ test evidence receipt revoked: the input tree could not be READ at completion, so there was nothing to compare the launch binding against. This is a defect in the walk, not a change to the tree
+  [test-prune] 2026-09-24T11:08:09.292Z Full-suite baseline recorded: run e8940e6a2c89497c91d5311a8217a716 accounted for every configured project (1); impact-filtered greens are now relative to it
+[31mfailed[m FsHotWatch.Tests.TestPrunePluginTests.full run (no filter) produces TestResult with WasFiltered = false [90m(10s 112ms)[m
+[31m  Xunit.MicrosoftTestingPlatform.XunitException: Swensen.Unquote.AssertionFailedException : Test failed:
+  
+  completed.Length >= 1
+  [].Length >= 1
+  0 >= 1
+  false
+  
+[m[90m    at Swensen.Unquote.Assertions.test(FSharpExpr`1 expr)
+    at FsHotWatch.Tests.TestPrunePluginTests.full run (no filter) produces TestResult with WasFiltered = false@3317.Invoke(String tmpDir) in /home/runner/work/FsHotWatch/FsHotWatch/tests/FsHotWatch.Tests/TestPrunePluginTests.fs:3342[90m
+    at FsHotWatch.Tests.TestHelpers.withTempDir[a](String prefix, FSharpFunc`2 body) in /home/runner/work/FsHotWatch/FsHotWatch/tests/FsHotWatch.Tests/TestHelpers.fs:505[90m
+    at FsHotWatch.Tests.TestPrunePluginTests.full run (no filter) produces TestResult with WasFiltered = false() in /home/runner/work/FsHotWatch/FsHotWatch/tests/FsHotWatch.Tests/TestPrunePluginTests.fs:3317[90m
+    at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+    at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+fshw host: no such file or directory: /definitely/not/here
+
+  In process file artifacts produced:
+    - /home/runner/work/FsHotWatch/FsHotWatch/.fshw/test-runs/d77c33a4c377425da7eb70413c8bb369/FsHotWatch.Tests.ctrf.json
+    - /home/runner/work/FsHotWatch/FsHotWatch/coverage/FsHotWatch.Tests/coverage.baseline.cobertura.xml
+
+[31mTest run summary: Failed![90m - [m/home/runner/work/FsHotWatch/FsHotWatch/tests/FsHotWatch.Tests/bin/Debug/net10.0/FsHotWatch.Tests.dll (net10.0|x64)
+[m  total: 4352
+[31m  failed: 1
+[m  succeeded: 4341
+  skipped: 10
+  duration: 4m 57s 272ms

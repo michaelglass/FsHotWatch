@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Byte-exact console captures of real MTP runs, for the output parsers. -->
+    <Content Include="MtpOutput/*.output.log" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

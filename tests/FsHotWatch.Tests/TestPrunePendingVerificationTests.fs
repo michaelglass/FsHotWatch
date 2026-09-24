@@ -944,6 +944,9 @@ open FsHotWatch.ProcessHelper
 let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
     FsHotWatch.RunLog.Ref.Unavailable "fixture: no run log"
 
+/// No project wrote a CTRF report in this test.
+let private noReport (_: string) : string list = []
+
 
 /// A report that passed `Ctrf.tryVerdictReport`, built the only way one can be: from CTRF
 /// whose clean summary is accounted for by its rows. A red summary carries no rows, as a
@@ -1242,7 +1245,8 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
         { Results = Map.ofList [ "ProjA", TestsErrored "test host was KILLED by SIGKILL (exit 137)" ]
           Elapsed = TimeSpan.Zero }
 
-    let entry = (failuresOf noRunLog Map.empty aborted |> List.exactlyOne).Entry
+    let entry =
+        (failuresOf noRunLog noReport Map.empty aborted |> List.exactlyOne).Entry
 
     test <@ entry.Severity = FsHotWatch.ErrorLedger.HostAborted @>
     test <@ FsHotWatch.ErrorLedger.ErrorEntry.isRunnerAbort entry @>
@@ -1259,7 +1263,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
         { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let realFailures = failuresOf noRunLog Map.empty failed
+    let realFailures = failuresOf noRunLog noReport Map.empty failed
     test <@ not realFailures.IsEmpty @>
 
     test

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: a red run names its failing tests when the runner coloured its console. MTP
+  prints `ESC[31mfailed ESC[m <name> ESC[90m(10s 112ms)ESC[m` on a terminal-aware host;
+  `parseFailedTests` and the daemon-log failure report matched the bytes, saw no
+  `failed ` and reported a completed run with one assertion failure as "no per-test
+  'failed' line was parsed", quoting the daemon banner as if the run had been killed.
+  Both now read the line with its colour removed (`ConsoleText.stripAnsi`), so the
+  coloured, `(canceled)` and multi-unit-duration shapes all name the test. A
+  `failed (canceled) <name>` red was also filed under the class `(canceled) <Class>`,
+  which no passing row could ever retire; it is now filed under the class.
+- fix: when the console names no failing test, `failuresOf` names them from the CTRF
+  report the run wrote beside its output log (`failedRowsOfReport`), so `reddenedBy`
+  carries the test, not the project. The "run's output begins…" head is quoted only
+  for a run that never printed its summary — killed, wedged or refused; a run that
+  completed quotes the runner's summary instead. The daemon-log report's summary lines
+  are matched by their leading word, so a log line that merely contains `failed:` no
+  longer joins them.
+
 ## 0.13.0-alpha.45 - 2026-09-24
 
 - feat: `ImpactDbPool` clears the pooled SQLite connections of one test-impact

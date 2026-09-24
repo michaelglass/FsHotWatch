@@ -4,6 +4,16 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### test-prune: a red run names its test even when the runner coloured the line
+
+- **`reddenedBy` names the failing test of a coloured MTP run.** A CI `confirm` in which
+  one test failed an assertion and the run completed was reported as `run failed but no
+  per-test 'failed' line was parsed`, framed as a killed or wedged run, because the runner
+  had printed `ESC[31mfailed ESC[m <name>` and the matcher read the escape, not the word.
+  The console line is now read with its colour removed; when it still names nothing, the
+  CTRF report the run wrote beside its output log names the tests; and the "output
+  begins…" head is quoted only for a run that never reached its summary.
+
 ### core, cli: a configured command can rewrite files before the build sees them
 
 - **`preprocessors` in `.fshw.json`** — commands that rewrite files in place *before*
