@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `Daemon.Run`, `Daemon.RunWith` and a child process scope started on the
+  caller's thread (`Async.StartImmediate`) no longer leave their process registry in
+  the caller's context once they first wait. The caller's spawns stay the caller's,
+  and are not refused after the daemon or scope has shut down.
+
 ## 0.10.0-alpha.45 - 2026-09-24
 
 - fix: a repository host's session serves its RPCs in the session's context: its

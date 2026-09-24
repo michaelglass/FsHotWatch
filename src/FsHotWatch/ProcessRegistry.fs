@@ -277,6 +277,47 @@ let private currentOpt () =
     let r = currentRegistry.Value
     if isNull (box r) then None else Some r
 
+/// Run `work` with `r` current, in a context of its own: the caller's is left as it
+/// was, and what follows `work` in the caller runs in the caller's context again.
+///
+/// `use _ = install r` inside an `async` is not enough. Started on the caller's thread
+/// (`Async.StartImmediate`, `Async.RunSynchronously`), the async sets `r` in the
+/// caller's context and hands the thread back at its first wait, still set; its
+/// restore runs later, in a continuation's context, never the caller's. So the caller
+/// would go on spawning into `r`, and be refused once `r` has shut down.
+let internal withRegistryAsync (r: Registry) (work: Async<'T>) : Async<'T> =
+    async {
+        let! ct = Async.CancellationToken
+
+        return!
+            Async.FromContinuations(fun (ok, error, cancelled) ->
+                match ExecutionContext.Capture() with
+                | null ->
+                    // Flow is suppressed, so nothing `work` waits on carries a context:
+                    // `r` is current until its first wait, and the caller's is restored.
+                    let prior = currentRegistry.Value
+                    currentRegistry.Value <- r
+
+                    try
+                        Async.StartWithContinuations(work, ok, error, cancelled, ct)
+                    finally
+                        currentRegistry.Value <- prior
+                | caller ->
+                    let inCaller (k: 'a -> unit) =
+                        fun (value: 'a) -> ExecutionContext.Run(caller, ContextCallback(fun _ -> k value), null)
+
+                    // `Run` gives the callback its own copy of the caller's context and
+                    // restores the caller's when the work first waits; the work's
+                    // continuations carry the copy.
+                    ExecutionContext.Run(
+                        caller,
+                        ContextCallback(fun _ ->
+                            currentRegistry.Value <- r
+                            Async.StartWithContinuations(work, inCaller ok, inCaller error, inCaller cancelled, ct)),
+                        null
+                    ))
+    }
+
 /// Refuse a launch BEFORE it has side effects when the current scope has shut down.
 /// Admission checks again after the spawn, which closes the race with a shutdown
 /// landing between this check and the spawn.
@@ -413,19 +454,20 @@ let internal withChildScope (ct: CancellationToken) (work: unit -> 'T) : 'T =
 let internal withChildScopeAsync (ct: CancellationToken) (work: Async<'T>) : Async<'T> =
     async {
         let scope = Registry(currentOpt ())
-        use _ = install scope
         let cancellation = ct.Register(fun () -> scope.KillAll())
 
         let! result =
-            async {
-                try
-                    return! work
-                finally
+            withRegistryAsync
+                scope
+                (async {
                     try
-                        scope.KillAll()
+                        return! work
                     finally
-                        cancellation.Dispose()
-            }
+                        try
+                            scope.KillAll()
+                        finally
+                            cancellation.Dispose()
+                })
 
         match uncertainRetirement scope.Leaks with
         | None -> return result
