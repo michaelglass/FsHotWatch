@@ -313,18 +313,10 @@ module QueuedResult =
 /// minutes long is the one whose queued result nobody can see from the outside.
 let SlowFoldThreshold = TimeSpan.FromSeconds 30.0
 
-/// The name of an event as a slow-fold line reports it.
+/// The name of an event as a slow-fold line reports it: its union case's name, so a
+/// new case is named without a change here.
 let eventKind (event: PluginEvent<'Msg>) : string =
-    match event with
-    | FileChanged _ -> "FileChanged"
-    | FileChecked _ -> "FileChecked"
-    | BatchChecked _ -> "BatchChecked"
-    | BuildCompleted _ -> "BuildCompleted"
-    | TestRunStarted _ -> "TestRunStarted"
-    | TestProgress _ -> "TestProgress"
-    | TestRunCompleted _ -> "TestRunCompleted"
-    | CommandCompleted _ -> "CommandCompleted"
-    | Custom _ -> "Custom"
+    (fst (Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(event, typeof<PluginEvent<'Msg>>))).Name
 
 /// The slow-fold line: what was folded, how long it took, and what waited behind it —
 /// the queued events, and the finished runs' results among them.

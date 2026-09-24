@@ -117,3 +117,4 @@ let ``a slow fold's line names the event, its duration, and what waited behind i
     test <@ slowFoldLine "Custom" (TimeSpan.FromSeconds 31.0) 0 [] = "Custom fold took 31s; nothing queued behind it" @>
     test <@ eventKind (FileChanged SolutionChanged) = "FileChanged" @>
     test <@ eventKind (Custom Finished) = "Custom" @>
+    test <@ eventKind (FileChanged(SourceChanged [ "a.fs" ])) = "FileChanged" @>
