@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- docs: `RouteStore` can be built over `TestPrune.Ports.pluginStoreAt dbPath` when the
+  process only seeds or reads routes and never opens the core index, so route seeding no
+  longer depends on the seeding process and the indexing process agreeing on core's
+  schema version. No code change: `RouteStore` already took any `PluginStore`.
+
 ## 3.1.5 - 2026-09-23
 
 - docs: reword private downstream-repo references and a scrubbed coverage reason

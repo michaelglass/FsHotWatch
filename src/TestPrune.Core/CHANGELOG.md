@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- fix!: `Database.create` refuses a database whose `user_version` is newer than its own
+  `SchemaVersion`, raising `SchemaNewerThanConsumerException` (public: `dbPath`,
+  `foundVersion`, `supportedVersion`) before any DDL runs and leaving the file untouched,
+  rows and version marker included. It used to treat such a file as forward-compatible
+  and run its own DDL against it, which holds only while the newer schema is a superset
+  of the older one: schema v14 moved `symbols.source_file` into `symbol_occurrences`, so
+  every consumer on v13 opening a v14 index died inside its own
+  `CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file)` with
+  `SQLite Error 1: no such column: source_file`. The message names both schema versions,
+  the TestPrune.Core version in use and the CHANGELOG entry that introduced the newer
+  schema. An older file is still deleted and recreated, as before. BREAKING CHANGE: a
+  consumer linking an older TestPrune.Core than the one that wrote the index now fails to
+  open it instead of proceeding; upgrade the consumer, or reach a plugin table through
+  `Ports.pluginStoreAt` (below), which needs no core schema at all.
+
+- feat: `Ports.pluginStoreAt dbPath` and `Database.openPluginConnection dbPath` open the
+  cache file for a plugin's own table with no schema-version check, no core DDL and no
+  version stamp, creating the file when it is absent. A process that only seeds or reads
+  its plugin table (`TestPrune.Falco.RouteStore(pluginStoreAt dbPath)`) therefore opens a
+  database of any core schema version, including one newer than the TestPrune.Core it
+  links. `Ports.toPluginStore db` is unchanged for a process that already holds the
+  `Database`.
+
 ## 11.0.0 - 2026-09-23
 
 - fix!: `RebuildProjects` and `InMemoryStore.fromAnalysisResults` reject an

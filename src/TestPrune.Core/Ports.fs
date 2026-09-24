@@ -67,8 +67,10 @@ let toSymbolStore (db: Database) : SymbolStore =
 /// The contract, in both directions:
 ///
 /// * Core owns the FILE. Opening it (`Database.create`) checks `PRAGMA user_version` and,
-///   on a `SchemaVersion` mismatch, DELETES and recreates it — dropping every plugin table
-///   with it, because core cannot migrate a table it knows nothing about.
+///   on a file OLDER than its `SchemaVersion`, DELETES and recreates it — dropping every
+///   plugin table with it, because core cannot migrate a table it knows nothing about. A
+///   file NEWER than its `SchemaVersion` it refuses to open at all; `pluginStoreAt` is
+///   how a plugin-only process reaches its table regardless.
 /// * A plugin therefore owns its tables but may never ASSUME they exist. Run idempotent
 ///   `CREATE TABLE IF NOT EXISTS` DDL before every read and write, and store only what can
 ///   be re-derived (Falco re-seeds its routes each run) — never the sole copy of anything.
@@ -85,6 +87,18 @@ type PluginStore =
 /// already run by the time a plugin gets a connection, so a plugin table created through
 /// this store cannot be silently dropped a moment later by core's own open path.
 let toPluginStore (db: Database) : PluginStore = { OpenConnection = db.OpenConnection }
+
+/// Create a PluginStore over the cache file at `dbPath` without opening it as a `Database`:
+/// no schema-version check, no core DDL, no version stamp. For a process that only seeds
+/// or reads its plugin table (TestPrune.Falco's route seeding) and never touches core's
+/// tables, so core schema skew between that process and the one that indexes is not its
+/// concern: it opens a file of any core schema version, including one newer than the
+/// TestPrune.Core it links, which `Database.create` refuses. The plugin contract above is
+/// unchanged, and it is what makes this safe: the table is created `IF NOT EXISTS` before
+/// every use and holds nothing that cannot be re-seeded, because core still deletes the
+/// file on its own next `SchemaVersion` bump.
+let pluginStoreAt (dbPath: string) : PluginStore =
+    { OpenConnection = fun () -> openPluginConnection dbPath }
 
 let toSymbolSink (db: Database) : SymbolSink =
     { RebuildProjects =

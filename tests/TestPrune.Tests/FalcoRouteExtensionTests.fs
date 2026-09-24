@@ -32,6 +32,49 @@ let private withRouteStore (f: string -> Database -> RouteStore -> unit) =
     finally
         cleanupDir tempDir
 
+/// Route seeding is the one thing a consumer does with this store that has no stake in
+/// core's schema. Seeding through `pluginStoreAt` therefore works on a database whose
+/// core schema is newer than the TestPrune.Core this process links, where `Database.create`
+/// would refuse to open it at all.
+module ``RouteStore over pluginStoreAt`` =
+
+    [<Fact>]
+    let ``seeds and reads routes in a database of a newer core schema`` () =
+        let tempDir = createTempDir ()
+
+        try
+            let dbPath = Path.Combine(tempDir, "test.db")
+
+            do
+                use conn = new SqliteConnection($"Data Source=%s{dbPath}")
+                conn.Open()
+                use cmd = conn.CreateCommand()
+                cmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion + 1};"
+                cmd.ExecuteNonQuery() |> ignore
+                conn.Close()
+                SqliteConnection.ClearPool(conn)
+
+            Assert.Throws<SchemaNewerThanConsumerException>(fun () -> Database.create dbPath |> ignore)
+            |> ignore
+
+            let entry =
+                { UrlPattern = "/health"
+                  HttpMethod = "GET"
+                  HandlerSourceFile = "src/Health.fs"
+                  HandlerFunction = Some "Health.get" }
+
+            RouteStore(pluginStoreAt dbPath).Rebuild([ entry ])
+
+            test <@ RouteStore(pluginStoreAt dbPath).GetAll() = [ entry ] @>
+
+            use conn = new SqliteConnection($"Data Source=%s{dbPath}")
+            conn.Open()
+            use v = conn.CreateCommand()
+            v.CommandText <- "PRAGMA user_version;"
+            test <@ v.ExecuteScalar() :?> int64 = int64 (SchemaVersion + 1) @>
+        finally
+            cleanupDir tempDir
+
 /// As `withTestSetup`, but also writes non-test app source files under `<repo>/src` so the
 /// extension can read them: a Falco.UnionRoutes route DU (case→URL derivation) or a module of
 /// named URL constants (`let settingsUrl = "/settings"`). `appSourceFiles` is empty for the
