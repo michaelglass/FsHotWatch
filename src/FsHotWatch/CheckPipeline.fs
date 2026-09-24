@@ -124,7 +124,11 @@ type CheckPipeline
         match cacheBackend with
         | Some(:? IScopedCheckCache as scoped) ->
             projectOptionsByProject
-            |> Seq.map (fun kv -> kv.Value.ProjectFileName, kv.Value.SourceFiles.Length)
+            |> Seq.map (fun kv ->
+                kv.Value.ProjectFileName,
+                kv.Value.SourceFiles
+                |> Array.filter (not << PathFilter.isGeneratedPath)
+                |> Array.length)
             |> Seq.toList
             |> scoped.ObserveWorkingSet
         | _ -> ()
@@ -210,8 +214,15 @@ type CheckPipeline
             | _ -> ()
         | None -> ()
 
-    /// Register project options for a project. Maps each source file to this project's options.
-    /// Filters out generated files in obj/ and bin/ directories that should not be checked.
+    /// Register project options for a project. Maps each of its checkable source files
+    /// to these options; the generated files in obj/ and bin/ are compiled but never
+    /// checked on their own, so they are not mapped.
+    ///
+    /// The options themselves are kept whole. The checker sees a project with the same
+    /// source files whether one of its own files is being checked or a project
+    /// downstream of it is (which reaches it through `ReferencedProjects`, unfiltered).
+    /// Two source lists for one project would be two versions of every type-check the
+    /// checker caches for it, and computing either demotes the other.
     ///
     /// Re-registering a project REPLACES its compile-item set: a file the prior options
     /// listed and these do not stops mapping to this project, and stops being registered at
@@ -219,15 +230,14 @@ type CheckPipeline
     /// from the project survived in the per-file map with the project's OLD options, and
     /// every later check and scan of the registered set kept reaching for it.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
-        let filteredOptions =
-            { options with
-                SourceFiles =
-                    options.SourceFiles
-                    |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
+        let checkable (o: FSharpProjectOptions) =
+            o.SourceFiles
+            |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f))
+            |> Set.ofArray
 
         let removedFiles =
             match projectOptionsByProject.TryGetValue(projectPath) with
-            | true, prior -> Set.difference (Set.ofArray prior.SourceFiles) (Set.ofArray filteredOptions.SourceFiles)
+            | true, prior -> Set.difference (checkable prior) (checkable options)
             | false, _ -> Set.empty
 
         for removed in removedFiles do
@@ -235,34 +245,28 @@ type CheckPipeline
 
             match projectOptionsByFile.TryGetValue(key) with
             | true, existing ->
-                match
-                    existing
-                    |> List.filter (fun o -> o.ProjectFileName <> filteredOptions.ProjectFileName)
-                with
+                match existing |> List.filter (fun o -> o.ProjectFileName <> options.ProjectFileName) with
                 | [] -> projectOptionsByFile.TryRemove(key) |> ignore
                 | remaining -> projectOptionsByFile[key] <- remaining
             | false, _ -> ()
 
-        projectOptionsByProject[projectPath] <- filteredOptions
-        projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot filteredOptions
+        projectOptionsByProject[projectPath] <- options
+        projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot options
 
-        for sourceFile in filteredOptions.SourceFiles do
+        for sourceFile in checkable options do
             projectOptionsByFile.AddOrUpdate(
                 AbsFilePath.create sourceFile,
-                [ filteredOptions ],
+                [ options ],
                 fun _ existing ->
-                    if
-                        existing
-                        |> List.exists (fun o -> o.ProjectFileName = filteredOptions.ProjectFileName)
-                    then
+                    if existing |> List.exists (fun o -> o.ProjectFileName = options.ProjectFileName) then
                         existing
                         |> List.map (fun o ->
-                            if o.ProjectFileName = filteredOptions.ProjectFileName then
-                                filteredOptions
+                            if o.ProjectFileName = options.ProjectFileName then
+                                options
                             else
                                 o)
                     else
-                        filteredOptions :: existing
+                        options :: existing
             )
             |> ignore
 
@@ -499,7 +503,7 @@ type CheckPipeline
                 let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
                 try
-                    for sourceFile in options.SourceFiles do
+                    for sourceFile in options.SourceFiles |> Array.filter (not << PathFilter.isGeneratedPath) do
                         let! result = this.CheckFile(AbsFilePath.create sourceFile, ?ct = ct)
 
                         match result with

@@ -10,6 +10,13 @@
   The same holds across a project or solution change that makes the daemon
   rediscover every project.
 
+- A project's own files are checked with the code generated into its obj/ directory,
+  as `dotnet build` compiles them, so a file that uses generated code is no longer
+  reported as referring to something undefined. A project that others depend on is
+  also no longer type-checked twice, once for its own files and once for its
+  dependents. The first check after upgrading re-checks each project once, because
+  the check-result cache's keys change.
+
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).
 

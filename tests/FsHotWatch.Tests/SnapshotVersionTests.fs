@@ -488,6 +488,155 @@ let ``a rediscovery's superseded generation is released by a collection`` () =
     supersededImportsAreCollected (fun tree ->
         FsHotWatch.Daemon.Daemon.dropForRediscovery tree.Checker [ tree.AOptions; tree.BOptions ])
 
+/// Project R, whose compile items begin with two files MSBuild-style tooling writes
+/// under obj/ (assembly attributes granting D its internals, and generated code R's
+/// own c.fs uses), and project D, which references R in memory: R has no output on
+/// disk, so the checker type-checks R's sources for D.
+type private GeneratedTree =
+    { Checker: FSharpChecker
+      Pipeline: CheckPipeline
+      RProject: string
+      RB: string
+      RC: string
+      DX: string }
+
+let private makeGeneratedTree (dir: string) =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+    let rDir = Path.Combine(dir, "R")
+    let dDir = Path.Combine(dir, "D")
+    let generated = Path.Combine(rDir, "obj", "Debug", "net10.0")
+    Directory.CreateDirectory generated |> ignore
+    Directory.CreateDirectory dDir |> ignore
+
+    write
+        generated
+        "R.AssemblyInfo.fs"
+        [| "namespace FSharp"
+           "[<assembly: System.Runtime.CompilerServices.InternalsVisibleTo(\"D\")>]"
+           "do ()" |]
+
+    write generated "R.Generated.fs" [| "module R.Generated"; "let answer = 42" |]
+    write rDir "a.fs" [| "module R.A"; "type T = { X: int }"; "let internal secret = 1" |]
+    write rDir "b.fs" [| "module R.B"; "let f (t: R.A.T) : R.A.T = { t with X = t.X + 1 }" |]
+    write rDir "c.fs" [| "module R.C"; "let g : R.A.T = R.B.f { R.A.X = R.Generated.answer }" |]
+    write dDir "x.fs" [| "module D.X"; "let y : R.A.T = R.B.f { R.A.X = R.A.secret }" |]
+    write dir "Base.fsx" [| "let placeholder = 0" |]
+
+    let baseOptions, _ =
+        let script = Path.Combine(dir, "Base.fsx")
+
+        checker.GetProjectOptionsFromScript(
+            script,
+            SourceText.ofString (File.ReadAllText script),
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+
+    let frameworkOptions =
+        baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
+
+    let rOutput = Path.Combine(rDir, "bin", "R.dll")
+
+    let project (projectFile: string) (output: string) (files: string list) refs =
+        { baseOptions with
+            ProjectFileName = projectFile
+            SourceFiles = Array.ofList files
+            OtherOptions =
+                Array.concat
+                    [ frameworkOptions
+                      [| $"-o:%s{output}"; "-a" |]
+                      [| for out, _ in refs -> $"-r:%s{out}" |] ]
+            ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
+            UseScriptResolutionRules = false
+            ProjectId = None
+            Stamp = None }
+
+    let rProject = Path.Combine(rDir, "R.fsproj")
+
+    let r =
+        project
+            rProject
+            rOutput
+            [ Path.Combine(generated, "R.AssemblyInfo.fs")
+              Path.Combine(generated, "R.Generated.fs")
+              Path.Combine(rDir, "a.fs")
+              Path.Combine(rDir, "b.fs")
+              Path.Combine(rDir, "c.fs") ]
+            []
+
+    let d =
+        project
+            (Path.Combine(dDir, "D.fsproj"))
+            (Path.Combine(dDir, "bin", "D.dll"))
+            [ Path.Combine(dDir, "x.fs") ]
+            [ rOutput, r ]
+
+    let pipeline = CheckPipeline(checker, repoRoot = dir)
+    pipeline.RegisterProject(r.ProjectFileName, r)
+    pipeline.RegisterProject(d.ProjectFileName, d)
+
+    { Checker = checker
+      Pipeline = pipeline
+      RProject = rProject
+      RB = Path.Combine(rDir, "b.fs")
+      RC = Path.Combine(rDir, "c.fs")
+      DX = Path.Combine(dDir, "x.fs") }
+
+/// The errors the pipeline's check of `path` reports. Only the messages leave, so the
+/// check's results are not kept alive by the caller.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private errorsOf (tree: GeneratedTree) (path: string) =
+    match tree.Pipeline.CheckFile(AbsFilePath.create path) |> Async.RunSynchronously with
+    | Some { CheckResults = FullCheck r } ->
+        r.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d -> d.Message)
+    | other -> failwith $"expected a full check of %s{path}, got %A{other}"
+
+[<Fact(Timeout = 120000)>]
+let ``a project's own check sees the source files generated under obj`` () =
+    withTempDir "snapshot-generated-own" (fun dir ->
+        let tree = makeGeneratedTree dir
+        let errors = errorsOf tree tree.RC
+        test <@ Array.isEmpty errors @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a project checked for a downstream one is not type-checked again for its own files`` () =
+    withTempDir "snapshot-generated-roles" (fun dir ->
+        let tree = makeGeneratedTree dir
+        let started = Collections.Concurrent.ConcurrentQueue<string>()
+
+        FcsCacheProbe.onJobEvent tree.Checker "TcIntermediate" (fun jobEvent label ->
+            if jobEvent = "Started" then
+                started.Enqueue label)
+
+        let ofR (label: string) =
+            label.EndsWith($"(%s{FcsCacheProbe.projectLabel tree.RProject})", StringComparison.Ordinal)
+
+        let drainR () =
+            let labels = Collections.Generic.List<string>()
+            let mutable label: string = null
+
+            while started.TryDequeue(&label) do
+                if ofR label then
+                    labels.Add label
+
+            labels |> Seq.toList
+
+        errorsOf tree tree.RB |> ignore
+        // Positive control: the observation sees R's files being type-checked.
+        test <@ not (List.isEmpty (drainR ())) @>
+
+        // D reaches R through its references, and uses what R's generated
+        // attributes grant it.
+        let errorsOfD = errorsOf tree tree.DX
+        test <@ Array.isEmpty errorsOfD @>
+        drainR () |> ignore
+
+        errorsOf tree tree.RC |> ignore
+        let restarted = drainR ()
+        test <@ List.isEmpty restarted @>)
+
 [<Fact(Timeout = 120000)>]
 let ``two checkouts with identical content get identical snapshot versions`` () =
     withTempDir "snapshot-checkout-1" (fun dir1 ->

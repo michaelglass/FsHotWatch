@@ -198,7 +198,7 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
 [<Fact(Timeout = 15000)>]
-let ``RegisterProject excludes obj and bin files from registration`` () =
+let ``RegisterProject registers no obj or bin file, and keeps the project whole`` () =
     let pipeline = CheckPipeline(nullChecker)
 
     let options =
@@ -216,6 +216,8 @@ let ``RegisterProject excludes obj and bin files from registration`` () =
     test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Real.fs") @>
     test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Another.fs") @>
     test <@ registered |> List.length = 2 @>
+    // The project is kept whole: the checker compiles the generated files with it.
+    test <@ pipeline.GetProjectOptions "/tmp/MyProject.fsproj" = Some options @>
 
 [<Fact(Timeout = 15000)>]
 let ``CheckFile returns None when token is cancelled`` () =

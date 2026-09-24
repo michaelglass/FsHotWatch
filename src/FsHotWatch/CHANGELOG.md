@@ -60,9 +60,24 @@
   and removes nothing. FCS keeps one version of each cache entry strongly (per
   project, and per file of a project), so each entry the new generation computes
   demotes the previous generation's version to a weak reference, and the next
-  collection releases it. No full collection is forced on rediscovery. `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and
-  a source guard refuses `InvalidateAll`, `ClearCaches`, `InvalidateConfiguration`
-  and `ClearLanguageServiceRootCaches*` anywhere in `src/`.
+  collection releases it. No full collection is forced on rediscovery.
+  `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and a source guard
+  refuses `InvalidateAll`, `ClearCaches`, `InvalidateConfiguration` and
+  `ClearLanguageServiceRootCaches*` anywhere in `src/`.
+- fix: a project is type-checked with one source list, whether one of its own files
+  is being checked or a project downstream of it is. `CheckPipeline.RegisterProject`
+  stored each project's options with the files generated under obj/ and bin/ removed,
+  while downstream projects reached it through their unfiltered `ReferencedProjects`.
+  The checker keys its per-project and per-file caches by project, so the two source
+  lists were two versions of every entry. Checking a downstream project demoted the
+  project's own warm type-checks, and the project's own check was then type-checked
+  again. (Both lists share one set of imports, which FCS keys without the source
+  files, so this was CPU, not retained memory.) The
+  project's own check also missed code generated into obj/ that its files use, and
+  reported it as not defined. `RegisterProject` now keeps the options whole and only
+  leaves the generated files unregistered, so they are still never checked on their
+  own. The check-result cache's options hash changes with the source list, so each
+  project's cached check results are recomputed once after upgrading.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 
