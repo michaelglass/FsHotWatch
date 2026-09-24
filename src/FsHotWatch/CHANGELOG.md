@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fix: the check cache no longer serves a result typed against a referenced project's
+  old build output. The compiler types a file against a referenced F# project's output
+  whenever that output is at a real path and at least as new as the project's
+  sources. A rebuild that changed the output and not the sources (sources restored
+  with their old timestamps, then rebuilt) served the old diagnostics. Each entry now
+  records the bytes of every real-path project output its check referenced, and is
+  served only while each output still holds them. A mismatch re-checks. Outputs under
+  a virtual root are typed from their sources, so they are not recorded, and framed
+  worktrees whose builds differ in bytes still share entries.
+
 - Fix: a project reference at a real path is stamped by its output assembly's bytes
   again, in per-worktree daemons and for unframed host projects. A reference to a
   framed project, under the virtual root, keeps its upstream's closure as its stamp:

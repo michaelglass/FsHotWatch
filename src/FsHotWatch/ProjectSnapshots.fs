@@ -150,18 +150,22 @@ let private referenceOnDisk (hashFile: string -> string) (repoRoot: string optio
 
     { Path = path; LastModified = stamp }
 
-/// A snapshot, and the frame its project was checked under.
+/// A snapshot, the frame its project was checked under, and the real-path project
+/// outputs anywhere in its reference tree: the ones FCS may type against, since it
+/// reads such an output whenever it is at least as new as its project's sources.
 [<NoComparison; NoEquality>]
 type Framed =
     { Snapshot: FSharpProjectSnapshot
-      Frame: PathFrame.PathFrame option }
+      Frame: PathFrame.PathFrame option
+      RealProjectOutputs: string list }
 
 /// A project's snapshot, the frame it was built under, and its closure hash.
 [<NoComparison; NoEquality>]
 type private Built =
     { Snapshot: FSharpProjectSnapshot
       Frame: PathFrame.PathFrame option
-      Closure: string }
+      Closure: string
+      RealProjectOutputs: string list }
 
 /// The snapshot for checking `openFile` in `options`, with content versions, each
 /// project under the frame `choose` gives it. `generation` is the generation each
@@ -216,6 +220,16 @@ let buildFramed
                 referenced
                 |> List.choose (fun (output, upstream) -> upstream |> Option.map (fun u -> output, snd u))
                 |> Map.ofList
+
+            // A framed upstream's references are framed too, so its tree has none.
+            let realProjectOutputs =
+                referenced
+                |> List.collect (fun (_, upstream) ->
+                    match upstream with
+                    | Some(output, ({ Frame = None } as u)) -> output :: u.RealProjectOutputs
+                    | Some _
+                    | None -> [])
+                |> List.distinct
 
             let references, otherOptions =
                 opts.OtherOptions
@@ -352,7 +366,8 @@ let buildFramed
             let b =
                 { Snapshot = snapshot
                   Frame = frame
-                  Closure = closure }
+                  Closure = closure
+                  RealProjectOutputs = realProjectOutputs }
 
             built[opts] <- b
             b
@@ -360,7 +375,8 @@ let buildFramed
     let top = snapshotOf options
 
     { Snapshot = top.Snapshot
-      Frame = top.Frame }
+      Frame = top.Frame
+      RealProjectOutputs = top.RealProjectOutputs }
 
 /// The snapshot for checking `openFile` in `options`, every project at its own paths.
 let build

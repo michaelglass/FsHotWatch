@@ -17,13 +17,29 @@ let sha256Hex (content: string) : string =
 let hashCacheKey (key: CacheKey) : string =
     sha256Hex $"%s{ContentHash.value key.FileHash}||%s{ContentHash.value key.ProjectOptionsHash}"
 
+/// A check-cache entry: the result, and what it was typed against beyond its key.
+///
+/// The key names sources and options, and cannot name a referenced project's output:
+/// whether FCS types against that output or the project's sources depends on the
+/// output's frame, decided only when the snapshot is built. So the entry records the
+/// bytes of every real-path project output its check referenced, and is served only
+/// while each still holds them.
+[<NoComparison>]
+type CachedCheck =
+    {
+        Result: FileCheckResult
+        /// Each real-path project output the check referenced, repository-relative, with
+        /// its content hash when the check ran. Empty when it referenced none.
+        ProjectOutputs: (string * string) list
+    }
+
 /// Backend interface for storing/retrieving cached results
 type ICheckCacheBackend =
-    /// Retrieve a cached result if it exists
-    abstract member TryGet: key: CacheKey -> FileCheckResult option
+    /// Retrieve a cached entry if it exists
+    abstract member TryGet: key: CacheKey -> CachedCheck option
 
-    /// Store a check result in the cache
-    abstract member Set: key: CacheKey -> result: FileCheckResult -> unit
+    /// Store a check-cache entry
+    abstract member Set: key: CacheKey -> entry: CachedCheck -> unit
 
     /// Invalidate a specific cache entry
     abstract member Invalidate: key: CacheKey -> unit

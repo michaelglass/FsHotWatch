@@ -180,15 +180,18 @@ let ``makeCacheKey produces different keys for different files`` () =
 
 // --- InMemoryCheckCache tests ---
 
-let private makeTestResult (file: string) (version: int64) : FileCheckResult =
-    { File = AbsFilePath.create file
-      Source = "test"
-      ParseResults = Unchecked.defaultof<_>
-      CheckResults = ParseOnly
-      ProjectOptions = Unchecked.defaultof<_>
-      Version = version
-      ModelGeneration = None
-      Frame = None }
+/// An entry for `file` that referenced no project outputs.
+let private makeTestResult (file: string) (version: int64) : CachedCheck =
+    { Result =
+        { File = AbsFilePath.create file
+          Source = "test"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = version
+          ModelGeneration = None
+          Frame = None }
+      ProjectOutputs = [] }
 
 let private makeKey (fileHash: string) : CacheKey =
     { FileHash = ContentHash.create fileHash
@@ -203,7 +206,7 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     cache.Set key result
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.File)
+    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.Result.File)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]
@@ -264,7 +267,7 @@ let ``InMemoryCheckCache updates existing key with new value`` () =
     cache.Set key (makeTestResult "test.fs" 2L)
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal(2L, r.Version)
+    | Some r -> Assert.Equal(2L, r.Result.Version)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]

@@ -135,6 +135,7 @@
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
+    <Compile Include="CheckCacheReferencedOutputTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />

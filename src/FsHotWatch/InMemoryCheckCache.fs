@@ -41,7 +41,7 @@ let thrashWarning (maxEntries: int) (admittedWorkingSet: int) : string option =
 ///
 /// Thread-safe: a single lock guards the store, the LRU list and the slot map.
 type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
-    let store = Dictionary<string, FileCheckResult>()
+    let store = Dictionary<string, CachedCheck>()
     let lruList = LinkedList<string>()
     let lruNodes = Dictionary<string, LinkedListNode<string>>()
     /// (file, project) → the hashed key currently holding that slot's result.
@@ -55,7 +55,8 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
 
     let mutable admittedWorkingSet = 0
 
-    let slotOf (result: FileCheckResult) =
+    let slotOf (entry: CachedCheck) =
+        let result = entry.Result
         // Test fixtures pass null options; they share one project slot.
         let project =
             if isNull (box result.ProjectOptions) then
@@ -138,7 +139,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
         member _.FitWarning = currentThrashWarning ()
 
     interface ICheckCacheBackend with
-        member _.TryGet(key: CacheKey) : FileCheckResult option =
+        member _.TryGet(key: CacheKey) : CachedCheck option =
             let hashedKey = hashCacheKey key
 
             lock lockObj (fun () ->
@@ -148,9 +149,9 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                     Some result
                 | false, _ -> None)
 
-        member _.Set (key: CacheKey) (result: FileCheckResult) : unit =
+        member _.Set (key: CacheKey) (entry: CachedCheck) : unit =
             let hashedKey = hashCacheKey key
-            let slot = slotOf result
+            let slot = slotOf entry
 
             lock lockObj (fun () ->
                 match slots.TryGetValue slot with
@@ -158,7 +159,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                 | _ -> ()
 
                 if lruNodes.ContainsKey(hashedKey) then
-                    store[hashedKey] <- result
+                    store[hashedKey] <- entry
                     moveToEnd hashedKey
                     // The result may be another file's: its slot must name this key too.
                     slots[slot] <- hashedKey
@@ -166,7 +167,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                     if lruList.Count >= bound then
                         evictLru ()
 
-                    store[hashedKey] <- result
+                    store[hashedKey] <- entry
                     addToEnd hashedKey
                     slots[slot] <- hashedKey)
 
