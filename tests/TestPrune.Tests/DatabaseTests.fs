@@ -1904,6 +1904,22 @@ module ``Schema version migration`` =
             cleanupDb path
 
     [<Fact>]
+    let ``initializes an existing empty file in place`` () =
+        // A zero-byte file at the path reads `user_version = 0` with no tables: not a
+        // pre-versioning database to recreate, just an index that has not been created
+        // yet. It is initialized where it is, not deleted first.
+        let path = tempDbPath ()
+
+        try
+            File.WriteAllBytes(path, [||])
+            let db = Database.create path
+            test <@ not db.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ db.GetAllSymbolNames() |> Set.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
     let ``sets schema version on new database`` () =
         let path = tempDbPath ()
 
@@ -2587,3 +2603,55 @@ module ``Unqualified symbol names are rejected`` =
             db.RebuildProjects([ resultWith syms ])
 
             test <@ (db.GetAllSymbolNames()).Count = 7 @>)
+
+/// The runtime-coverage writers take a sequence of files; an empty one is a run that
+/// executed nothing, and each writer has one meaning for it.
+module ``Runtime coverage with empty inputs`` =
+
+    [<Fact>]
+    let ``RecordCoverageBatch with no rows ingests and skips nothing`` () =
+        withDb (fun db -> test <@ db.RecordCoverageBatch [] = (0, 0) @>)
+
+    [<Fact>]
+    let ``ReplaceRuntimeCoverage with no files clears the project and records the run`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>
+
+            db.ReplaceRuntimeCoverage("A.Tests", "run-2", Seq.empty)
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [] @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ "A.Tests", "run-2" ] @>)
+
+    [<Fact>]
+    let ``MergeRuntimeCoverage with no files keeps what the project already covers`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            db.MergeRuntimeCoverage("A.Tests", Seq.empty)
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>)
+
+/// `GetProjectKey` answers two reserved names besides project names, so a caller holding
+/// only the project-key lookup can ask about the index as a whole: whether the last
+/// attempt left it incomplete, and which completed attempt produced it.
+module ``GetProjectKey reserved lookup keys`` =
+
+    [<Fact>]
+    let ``incomplete-index key is set until an attempt completes, then absent`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = None @>)
+
+    [<Fact>]
+    let ``generation key is the token of the attempt that completed the index`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexGenerationLookupKey = Some token @>)

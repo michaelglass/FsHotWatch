@@ -151,6 +151,19 @@ module ``PluginStore without core schema`` =
             cleanupDb path
 
     [<Fact>]
+    let ``pluginStoreAt does not create a directory for the file`` () =
+        // The store creates the FILE when it is absent, nothing more: a path under a
+        // directory that does not exist is a wrong path, and it fails as one instead of
+        // quietly materializing a cache somewhere nobody looks.
+        let path = Path.Combine(tempDbPath () + ".dir", "test.db")
+        test <@ not (Directory.Exists(Path.GetDirectoryName path)) @>
+
+        Assert.Throws<SqliteException>(fun () -> (pluginStoreAt path).OpenConnection() |> ignore)
+        |> ignore
+
+        test <@ not (File.Exists path) @>
+
+    [<Fact>]
     let ``core recreating an older database drops the plugin table with it`` () =
         // Pins the newer-on-older direction as it stands: core owns the file, and a
         // `SchemaVersion` bump deletes it wholesale. A plugin table written through

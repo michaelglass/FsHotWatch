@@ -219,17 +219,28 @@ let private nameSet = nameSetNamed "p"
 
 let private bindNameSet (cmd: SqliteCommand) (names: string list) = bindNameSetNamed "p" cmd names
 
+/// Run `sql` on `conn` for its effect.
+let private execute (conn: SqliteConnection) (sql: string) =
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- sql
+    cmd.ExecuteNonQuery() |> ignore
+
+/// Run `sql` on `conn` and read the integer it selects.
+let private scalarInt64 (conn: SqliteConnection) (sql: string) : int64 =
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- sql
+    cmd.ExecuteScalar() :?> int64
+
+let private readUserVersion (conn: SqliteConnection) : int =
+    scalarInt64 conn "PRAGMA user_version;" |> int
+
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
     let conn = new SqliteConnection(connStr)
 
     try
         conn.Open()
-
-        use pragmaCmd = conn.CreateCommand()
-        pragmaCmd.CommandText <- "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
-        pragmaCmd.ExecuteNonQuery() |> ignore
-
+        execute conn "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
         conn
     with ex ->
         conn.Dispose()
@@ -329,18 +340,11 @@ let private openConnection (dbPath: string) =
 let SchemaVersion = 14
 
 /// The TestPrune.Core package version this process links, for the schema-skew message: a
-/// consumer reading "upgrade TestPrune.Core" needs to know which one it is running.
+/// consumer reading "upgrade TestPrune.Core" needs to know which one it is running. The
+/// assembly version is the package's `<Version>` with a fourth `.0`, so its first three
+/// fields are the package version.
 let private packageVersion =
-    let asm = System.Reflection.Assembly.GetExecutingAssembly()
-
-    let informational =
-        asm.GetCustomAttributes(typeof<System.Reflection.AssemblyInformationalVersionAttribute>, false)
-        |> Seq.tryHead
-        |> Option.map (fun a -> (a :?> System.Reflection.AssemblyInformationalVersionAttribute).InformationalVersion)
-
-    match informational with
-    | Some v -> v.Split('+').[0]
-    | None -> string (asm.GetName().Version)
+    System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3)
 
 /// Raised by `Database.create` when the file at `dbPath` carries a `PRAGMA user_version`
 /// above this TestPrune.Core's `SchemaVersion`: a newer TestPrune.Core wrote it. This
@@ -373,11 +377,7 @@ let deleteCacheFiles (dbPath: string) =
             File.Delete(p)
 
 let private hasUserTables (conn: SqliteConnection) =
-    use cmd = conn.CreateCommand()
-
-    cmd.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-
-    cmd.ExecuteScalar() :?> int64 > 0L
+    scalarInt64 conn "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';" > 0L
 
 /// Open a connection, deleting and recreating the database if its schema is older than
 /// this version's, and refusing it if newer. Returns `(connection, wasFresh)`; see
@@ -385,9 +385,7 @@ let private hasUserTables (conn: SqliteConnection) =
 let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "PRAGMA user_version;"
-        let version = cmd.ExecuteScalar() :?> int64 |> int
+        let version = readUserVersion conn
 
         let release () =
             SqliteConnection.ClearPool(conn)
@@ -445,21 +443,14 @@ type Database(dbPath: string) =
         let openedConn, fresh = openCheckedConnection dbPath
         wasRecreated <- fresh
         use conn = openedConn
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- schema
-        cmd.ExecuteNonQuery() |> ignore
-
-        use versionCmd = conn.CreateCommand()
-        versionCmd.CommandText <- "PRAGMA user_version;"
-        let currentVersion = versionCmd.ExecuteScalar() :?> int64 |> int
+        execute conn schema
+        let currentVersion = readUserVersion conn
 
         // Stamp when the file was unversioned or just recreated. A file stamped newer
         // than `SchemaVersion` never reaches this point: `openCheckedConnection` refuses
         // it, so the marker a newer process relies on is never downgraded.
         if currentVersion < SchemaVersion then
-            use setCmd = conn.CreateCommand()
-            setCmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion};"
-            setCmd.ExecuteNonQuery() |> ignore
+            execute conn $"PRAGMA user_version = %d{SchemaVersion};"
 
     /// True when this DB had no usable prior state when opened — the file did not exist,
     /// or an incompatible schema (a `SchemaVersion` bump) forced a delete+recreate. A
@@ -1401,15 +1392,13 @@ type Database(dbPath: string) =
     /// Whether the last index attempt failed before producing a complete graph.
     member internal this.IsIndexIncomplete() : bool =
         use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
 
-        cmd.CommandText <-
+        scalarInt64
+            conn
             """SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete')
                    OR NOT EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_completed')
-                 THEN 1 ELSE 0 END"""
-
-        cmd.ExecuteScalar() :?> int64 = 1L
+                 THEN 1 ELSE 0 END""" = 1L
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
