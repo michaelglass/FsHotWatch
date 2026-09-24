@@ -36,6 +36,22 @@
   verdict deadline, and `--run-once` its 30-minute settle. The `WaitForComplete` log
   line now names the bound it applied, and a plugin-free host that times out names
   the work it still owns.
+- fix!: a checkout's jj/git layout is read in one place,
+  `RepositoryIdentity.resolveWorktree`, which now also returns the checkout's `Kind`.
+  The shared cache namespace (`RepoIdentity.namespaceOf`) derives from the same
+  canonical common store as the `RepositoryId`, so it no longer disagrees with it:
+  two repositories under a directory named `worktrees` no longer share a namespace
+  (git's common directory is read from `commondir`, not cut at `/worktrees/`), and a
+  git worktree of a colocated jj repository shares its jj workspaces' namespace. A
+  layout that cannot be read still falls back to a private namespace.
+  `RepoIdentitySource` is now `Store | Unreadable`; `CheckoutKind` moved to
+  `RepositoryIdentity` (`CheckoutKind.isSecondary`, `CheckoutKind.describe`);
+  `RepoIdentity.checkoutKind` and `canonicalGitDir` are gone.
+  **A workspace may miss the shared cache once after upgrading**: namespaces are now
+  built from canonical paths (symlinks resolved, e.g. `/private/var` rather than
+  `/var` on macOS, and each name spelled as stored on disk) and git's `commondir`,
+  and a checkout under no VCS is keyed as a standalone store. Wherever that moves a
+  repository's store path, its namespace directory changes and starts cold.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

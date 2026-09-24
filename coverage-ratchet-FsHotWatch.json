@@ -1701,8 +1701,9 @@
       "coveredBranches": 31
     },
     "RepoIdentity.fs": {
-      "coveredLines": 56,
-      "coveredBranches": 18
+      "coveredLines": 28,
+      "coveredBranches": 6,
+      "reason": "Lowered from 56/18 (2026-09-24): the file's own layout readers (pointer reading, the `/worktrees/` git-dir cut, the checkout-kind probe) were deleted; namespaceOf now derives from RepositoryIdentity.resolveWorktree. Measured 28/28 lines, 6/6 branches on macOS by a coverage run of RepositoryIdentityTests + CrossWorkspaceCacheTests + DaemonConfigTests; every remaining line and branch is covered."
     },
     "RunClaim.fs": {
       "coveredLines": 106,

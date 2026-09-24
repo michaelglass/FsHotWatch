@@ -569,7 +569,7 @@ let ``parseConfig cache object reads scope and include exclude globs`` () =
 [<Fact(Timeout = 15000)>]
 let ``scope all caches in a secondary workspace and says what it detected`` () =
     let on, message =
-        resolveCacheScope CacheScope.AllCheckouts FsHotWatch.RepoIdentity.CheckoutKind.JjSecondaryWorkspace
+        resolveCacheScope CacheScope.AllCheckouts (Ok FsHotWatch.RepositoryIdentity.CheckoutKind.JjSecondaryWorkspace)
 
     test <@ on @>
     test <@ message.Contains "secondary jj workspace" @>
@@ -579,21 +579,37 @@ let ``scope default-workspace turns the cache OFF in a secondary checkout, and s
     // A silent "off because you look like a task workspace" is an invisible
     // substitution; the log names the scope and the evidence.
     for kind in
-        [ FsHotWatch.RepoIdentity.CheckoutKind.JjSecondaryWorkspace
-          FsHotWatch.RepoIdentity.CheckoutKind.GitWorktree ] do
-        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly kind
+        [ FsHotWatch.RepositoryIdentity.CheckoutKind.JjSecondaryWorkspace
+          FsHotWatch.RepositoryIdentity.CheckoutKind.GitWorktree ] do
+        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly (Ok kind)
         test <@ not on @>
         test <@ message.Contains "OFF" && message.Contains "default-workspace" @>
 
 [<Fact(Timeout = 15000)>]
 let ``scope default-workspace keeps the cache ON in the default checkout`` () =
     for kind in
-        [ FsHotWatch.RepoIdentity.CheckoutKind.JjDefaultWorkspace
-          FsHotWatch.RepoIdentity.CheckoutKind.GitMainCheckout
-          FsHotWatch.RepoIdentity.CheckoutKind.PlainDirectory ] do
-        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly kind
+        [ FsHotWatch.RepositoryIdentity.CheckoutKind.JjDefaultWorkspace
+          FsHotWatch.RepositoryIdentity.CheckoutKind.GitMainCheckout
+          FsHotWatch.RepositoryIdentity.CheckoutKind.PlainDirectory ] do
+        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly (Ok kind)
         test <@ on @>
         test <@ message.Contains "default-workspace" @>
+
+[<Fact(Timeout = 15000)>]
+let ``scope default-workspace turns the cache OFF in a checkout whose layout cannot be read`` () =
+    // Not provably the default workspace, so not the one "default-workspace" caches
+    // in — and the log carries the reason the layout could not be read.
+    let error =
+        FsHotWatch.RepositoryIdentity.IdentityError.DanglingPointer("/r/.jj/repo", "../gone")
+
+    let on, message =
+        resolveCacheScope CacheScope.DefaultWorkspaceOnly (Result.Error error)
+
+    test <@ not on @>
+    test <@ message.Contains "OFF" && message.Contains "/r/.jj/repo" @>
+
+    let onAll, _ = resolveCacheScope CacheScope.AllCheckouts (Result.Error error)
+    test <@ onAll @>
 
 // --- cache include / exclude: which projects cache ---
 

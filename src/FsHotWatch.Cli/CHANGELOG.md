@@ -27,6 +27,10 @@
 - **An absent run directory is no longer reported as an empty one.** When a verdict's
   runs left no reports, the agent hints check each run directory: an empty one is a run
   that tested nothing, and an absent one (pruned, or never written) is named as absent.
+- fix: `cache.scope: "default-workspace"` reads the checkout kind from the same
+  layout reader as the repository identity. A checkout whose layout cannot be read
+  (a dangling or malformed jj/git pointer) is not provably the default workspace, so
+  the cache stays off there, and the startup line names the unreadable file.
 
 ## 0.14.0-alpha.61 - 2026-09-23
 
