@@ -21,6 +21,7 @@ let private shellSpec (dir: string) (name: string) (script: string) (writes: str
 
 let private run (spec: Spec) (batch: string list) =
     let preprocessor = create spec
+    test <@ preprocessor.Name = spec.Name @>
 
     try
         preprocessor.Process batch spec.WorkDir
@@ -200,3 +201,49 @@ let ``a write is reported under the real root when the batch arrived under it`` 
             match run spec linkBatch with
             | Ok result -> test <@ result.Modified = [ Path.Combine(link, "Gen.fs") ] @>
             | Error reason -> failwith $"expected Ok, got Error %s{reason}"))
+
+[<Fact(Timeout = 30000)>]
+let ``a write outside the repository root keeps its own path whatever form the batch arrived in`` () =
+    // Only paths under the configured root have a twin under the real root; a declared
+    // write elsewhere (an absolute path into another tree) is reported as written.
+    withTempDir "cmdpre-outside" (fun dir ->
+        withTempDir "cmdpre-elsewhere" (fun elsewhere ->
+            let real = realPathOf dir
+            let outside = Path.Combine(elsewhere, "Other.fs")
+
+            withLinkedDir dir (fun link ->
+                let spec =
+                    { shellSpec
+                          link
+                          "gen"
+                          $"printf 'module Gen\\n' > Gen.fs; printf 'module Other\\n' > '%s{outside}'"
+                          [ "Gen.fs" ] with
+                        Writes = [ Path.Combine(link, "Gen.fs"); outside ] }
+
+                match run spec [ Path.Combine(real, "Trigger.fs") ] with
+                | Ok result -> test <@ result.Modified = [ Path.Combine(real, "Gen.fs"); outside ] @>
+                | Error reason -> failwith $"expected Ok, got Error %s{reason}")))
+
+[<Fact(Timeout = 30000)>]
+let ``a repository root that is its own real path reports writes as written`` () =
+    // No link anywhere in the root: there is no second form for the batch to arrive
+    // in, and a write is reported exactly as declared.
+    withTempDir "cmdpre-plain" (fun dir ->
+        let real = realPathOf dir
+        let spec = shellSpec real "gen" "printf 'module Gen\\n' > Gen.fs" [ "Gen.fs" ]
+
+        match run spec [ Path.Combine(real, "Trigger.fs") ] with
+        | Ok result -> test <@ result.Modified = [ Path.Combine(real, "Gen.fs") ] @>
+        | Error reason -> failwith $"expected Ok, got Error %s{reason}")
+
+[<Fact(Timeout = 30000)>]
+let ``a refusal carries the last lines of a long output, not the first`` () =
+    withTempDir "cmdpre-tail" (fun dir ->
+        let spec =
+            shellSpec dir "gen" "for i in $(seq 1 30); do echo line-$i; done; exit 1" [ "Gen.fs" ]
+
+        match run spec [ Path.Combine(dir, "Trigger.fs") ] with
+        | Ok _ -> failwith "a failing command must be a refusal"
+        | Error reason ->
+            test <@ reason.Contains "line-30" && reason.Contains "line-11" @>
+            test <@ not (reason.Contains "line-10\n") && not (reason.Contains "line-1\n") @>)

@@ -141,10 +141,8 @@ let create (spec: Spec) : IFsHotWatchPreprocessor =
                 let outcome =
                     try
                         Ok(runProcess spec.Command spec.Args spec.WorkDir [] (ProcessBounds.silent spec.Timeout))
-                    with
-                    | :? System.ComponentModel.Win32Exception as ex ->
+                    with :? System.ComponentModel.Win32Exception as ex ->
                         Error $"`%s{invocation}` could not start in %s{spec.WorkDir}: %s{ex.Message}"
-                    | :? LaunchStalledException as ex -> Error $"`%s{invocation}` did not start: %s{ex.Message}"
 
                 match outcome with
                 | Error reason -> Error reason
