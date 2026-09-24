@@ -21,6 +21,7 @@
     <Compile Include="RetentionTests.fs" />
     <Compile Include="SleepTests.fs" />
     <Compile Include="ConfigOverrideTests.fs" />
+    <Compile Include="HashCostTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

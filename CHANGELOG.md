@@ -4,6 +4,23 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### tests, bench: a benchmark is a number, never a verdict
+
+- **`fshw-bench hash-cost`** (`mise run bench-hash-cost`) reports `merkleCacheKey`'s
+  per-call cost on a representative source file. The measurement used to be a unit test
+  asserting an absolute µs/call ceiling; a throughput bound measured on a shared box is a
+  function of machine load, and fails under a landing gate's parallel builds while passing
+  every time it runs by itself. The suite now refuses that shape outright
+  (`BenchmarkPlacementTests`): no gated test project may carry a `Category=Benchmark`
+  trait or a `BENCH`-named test. Filtering such a trait out of `check`/`confirm` was
+  considered and rejected — TestPrune's debt ledger credits a configured project's run
+  with every test its index sees there, so a test present but filtered out is a test the
+  gate vouches for and never runs.
+- Two remaining wall-clock assertions became RELATIVE bounds, so box load cancels out:
+  the streaming-output test compares the first chunk's arrival with the same run's end,
+  and the wedged-restore barrier test compares a killed run against a control run of the
+  same script taken moments before.
+
 ### core, cli: a configured command can rewrite files before the build sees them
 
 - **`preprocessors` in `.fshw.json`** — commands that rewrite files in place *before*

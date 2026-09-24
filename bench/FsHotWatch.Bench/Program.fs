@@ -21,6 +21,7 @@ let private usage =
   fshw-bench graph <kept.nettrace> [--roots TypeA,TypeB] [--top 40]
                    [--path-from TypeA --path-to TypeB [--block TypeC,…]]
   fshw-bench summarize <jsonl> [--allow-contended]
+  fshw-bench hash-cost [--iterations 1000] [--warmup 100]
 """
 
 /// Parse `--key value` / `--flag` arguments. Repeated keys accumulate.
@@ -233,6 +234,15 @@ let main argv =
         | _ ->
             eprintf "%s" usage
             2
+    | "hash-cost" ->
+        let count key fallback =
+            one opts key |> Option.map int |> Option.defaultValue fallback
+
+        HashCost.measure (count "warmup" 100) (count "iterations" 1000) (HashCost.representativeInputs ())
+        |> HashCost.render
+        |> printfn "%s"
+
+        0
     | _ ->
         eprintf "%s" usage
         2
