@@ -2619,7 +2619,7 @@ module ``Runtime coverage with empty inputs`` =
             test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>
 
             db.ReplaceRuntimeCoverage("A.Tests", "run-2", Seq.empty)
-            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [] @>
+            test <@ List.isEmpty (db.GetRuntimeCoverageProjects [ "src/Lib.fs" ]) @>
             test <@ db.GetRuntimeCoverageBaselines() = [ "A.Tests", "run-2" ] @>)
 
     [<Fact>]
