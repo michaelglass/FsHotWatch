@@ -78,6 +78,11 @@ let apply (strip: string list) (sets: Set list) (configText: string) : Result<st
     |> List.fold (fun acc s -> acc |> Result.bind (fun () -> place root s.Path (JsonNode.Parse(s.Json)) s)) (Ok())
     |> Result.map (fun () -> root.ToJsonString(JsonSerializerOptions(WriteIndented = true)))
 
+/// `apply` to a worktree's config text, or to the defaults (an empty object) when the
+/// repository has no `.fshw.json`: a sweep must not need a config file to exist first.
+let applyTo (existing: string option) (strip: string list) (sets: Set list) : Result<string, string> =
+    apply strip sets (existing |> Option.defaultValue "{}")
+
 let private pair =
     Regex(@"^(?<k>[A-Za-z][A-Za-z0-9_]*)=(?<v>\S+)$", RegexOptions.Compiled)
 

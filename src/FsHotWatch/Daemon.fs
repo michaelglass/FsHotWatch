@@ -98,6 +98,15 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let diagnostics, selfIncompatible =
             classifyFcsDiagnostics allSuppressed checkResults.Diagnostics
 
+        // Checked under a virtual root, a diagnostic can name a path in its text: the
+        // reader gets the worktree's.
+        let diagnostics =
+            diagnostics
+            |> List.map (fun entry ->
+                { entry with
+                    Message = PathFrame.textFrom checkResult.Frame entry.Message
+                    Detail = entry.Detail |> Option.map (PathFrame.textFrom checkResult.Frame) })
+
         // Anything the compiler could not tell apart from itself survived a
         // re-check in `CheckPipeline` and is still here, so it is a fault in THIS
         // process. Say so, loudly enough to be counted — the point of the guard
@@ -1257,6 +1266,14 @@ type private ChangeRequest =
 let internal settledLine (epoch: int64) (after: TimeSpan) (files: int) : string =
     $"settled epoch=%d{epoch} after=%d{int64 after.TotalMilliseconds}ms files=%d{files}"
 
+/// How long a change batch waited for a settled project model before checking
+/// anything, when that wait is long enough to explain a slow settle.
+let internal captureWaitLine (waited: TimeSpan) : string option =
+    if waited >= TimeSpan.FromMilliseconds 100.0 then
+        Some $"change batch waited %d{int64 waited.TotalMilliseconds}ms for the project model"
+    else
+        None
+
 /// The reply `fshw format` prints. It names the set that was offered, and the formatter
 /// that ran over it — or the reason none did. `formatted 0 files` on its own was the
 /// defect: the same text for "every registered file is clean" and "no
@@ -1296,7 +1313,9 @@ let private processBatchAttempt
         // The cohort reads the live graph, and publishes only while the model it
         // captured is still current. An in-batch rediscovery captures its own result.
         let captureModel () = ctx.Discovery.Capture id
+        let captureStarted = System.Diagnostics.Stopwatch.StartNew()
         let! initialModel = captureModel ()
+        captureWaitLine captureStarted.Elapsed |> Option.iter (Logging.debug "daemon")
         let mutable batchModel = initialModel
 
         let publishCurrent write =
@@ -2320,7 +2339,12 @@ type Daemon
                 watcher |> Option.iter (fun w -> (w :> IDisposable).Dispose())
 
     /// Register a declarative framework-managed plugin handler.
+    ///
+    /// Registration starts the plugin's worker, which captures the current context: the
+    /// daemon's process scope is installed for it, so what the plugin spawns is the
+    /// daemon's to reap, whoever registers it.
     member _.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
+        use _processScope = ProcessRegistry.install processRegistry
         host.RegisterHandler(handler)
 
     /// Register a preprocessor (e.g., formatter) that runs before events are dispatched.
@@ -2384,6 +2408,7 @@ type Daemon
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {
+            use _processScope = ProcessRegistry.install processRegistry
             ready.Set()
 
             try
@@ -2441,6 +2466,10 @@ type Daemon
             cts: CancellationTokenSource
         ) =
         async {
+            // Called from the caller's context: what this starts runs in the daemon's
+            // process scope, and the caller's is untouched.
+            use _processScope = ProcessRegistry.install processRegistry
+
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
                 // sends next is bound to this request rather than to an earlier one
@@ -2537,7 +2566,11 @@ type Daemon
                         fun () ->
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount
-                      GetProjectModel = this.ProjectModel }
+                      GetProjectModel = this.ProjectModel
+                      // Captured here, with this daemon's process scope installed: in a
+                      // repository host the session's endpoint is served from the host's
+                      // context, and the session's RPCs still run in the session's.
+                      Context = Option.ofObj (ExecutionContext.Capture()) }
 
                 // Everything before the daemon serves — runtime boot (per-worktree),
                 // config and analyzer loading, the singleton lock — is wall time a cold
@@ -2549,7 +2582,11 @@ type Daemon
                     Some "daemon start to serving"
                 )
 
-                let ipcTask = Async.StartAsTask(serve rpcConfig cts)
+                // Started on this thread: a server creates its listening instances
+                // before its first wait, so the daemon accepts connections before this
+                // method goes on. Queued to the thread pool instead, a loaded box could
+                // hold the start back while a client probing for the daemon finds none.
+                let ipcTask = Async.StartImmediateAsTask(serve rpcConfig cts)
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
                 // timer that gracefully shuts the daemon down once it has been idle
@@ -3403,25 +3440,23 @@ module Daemon =
     let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
         configured |> Option.defaultValue [] |> Set.ofList
 
-    /// What a full rediscovery drops from the checker. A daemon that owns its checker
-    /// drops everything it holds (and, owning its process, the language service's
-    /// process-wide caches). A hosted session's checker is shared with its partition's
-    /// other sessions, so it drops only `ownProjects`, and nothing its siblings hold.
-    let internal dropForRediscovery
-        (seams: DaemonHosting.HostingSeams)
-        (checker: FSharpChecker)
-        (ownProjects: FSharpProjectOptions list)
-        =
-        if seams.InvalidatesWholeChecker then
-            checker.InvalidateAll()
+    /// What a full rediscovery drops from the checker: every project it is handed moves
+    /// to a new generation (`ProjectSnapshots.invalidate`), so the checks after it
+    /// type-check them again under new cache keys while the checks already under way
+    /// finish against the entries they started with. Nothing is removed from the
+    /// checker's caches — `InvalidateAll` and
+    /// `ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients` both replace
+    /// them under the running checks. The previous generation's entries are demoted to
+    /// weak references as the new generation recomputes them, and released by the next
+    /// collection (see `ProjectSnapshots.invalidate`). A hosted session is
+    /// handed only its own projects, so its siblings' entries stay warm.
+    let internal dropForRediscovery (checker: FSharpChecker) (projects: FSharpProjectOptions list) =
+        for options in projects do
+            ProjectSnapshots.invalidate checker options
 
-            if seams.ClearsProcessCaches then
-                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-        else
-            for options in ownProjects do
-                ProjectSnapshots.invalidate checker options
-
-    let private createWithCore
+    /// Build the daemon, with `processRegistry` installed (see `createWithCore`).
+    let private constructDaemon
+        (processRegistry: ProcessRegistry.Registry)
         (checker: FSharpChecker)
         (repoRoot: string)
         (opts: DaemonOptions)
@@ -3430,21 +3465,6 @@ module Daemon =
         (watcherIsMacOSOverride: bool option)
         (watcherFactory: WatcherFactory)
         =
-        // This MUST be the first thing that happens.
-        //
-        // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
-        // value is only visible to ExecutionContexts captured AFTER it is set.
-        // Everything below captures a context: the PluginHost's agents, the
-        // change/scan supervisors, the plugin handlers registered later. Whichever
-        // of them eventually DISPATCHES to a plugin decides the context that
-        // plugin's `runProcess` runs in, so installing the registry any later
-        // means a plugin's spawned child resolves NO registry,
-        // `ProcessRegistry.track` drops it silently, `KillAll` reaps nothing, and
-        // a wedged plugin's process outlives the daemon as an init-reparented
-        // orphan.
-        let processRegistry = ProcessRegistry.Registry()
-        ProcessRegistry.install processRegistry |> ignore
-
         let seams = DaemonHosting.seams opts.Hosting
         let watcherFactory = seams.Watcher watcherFactory
 
@@ -3526,10 +3546,18 @@ module Daemon =
                         cacheBackend = b,
                         cacheKeyProvider = kp,
                         activity = fcsSink,
-                        repoRoot = repoRoot
+                        repoRoot = repoRoot,
+                        frames = seams.Frames
                     )
-                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink, repoRoot = repoRoot)
-                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot)
+                | Some b, None ->
+                    CheckPipeline(
+                        checker,
+                        cacheBackend = b,
+                        activity = fcsSink,
+                        repoRoot = repoRoot,
+                        frames = seams.Frames
+                    )
+                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot, frames = seams.Frames)
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache cacheBackend)
 
@@ -3572,15 +3600,14 @@ module Daemon =
                         Some(fun () ->
                             pipeline.GetRegisteredProjects()
                             |> List.choose pipeline.GetProjectOptions
-                            |> dropForRediscovery seams checker)
+                            |> dropForRediscovery checker)
                   InvalidateFcsForProjects =
                     if isNull (box checker) then
                         None
                     else
                         Some(fun optsList ->
-                            // Per-project invalidation only. No global
-                            // ClearLanguageServiceRootCaches — that GC is what
-                            // makes the full path cold; scoping is the point.
+                            // The changed projects only; the full path hands
+                            // `dropForRediscovery` every registered project.
                             for opts in optsList do
                                 ProjectSnapshots.invalidate checker opts)
                   RepoRoot = repoRoot
@@ -3815,6 +3842,41 @@ module Daemon =
         with _ ->
             lifetime.Dispose()
             reraise ()
+
+    /// Build a daemon, its process registry installed while it is built and not after.
+    ///
+    /// The registry is scoped by an `AsyncLocal`, and an AsyncLocal value is only
+    /// visible to ExecutionContexts captured AFTER it is set. Construction captures
+    /// every context the daemon works in: the PluginHost's agents, the change/scan
+    /// supervisors, the plugin handlers registered later. So the registry is installed
+    /// first, and a plugin's spawned child resolves to it; installed any later, the
+    /// child would resolve NO registry, `KillAll` would reap nothing, and a wedged
+    /// plugin's process would outlive the daemon as an init-reparented orphan.
+    ///
+    /// Once built, the caller's own registry is back. The daemon's is the daemon's: left
+    /// in the caller's context, a spawn the caller makes later would land in it, and
+    /// after the daemon is disposed be refused by a registry that has shut down.
+    let private createWithCore
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (workspaceLoader: IWorkspaceLoader option)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherIsMacOSOverride: bool option)
+        (watcherFactory: WatcherFactory)
+        =
+        let processRegistry = ProcessRegistry.Registry()
+
+        using (ProcessRegistry.install processRegistry) (fun _ ->
+            constructDaemon
+                processRegistry
+                checker
+                repoRoot
+                opts
+                workspaceLoader
+                mapProjectOptions
+                watcherIsMacOSOverride
+                watcherFactory)
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =

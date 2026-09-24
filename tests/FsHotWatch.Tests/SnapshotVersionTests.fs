@@ -267,6 +267,376 @@ let ``invalidating a project makes the checker type-check it again`` () =
         checkB2 tree |> ignore
         test <@ drain tree |> List.contains "B1.fs" @>)
 
+/// A checker event handler that holds the first event `matches` accepts: it signals
+/// `reached` and blocks that computation until `release` is set. Every other event
+/// passes.
+let private holdFirst
+    (matches: string -> bool)
+    (reached: Threading.ManualResetEventSlim)
+    (release: Threading.ManualResetEventSlim)
+    =
+    let held = ref 0
+
+    fun (file: string, _: FSharpProjectOptions) ->
+        if
+            matches (Path.GetFileName file)
+            && Threading.Interlocked.CompareExchange(&held.contents, 1, 0) = 0
+        then
+            reached.Set()
+
+            if not (release.Wait(TimeSpan.FromSeconds 60.0)) then
+                failwith $"%s{file} was held past its bound"
+
+/// Two checks of one project under way when `invalidate` runs, and the errors each
+/// reports.
+let private checksAcrossInvalidation (invalidate: FSharpChecker -> FSharpProjectOptions -> unit) =
+    withTempDir "snapshot-invalidate-inflight" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+
+        // A declares a type and B's signature mentions it; B also depends on S, so a
+        // check holding S's type-check has A's result in hand and has not asked for
+        // B. C and D each pass an A value to B. D precedes C, so D's check never
+        // type-checks C (a check type-checks every file before its own), and E
+        // keeps D from being the last file.
+        write dir "A.fs" [| "module A"; "type T = { X: int }"; "let make () = { X = 1 }" |]
+        write dir "S.fs" [| "module S"; "let s = 1" |]
+        write dir "B.fs" [| "module B"; "let f (t: A.T) : A.T = { t with X = t.X + S.s }" |]
+        write dir "C.fs" [| "module C"; "let c : A.T = B.f (A.make ())" |]
+        write dir "D.fs" [| "module D"; "let d : A.T = B.f (A.make ())" |]
+        write dir "E.fs" [| "module E"; "let e = 0" |]
+        write dir "Base.fsx" [| "let placeholder = 0" |]
+
+        let baseOptions, _ =
+            let script = Path.Combine(dir, "Base.fsx")
+
+            checker.GetProjectOptionsFromScript(
+                script,
+                SourceText.ofString (File.ReadAllText script),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let options =
+            { baseOptions with
+                ProjectFileName = Path.Combine(dir, "P.fsproj")
+                SourceFiles = [| for f in [ "A.fs"; "S.fs"; "B.fs"; "D.fs"; "C.fs"; "E.fs" ] -> Path.Combine(dir, f) |]
+                OtherOptions = baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
+                UseScriptResolutionRules = false
+                ProjectId = None
+                Stamp = None }
+
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let check (file: string) (edit: string) =
+            let path = Path.Combine(dir, file)
+            let read = FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash path
+
+            let openFile =
+                { read with
+                    Text = read.Text + edit
+                    Version = read.Version + edit }
+
+            let snapshot =
+                FsHotWatch.ProjectSnapshots.build
+                    (FsHotWatch.ProjectSnapshots.generationOf checker)
+                    hasher.Hash
+                    (Some dir)
+                    openFile
+                    options
+
+            async {
+                match! FsHotWatch.ProjectSnapshots.parseAndCheck checker path snapshot with
+                | _, FSharpCheckFileAnswer.Succeeded results ->
+                    return
+                        results.Diagnostics
+                        |> Array.filter (fun d ->
+                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                        |> Array.map (fun d -> d.Message)
+                | _, other -> return failwith $"check of %s{file} did not complete: %A{other}"
+            }
+            |> Async.StartAsTask
+
+        let aChecked = new Threading.ManualResetEventSlim()
+        let sReached = new Threading.ManualResetEventSlim()
+        let sRelease = new Threading.ManualResetEventSlim()
+        let dReached = new Threading.ManualResetEventSlim()
+        let dRelease = new Threading.ManualResetEventSlim()
+
+        checker.FileChecked.Add(fun (file, _) ->
+            if Path.GetFileName file = "A.fs" then
+                aChecked.Set())
+
+        checker.BeforeBackgroundFileCheck.Add(holdFirst ((=) "S.fs") sReached sRelease)
+        checker.FileParsed.Add(holdFirst (fun f -> f = "D.fs" && sReached.IsSet) dReached dRelease)
+
+        let bound = TimeSpan.FromSeconds 60.0
+
+        // C's check has A's types and is held before it asks for B.
+        let checkC = check "C.fs" ""
+        test <@ sReached.Wait bound && aChecked.Wait bound @>
+
+        // D's check starts from the same checker state, and is held while it parses
+        // its own text of D.fs, before it asks for any type-check.
+        let checkD = check "D.fs" "\n// being edited"
+        test <@ dReached.Wait bound @>
+
+        invalidate checker options
+
+        // If the invalidation dropped A, S and B, D's check type-checks all three
+        // again and finishes, and C's check then receives D's B, whose signature
+        // names the other copy of A.T. If nothing was dropped, D's check waits for
+        // the S that C's check holds; the delay bounds that wait.
+        dRelease.Set()
+        Threading.Tasks.Task.WhenAny(checkD, Threading.Tasks.Task.Delay(TimeSpan.FromSeconds 5.0)).Wait()
+        sRelease.Set()
+
+        checkC.Result, checkD.Result)
+
+[<Fact(Timeout = 120000)>]
+let ``invalidating a project leaves the checks already under way coherent`` () =
+    let errorsOfC, errorsOfD =
+        checksAcrossInvalidation FsHotWatch.ProjectSnapshots.invalidate
+
+    test <@ Array.isEmpty errorsOfC @>
+    test <@ Array.isEmpty errorsOfD @>
+
+[<Fact(Timeout = 120000)>]
+let ``a rediscovery leaves the checks already under way coherent`` () =
+    let errorsOfC, errorsOfD =
+        checksAcrossInvalidation (fun checker options ->
+            FsHotWatch.Daemon.Daemon.dropForRediscovery checker [ options ])
+
+    test <@ Array.isEmpty errorsOfC @>
+    test <@ Array.isEmpty errorsOfD @>
+
+/// The compiler unit a check result imported for the referenced project A: FCS's
+/// internal `CcuThunk`, which the importing project's bootstrap owns. Framework units
+/// are shared between bootstraps, so they would prove nothing here.
+let private importsOf (results: FSharpCheckFileResults) : obj =
+    let a =
+        results.ProjectContext.GetReferencedAssemblies()
+        |> List.find (fun assembly -> assembly.SimpleName = "A")
+
+    a.GetType().GetFields(Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.NonPublic)
+    |> Array.tryPick (fun field ->
+        if field.FieldType.Name = "CcuThunk" then
+            Some(field.GetValue a)
+        else
+            None)
+    |> Option.defaultWith (fun () -> failwith "FSharpAssembly holds no CcuThunk")
+
+/// Check B2.fs through the snapshot path and return its imports, weakly, so nothing
+/// here keeps the check alive.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private checkB2Imports (tree: Tree) : obj =
+    let path = Path.Combine(tree.Dir, "B2.fs")
+    let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+    let snapshot =
+        FsHotWatch.ProjectSnapshots.build
+            (FsHotWatch.ProjectSnapshots.generationOf tree.Checker)
+            hasher.Hash
+            (Some tree.Dir)
+            (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash path)
+            tree.BOptions
+
+    match
+        FsHotWatch.ProjectSnapshots.parseAndCheck tree.Checker path snapshot
+        |> Async.RunSynchronously
+    with
+    | _, FSharpCheckFileAnswer.Succeeded results -> importsOf results
+    | _, other -> failwith $"check of B2.fs did not complete: %A{other}"
+
+/// `checkB2Imports`, held only weakly.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private checkB2ImportsWeakly (tree: Tree) = WeakReference(checkB2Imports tree)
+
+let private collect () =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+
+/// After `supersede` and a check in the new generation, the previous generation's
+/// imports are collected while the new generation's are alive.
+let private supersededImportsAreCollected (supersede: Tree -> unit) =
+    withTempDir "snapshot-generation-reclaim" (fun dir ->
+        let tree = makeTree dir
+        let before = checkB2ImportsWeakly tree
+        supersede tree
+        let current = checkB2Imports tree
+        collect ()
+
+        test <@ not before.IsAlive @>
+        GC.KeepAlive current)
+
+[<Fact(Timeout = 120000)>]
+let ``a generation still in use is not released by a collection`` () =
+    // Positive control for the two below: the same observation of a generation
+    // nothing superseded sees it held.
+    withTempDir "snapshot-generation-held" (fun dir ->
+        let tree = makeTree dir
+        let before = checkB2ImportsWeakly tree
+        collect ()
+        test <@ before.IsAlive @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a project's superseded generation is released by a collection`` () =
+    supersededImportsAreCollected (fun tree -> FsHotWatch.ProjectSnapshots.invalidate tree.Checker tree.BOptions)
+
+[<Fact(Timeout = 120000)>]
+let ``a rediscovery's superseded generation is released by a collection`` () =
+    supersededImportsAreCollected (fun tree ->
+        FsHotWatch.Daemon.Daemon.dropForRediscovery tree.Checker [ tree.AOptions; tree.BOptions ])
+
+/// Project R, whose compile items begin with two files MSBuild-style tooling writes
+/// under obj/ (assembly attributes granting D its internals, and generated code R's
+/// own c.fs uses), and project D, which references R in memory: R has no output on
+/// disk, so the checker type-checks R's sources for D.
+type private GeneratedTree =
+    { Checker: FSharpChecker
+      Pipeline: CheckPipeline
+      RProject: string
+      RB: string
+      RC: string
+      DX: string }
+
+let private makeGeneratedTree (dir: string) =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+    let rDir = Path.Combine(dir, "R")
+    let dDir = Path.Combine(dir, "D")
+    let generated = Path.Combine(rDir, "obj", "Debug", "net10.0")
+    Directory.CreateDirectory generated |> ignore
+    Directory.CreateDirectory dDir |> ignore
+
+    write
+        generated
+        "R.AssemblyInfo.fs"
+        [| "namespace FSharp"
+           "[<assembly: System.Runtime.CompilerServices.InternalsVisibleTo(\"D\")>]"
+           "do ()" |]
+
+    write generated "R.Generated.fs" [| "module R.Generated"; "let answer = 42" |]
+    write rDir "a.fs" [| "module R.A"; "type T = { X: int }"; "let internal secret = 1" |]
+    write rDir "b.fs" [| "module R.B"; "let f (t: R.A.T) : R.A.T = { t with X = t.X + 1 }" |]
+    write rDir "c.fs" [| "module R.C"; "let g : R.A.T = R.B.f { R.A.X = R.Generated.answer }" |]
+    write dDir "x.fs" [| "module D.X"; "let y : R.A.T = R.B.f { R.A.X = R.A.secret }" |]
+    write dir "Base.fsx" [| "let placeholder = 0" |]
+
+    let baseOptions, _ =
+        let script = Path.Combine(dir, "Base.fsx")
+
+        checker.GetProjectOptionsFromScript(
+            script,
+            SourceText.ofString (File.ReadAllText script),
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+
+    let frameworkOptions =
+        baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
+
+    let rOutput = Path.Combine(rDir, "bin", "R.dll")
+
+    let project (projectFile: string) (output: string) (files: string list) refs =
+        { baseOptions with
+            ProjectFileName = projectFile
+            SourceFiles = Array.ofList files
+            OtherOptions =
+                Array.concat
+                    [ frameworkOptions
+                      [| $"-o:%s{output}"; "-a" |]
+                      [| for out, _ in refs -> $"-r:%s{out}" |] ]
+            ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
+            UseScriptResolutionRules = false
+            ProjectId = None
+            Stamp = None }
+
+    let rProject = Path.Combine(rDir, "R.fsproj")
+
+    let r =
+        project
+            rProject
+            rOutput
+            [ Path.Combine(generated, "R.AssemblyInfo.fs")
+              Path.Combine(generated, "R.Generated.fs")
+              Path.Combine(rDir, "a.fs")
+              Path.Combine(rDir, "b.fs")
+              Path.Combine(rDir, "c.fs") ]
+            []
+
+    let d =
+        project
+            (Path.Combine(dDir, "D.fsproj"))
+            (Path.Combine(dDir, "bin", "D.dll"))
+            [ Path.Combine(dDir, "x.fs") ]
+            [ rOutput, r ]
+
+    let pipeline = CheckPipeline(checker, repoRoot = dir)
+    pipeline.RegisterProject(r.ProjectFileName, r)
+    pipeline.RegisterProject(d.ProjectFileName, d)
+
+    { Checker = checker
+      Pipeline = pipeline
+      RProject = rProject
+      RB = Path.Combine(rDir, "b.fs")
+      RC = Path.Combine(rDir, "c.fs")
+      DX = Path.Combine(dDir, "x.fs") }
+
+/// The errors the pipeline's check of `path` reports. Only the messages leave, so the
+/// check's results are not kept alive by the caller.
+[<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private errorsOf (tree: GeneratedTree) (path: string) =
+    match tree.Pipeline.CheckFile(AbsFilePath.create path) |> Async.RunSynchronously with
+    | Some { CheckResults = FullCheck r } ->
+        r.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d -> d.Message)
+    | other -> failwith $"expected a full check of %s{path}, got %A{other}"
+
+[<Fact(Timeout = 120000)>]
+let ``a project's own check sees the source files generated under obj`` () =
+    withTempDir "snapshot-generated-own" (fun dir ->
+        let tree = makeGeneratedTree dir
+        let errors = errorsOf tree tree.RC
+        test <@ Array.isEmpty errors @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a project checked for a downstream one is not type-checked again for its own files`` () =
+    withTempDir "snapshot-generated-roles" (fun dir ->
+        let tree = makeGeneratedTree dir
+        let started = Collections.Concurrent.ConcurrentQueue<string>()
+
+        FcsCacheProbe.onJobEvent tree.Checker "TcIntermediate" (fun jobEvent label ->
+            if jobEvent = "Started" then
+                started.Enqueue label)
+
+        let ofR (label: string) =
+            label.EndsWith($"(%s{FcsCacheProbe.projectLabel tree.RProject})", StringComparison.Ordinal)
+
+        let drainR () =
+            let labels = Collections.Generic.List<string>()
+            let mutable label: string = null
+
+            while started.TryDequeue(&label) do
+                if ofR label then
+                    labels.Add label
+
+            labels |> Seq.toList
+
+        errorsOf tree tree.RB |> ignore
+        // Positive control: the observation sees R's files being type-checked.
+        test <@ not (List.isEmpty (drainR ())) @>
+
+        // D reaches R through its references, and uses what R's generated
+        // attributes grant it.
+        let errorsOfD = errorsOf tree tree.DX
+        test <@ Array.isEmpty errorsOfD @>
+        drainR () |> ignore
+
+        errorsOf tree tree.RC |> ignore
+        let restarted = drainR ()
+        test <@ List.isEmpty restarted @>)
+
 [<Fact(Timeout = 120000)>]
 let ``two checkouts with identical content get identical snapshot versions`` () =
     withTempDir "snapshot-checkout-1" (fun dir1 ->
@@ -289,6 +659,7 @@ let ``two checkouts with identical content get identical snapshot versions`` () 
 
                 let snapshot =
                     FsHotWatch.ProjectSnapshots.build
+                        (FsHotWatch.ProjectSnapshots.generationOf tree.Checker)
                         hasher.Hash
                         (Some tree.Dir)
                         (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash b2)
@@ -315,6 +686,10 @@ let private movingHash (first: string) (later: string) =
     fun (_: string) ->
         calls.Value <- calls.Value + 1
         if calls.Value = 1 then first else later
+
+/// Every project in the generation a checker starts in.
+let private firstGeneration (_: string) =
+    FsHotWatch.ProjectSnapshots.Generation 0L
 
 let private openFile path version text : FsHotWatch.ProjectSnapshots.OpenFile =
     { Path = path
@@ -385,7 +760,7 @@ let ``a source read after it moved is refused, not served under its old version`
         let opened = openFile openPath "v" "module Open"
 
         let snapshot =
-            FsHotWatch.ProjectSnapshots.build (movingHash "before" "after") None opened options
+            FsHotWatch.ProjectSnapshots.build firstGeneration (movingHash "before" "after") None opened options
 
         let otherFile = snapshot.SourceFiles |> List.find (fun f -> f.FileName = other)
         test <@ otherFile.Version = "before" @>
@@ -405,7 +780,8 @@ let ``sources are read when the checker asks for them`` () =
 
         let opened = openFile openPath "v" "module Open"
 
-        let snapshot = FsHotWatch.ProjectSnapshots.build hasher.Hash None opened options
+        let snapshot =
+            FsHotWatch.ProjectSnapshots.build firstGeneration hasher.Hash None opened options
 
         let texts = [ for f in snapshot.SourceFiles -> f.FileName, readSource f ]
         test <@ texts = [ other, "module Other"; openPath, "module Open" ] @>)
@@ -430,7 +806,8 @@ let ``only references inside the repository are stamped by content`` () =
             let opened = openFile (Path.Combine(dir, "Open.fs")) "v" ""
 
             let stamps repoRoot =
-                (FsHotWatch.ProjectSnapshots.build hasher.Hash repoRoot opened options).ReferencesOnDisk
+                (FsHotWatch.ProjectSnapshots.build firstGeneration hasher.Hash repoRoot opened options)
+                    .ReferencesOnDisk
                 |> List.map (fun r -> r.Path, r.LastModified)
 
             let real path =
@@ -444,9 +821,116 @@ let ``only references inside the repository are stamped by content`` () =
             test <@ stamps None = [ inside, real inside; external, real external ] @>
 
             let snapshot =
-                FsHotWatch.ProjectSnapshots.build hasher.Hash (Some dir) opened options
+                FsHotWatch.ProjectSnapshots.build firstGeneration hasher.Hash (Some dir) opened options
 
             test <@ snapshot.OtherOptions = [ "--noframework" ] @>))
+
+[<Fact>]
+let ``each generation of a project stamps its references differently`` () =
+    withTempDir "snapshot-generations" (fun dir ->
+        let reference = Path.Combine(dir, "In.dll")
+        File.WriteAllText(reference, "in")
+        let project = Path.Combine(dir, "P.fsproj")
+        let options = makeProjectOptions project [] [ $"-r:%s{reference}" ]
+        let opened = openFile (Path.Combine(dir, "Open.fs")) "v" ""
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+        let stampIn generation =
+            (FsHotWatch.ProjectSnapshots.build (fun _ -> generation) hasher.Hash (Some dir) opened options)
+                .ReferencesOnDisk
+            |> List.map (fun r -> r.LastModified)
+
+        let stamps =
+            [ 0L; 1L; 2L ] |> List.map (FsHotWatch.ProjectSnapshots.Generation >> stampIn)
+
+        test <@ stamps.Head = [ FsHotWatch.ProjectSnapshots.contentStamp (hasher.Hash reference) ] @>
+        test <@ List.distinct stamps = stamps @>)
+
+[<Fact>]
+let ``invalidating a project advances that project's generation only`` () =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+    let other = FsHotWatch.Daemon.Daemon.createChecker ()
+    let p = makeProjectOptions "/repo/P.fsproj" [] []
+    let generation = FsHotWatch.ProjectSnapshots.generationOf
+
+    FsHotWatch.ProjectSnapshots.invalidate checker p
+    FsHotWatch.ProjectSnapshots.invalidate checker p
+
+    test <@ generation checker p.ProjectFileName = FsHotWatch.ProjectSnapshots.Generation 2L @>
+    test <@ generation checker "/repo/Q.fsproj" = FsHotWatch.ProjectSnapshots.Generation 0L @>
+    test <@ generation other p.ProjectFileName = FsHotWatch.ProjectSnapshots.Generation 0L @>
+
+/// Two worktrees with one project of the same content, each framed under the same
+/// virtual root, and the reference stamps `checker`'s framed snapshot of each carries.
+let private sharedFrameTree (worktrees: string) (library: string) =
+    let virtualRoot = Path.Combine(worktrees, "virtual")
+    let reference = Path.Combine(library, "Lib.dll")
+    File.WriteAllText(reference, "lib")
+
+    let worktree name =
+        let root = Path.Combine(worktrees, name)
+        Directory.CreateDirectory root |> ignore
+        let source = Path.Combine(root, "A.fs")
+        File.WriteAllText(source, "module A")
+
+        let options =
+            makeProjectOptions (Path.Combine(root, "P.fsproj")) [ source ] [ $"-r:%s{reference}"; "--noframework" ]
+
+        root, source, options, FsHotWatch.PathFrame.create root virtualRoot
+
+    let hasher = FsHotWatch.CheckCache.FileContentHasher()
+
+    let stamps (checker: FSharpChecker) (root: string, source: string, options, frame) =
+        (FsHotWatch.ProjectSnapshots.buildFramed
+            (FsHotWatch.ProjectSnapshots.generationOf checker)
+            hasher.Hash
+            (Some root)
+            (fun _ _ -> Some frame)
+            (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash source)
+            options)
+            .Snapshot.ReferencesOnDisk
+        |> List.map (fun r -> r.LastModified)
+
+    worktree "a", worktree "b", stamps
+
+/// What `CheckPipeline` records after checking a framed project.
+let private recordFramed checker (_: string, _: string, options: FSharpProjectOptions, frame) =
+    FsHotWatch.ProjectSnapshots.recordFrame
+        checker
+        options.ProjectFileName
+        (FsHotWatch.PathFrame.toVirtual frame options.ProjectFileName)
+
+[<Fact>]
+let ``a shared invalidation moves every session sharing a virtual identity together`` () =
+    withTempDir "snapshot-shared-generation" (fun worktrees ->
+        withTempDir "snapshot-shared-library" (fun library ->
+            let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+            let a, b, stamps = sharedFrameTree worktrees library
+            let (_, _, aOptions, _) = a
+            let before = stamps checker a
+            test <@ stamps checker b = before @>
+
+            recordFramed checker a
+            FsHotWatch.ProjectSnapshots.invalidateShared checker aOptions
+
+            let afterA = stamps checker a
+            test <@ afterA <> before @>
+            test <@ stamps checker b = afterA @>))
+
+[<Fact>]
+let ``a session's own invalidation leaves a shared virtual identity where it is`` () =
+    withTempDir "snapshot-own-generation" (fun worktrees ->
+        withTempDir "snapshot-own-library" (fun library ->
+            let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+            let a, b, stamps = sharedFrameTree worktrees library
+            let (_, _, aOptions, _) = a
+            let before = stamps checker a
+
+            recordFramed checker a
+            FsHotWatch.ProjectSnapshots.invalidate checker aOptions
+
+            test <@ stamps checker a = before @>
+            test <@ stamps checker b = before @>))
 
 [<Fact>]
 let ``content stamps are equal exactly when the content hashes are`` () =
@@ -488,7 +972,8 @@ let ``a project reached twice is snapshotted once, and non-F# references pass th
 
         let opened = openFile (Path.Combine(dir, "Open.fs")) "v" ""
 
-        let snapshot = FsHotWatch.ProjectSnapshots.build (fun _ -> "h") None opened c
+        let snapshot =
+            FsHotWatch.ProjectSnapshots.build firstGeneration (fun _ -> "h") None opened c
 
         let outputs = snapshot.ReferencedProjects |> List.map (fun r -> r.OutputFile)
 

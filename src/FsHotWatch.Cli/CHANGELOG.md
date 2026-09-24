@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- fix: the run-level `beforeRun`/`afterRun` hooks run inside a process scope owned by the
+  run. A run that ends, or is interrupted (Ctrl-C, SIGTERM) in the middle of a hook, kills
+  the hook's process tree instead of leaving it orphaned; `afterRun` runs in a scope of
+  its own and what it leaves running is reaped once it returns. This covers the
+  bracketing path and `confirm`'s fast path.
+
+- A scan no longer reports types in a project as incompatible with themselves (`The
+  type 'X' is not compatible with the type 'X'`) after it re-checks one such
+  diagnostic. Re-checking removed the project from the checker's caches under the
+  project's other running checks, and each of those could then see two copies of one
+  type. Code that `dotnet build` compiles no longer fails `check` this way.
+  The same holds across a project or solution change that makes the daemon
+  rediscover every project.
+
+- `FSHW_VIRTUAL_ROOT=0` in a repository host's environment checks every worktree at its
+  own paths instead of under the virtual root; each session logs
+  `[config] virtualRoot=on|off`.
+
+- The repository host checks every worktree under one virtual root: identical projects
+  in several worktrees are checked once. `fshw host` exits 2 if that root exists.
+
+- A project's own files are checked with the code generated into its obj/ directory,
+  as `dotnet build` compiles them, so a file that uses generated code is no longer
+  reported as referring to something undefined. A project that others depend on is
+  also no longer type-checked twice, once for its own files and once for its
+  dependents. The first check after upgrading re-checks each project once, because
+  the check-result cache's keys change.
+
 - The repository host shares one checker between sessions with the same checker
   configuration (`checker.cacheSizeFactor`).
 
@@ -27,6 +55,10 @@
 - **An absent run directory is no longer reported as an empty one.** When a verdict's
   runs left no reports, the agent hints check each run directory: an empty one is a run
   that tested nothing, and an absent one (pruned, or never written) is named as absent.
+- fix: `cache.scope: "default-workspace"` reads the checkout kind from the same
+  layout reader as the repository identity. A checkout whose layout cannot be read
+  (a dangling or malformed jj/git pointer) is not provably the default workspace, so
+  the cache stays off there, and the startup line names the unreadable file.
 
 ## 0.14.0-alpha.61 - 2026-09-23
 

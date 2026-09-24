@@ -2,12 +2,56 @@
 
 ## Unreleased
 
+- fix: a repository host's session serves its RPCs in the session's context: its
+  process scope, log sink and client environment, as a daemon on its own pipe does.
+  The host's endpoint served them in the host's own context, so what a plugin command
+  spawned while handling a call was not reaped with its session, and what the call
+  logged went to the host's log. `DaemonRpcConfig` gains `Context`.
+
+- fix: a daemon's process registry is the daemon's. Building a daemon in-process no
+  longer leaves its registry installed in the caller's context, so a spawn the caller
+  makes afterwards is the caller's, and is not refused once the daemon is disposed. A
+  plugin's work, inline or exclusive, runs in the context it was registered in, whoever
+  dispatches to it, and `Daemon.RegisterHandler` registers in the daemon's scope, so
+  what a plugin spawns is still reaped when its daemon stops.
+
+- fix: `Daemon.RunWith` and `RepositoryHost.run` start their IPC server on their own
+  thread, so a daemon or host accepts connections before its startup goes on. Queued to
+  the thread pool, a loaded box could leave a client probing for it with nothing
+  listening.
+
+- A per-file plugin's replayed summary ("N files examined, M replayed from cache") now
+  counts the current run, not everything since the daemon started. A run is the set of
+  files one scan or change batch checked. A rescan that serves both of a repository's
+  files from cache used to read "3 files examined, 3 replayed" because of earlier runs,
+  and now reads "0 files examined, 2 replayed". Two sessions of one repository therefore
+  report the same run the same way, whichever of them filled the shared cache first.
+  The `task-cache` debug line for a hit or miss now names the file.
+
+- Each per-file FCS check now logs `check start <file>` when it begins, and
+  `checked <file> in Nms (snapshot Xms, fcs Yms)` when it succeeds. The split shows
+  whether a slow check is spent building the project snapshot or in the checker itself.
+  A change batch that waits 100 ms or longer for a settled project model says so at
+  debug level.
+
+- feat: a repository host checks every worktree under one virtual root, so a project
+  whose content is the same in several worktrees is checked once and its results serve
+  them all. `ProjectSnapshots.buildFramed` checks each project under the frame its
+  session chooses (`PathFrame`, `SessionFrames`); `CanonicalProjects` keeps one content
+  per project shared, and a session whose project differs checks it at its own paths.
+  A project that reads its own location (`__SOURCE_DIRECTORY__`, `__SOURCE_FILE__`,
+  `#line`, a type provider, `--version:@`, `--load`, `--use`, a response file) is never
+  shared (`FrameExclusions`), and the host's log says which and why. Diagnostics, and
+  analyzer and TestPrune results, are rebased to the worktree's paths.
+  `FileCheckResult.Frame` names the frame a result was checked under. A host refuses to
+  start while its virtual root exists (`HostRun.VirtualRootExists`).
+
 - feat!: a repository host's sessions of one checker configuration check through one
   checker (`CheckerPartitions`), so they hold one copy of the framework imports and
   `TcGlobals`. `DaemonHosting.hostedBy` takes the partition's checker factory, and
-  `HostingSeams` gains `Checker` and `InvalidatesWholeChecker`: a hosted session's full
-  rediscovery drops only its own projects, never its siblings'. `Daemon.Checker` exposes
-  the checker a daemon checks through.
+  `HostingSeams` gains `Checker`: a hosted session's full rediscovery drops only its
+  own projects, never its siblings'. `Daemon.Checker` exposes the checker a daemon
+  checks through.
 
 - feat: a repository host can serve many worktrees from one process, each as its own
   session of today's `Daemon`.
@@ -36,6 +80,69 @@
   verdict deadline, and `--run-once` its 30-minute settle. The `WaitForComplete` log
   line now names the bound it applied, and a plugin-free host that times out names
   the work it still owns.
+- fix!: invalidating a project no longer makes the checks already under way report its
+  types as incompatible with themselves (`The type 'X' is not compatible with the
+  type 'X'`). `ProjectSnapshots.invalidate` removed the project's entries from the
+  checker's caches while other checks of the project were still running. Such a check
+  then type-checked a removed file again, or took another check's new result for it,
+  against results it already held, so one file's types existed twice. A scan that
+  re-checked one self-incompatible diagnostic that way produced more of them in the
+  project's other files. `invalidate` now moves the project to a new generation
+  instead: the snapshots `ProjectSnapshots.build` makes afterwards stamp its
+  references differently, so the project and everything downstream of it are
+  type-checked again under new cache keys, and nothing a running check depends on is
+  removed. Breaking: `ProjectSnapshots.build` takes a new first argument, the
+  generation of each project (`ProjectSnapshots.generationOf checker`), and
+  `ProjectSnapshots.Generation` is new. The self-incompatible re-check builds its
+  snapshot again after invalidating. Under a repository host's virtual root a project's
+  generation belongs to the virtual identity its sessions share: the self-incompatible
+  re-check moves every session sharing it to a new generation together
+  (`ProjectSnapshots.invalidateShared`, with the aliases `recordFrame` records), while a
+  session's own rediscovery or project change (`invalidate`) leaves it where it is,
+  since the shared key already carries the project's content.
+- fix: a full rediscovery no longer makes the checks already under way report types
+  as incompatible with themselves. A standalone daemon called `InvalidateAll` and
+  `ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients`, which both
+  replace the TransparentCompiler's caches under the running checks: the same race
+  as removing one project's entries. `Daemon.dropForRediscovery checker projects`
+  now moves every project it is handed to a new generation, in both hosting modes,
+  and removes nothing. FCS keeps one version of each cache entry strongly (per
+  project, and per file of a project), so each entry the new generation computes
+  demotes the previous generation's version to a weak reference, and the next
+  collection releases it. No full collection is forced on rediscovery.
+  `HostingSeams.ClearsProcessCaches` is gone (nothing clears them), and a source guard
+  refuses `InvalidateAll`, `ClearCaches`, `InvalidateConfiguration` and
+  `ClearLanguageServiceRootCaches*` anywhere in `src/`.
+- fix: a project is type-checked with one source list, whether one of its own files
+  is being checked or a project downstream of it is. `CheckPipeline.RegisterProject`
+  stored each project's options with the files generated under obj/ and bin/ removed,
+  while downstream projects reached it through their unfiltered `ReferencedProjects`.
+  The checker keys its per-project and per-file caches by project, so the two source
+  lists were two versions of every entry. Checking a downstream project demoted the
+  project's own warm type-checks, and the project's own check was then type-checked
+  again. (Both lists share one set of imports, which FCS keys without the source
+  files, so this was CPU, not retained memory.) The
+  project's own check also missed code generated into obj/ that its files use, and
+  reported it as not defined. `RegisterProject` now keeps the options whole and only
+  leaves the generated files unregistered, so they are still never checked on their
+  own. The check-result cache's options hash changes with the source list, so each
+  project's cached check results are recomputed once after upgrading.
+- fix!: a checkout's jj/git layout is read in one place,
+  `RepositoryIdentity.resolveWorktree`, which now also returns the checkout's `Kind`.
+  The shared cache namespace (`RepoIdentity.namespaceOf`) derives from the same
+  canonical common store as the `RepositoryId`, so it no longer disagrees with it:
+  two repositories under a directory named `worktrees` no longer share a namespace
+  (git's common directory is read from `commondir`, not cut at `/worktrees/`), and a
+  git worktree of a colocated jj repository shares its jj workspaces' namespace. A
+  layout that cannot be read still falls back to a private namespace.
+  `RepoIdentitySource` is now `Store | Unreadable`; `CheckoutKind` moved to
+  `RepositoryIdentity` (`CheckoutKind.isSecondary`, `CheckoutKind.describe`);
+  `RepoIdentity.checkoutKind` and `canonicalGitDir` are gone.
+  **A workspace may miss the shared cache once after upgrading**: namespaces are now
+  built from canonical paths (symlinks resolved, e.g. `/private/var` rather than
+  `/var` on macOS, and each name spelled as stored on disk) and git's `commondir`,
+  and a checkout under no VCS is keyed as a standalone store. Wherever that moves a
+  repository's store path, its namespace directory changes and starts cold.
 
 ## 0.10.0-alpha.44 - 2026-09-23
 

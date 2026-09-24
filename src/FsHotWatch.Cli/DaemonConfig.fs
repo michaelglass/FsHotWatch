@@ -64,13 +64,26 @@ let defaultInMemoryCache =
       Exclude = [] }
 
 /// Whether `scope` runs a cache in a checkout of `kind`, and the startup line saying
-/// what was detected and what follows from it.
-let resolveCacheScope (scope: CacheScope) (kind: FsHotWatch.RepoIdentity.CheckoutKind) : bool * string =
-    let detected = FsHotWatch.RepoIdentity.describeCheckoutKind kind
+/// what was detected and what follows from it. A checkout whose layout cannot be read
+/// is not provably the default workspace, so `"default-workspace"` leaves it off.
+let resolveCacheScope
+    (scope: CacheScope)
+    (kind: Result<FsHotWatch.RepositoryIdentity.CheckoutKind, FsHotWatch.RepositoryIdentity.IdentityError>)
+    : bool * string =
+    let detected =
+        match kind with
+        | Result.Ok kind -> FsHotWatch.RepositoryIdentity.CheckoutKind.describe kind
+        | Result.Error error ->
+            $"a checkout whose layout cannot be read (%s{FsHotWatch.RepositoryIdentity.IdentityError.describe error})"
+
+    let secondaryOrUnknown =
+        kind
+        |> Result.map FsHotWatch.RepositoryIdentity.CheckoutKind.isSecondary
+        |> Result.defaultValue true
 
     match scope with
     | CacheScope.AllCheckouts -> true, $"check-result cache: cache.scope is \"all\"; this checkout is %s{detected}"
-    | CacheScope.DefaultWorkspaceOnly when FsHotWatch.RepoIdentity.isSecondaryCheckout kind ->
+    | CacheScope.DefaultWorkspaceOnly when secondaryOrUnknown ->
         false,
         $"check-result cache: OFF in this checkout — cache.scope is \"default-workspace\" and this is %s{detected}"
     | CacheScope.DefaultWorkspaceOnly ->
@@ -114,7 +127,9 @@ let createCacheComponents
     | NoCache -> (None, None)
     | InMemory settings ->
         let on, message =
-            resolveCacheScope settings.Scope (FsHotWatch.RepoIdentity.checkoutKind repoRoot)
+            resolveCacheScope
+                settings.Scope
+                (FsHotWatch.RepositoryIdentity.resolveWorktree repoRoot |> Result.map _.Kind)
 
         Logging.info "cache" message
 

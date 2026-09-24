@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- (breaking) A passed build no longer reports "built N projects" for every project
+  MSBuild visited. It says `rebuilt R of N projects`, or `N projects up to date` when it
+  re-emitted nothing. R counts the outputs named in the build's `Project -> path.dll` lines
+  that were written after the build started. On a one-file edit to a test file in a
+  19-project solution, it used to say "built 19 projects" when one project was rebuilt.
+  `BuildOutcome.BuildPassed` now carries `rebuilt: int option`; `None` means not measured.
+
 ## 0.7.0-alpha.39 - 2026-09-23
 
 - A build that overruns its `timeoutSec` budget now reports what it was doing instead of

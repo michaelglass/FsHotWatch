@@ -49,6 +49,60 @@ type private InMemoryCache() =
             store.Clear()
 
 [<Fact(Timeout = 15000)>]
+let ``per-file check lines name the file and split the time between snapshot and FCS`` () =
+    test <@ checkStartLine "Lib.fs" = "check start Lib.fs" @>
+
+    test
+        <@
+            checkedLine
+                "Lib.fs"
+                (TimeSpan.FromMilliseconds 1234.4)
+                (TimeSpan.FromMilliseconds 12.0)
+                (TimeSpan.FromMilliseconds 1222.0) = "checked Lib.fs in 1234ms (snapshot 12ms, fcs 1222ms)"
+        @>
+
+type private RecordingSink() =
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+    member _.Lines = lines |> List.ofSeq
+
+    interface FsHotWatch.PluginActivity.IActivitySink with
+        member _.StartSubtask(_, _) = ()
+        member _.UpdateSubtask(_, _) = ()
+        member _.EndSubtask _ = ()
+        member _.Log line = lines.Enqueue line
+        member _.SetSummary _ = ()
+
+[<Fact(Timeout = 120000)>]
+let ``a file check logs its start before its timed result`` () =
+    withTempDir "check-lines" (fun tmpDir ->
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let sink = RecordingSink()
+        let pipeline = CheckPipeline(checker, activity = sink)
+        let script = Path.Combine(tmpDir, "Lib.fsx")
+        File.WriteAllLines(script, [| "let x : int = 42" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                script,
+                SourceText.ofString (File.ReadAllText script),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject(Path.Combine(tmpDir, "Lib.fsproj"), options)
+
+        match pipeline.CheckFile(AbsFilePath.create script) |> Async.RunSynchronously with
+        | Some { CheckResults = FullCheck _ } -> ()
+        | other -> failwith $"expected a full check, got %A{other}"
+
+        match sink.Lines with
+        | [ start; finished ] ->
+            test <@ start = "check start Lib.fsx" @>
+            test <@ finished.StartsWith "checked Lib.fsx in " @>
+            test <@ finished.Contains "(snapshot " && finished.Contains ", fcs " @>
+        | other -> failwith $"expected a start line then a checked line, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
 let ``CheckFile returns None when no project registered for the file`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -198,7 +252,7 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
 [<Fact(Timeout = 15000)>]
-let ``RegisterProject excludes obj and bin files from registration`` () =
+let ``RegisterProject registers no obj or bin file, and keeps the project whole`` () =
     let pipeline = CheckPipeline(nullChecker)
 
     let options =
@@ -216,6 +270,8 @@ let ``RegisterProject excludes obj and bin files from registration`` () =
     test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Real.fs") @>
     test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Another.fs") @>
     test <@ registered |> List.length = 2 @>
+    // The project is kept whole: the checker compiles the generated files with it.
+    test <@ pipeline.GetProjectOptions "/tmp/MyProject.fsproj" = Some options @>
 
 [<Fact(Timeout = 15000)>]
 let ``CheckFile returns None when token is cancelled`` () =
@@ -483,7 +539,8 @@ let private fullCheckResult path options =
       CheckResults = FullCheck Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
       ProjectOptions = options
       Version = 1L
-      ModelGeneration = None }
+      ModelGeneration = None
+      Frame = None }
 
 let private parseOnlyResult path options =
     { File = AbsFilePath.create path
@@ -492,7 +549,8 @@ let private parseOnlyResult path options =
       CheckResults = ParseOnly
       ProjectOptions = options
       Version = 1L
-      ModelGeneration = None }
+      ModelGeneration = None
+      Frame = None }
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when backend is None`` () =

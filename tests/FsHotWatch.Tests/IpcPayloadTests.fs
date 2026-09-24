@@ -28,7 +28,8 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> unchecked
-      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved }
+      GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+      Context = None }
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host
 

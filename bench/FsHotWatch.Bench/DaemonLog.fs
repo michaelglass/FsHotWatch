@@ -6,8 +6,9 @@
 /// normal). A count taken from the whole file, or from the whole of one daemon's run,
 /// mixes runs. Two cuts make it honest:
 ///
-/// 1. `sinceLastStart` keeps only the lines from the LAST `[config] … verdictInputs:`
-///    line — the first line every daemon start writes — onward.
+/// 1. `sinceLastStart` keeps only the lines from the LAST daemon or hosted-session start:
+///    its `[config] … Loaded .fshw.json` line (every start writes one, file or not), or the
+///    `verdictInputs:` line written just before it when verdict inputs are declared.
 /// 2. `cycles` splits that window into start/end-delimited cycles; a consumer reads the
 ///    last COMPLETE one.
 ///
@@ -38,18 +39,38 @@ let tryTagged (line: string) : (string * string) option =
         else
             Some(m.Groups.["tag"].Value, body)
 
-let private isDaemonStart (line: string) =
+let private isConfig (line: string) =
     match tryTagged line with
-    | Some("config", body) -> body.StartsWith("verdictInputs:", StringComparison.Ordinal)
+    | Some("config", _) -> true
     | _ -> false
 
-/// The lines of the most recent daemon start onward. Empty when the log records no start.
-let sinceLastStart (lines: string list) : string list =
-    let indexed = lines |> List.indexed
+/// A line every daemon or hosted-session start writes: `Loaded .fshw.json` (written even
+/// when the file is absent), or `verdictInputs:` (written only when the worktree
+/// declares verdict inputs, and just before `Loaded`).
+let private isStartMarker (line: string) =
+    match tryTagged line with
+    | Some("config", body) ->
+        body.StartsWith("verdictInputs:", StringComparison.Ordinal)
+        || body.StartsWith("Loaded .fshw.json", StringComparison.Ordinal)
+    | _ -> false
 
-    match indexed |> List.filter (snd >> isDaemonStart) |> List.tryLast with
+/// The lines of the most recent daemon start onward: from the last start marker, extended
+/// back over the contiguous `[config]` block that start wrote just before it (so the
+/// window begins at `verdictInputs:` when one was written). Empty when the log records no
+/// start. A repository that declares no verdict inputs (or has no `.fshw.json`) still
+/// gets a window: its start writes `Loaded .fshw.json`.
+let sinceLastStart (lines: string list) : string list =
+    let arr = List.toArray lines
+
+    match arr |> Array.tryFindIndexBack isStartMarker with
     | None -> []
-    | Some(start, _) -> lines |> List.skip start
+    | Some last ->
+        let mutable start = last
+
+        while start > 0 && isConfig arr.[start - 1] do
+            start <- start - 1
+
+        arr |> Array.skip start |> Array.toList
 
 let private startedPid =
     Regex(@"^Starting FsHotWatch daemon for .* pid=(?<pid>\d+)", RegexOptions.Compiled)
@@ -246,4 +267,14 @@ let settled (window: string list) : Settle list =
                       Files = int m.Groups.["f"].Value }
             else
                 None
+        | _ -> None)
+
+/// The virtual-root setting a hosted session echoes at attach: `[config] virtualRoot=on|off`.
+/// `None` when the binary does not echo it.
+let virtualRootEcho (window: string list) : string option =
+    window
+    |> List.tryPick (fun line ->
+        match tryTagged line with
+        | Some("config", body) when body.StartsWith("virtualRoot=", StringComparison.Ordinal) ->
+            Some(body.Substring("virtualRoot=".Length).Trim())
         | _ -> None)

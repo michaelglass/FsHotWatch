@@ -182,6 +182,10 @@ type DaemonRpcConfig =
         /// as `unchecked` and the statuses, so a verdict is graded against the model
         /// that was current when its other inputs were read, never a later one.
         GetProjectModel: unit -> ProjectModel.Observation
+        /// The context the daemon's RPCs run in: its process scope, and in a repository
+        /// host its session's log sink and client environment. `None`: the context of
+        /// whatever serves them.
+        Context: ExecutionContext option
     }
 
 /// Sentinel key under which a wedge report is carried in the status JSON map.
@@ -623,10 +627,27 @@ module IpcServer =
             return not accepting
         }
 
+    /// What serves a connection: its RPC target, and the context its calls run in
+    /// (`None`: the server's own).
+    [<NoComparison; NoEquality>]
+    type internal Served =
+        { Target: obj
+          Context: ExecutionContext option }
+
+    /// A daemon's RPCs, served in the daemon's context whichever server accepted them:
+    /// its own pipe, or a repository host's endpoint.
+    let internal servedDaemon
+        (config: DaemonRpcConfig)
+        (watchdog: OperationWatchdog.Watchdog)
+        (disconnected: CancellationToken)
+        : Served =
+        { Target = box (DaemonRpcTarget(config, watchdog, disconnected = disconnected))
+          Context = config.Context }
+
     /// Decides what serves a newly connected client: the RPC target for it, or `None`
     /// when the connection has already been answered in full and should close. Given
     /// the connected pipe and a token cancelled when the client goes away.
-    type internal ConnectionOpener = NamedPipeServerStream -> CancellationToken -> Async<obj option>
+    type internal ConnectionOpener = NamedPipeServerStream -> CancellationToken -> Async<Served option>
 
     /// Serve one accepted connection and clean up when done. Until its teardown has
     /// finished — the pipe disposed, not merely the RPC completed — the connection stays
@@ -645,9 +666,9 @@ module IpcServer =
                 try
                     match! opener pipeServer clientGone.Token with
                     | None -> pipeServer.Dispose()
-                    | Some target ->
+                    | Some served ->
                         let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
-                        use rpc = new JsonRpc(handler, target)
+                        use rpc = new JsonRpc(handler, served.Target)
 
                         rpc.Disconnected.Add(fun _ ->
                             try
@@ -656,7 +677,16 @@ module IpcServer =
                                 // Torn down already: nothing is left running to cancel.
                                 ())
 
-                        rpc.StartListening()
+                        // Calls are dispatched from the read loop this starts, in the
+                        // context it is started in.
+                        match served.Context with
+                        | None -> rpc.StartListening()
+                        | Some context ->
+                            ExecutionContext.Run(
+                                context.CreateCopy(),
+                                ContextCallback(fun _ -> rpc.StartListening()),
+                                null
+                            )
 
                         try
                             // A client that vanishes faults the completion: an ordinary
@@ -827,8 +857,7 @@ module IpcServer =
         serveConnections
             drainBound
             pipeName
-            (fun _ disconnected ->
-                async { return Some(box (DaemonRpcTarget(config, watchdog, disconnected = disconnected))) })
+            (fun _ disconnected -> async { return Some(servedDaemon config watchdog disconnected) })
             cts
 
     /// Serve with a watchdog this server creates, and disposes when the server loop

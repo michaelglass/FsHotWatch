@@ -34,7 +34,10 @@ type StaleArtifact =
     { Project: string; Reason: StaleReason }
 
 type BuildOutcome =
-    | BuildPassed of output: string
+    /// `rebuilt` is how many of the projects the output names this build re-emitted,
+    /// or `None` when that was not measured. MSBuild names every project it visited,
+    /// up-to-date ones included, so the named count alone is the solution's size.
+    | BuildPassed of output: string * rebuilt: int option
     /// Build subprocess returned success but post-build verification found one
     /// or more stale DLLs (MSBuild's incremental cache likely lied). Demoted
     /// here so downstream plugins receive BuildFailed and never run against
@@ -161,7 +164,7 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
 
     if success then
-        BuildPassed output, parsed
+        BuildPassed(output, None), parsed
     else
         let entries =
             if parsed.IsEmpty then
@@ -170,6 +173,44 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
                 parsed
 
         BuildOutputFailed [ output ], entries
+
+/// How many of the outputs a build's `Project -> path.dll` lines name were written
+/// after `buildStarted`. MSBuild prints that line for every project it visits, and
+/// an up-to-date project keeps its output's timestamp, so this is the count the
+/// build actually re-emitted. `writtenAt` is `None` for an output that is not there.
+let internal countRebuilt (writtenAt: string -> DateTime option) (buildStarted: DateTime) (output: string) : int =
+    BuildDiagnostics.parseDllPaths output
+    |> Map.filter (fun _ path ->
+        match writtenAt path with
+        | Some written -> written >= buildStarted
+        | None -> false)
+    |> Map.count
+
+/// A passed outcome with its rebuilt count measured; any other outcome as it was.
+let internal withRebuiltCount
+    (writtenAt: string -> DateTime option)
+    (buildStarted: DateTime)
+    (outcome: BuildOutcome)
+    : BuildOutcome =
+    match outcome with
+    | BuildPassed(output, _) -> BuildPassed(output, Some(countRebuilt writtenAt buildStarted output))
+    | BuildArtifactsStale _
+    | BuildOutputFailed _ -> outcome
+
+let private outputWrittenAt (path: string) : DateTime option =
+    if File.Exists path then
+        Some(File.GetLastWriteTimeUtc path)
+    else
+        None
+
+/// The one-line verdict for a passed build. It never calls a project "built" that
+/// the build only visited.
+let internal describeBuildPassed (output: string) (rebuilt: int option) : string =
+    match BuildDiagnostics.parseDllPaths output |> Map.count, rebuilt with
+    | 0, _ -> "build succeeded"
+    | named, Some 0 -> $"%d{named} projects up to date"
+    | named, Some count -> $"rebuilt %d{count} of %d{named} projects"
+    | named, None -> $"%d{named} projects built or up to date"
 
 /// A retryable MSBuild copy warning retains the exact files whose relationship must
 /// be checked after the subprocess exits. MSB3026 is not itself a failure: MSBuild
@@ -239,7 +280,7 @@ let verifyCopyRetryWarningsWith
     (entries: ErrorEntry list)
     : BuildOutcome * ErrorEntry list =
     match outcome with
-    | BuildPassed output ->
+    | BuildPassed(output, _) ->
         let unresolved =
             parseCopyRetryWarnings output
             |> List.choose (fun warning ->
@@ -909,9 +950,6 @@ let createWith
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
 
-    let countBuiltProjects (output: string) =
-        BuildDiagnostics.parseDllPaths output |> Map.count
-
     /// Phrase a single stale-artifact case for human-readable diagnostics.
     /// Worker-side so cache replay reproduces the same message verbatim.
     let formatStaleArtifact (s: StaleArtifact) : string =
@@ -949,9 +987,7 @@ let createWith
     /// disagree.
     let buildSummary (outcome: BuildOutcome) (entries: ErrorEntry list) : string =
         match outcome with
-        | BuildPassed out ->
-            let n = countBuiltProjects out
-            if n > 0 then $"built {n} projects" else "build succeeded"
+        | BuildPassed(out, rebuilt) -> describeBuildPassed out rebuilt
         | BuildArtifactsStale(stale, _) -> $"build failed: %d{stale.Length} stale artifacts"
         | BuildOutputFailed _ ->
             let errCount =
@@ -992,7 +1028,7 @@ let createWith
     /// the identical structured stale list.
     let verifyAndDemote (outcome: BuildOutcome) : BuildOutcome =
         match outcome with
-        | BuildPassed out ->
+        | BuildPassed(out, _) ->
             // ONE walk answers both: what this build left stale, and what it declined
             // to produce at all. Taken here rather than at `BuildDone` so the stat
             // calls stay off the synchronous handler's capture window, and because a
@@ -1080,7 +1116,9 @@ let createWith
                                 let copyVerifiedOutcome, verifiedEntries =
                                     verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
 
-                                let outcome = verifyAndDemote copyVerifiedOutcome
+                                let outcome =
+                                    verifyAndDemote copyVerifiedOutcome
+                                    |> withRebuiltCount outputWrittenAt buildStarted
 
                                 match outcome, result, overrun with
                                 | BuildOutputFailed _, TimedOut _, Some(summary, report, _) ->
@@ -1262,7 +1300,8 @@ let createWith
                                     return
                                         applyBuildOutcome
                                             ctx
-                                            (verifyAndDemote copyVerifiedOutcome)
+                                            (verifyAndDemote copyVerifiedOutcome
+                                             |> withRebuiltCount outputWrittenAt buildStarted)
                                             verifiedEntries
                                             (DateTime.UtcNow - buildStarted)
                                 with ex ->
@@ -1575,7 +1614,7 @@ let createWith
                   let lastResult = Lifecycle.value state.LastBuild
 
                   match lastResult with
-                  | Some(BuildPassed output) ->
+                  | Some(BuildPassed(output, _)) ->
                       return
                           JsonSerializer.Serialize(
                               {| status = "passed"

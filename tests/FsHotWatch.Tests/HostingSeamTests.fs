@@ -98,9 +98,13 @@ let private checkerConstructor = "src/FsHotWatch/Daemon.fs"
 
 let private buildsAChecker = Regex(@"\bFSharpChecker\.Create\b")
 
-/// Dropping every project a checker holds, or its process-wide root caches.
-let private dropsTheWholeChecker =
-    Regex(@"\.InvalidateAll\s*\(|\bClearLanguageServiceRootCaches\w*\s*\(")
+/// Removing entries from a checker's caches. Checks already under way go on asking
+/// for them, and one that recomputes a removed entry, or takes another check's
+/// recomputation, sees two copies of a file's types.
+let private clearsCheckerCaches =
+    Regex(
+        @"\.InvalidateAll\s*\(|\.ClearCaches\s*\(|\.InvalidateConfiguration\s*\(|\bClearLanguageServiceRootCaches\w*\s*\("
+    )
 
 /// The lines of `src/` whose code matches `pattern`, as (file, 1-based line, all lines).
 let private matchesIn (root: string) (pattern: Regex) =
@@ -115,12 +119,6 @@ let private matchesIn (root: string) (pattern: Regex) =
         |> Seq.filter (fun (_, line) -> pattern.IsMatch(codeOf line))
         |> Seq.map (fun (i, _) -> relative, i, lines))
     |> List.ofSeq
-
-/// Whether the code at `index` sits under a condition that asks the seam: one of the
-/// three lines above it tests a `seams.` answer.
-let private guardedBySeam (lines: string array) (index: int) =
-    [ max 0 (index - 3) .. index - 1 ]
-    |> List.exists (fun i -> Regex.IsMatch(codeOf lines[i], @"\bif\b.*\bseams\.\w+"))
 
 [<Fact>]
 let ``nothing outside the daemon's constructor builds a checker`` () =
@@ -142,35 +140,23 @@ let ``nothing outside the daemon's constructor builds a checker`` () =
         )
 
 [<Fact>]
-let ``the whole checker is dropped only where the seam says the daemon owns it`` () =
-    let found = matchesIn (repoRoot ()) dropsTheWholeChecker
-    test <@ not (List.isEmpty found) @>
-
-    let unguarded =
-        found
-        |> List.filter (fun (_, i, lines) -> not (guardedBySeam lines i))
+let ``nothing removes entries from a checker's caches`` () =
+    let found =
+        matchesIn (repoRoot ()) clearsCheckerCaches
         |> List.map (fun (file, i, lines) -> $"%s{file}:%d{i + 1}: %s{lines[i].Trim()}")
 
-    if not (List.isEmpty unguarded) then
+    if not (List.isEmpty found) then
         Assert.Fail(
-            "These drop a whole checker without asking the seam. A hosted session's \
-             checker is shared, so dropping all of it drops its siblings' state too \
-             (`HostingSeams.InvalidatesWholeChecker`, `ClearsProcessCaches`):\n"
-            + String.Join("\n", unguarded)
+            "These remove checker cache entries that checks already under way may still \
+             ask for. Move the project to a new generation instead \
+             (`ProjectSnapshots.invalidate`):\n"
+            + String.Join("\n", found)
         )
 
 [<Fact>]
-let ``the drop guard refuses a drop no condition asks the seam about`` () =
-    let unguarded =
-        [| "        Some(fun () ->"; "            checker.InvalidateAll()" |]
-
-    let guarded =
-        [| "        Some(fun () ->"
-           "            if seams.InvalidatesWholeChecker then"
-           "                checker.InvalidateAll()" |]
-
-    test <@ dropsTheWholeChecker.IsMatch unguarded[1] && not (guardedBySeam unguarded 1) @>
-    test <@ dropsTheWholeChecker.IsMatch guarded[2] && guardedBySeam guarded 2 @>
-    test <@ dropsTheWholeChecker.IsMatch "checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()" @>
-    // A comment that names the call is documentation, not a drop.
-    test <@ not (dropsTheWholeChecker.IsMatch(codeOf "            // checker.InvalidateAll() drops siblings' state")) @>
+let ``the cache-removing guard sees each way of removing entries`` () =
+    test <@ clearsCheckerCaches.IsMatch "checker.InvalidateAll()" @>
+    test <@ clearsCheckerCaches.IsMatch "checker.ClearCaches()" @>
+    test <@ clearsCheckerCaches.IsMatch "checker.InvalidateConfiguration(identity)" @>
+    test <@ clearsCheckerCaches.IsMatch "checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()" @>
+    test <@ not (clearsCheckerCaches.IsMatch(codeOf "    // checker.InvalidateAll() would race")) @>

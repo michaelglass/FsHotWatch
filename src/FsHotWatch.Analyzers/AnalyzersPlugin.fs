@@ -604,10 +604,16 @@ let internal createWithSlowHook
                                                         // orphaned holding the semaphore slot.
                                                         let activeClient = Volatile.Read(&client)
 
+                                                        // Checked under a virtual root, every range in
+                                                        // the results names the file by its virtual
+                                                        // path: the analyzers are told the same name.
+                                                        let analyzedFile =
+                                                            FsHotWatch.PathFrame.nameIn result.Frame fileStr
+
                                                         let runWith (typedTree: obj) =
                                                             let context =
                                                                 createCliContext
-                                                                    (box fileStr)
+                                                                    (box analyzedFile)
                                                                     (box sourceText)
                                                                     (box result.ParseResults)
                                                                     checkResultsObj
@@ -696,7 +702,10 @@ let internal createWithSlowHook
                                                                 | Ok msgs ->
                                                                     msgs
                                                                     |> List.map (fun m ->
-                                                                        { Message = m.Message
+                                                                        { Message =
+                                                                            FsHotWatch.PathFrame.textFrom
+                                                                                result.Frame
+                                                                                m.Message
                                                                           Severity =
                                                                             match m.Severity with
                                                                             | Severity.Error ->

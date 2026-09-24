@@ -9,12 +9,12 @@ let private usage =
 
   fshw-bench run --repo <path> [--rev <rev>] [--sessions 1,2,4] [--reps 5]
                  [--out <jsonl>] [--label per-worktree] [--cli <FsHotWatch.Cli.dll>]
-                 [--prepare "<shell cmd>"] [--strip <key>]... [--set <dotted.path>=<json>]... [--tests] [--no-heap]
+                 [--prepare "<shell cmd>"] [--strip <key>]... [--set <dotted.path>=<json>]... [--env KEY=VALUE]... [--tests] [--no-heap]
                  [--warm-cache] [--settle-sec 60] [--sample-sec 5]
                  [--scan-timeout-min 60] [--test-timeout-min 120]
                  [--keep-worktrees] [--allow-contended] [--keep-traces <dir>] [--no-retention]
                  [--mode legacy|host] [--edits K --edit-file <worktree-relative path>]
-                 [--settle-timeout-sec 120]
+                 [--settle-timeout-sec 120] [--max-load <load1 ceiling>]
   fshw-bench probe --pid <pid> [--port <socket>] [--worktree <path>] [--no-heap] [--no-retention]
                    [--out <jsonl>] [--label <text>]
   fshw-bench port --pid <pid>
@@ -83,6 +83,17 @@ let main argv =
                 |> Option.defaultValue []
                 |> List.map ConfigOverride.parseSet
 
+            let envs =
+                opts
+                |> Map.tryFind "env"
+                |> Option.defaultValue []
+                |> List.map (fun e ->
+                    match Scenario.parseEnv e with
+                    | Ok kv -> kv
+                    | Error msg ->
+                        eprintfn "%s" msg
+                        exit 2)
+
             if
                 (one opts "edits" |> Option.map int |> Option.defaultValue 0) > 0
                 && (one opts "edit-file").IsNone
@@ -117,6 +128,7 @@ let main argv =
                   Prepare = one opts "prepare" |> Option.defaultValue "dotnet build"
                   Strip = opts |> Map.tryFind "strip" |> Option.defaultValue []
                   Set = sets |> List.choose Result.toOption
+                  Env = envs
                   Tests = flag opts "tests"
                   Heap = not (flag opts "no-heap")
                   WarmCache = flag opts "warm-cache"
@@ -140,6 +152,7 @@ let main argv =
                         exit 2
                   Edits = one opts "edits" |> Option.map int |> Option.defaultValue 0
                   EditFile = one opts "edit-file"
+                  MaxLoad1 = one opts "max-load" |> Option.map float
                   SettleTimeout =
                     TimeSpan.FromSeconds(one opts "settle-timeout-sec" |> Option.map float |> Option.defaultValue 120.0) }
     | "probe" ->

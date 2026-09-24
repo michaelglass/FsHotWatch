@@ -46,6 +46,16 @@ let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
     | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
     | FSharpCheckFileAnswer.Aborted -> Seq.empty
 
+/// The line logged when a file's FCS check begins, so the log shows whether a slow
+/// result was slow to start or slow to finish.
+let internal checkStartLine (fileName: string) : string = $"check start %s{fileName}"
+
+/// The line logged when a file's FCS check succeeds: its total time, split between
+/// building the project snapshot and the checker's parse and type-check.
+let internal checkedLine (fileName: string) (total: TimeSpan) (snapshot: TimeSpan) (fcs: TimeSpan) : string =
+    let ms (span: TimeSpan) = int64 span.TotalMilliseconds
+    $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms)"
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -54,9 +64,13 @@ type CheckPipeline
         ?cacheKeyProvider: ICacheKeyProvider,
         ?activity: PluginActivity.IActivitySink,
         ?repoRoot: string,
-        ?recheckCooldown: TimeSpan
+        ?recheckCooldown: TimeSpan,
+        ?frames: PathFrame.FrameChoice
     ) =
     let activity = defaultArg activity noopSink
+    // Which frame each project is checked under: its own paths unless a repository host
+    // checks its worktrees under one virtual root.
+    let frames = defaultArg frames PathFrame.realPaths
 
     /// See `FcsDiagnosticFilter.shouldRecheckProject`. Injectable so the
     /// cooldown can be collapsed in tests without waiting five minutes.
@@ -124,7 +138,11 @@ type CheckPipeline
         match cacheBackend with
         | Some(:? IScopedCheckCache as scoped) ->
             projectOptionsByProject
-            |> Seq.map (fun kv -> kv.Value.ProjectFileName, kv.Value.SourceFiles.Length)
+            |> Seq.map (fun kv ->
+                kv.Value.ProjectFileName,
+                kv.Value.SourceFiles
+                |> Array.filter (not << PathFilter.isGeneratedPath)
+                |> Array.length)
             |> Seq.toList
             |> scoped.ObserveWorkingSet
         | _ -> ()
@@ -210,8 +228,15 @@ type CheckPipeline
             | _ -> ()
         | None -> ()
 
-    /// Register project options for a project. Maps each source file to this project's options.
-    /// Filters out generated files in obj/ and bin/ directories that should not be checked.
+    /// Register project options for a project. Maps each of its checkable source files
+    /// to these options; the generated files in obj/ and bin/ are compiled but never
+    /// checked on their own, so they are not mapped.
+    ///
+    /// The options themselves are kept whole. The checker sees a project with the same
+    /// source files whether one of its own files is being checked or a project
+    /// downstream of it is (which reaches it through `ReferencedProjects`, unfiltered).
+    /// Two source lists for one project would be two versions of every type-check the
+    /// checker caches for it, and computing either demotes the other.
     ///
     /// Re-registering a project REPLACES its compile-item set: a file the prior options
     /// listed and these do not stops mapping to this project, and stops being registered at
@@ -219,15 +244,14 @@ type CheckPipeline
     /// from the project survived in the per-file map with the project's OLD options, and
     /// every later check and scan of the registered set kept reaching for it.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
-        let filteredOptions =
-            { options with
-                SourceFiles =
-                    options.SourceFiles
-                    |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
+        let checkable (o: FSharpProjectOptions) =
+            o.SourceFiles
+            |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f))
+            |> Set.ofArray
 
         let removedFiles =
             match projectOptionsByProject.TryGetValue(projectPath) with
-            | true, prior -> Set.difference (Set.ofArray prior.SourceFiles) (Set.ofArray filteredOptions.SourceFiles)
+            | true, prior -> Set.difference (checkable prior) (checkable options)
             | false, _ -> Set.empty
 
         for removed in removedFiles do
@@ -235,34 +259,28 @@ type CheckPipeline
 
             match projectOptionsByFile.TryGetValue(key) with
             | true, existing ->
-                match
-                    existing
-                    |> List.filter (fun o -> o.ProjectFileName <> filteredOptions.ProjectFileName)
-                with
+                match existing |> List.filter (fun o -> o.ProjectFileName <> options.ProjectFileName) with
                 | [] -> projectOptionsByFile.TryRemove(key) |> ignore
                 | remaining -> projectOptionsByFile[key] <- remaining
             | false, _ -> ()
 
-        projectOptionsByProject[projectPath] <- filteredOptions
-        projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot filteredOptions
+        projectOptionsByProject[projectPath] <- options
+        projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot options
 
-        for sourceFile in filteredOptions.SourceFiles do
+        for sourceFile in checkable options do
             projectOptionsByFile.AddOrUpdate(
                 AbsFilePath.create sourceFile,
-                [ filteredOptions ],
+                [ options ],
                 fun _ existing ->
-                    if
-                        existing
-                        |> List.exists (fun o -> o.ProjectFileName = filteredOptions.ProjectFileName)
-                    then
+                    if existing |> List.exists (fun o -> o.ProjectFileName = options.ProjectFileName) then
                         existing
                         |> List.map (fun o ->
-                            if o.ProjectFileName = filteredOptions.ProjectFileName then
-                                filteredOptions
+                            if o.ProjectFileName = options.ProjectFileName then
+                                options
                             else
                                 o)
                     else
-                        filteredOptions :: existing
+                        options :: existing
             )
             |> ignore
 
@@ -327,17 +345,46 @@ type CheckPipeline
 
             try
                 ct.ThrowIfCancellationRequested()
+                let fileName = Path.GetFileName absPath
+                activity.Log(checkStartLine fileName)
                 let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                let snapshot = ProjectSnapshots.build hashFile repoRoot openFile options
-                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker absPath snapshot
+                // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
+                // project's new generation. A generation never changes the frame.
+                let framedNow () =
+                    ProjectSnapshots.buildFramed
+                        (ProjectSnapshots.generationOf checker)
+                        hashFile
+                        repoRoot
+                        frames
+                        openFile
+                        options
+
+                let framed = framedNow ()
+                let snapshotTime = sw.Elapsed
+
+                // The name FCS knows the file by: under the virtual root when its project is.
+                let checkedPath =
+                    match framed.Frame with
+                    | Some frame ->
+                        ProjectSnapshots.recordFrame
+                            checker
+                            options.ProjectFileName
+                            (PathFrame.toVirtual frame options.ProjectFileName)
+
+                        PathFrame.toVirtual frame absPath
+                    | None -> absPath
+
+                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
                 // apart, so an identical render means it found no difference to tell.
                 // What produces it is not known (see `FcsDiagnosticFilter`), so
-                // dropping this project's checker state and asking again is a guess
-                // at the class of thing that might clear it: cheap, bounded to ONCE
+                // asking again in a new generation of this project's checker state
+                // (`ProjectSnapshots.invalidateShared`, since a suspect entry under a
+                // virtual root is every sharing session's) is a guess at the class of thing
+                // that might clear it: cheap, bounded to ONCE
                 // per project per cooldown so a pathological tree cannot turn every
                 // file into a project re-typecheck, and never trusted to have worked
                 // — a survivor is reported as our fault, not swallowed.
@@ -355,7 +402,7 @@ type CheckPipeline
                 let onRecheck () =
                     recheckBudget.Spend(project, DateTime.UtcNow)
                     Logging.warn "check" retryLog
-                    ProjectSnapshots.invalidate checker options
+                    ProjectSnapshots.invalidateShared checker options
 
                 let! parseResults, checkAnswer =
                     FcsDiagnosticFilter.recheckIfSelfIncompatible
@@ -363,18 +410,18 @@ type CheckPipeline
                         FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
                         budgetAllows
                         onRecheck
-                        (fun () -> ProjectSnapshots.parseAndCheck checker absPath snapshot)
+                        (fun () -> ProjectSnapshots.parseAndCheck checker checkedPath (framedNow ()).Snapshot)
                         (firstParse, firstAnswer)
 
                 sw.Stop()
                 ct.ThrowIfCancellationRequested()
 
                 if sw.Elapsed.TotalSeconds > 2.0 then
-                    Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                    Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                 match checkAnswer with
                 | FSharpCheckFileAnswer.Succeeded checkResults ->
-                    activity.Log($"checked {Path.GetFileName absPath}")
+                    activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
 
                     return
                         Some
@@ -384,7 +431,8 @@ type CheckPipeline
                               CheckResults = FullCheck checkResults
                               ProjectOptions = options
                               Version = version
-                              ModelGeneration = None }
+                              ModelGeneration = None
+                              Frame = framed.Frame }
                 | FSharpCheckFileAnswer.Aborted ->
                     return
                         Some
@@ -394,7 +442,8 @@ type CheckPipeline
                               CheckResults = ParseOnly
                               ProjectOptions = options
                               Version = version
-                              ModelGeneration = None }
+                              ModelGeneration = None
+                              Frame = framed.Frame }
             with ex ->
                 Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                 return None
@@ -493,7 +542,7 @@ type CheckPipeline
                 let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
                 try
-                    for sourceFile in options.SourceFiles do
+                    for sourceFile in options.SourceFiles |> Array.filter (not << PathFilter.isGeneratedPath) do
                         let! result = this.CheckFile(AbsFilePath.create sourceFile, ?ct = ct)
 
                         match result with

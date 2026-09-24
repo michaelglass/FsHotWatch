@@ -62,7 +62,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L
-      ModelGeneration = Some fixtureModelGeneration }
+      ModelGeneration = Some fixtureModelGeneration
+      Frame = None }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.

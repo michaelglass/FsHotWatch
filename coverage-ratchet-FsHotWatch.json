@@ -709,7 +709,7 @@
       {
         "line": 100,
         "branch": 98,
-        "reason": "Linux floor from CI run 35818884692 on 583d2a54 (2026-09-23): line 100 percent, branch 98.2 percent (112/114 branches), rounded down. Of the two unreached branches, the null arm of `string path` in canonicalize's empty-path error is now covered by a test, which leaves one: the `answering.Length = 1` arm of storedName. That arm is taken only when a name resolves on disk but no directory entry matches its exact bytes, which happens on a case- or normalization-insensitive volume (APFS). On Linux's exact-bytes filesystems it cannot be reached. macOS covers every branch and stays on the ratchet default.",
+        "reason": "Linux floor from CI run 35818884692 on 583d2a54 (2026-09-23): line 100 percent, branch 98.2 percent (112/114 branches), rounded down. Of the two unreached branches, the null arm of `string path` in canonicalize's empty-path error is now covered by a test, and the other was storedName's single-equivalent-entry arm, which a real Linux filesystem cannot reach. That lookup now takes its directory lister as a parameter (storedNameIn), and a test drives every fallback outcome through an injected listing, so that arm is covered on any platform; this floor stays until a CI run re-measures Linux. macOS covers every branch and stays on the ratchet default.",
         "platform": "linux"
       }
     ],
@@ -1701,8 +1701,9 @@
       "coveredBranches": 31
     },
     "RepoIdentity.fs": {
-      "coveredLines": 56,
-      "coveredBranches": 18
+      "coveredLines": 28,
+      "coveredBranches": 6,
+      "reason": "Lowered from 56/18 (2026-09-24): the file's own layout readers (pointer reading, the `/worktrees/` git-dir cut, the checkout-kind probe) were deleted; namespaceOf now derives from RepositoryIdentity.resolveWorktree. Measured 28/28 lines, 6/6 branches on macOS by a coverage run of RepositoryIdentityTests + CrossWorkspaceCacheTests + DaemonConfigTests; every remaining line and branch is covered."
     },
     "RunClaim.fs": {
       "coveredLines": 106,

@@ -66,6 +66,9 @@ type Config =
         Strip: string list
         /// `--set` overrides applied after `Strip`, in order.
         Set: ConfigOverride.Set list
+        /// `--env` variables for every process the harness launches (legacy daemons, the
+        /// host's attaching CLIs and so the host itself).
+        Env: (string * string) list
         Tests: bool
         Heap: bool
         /// Keep caches between repetitions instead of forcing a cold scan each time.
@@ -87,6 +90,9 @@ type Config =
         EditFile: string option
         /// How long one edit round waits for every session's settle line.
         SettleTimeout: TimeSpan
+        /// `--max-load`: absolute load1 ceiling for the preflight quiet check (default:
+        /// half the cores). Every record keeps its load, so a looser bar stays visible.
+        MaxLoad1: float option
     }
 
 let private log (msg: string) =
@@ -153,7 +159,13 @@ let private overrideConfig (worktree: string) (strip: string list) (sets: Config
     if not (List.isEmpty strip && List.isEmpty sets) then
         let file = Path.Combine(worktree, ".fshw.json")
 
-        match ConfigOverride.apply strip sets (File.ReadAllText file) with
+        let existing =
+            if File.Exists file then
+                Some(File.ReadAllText file)
+            else
+                None
+
+        match ConfigOverride.applyTo existing strip sets with
         | Ok text -> File.WriteAllText(file, text)
         | Error e -> failwith e
 
@@ -185,6 +197,10 @@ let private start (cfg: Config) (runDir: string) (cacheHome: string) (session: i
     psi.UseShellExecute <- false
     psi.Environment.["DOTNET_DiagnosticPorts"] <- $"%s{port},listen,nosuspend"
     psi.Environment.[FsHwPaths.CacheHomeEnvVar] <- cacheHome
+
+    for k, v in cfg.Env do
+        psi.Environment.[k] <- v
+
     let started = DateTime.UtcNow
     use proc = Process.Start psi
 
@@ -285,6 +301,39 @@ let editEpochDone (fresh: DaemonLog.Settle list) (sinceLastLine: TimeSpan) (quie
     match fresh with
     | [] -> false
     | first :: _ -> fresh |> List.exists (fun x -> x.Epoch > first.Epoch) || sinceLastLine >= quiet
+
+/// Parse `--env KEY=VALUE` (only the first `=` splits).
+let parseEnv (arg: string) : Result<string * string, string> =
+    let at = arg.IndexOf('=')
+
+    if at <= 0 then
+        Error $"--env %s{arg}: expected KEY=VALUE"
+    else
+        Ok(arg.Substring(0, at), arg.Substring(at + 1))
+
+/// A hosted session must echo the virtual-root setting its host was launched with:
+/// `FSHW_VIRTUAL_ROOT=0` means off, anything else (or unset) means on. A binary that
+/// echoes nothing is only a problem when the setting was asked for.
+let virtualRootProblems (env: (string * string) list) (echo: string option) : string list =
+    let requested =
+        env |> List.tryFind (fst >> (=) "FSHW_VIRTUAL_ROOT") |> Option.map snd
+
+    let expected =
+        match requested with
+        | Some "0" -> "off"
+        | _ -> "on"
+
+    match requested, echo with
+    | None, None -> []
+    | Some v, None -> [ $"FSHW_VIRTUAL_ROOT=%s{v} was set but the session echoed no virtualRoot" ]
+    | _, Some e when e <> expected ->
+        let asked =
+            match requested with
+            | Some v -> $"FSHW_VIRTUAL_ROOT=%s{v} was set"
+            | None -> "FSHW_VIRTUAL_ROOT was not set"
+
+        [ $"%s{asked} but the session echoed virtualRoot=%s{e}" ]
+    | _ -> []
 
 /// The CLI arguments that attach a session to the repository host: `start`, as a legacy
 /// daemon starts. `scan` would attach AND force a second full scan on top of the attach's
@@ -670,7 +719,8 @@ let runMatrix (cfg: Config) : int =
     Directory.CreateDirectory runDir |> ignore
     let mode = modeName cfg.Mode
 
-    let preflight = Load.contention Load.defaultBar (Instruments.loadSnapshot [])
+    let preflight =
+        Load.contention (Load.barFor cfg.MaxLoad1 Environment.ProcessorCount) (Instruments.loadSnapshot [])
 
     if not (List.isEmpty preflight) then
         log ("box is CONTENDED: " + String.concat "; " preflight)
@@ -680,7 +730,8 @@ let runMatrix (cfg: Config) : int =
             exit 3
 
     let provenance: Record.ConfigProvenance =
-        { Strip = cfg.Strip
+        { Env = cfg.Env
+          Strip = cfg.Strip
           Set = cfg.Set |> List.map (fun s -> ConfigOverride.pathText s, s.Json)
           Echo = None }
 
@@ -735,6 +786,7 @@ let runMatrix (cfg: Config) : int =
                     [ "FSHW_REPOSITORY_HOST", "1"
                       "FSHW_STATE_HOME", stateHome
                       FsHwPaths.CacheHomeEnvVar, cacheHome ]
+                    @ cfg.Env
 
                 let launched = ResizeArray<Process>()
 
@@ -871,6 +923,7 @@ let runMatrix (cfg: Config) : int =
                     window,
                     scanProblems s.Owner scan window
                     @ ConfigOverride.echoProblems cfg.Set (ConfigOverride.echo window)
+                    @ virtualRootProblems cfg.Env (DaemonLog.virtualRootEcho window)
 
                 try
                     // Phase 1: cold scan, every session concurrently.

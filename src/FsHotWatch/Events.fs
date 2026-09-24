@@ -117,6 +117,10 @@ type FileCheckResult =
         /// The completed project-model generation this result was published against.
         /// `None` when no daemon discovery captured it (a bare pipeline check).
         ModelGeneration: int64 option
+        /// The frame the file was checked under, when it was checked at a virtual root:
+        /// paths inside `ParseResults` and `CheckResults` are then virtual, and this maps
+        /// them to the worktree. `None`: they are the worktree's own.
+        Frame: PathFrame.PathFrame option
     }
 
 /// Result of checking all files in a project.

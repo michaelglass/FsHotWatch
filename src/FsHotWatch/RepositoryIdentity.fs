@@ -107,34 +107,36 @@ let private entryExists (path: string) =
     File.Exists path || Directory.Exists path || (linkTarget path).IsSome
 
 /// The name `name` is stored under inside the real directory `dir`, or None when
-/// nothing answers to it. An exact match wins; otherwise the one entry equal to it
-/// ignoring case and Unicode normalization (what a case-insensitive volume answered
-/// to). A directory that cannot be listed keeps the name as given — the entry exists,
-/// its stored spelling just cannot be learned.
-let private storedName (dir: string) (name: string) : string option =
-    let candidate = Path.Combine(dir, name)
+/// nothing answers to it. An exact match wins, and the listing stops there without
+/// normalizing anything; only when there is none is the directory listed again for the
+/// one entry equal to it ignoring case and Unicode normalization (what a
+/// case-insensitive volume answered to). A directory that cannot be listed keeps the
+/// name as given — the entry exists, its stored spelling just cannot be learned.
+let internal storedNameIn (listNames: string -> seq<string>) (dir: string) (name: string) : string option =
+    // The listing is lazy, so a directory that cannot be read throws while it is walked.
+    let scan (walk: seq<string> -> string option) =
+        try
+            walk (listNames dir)
+        with _ ->
+            None
 
-    if not (entryExists candidate) then
+    let equivalent (entry: string) =
+        String.Equals(nfc entry, nfc name, StringComparison.OrdinalIgnoreCase)
+
+    let theOneEquivalent (entries: seq<string>) =
+        match entries |> Seq.filter equivalent |> Seq.truncate 2 |> List.ofSeq with
+        | [ stored ] -> Some stored
+        | _ -> None
+
+    if not (entryExists (Path.Combine(dir, name))) then
         None
     else
-        let entries =
-            try
-                Directory.EnumerateFileSystemEntries(dir)
-                |> Seq.map Path.GetFileName
-                |> Array.ofSeq
-            with _ ->
-                [||]
+        scan (Seq.tryFind (fun entry -> String.Equals(entry, name, StringComparison.Ordinal)))
+        |> Option.orElseWith (fun () -> scan theOneEquivalent)
+        |> Option.orElse (Some name)
 
-        // `Array.IndexOf` (ordinal for strings) and `.Length`, not `Array.contains` /
-        // `Array.exists` and a `[| x |]` pattern: those compile a null-array guard that no
-        // array here can reach.
-        let answering =
-            entries
-            |> Array.filter (fun e -> String.Equals(nfc e, nfc name, StringComparison.OrdinalIgnoreCase))
-
-        if Array.IndexOf(entries, name) >= 0 then Some name
-        elif answering.Length = 1 then Some answering[0]
-        else Some name
+let private storedName =
+    storedNameIn (fun dir -> Directory.EnumerateFileSystemEntries dir |> Seq.map Path.GetFileName)
 
 let private parentOf (path: string) =
     match Path.GetDirectoryName path with
@@ -311,9 +313,45 @@ module SessionId =
             | _ -> None
         | _ -> None
 
+/// Which checkout of its repository a worktree is, read from the same entries that
+/// locate its common store. jj is read first: a colocated repository carries `.git`
+/// too, and only jj's pointer says which workspace this is.
+[<RequireQualifiedAccess>]
+type CheckoutKind =
+    /// `.jj/repo` is a directory: the workspace that owns the store.
+    | JjDefaultWorkspace
+    /// `.jj/repo` is a file pointing at another workspace's store (`jj workspace add`).
+    | JjSecondaryWorkspace
+    /// `.git` is a directory.
+    | GitMainCheckout
+    /// `.git` is a `gitdir:` file (`git worktree add`).
+    | GitWorktree
+    /// Neither `.jj` nor `.git`: a standalone repository of its own.
+    | PlainDirectory
+
+module CheckoutKind =
+    /// A secondary checkout: a jj workspace other than the default, or a git worktree.
+    let isSecondary (kind: CheckoutKind) : bool =
+        match kind with
+        | CheckoutKind.JjSecondaryWorkspace
+        | CheckoutKind.GitWorktree -> true
+        | CheckoutKind.JjDefaultWorkspace
+        | CheckoutKind.GitMainCheckout
+        | CheckoutKind.PlainDirectory -> false
+
+    /// How a log line names a checkout kind, with the evidence it was read from.
+    let describe (kind: CheckoutKind) : string =
+        match kind with
+        | CheckoutKind.JjDefaultWorkspace -> "the jj default workspace (.jj/repo is a directory)"
+        | CheckoutKind.JjSecondaryWorkspace -> "a secondary jj workspace (.jj/repo is a file)"
+        | CheckoutKind.GitMainCheckout -> "a git main checkout (.git is a directory)"
+        | CheckoutKind.GitWorktree -> "a git worktree (.git is a file)"
+        | CheckoutKind.PlainDirectory -> "a plain directory (no .jj or .git)"
+
 /// A worktree root with everything derived from it.
 type ResolvedWorktree =
     { Root: CanonicalPath
+      Kind: CheckoutKind
       Store: CommonStore
       Repository: RepositoryId
       Worktree: WorktreeId }
@@ -378,8 +416,9 @@ let private colocatedJjRepo (gitCommon: CanonicalPath) : CanonicalPath option =
     else
         None
 
-/// The common store for the checkout rooted at the canonical directory `root`.
-let private commonStoreOf (root: CanonicalPath) : Result<CommonStore, IdentityError> =
+/// The kind of the checkout rooted at the canonical directory `root`, and its common
+/// store.
+let private checkoutOf (root: CanonicalPath) : Result<CheckoutKind * CommonStore, IdentityError> =
     let jjDir = Path.Combine(root.Value, ".jj")
     let jjRepo = Path.Combine(jjDir, "repo")
     let dotGit = Path.Combine(root.Value, ".git")
@@ -388,42 +427,41 @@ let private commonStoreOf (root: CanonicalPath) : Result<CommonStore, IdentityEr
         { Provider = VcsProvider.Jujutsu
           Path = path }
 
+    let git kind (gitDir: CanonicalPath) =
+        gitCommonDir gitDir
+        |> Result.map (fun common ->
+            match colocatedJjRepo common with
+            | Some jjRepo -> kind, jj jjRepo
+            | None ->
+                kind,
+                { Provider = VcsProvider.Git
+                  Path = common })
+
     if Directory.Exists jjRepo then
-        canonicalize jjRepo |> Result.map jj
+        canonicalize jjRepo
+        |> Result.map (fun path -> CheckoutKind.JjDefaultWorkspace, jj path)
     elif File.Exists jjRepo then
-        readPointer jjRepo |> Result.bind (followPointer jjRepo jjDir) |> Result.map jj
+        readPointer jjRepo
+        |> Result.bind (followPointer jjRepo jjDir)
+        |> Result.map (fun path -> CheckoutKind.JjSecondaryWorkspace, jj path)
     elif Directory.Exists jjDir then
         Error(IdentityError.MalformedMetadata(jjDir, "has no `repo` entry"))
-    else
-        let gitDir =
-            if Directory.Exists dotGit then
-                canonicalize dotGit |> Result.map Some
-            elif File.Exists dotGit then
-                readPointer dotGit
-                |> Result.bind (fun line ->
-                    if line.StartsWith("gitdir:", StringComparison.Ordinal) then
-                        followPointer dotGit root.Value (line.Substring("gitdir:".Length).Trim())
-                        |> Result.map Some
-                    else
-                        Error(IdentityError.MalformedMetadata(dotGit, "a `.git` file must start with `gitdir:`")))
+    elif Directory.Exists dotGit then
+        canonicalize dotGit |> Result.bind (git CheckoutKind.GitMainCheckout)
+    elif File.Exists dotGit then
+        readPointer dotGit
+        |> Result.bind (fun line ->
+            if line.StartsWith("gitdir:", StringComparison.Ordinal) then
+                followPointer dotGit root.Value (line.Substring("gitdir:".Length).Trim())
             else
-                Ok None
-
-        gitDir
-        |> Result.bind (fun gitDir ->
-            match gitDir with
-            | None ->
-                Ok
-                    { Provider = VcsProvider.Standalone
-                      Path = root }
-            | Some gitDir ->
-                gitCommonDir gitDir
-                |> Result.map (fun common ->
-                    match colocatedJjRepo common with
-                    | Some jjRepo -> jj jjRepo
-                    | None ->
-                        { Provider = VcsProvider.Git
-                          Path = common }))
+                Error(IdentityError.MalformedMetadata(dotGit, "a `.git` file must start with `gitdir:`")))
+        |> Result.bind (git CheckoutKind.GitWorktree)
+    else
+        Ok(
+            CheckoutKind.PlainDirectory,
+            { Provider = VcsProvider.Standalone
+              Path = root }
+        )
 
 /// Resolve the worktree rooted at `root` (the directory holding `.jj` / `.git`; a
 /// directory with neither is a standalone repository of its own).
@@ -433,11 +471,12 @@ let resolveWorktree (root: string) : Result<ResolvedWorktree, IdentityError> =
         if not (Directory.Exists canonical.Value) then
             Error(IdentityError.NotADirectory canonical.Value)
         else
-            commonStoreOf canonical
-            |> Result.map (fun store ->
+            checkoutOf canonical
+            |> Result.map (fun (kind, store) ->
                 let repository = RepositoryId.ofStore store
 
                 { Root = canonical
+                  Kind = kind
                   Store = store
                   Repository = repository
                   Worktree = WorktreeId.ofRoot repository canonical }))
@@ -455,6 +494,10 @@ type RepositoryControlPaths =
         /// The IPC endpoint (pipe) name. Short, because a Unix-domain socket path is
         /// length-limited and the runtime prefixes it.
         Endpoint: string
+        /// The root every worktree of the repository is checked under. It must never
+        /// exist: FCS reads a project reference's output from disk when a file is at its
+        /// output path, and every output path is under this root.
+        VirtualRoot: string
     }
 
 /// Hex characters of the `RepositoryId` the endpoint name carries (64 bits — ample to
@@ -470,7 +513,8 @@ let repositoryControlPaths (stateHome: string) (repository: RepositoryId) : Repo
       PidFile = Path.Combine(dir, "host.pid")
       IdentityFile = Path.Combine(dir, "host.identity")
       HostLog = Path.Combine(dir, "host.log")
-      Endpoint = $"fshw-repo-%s{repository.Value.Substring(0, EndpointIdLength)}" }
+      Endpoint = $"fshw-repo-%s{repository.Value.Substring(0, EndpointIdLength)}"
+      VirtualRoot = Path.Combine(dir, "virtual") }
 
 /// The repository's slice of the box-wide shared cache (immutable, content-keyed
 /// artifacts shared by all its worktrees).

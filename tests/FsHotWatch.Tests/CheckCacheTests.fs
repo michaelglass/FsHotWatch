@@ -187,7 +187,8 @@ let private makeTestResult (file: string) (version: int64) : FileCheckResult =
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
       Version = version
-      ModelGeneration = None }
+      ModelGeneration = None
+      Frame = None }
 
 let private makeKey (fileHash: string) : CacheKey =
     { FileHash = ContentHash.create fileHash

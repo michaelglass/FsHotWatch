@@ -243,6 +243,44 @@ let ``. segments, a relative path, and .. above the filesystem root all canonica
         test <@ (resolved (Path.GetRelativePath(Directory.GetCurrentDirectory(), primary))).Root = expected @>)
 
 [<Fact(Timeout = 15000)>]
+let ``an exactly spelled name stops the listing at its entry and normalizes nothing`` () =
+    // Canonicalizing lists each parent directory, and a temp directory can hold tens of
+    // thousands of entries. An exact match is the common case: it must cost a scan up to
+    // that entry, not a normalization of every name in the directory. Names are only
+    // normalized by the fallback, which lists the directory again, so two pulls means
+    // the scan stopped at the match and the fallback never ran. The case variant before
+    // it is not the stored spelling.
+    withTempDir "rid-stored-exact" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, "Name"), "")
+        let pulled = ref 0
+
+        let listNames (_: string) =
+            seq {
+                "name"
+                "Name"
+                "after-the-match"
+            }
+            |> Seq.map (fun entry ->
+                pulled.Value <- pulled.Value + 1
+                entry)
+
+        test <@ storedNameIn listNames dir "Name" = Some "Name" @>
+        test <@ pulled.Value = 2 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``without an exact entry, only a single equivalent entry is the stored spelling`` () =
+    // The fallback, on any volume: one entry equal ignoring case and normalization is
+    // what the name resolved to; none, or several, leaves the name as given.
+    withTempDir "rid-stored-fallback" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, "Name"), "")
+        let listing (entries: string list) (_: string) = Seq.ofList entries
+
+        test <@ storedNameIn (listing [ "other"; "NAME" ]) dir "Name" = Some "NAME" @>
+        test <@ storedNameIn (listing [ "other" ]) dir "Name" = Some "Name" @>
+        test <@ storedNameIn (listing [ "NAME"; "name" ]) dir "Name" = Some "Name" @>
+        test <@ storedNameIn (listing [ "Name" ]) dir "Absent" = None @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a directory that cannot be listed keeps the name as given`` () =
     // Search permission without read permission: the entry is reachable, its stored
     // spelling just cannot be learned by listing.
@@ -589,6 +627,138 @@ let ``shared cache is per repository and results stay in the worktree's own .fsh
         test <@ repositorySharedCacheDir "/c" p.Repository = repositorySharedCacheDir "/c" s.Repository @>
         test <@ worktreeResultRoot p = Path.Combine(p.Root.Value, ".fshw") @>
         test <@ worktreeResultRoot s = Path.Combine(s.Root.Value, ".fshw") @>)
+
+// ---------------------------------------------------------------------------
+// Checkout kind: read from the entries that locate the store
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``every checkout kind is read alongside its store`` () =
+    withTempDir "kind" (fun dir ->
+        let jj = jjPrimary (mkdir (Path.Combine(dir, "jj")))
+        let jjWs = jjSecondary jj (mkdir (Path.Combine(dir, "jj-ws")))
+        let git = gitMain "o" (mkdir (Path.Combine(dir, "git")))
+        let gitWt = gitWorktree git "wt" (Path.Combine(dir, "git-wt"))
+        let plain = mkdir (Path.Combine(dir, "plain"))
+
+        let kinds =
+            [ jj; jjWs; git; gitWt; plain ]
+            |> List.map (fun root -> let r = resolved root in r.Kind, r.Store.Provider)
+
+        test
+            <@
+                kinds = [ CheckoutKind.JjDefaultWorkspace, VcsProvider.Jujutsu
+                          CheckoutKind.JjSecondaryWorkspace, VcsProvider.Jujutsu
+                          CheckoutKind.GitMainCheckout, VcsProvider.Git
+                          CheckoutKind.GitWorktree, VcsProvider.Git
+                          CheckoutKind.PlainDirectory, VcsProvider.Standalone ]
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a colocated repository's checkouts keep their own kinds while sharing the jj store`` () =
+    // jj is read first: a colocated secondary workspace that also carries a `.git` is a
+    // jj workspace. A git worktree adopted into the jj repository is still a git
+    // worktree — the kind is the checkout's shape, the provider is the store's.
+    withTempDir "kind-coloc" (fun dir ->
+        let primary = colocate (jjPrimary (mkdir (Path.Combine(dir, "repo"))))
+        let secondary = jjSecondary primary (mkdir (Path.Combine(dir, "ws")))
+        mkdir (Path.Combine(secondary, ".git")) |> ignore
+        let gitWt = gitWorktree primary "gwt" (Path.Combine(dir, "gwt"))
+
+        test <@ (resolved primary).Kind = CheckoutKind.JjDefaultWorkspace @>
+        test <@ (resolved secondary).Kind = CheckoutKind.JjSecondaryWorkspace @>
+        test <@ (resolved gitWt).Kind = CheckoutKind.GitWorktree @>
+        test <@ (resolved gitWt).Store = (resolved primary).Store @>)
+
+[<Fact(Timeout = 15000)>]
+let ``only jj secondary workspaces and git worktrees are secondary checkouts`` () =
+    let secondary =
+        [ CheckoutKind.JjDefaultWorkspace
+          CheckoutKind.JjSecondaryWorkspace
+          CheckoutKind.GitMainCheckout
+          CheckoutKind.GitWorktree
+          CheckoutKind.PlainDirectory ]
+        |> List.filter CheckoutKind.isSecondary
+
+    test <@ secondary = [ CheckoutKind.JjSecondaryWorkspace; CheckoutKind.GitWorktree ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``every checkout kind describes itself with the evidence it was read from`` () =
+    let descriptions =
+        [ CheckoutKind.JjDefaultWorkspace
+          CheckoutKind.JjSecondaryWorkspace
+          CheckoutKind.GitMainCheckout
+          CheckoutKind.GitWorktree
+          CheckoutKind.PlainDirectory ]
+        |> List.map CheckoutKind.describe
+
+    test <@ descriptions |> List.distinct |> List.length = 5 @>
+    test <@ descriptions |> List.forall (fun d -> d.Contains ".jj" || d.Contains ".git") @>
+
+// ---------------------------------------------------------------------------
+// The shared cache namespace reads the same layout
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``repositories living under a directory named worktrees get distinct cache namespaces`` () =
+    // Cutting a git directory at its last `/worktrees/` segment turned both of these
+    // into `<dir>` and gave two unrelated repositories one shared cache.
+    withTempDir "ns-worktrees-dir" (fun dir ->
+        let a = gitMain "o" (mkdir (Path.Combine(dir, "worktrees", "a")))
+        let b = gitMain "o" (mkdir (Path.Combine(dir, "worktrees", "b")))
+
+        test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a git worktree of a colocated jj repository shares the jj workspaces' cache namespace`` () =
+    withTempDir "ns-coloc" (fun dir ->
+        let primary = colocate (jjPrimary (mkdir (Path.Combine(dir, "repo"))))
+        let secondary = jjSecondary primary (mkdir (Path.Combine(dir, "ws")))
+        let gitWt = gitWorktree primary "gwt" (Path.Combine(dir, "gwt"))
+
+        let namespaces = [ primary; secondary; gitWt ] |> List.map RepoIdentity.namespaceOf
+
+        test <@ namespaces |> List.distinct |> List.length = 1 @>
+        test <@ namespaces.Head.StartsWith "repo-" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the cache namespace is keyed by the same store as the RepositoryId`` () =
+    // Every checkout that resolves to one RepositoryId lands in one namespace, and a
+    // symlinked spelling of a checkout is the same checkout.
+    withTempDir "ns-parity" (fun dir ->
+        let jj = jjPrimary (mkdir (Path.Combine(dir, "jj")))
+        let jjWs = jjSecondary jj (mkdir (Path.Combine(dir, "jj-ws")))
+        let git = gitMain "o" (mkdir (Path.Combine(dir, "git")))
+        let gitWt = gitWorktree git "wt" (Path.Combine(dir, "git-wt"))
+        let plain = mkdir (Path.Combine(dir, "plain"))
+        let link = Path.Combine(dir, "link")
+        File.CreateSymbolicLink(link, jjWs) |> ignore
+
+        // Each checkout is resolved once: resolving canonicalizes through the temp
+        // directory, so resolving inside the pairwise comparison multiplies that cost by
+        // the number of pairs.
+        let identities =
+            [ jj; jjWs; git; gitWt; plain; link ]
+            |> List.map (fun checkout -> (resolved checkout).Repository, RepoIdentity.namespaceOf checkout)
+
+        let agree (repositoryA: RepositoryId, namespaceA: string) (repositoryB: RepositoryId, namespaceB: string) =
+            (repositoryA = repositoryB) = (namespaceA = namespaceB)
+
+        test <@ identities |> List.forall (fun a -> identities |> List.forall (agree a)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a checkout whose layout cannot be read gets a private cache namespace`` () =
+    // The cache falls back rather than failing: a dangling jj pointer shares nothing,
+    // not even with the repository it claims.
+    withTempDir "ns-dangling" (fun dir ->
+        let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
+        let ws = mkdir (Path.Combine(dir, "ws", ".jj"))
+        File.WriteAllText(Path.Combine(ws, "repo"), "../../nowhere/.jj/repo")
+        let broken = Path.Combine(dir, "ws")
+
+        test <@ RepoIdentity.namespaceOf broken <> RepoIdentity.namespaceOf primary @>
+        test <@ RepoIdentity.namespaceOf broken = RepoIdentity.namespaceOf broken @>
+        test <@ (RepoIdentity.namespaceOf broken).StartsWith "ws-" @>)
 
 // ---------------------------------------------------------------------------
 // This checkout, and the real tools

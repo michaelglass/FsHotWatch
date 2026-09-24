@@ -418,17 +418,17 @@ let ``the store directory is named after the repository, not the checkout`` () =
         test <@ (RepoIdentity.namespaceOf main).StartsWith "main-" @>)
 
 [<Fact(Timeout = 15000)>]
-let ``a corrupt workspace pointer still yields an identity and a namespace instead of crashing daemon start`` () =
-    // A pointer that cannot be made a path (a null character): `Path.GetFullPath`
-    // throws, the raw text stands in as the identity, and the namespace takes the
-    // awkward-name form. A private, stable namespace — never an exception on the
-    // daemon's startup path.
-    withJjWorkspace (fun _ _ -> "../../\000/.jj/repo") (fun _ secondary ->
+let ``a corrupt workspace pointer still yields a namespace instead of crashing daemon start`` () =
+    // A pointer that cannot be made a path (a null character) is unreadable metadata:
+    // the checkout gets a private, stable namespace named after itself — never an
+    // exception on the daemon's startup path, never the main checkout's store.
+    withJjWorkspace (fun _ _ -> "../../\000/.jj/repo") (fun main secondary ->
         match RepoIdentity.describe secondary with
-        | RepoIdentity.RepoIdentitySource.Jujutsu repoDir -> test <@ repoDir.Length > 0 @>
-        | other -> failwith $"expected a Jujutsu identity from the pointer, got %A{other}"
+        | RepoIdentity.RepoIdentitySource.Unreadable(root, _) -> test <@ root = Path.GetFullPath secondary @>
+        | other -> failwith $"expected an unreadable identity from the pointer, got %A{other}"
 
-        test <@ (RepoIdentity.namespaceOf secondary).StartsWith "repo-" @>)
+        test <@ (RepoIdentity.namespaceOf secondary).StartsWith "ws-" @>
+        test <@ RepoIdentity.namespaceOf secondary <> RepoIdentity.namespaceOf main @>)
 
 [<Fact(Timeout = 15000)>]
 let ``this checkout's identity resolves to a directory that exists`` () =
@@ -438,15 +438,15 @@ let ``this checkout's identity resolves to a directory that exists`` () =
     let root = RepoTasks.repoRoot ()
 
     match RepoIdentity.describe root with
-    | RepoIdentity.RepoIdentitySource.Jujutsu repoDir ->
-        test <@ Directory.Exists repoDir @>
-        test <@ Path.IsPathRooted repoDir @>
-        let main = Path.GetDirectoryName(Path.GetDirectoryName repoDir)
-        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf root @>
-    | RepoIdentity.RepoIdentitySource.Git gitDir ->
-        test <@ Directory.Exists gitDir @>
-        test <@ Path.IsPathRooted gitDir @>
-    | RepoIdentity.RepoIdentitySource.CheckoutPath _ -> ()
+    | RepoIdentity.RepoIdentitySource.Store store ->
+        test <@ Directory.Exists store.Path.Value @>
+        test <@ Path.IsPathRooted store.Path.Value @>
+
+        if store.Provider = RepositoryIdentity.VcsProvider.Jujutsu then
+            let main = Path.GetDirectoryName(Path.GetDirectoryName store.Path.Value)
+            test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf root @>
+    | RepoIdentity.RepoIdentitySource.Unreadable(_, error) ->
+        failwith $"this checkout's layout should read: %s{RepositoryIdentity.IdentityError.describe error}"
 
 [<Fact(Timeout = 15000)>]
 let ``two unrelated checkouts never share a cache namespace`` () =
@@ -454,14 +454,12 @@ let ``two unrelated checkouts never share a cache namespace`` () =
         test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
 
 [<Fact(Timeout = 15000)>]
-let ``a git worktree resolves to the repository's own git directory`` () =
-    test <@ RepoIdentity.canonicalGitDir "/repo/.git/worktrees/feature" = "/repo/.git" @>
-    test <@ RepoIdentity.canonicalGitDir "/repo/.git" = "/repo/.git" @>
-
-[<Fact(Timeout = 15000)>]
 let ``a checkout under no recognised version control gets a private namespace`` () =
     withTempDir "novcs" (fun dir ->
-        test <@ RepoIdentity.describe dir = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath dir) @>)
+        match RepoIdentity.describe dir with
+        | RepoIdentity.RepoIdentitySource.Store store ->
+            test <@ store.Provider = RepositoryIdentity.VcsProvider.Standalone @>
+        | other -> failwith $"expected a standalone store, got %A{other}")
 
 // ---------------------------------------------------------------------------
 // The compiler options hash — the shared daemon's prerequisite
@@ -730,16 +728,21 @@ let ``the fingerprint registry is bounded and forgetting one only costs a reason
 // Identity and path edge cases
 // ---------------------------------------------------------------------------
 
+let private isUnreadable (source: RepoIdentity.RepoIdentitySource) =
+    match source with
+    | RepoIdentity.RepoIdentitySource.Unreadable(root, _) -> Path.IsPathRooted root
+    | RepoIdentity.RepoIdentitySource.Store _ -> false
+
 [<Fact(Timeout = 15000)>]
 let ``an empty or unrecognised pointer file leaves the checkout on its own`` () =
     withTempDir "emptyptr" (fun dir ->
         Directory.CreateDirectory(Path.Combine(dir, ".jj")) |> ignore
         File.WriteAllText(Path.Combine(dir, ".jj", "repo"), "   \n")
-        test <@ RepoIdentity.describe dir = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath dir) @>
+        test <@ isUnreadable (RepoIdentity.describe dir) @>
 
         // A `.git` file that is not a `gitdir:` pointer is not a repository marker.
         File.WriteAllText(Path.Combine(dir, ".git"), "something else\n")
-        test <@ RepoIdentity.describe dir = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath dir) @>)
+        test <@ isUnreadable (RepoIdentity.describe dir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a colocated git checkout and its worktrees share an identity`` () =
@@ -747,26 +750,41 @@ let ``a colocated git checkout and its worktrees share an identity`` () =
         let main = Path.Combine(root, "main")
         let worktree = Path.Combine(root, "wt")
         let gitDir = Path.Combine(main, ".git")
-        Directory.CreateDirectory gitDir |> ignore
+        let perWorktree = Path.Combine(gitDir, "worktrees", "wt")
+        Directory.CreateDirectory perWorktree |> ignore
+        File.WriteAllText(Path.Combine(perWorktree, "commondir"), "../..\n")
         Directory.CreateDirectory worktree |> ignore
-        File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: %s{gitDir}/worktrees/wt\n")
+        File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: %s{perWorktree}\n")
 
-        test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Git gitDir @>
-        test <@ RepoIdentity.describe worktree = RepoIdentity.RepoIdentitySource.Git gitDir @>
+        match RepoIdentity.describe main with
+        | RepoIdentity.RepoIdentitySource.Store store ->
+            test <@ store.Provider = RepositoryIdentity.VcsProvider.Git @>
+            test <@ store.Path.Value.EndsWith(Path.Combine("main", ".git")) @>
+        | other -> failwith $"expected a git store, got %A{other}"
+
+        test <@ RepoIdentity.describe worktree = RepoIdentity.describe main @>
 
         test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf worktree @>)
 
 [<Fact(Timeout = 15000)>]
 let ``the identity source is tagged by kind so two kinds cannot collide`` () =
-    let path = "/some/place"
+    withTempDir "tagged" (fun dir ->
+        let path =
+            match RepositoryIdentity.canonicalize dir with
+            | Ok path -> path
+            | Error error -> failwith (RepositoryIdentity.IdentityError.describe error)
 
-    let sources =
-        [ RepoIdentity.RepoIdentitySource.Jujutsu path
-          RepoIdentity.RepoIdentitySource.Git path
-          RepoIdentity.RepoIdentitySource.CheckoutPath path ]
-        |> List.map RepoIdentity.identitySource
+        let store provider =
+            RepoIdentity.RepoIdentitySource.Store { Provider = provider; Path = path }
 
-    test <@ sources |> List.distinct |> List.length = 3 @>
+        let sources =
+            [ store RepositoryIdentity.VcsProvider.Jujutsu
+              store RepositoryIdentity.VcsProvider.Git
+              store RepositoryIdentity.VcsProvider.Standalone
+              RepoIdentity.RepoIdentitySource.Unreadable(path.Value, RepositoryIdentity.IdentityError.PathNotFound dir) ]
+            |> List.map RepoIdentity.identitySource
+
+        test <@ sources |> List.distinct |> List.length = 4 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a checkout whose directory name is not filesystem-plain still gets a namespace`` () =
@@ -819,7 +837,7 @@ let ``an unreadable repository pointer leaves the checkout on its own`` () =
         File.SetUnixFileMode(pointer, UnixFileMode.None)
 
         try
-            test <@ RepoIdentity.describe dir = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath dir) @>
+            test <@ isUnreadable (RepoIdentity.describe dir) @>
         finally
             File.SetUnixFileMode(pointer, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
 
@@ -1002,64 +1020,3 @@ let ``an analyzer whose source drifted after its build has no analyzers key at a
 
         File.AppendAllText(Path.Combine(b, rulesSourceRel), "\n// edited, not rebuilt\n")
         test <@ analyzersKeyOf b dllB (Path.Combine(b, "src", "A.fs")) = None @>)
-
-// ---------------------------------------------------------------------------
-// Checkout kind: which checkout of a repository is this? Read from the filesystem,
-// because `.fshw.json` is tracked and shared by every workspace.
-// ---------------------------------------------------------------------------
-
-[<Fact(Timeout = 15000)>]
-let ``a jj default workspace has a .jj/repo DIRECTORY`` () =
-    withTempDir "kind-jj-default" (fun root ->
-        Directory.CreateDirectory(Path.Combine(root, ".jj", "repo")) |> ignore
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjDefaultWorkspace @>)
-
-[<Fact(Timeout = 15000)>]
-let ``a jj secondary workspace has a .jj/repo FILE`` () =
-    withTempDir "kind-jj-secondary" (fun root ->
-        Directory.CreateDirectory(Path.Combine(root, ".jj")) |> ignore
-        File.WriteAllText(Path.Combine(root, ".jj", "repo"), "../../../.jj/repo")
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjSecondaryWorkspace @>)
-
-[<Fact(Timeout = 15000)>]
-let ``a git main checkout has a .git DIRECTORY`` () =
-    withTempDir "kind-git-main" (fun root ->
-        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.GitMainCheckout @>)
-
-[<Fact(Timeout = 15000)>]
-let ``a git worktree has a .git FILE`` () =
-    withTempDir "kind-git-worktree" (fun root ->
-        File.WriteAllText(Path.Combine(root, ".git"), "gitdir: /elsewhere/.git/worktrees/w")
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.GitWorktree @>)
-
-[<Fact(Timeout = 15000)>]
-let ``a colocated jj secondary workspace is read as jj, not by its git file`` () =
-    // A colocated repo carries both; jj's own pointer is the one that says which
-    // workspace this is.
-    withTempDir "kind-colocated" (fun root ->
-        Directory.CreateDirectory(Path.Combine(root, ".jj")) |> ignore
-        File.WriteAllText(Path.Combine(root, ".jj", "repo"), "../../../.jj/repo")
-        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.JjSecondaryWorkspace @>)
-
-[<Fact(Timeout = 15000)>]
-let ``a plain directory is neither`` () =
-    withTempDir "kind-plain" (fun root ->
-        test <@ RepoIdentity.checkoutKind root = RepoIdentity.CheckoutKind.PlainDirectory @>)
-
-[<Fact(Timeout = 15000)>]
-let ``only jj secondary workspaces and git worktrees are secondary checkouts`` () =
-    let secondary =
-        [ RepoIdentity.CheckoutKind.JjDefaultWorkspace
-          RepoIdentity.CheckoutKind.JjSecondaryWorkspace
-          RepoIdentity.CheckoutKind.GitMainCheckout
-          RepoIdentity.CheckoutKind.GitWorktree
-          RepoIdentity.CheckoutKind.PlainDirectory ]
-        |> List.filter RepoIdentity.isSecondaryCheckout
-
-    test
-        <@
-            secondary = [ RepoIdentity.CheckoutKind.JjSecondaryWorkspace
-                          RepoIdentity.CheckoutKind.GitWorktree ]
-        @>

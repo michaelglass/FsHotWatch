@@ -97,3 +97,11 @@ let ``string values compare unquoted, and sections that never echo are recorded 
           ok (ConfigOverride.parseSet "build.args=\"build\"") ]
 
     test <@ List.isEmpty (ConfigOverride.echoProblems sets [ "checker.mode", "fast" ]) @>
+
+[<Fact>]
+let ``a repository with no .fshw.json is overridden from the defaults, an empty object`` () =
+    let text =
+        ok (ConfigOverride.applyTo None [] [ ok (ConfigOverride.parseSet "build=false") ])
+
+    test <@ System.Text.Json.Nodes.JsonNode.Parse(text).["build"].GetValue<bool>() = false @>
+    test <@ ConfigOverride.applyTo (Some config) [] [] = ConfigOverride.apply [] [] config @>
