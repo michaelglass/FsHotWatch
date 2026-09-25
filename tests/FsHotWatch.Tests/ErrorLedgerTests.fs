@@ -1003,7 +1003,7 @@ let ``every read sees each write whole while writers run`` () =
         stop.Set()
 
     test <@ reader.Wait(TimeSpan.FromSeconds 30.0) @>
-    test <@ List.ofSeq torn = [] @>
+    test <@ Seq.isEmpty torn @>
 
     // At rest, the files with findings and the keys with revisions are the same set.
     let files = ledger.GetAll() |> Map.keys |> Set.ofSeq
