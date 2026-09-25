@@ -27,6 +27,17 @@
   (`Database.extensionEdgeOwner`). An existing index is recreated on open, so the
   `_extern`-owned extension edges it accumulated do not survive the upgrade.
 
+- feat: `NamedDispatch.NamedDispatchExtension` couples a test to a handler it reaches
+  only through a string name (a job runner, a message topic, a command table). The
+  consumer declares both sides in the tree, by attribute name:
+  `[<DispatchedAs(channel, name)>]` on the handler and
+  `[<DispatchTemplate(channel, "/admin/jobs/{action}/{name}")>]` on any symbol. Every
+  template match in a test-bearing file whose captured name is registered on that
+  channel yields a `SharedState` edge (source `named-dispatch`) from the symbol
+  enclosing the match to the handler, so the walk reaches the test even when the
+  registry is a composition root. Edges depend only on the indexed store and its source
+  files — never on the change set — so two index builds of one tree agree.
+
 ## 12.0.0 - 2026-09-24
 
 - fix!: `Database.create` refuses a database whose `user_version` is newer than its own

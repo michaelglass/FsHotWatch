@@ -152,3 +152,46 @@ type DependsOnGlobAttribute(pattern: string) =
                  Inherited = false)>]
 type CompositionRootAttribute() =
     inherit Attribute()
+
+/// Registers the annotated handler under a string NAME on a dispatch CHANNEL, for
+/// `TestPrune.NamedDispatch`. A test that reaches the handler only by dispatching that
+/// name — `POST /admin/jobs/run/Purge`, a queue topic, a command verb — gets an edge to
+/// it, matched through the channel's `DispatchTemplate`.
+///
+/// Put it on the function that does the work, never on the registry that dispatches to
+/// it: a registry marked `CompositionRoot` stops the walk, so an edge into it selects
+/// nothing that changed behind it.
+///
+/// Matched by attribute NAME, like `CompositionRoot`; a consumer may declare its own
+/// two-line equivalent instead of referencing this package.
+///
+/// Example:
+///   [&lt;TestPrune.DispatchedAs("job", "Purge")&gt;]
+///   let runPurge (config: Config) = ...
+[<AttributeUsage(AttributeTargets.Method ||| AttributeTargets.Property, AllowMultiple = true, Inherited = false)>]
+type DispatchedAsAttribute(channel: string, name: string) =
+    inherit Attribute()
+    member _.Channel = channel
+    member _.Name = name
+
+/// Declares the textual shape a dispatch on CHANNEL takes at a call site, for
+/// `TestPrune.NamedDispatch`. `{name}` marks where the registered name appears and is
+/// required; any other `{placeholder}` matches one path-like segment. Conventionally
+/// placed on the registry.
+///
+/// Matched by attribute NAME; a consumer may declare its own equivalent.
+///
+/// Example:
+///   [&lt;TestPrune.DispatchTemplate("job", "/admin/jobs/{action}/{name}")&gt;]
+///   let run (job: JobName) = ...
+[<AttributeUsage(AttributeTargets.Method
+                 ||| AttributeTargets.Property
+                 ||| AttributeTargets.Class
+                 ||| AttributeTargets.Struct
+                 ||| AttributeTargets.Interface,
+                 AllowMultiple = true,
+                 Inherited = false)>]
+type DispatchTemplateAttribute(channel: string, template: string) =
+    inherit Attribute()
+    member _.Channel = channel
+    member _.Template = template

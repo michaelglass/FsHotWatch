@@ -72,6 +72,7 @@
     <Compile Include="FalcoRouteExtensionTests.fs" />
     <Compile Include="FalcoRouteEdgeDeterminismTests.fs" />
     <Compile Include="SqlCouplingTests.fs" />
+    <Compile Include="NamedDispatchTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
     <Compile Include="ReleaseEnrollmentTests.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />
