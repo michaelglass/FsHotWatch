@@ -9,9 +9,19 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Coverage is scoped to the TestPrune.Trace* modules by testconfig.json (MTP copies it next to
+    the test app as TestPrune.Trace.Tests.testconfig.json). These tests load TestPrune.Core, whose
+    files are measured, and ratcheted, by TestPrune.Tests; without the scope they would appear
+    here too, at this project's 100% default. It is a per-project setting because CI's reusable
+    workflow passes no coverage-settings file; `mise run test` skips the shared one here, as MTP
+    refuses a run given both.
+  -->
   <ItemGroup>
     <Compile Include="Fixtures.fs" />
     <Compile Include="ScaffoldTests.fs" />
+    <Compile Include="TraceStoreTests.fs" />
+    <Compile Include="FingerprintTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

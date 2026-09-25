@@ -26,6 +26,8 @@
 
     <ItemGroup>
         <Compile Include="Model.fs" />
+        <Compile Include="TraceStore.fs" />
+        <Compile Include="Fingerprint.fs" />
     </ItemGroup>
 
     <ItemGroup>

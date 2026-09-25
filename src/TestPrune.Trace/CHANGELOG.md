@@ -3,3 +3,10 @@
 ## Unreleased
 
 - feat: package scaffold with the shared trace model (`TestPrune.Trace.Model`).
+- feat: trace store (`TestPrune.Trace.TraceStore`): a SQLite file separate from the index, with its
+  own `TraceSchemaVersion` and forward-only migrations. A file from a newer trace schema is refused
+  (`TraceSchemaNewerThanConsumer`) and left untouched; no code path deletes it. Content is stored per
+  scope, so fixture and pool content is stored once and linked from each test.
+- feat: environment fingerprint (`TestPrune.Trace.Fingerprint`): SHA-256 of canonical JSON over the
+  runtime, OS/arch, original deps.json hash, recorder and weaver versions, TestPrune.Core's
+  `SchemaVersion` as the hash scheme, and configured files and environment variables (values hashed).

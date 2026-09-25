@@ -18,14 +18,18 @@ depends = ["restore"]
 description = "Run tests with coverage"
 # One cobertura per test project, in coverage/<project without .Tests>/, the same layout
 # CI's reusable build workflow produces and the coverage-ratchet-<project>.json files check.
+# A test project with its own testconfig.json carries its coverage settings there (CI passes
+# no --coverage-settings); MTP refuses a run given both, so the shared file is skipped for it.
 run = """
 set -e
 for proj in $(find tests -name '*.Tests.fsproj' | sort); do
   project_name=$(basename "$(dirname "$proj")" | sed 's/\\.Tests$//')
+  settings="--coverage-settings $PWD/coverage.settings.xml"
+  [ -f "$(dirname "$proj")/testconfig.json" ] && settings=""
   echo "Testing $proj (coverage -> coverage/$project_name/)"
   dotnet test --project "$proj" \
     --coverage \
-    --coverage-settings "$PWD/coverage.settings.xml" \
+    $settings \
     --coverage-output-format cobertura \
     --coverage-output "$PWD/coverage/$project_name/coverage.cobertura.xml"
 done
