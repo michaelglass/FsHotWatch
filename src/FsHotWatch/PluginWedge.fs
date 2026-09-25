@@ -137,16 +137,27 @@ let describeAwaiting
     let elapsedSince (startedAt: DateTime) =
         if now > startedAt then now - startedAt else TimeSpan.Zero
 
-    [ for (key, startedAt) in subtasks do
-          $"%s{key} %s{formatElapsed (elapsedSince startedAt)}"
-      for (name, startedAt, deadline) in boundedWork do
-          match deadline with
-          | Some bound ->
-              $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)} of %s{formatElapsed bound}"
-          | None -> $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)}"
-      if pendingEvents > 0 then
-          $"%d{pendingEvents} event(s) admitted and not yet folded" ]
-    |> String.concat "; "
+    // List.map rather than `for … in` inside a list expression: the latter compiles to
+    // an enumerator with a null-guarded Dispose whose null arm no list can reach.
+    let subtaskClauses =
+        subtasks
+        |> List.map (fun (key, startedAt) -> $"%s{key} %s{formatElapsed (elapsedSince startedAt)}")
+
+    let boundedClauses =
+        boundedWork
+        |> List.map (fun (name, startedAt, deadline) ->
+            match deadline with
+            | Some bound ->
+                $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)} of %s{formatElapsed bound}"
+            | None -> $"bounded work: %s{name} %s{formatElapsed (elapsedSince startedAt)}")
+
+    let backlogClause =
+        if pendingEvents > 0 then
+            [ $"%d{pendingEvents} event(s) admitted and not yet folded" ]
+        else
+            []
+
+    subtaskClauses @ boundedClauses @ backlogClause |> String.concat "; "
 
 /// The clause appended to a still-running or wedge line: what the plugin is on, or
 /// nothing when the host knows nothing more than that it is Running.
