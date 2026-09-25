@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-25
+
 - chore!: `SqlExtension` and `AutoSqlExtension` implement TestPrune.Core's
   `AnalyzeEdges: SymbolStore -> repoRoot` (no `changedFiles`). They already returned
   edges for the whole tree, so the edges themselves do not change.

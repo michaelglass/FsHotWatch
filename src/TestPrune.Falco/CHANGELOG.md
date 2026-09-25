@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.0 - 2026-09-25
+
 - fix!: `AnalyzeEdges` returns edges for every route in the route table on every call,
   not only for handler files in the run's change set, so the stored route edges are the
   same whatever the index's build history. A route removed from the table, or repointed
