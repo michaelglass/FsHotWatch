@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: on macOS, a daemon or repository host the CLI launches runs with
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0`. Some macOS releases intermittently deliver
+  CoreCLR's GC thread-suspend activation signal with a NULL handler, killing the daemon
+  with SIGSEGV at pc=0; with injection off the GC reaches safe points through polls and
+  return-address hijacks instead. A value already in the environment (`DOTNET_` or
+  `COMPlus_` prefix) is left alone, and `FSHW_THREAD_SUSPEND_INJECTION=1` keeps the
+  runtime default. Daemon and host logs name the active mode and the OS version at
+  startup (`thread-suspend: …; os: macOS 27.0 (26A428)`).
+
 ## 0.14.0-alpha.63 - 2026-09-25
 
 - feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the

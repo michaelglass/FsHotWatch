@@ -163,6 +163,7 @@
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="DetachedLaunchTests.fs" />
+    <Compile Include="ThreadSuspendInjectionTests.fs" />
     <Compile Include="LauncherLifetimeTests.fs" />
     <Compile Include="LoadedConfigIdentityTests.fs" />
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />
