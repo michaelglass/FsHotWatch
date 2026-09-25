@@ -565,3 +565,76 @@ let ``runTick appends what the plugin is on to its still-running and wedge lines
     test <@ wedges.Count = 1 @>
     test <@ wedges.[0].Contains "wedged on 'test-prune'" @>
     test <@ wedges.[0].EndsWith " — on: tests result queued 80m 0s" @>
+
+// ---------------------------------------------------------------------------
+// A clock that steps backwards — a future start, a future hand-off, a future
+// activity stamp, or a later tick reading an earlier `Now`. Every duration clamps
+// at zero, and an escalation already logged is never logged again.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``describeAwaiting clamps work that started in the future to zero elapsed`` () =
+    let later = now + TimeSpan.FromMinutes 3.0
+
+    let text =
+        describeAwaiting now [ "primary", later ] [ "dispatch", later, Some(TimeSpan.FromMinutes 20.0) ] 0
+
+    test <@ text = "primary 0s; bounded work: dispatch 0s of 20m 0s" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a result handed to the mailbox in the future is queued for zero and not mentioned`` () =
+    let since = now - TimeSpan.FromMinutes 2.0
+    let queuedAt = now + TimeSpan.FromMinutes 30.0
+
+    let actions, buckets =
+        decideTick bound resultBound escalate (queued "test-prune" since queuedAt) Map.empty
+
+    test <@ List.isEmpty actions @>
+    test <@ buckets |> Map.forall (fun _ bucket -> bucket = 0) @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideTick does NOT fail closed when the last activity is stamped in the future`` () =
+    let actions, _ =
+        decideTick bound resultBound escalate (inputs [] true (now + TimeSpan.FromMinutes 90.0)) Map.empty
+
+    test <@ List.isEmpty actions @>
+
+[<Fact(Timeout = 15000)>]
+let ``a tick whose clock stepped back keeps the escalations already logged and repeats none`` () =
+    let since = now - TimeSpan.FromMinutes 20.0
+    let queuedAt = now - TimeSpan.FromMinutes 15.0
+
+    let actions1, buckets1 =
+        decideTick bound resultBound escalate (queued "test-prune" since queuedAt) Map.empty
+
+    test <@ List.length actions1 = 2 @>
+
+    // Ten minutes earlier: both the run and its result fall into lower buckets.
+    let earlier =
+        { queued "test-prune" since queuedAt with
+            Now = now - TimeSpan.FromMinutes 10.0 }
+
+    let actions2, buckets2 = decideTick bound resultBound escalate earlier buckets1
+
+    test <@ List.isEmpty actions2 @>
+    test <@ buckets2 = buckets1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runTick recovers from an unobservable wedge AT MOST ONCE across ticks`` () =
+    let log = ResizeArray<string>()
+    let wedges = ResizeArray<string>()
+    let quietSince = DateTime.UtcNow - TimeSpan.FromMinutes 90.0
+
+    let d =
+        { deps bound (fun () -> []) log wedges with
+            AnyBusy = fun () -> true
+            LastActivityAt = fun () -> quietSince }
+
+    let latch = FireLatch.create ()
+    let buckets = ref Map.empty
+
+    test <@ runTick d latch buckets @>
+    test <@ not (runTick d latch buckets) @>
+    test <@ wedges.Count = 1 @>
+    test <@ wedges.[0].Contains "cannot tell which plugin" @>
+    test <@ log.Count = 0 @>
