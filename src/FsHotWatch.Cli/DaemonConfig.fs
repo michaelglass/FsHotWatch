@@ -246,6 +246,9 @@ type TestProjectConfig =
         /// How to obtain the structured test report the verdict is derived from
         /// (`reportVerificationFormat` in `.fshw.json`). Default `AutoDetect`.
         ReportVerificationFormat: ReportVerificationFormat
+        /// Whether this project takes part in `tests.traces` recording. Default true;
+        /// `"traces": false` opts it out.
+        Traces: bool
     }
 
 /// Configuration for Falco route attribution.
@@ -329,7 +332,8 @@ type DaemonConfiguration =
                Excluded: SolutionScope.Exclusion list
                Solution: string option
                CoverageDir: string
-               DependsOn: string list |} option
+               DependsOn: string list
+               Traces: FsHotWatch.TestPrune.TraceSettings option |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -792,6 +796,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                                     AutoDetect
                             | _ -> AutoDetect
 
+                        // `traces`: every project takes part in `tests.traces`
+                        // recording unless it says `"traces": false`.
+                        let traces =
+                            match p.TryGetProperty("traces") with
+                            | true, t when t.ValueKind = JsonValueKind.False -> false
+                            | _ -> true
+
                         { Project = project
                           Command = command
                           Args = args
@@ -803,7 +814,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           Coverage = coverage
                           CoverageArgsTemplate = coverageArgsTemplate
                           TimeoutSec = timeoutSec
-                          ReportVerificationFormat = reportVerificationFormat })
+                          ReportVerificationFormat = reportVerificationFormat
+                          Traces = traces })
                     |> Seq.toList
                 | _ -> []
 
@@ -834,6 +846,60 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
                 | _ -> []
 
+            // `tests.traces`: opt-in per-test trace recording. Absent → None (off,
+            // byte-for-byte today's behaviour). An unknown `record` value warns and is
+            // off: recording never gates a verdict, so a typo must not fail the config.
+            let traces =
+                match v.TryGetProperty("traces") with
+                | true, t when t.ValueKind = JsonValueKind.Object ->
+                    let str (name: string) =
+                        match t.TryGetProperty(name) with
+                        | true, s when s.ValueKind = JsonValueKind.String -> Some(s.GetString())
+                        | _ -> None
+
+                    let strs (name: string) =
+                        match t.TryGetProperty(name) with
+                        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                            arr.EnumerateArray()
+                            |> Seq.filter (fun e -> e.ValueKind = JsonValueKind.String)
+                            |> Seq.map (fun e -> e.GetString())
+                            |> Seq.toList
+                        | _ -> []
+
+                    let record =
+                        match str "record" with
+                        | None -> FsHotWatch.TestPrune.RecordOff
+                        | Some raw ->
+                            match FsHotWatch.TestPrune.TraceSettings.parseRecord raw with
+                            | Some r -> r
+                            | None ->
+                                Logging.warn
+                                    "config"
+                                    $"Unknown tests.traces.record value '%s{raw}' (expected off, full-runs or every-run), recording is off"
+
+                                FsHotWatch.TestPrune.RecordOff
+
+                    let weaveTests =
+                        match str "weaveTests" |> Option.map (fun w -> w.ToLowerInvariant()) with
+                        | Some "full" -> FsHotWatch.TestPrune.WeaveTestFull
+                        | _ -> FsHotWatch.TestPrune.WeaveTestSites
+
+                    let verifyTimeoutSec =
+                        match t.TryGetProperty("verifyTimeoutSec") with
+                        | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
+                        | _ -> FsHotWatch.TestPrune.TraceSettings.defaultVerifyTimeoutSec
+
+                    let settings: FsHotWatch.TestPrune.TraceSettings =
+                        { Record = record
+                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.defaultDbPath
+                          WeaveTests = weaveTests
+                          FingerprintInputs = strs "fingerprintInputs"
+                          FingerprintEnv = strs "fingerprintEnv"
+                          VerifyTimeoutSec = verifyTimeoutSec }
+
+                    Some settings
+                | _ -> None
+
             if projects.IsEmpty then
                 None
             else
@@ -844,7 +910,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        Excluded = excluded
                        Solution = solution
                        CoverageDir = coverageDir
-                       DependsOn = dependsOn |}
+                       DependsOn = dependsOn
+                       Traces = traces |}
         | _ -> None
 
     let fileCommands =

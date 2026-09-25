@@ -1608,7 +1608,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                        Excluded = []
                        Solution = None
                        CoverageDir = "coverage"
-                       DependsOn = [] |}
+                       DependsOn = []
+                       Traces = None |}
             FileCommands =
                 [ {| PluginName = "a"
                      Pattern = Some "*.md"
@@ -2371,3 +2372,82 @@ let ``preprocessors are registered in registerPlugins and nowhere else`` () =
         |> List.ofSeq
 
     test <@ sites = [ "DaemonConfig.fs" ] @>
+
+// --- parseConfig: tests.traces ---
+// Opt-in per-test trace recording. Absent means off; parsed and carried only.
+
+let private tracesOf (traces: string) =
+    let json =
+        """{"tests": {"traces": __T__, "projects": [{"project": "T"}]}}""".Replace("__T__", traces)
+
+    (parseConfig json defaults).Tests.Value.Traces
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig without tests.traces records nothing`` () =
+    let config = parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults
+    test <@ config.Tests.Value.Traces = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces full-runs with defaults`` () =
+    let t = (tracesOf """{"record": "full-runs"}""").Value
+
+    test
+        <@
+            t.Record = FsHotWatch.TestPrune.RecordFullRuns
+            && t.DbPath = ".fshw/test-traces.db"
+            && t.WeaveTests = FsHotWatch.TestPrune.WeaveTestSites
+        @>
+
+    test
+        <@
+            List.isEmpty t.FingerprintInputs
+            && List.isEmpty t.FingerprintEnv
+            && t.VerifyTimeoutSec = 300
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces reads every field`` () =
+    let t =
+        (tracesOf
+            """{"record": "every-run", "db": "x/t.db", "weaveTests": "full",
+                "fingerprintInputs": ["global.json"], "fingerprintEnv": ["APP_ENV"], "verifyTimeoutSec": 60}""")
+            .Value
+
+    test
+        <@
+            (t.Record, t.DbPath, t.WeaveTests) = (FsHotWatch.TestPrune.RecordEveryRun,
+                                                  "x/t.db",
+                                                  FsHotWatch.TestPrune.WeaveTestFull)
+        @>
+
+    test <@ (t.FingerprintInputs, t.FingerprintEnv, t.VerifyTimeoutSec) = ([ "global.json" ], [ "APP_ENV" ], 60) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces record off is carried as off`` () =
+    test <@ (tracesOf """{"record": "off"}""").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces without a record value is off`` () =
+    test <@ (tracesOf "{}").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+
+[<Fact(Timeout = 15000)>]
+let ``TraceSettings.parseRecord rejects unknown values`` () =
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "sometimes" = None @>
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "full-run" = None @>
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "" = None @>
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "Full-Runs" = Some FsHotWatch.TestPrune.RecordFullRuns @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig an unknown record value is off, not an error`` () =
+    test <@ (tracesOf """{"record": "sometimes"}""").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig a project opts out with traces false; the default is in`` () =
+    let json =
+        """{"tests": {"projects": [
+            {"project": "A", "command": "dotnet", "args": "run --project tests/A --no-build"},
+            {"project": "B", "command": "dotnet", "args": "run --project tests/B --no-build", "traces": false},
+            {"project": "C", "command": "dotnet", "args": "run --project tests/C --no-build", "traces": true}]}}"""
+
+    let ps = (parseConfig json defaults).Tests.Value.Projects
+    test <@ ps |> List.map (fun p -> p.Project, p.Traces) = [ "A", true; "B", false; "C", true ] @>

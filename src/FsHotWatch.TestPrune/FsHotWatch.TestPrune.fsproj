@@ -39,6 +39,7 @@
     <Compile Include="ArtifactFreshness.fs" />
     <Compile Include="StaleArtifactPreflight.fs" />
     <Compile Include="ImpactDbPool.fs" />
+    <Compile Include="Traces.fs" />
     <Compile Include="TestMode.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>

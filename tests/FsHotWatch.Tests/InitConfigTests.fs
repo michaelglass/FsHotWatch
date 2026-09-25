@@ -310,7 +310,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                        Excluded = []
                        Solution = None
                        CoverageDir = "coverage"
-                       DependsOn = [] |} }
+                       DependsOn = []
+                       Traces = None |} }
 
 
     let json = serializeConfig config
@@ -337,11 +338,13 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             Coverage = true
                             CoverageArgsTemplate = None
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ]
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            Traces = true } ]
                        Excluded = []
                        Solution = None
                        CoverageDir = "coverage"
-                       DependsOn = [] |} }
+                       DependsOn = []
+                       Traces = None |} }
 
 
     let json = serializeConfig config
