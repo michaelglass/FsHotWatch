@@ -143,6 +143,7 @@
     <Compile Include="OutputCopyFreshnessTests.fs" />
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
+    <Compile Include="CheckPipelineCancellationTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />

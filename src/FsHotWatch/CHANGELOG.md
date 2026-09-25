@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- perf: `CheckPipeline` observes a canceled check through `IsCancellationRequested`
+  instead of throwing `OperationCanceledException`, so a superseded check no longer
+  unwinds an exception (which, on macOS, walks the unwinder under dyld's loader lock and
+  prolongs GC thread suspension). Results, logging and caching are unchanged: a check
+  canceled before FCS logs `Cancelled: <file>` at debug level, one canceled after FCS
+  logs the same `Failed to check <path>: The operation was canceled.` error as before,
+  and neither returns nor caches a result.
+
 ## 0.10.0-alpha.46 - 2026-09-25
 
 - feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),

@@ -106,6 +106,19 @@ type CheckPipeline
     /// so a file is read and hashed once per change for both.
     let hashFile = upstreamFingerprints.HashFile
     let mutable nextVersion = 0L
+
+    /// A check canceled outside CheckFileCore's guarded body: logged at debug level,
+    /// and the check returns no result. Cancellation is observed through
+    /// `IsCancellationRequested` rather than thrown, so a superseded check costs no
+    /// exception unwind.
+    let logCanceled (absPath: string) =
+        Logging.debug "check" $"Cancelled: %s{Path.GetFileName absPath}"
+
+    /// A check canceled inside CheckFileCore's guarded body is reported like any other
+    /// failure there: an error naming the file and the cancellation.
+    let logCanceledAsFailure (absPath: string) (ct: CancellationToken) =
+        Logging.error "check" $"Failed to check %s{absPath}: %s{OperationCanceledException(ct).Message}"
+
     let mutable lastFitWarning: string option = None
 
     let optionsHashOf (options: FSharpProjectOptions) =
@@ -348,123 +361,134 @@ type CheckPipeline
         (openFile: ProjectSnapshots.OpenFile, options: FSharpProjectOptions, ct: CancellationToken)
         : Async<(FileCheckResult * (string * string) list) option> =
         async {
-            ct.ThrowIfCancellationRequested()
-            let absPath = openFile.Path
-            let source = openFile.Text
-            let version = this.NextVersion()
-
-            try
-                ct.ThrowIfCancellationRequested()
-                let fileName = Path.GetFileName absPath
-                activity.Log(checkStartLine fileName)
-                let sw = System.Diagnostics.Stopwatch.StartNew()
-
-                // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
-                // project's new generation. A generation never changes the frame.
-                let framedNow () =
-                    ProjectSnapshots.buildFramed
-                        (ProjectSnapshots.generationOf checker)
-                        hashFile
-                        repoRoot
-                        frames
-                        openFile
-                        options
-
-                let framed = framedNow ()
-                let snapshotTime = sw.Elapsed
-
-                // What FCS may type against beyond the snapshot's versions, read before it does.
-                let outputs =
-                    framed.RealProjectOutputs |> List.map (fun output -> output, hashFile output)
-
-                // The name FCS knows the file by: under the virtual root when its project is.
-                let checkedPath =
-                    match framed.Frame with
-                    | Some frame ->
-                        ProjectSnapshots.recordFrame
-                            checker
-                            options.ProjectFileName
-                            (PathFrame.toVirtual frame options.ProjectFileName)
-
-                        PathFrame.toVirtual frame absPath
-                    | None -> absPath
-
-                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
-
-                // A diagnostic that declares a type incompatible with ITSELF is not
-                // code feedback — the compiler renders two types so they can be told
-                // apart, so an identical render means it found no difference to tell.
-                // What produces it is not known (see `FcsDiagnosticFilter`), so
-                // asking again in a new generation of this project's checker state
-                // (`ProjectSnapshots.invalidateShared`, since a suspect entry under a
-                // virtual root is every sharing session's) is a guess at the class of thing
-                // that might clear it: cheap, bounded to ONCE
-                // per project per cooldown so a pathological tree cannot turn every
-                // file into a project re-typecheck, and never trusted to have worked
-                // — a survivor is reported as our fault, not swallowed.
-                let project = options.ProjectFileName
-
-                // Asked on every check rather than behind the staleness test: it
-                // is a dictionary probe and a subtraction, and asking it
-                // unconditionally keeps the budget rule on the path every check
-                // takes instead of only the one nothing can provoke on demand.
-                let budgetAllows = recheckBudget.Allows(project, DateTime.UtcNow)
-
-                let retryLog =
-                    FcsDiagnosticFilter.recheckLogLine (Path.GetFileName project) (Path.GetFileName absPath)
-
-                let onRecheck () =
-                    recheckBudget.Spend(project, DateTime.UtcNow)
-                    Logging.warn "check" retryLog
-                    ProjectSnapshots.invalidateShared checker options
-
-                let! parseResults, checkAnswer =
-                    FcsDiagnosticFilter.recheckIfSelfIncompatible
-                        (snd >> answerMessages)
-                        FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
-                        budgetAllows
-                        onRecheck
-                        (fun () -> ProjectSnapshots.parseAndCheck checker checkedPath (framedNow ()).Snapshot)
-                        (firstParse, firstAnswer)
-
-                sw.Stop()
-                ct.ThrowIfCancellationRequested()
-
-                if sw.Elapsed.TotalSeconds > 2.0 then
-                    Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
-
-                match checkAnswer with
-                | FSharpCheckFileAnswer.Succeeded checkResults ->
-                    activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
-
-                    return
-                        Some(
-                            { File = AbsFilePath.create absPath
-                              Source = source
-                              ParseResults = parseResults
-                              CheckResults = FullCheck checkResults
-                              ProjectOptions = options
-                              Version = version
-                              ModelGeneration = None
-                              Frame = framed.Frame },
-                            outputs
-                        )
-                | FSharpCheckFileAnswer.Aborted ->
-                    return
-                        Some(
-                            { File = AbsFilePath.create absPath
-                              Source = source
-                              ParseResults = parseResults
-                              CheckResults = ParseOnly
-                              ProjectOptions = options
-                              Version = version
-                              ModelGeneration = None
-                              Frame = framed.Frame },
-                            outputs
-                        )
-            with ex ->
-                Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+            if ct.IsCancellationRequested then
+                logCanceled openFile.Path
                 return None
+            else
+                let absPath = openFile.Path
+                let source = openFile.Text
+                let version = this.NextVersion()
+
+                try
+                    if ct.IsCancellationRequested then
+                        logCanceledAsFailure absPath ct
+                        return None
+                    else
+                        let fileName = Path.GetFileName absPath
+                        activity.Log(checkStartLine fileName)
+                        let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                        // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
+                        // project's new generation. A generation never changes the frame.
+                        let framedNow () =
+                            ProjectSnapshots.buildFramed
+                                (ProjectSnapshots.generationOf checker)
+                                hashFile
+                                repoRoot
+                                frames
+                                openFile
+                                options
+
+                        let framed = framedNow ()
+                        let snapshotTime = sw.Elapsed
+
+                        // What FCS may type against beyond the snapshot's versions, read before it does.
+                        let outputs =
+                            framed.RealProjectOutputs |> List.map (fun output -> output, hashFile output)
+
+                        // The name FCS knows the file by: under the virtual root when its project is.
+                        let checkedPath =
+                            match framed.Frame with
+                            | Some frame ->
+                                ProjectSnapshots.recordFrame
+                                    checker
+                                    options.ProjectFileName
+                                    (PathFrame.toVirtual frame options.ProjectFileName)
+
+                                PathFrame.toVirtual frame absPath
+                            | None -> absPath
+
+                        let! firstParse, firstAnswer =
+                            ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+
+                        // A diagnostic that declares a type incompatible with ITSELF is not
+                        // code feedback — the compiler renders two types so they can be told
+                        // apart, so an identical render means it found no difference to tell.
+                        // What produces it is not known (see `FcsDiagnosticFilter`), so
+                        // asking again in a new generation of this project's checker state
+                        // (`ProjectSnapshots.invalidateShared`, since a suspect entry under a
+                        // virtual root is every sharing session's) is a guess at the class of thing
+                        // that might clear it: cheap, bounded to ONCE
+                        // per project per cooldown so a pathological tree cannot turn every
+                        // file into a project re-typecheck, and never trusted to have worked
+                        // — a survivor is reported as our fault, not swallowed.
+                        let project = options.ProjectFileName
+
+                        // Asked on every check rather than behind the staleness test: it
+                        // is a dictionary probe and a subtraction, and asking it
+                        // unconditionally keeps the budget rule on the path every check
+                        // takes instead of only the one nothing can provoke on demand.
+                        let budgetAllows = recheckBudget.Allows(project, DateTime.UtcNow)
+
+                        let retryLog =
+                            FcsDiagnosticFilter.recheckLogLine (Path.GetFileName project) (Path.GetFileName absPath)
+
+                        let onRecheck () =
+                            recheckBudget.Spend(project, DateTime.UtcNow)
+                            Logging.warn "check" retryLog
+                            ProjectSnapshots.invalidateShared checker options
+
+                        let! parseResults, checkAnswer =
+                            FcsDiagnosticFilter.recheckIfSelfIncompatible
+                                (snd >> answerMessages)
+                                FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
+                                budgetAllows
+                                onRecheck
+                                (fun () -> ProjectSnapshots.parseAndCheck checker checkedPath (framedNow ()).Snapshot)
+                                (firstParse, firstAnswer)
+
+                        sw.Stop()
+
+                        if ct.IsCancellationRequested then
+                            logCanceledAsFailure absPath ct
+                            return None
+                        else
+
+                            if sw.Elapsed.TotalSeconds > 2.0 then
+                                Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
+
+                            match checkAnswer with
+                            | FSharpCheckFileAnswer.Succeeded checkResults ->
+                                activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
+
+                                return
+                                    Some(
+                                        { File = AbsFilePath.create absPath
+                                          Source = source
+                                          ParseResults = parseResults
+                                          CheckResults = FullCheck checkResults
+                                          ProjectOptions = options
+                                          Version = version
+                                          ModelGeneration = None
+                                          Frame = framed.Frame },
+                                        outputs
+                                    )
+                            | FSharpCheckFileAnswer.Aborted ->
+                                return
+                                    Some(
+                                        { File = AbsFilePath.create absPath
+                                          Source = source
+                                          ParseResults = parseResults
+                                          CheckResults = ParseOnly
+                                          ProjectOptions = options
+                                          Version = version
+                                          ModelGeneration = None
+                                          Frame = framed.Frame },
+                                        outputs
+                                    )
+                with ex ->
+                    Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                    return None
         }
 
     /// Cache-aware wrapper: looks up the cache, on miss reads disk and calls
@@ -473,42 +497,45 @@ type CheckPipeline
         (absPath: string, options: FSharpProjectOptions, ct: CancellationToken)
         : Async<FileCheckResult option> =
         async {
-            ct.ThrowIfCancellationRequested()
+            if ct.IsCancellationRequested then
+                logCanceled absPath
+                return None
+            else
 
-            let cacheBackend = backendFor options
+                let cacheBackend = backendFor options
 
-            let cacheKey =
-                cacheBackend
-                |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
+                let cacheKey =
+                    cacheBackend
+                    |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
-            match tryGetCachedFullCheck outputsHold cacheBackend cacheKey with
-            | Some cached ->
-                Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
-                return Some cached
-            | None ->
-                let openFile = ProjectSnapshots.readOpenFile hashFile absPath
-                let! result = this.CheckFileCore(openFile, options, ct)
+                match tryGetCachedFullCheck outputsHold cacheBackend cacheKey with
+                | Some cached ->
+                    Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
+                    return Some cached
+                | None ->
+                    let openFile = ProjectSnapshots.readOpenFile hashFile absPath
+                    let! result = this.CheckFileCore(openFile, options, ct)
 
-                match result, cacheBackend, cacheKey with
-                | Some(r, outputs), Some backend, Some key ->
-                    let inputsHeld =
-                        makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key
-                        && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
+                    match result, cacheBackend, cacheKey with
+                    | Some(r, outputs), Some backend, Some key ->
+                        let inputsHeld =
+                            makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key
+                            && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
 
-                    match r.CheckResults with
-                    | FullCheck _ when inputsHeld ->
-                        backend.Set
-                            key
-                            { Result = r
-                              ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
-                    | FullCheck _ ->
-                        Logging.debug
-                            "check"
-                            $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
-                    | ParseOnly -> ()
-                | _ -> ()
+                        match r.CheckResults with
+                        | FullCheck _ when inputsHeld ->
+                            backend.Set
+                                key
+                                { Result = r
+                                  ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
+                        | FullCheck _ ->
+                            Logging.debug
+                                "check"
+                                $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
+                        | ParseOnly -> ()
+                    | _ -> ()
 
-                return result |> Option.map fst
+                    return result |> Option.map fst
         }
 
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
@@ -522,18 +549,21 @@ type CheckPipeline
             let fileToken = fileCts.Token
 
             try
-                fileToken.ThrowIfCancellationRequested()
+                if fileToken.IsCancellationRequested then
+                    logCanceled absPath
+                    return None
+                else
 
-                match projectOptionsByFile.TryGetValue(filePath) with
-                | false, _ ->
-                    Logging.debug "check" $"No project options for: %s{absPath}"
-                    return None
-                | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken)
-                | true, [] ->
-                    Logging.debug "check" $"No project options for: %s{absPath}"
-                    return None
+                    match projectOptionsByFile.TryGetValue(filePath) with
+                    | false, _ ->
+                        Logging.debug "check" $"No project options for: %s{absPath}"
+                        return None
+                    | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken)
+                    | true, [] ->
+                        Logging.debug "check" $"No project options for: %s{absPath}"
+                        return None
             with :? OperationCanceledException ->
-                Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
+                logCanceled absPath
                 return None
         }
 
@@ -549,10 +579,13 @@ type CheckPipeline
             let fileToken = fileCts.Token
 
             try
-                fileToken.ThrowIfCancellationRequested()
-                return! this.CheckFileCached(absPath, options, fileToken)
+                if fileToken.IsCancellationRequested then
+                    logCanceled absPath
+                    return None
+                else
+                    return! this.CheckFileCached(absPath, options, fileToken)
             with :? OperationCanceledException ->
-                Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
+                logCanceled absPath
                 return None
         }
 
