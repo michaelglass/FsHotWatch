@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.46 - 2026-09-25
+
 - **BREAKING:** `create`'s `beforeRun` hook receives a `HookStep.Tracker` after the run
   id (`Guid -> HookStep.Tracker -> unit`). A hook hands each step it runs to the tracker
   once the step's child has started and disposes the handle when it exits; the plugin
@@ -25,6 +27,7 @@
   completed quotes the runner's summary instead. The daemon-log report's summary lines
   are matched by their leading word, so a log line that merely contains `failed:` no
   longer joins them.
+- build(deps): bump TestPrune.Core from 11.0.0 to 12.0.0
 
 ## 0.13.0-alpha.45 - 2026-09-24
 

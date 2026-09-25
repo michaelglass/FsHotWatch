@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.63 - 2026-09-25
+
 - feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the
   daemon's `[wait]` and `[wedge]` lines name it by index, command, pid and bound. Every
   hook step, run-level ones included, logs its start with its pid and bound.
@@ -12,6 +14,10 @@
   formatter, in every mode (daemon, `check --run-once`, `confirm`); their `triggers`
   patterns are watched; a failing entry reddens the run under its name. A malformed
   entry is a config error.
+- build(deps): bump TestPrune.Core from 11.0.0 to 12.0.0
+- build(deps): bump TestPrune.Falco from 3.1.4 to 3.1.6
+- build(deps): bump TestPrune.Sql from 0.1.0 to 0.2.0
+- build(deps): bump TestPrune.SqlHydra from 0.1.0 to 0.1.1
 
 ## 0.14.0-alpha.62 - 2026-09-24
 

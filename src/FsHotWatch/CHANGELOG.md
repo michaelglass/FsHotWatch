@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.46 - 2026-09-25
+
 - feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),
   its one rendering (`HookStep.describe`), and a `Tracker` that holds it for as long as it
   runs; `HookStep.asSubtasks` holds it as a plugin subtask, so the wait and wedge lines

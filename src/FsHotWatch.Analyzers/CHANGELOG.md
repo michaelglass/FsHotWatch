@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.38 - 2026-09-25
+
 - Changed: an analyzer that raises is a FAILURE, no longer a clean file. The SDK
   hands a raising analyzer's exception back as that analyzer's result, and the
   host folded it to "no findings" — so the gate went green with the rule silently

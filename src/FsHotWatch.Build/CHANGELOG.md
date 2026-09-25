@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.41 - 2026-09-25
+
+- coverage: BuildPlugin, RunOnceCheck, RunOnceOutput and AnalyzersPlugin meet their macOS floors
+
+
 ## 0.7.0-alpha.40 - 2026-09-24
 
 - (breaking) A passed build no longer reports "built N projects" for every project
