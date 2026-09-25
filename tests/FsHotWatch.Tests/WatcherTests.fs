@@ -928,6 +928,19 @@ let ``a native notification for a deleted file emits`` () =
             test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>))
 
 [<Fact(Timeout = 15000)>]
+let ``a native notification for a file the watcher does not track emits nothing`` () =
+    // FSEvents reports every file under a watched root, not only F# sources. The
+    // relevance filter must drop the rest before the ledger ever hashes them, or an
+    // editor's swap file or a stray note becomes a source change.
+    withTempDir "watcher-content-untracked" (fun tmpDir ->
+        let note = Path.Combine(tmpDir, "src", "notes.txt")
+
+        withNativeNotifications tmpDir (fun handle changes ->
+            File.WriteAllText(note, "not F#")
+            handle note
+            test <@ changes |> Seq.toList |> List.isEmpty @>))
+
+[<Fact(Timeout = 15000)>]
 let ``a native notification for a file that is still gone emits nothing`` () =
     // A removal is a change exactly once; a later batch naming the same removed
     // path describes nothing new.
