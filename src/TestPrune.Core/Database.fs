@@ -328,6 +328,12 @@ let private openConnection (dbPath: string) =
 ///          deleted, so an existing index holds whatever mix of edges its build history
 ///          left behind. The recreate drops those rows; the next refresh writes the
 ///          current set.
+/// v16    — no schema text change; a REBUILD, because stored content hashes changed
+///          meaning. A Type's hash now covers only its header — the definition with each
+///          union case and member replaced by its name — and a union case's covers its
+///          own attributes and payload rather than the line its name is on. A file not
+///          re-indexed would otherwise keep old-style hashes, and its first edit would
+///          report every type in it as modified and purge their coverage.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -343,7 +349,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 15
+let SchemaVersion = 16
 
 /// The `dependencies.source_file` value that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

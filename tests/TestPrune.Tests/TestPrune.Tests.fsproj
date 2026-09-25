@@ -65,6 +65,7 @@
     <Compile Include="CompositionRootSelectionTests.fs" />
     <Compile Include="SeedCoverageTests.fs" />
     <Compile Include="IntegrationTests.fs" />
+    <Compile Include="TypeHashSplitTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="TestRunnerTests.fs" />
     <Compile Include="ProjectLoaderTests.fs" />

@@ -1069,6 +1069,99 @@ let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
 
     results |> Seq.toList
 
+/// A span of a type definition that one of the type's own symbols hashes: a union case
+/// or a member. `Name` is the short name that symbol is looked up by.
+type internal TypeChild =
+    { Name: string
+      Range: range
+      IsCase: bool }
+
+/// A type definition as its header hash sees it: the whole definition, and the child
+/// spans that may be cut out of it because another symbol hashes them.
+type internal TypeDefnShape =
+    {
+        Name: string
+        Range: range
+        /// A struct union lays every case's fields out in one value, so its payloads are
+        /// part of the type's layout and stay in its header.
+        IsStruct: bool
+        Children: TypeChild list
+    }
+
+let private rangeWithAttributes (attributes: SynAttributes) (r: range) =
+    attributes
+    |> List.fold (fun acc (list: SynAttributeList) -> Range.unionRanges acc list.Range) r
+
+let private isStructAttribute (attributes: SynAttributes) =
+    attributes
+    |> List.exists (fun list ->
+        list.Attributes
+        |> List.exists (fun a ->
+            match List.tryLast a.TypeName.LongIdent with
+            | Some id -> id.idText = "Struct" || id.idText = "StructAttribute"
+            | None -> false))
+
+/// Walk the parsed AST to collect each type definition with its union cases and members.
+let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
+    let results = ResizeArray()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(
+                typeInfo = SynComponentInfo(attributes = attributes; longId = ids)
+                typeRepr = typeRepr
+                members = extraMembers
+                range = fullRange) in typeDefns do
+                let children = ResizeArray<TypeChild>()
+
+                let rec walkMember (memberDefn: SynMemberDefn) =
+                    match memberDefn with
+                    | SynMemberDefn.Member(
+                        memberDefn = SynBinding(attributes = bindingAttributes; headPat = headPat); range = memberRange) ->
+                        match extractMemberName headPat with
+                        | Some n ->
+                            children.Add
+                                { Name = n
+                                  Range = rangeWithAttributes bindingAttributes memberRange
+                                  IsCase = false }
+                        | None -> ()
+                    | SynMemberDefn.Interface(members = Some members) ->
+                        for m in members do
+                            walkMember m
+                    // INT-WILDCARD-001:ok — every other member form (implicit constructor,
+                    // `let`/`do` bindings, `inherit`, `val` fields, auto-properties,
+                    // get/set properties, abstract slots) has no symbol hashing its whole
+                    // text, so it stays in the type's header.
+                    | _ -> ()
+
+                match typeRepr with
+                | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(unionCases = cases), _) ->
+                    for SynUnionCase(attributes = caseAttributes; ident = SynIdent(id, _); range = caseRange) in cases do
+                        children.Add
+                            { Name = id.idText
+                              Range = rangeWithAttributes caseAttributes caseRange
+                              IsCase = true }
+                | SynTypeDefnRepr.ObjectModel(members = members) ->
+                    for m in members do
+                        walkMember m
+                | _ -> () // INT-WILDCARD-001:ok — records, enums and abbreviations are all header
+
+                for m in extraMembers do
+                    walkMember m
+
+                results.Add
+                    { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                      Range = rangeWithAttributes attributes fullRange
+                      IsStruct = isStructAttribute attributes
+                      Children =
+                        children
+                        |> Seq.sortBy (fun c -> c.Range.StartLine, c.Range.StartColumn)
+                        |> Seq.toList }
+        | _ -> ())
+
+    results |> Seq.toList
+
 /// Signature syntax has declarations rather than implementation bindings. Its full
 /// ranges include multiline types and constraints, which FCS identifier ranges omit.
 let private collectSignatureRanges (tree: ParsedInput) =
@@ -1250,14 +1343,10 @@ let private stripComments (flat: string) : string =
 
     result.ToString()
 
-/// Hash the source lines between startLine and endLine (1-based, inclusive),
-/// stripping comments and normalizing whitespace so that comment-only changes
-/// and layout-only changes (e.g. reformatting to add a comment block) don't
-/// affect the hash.
-let private hashSourceLines (lines: string array) (startLine: int) (endLine: int) : string =
-    let start = max 0 (startLine - 1)
-    let end' = min lines.Length endLine
-    let flat = lines[start .. end' - 1] |> String.concat "\n"
+/// Hash a piece of source text, stripping comments and normalizing whitespace so
+/// that comment-only changes and layout-only changes (e.g. reformatting to add a
+/// comment block) don't affect the hash.
+let private hashText (flat: string) : string =
     let stripped = stripComments flat
     // Join non-empty trimmed lines with a single space, then collapse internal
     // whitespace sequences. This makes `let f x = x + 1` hash identically to
@@ -1276,6 +1365,76 @@ let private hashSourceLines (lines: string array) (startLine: int) (endLine: int
         System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
 
     System.Convert.ToHexStringLower(bytes)
+
+/// Hash the source lines between startLine and endLine (1-based, inclusive) under
+/// `hashText`'s normalisation.
+let private hashSourceLines (lines: string array) (startLine: int) (endLine: int) : string =
+    let start = max 0 (startLine - 1)
+    let end' = min lines.Length endLine
+    hashText (lines[start .. end' - 1] |> String.concat "\n")
+
+/// The source text a symbol's content hash covers.
+type private HashedSpan =
+    /// Whole lines, inclusive and 1-based.
+    | Lines of startLine: int * endLine: int
+    /// Exactly the range, column-precise.
+    | Exact of range
+
+/// Maps an FCS position (1-based line, 0-based column) to an index into the source.
+type private SourceIndex(source: string) =
+    let lineStarts =
+        let starts = ResizeArray [ 0 ]
+
+        source
+        |> Seq.iteri (fun i c ->
+            if c = '\n' then
+                starts.Add(i + 1))
+
+        starts.ToArray()
+
+    member _.Offset(p: pos) =
+        let line = p.Line - 1
+
+        if line < 0 then 0
+        elif line >= lineStarts.Length then source.Length
+        else min source.Length (lineStarts[line] + p.Column)
+
+    member _.Slice(startOffset: int, endOffset: int) =
+        source.Substring(startOffset, max 0 (endOffset - startOffset))
+
+    member this.Text(r: range) =
+        this.Slice(this.Offset r.Start, this.Offset r.End)
+
+/// Hash of exactly the text `r` covers, column-precise — so that two union cases sharing
+/// one line (`type T = A of int | B of string`) hash apart.
+let private hashRange (index: SourceIndex) (r: range) : string = hashText (index.Text r)
+
+/// A type's HEADER hash: its whole definition with each of `punched` — the union cases
+/// and members whose own symbols hash that text — replaced by the child's name.
+///
+/// What stays is exactly what no other symbol hashes: the name, type parameters,
+/// attributes, the kind of representation, base types and interfaces, record fields
+/// (their types are the layout), a struct union's payloads, a class's constructor and
+/// `let`/`do` bindings, and the order of every case and member name. Adding, removing or
+/// reordering a case or member therefore changes the header; editing a case's payload or
+/// a member's body changes only that case or member.
+let private hashTypeHeader (index: SourceIndex) (shape: TypeDefnShape) (punched: TypeChild list) : string =
+    let text = System.Text.StringBuilder()
+    let finish = index.Offset shape.Range.End
+    let mutable cursor = index.Offset shape.Range.Start
+
+    for child in punched do
+        let s = index.Offset child.Range.Start
+        let e = index.Offset child.Range.End
+
+        if s >= cursor && e <= finish then
+            text.Append(index.Slice(cursor, s)).Append(' ').Append(child.Name).Append(' ')
+            |> ignore
+
+            cursor <- e
+
+    text.Append(index.Slice(cursor, finish)) |> ignore
+    hashText (text.ToString())
 
 let private isSharedLiteral (text: string) =
     text.Length >= MinSharedLiteralLength
@@ -1653,7 +1812,7 @@ let private extractResults
             // more than once in a file (`let f` in two sibling nested modules); `Map.ofList`
             // would be last-write-wins and silently sever the earlier binding's edges.
             // Callers disambiguate by which range contains the use in question.
-            let groupRangesByName (ranges: (string * range) list) : Map<string, range list> =
+            let groupRangesByName (ranges: (string * 'Span) list) : Map<string, 'Span list> =
                 ranges
                 |> List.groupBy fst
                 |> List.map (fun (n, rs) -> n, List.map snd rs)
@@ -1674,49 +1833,14 @@ let private extractResults
                 | [] -> List.tryHead candidates
                 | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
 
-            let definitions =
-                allUses
-                |> List.choose (fun u ->
-                    if u.IsFromDefinition then
-                        classifySymbol u.Symbol
-                        |> Option.map (fun (kind, fullName) ->
-                            let isExtern =
-                                match u.Symbol with
-                                | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
-                                | _ -> false
+            let typeShapes = collectTypeDefnShapes parseResults.ParseTree
+            let sourceIndex = SourceIndex source
 
-                            // Prefer the AST range over FCS's `u.Range`: for a Type it spans
-                            // all DU cases and record fields, for a Function/Value it
-                            // includes the attributes, so both affect the hash.
-                            let hashStart, hashEnd =
-                                let sn = canonicalShortName fullName
-
-                                match kind with
-                                | Type ->
-                                    typeDefnRangeMap
-                                    |> Map.tryFind sn
-                                    |> Option.bind (pickRangeFor u.Range)
-                                    |> Option.map (fun r -> r.StartLine, r.EndLine)
-                                    |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
-                                | Function
-                                | Value ->
-                                    allBindingRangeMap
-                                    |> Map.tryFind sn
-                                    |> Option.bind (pickRangeFor u.Range)
-                                    |> Option.map (fun r -> r.StartLine, r.EndLine)
-                                    |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
-                                | _ -> u.Range.StartLine, u.Range.EndLine
-
-                            { FullName = fullName
-                              Kind = kind
-                              SourceFile = sourceFileName
-                              LineStart = u.Range.StartLine
-                              LineEnd = u.Range.EndLine
-                              ContentHash = hashSourceLines sourceLines hashStart hashEnd
-                              IsExtern = isExtern },
-                            u)
-                    else
-                        None)
+            let unionCaseRangeMap =
+                typeShapes
+                |> List.collect (fun shape ->
+                    shape.Children |> List.filter _.IsCase |> List.map (fun c -> c.Name, c.Range))
+                |> groupRangesByName
 
             let isTrackedSymbol (symbolInfo: SymbolInfo) =
                 match symbolInfo.Kind with
@@ -1738,6 +1862,103 @@ let private extractResults
                     symbolInfo.FullName.Contains('.')
                     && allBindingRangeMap |> Map.containsKey (canonicalShortName symbolInfo.FullName)
                 | ExternRef -> false
+
+            // The text each definition's hash covers. Prefer the AST range over FCS's
+            // `u.Range` (the identifier alone): a binding's includes its attributes and
+            // body, a union case's its attributes and payload. A Type's hash is refined
+            // to its header below, once every other symbol's span is known.
+            let spanOf (kind: SymbolKind) (fullName: string) (u: FSharpSymbolUse) : HashedSpan =
+                let sn = canonicalShortName fullName
+                let lines (r: range) = Lines(r.StartLine, r.EndLine)
+                let fallback = lines u.Range
+
+                let pickFrom map =
+                    map |> Map.tryFind sn |> Option.bind (pickRangeFor u.Range)
+
+                match kind with
+                | Type -> pickFrom typeDefnRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | Function
+                | Value
+                | Property -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | DuCase -> pickFrom unionCaseRangeMap |> Option.map Exact |> Option.defaultValue fallback
+                | Module
+                | ExternRef -> fallback
+
+            let hashSpan span =
+                match span with
+                | Lines(startLine, endLine) -> hashSourceLines sourceLines startLine endLine
+                | Exact r -> hashRange sourceIndex r
+
+            let spannedDefinitions =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        classifySymbol u.Symbol
+                        |> Option.map (fun (kind, fullName) ->
+                            let isExtern =
+                                match u.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
+                                | _ -> false
+
+                            let span = spanOf kind fullName u
+
+                            { FullName = fullName
+                              Kind = kind
+                              SourceFile = sourceFileName
+                              LineStart = u.Range.StartLine
+                              LineEnd = u.Range.EndLine
+                              ContentHash = hashSpan span
+                              IsExtern = isExtern },
+                            u,
+                            span)
+                    else
+                        None)
+
+            // Union cases and members whose text some tracked symbol's own hash covers;
+            // only these are cut out of their type's header. Anything else stays in it,
+            // so no text of a type is ever hashed by nobody.
+            let hashedApart =
+                spannedDefinitions
+                |> List.choose (fun (si, _, span) ->
+                    if si.Kind <> Type && isTrackedSymbol si then
+                        Some(canonicalShortName si.FullName, span)
+                    else
+                        None)
+                |> groupRangesByName
+
+            let isHashedApart (child: TypeChild) =
+                hashedApart
+                |> Map.tryFind child.Name
+                |> Option.defaultValue []
+                |> List.exists (fun span ->
+                    match span with
+                    | Lines(startLine, endLine) -> startLine <= child.Range.StartLine && child.Range.EndLine <= endLine
+                    | Exact r -> Range.rangeContainsRange r child.Range)
+
+            let headerHash (fullName: string) (u: FSharpSymbolUse) : string option =
+                let sn = canonicalShortName fullName
+
+                typeShapes
+                |> List.filter (fun shape ->
+                    shape.Name = sn
+                    && shape.Range.StartLine <= u.Range.StartLine
+                    && u.Range.EndLine <= shape.Range.EndLine)
+                |> List.sortBy (fun shape -> shape.Range.EndLine - shape.Range.StartLine)
+                |> List.tryHead
+                |> Option.map (fun shape ->
+                    shape.Children
+                    |> List.filter (fun c -> (not c.IsCase || not shape.IsStruct) && isHashedApart c)
+                    |> hashTypeHeader sourceIndex shape)
+
+            let definitions =
+                spannedDefinitions
+                |> List.map (fun (si, u, _) ->
+                    match si.Kind with
+                    | Type ->
+                        match headerHash si.FullName u with
+                        | Some h -> { si with ContentHash = h }, u
+                        | None -> si, u
+                    | _ -> si, u)
 
             let symbols =
                 definitions

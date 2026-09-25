@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat: a type's content hash covers only its header, so an edit to one union case or
+  one member no longer changes the hash of the whole type. The header is the type's
+  definition with each union case and member replaced by its name: the name, type
+  parameters, attributes, representation kind, base types and interfaces, record fields,
+  a class's constructor and `let`/`do` bindings, and the order of every case and member
+  name. Adding, removing or reordering a case or member still changes it. Each union
+  case now hashes its own attributes and payload, column-precise, so cases sharing one
+  line hash apart. A property member hashes its whole body, as methods already did.
+  Record fields and a `[<Struct>]` union's payloads stay in the header, because they are
+  the type's layout. A test that matches only one case is no longer selected by an edit
+  to another case's payload. A member edit still reaches the type's consumers, because
+  the walk lifts a changed member to its declaring type.
+
+- SchemaVersion 15 -> 16: stored Type and union-case content hashes changed meaning. An
+  existing index is recreated on open, so no file keeps old-style hashes.
+
 ## 13.0.0 - 2026-09-25
 
 - fix!: extension edges are a function of the tree, not of index history.

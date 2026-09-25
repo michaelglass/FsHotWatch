@@ -751,9 +751,18 @@ let consume () =
                 || not (d.ToSymbol.StartsWith("M.MyBuilder.", System.StringComparison.Ordinal)))
         @>
 
-    // Reason it is safe: the builder TYPE's hash range spans its members, and the
-    // consumer reaches the type through the builder value.
-    test <@ hashOf before "M.MyBuilder" <> hashOf after "M.MyBuilder" @>
+    // Reason it is safe: the edited member's own hash changes, the member is linked to
+    // the builder TYPE, the walk lifts a changed member to its type, and the consumer
+    // reaches the type through the builder value.
+    test <@ hashOf before "M.MyBuilder.Bind" <> hashOf after "M.MyBuilder.Bind" @>
+
+    test
+        <@
+            after.ParentLinks
+            |> List.contains
+                { Child = "M.MyBuilder.Bind"
+                  Parent = "M.MyBuilder" }
+        @>
 
     test
         <@
