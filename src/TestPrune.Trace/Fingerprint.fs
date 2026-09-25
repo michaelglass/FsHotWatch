@@ -30,6 +30,19 @@ type Inputs =
         ConfigEnv: (string * string) list
     }
 
+/// The canonical JSON shape of a fingerprint. Fields are declared in alphabetical order
+/// with the serialized names, so the JSON is stable and field order is explicit.
+type CanonicalFingerprint =
+    { arch: string
+      deps: string
+      env: string[]
+      files: string[]
+      hashScheme: int
+      os: string
+      recorder: string
+      runtime: string
+      weaver: string }
+
 let private sha256Hex (bytes: byte[]) =
     Convert.ToHexString(SHA256.HashData bytes).ToLowerInvariant()
 
@@ -39,17 +52,17 @@ let compute (i: Inputs) : string =
     let pairs (xs: (string * string) list) =
         xs |> List.sort |> List.map (fun (k, v) -> k + "=" + v) |> List.toArray
 
-    // Anonymous-record fields serialize in a fixed (alphabetical) order.
     JsonSerializer.Serialize(
-        {| runtime = i.Runtime
-           os = i.Os
-           arch = i.Arch
-           deps = i.DepsJsonSha256
-           recorder = i.RecorderVersion
-           weaver = i.WeaverVersion
-           hashScheme = i.HashScheme
-           files = pairs i.ConfigFiles
-           env = pairs i.ConfigEnv |}
+        { arch = i.Arch
+          deps = i.DepsJsonSha256
+          env = pairs i.ConfigEnv
+          files = pairs i.ConfigFiles
+          hashScheme = i.HashScheme
+          os = i.Os
+          recorder = i.RecorderVersion
+          runtime = i.Runtime
+          weaver = i.WeaverVersion }
+        : CanonicalFingerprint
     )
     |> Encoding.UTF8.GetBytes
     |> sha256Hex

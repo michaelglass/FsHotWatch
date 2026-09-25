@@ -12,3 +12,6 @@
 - feat: environment fingerprint (`TestPrune.Trace.Fingerprint`): SHA-256 of canonical JSON over the
   runtime, OS/arch, original deps.json hash, recorder and weaver versions, TestPrune.Core's
   `SchemaVersion` as the hash scheme, and configured files and environment variables (values hashed).
+- feat: weaver core (`TestPrune.Trace.Weaver`): Mono.Cecil method-entry probes with a manifest; refuses
+  optimized builds; re-anchors F#'s end-of-method hidden sequence points at the woven code size so
+  portable PDBs stay decodable (checked for every woven method by `PdbCheck`).
