@@ -47,7 +47,7 @@ module TraceSettings =
     let defaultVerifyTimeoutSec = 300
 
     /// Parse the `record` value (case-insensitive). Unknown text is `None`: the caller
-    /// warns and treats it as off.
+    /// refuses the configuration.
     let parseRecord (s: string) : TraceRecordPolicy option =
         match s.ToLowerInvariant() with
         | "off" -> Some RecordOff

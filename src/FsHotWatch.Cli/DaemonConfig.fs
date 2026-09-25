@@ -847,8 +847,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | _ -> []
 
             // `tests.traces`: opt-in per-test trace recording. Absent → None (off,
-            // byte-for-byte today's behaviour). An unknown `record` value warns and is
-            // off: recording never gates a verdict, so a typo must not fail the config.
+            // byte-for-byte today's behaviour). An unknown `record` value is a
+            // ConfigError: a typo would otherwise switch tracing off unnoticed.
             let traces =
                 match v.TryGetProperty("traces") with
                 | true, t when t.ValueKind = JsonValueKind.Object ->
@@ -873,11 +873,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             match FsHotWatch.TestPrune.TraceSettings.parseRecord raw with
                             | Some r -> r
                             | None ->
-                                Logging.warn
-                                    "config"
-                                    $"Unknown tests.traces.record value '%s{raw}' (expected off, full-runs or every-run), recording is off"
-
-                                FsHotWatch.TestPrune.RecordOff
+                                raise (
+                                    ConfigError
+                                        $"tests.traces.record has unknown value '%s{raw}' (expected off, full-runs or every-run)"
+                                )
 
                     let weaveTests =
                         match str "weaveTests" |> Option.map (fun w -> w.ToLowerInvariant()) with

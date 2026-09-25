@@ -2437,9 +2437,22 @@ let ``TraceSettings.parseRecord rejects unknown values`` () =
     test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "" = None @>
     test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "Full-Runs" = Some FsHotWatch.TestPrune.RecordFullRuns @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig an unknown record value is off, not an error`` () =
-    test <@ (tracesOf """{"record": "sometimes"}""").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+[<Theory(Timeout = 15000)>]
+[<InlineData("sometimes")>]
+[<InlineData("full-run")>]
+[<InlineData("")>]
+let ``parseConfig an unknown record value is a ConfigError naming it and the accepted values`` (value: string) =
+    let ex =
+        Assert.Throws<ConfigError>(fun () -> tracesOf $"""{{"record": "%s{value}"}}""" |> ignore)
+
+    test <@ ex.message.Contains $"'%s{value}'" @>
+
+    test
+        <@
+            ex.message.Contains "off"
+            && ex.message.Contains "full-runs"
+            && ex.message.Contains "every-run"
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig a project opts out with traces false; the default is in`` () =
