@@ -22,6 +22,13 @@
   30s)`, so a daemon log shows what a runtime GC setting costs. `OperationWatchdog.Watchdog`
   takes an optional `gcPauseTotal` source; `gcPauseSuffix` renders it.
 
+- fix: the daemon hands Ionide.ProjInfo's `Init.init` the `dotnet` muxer at its real
+  location, so the `DOTNET_HOST_PATH` it writes into the daemon's own environment names the
+  directory that holds `sdk/`. Through a symlinked PATH entry (a Nix wrapper, mise, Homebrew)
+  it named the symlink's `bin/`, and in-process FCS, which finds the SDK beside
+  `DOTNET_HOST_PATH`, resolved a script with no framework references and aborted its check.
+  `ProcessHelper.installedDotnet` is the resolution, shared with the spawn path.
+
 - fix: `DOTNET_INTERNAL_ThreadSuspendInjection` is in `SessionScope.processOwned`, so a
   repository host the CLI launched with thread-suspend injection off still accepts a shell
   that does not set it, instead of refusing the attach as an MSBuild environment mismatch.

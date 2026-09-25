@@ -489,6 +489,48 @@ let ``runProcess resolves DOTNET_HOST_PATH symlink chain to final target`` () =
         if System.IO.Directory.Exists(tmp) then
             System.IO.Directory.Delete(tmp, true)
 
+// The daemon hands Ionide.ProjInfo's `Init.init` the muxer through `installedDotnet`, and
+// `Init.init` writes it into this process's DOTNET_HOST_PATH. In-process FCS resolves a
+// script's framework references from dirname(DOTNET_HOST_PATH)/sdk, so the value written
+// decides whether a script check has any: through a symlinked PATH entry the dirname is
+// the symlink's `bin/`, FCS finds no SDK, keeps .NET Framework defaults that do not
+// resolve here, and the check aborts. This sets the process
+// environment the daemon's own FCS reads, hence this module's serialized collection.
+[<Fact(Timeout = 60000)>]
+let ``the installed muxer behind a symlinked PATH entry leaves in-process FCS its framework references`` () =
+    withTempDir "installed-dotnet" (fun dir ->
+        let real =
+            match Ionide.ProjInfo.Paths.dotnetRoot.Value with
+            | Some exe -> installedDotnet exe.FullName
+            | None -> failwith "no dotnet muxer to link to"
+
+        let bin = System.IO.Directory.CreateDirectory(System.IO.Path.Combine(dir, "bin"))
+        let link = System.IO.Path.Combine(bin.FullName, "dotnet")
+        System.IO.File.CreateSymbolicLink(link, real) |> ignore
+        let script = System.IO.Path.Combine(dir, "Probe.fsx")
+        System.IO.File.WriteAllText(script, "let answer = 42\n")
+        let references = ref []
+
+        withEnv "DOTNET_HOST_PATH" (Some(installedDotnet link)) (fun () ->
+            let checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+
+            // FCS's own default, as a script check without explicit framework flags gets it:
+            // it stays on .NET Framework references unless it finds an SDK.
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    script,
+                    FSharp.Compiler.Text.SourceText.ofString (System.IO.File.ReadAllText script)
+                )
+                |> Async.RunSynchronously
+
+            references.Value <-
+                [ for option in options.OtherOptions do
+                      if option.StartsWith("-r:", StringComparison.Ordinal) then
+                          System.IO.Path.GetFileName(option.Substring 3) ])
+
+        Assert.Contains("System.Runtime.dll", references.Value)
+        Assert.Equal(real, installedDotnet link))
+
 [<Fact(Timeout = 20000)>]
 let ``runProcess overlays explicit env on top of inherited env`` () =
     let inheritedKey = "FSHOTWATCH_ENV_PASSTHROUGH_INHERITED"

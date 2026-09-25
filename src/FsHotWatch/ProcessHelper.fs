@@ -848,6 +848,20 @@ let private sessionCommand (command: string) : string =
                 System.ComponentModel.Win32Exception(2, $"%s{command}: not found on this worktree's PATH (%s{path})")
             )
 
+/// A `dotnet` muxer path at its real location: every symlink resolved, so
+/// dirname(path) is the install directory holding `sdk/` and `shared/`. Readers of
+/// DOTNET_HOST_PATH derive the install from that dirname — a child muxer its runtime,
+/// in-process FCS the SDK a script is resolved against — and a PATH entry that is a
+/// symlink (a Nix wrapper's `bin/`, mise, Homebrew) has neither beside it. A path that
+/// is missing or is no symlink is returned unchanged.
+let installedDotnet (path: string) : string =
+    try
+        match System.IO.File.ResolveLinkTarget(path, returnFinalTarget = true) with
+        | null -> path
+        | resolved -> resolved.FullName
+    with _ ->
+        path
+
 /// Build the `ProcessStartInfo` for a spawned child: redirected stdio, the
 /// working directory, the sanitized+overlaid environment, and the realpath'd
 /// `DOTNET_HOST_PATH`. Shared by every spawn path (`runProcessWithTimeout` and
@@ -881,12 +895,10 @@ let private makeChildProcessStartInfo
     for (key, value) in mergeDotnetEnv command env do
         psi.Environment[key] <- value
 
-    // Realpath DOTNET_HOST_PATH so dirname(DOTNET_HOST_PATH) lands on the
-    // directory containing shared/Microsoft.NETCore.App. A no-op on normal
-    // installs. On Nix-wrapped SDKs the wrapper bin/ has no shared/ sibling but
-    // the unwrapped target does — without this, child apphosts die with
-    // "apphost_version not found" because the muxer reads DOTNET_HOST_PATH
-    // literally. See memory/dotnet_tool_launcher_truncates_nix_profiles.md.
+    // Realpath DOTNET_HOST_PATH (`installedDotnet`). A no-op on normal installs. On
+    // Nix-wrapped SDKs the wrapper bin/ has no shared/ sibling but the unwrapped target
+    // does — without this, child apphosts die with "apphost_version not found" because
+    // the muxer reads DOTNET_HOST_PATH literally.
     //
     // Applied AFTER the explicit env overlay so callers passing DOTNET_HOST_PATH
     // explicitly also get the symlink resolved — which lets tests exercise the
@@ -894,13 +906,7 @@ let private makeChildProcessStartInfo
     // other tests' subprocess spawns.
     match psi.Environment.TryGetValue "DOTNET_HOST_PATH" with
     | true, hostPath when not (String.IsNullOrEmpty hostPath) ->
-        try
-            let resolved = System.IO.File.ResolveLinkTarget(hostPath, returnFinalTarget = true)
-
-            if not (isNull resolved) then
-                psi.Environment["DOTNET_HOST_PATH"] <- resolved.FullName
-        with _ ->
-            () // path missing or not a symlink — leave the original value alone
+        psi.Environment["DOTNET_HOST_PATH"] <- installedDotnet hostPath
     | _ -> ()
 
     psi

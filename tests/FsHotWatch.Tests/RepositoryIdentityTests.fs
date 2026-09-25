@@ -232,15 +232,33 @@ let ``.. after a symlink is the PHYSICAL parent, not the lexical one`` () =
         test <@ (resolved (dir + "/shortcut/../sibling")).Worktree = (resolved sibling).Worktree @>)
 
 [<Fact(Timeout = 15000)>]
-let ``. segments, a relative path, and .. above the filesystem root all canonicalize`` () =
+let ``. segments and .. above the filesystem root canonicalize`` () =
     withTempDir "rid-segments" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
         let expected = (resolved primary).Root
 
         test <@ (resolved (dir + "/./repo/.")).Root = expected @>
         // `..` at the root stays at the root, as POSIX has it.
-        test <@ (resolved ("/.." + primary)).Root = expected @>
-        test <@ (resolved (Path.GetRelativePath(Directory.GetCurrentDirectory(), primary))).Root = expected @>)
+        test <@ (resolved ("/.." + primary)).Root = expected @>)
+
+/// A relative path resolves against the PROCESS working directory, which in-process
+/// project loading (MSBuild) moves while the parallel collections run. So this class
+/// runs serialized, and stands the process in a directory of its own.
+[<Collection(LogGlobalCollectionName)>]
+type RelativePathTests() =
+    [<Fact(Timeout = 15000)>]
+    member _.``a relative path canonicalizes against the working directory``() =
+        withTempDir "rid-relative" (fun dir ->
+            let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
+            let expected = (resolved primary).Root
+            let original = Directory.GetCurrentDirectory()
+
+            try
+                Directory.SetCurrentDirectory dir
+                test <@ (resolved "repo").Root = expected @>
+                test <@ (resolved "./repo/../repo").Root = expected @>
+            finally
+                Directory.SetCurrentDirectory original)
 
 [<Fact(Timeout = 15000)>]
 let ``an exactly spelled name stops the listing at its entry and normalizes nothing`` () =

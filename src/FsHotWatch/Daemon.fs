@@ -3658,7 +3658,15 @@ module Daemon =
                 match workspaceLoader with
                 | Some loader -> loader
                 | None ->
-                    let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
+                    // Init.init writes the muxer it is given into this process's
+                    // DOTNET_HOST_PATH when that is unset, and in-process FCS finds the SDK
+                    // as dirname(DOTNET_HOST_PATH). Its own lookup returns the first PATH
+                    // entry as spelled, so hand it the installed muxer instead.
+                    let muxer =
+                        Paths.dotnetRoot.Value
+                        |> Option.map (fun exe -> FileInfo(ProcessHelper.installedDotnet exe.FullName))
+
+                    let toolsPath = Init.init (DirectoryInfo(repoRoot)) muxer
                     WorkspaceLoader.Create(toolsPath, [])
 
             // Plugins read the model from the host publication. A settled model is

@@ -372,10 +372,13 @@ let ``a bare command is found on the session's PATH, not the host's`` () =
             isolated (fun () ->
                 use _ = SessionEnvironment.install env
 
+                // In `dir`, not ".": the process working directory is shared with every
+                // parallel test, and in-process project loading moves it into directories
+                // those tests then delete — the wrapper's shell then reports that first.
                 ProcessHelper.runProcess
                     "dotnet"
                     "--version"
-                    "."
+                    dir
                     []
                     (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 30.0))
                 |> stdoutOf)
