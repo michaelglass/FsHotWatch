@@ -2235,4 +2235,4 @@ let ``a reader never sees Completed for a run without that run's findings`` () =
     test <@ reader.Wait(TimeSpan.FromSeconds 50.0) @>
     let violations, lastSeen = reader.Result
     test <@ lastSeen = runs @>
-    test <@ violations = [] @>
+    test <@ List.isEmpty violations @>
