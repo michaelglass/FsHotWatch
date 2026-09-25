@@ -6,6 +6,11 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- FS0988: existing suppression; FS3511: state machine not statically compilable; NETSDK1188: harmless locale warnings from Microsoft.Testing.Platform -->
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <!-- Parallel tests block pool threads in synchronous waits. Past the pool's minimum
+         (one thread per core by default) a new thread waits on starvation injection, which
+         a saturated CPU slows to seconds per thread, so every in-flight test waiting on
+         pool work stalls at once. Up to this floor the pool adds threads on demand. -->
+    <ThreadPoolMinThreads>128</ThreadPoolMinThreads>
   </PropertyGroup>
 
   <ItemGroup>

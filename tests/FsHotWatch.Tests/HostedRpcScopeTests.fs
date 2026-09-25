@@ -48,16 +48,21 @@ let private spawner (root: string) (pidFile: string) : PluginFramework.PluginHan
               async {
                   ctx.Log CommandRan
 
-                  // Started from the call, so it runs in the call's context.
-                  Task.Run(fun () ->
-                      runProcess
-                          "sh"
-                          $"-c \"echo $$ > '%s{pidFile}'; exec sleep 30\""
-                          root
-                          []
-                          (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
-                      |> ignore)
-                  |> ignore
+                  // Started from the call, so it runs in the call's context. A thread of its
+                  // own: the wait for the child lasts until the daemon reaps it, and a pool
+                  // thread held that long is one the daemon's own work cannot have.
+                  Thread(
+                      (fun () ->
+                          runProcess
+                              "sh"
+                              $"-c \"echo $$ > '%s{pidFile}'; exec sleep 30\""
+                              root
+                              []
+                              (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+                          |> ignore),
+                      IsBackground = true
+                  )
+                      .Start()
 
                   return "started"
               }) ]
@@ -201,11 +206,33 @@ let ``a command called through a repository host spawns and logs in its session'
             use cts = new CancellationTokenSource()
             let endpoint = settings.Control.Endpoint
 
-            let run =
-                Task.Run(fun () -> RepositoryHost.run settings factory (TimeSpan.FromMinutes 5.0) cts)
+            // The host blocks the thread that runs it until it stops, so it gets a thread of
+            // its own, as it has the CLI's main thread in production. On a pool thread it
+            // could not even start while the pool was starved.
+            let run = TaskCompletionSource<unit>()
+
+            let host =
+                Thread(
+                    (fun () ->
+                        try
+                            RepositoryHost.run settings factory (TimeSpan.FromMinutes 5.0) cts |> ignore
+                            run.SetResult()
+                        with failure ->
+                            run.SetException failure),
+                    IsBackground = true
+                )
+
+            host.Start()
 
             try
-                test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning endpoint) 20000 @>
+                waitUntilTrue (fun () -> run.Task.IsCompleted || RepositoryIpc.isRunning endpoint) 20000
+                |> ignore
+
+                // A host that ended before it served says why.
+                if run.Task.IsFaulted then
+                    raise (run.Task.Exception.GetBaseException())
+
+                test <@ not run.Task.IsCompleted && RepositoryIpc.isRunning endpoint @>
 
                 let request =
                     { requestFor
@@ -239,7 +266,7 @@ let ``a command called through a repository host spawns and logs in its session'
                         |> Async.RunSynchronously
                         |> ignore
 
-                        run.Wait(TimeSpan.FromSeconds 60.0) |> ignore)
+                        host.Join(TimeSpan.FromSeconds 60.0) |> ignore)
             finally
                 cts.Cancel()
-                run.Wait(TimeSpan.FromSeconds 60.0) |> ignore)
+                host.Join(TimeSpan.FromSeconds 60.0) |> ignore)

@@ -962,12 +962,16 @@ module IpcClient =
     let invalidate (pipeName: string) : Async<string> = invoke pipeName "Invalidate" [||]
 
     /// Quick probe to check if a daemon is listening on the named pipe.
+    ///
+    /// The connect runs on the caller's thread. `ConnectAsync` would queue it to the thread
+    /// pool, so a caller blocking on it would wait for a pool thread as well as for the
+    /// daemon, and a starved pool would read as "not running".
     let isRunning (pipeName: string) : bool =
         try
             use pipe =
                 new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
 
-            pipe.ConnectAsync(500).Wait()
+            pipe.Connect 500
             true
         with _ex ->
             false

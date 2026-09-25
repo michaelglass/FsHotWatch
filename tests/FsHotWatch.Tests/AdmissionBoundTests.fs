@@ -114,3 +114,37 @@ let ``a bounded wait returns the result, raises the failure unwrapped, or gives 
 
     raises<TimeoutException>
         <@ SupervisedWork.waitWithin (TimeSpan.FromMilliseconds 50.0) (TaskCompletionSource<int>().Task) @>
+
+[<Fact(Timeout = 60000)>]
+let ``a daemon probe answers while every pool thread is busy`` () =
+    // A listening pipe accepts a connection before its server calls accept, so the probe
+    // needs no pool thread on either side to see a daemon that is there.
+    let pipeName = $"fp-{Guid.NewGuid():N}"
+
+    use server =
+        new IO.Pipes.NamedPipeServerStream(
+            pipeName,
+            IO.Pipes.PipeDirection.InOut,
+            1,
+            IO.Pipes.PipeTransmissionMode.Byte,
+            IO.Pipes.PipeOptions.Asynchronous
+        )
+
+    let answered =
+        withEveryPoolThreadBusy (fun () ->
+            let answer = TaskCompletionSource<bool>()
+
+            Thread((fun () -> answer.SetResult(Ipc.IpcClient.isRunning pipeName)), IsBackground = true).Start()
+
+            answer.Task.Wait(TimeSpan.FromSeconds 10.0) && answer.Task.Result)
+
+    Assert.True(answered, "a listening daemon read as not running while the pool was busy")
+
+/// Parallel tests block pool threads in synchronous waits. Past the pool's minimum, a new
+/// thread waits on starvation injection, which a saturated CPU halts, so every in-flight
+/// test waiting on pool work stalls at once. `ThreadPoolMinThreads` in the test project
+/// raises the minimum, up to which the pool adds a thread for each without delay.
+[<Fact>]
+let ``the test host lets parallel tests block pool threads without starving the pool`` () =
+    let workers, _ = ThreadPool.GetMinThreads()
+    test <@ workers >= 128 @>
