@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: the watchdog heartbeat carries the GC pause share since the previous heartbeat
+  (`GC.GetTotalPauseDuration` deltas), e.g. `heartbeat: idle; gc-pause 1.00% (300ms of
+  30s)`, so a daemon log shows what a runtime GC setting costs. `OperationWatchdog.Watchdog`
+  takes an optional `gcPauseTotal` source; `gcPauseSuffix` renders it.
+
 - perf: `CheckPipeline` observes a canceled check through `IsCancellationRequested`
   instead of throwing `OperationCanceledException`, so a superseded check no longer
   unwinds an exception (which, on macOS, walks the unwinder under dyld's loader lock and
