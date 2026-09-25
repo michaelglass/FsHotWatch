@@ -157,6 +157,45 @@ let ``this process resolves a root that holds a runtime`` () =
     test <@ root.IsSome @>
     test <@ Directory.Exists(Path.Combine(root.Value, "shared", "Microsoft.NETCore.App")) @>
 
+[<Fact>]
+let ``a DOTNET_HOST_PATH symlink is read as its final target`` () =
+    let dir = Directory.CreateTempSubdirectory("tl-host-").FullName
+
+    try
+        let real = Path.Combine(dir, "dotnet")
+        File.WriteAllText(real, "")
+        let link = Path.Combine(dir, "wrapper")
+        File.CreateSymbolicLink(link, real) |> ignore
+
+        let read (key: string) =
+            if key = "DOTNET_HOST_PATH" then link else null
+
+        test <@ TracedLaunch.readEnvResolvingHost read "DOTNET_HOST_PATH" = Some(FileInfo(real).FullName) @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact>]
+let ``a DOTNET_HOST_PATH that is not a link, or is missing, is read as is`` () =
+    let dir = Directory.CreateTempSubdirectory("tl-host-").FullName
+
+    try
+        let plain = Path.Combine(dir, "dotnet")
+        File.WriteAllText(plain, "")
+        let missing = Path.Combine(dir, "absent")
+        test <@ TracedLaunch.readEnvResolvingHost (fun _ -> plain) "DOTNET_HOST_PATH" = Some plain @>
+        test <@ TracedLaunch.readEnvResolvingHost (fun _ -> missing) "DOTNET_HOST_PATH" = Some missing @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact>]
+let ``other variables are read as is, and an unset one is None`` () =
+    let read (key: string) =
+        if key = "DOTNET_ROOT" then "/wrapper/bin" else null
+
+    test <@ TracedLaunch.readEnvResolvingHost read "DOTNET_ROOT" = Some "/wrapper/bin" @>
+    test <@ TracedLaunch.readEnvResolvingHost read "DOTNET_HOST_PATH" = None @>
+    test <@ TracedLaunch.readEnvResolvingHost (fun _ -> "") "DOTNET_HOST_PATH" = Some "" @>
+
 // --- spec: the whole launch ---
 
 [<Fact>]

@@ -149,21 +149,27 @@ module TracedLaunch =
 
             [ yield! Option.toList muxerDir; runtimeRoot ] |> List.tryFind hasRuntime
 
+    /// Read `key` through `read` (null when unset). `DOTNET_HOST_PATH` is read as its
+    /// final link target, so its directory is the real install rather than a wrapper's.
+    let readEnvResolvingHost (read: string -> string) (key: string) : string option =
+        match read key with
+        | null -> None
+        | value when key = "DOTNET_HOST_PATH" && value <> "" ->
+            // A missing or unreadable path throws; it is read as is (as ProcessHelper does
+            // for a child's DOTNET_HOST_PATH), and `dotnetRoot` then finds no runtime beside it.
+            try
+                match System.IO.File.ResolveLinkTarget(value, returnFinalTarget = true) with
+                | null -> Some value
+                | target -> Some target.FullName
+            with _ ->
+                Some value
+        | value -> Some value
+
     /// `dotnetRoot` for this process: its environment (with `DOTNET_HOST_PATH` realpath'd),
     /// a runtime present when `shared/Microsoft.NETCore.App` exists, and the runtime this
     /// process itself runs on.
     let dotnetRootOfThisProcess () : string option =
-        let getEnv (key: string) =
-            match System.Environment.GetEnvironmentVariable key with
-            | null -> None
-            | value when key = "DOTNET_HOST_PATH" && value <> "" ->
-                try
-                    match System.IO.File.ResolveLinkTarget(value, returnFinalTarget = true) with
-                    | null -> Some value
-                    | target -> Some target.FullName
-                with _ ->
-                    Some value
-            | value -> Some value
+        let getEnv = readEnvResolvingHost System.Environment.GetEnvironmentVariable
 
         let hasRuntime (root: string) =
             System.IO.Directory.Exists(System.IO.Path.Combine(root, "shared", "Microsoft.NETCore.App"))
