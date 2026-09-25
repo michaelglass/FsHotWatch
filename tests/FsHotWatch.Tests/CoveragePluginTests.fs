@@ -801,7 +801,7 @@ let private stubCoverageCtx
       CompleteWithTimeout = ignore
       RunExclusive = claim
       RunExclusiveShared = fun _ _ _ _ _ -> failwith "coverage takes no shared lease"
-      IsRunning = fun _ -> false
+      SlotHolder = fun _ -> PF.SlotHolder.Free
       DeclareBoundedWork = PF.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = PF.ProjectGraphAccessor.none }

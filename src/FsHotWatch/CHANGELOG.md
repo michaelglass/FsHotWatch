@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING:** `PluginCtx.IsRunning: string -> bool` is replaced by
+  `PluginCtx.SlotHolder: string -> SlotHolder` (`Free | LiveRun | Fold`). `IsRunning`
+  read false while a finished run's result fold still held the key, yet a claim on that
+  key returned `SlotBusy`; `SlotHolder.Fold` names that case. `ctx.IsRunning key` is
+  `ctx.SlotHolder key = SlotHolder.LiveRun`. `CommandCtx` and `CommandReadCtx` keep
+  `IsRunning`.
+
 - feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),
   its one rendering (`HookStep.describe`), and a `Tracker` that holds it for as long as it
   runs; `HookStep.asSubtasks` holds it as a plugin subtask, so the wait and wedge lines

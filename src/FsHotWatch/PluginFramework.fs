@@ -31,6 +31,18 @@ type RunClaim =
     /// already covers the need) or queue (when the work is owed).
     | SlotBusy
 
+/// What holds an exclusive key (`PluginCtx.SlotHolder`). A claim on a key held by
+/// either `LiveRun` or `Fold` returns `SlotBusy`.
+[<RequireQualifiedAccess>]
+type SlotHolder =
+    /// Nothing holds the key.
+    | Free
+    /// A live worker runs under the key.
+    | LiveRun
+    /// No worker is live, but a fold holds the key: a finished run's result or a
+    /// delivered intent, whose `Update` has not committed.
+    | Fold
+
 /// Outcome of atomically claiming a plugin-local slot and a host-wide lease.
 type SharedRunClaim =
     /// The shared resource was idle and work started immediately.
@@ -224,10 +236,12 @@ type PluginCtx<'Msg> =
         /// Both SharedClaimed and SharedQueued mean the framework owns the work;
         /// only LocalSlotBusy requires the caller to retain or merge the debt.
         RunExclusiveShared: SharedRunStarter<'Msg>
-        /// Whether `key` is currently running under `RunExclusive`. Plugins
-        /// use this for IPC-facing status without maintaining their own
-        /// "is running" bit.
-        IsRunning: string -> bool
+        /// What holds `key` under `RunExclusive`. Outside the fold that holds the
+        /// key, `SlotHolder.Free` is the only case a claim can succeed in: a plugin
+        /// that would do expensive work only to launch it can ask first. It must
+        /// still handle `SlotBusy`, since the key may be taken between the read and
+        /// the claim.
+        SlotHolder: string -> SlotHolder
         /// Caller-configured FCS warning codes the host has been told to
         /// treat as noise. Plugins must merge this with per-file `#nowarn`
         /// directives (`FcsDiagnosticFilter.allSuppressedCodes`) before any
@@ -1080,6 +1094,13 @@ let internal registerHandlerForOwner
 
     let isRunning (key: string) = owner.Snapshot.IsRunning key
 
+    let slotHolder (key: string) =
+        let snapshot = owner.Snapshot
+
+        if snapshot.IsRunning key then SlotHolder.LiveRun
+        elif snapshot.IsHeld key then SlotHolder.Fold
+        else SlotHolder.Free
+
     /// The plugin's name is part of the operation name, so the wedge message that names
     /// an overrun declaration names the plugin that made it.
     let declareBoundedWork (label: string) (deadline: System.TimeSpan) =
@@ -1112,7 +1133,7 @@ let internal registerHandlerForOwner
           CompleteWithTimeout = fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
           RunExclusive = runExclusive event
           RunExclusiveShared = runExclusiveShared event
-          IsRunning = isRunning
+          SlotHolder = slotHolder
           DeclareBoundedWork = declareBoundedWork
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }

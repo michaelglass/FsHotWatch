@@ -100,7 +100,11 @@ let ``exclusive ownership survives shared completion processing`` (blockedStage:
         let ctx = capturedCtx.Value
         let secondClaim = ctx.RunExclusive "work" (async { return SharedFinished })
         test <@ secondClaim = SlotBusy @>
-        Assert.True(ctx.IsRunning "work", "the slot must remain owned through completion processing")
+
+        Assert.True(
+            ctx.SlotHolder "work" = SlotHolder.LiveRun,
+            "the slot must remain owned through completion processing"
+        )
     finally
         release.Set()
         waitUntil (fun () -> not (registration.IsBusy())) 5000
@@ -354,7 +358,12 @@ let ``shared startup failure retains local ownership through resource handoff`` 
 
     try
         Assert.True(entered.Wait(5000), "startup cleanup must reach the controlled handoff")
-        Assert.True(ctx.IsRunning "work", "startup failure still owns the slot until handoff finishes")
+
+        Assert.True(
+            ctx.SlotHolder "work" = SlotHolder.LiveRun,
+            "startup failure still owns the slot until handoff finishes"
+        )
+
         Assert.True(registration.IsBusy(), "handoff remains an outstanding obligation")
     finally
         release.Set()
@@ -773,7 +782,7 @@ let ``a claim whose Running report throws retires the run with that failure`` ()
         )
 
     Assert.Same(failure, thrown)
-    Assert.False(captured.Value.IsRunning "work", "a claim that could not report Running must not stay held")
+    Assert.Equal(SlotHolder.Free, captured.Value.SlotHolder "work")
     Assert.False(registration.IsBusy())
     Assert.Same(failure, registration.Fault().Value)
 

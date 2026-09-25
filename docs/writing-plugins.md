@@ -332,7 +332,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
 
 **Concurrency**
 - `ctx.RunExclusive(key, work)` — run `work` exclusively under `key`; further calls with the same key while it runs are dropped. On completion, the returned `'Msg` is posted back as a `Custom` event.
-- `ctx.IsRunning(key)` — whether `key` is currently running under `RunExclusive` (handy for IPC status without your own "is running" flag).
+- `ctx.SlotHolder(key)` — what holds `key` under `RunExclusive`: `SlotHolder.Free`, `LiveRun` (a worker is running), or `Fold` (a finished run's result or a delivered intent has not committed). A claim on a held key returns `SlotBusy`, so ask before doing expensive work whose only purpose is to launch. IPC commands keep `ctx.IsRunning(key)` for status.
 
 ## Run history
 

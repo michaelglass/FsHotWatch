@@ -2540,7 +2540,12 @@ let private stubBuildCtx (claim: string * string -> SharedRunClaim) (isRunning: 
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> failwith "build must use the shared artifact lease"
       RunExclusiveShared = fun key resource _ _ _ -> claim (key, resource)
-      IsRunning = isRunning
+      SlotHolder =
+        fun key ->
+            if isRunning key then
+                SlotHolder.LiveRun
+            else
+                SlotHolder.Free
       DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none }
@@ -2778,7 +2783,7 @@ let private twoRootTemplate (tmpDir: string) =
     handler, secondProject, secondSource, buildLog
 
 /// A test host completing while "build" is held by a finished build's result fold: the
-/// run is no longer live, so `IsRunning` is false, yet the claim is refused.
+/// run is no longer live, so the holder is not `SlotHolder.LiveRun`, yet the claim is refused.
 let private completedTestRun (runId: Guid) =
     TestRunCompleted
         { RunId = runId

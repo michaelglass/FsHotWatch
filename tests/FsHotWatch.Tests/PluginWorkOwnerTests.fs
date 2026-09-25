@@ -42,12 +42,15 @@ let ``owner atomically transfers a run to its result fold and publishes the fold
     let running = owner.Snapshot
     Assert.True running.IsBusy
     Assert.True(running.IsRunning "work")
+    Assert.True(running.IsHeld "work")
     Assert.False(running.IsRunning "other")
+    Assert.False(running.IsHeld "other")
 
     let completion = complete owner identity
     let folding = owner.Snapshot
     Assert.True folding.IsBusy
     Assert.False(folding.IsRunning "work")
+    Assert.True(folding.IsHeld "work", "the result fold holds the key after its worker has finished")
     Assert.Equal(0, folding.State)
     // A prior observation is immutable even after its successor is published.
     Assert.True(running.IsRunning "work")
@@ -56,6 +59,7 @@ let ``owner atomically transfers a run to its result fold and publishes the fold
     let resting = owner.Snapshot
     assertResting resting
     Assert.False resting.IsBusy
+    Assert.False(resting.IsHeld "work")
     Assert.Equal(1, resting.State)
     Assert.Equal(1L, resting.CompletedEvents)
 

@@ -57,7 +57,7 @@ let private handoffHandler
                     | Claimed -> ()
                     | SlotBusy -> failwith "test setup: expected to claim the tests key"
                 | FileChanged(SourceChanged [ "hold" ]) ->
-                    while ctx.IsRunning "tests" do
+                    while ctx.SlotHolder "tests" = SlotHolder.LiveRun do
                         Thread.Sleep 5
                 | FileChanged(SourceChanged [ "report" ]) ->
                     ctx.ReportStatus(PluginStatus.completedNow "symbol analysis: no run due" TimeSpan.Zero)

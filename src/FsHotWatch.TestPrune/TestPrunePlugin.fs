@@ -8197,28 +8197,41 @@ let internal createWithQueries
                             { state with
                                 PriorProjectFingerprints = currentFingerprints }
 
-                        if ctx.IsRunning "tests" && joinsFullRun state false then
+                        // Asked BEFORE selection: a held key refuses the claim, and
+                        // selection is the expensive step (a flush and an impact query
+                        // over the whole index), so selecting only to be refused is
+                        // wasted work. A fold of a finished run holds the key as surely
+                        // as a live run does. The claim below still handles `SlotBusy`
+                        // for a key taken after this read.
+                        let heldBy =
+                            match ctx.SlotHolder "tests" with
+                            | SlotHolder.Free -> None
+                            | SlotHolder.LiveRun -> Some "tests already running"
+                            | SlotHolder.Fold -> Some "tests key held by an uncommitted fold"
+
+                        match heldBy with
+                        | Some reason when joinsFullRun state false ->
                             // A pass-through full run takes what is owed: no run follows
                             // it. The fanout is kept for whatever launches next.
-                            ctx.Log "  ↳ attached to the full run (tests already running)"
+                            ctx.Log $"  ↳ attached to the full run (%s{reason})"
 
                             Logging.info
                                 "test-prune"
-                                "BuildSucceeded received during a full-suite run — attaching debt to that run"
+                                $"BuildSucceeded received during a full-suite run (%s{reason}) — attaching debt to that run"
 
                             return
                                 { attachToFullRun state with
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                        elif ctx.IsRunning "tests" then
+                        | Some reason ->
                             // The leading two spaces nest this under the in-flight test
                             // run in the activity-fold `recent:` view (the renderer
                             // already indents every tail entry by 8), so it does not read
                             // as a sibling of the test-result lines.
-                            ctx.Log "  ↳ queued re-run (tests already running)"
+                            ctx.Log $"  ↳ queued re-run (%s{reason})"
 
                             Logging.info
                                 "test-prune"
-                                "BuildSucceeded received but tests already running — will re-run after"
+                                $"BuildSucceeded received but %s{reason} — will re-run after, without selecting now"
 
                             // Stash the fanout so the rerun runs it (don't lose a
                             // mid-run dependency change).
@@ -8227,7 +8240,7 @@ let internal createWithQueries
                             return
                                 { state with
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                        else
+                        | None ->
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
 
                             // Flush/query before announcing Running so the reported status never

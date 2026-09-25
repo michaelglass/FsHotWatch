@@ -39,7 +39,7 @@ let private recordingCtx () : PluginCtx<TestPruneMsg> =
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> Claimed
       RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
-      IsRunning = fun _ -> false
+      SlotHolder = fun _ -> SlotHolder.Free
       DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none }
@@ -497,11 +497,53 @@ let ``a build landing while tests hold their key queues one impact run`` () =
 
     let busy =
         { ctx with
-            IsRunning = fun key -> key = "tests" }
+            SlotHolder =
+                fun key ->
+                    if key = "tests" then
+                        SlotHolder.LiveRun
+                    else
+                        SlotHolder.Free }
 
     update busy handler handler.Init (BuildCompleted BuildSucceeded) |> ignore
     Assert.Equal(0, claims ())
     Assert.Equal<(string * string option) list>([ "tests", Some "impact" ], Seq.toList intents)
+
+/// A finished run's result fold holds the key with no live worker, so a claim is refused.
+/// Selection is the expensive step, and the refused claim would discard it: the build
+/// queues its run before selecting anything. `effects` records every selection, claim and
+/// intent in the order the handler made them.
+[<Fact(Timeout = 15000)>]
+let ``a build landing while a result fold holds the tests key queues without selecting`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ config "ProjA" ]) None None None None []
+
+    let effects = ResizeArray<string>()
+    let activity = ResizeArray<string>()
+
+    let folding =
+        { recordingCtx () with
+            SlotHolder = fun key -> if key = "tests" then SlotHolder.Fold else SlotHolder.Free
+            DeclareBoundedWork =
+                fun label _ ->
+                    effects.Add $"select: %s{label}"
+
+                    { new IDisposable with
+                        member _.Dispose() = () }
+            RunExclusiveShared =
+                fun key _ _ _ _ ->
+                    effects.Add $"claim: %s{key}"
+                    LocalSlotBusy
+            EnqueueExclusiveIntent =
+                fun key _ _ ->
+                    effects.Add $"intent: %s{key}"
+                    Task.FromResult(())
+            Log = activity.Add }
+
+    update folding handler handler.Init (BuildCompleted BuildSucceeded) |> ignore
+    Assert.Equal<string list>([ "intent: tests" ], Seq.toList effects)
+    Assert.Contains(activity, fun line -> line.Contains "queued re-run" && line.Contains "uncommitted fold")
 
 /// A handler with a full-suite baseline and one passing full run: session coverage, an
 /// empty queue and no reds, so an ordinary `BuildCompleted` may replay a cached green.

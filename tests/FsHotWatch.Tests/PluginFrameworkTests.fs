@@ -1148,8 +1148,8 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
         // thread-pool can lag scheduling the runOne async by several seconds.
         waitUntil (fun () -> !started = 1) 20000
 
-        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
-        test <@ not (capturedCtx.Value.IsRunning "k") @>
+        waitUntil (fun () -> capturedCtx.Value.SlotHolder "k" = SlotHolder.Free) 20000
+        test <@ capturedCtx.Value.SlotHolder "k" = SlotHolder.Free @>
         // No completion posted — Custom RxDone never fired.
         test <@ !completed = 0 @>
 
@@ -1217,13 +1217,13 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
         test <@ isFailed () @>
 
         // ...and the exclusion slot is released so subsequent runs can proceed.
-        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
-        test <@ not (capturedCtx.Value.IsRunning "k") @>
+        waitUntil (fun () -> capturedCtx.Value.SlotHolder "k" = SlotHolder.Free) 20000
+        test <@ capturedCtx.Value.SlotHolder "k" = SlotHolder.Free @>
     }
     |> Async.RunSynchronously
 
 [<Fact(Timeout = 20000)>]
-let ``IsRunning reports true while work in flight, false after completion`` () =
+let ``SlotHolder reports a live run while work is in flight and free after completion`` () =
     async {
         let gate = new System.Threading.ManualResetEventSlim(false)
         let observedRunning = ref false
@@ -1263,14 +1263,14 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
 
         dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "x" ]))
         // Committed, so ctx is captured and RunExclusive has been called.
-        waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 12000
-        observedRunning.Value <- capturedCtx.Value.IsRunning "k"
+        waitUntil (fun () -> capturedCtx.Value.SlotHolder "k" = SlotHolder.LiveRun) 12000
+        observedRunning.Value <- capturedCtx.Value.SlotHolder "k" = SlotHolder.LiveRun
         test <@ !observedRunning @>
-        test <@ not (capturedCtx.Value.IsRunning "other") @>
+        test <@ capturedCtx.Value.SlotHolder "other" = SlotHolder.Free @>
 
         gate.Set()
-        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 12000
-        test <@ not (capturedCtx.Value.IsRunning "k") @>
+        waitUntil (fun () -> capturedCtx.Value.SlotHolder "k" = SlotHolder.Free) 12000
+        test <@ capturedCtx.Value.SlotHolder "k" = SlotHolder.Free @>
     }
     |> Async.RunSynchronously
 
@@ -1613,7 +1613,7 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
 [<Fact(Timeout = 20000)>]
 let ``a terminal stamped by ANY plugin path while a run is in flight is suppressed at the funnel`` () =
     // The ownership rule lives at the ONE choke point every plugin-originated status passes
-    // through, rather than being re-implemented as `if not (ctx.IsRunning "tests")` in each
+    // through, rather than being re-implemented as `if not (ctx.SlotHolder "tests" = SlotHolder.LiveRun)` in each
     // handler — the duplication class that caused this bug in the first place.
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let gate = Gate()
@@ -2175,7 +2175,7 @@ let private runRig (raceTheClaim: PluginCtx<RigMsg> -> RegisteredPlugin -> Async
 
                     let runLive =
                         match ctxRef with
-                        | Some c -> c.IsRunning "tests"
+                        | Some c -> c.SlotHolder "tests" = SlotHolder.LiveRun
                         | None -> false
 
                     lock statusesLock (fun () ->

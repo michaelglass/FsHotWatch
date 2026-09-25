@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a `BuildSucceeded` arriving while a finished run's result fold holds the "tests"
+  key queues its re-run without selecting. It read the key as free, ran the whole
+  flush and impact query, and only then found the claim refused. The activity line
+  names the holder: `queued re-run (tests key held by an uncommitted fold)`.
+
 - **BREAKING:** `create`'s `beforeRun` hook receives a `HookStep.Tracker` after the run
   id (`Guid -> HookStep.Tracker -> unit`). A hook hands each step it runs to the tracker
   once the step's child has started and disposes the handle when it exits; the plugin

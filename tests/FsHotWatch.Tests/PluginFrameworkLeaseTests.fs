@@ -458,7 +458,7 @@ let ``a cancelled run restores its displaced status and an owed run verdict stil
                     | FileChanged(SourceChanged [ "hold" ]) ->
                         // Until the worker has retired into its result fold, which then
                         // queues behind "report": that fold is owed while "report" runs.
-                        while ctx.IsRunning "work" do
+                        while ctx.SlotHolder "work" = SlotHolder.LiveRun do
                             Thread.Sleep 5
                     | FileChanged(SourceChanged [ "report" ]) ->
                         ctx.ReportStatus(PluginStatus.completedNow "unrelated terminal" TimeSpan.Zero)

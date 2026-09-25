@@ -671,6 +671,11 @@ type Snapshot<'State> =
         |> Map.tryFind key
         |> Option.exists (fun lane -> holdsWorker lane.Holder)
 
+    /// Anything holds `key`: a live worker, or a fold that has not committed. A claim on
+    /// a held key is refused.
+    member this.IsHeld(key: string) =
+        obligations this.Work |> snd |> Map.containsKey key
+
     member this.HasExclusiveRun =
         obligations this.Work
         |> snd
