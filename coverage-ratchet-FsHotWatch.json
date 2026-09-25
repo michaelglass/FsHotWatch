@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "FcsDiagnosticFilter.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Fully covered, including the self-incompatible classifier templates and the generation-aware re-check.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 94,
+        "reason": "Linux CI (.NET SDK 10.0.401) measures line=100% branch=94.0% (47/50) while macOS (SDK 10.0.3xx) measures 100%: the newer F# compiler emits extra branch points for the same source (the known SDK difference). The three uncovered halves are not yet identified in the sdk:10.0.401 container; once they are, each gets a test or the construct is restructured, and this floor returns to 100.",
+        "platform": "linux"
+      }
+    ],
     "AnalyzerIdentity.fs": [
       {
         "line": 97,
