@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.1.0 - 2026-09-25
+
+- Hash a type's header apart from its union cases and members
+
+
 ## 13.0.0 - 2026-09-25
 
 - fix!: extension edges are a function of the tree, not of index history

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.1.0 - 2026-09-25
+
 - feat: a type's content hash covers only its header, so an edit to one union case or
   one member no longer changes the hash of the whole type. The header is the type's
   definition with each union case and member replaced by its name: the name, type
