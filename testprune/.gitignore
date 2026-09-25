@@ -74,3 +74,6 @@ benchmarks/results/
 
 # jj parallel workspaces
 .workspaces/
+
+# Scratch copies of fixture builds made by the weaver tests
+tests/TraceFixtures/bin-scratch/
