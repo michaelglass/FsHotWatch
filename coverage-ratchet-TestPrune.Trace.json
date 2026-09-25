@@ -1,3 +1,24 @@
 {
-  "overrides": {}
+  "overrides": {
+    "Launch.fs": {
+      "line": 100.0,
+      "branch": 83.3,
+      "reason": "Process launcher. The uncovered branch halves are compiler-generated: the null arm of the string pattern and the Process.Start null result, which cannot occur for UseShellExecute=false."
+    },
+    "Manifest.fs": {
+      "line": 100.0,
+      "branch": 71.4,
+      "reason": "Manifest TSV read/write. Round-trip, refusal and error paths are tested; the uncovered branch halves are compiler-generated array-literal and string-split null checks."
+    },
+    "PdbCheck.fs": {
+      "line": 100.0,
+      "branch": 87.5,
+      "reason": "SRM decode check. Both the healthy and the failing path are tested; the remaining branch half is the compiler-generated disposal null check on the `use` bindings."
+    },
+    "Weaver.fs": {
+      "line": 97.0,
+      "branch": 84.8,
+      "reason": "Cecil weaver. Uncovered: the missing-internal-SequencePoint-constructor guard (Cecil is pinned to 0.11.6, which has it), the PdbCorrupt refusal (unreachable once the end-of-method fix is in; PdbCheck's own tests prove the check fires on the unfixed Cecil output), the empty-document-hash arm (the F# compiler always records a SHA256), the unresolvable-attribute name fallback in test detection (the resolver also searches the recorder's directory, which holds xunit in the test host), and compiler-generated null/short-circuit branch halves."
+    }
+  }
 }

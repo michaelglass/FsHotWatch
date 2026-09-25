@@ -12,6 +12,9 @@
   <ItemGroup>
     <Compile Include="Fixtures.fs" />
     <Compile Include="ScaffoldTests.fs" />
+    <Compile Include="ManifestTests.fs" />
+    <Compile Include="LaunchTests.fs" />
+    <Compile Include="WeaverTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

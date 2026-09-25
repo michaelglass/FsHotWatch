@@ -26,6 +26,10 @@
 
     <ItemGroup>
         <Compile Include="Model.fs" />
+        <Compile Include="Manifest.fs" />
+        <Compile Include="PdbCheck.fs" />
+        <Compile Include="Launch.fs" />
+        <Compile Include="Weaver.fs" />
     </ItemGroup>
 
     <ItemGroup>
