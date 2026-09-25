@@ -29,6 +29,13 @@ let FcsInternalPluginName = "fcs-internal"
 [<Literal>]
 let TestPrunePluginName = "test-prune"
 
+/// The analyzers plugin's registered name, and therefore its LEDGER KEY. Named here for
+/// the same reason as `TestPrunePluginName`: the verdict asks of an analyzer entry
+/// whether it was computed from a check that is itself a checker fault, and the only
+/// way to ask is by ledger source.
+[<Literal>]
+let AnalyzersPluginName = "analyzers"
+
 /// Convention: each plugin emits one long-lived "primary" subtask per run
 /// whose label is the user-facing status line. The renderer prefers this
 /// label over the recent-activity tail.

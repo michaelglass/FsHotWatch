@@ -248,7 +248,9 @@ Two kinds of failing diagnostic are not claims about the tree on disk at all:
   (`'T' does not match the type 'T'`). Such a check has shown its answer for that
   file is not a reading of the code, so none of its errors is a finding — the ones
   that follow from the phantom mismatch least of all. They are reported under
-  `fcs-internal` at their own severity: never green, never a claim your code is broken;
+  `fcs-internal` at their own severity: never green, never a claim your code is broken.
+  An analyzer crash or finding on such a file ran on the same check results, and is
+  classified the same way;
 * a diagnostic against an absolute path **that is no longer on disk** — the ledger is
   still describing a tree you have already changed.
 
@@ -409,7 +411,7 @@ names.
 |--------|---------|
 | `about-this-tree` | A genuine claim about the tree on disk. The red is earned. The default — nothing reaches the others without proof. |
 | `vanished-file` | The diagnostic names an absolute path that is not on disk. The daemon is describing a tree that no longer exists. |
-| `checker-fault` | An FCS `internal error:` — the checker crashed, so it made no finding at all — or an `fcs-internal` error: one from a check that also reported a type incompatible with itself. |
+| `checker-fault` | An FCS `internal error:` — the checker crashed, so it made no finding at all — or an `fcs-internal` error: one from a check that also reported a type incompatible with itself — or an `analyzers` entry on a file whose check did. |
 
 When **every** failing diagnostic is one of the latter two and no plugin failed, there
 is no verdict to give: the outcome is `incomplete` and the exit code is **3**, not 1.

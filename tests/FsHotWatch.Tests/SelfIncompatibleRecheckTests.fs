@@ -170,7 +170,11 @@ let private suspectDiagnostics =
 
 /// The verdict a set of per-file ledger writes produces, through the daemon
 /// transport's own projection (`IpcOutput.checkInputs`) and `CheckVerdict.verdict`.
-let private verdictOf (files: (string * Daemon.FcsLedgerWrites) list) =
+/// `analyzerEntries` are what the analyzers plugin reported against each file.
+let private verdictWith
+    (files: (string * Daemon.FcsLedgerWrites) list)
+    (analyzerEntries: (string * ErrorEntry list) list)
+    =
     let entries (plugin: string) (es: ErrorEntry list) =
         es
         |> List.map (fun e ->
@@ -181,6 +185,11 @@ let private verdictOf (files: (string * Daemon.FcsLedgerWrites) list) =
               Column = e.Column
               Detail = e.Detail })
 
+    let analyzersOf file =
+        analyzerEntries
+        |> List.filter (fun (f, _) -> f = file)
+        |> List.collect (snd >> entries PluginActivity.AnalyzersPluginName)
+
     let response: DiagnosticsResponse =
         { Count = 0
           Files =
@@ -188,7 +197,8 @@ let private verdictOf (files: (string * Daemon.FcsLedgerWrites) list) =
             |> List.map (fun (file, w) ->
                 file,
                 entries PluginActivity.FcsPluginName w.Findings
-                @ entries PluginActivity.FcsInternalPluginName w.Internal)
+                @ entries PluginActivity.FcsInternalPluginName w.Internal
+                @ analyzersOf file)
             |> Map.ofList
           Statuses = Map.empty
           Coverage = Complete
@@ -199,6 +209,8 @@ let private verdictOf (files: (string * Daemon.FcsLedgerWrites) list) =
 
     let causes = IpcOutput.redCausesOf "logs/daemon.log" false response
     CheckVerdict.verdict CheckVerdict.InnerLoop inputs, causes
+
+let private verdictOf (files: (string * Daemon.FcsLedgerWrites) list) = verdictWith files []
 
 /// `names`, created empty in a directory of their own and passed to `body` as full
 /// paths: real files, so the vanished-file classification cannot be what decides a
@@ -392,4 +404,59 @@ let ``a genuine type error in one of the concurrent files still reddens the run`
                 causes |> List.map (fun c -> c.Source, c.File, c.Kind) = [ PluginActivity.FcsPluginName,
                                                                            broken,
                                                                            Verdict.AboutThisTree ]
+            @>)
+
+// --- analyzers that ran on a suspect check --------------------------------------
+
+/// What the analyzers plugin reports when an analyzer raises on a file.
+let private analyzerCrash =
+    FsHotWatch.Analyzers.AnalyzersPlugin.crashFinding (
+        FsHotWatch.Analyzers.AnalyzersPlugin.crashOf "RenderingAnalyzer" (exn "error recovery at (327,26--327,74)")
+    )
+
+[<Fact>]
+let ``an analyzer crash and findings on a suspect file are checker faults, so the run has no verdict`` () =
+    // The analyzers ran on the same poisoned check results the FCS errors came from, so
+    // what they said about the file is no more a finding than those errors are.
+    let suspect = Daemon.fcsLedgerWrites Set.empty None "App.fsproj" suspectDiagnostics
+
+    let finding = ErrorEntry.error "wrapper rendered without its renderer"
+
+    withFiles [ "Jobs.fs" ] (fun paths ->
+        let file = List.head paths
+
+        let outcome, causes =
+            verdictWith [ file, suspect ] [ file, [ analyzerCrash; finding ] ]
+
+        test <@ causes |> List.forall (fun c -> c.Kind = Verdict.CheckerFault) @>
+
+        test
+            <@
+                causes
+                |> List.filter (fun c -> c.Source = PluginActivity.AnalyzersPluginName)
+                |> List.length = 2
+            @>
+
+        test <@ outcome = CheckVerdict.CheckOutcome.StaleDaemonState 4 @>)
+
+[<Fact>]
+let ``an analyzer crash on a file whose check was clean still reddens the run`` () =
+    // POSITIVE CONTROL: only the suspect FILE's analyzer results move. A crash beside a
+    // clean check is about this tree — the analyzer is broken, or the code breaks it.
+    let clean = Daemon.fcsLedgerWrites Set.empty None "App.fsproj" [||]
+    let suspect = Daemon.fcsLedgerWrites Set.empty None "App.fsproj" suspectDiagnostics
+
+    withFiles [ "Clean.fs"; "Jobs.fs" ] (fun paths ->
+        let cleanFile, suspectFile = paths.[0], paths.[1]
+
+        let outcome, causes =
+            verdictWith [ cleanFile, clean; suspectFile, suspect ] [ cleanFile, [ analyzerCrash ] ]
+
+        test <@ outcome = CheckVerdict.CheckOutcome.FailuresFound @>
+
+        test
+            <@
+                causes
+                |> List.filter (fun c -> c.Kind = Verdict.AboutThisTree)
+                |> List.map (fun c -> c.Source, c.File) = [ PluginActivity.AnalyzersPluginName, cleanFile ]
             @>)

@@ -82,8 +82,14 @@ let private failingEntriesWithKind
     (daemon: Daemon.Daemon)
     (noWarnFail: bool)
     : (string * string * ErrorEntry * Verdict.RedCauseKind) list =
+    let suspect =
+        daemon.Host.GetErrors()
+        |> Map.toSeq
+        |> Seq.collect (fun (file, entries) -> entries |> Seq.map (fun (source, _) -> file, source))
+        |> Verdict.RedCause.suspectFiles
+
     failingEntries daemon noWarnFail
-    |> List.map (fun (file, (source, e)) -> file, source, e, Verdict.RedCause.classify source file e.Message)
+    |> List.map (fun (file, (source, e)) -> file, source, e, Verdict.RedCause.classify suspect source file e.Message)
 
 /// The in-process twin of `IpcOutput.redCausesOf`: the failing ledger
 /// entries the exit code was computed from, as the verdict records them. Derived from

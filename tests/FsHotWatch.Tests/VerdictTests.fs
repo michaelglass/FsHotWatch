@@ -3641,7 +3641,7 @@ let private fcsCause (message: string) : Verdict.RedCause =
       // Classified by PRODUCTION, not stamped: a fixture that hand-picked the kind
       // would keep passing if `classify` stopped working, and these causes are the
       // exact shape (`fcs` + `internal error:`) the classifier exists to recognise.
-      Kind = Verdict.RedCause.classify "fcs" "src/Lib/Thing.fs" message }
+      Kind = Verdict.RedCause.classify Set.empty "fcs" "src/Lib/Thing.fs" message }
 
 [<Fact>]
 let ``a red with every plugin ok NAMES the diagnostics that reddened it`` () =

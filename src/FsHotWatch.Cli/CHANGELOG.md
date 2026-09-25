@@ -6,6 +6,9 @@
   errors of a check that also reported a type incompatible with itself; a run whose
   only failures are checker faults has no verdict (exit 3), never a green, and a
   genuine error anywhere else still reddens it.
+- fix: an analyzer crash or finding on a file whose latest check reported a type
+  incompatible with itself is a `checker-fault` red cause too: the analyzers ran on the
+  same check results. An analyzer crash on a file whose check was clean still reddens.
 
 ## 0.14.0-alpha.63 - 2026-09-25
 

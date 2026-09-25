@@ -19,6 +19,7 @@
   knock-on errors (an inferred type that no longer unifies, a match that no longer
   looks complete) cannot be recognised by message. They are never demoted to `Info`,
   which could let a genuinely broken file go green.
+- feat: `PluginActivity.AnalyzersPluginName`, the analyzers plugin's ledger key.
 - fix: the `fcs-internal` ledger text no longer claims every surfaced fault survived a
   re-check.
 - obs: `check start` and `checked` lines name the project's checker generation and a
