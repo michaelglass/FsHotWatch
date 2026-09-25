@@ -44,13 +44,15 @@ let ``a finished run's result shows as a queued-result subtask until the plugin 
                         // mailbox for as long as the test says, so the run's result has
                         // to queue behind it.
                         if Interlocked.Increment &changes = 1 then
-                            ctx.RunExclusive
-                                "work"
-                                (async {
+                            let run =
+                                async {
                                     runMayFinish.Wait()
                                     return Finished
-                                })
-                            |> ignore
+                                }
+
+                            match ctx.RunExclusive "work" run with
+                            | Claimed -> ()
+                            | SlotBusy -> failwith "the first change's run finds the slot free"
                         else
                             blockerStarted.Set()
                             blockerMayReturn.Wait()
@@ -85,8 +87,9 @@ let ``a finished run's result shows as a queued-result subtask until the plugin 
     runMayFinish.Set()
     test <@ waitFor (TimeSpan.FromSeconds 5.0) (fun () -> recorded () = [ "start", key ]) @>
 
-    // Nothing ends the wait but the plugin taking the result off the mailbox.
-    Thread.Sleep 100
+    // Nothing ends the wait but the plugin taking the result off the mailbox, and the
+    // mailbox is held by the blocker this test has not released: the result cannot
+    // have been folded yet.
     test <@ recorded () = [ "start", key ] @>
     test <@ not resultFolded.IsSet @>
 
