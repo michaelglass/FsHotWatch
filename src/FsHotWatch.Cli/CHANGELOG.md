@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0,
+  TestPrune.SqlHydra 0.2.0. Existing test-impact databases are recreated on first open
+  (schema 15).
+
+- feat: `{ "type": "named-dispatch" }` in `tests.extensions` registers
+  `TestPrune.NamedDispatch.NamedDispatchExtension()`, linking tests to handlers they
+  reach by a string name (`[<DispatchedAs>]` / `[<DispatchTemplate>]`, matched by
+  attribute name). It takes no other fields.
+
 - feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the
   daemon's `[wait]` and `[wedge]` lines name it by index, command, pid and bound. Every
   hook step, run-level ones included, logs its start with its pid and bound.

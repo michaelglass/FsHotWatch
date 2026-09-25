@@ -110,6 +110,7 @@
          and MUST stay first: F# is order-dependent. -->
     <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="TestPruneNamedDispatchTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />

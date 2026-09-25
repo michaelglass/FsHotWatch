@@ -260,6 +260,9 @@ type TestExtensionConfig =
     | FalcoExtension of FalcoExtensionConfig
     | SqlExtension
     | SqlHydraExtension of SqlHydraExtensionConfig
+    /// Links tests to handlers they reach by a string name, from `[<DispatchedAs>]`
+    /// registrations and `[<DispatchTemplate>]` shapes declared in the tree.
+    | NamedDispatchExtension
 
 /// Format mode configuration.
 type FormatMode =
@@ -690,6 +693,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         | "sql-hydra"
                         | "sqlhydra" ->
                             SqlHydraExtension { GeneratedModulePrefix = requiredNonBlank "generatedModulePrefix" }
+                        | "named-dispatch" -> NamedDispatchExtension
                         | other -> raise (ConfigError($"tests.extensions has unknown type '%s{other}'")))
                     |> Seq.toList
                 | true, _ -> raise (ConfigError("tests.extensions must be an array"))
@@ -1851,7 +1855,9 @@ let internal buildTestExtensions
         | SqlExtension -> TestPrune.Sql.AutoSqlExtension() :> TestPrune.Extensions.ITestPruneExtension
         | SqlHydraExtension config ->
             TestPrune.SqlHydra.SqlHydraExtension(config.GeneratedModulePrefix)
-            :> TestPrune.Extensions.ITestPruneExtension)
+            :> TestPrune.Extensions.ITestPruneExtension
+        | NamedDispatchExtension ->
+            TestPrune.NamedDispatch.NamedDispatchExtension() :> TestPrune.Extensions.ITestPruneExtension)
 
 /// Register plugins on the daemon based on the loaded configuration.
 /// Where TestPrune keeps a worktree's test-impact index.

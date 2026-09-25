@@ -24,7 +24,6 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
-open TestPrune.Extensions
 open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
@@ -311,10 +310,10 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
         let mutable extensionCalled = false
 
         let fakeExtension =
-            { new ITestPruneExtension with
+            { new TestPrune.Extensions.ITestPruneExtension with
                 member _.Name = "fake-extension"
 
-                member _.AnalyzeEdges _symbolStore _changedFiles _repoRoot =
+                member _.AnalyzeEdges _symbolStore _repoRoot =
                     extensionCalled <- true
                     [] }
 
@@ -346,13 +345,13 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
         test <@ extensionCalled @>)
 
 [<Fact(Timeout = 15000)>]
-let ``extension error is caught and does not crash plugin`` () =
+let ``extension error is caught and reported to the ledger, not swallowed`` () =
     withTempDir "tp-ext-err" (fun tmpDir ->
         let failingExtension =
-            { new ITestPruneExtension with
+            { new TestPrune.Extensions.ITestPruneExtension with
                 member _.Name = "failing-extension"
 
-                member _.AnalyzeEdges _symbolStore _changedFiles _repoRoot = failwith "extension broke" }
+                member _.AnalyzeEdges _symbolStore _repoRoot = failwith "extension broke" }
 
         let configs =
             [ { Project = "TestProject"
@@ -379,7 +378,21 @@ let ``extension error is caught and does not crash plugin`` () =
         completion.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
         let status = host.GetStatus("test-prune")
-        test <@ status.IsSome @>)
+        test <@ status.IsSome @>
+
+        let reported =
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.tryFind (extensionLedgerKey "failing-extension")
+            |> Option.defaultValue []
+
+        test
+            <@
+                reported
+                |> List.exists (fun e ->
+                    e.Severity = FsHotWatch.ErrorLedger.DiagnosticSeverity.Error
+                    && e.Message.Contains "failing-extension"
+                    && e.Message.Contains "extension broke")
+            @>)
 
 [<Fact(Timeout = 15000)>]
 let ``database read-before-write preserves previous symbols for diffing`` () =

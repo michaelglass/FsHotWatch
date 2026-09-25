@@ -1309,6 +1309,8 @@ let ``parseConfig gives sql and sqlhydra distinct typed configurations`` () =
 [<InlineData("{\"type\":\"sqlhydra\"}")>]
 [<InlineData("{\"type\":\"sqlhydra\",\"generatedModulePrefix\":\"  \"}")>]
 [<InlineData("{\"type\":\"not-an-extension\"}")>]
+[<InlineData("{\"type\":\"named_dispatch\"}")>]
+[<InlineData("{\"type\":\"namedDispatch\"}")>]
 let ``parseConfig refuses incomplete and unknown test extensions`` (extensionJson: string) =
     let json =
         $"""{{
@@ -1320,6 +1322,24 @@ let ``parseConfig refuses incomplete and unknown test extensions`` (extensionJso
 
     let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
     test <@ ex.Message.Contains("tests.extensions") @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads named-dispatch as a settings-free extension`` () =
+    let config =
+        parseConfig
+            """{"tests":{"extensions":[{"type":"named-dispatch"},{"type":"sql"}],"projects":[{"project":"Tests"}]}}"""
+            defaults
+
+    test <@ config.Tests.Value.Extensions = [ NamedDispatchExtension; SqlExtension ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``test extension factory constructs named-dispatch`` () =
+    withTempDir "cfg-named-dispatch-factory" (fun tmpDir ->
+        let db = TestPrune.Database.Database.create (Path.Combine(tmpDir, "test-impact.db"))
+        let extensions = buildTestExtensions db [ NamedDispatchExtension ]
+
+        test <@ extensions |> List.map _.Name = [ "Named Dispatch" ] @>
+        test <@ extensions.Head :? TestPrune.NamedDispatch.NamedDispatchExtension @>)
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig accepts sqlhydra as compatibility alias`` () =

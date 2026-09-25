@@ -22,7 +22,6 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
-open TestPrune.Extensions
 open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
@@ -1462,6 +1461,43 @@ let ``a test run does not erase the unanalysable-file warning`` () =
 
         handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
 
+        test <@ ledger2.Count = 0 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a test run does not erase a failed extension's error`` () =
+    // The same ledger rewrite as the unanalysable-file case: a failed extension's stored
+    // edges describe an older tree, and the error saying so must outlive the next green run
+    // and leave only when the extension answers (the state drops it).
+    withTempDir "tp-failed-extension" (fun tmpDir ->
+        let handler =
+            create ":memory:" tmpDir (Some [ projConfig "ProjA" ]) None None None None []
+
+        let stateWithFailedExtension =
+            { handler.Init with
+                FailedExtensions = Map.ofList [ "Named Dispatch", "template has no {name}" ] }
+
+        let greenRun =
+            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+
+        let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
+
+        handler.Update ctx stateWithFailedExtension greenRun
+        |> Async.RunSynchronously
+        |> ignore
+
+        let key = extensionLedgerKey "Named Dispatch"
+        test <@ ledger.ContainsKey key @>
+
+        test
+            <@
+                ledger[key]
+                |> List.exists (fun e ->
+                    e.Severity = FsHotWatch.ErrorLedger.Error
+                    && e.Message.Contains "template has no {name}")
+            @>
+
+        let ctx2, _statuses2, ledger2 = makeTestPruneRecordingCtx ()
+        handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
         test <@ ledger2.Count = 0 @>)
 
 [<Fact(Timeout = 10000)>]

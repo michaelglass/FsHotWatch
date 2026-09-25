@@ -4,6 +4,30 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### cli, test-prune: TestPrune 13, and the `named-dispatch` extension
+
+- **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0
+  and TestPrune.SqlHydra 0.2.0. An extension's `AnalyzeEdges` now returns its complete
+  edge set for the tree (no `changedFiles` argument), and the plugin stores each answer
+  with `refreshExtensionEdges`, replacing that extension's previous edges instead of
+  appending them through `RebuildProjects` where no re-index ever removed them. The
+  extensions re-run whenever a flush indexes something, and on the first flush of a
+  process.
+- **An extension that throws is reported, not swallowed.** Its previous edges are kept
+  (an extension that cannot answer has not said its edges are gone), it is logged, and an
+  error is recorded in the ledger under `<extension:NAME>` so a check is not green over
+  edges that describe an older tree. Until it answers, runs take the same coarse fallback
+  as an unanalysable file (every test project, in full). It is retried on every flush and
+  the entry clears once it answers.
+- **`{ "type": "named-dispatch" }`** in `tests.extensions` registers TestPrune's
+  `NamedDispatchExtension`, which links a test to a handler it reaches only by a string
+  name: `[<DispatchedAs(channel, name)>]` on the handler,
+  `[<DispatchTemplate(channel, "/path/{name}")>]` on the dispatch shape, both matched by
+  attribute name. It takes no other fields.
+- **Existing test-impact databases are recreated on first open** (TestPrune schema 14 →
+  15): extension edges are now owned by their extension, and the old `_extern`-owned ones
+  do not survive the upgrade. The first check after upgrading re-indexes from scratch.
+
 ### core, cli, test-prune: a wait inside a hook names the step it is on
 
 - **A `tests.beforeRun` step is a subtask while it runs.** A run's hook chain logged a

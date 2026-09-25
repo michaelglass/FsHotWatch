@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **BREAKING:** TestPrune.Core 13.0.0. `ITestPruneExtension.AnalyzeEdges` takes no
+  `changedFiles` and returns the extension's complete edge set; the plugin stores it with
+  `Extensions.refreshExtensionEdges` (owner-scoped replacement) instead of
+  `RebuildProjects`. Extensions re-run when a flush indexes something, on a process's
+  first flush, and after a failure.
+
+- fix: an extension that throws is logged and reported as an error under
+  `<extension:NAME>` (`extensionLedgerKey`) until it answers again; its previous edges
+  are kept, and runs take the unanalysable-file coarse fallback (every test project in
+  full) meanwhile (`TestPruneState.FailedExtensions`). It used to be logged and treated
+  as having no edges.
+
+- TestPrune schema 14 → 15: an existing `test-impact.db` is recreated on first open.
+
 - **BREAKING:** `create`'s `beforeRun` hook receives a `HookStep.Tracker` after the run
   id (`Guid -> HookStep.Tracker -> unit`). A hook hands each step it runs to the tracker
   once the step's child has started and disposes the handle when it exits; the plugin

@@ -35,7 +35,7 @@ non-zero on failures (exit 1) or when completeness cannot be confirmed
 (exit 2). `fshw status` is the read-only observer: it reports the daemon's
 current state without triggering anything.
 
-## SQL test attribution extensions
+## Test attribution extensions
 
 `tests.extensions` composes explicit TestPrune dependency attribution into the
 daemon's impact graph:
@@ -45,7 +45,8 @@ daemon's impact graph:
   "tests": {
     "extensions": [
       {"type": "sql"},
-      {"type": "sql-hydra", "generatedModulePrefix": "Intelligence.Database.Generated"}
+      {"type": "sql-hydra", "generatedModulePrefix": "MyApp.Database.Generated"},
+      {"type": "named-dispatch"}
     ]
   }
 }
@@ -54,7 +55,11 @@ daemon's impact graph:
 `sql` uses `AutoSqlExtension()` to discover `ReadsFrom` and `WritesTo`
 attributes. `sql-hydra` uses `SqlHydraExtension(prefix)` and requires the full,
 non-blank prefix before generated schema/table types. `sqlhydra` is accepted as
-a compatibility alias. Unknown or incomplete entries fail configuration.
+a compatibility alias. `named-dispatch` uses `NamedDispatchExtension()` to link
+tests to handlers they reach by a string name, from `[<DispatchedAs(channel, name)>]`
+registrations and `[<DispatchTemplate(channel, "/path/{name}")>]` shapes; it takes
+no other fields. Unknown or incomplete entries fail configuration. An extension
+that throws keeps its previous edges and is reported as an error until it answers.
 
 ## Commands
 
