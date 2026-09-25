@@ -322,6 +322,25 @@ let ``ErrorLedger notifies reporters on Clear`` () =
     ledger.GetAll() |> ignore
     test <@ cleared.Length = 1 @>
 
+/// An empty report is a clear, and reporters must hear it as one: otherwise the
+/// on-disk mirror keeps the file's last findings after the ledger dropped them.
+[<Fact(Timeout = 15000)>]
+let ``ErrorLedger notifies reporters on an empty Report`` () =
+    let mutable cleared: (string * string) list = []
+
+    let reporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ = ()
+            member _.Clear plugin file = cleared <- (plugin, file) :: cleared
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ reporter ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("lint", "/src/A.fs", [])
+    test <@ cleared = [ "lint", "/src/A.fs" ] @>
+    test <@ ledger.GetAll().IsEmpty @>
+
 [<Fact(Timeout = 15000)>]
 let ``ErrorLedger notifies reporters on ClearPlugin`` () =
     let mutable clearedPlugins: string list = []
@@ -621,6 +640,12 @@ let ``Transport.takeDetail spends nothing on an entry that has no detail`` () =
 
     test <@ spent = 0 @>
     test <@ carried |> List.forall Option.isNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``Transport.takeDetail treats a null detail as no detail`` () =
+    // A reporter written in C# can hand the ledger `Some null`; it must not be charged
+    // to the budget or carried as text.
+    test <@ Transport.takeDetail 7 (Some null) = (None, 7) @>
 
 /// A read answers from what is already recorded, whatever the writer is doing. The
 /// verdict, the RPC status and the wedge monitor all read the ledger; a write that

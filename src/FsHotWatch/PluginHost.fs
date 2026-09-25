@@ -546,19 +546,24 @@ type PluginHost
     /// and return once it is held — a writer that cannot finish, for proving that reads
     /// do not wait for one.
     member internal _.HoldStatusWritesForTest(release: System.Threading.ManualResetEventSlim) =
-        use held = new System.Threading.ManualResetEventSlim(false)
+        // `try/finally`, not `use`: this seam must not add a null-check branch to the
+        // file's coverage that no test can take.
+        let held = new System.Threading.ManualResetEventSlim(false)
 
-        let holder =
-            System.Threading.Thread(
-                (fun () ->
-                    lock statusGate (fun () ->
-                        held.Set()
-                        release.Wait())),
-                IsBackground = true
-            )
+        try
+            let holder =
+                System.Threading.Thread(
+                    (fun () ->
+                        lock statusGate (fun () ->
+                            held.Set()
+                            release.Wait())),
+                    IsBackground = true
+                )
 
-        holder.Start()
-        held.Wait()
+            holder.Start()
+            held.Wait()
+        finally
+            held.Dispose()
 
     /// UTC timestamp of the most recent host activity: an event dispatch or a
     /// plugin status transition. Used by `WaitForComplete` to enforce a

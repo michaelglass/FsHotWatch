@@ -86,6 +86,15 @@ let ``isProcessAlive says an exited, reaped process is gone`` () =
 
 let private noPause () = ()
 
+[<Fact>]
+let ``settlePause waits the settle pause between liveness polls`` () =
+    // Production's pause must actually wait: a zero pause spends the whole settle
+    // window in microseconds and names a dying process as a survivor.
+    let clock = Diagnostics.Stopwatch.StartNew()
+    settlePause ()
+    test <@ clock.Elapsed >= SettlePause - TimeSpan.FromMilliseconds 1.0 @>
+
+
 let private table rows () = Ok rows
 
 /// A liveness probe backed by a set the test mutates.

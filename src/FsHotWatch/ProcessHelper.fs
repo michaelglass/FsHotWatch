@@ -615,6 +615,12 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
 let internal SettleAttempts = 40
 let internal SettlePause = TimeSpan.FromMilliseconds 50.0
 
+/// The pause between settle polls in production. A named function, not a lambda at the
+/// call site: that lambda ran only when a SIGKILLed tree member still answered the
+/// first liveness poll (a zombie its parent had not yet reaped), so whether it ever
+/// executed was a race — and so was its coverage. Here it is testable directly.
+let internal settlePause () = Thread.Sleep SettlePause
+
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything
 /// else is a capture we cannot vouch for.
@@ -1296,13 +1302,7 @@ let internal runProcessCore
     let killTree () : KillOutcome =
         if accounted then
             let t =
-                accountTeardown
-                    readProcessTable
-                    isProcessAlive
-                    SettleAttempts
-                    (fun () -> Thread.Sleep SettlePause)
-                    pid
-                    plainKill
+                accountTeardown readProcessTable isProcessAlive SettleAttempts settlePause pid plainKill
 
             match t.Survivors with
             | Ok survivors ->

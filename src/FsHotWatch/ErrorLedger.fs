@@ -304,6 +304,14 @@ let private markAbsent key (state: LedgerState) =
     { state with
         EntryRevisions = Map.remove key state.EntryRevisions }
 
+/// What one write did: applied and published, refused because the ledger had already
+/// stopped, or failed and stopped it.
+[<NoComparison; NoEquality>]
+type private WriteOutcome<'r> =
+    | Applied of 'r
+    | Refused of exn
+    | Failed of exn
+
 /// Accumulates per-file errors from plugins. Errors auto-clear when a file
 /// is re-checked and passes. Supports optional version-guarded updates: when a
 /// version is provided, stale updates (version < last accepted) are silently ignored.
@@ -448,33 +456,36 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
         next, removed
 
-    /// Apply one write under the lock and publish its result. `None` when the ledger
-    /// has latched a fault, before or during this write.
-    let write (mutation: LedgerState -> LedgerState * 'r) : 'r option =
+    let stopped (fault: exn) =
+        System.InvalidOperationException("The error ledger stopped after a failed write.", fault)
+
+    /// Apply one write under the lock and publish its result. `Error` carries the fault
+    /// the ledger has latched, before or during this write.
+    let write (mutation: LedgerState -> LedgerState * 'r) : Result<'r, exn> =
         let outcome =
             lock writeGate (fun () ->
                 match fault with
-                | Some _ -> None
+                | Some latched -> Refused latched
                 | None ->
                     // No inner recovery: anything that throws here is a programming bug.
                     // It latches, so every later read raises it rather than answering.
                     try
                         let next, result = mutation state
                         System.Threading.Volatile.Write(&state, next)
-                        Some(Result.Ok result)
+                        Applied result
                     with ex ->
                         System.Threading.Volatile.Write(&fault, Some ex)
-                        Some(Result.Error ex))
+                        Failed ex)
 
         match outcome with
-        | None -> None
-        | Some(Result.Ok result) -> Some result
-        | Some(Result.Error ex) ->
+        | Applied result -> Result.Ok result
+        | Refused latched -> Result.Error latched
+        | Failed ex ->
             // Log loudly with the full stack trace so the bug is debuggable, then tell
             // subscribers, outside the lock.
             Logging.error "error-ledger" $"Ledger write failed (programming bug, ledger stopped): %s{ex.ToString()}"
             crashed.Trigger ex
-            None
+            Result.Error ex
 
     let writeState (mutation: LedgerState -> LedgerState) =
         write (fun s -> mutation s, ()) |> ignore
@@ -482,7 +493,7 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// The last published state, or the latched fault.
     let read () : LedgerState =
         match System.Threading.Volatile.Read(&fault) with
-        | Some ex -> raise (System.InvalidOperationException("The error ledger stopped after a failed write.", ex))
+        | Some ex -> raise (stopped ex)
         | None -> System.Threading.Volatile.Read(&state)
 
     /// Set errors for a plugin + file. Replaces previous. Empty list clears.
@@ -512,12 +523,9 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// snapshot. One write makes the comparison and removal atomic.
     member internal _.PruneIfCurrent(candidates: LedgerKeyRevision list) : int =
         match write (pruneIfCurrent candidates) with
-        | Some removed -> removed
-        | None ->
-            // Refused because the ledger stopped: `read` raises the latched fault rather
-            // than letting "nothing removed" stand for it.
-            read () |> ignore
-            0
+        | Result.Ok removed -> removed
+        // The ledger stopped: raise its fault rather than let "nothing removed" stand for it.
+        | Result.Error fault -> raise (stopped fault)
 
     /// Get all errors grouped by file path. Each entry includes the plugin name.
     member _.GetAll() : Map<string, (string * ErrorEntry) list> =
@@ -589,16 +597,21 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// return once it is held — a writer that cannot finish, for proving that reads
     /// do not wait for one.
     member internal _.HoldWritesForTest(release: System.Threading.ManualResetEventSlim) =
-        use held = new System.Threading.ManualResetEventSlim(false)
+        // `try/finally`, not `use`: this seam must not add a null-check branch to the
+        // file's coverage that no test can take.
+        let held = new System.Threading.ManualResetEventSlim(false)
 
-        let holder =
-            System.Threading.Thread(
-                (fun () ->
-                    lock writeGate (fun () ->
-                        held.Set()
-                        release.Wait())),
-                IsBackground = true
-            )
+        try
+            let holder =
+                System.Threading.Thread(
+                    (fun () ->
+                        lock writeGate (fun () ->
+                            held.Set()
+                            release.Wait())),
+                    IsBackground = true
+                )
 
-        holder.Start()
-        held.Wait()
+            holder.Start()
+            held.Wait()
+        finally
+            held.Dispose()

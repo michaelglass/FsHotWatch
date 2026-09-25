@@ -1223,15 +1223,15 @@
     ],
     "ErrorLedger.fs": [
       {
-        "coveredLines": 341,
-        "coveredBranches": 32,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredLines": 261,
+        "coveredBranches": 42,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || Lines lowered 341 -> 261 on 2026-09-25 by deleted code: the ledger's MailboxProcessor (message DU, async receive loop, per-message reply plumbing and reply timeouts) was replaced by immutable state published with a volatile write under a write lock, with lock-free reads. Branches raised 32 -> 42: the file now measures 100% line and 100% branch (261 lines, 42/42 branches, one full local run of 4410 tests).",
         "platform": "macos"
       },
       {
-        "coveredLines": 321,
+        "coveredLines": 261,
         "coveredBranches": 95,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 95/95 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 95/95 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box. || Lines lowered 321 -> 261 on 2026-09-25 by deleted code: the ledger's MailboxProcessor (message DU, async receive loop, reply plumbing and timeouts) was replaced by immutable state published under a write lock with lock-free reads. Measured in mcr.microsoft.com/dotnet/sdk:10.0.401 (the CI SDK) with this tree's full FsHotWatch.Tests coverage run: 261 lines at 100% line, 107/109 branches (the two misses are F# `lock`'s never-taken not-acquired branch, emitted on Linux only). An exact tool count, not the HTML lower bound; branch floor unchanged. Refresh from the next Linux CI run.",
         "platform": "linux"
       }
     ],
@@ -1610,9 +1610,9 @@
     ],
     "PluginHost.fs": [
       {
-        "coveredLines": 352,
+        "coveredLines": 337,
         "coveredBranches": 49,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || Branches lowered 58 -> 50 on 2026-09-17 by deleted code: bumpGenerationIfStarting (its Running and previous-status matches and the edge test) and the per-plugin IsBusy/Fault scans behind AnyPluginBusy, BusyPluginNames, CompletedDispatches and FaultedPlugins were replaced by reads of one owner snapshot. Two full local runs measured 50 covered of 60; every uncovered branch is in code this change did not touch (duplicate-name warning, preprocessor loop enumerator, PruneVanishedErrors path classification). || Branches lowered 50 -> 49 on 2026-09-24 by deleted code: the preprocessor registry changed from a ConcurrentBag to an ordered list (registration order is run order), and the bag's `for … in` enumerator branch went with it; the loop now iterates a list snapshot. Nothing else in this file changed.",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || Branches lowered 58 -> 50 on 2026-09-17 by deleted code: bumpGenerationIfStarting (its Running and previous-status matches and the edge test) and the per-plugin IsBusy/Fault scans behind AnyPluginBusy, BusyPluginNames, CompletedDispatches and FaultedPlugins were replaced by reads of one owner snapshot. Two full local runs measured 50 covered of 60; every uncovered branch is in code this change did not touch (duplicate-name warning, preprocessor loop enumerator, PruneVanishedErrors path classification). || Branches lowered 50 -> 49 on 2026-09-24 by deleted code: the preprocessor registry changed from a ConcurrentBag to an ordered list (registration order is run order), and the bag's `for … in` enumerator branch went with it; the loop now iterates a list snapshot. Nothing else in this file changed. || Lines lowered 352 -> 337 on 2026-09-25 by deleted code: the status MailboxProcessor (its StatusMsg DU, the async receive loop with its SetStatus/GetStatus/GetAllStatuses arms, and the PostAndReply reply-timeout plumbing) was replaced by one immutable map published with a volatile write under a lock. The same change added tests for the duplicate-name warning, a ledger key that is not a valid path (PruneVanishedErrors' exception arm) and ActivitySinkFor, so branches stay at 49 (49/54 measured, one full local run of 4410 tests). Remaining uncovered lines predate this change.",
         "platform": "macos"
       },
       {

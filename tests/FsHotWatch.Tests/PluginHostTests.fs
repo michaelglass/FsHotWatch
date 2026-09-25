@@ -2118,3 +2118,49 @@ let ``a status write is visible to the next read with every pool thread held`` (
 
     test <@ status = Some Idle @>
     test <@ all |> Map.tryFind "starved-pre" = Some Idle @>
+
+/// Two plugins under one name share command and status slots, so the second
+/// registration must say so rather than silently overwrite the first.
+[<Fact(Timeout = 15000)>]
+let ``registering a second plugin under a taken name warns`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let lines = ResizeArray<string>()
+
+    use _ =
+        FsHotWatch.Logging.installSink
+            { Write = fun line -> lock lines (fun () -> lines.Add line)
+              Level = FsHotWatch.Logging.LogLevel.Warning }
+
+    host.RegisterHandler(idleHandler "twin")
+    test <@ lines |> Seq.exists (fun l -> l.Contains "already registered") |> not @>
+
+    host.RegisterHandler(idleHandler "twin")
+    test <@ lines |> Seq.exists (fun l -> l.Contains "'twin' is already registered") @>
+
+/// A ledger key that is not a valid path cannot name a repository file, so pruning
+/// keeps it as the opaque plugin identity it is instead of failing the prune.
+[<Fact(Timeout = 20000)>]
+let ``vanished-diagnostic pruning keeps a key that is not a valid path`` () =
+    withTempDir "diagnostic-key-invalid" (fun root ->
+        let host = PluginHost.create nullChecker root
+        let invalid = "Bad\u0000Name.fs"
+        host.ReportErrors("test-prune", invalid, ghostEntry "not a path")
+
+        host.PruneVanishedErrors(fun _ -> false) |> ignore
+
+        test <@ host.GetErrors() |> Map.containsKey invalid @>)
+
+/// The check pipeline reports through `ActivitySinkFor`; its subtasks and log lines
+/// must land on the plugin the sink was made for.
+[<Fact(Timeout = 20000)>]
+let ``an activity sink records subtasks and log lines for its plugin`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let sink = host.ActivitySinkFor "sunk"
+
+    sink.StartSubtask("parse", "parsing Lib.fs")
+    sink.Log "checked Lib.fs"
+
+    let snapshot = host.GetActivitySnapshot "sunk"
+    test <@ snapshot.Subtasks |> List.map _.Key = [ "parse" ] @>
+    test <@ snapshot.ActivityTail = [ "checked Lib.fs" ] @>
+    test <@ host.GetActivitySnapshot "other" |> _.ActivityTail |> List.isEmpty @>
