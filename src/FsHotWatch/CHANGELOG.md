@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `PluginWork.resultFirst work` lets a run's result fold ahead of the dispatched
+  events queued before it. Once the result is in the mailbox, the plugin's own messages
+  (`Custom`) fold in their own order until the result has, then dispatched events resume
+  in theirs. So the result folds once the fold in flight commits, not after the whole
+  backlog. Undeclared runs keep the first-in, first-out mailbox. docs/writing-plugins.md,
+  "Result ordering", gives the contract and when a plugin may declare it.
+  `PluginWork.isResultFirst` reads the declaration.
+
 - **BREAKING:** `PluginCtx.IsRunning: string -> bool` is replaced by
   `PluginCtx.SlotHolder: string -> SlotHolder` (`Free | LiveRun | Fold`). `IsRunning`
   read false while a finished run's result fold still held the key, yet a claim on that

@@ -316,6 +316,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
 **Running work**
 - `ctx.RunExclusive(key, work)` — run `work` under a single-flight slot, returning a `RunClaim`. The framework reports `Running` at the claim and posts `work`'s result back as a `Custom` message.
   The result must be handled: `SlotBusy` means the work was **not started**, so decide explicitly — skip it, or queue it. Dropping a refused claim is dropping work.
+  Wrap `work` in `PluginWork.resultFirst` to let its result fold ahead of the dispatched events queued before it — see [Result ordering](#result-ordering).
 
 **The warm compiler**
 - `ctx.Checker` — the shared, warm `FSharpChecker`. Reuse it for your own analysis instead of starting a new one.
@@ -333,6 +334,56 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
 **Concurrency**
 - `ctx.RunExclusive(key, work)` — run `work` exclusively under `key`; further calls with the same key while it runs are dropped. On completion, the returned `'Msg` is posted back as a `Custom` event.
 - `ctx.SlotHolder(key)` — what holds `key` under `RunExclusive`: `SlotHolder.Free`, `LiveRun` (a worker is running), or `Fold` (a finished run's result or a delivered intent has not committed). A claim on a held key returns `SlotBusy`, so ask before doing expensive work whose only purpose is to launch. IPC commands keep `ctx.IsRunning(key)` for status.
+
+## Result ordering
+
+A plugin's mailbox folds one message at a time. Two kinds of message reach it:
+**dispatched events** (`FileChanged`, `FileChecked`, `BatchChecked`, `BuildCompleted`,
+the test lifecycle, `CommandCompleted`) and the plugin's **own messages**, which are
+`Custom` (a `ctx.Post`, a delivered intent, an exclusive run's result).
+
+By default the mailbox is first in, first out. A finished run's result therefore waits
+behind every event admitted before it. The result keeps its key held (`SlotHolder.Fold`)
+and its `Running` status until it folds. When those folds are slow, the result can wait a
+long time. The wait shows as the `<key> result queued` subtask.
+
+`PluginWork.resultFirst work` declares that `work`'s result does not have to wait for
+dispatched events. Once the result is in the mailbox, the next message folded is the
+oldest of the plugin's own messages. Own messages keep folding until the result has
+folded, and only then do dispatched events resume. So the result folds once the fold
+already in flight commits. It does not wait for the events queued behind that fold.
+
+What stays fixed:
+
+- **Own messages keep their order.** Anything the worker posted before returning folds
+  before its result. So does any intent or post admitted earlier. Own messages move
+  ahead of dispatched events as one block.
+- **Dispatched events keep their order.** Each `BatchChecked` still folds after the
+  `FileChecked` events of its cohort, and a `BuildCompleted` still folds after both.
+- **Nothing is lost.** Only the order changes: every admitted message still folds once.
+- **Run N+1 cannot start ahead of run N's result.** Until run N's result commits, it
+  holds its key, so any other fold that claims the key gets `SlotBusy`. The only fold
+  that can claim run N+1 before then is run N's own result fold. Moving the result
+  earlier just means fewer events see `SlotBusy`: an event that folds after the result
+  finds the key free and claims it directly.
+- **The owner model is unchanged.** Admission, `SlotHolder`, `Running`, and the
+  commit order work as before, because they never depended on mailbox order.
+
+Declare `resultFirst` only when the result's `Update` gives the same answer whether a
+dispatched event admitted during the run folds before it or after it. In other words,
+the fold must not rely on "an event I folded while the key was held" to learn that the
+world moved during the run. Two plugins show the difference:
+
+- **TestPrune** declares its tests runs. Its result fold removes only the symbols the run
+  launched with, so file checks that arrive during the run stay owed either way.
+- **Build** does not declare. A `FileChanged` folded during a build is held in
+  `PendingFiles`, and `BuildDone` launches those files as the next build. Suppose
+  `BuildDone` folded first instead. It would find nothing pending and cache a success
+  under a key hashed from the edited sources, sources that build never compiled.
+
+That second case is why the declaration is opt-in. The framework cannot tell whether a
+result depends on the events queued before it. The declaring plugin must decide. This
+includes any event the run itself emitted that the plugin also subscribes to.
 
 ## Run history
 

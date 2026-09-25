@@ -4,6 +4,17 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### core, test-prune: a finished test run no longer waits behind a storm of checks
+
+- **A tests run's result folds once the fold in flight commits.** A plugin's mailbox
+  was strictly first in, first out, so a finished run's result waited behind every event
+  queued before it. Under a storm of `FileChecked`/`BatchChecked` events, each fold slow,
+  a green full-suite result could wait more than an hour, with the plugin still
+  `Running` and the tests key held. `PluginWork.resultFirst` lets a plugin declare that
+  a run's result may fold ahead of the dispatched events queued before it, and TestPrune
+  declares its tests runs. The plugin's own messages and the dispatched events each
+  keep their order. docs/writing-plugins.md, "Result ordering", gives the contract.
+
 ### core, cli, test-prune: a wait inside a hook names the step it is on
 
 - **A `tests.beforeRun` step is a subtask while it runs.** A run's hook chain logged a

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a finished tests run's result no longer waits behind the file checks queued
+  before it. Its runs are declared `PluginWork.resultFirst`, so the result folds once
+  the fold in flight commits. Before this, the result held the "tests" key and its
+  green through every queued `FileChecked`/`BatchChecked` fold, and a restart in the
+  meantime discarded it.
+
 - fix: a `BuildSucceeded` arriving while a finished run's result fold holds the "tests"
   key queues its re-run without selecting. It read the key as free, ran the whole
   flush and impact query, and only then found the claim refused. The activity line

@@ -477,6 +477,36 @@ let ``a queued impact run launches owed fanout or queues again behind a held key
         Assert.Equal<(string * string option) list>([ "tests", Some "impact" ], Seq.toList intents)
         Assert.Equal<Set<string>>(Set.singleton "ProjA", next.PendingForceRunProjects)
 
+/// A tests run's result folds ahead of the file checks queued before it: its fold sheds
+/// only the symbols the run launched with, so checks that arrive during the run lose
+/// nothing by folding after it. Both of the run's shapes are declared: the run itself,
+/// and the refusal it becomes when the artifact lease is invalid.
+[<Fact(Timeout = 15000)>]
+let ``a tests run is declared result-first`` () =
+    let root = isolatedRoot ()
+    seedBaseline root [ "ProjA" ]
+
+    let handler =
+        create ":memory:" root (Some [ config "ProjA" ]) None None None None []
+
+    let runs = ResizeArray<SharedResourceState -> Async<TestPruneMsg>>()
+
+    let ctx =
+        { recordingCtx () with
+            RunExclusiveShared =
+                fun _ _ workFor _ _ ->
+                    runs.Add workFor
+                    SharedClaimed }
+
+    let owed =
+        { handler.Init with
+            PendingForceRunProjects = Set.singleton "ProjA" }
+
+    update ctx handler owed (Custom ImpactRunRequested) |> ignore
+    let workFor = Assert.Single runs
+    Assert.True(PluginWork.isResultFirst (workFor Ready), "the run")
+    Assert.True(PluginWork.isResultFirst (workFor (Invalid "stale artifacts")), "the refusal")
+
 [<Fact(Timeout = 15000)>]
 let ``a queued impact run without test projects only analyses`` () =
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []

@@ -166,6 +166,25 @@ module PluginWork =
         let mutable marker = null
         safe.TryGetValue(work, &marker)
 
+    let private resultFirstRuns =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+
+    /// Declare that `work`'s result may be folded ahead of the dispatched events queued
+    /// before it. Once the result is in the plugin's mailbox, the plugin's own messages
+    /// up to and including it fold next; dispatched events wait. Neither kind is
+    /// reordered among itself. Declare it only when the result's `Update` does not
+    /// depend on having seen those dispatched events first — including any event the
+    /// run itself emitted that the plugin subscribes to. See docs/writing-plugins.md,
+    /// "Result ordering".
+    let resultFirst (work: Async<'Msg>) : Async<'Msg> =
+        resultFirstRuns.AddOrUpdate(work, null)
+        work
+
+    /// Whether `work` was declared with `resultFirst`.
+    let isResultFirst (work: Async<'Msg>) : bool =
+        let mutable marker = null
+        resultFirstRuns.TryGetValue(work, &marker)
+
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -350,6 +369,23 @@ let slowFoldLine (kind: string) (elapsed: TimeSpan) (queuedBehind: int) (results
             $"%d{n} event(s) queued behind it, among them %s{named}"
 
     $"%s{kind} fold took %s{took}; %s{behind}"
+
+/// Which of `queued` (oldest first) a plugin folds next. When a `resultFirst` run's
+/// result is among them, the oldest of the plugin's own messages: they fold in their own
+/// order until that result has, ahead of every dispatched event. Otherwise the oldest.
+/// Neither kind is reordered among itself.
+let internal nextToFold (isResultFirst: 'Id -> bool) (queued: (PluginEvent<'Msg> * 'Id) list) : int =
+    let own =
+        queued
+        |> List.indexed
+        |> List.choose (fun (index, (event, id)) ->
+            match event with
+            | Custom _ -> Some(index, id)
+            | _ -> None)
+
+    match own with
+    | (oldest, _) :: _ when own |> List.exists (snd >> isResultFirst) -> oldest
+    | _ -> 0
 
 module BoundedWork =
     /// The declaration made by a context with no host behind it — test fixtures, and any
@@ -756,10 +792,11 @@ let internal registerHandlerForOwner
     let mutable deliver: PluginEvent<'Msg> * PluginWorkOwner.WorkId -> unit = ignore
 
     // Results handed to the mailbox and not yet picked up, by the fold's identity, each
-    // with the subtask that shows it waiting. `finishRun` adds one as it delivers the
-    // fold; the receive loop removes it as it takes the fold off the mailbox.
+    // with the subtask that shows it waiting and whether its run was declared
+    // `resultFirst`. `finishRun` adds one as it delivers the fold; the receive loop
+    // removes it as it takes the fold off the mailbox.
     let queuedResults =
-        System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, string>()
+        System.Collections.Concurrent.ConcurrentDictionary<PluginWorkOwner.WorkId, string * bool>()
 
     // The consumers of each delivered intent that clients alone hold, from its delivery
     // until its fold has been processed. A claim that fold makes, and an intent it
@@ -825,6 +862,7 @@ let internal registerHandlerForOwner
         (identity: PluginWorkOwner.WorkId)
         (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
         (startedAt: DateTime)
+        (resultFirst: bool)
         (outcome: Result<'Msg, exn>)
         =
         let completion =
@@ -854,7 +892,7 @@ let internal registerHandlerForOwner
             match owner.CompleteRun identity with
             | Some fold ->
                 let subtask = QueuedResult.subtaskKey key
-                queuedResults[fold] <- subtask
+                queuedResults[fold] <- (subtask, resultFirst)
                 services.StartSubtask handler.Name subtask (QueuedResult.label key)
                 deliver (Custom message, fold)
             | None -> ()
@@ -914,8 +952,11 @@ let internal registerHandlerForOwner
         (startedAt: DateTime)
         (displaced: PluginStatus)
         (abandoned: (System.Threading.CancellationTokenSource * IDisposable) option)
+        (resultFirst: bool)
         (work: Async<'Msg>)
         =
+        let finishRun = finishRun key identity sharedRun startedAt resultFirst
+
         async {
             match abandoned with
             | None ->
@@ -932,7 +973,7 @@ let internal registerHandlerForOwner
 
                 // Total: every plugin callback inside is guarded, and only this run retires
                 // its own worker.
-                finishRun key identity sharedRun startedAt outcome
+                finishRun outcome
             | Some(source, watch) ->
                 let token = source.Token
 
@@ -953,11 +994,11 @@ let internal registerHandlerForOwner
                 if cancelled then
                     retireAbandoned key identity sharedRun startedAt displaced
                 elif settled.IsFaulted then
-                    finishRun key identity sharedRun startedAt (Result.Error(settled.Exception.GetBaseException()))
+                    finishRun (Result.Error(settled.Exception.GetBaseException()))
                 elif settled.IsCanceled then
-                    finishRun key identity sharedRun startedAt (Result.Error(OperationCanceledException()))
+                    finishRun (Result.Error(OperationCanceledException()))
                 else
-                    finishRun key identity sharedRun startedAt (Result.Ok settled.Result)
+                    finishRun (Result.Ok settled.Result)
         }
 
     /// Claim `key` and report the `Running` the claim earns as one step against the
@@ -992,7 +1033,17 @@ let internal registerHandlerForOwner
         match claim after key with
         | Some(identity, startedAt, displaced) ->
             try
-                startOwned (runOne key identity None startedAt displaced (abandonmentOf (leasesOf after) work) work)
+                startOwned (
+                    runOne
+                        key
+                        identity
+                        None
+                        startedAt
+                        displaced
+                        (abandonmentOf (leasesOf after) work)
+                        (PluginWork.isResultFirst work)
+                        work
+                )
             with failure ->
                 try
                     reportRunFailure key startedAt "failed to start" failure
@@ -1054,6 +1105,9 @@ let internal registerHandlerForOwner
                             startedAt
                             displaced
                             abandonment
+                            (match produced with
+                             | Result.Ok work -> PluginWork.isResultFirst work
+                             | Result.Error _ -> false)
                             guardedWork
                     )
 
@@ -1615,13 +1669,42 @@ let internal registerHandlerForOwner
                                     return Result.Error("Plugin commit", PluginWorkOwner.UpdateFailed failure)
                         }
 
+                    // Messages taken off the mailbox and not yet folded, oldest first. Only
+                    // this loop touches it, and everything in it is older than anything
+                    // still in the mailbox.
+                    let taken = ResizeArray<PluginEvent<'Msg> * PluginWorkOwner.WorkId>()
+
+                    let isResultFirst identity =
+                        match queuedResults.TryGetValue identity with
+                        | true, (_, resultFirst) -> resultFirst
+                        | _ -> false
+
+                    /// The next message to fold: see `nextToFold`. While a `resultFirst`
+                    /// result is queued, everything already in the mailbox is taken, so the
+                    /// result is found wherever it is.
+                    let receive () =
+                        async {
+                            if queuedResults.Values |> Seq.exists snd then
+                                for _ in 1 .. inbox.CurrentQueueLength do
+                                    let! message = inbox.Receive()
+                                    taken.Add message
+
+                            if taken.Count = 0 then
+                                return! inbox.Receive()
+                            else
+                                let index = nextToFold isResultFirst (List.ofSeq taken)
+                                let message = taken[index]
+                                taken.RemoveAt index
+                                return message
+                        }
+
                     let rec loop () =
                         async {
-                            let! event, identity = inbox.Receive()
+                            let! event, identity = receive ()
                             beginRunOf identity
 
                             match queuedResults.TryRemove identity with
-                            | true, subtask -> services.EndSubtask handler.Name subtask
+                            | true, (subtask, _) -> services.EndSubtask handler.Name subtask
                             | _ -> ()
 
                             let dispatchStarted = DateTime.UtcNow
@@ -1684,8 +1767,8 @@ let internal registerHandlerForOwner
                                     (slowFoldLine
                                         (eventKind event)
                                         foldTook
-                                        inbox.CurrentQueueLength
-                                        (queuedResults.Values |> List.ofSeq))
+                                        (taken.Count + inbox.CurrentQueueLength)
+                                        (queuedResults.Values |> Seq.map fst |> List.ofSeq))
 
                             match committed with
                             | Result.Ok() -> ()

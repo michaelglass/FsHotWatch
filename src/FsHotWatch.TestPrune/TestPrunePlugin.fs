@@ -5356,6 +5356,15 @@ let internal createWithQueries
 
     /// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
     /// dependency fanout this launch consumes; an unavailable launch hands it back.
+    ///
+    /// Result-first: the completion fold sheds only the symbols the run launched with, so
+    /// a file check or build dispatched during the run stays owed whether it folds before
+    /// the result or after it. Folding after can only cost a run: a BootScan cohort that
+    /// would have joined a full run in flight (`joinsFullRun`) finds none and queues its
+    /// own. It never lets less evidence discharge anything. The run emits test lifecycle
+    /// events this plugin does not subscribe to. Without this, a result stuck behind a
+    /// storm of checks holds the "tests" key, and its green, for as long as those folds
+    /// take.
     let runTestHostExclusive
         (ctx: PluginCtx<TestPruneMsg>)
         (owed: Set<string>)
@@ -5364,8 +5373,8 @@ let internal createWithQueries
         =
         let workFor =
             function
-            | Ready -> work
-            | Invalid reason -> async { return ArtifactsUnavailable(reason, owed, reply) }
+            | Ready -> PluginWork.resultFirst work
+            | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
 
         // What this launch releases into the shared "build-artifacts" lease, which the
         // next claimant is handed. Only a verdict ABOUT the artifacts may change it.
