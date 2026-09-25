@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 13.0.0 - 2026-09-25
+
+- fix!: extension edges are a function of the tree, not of index history
+- feat(core): named-dispatch extension couples tests to handlers reached by name
+- Adapt named-dispatch extension to the whole-tree AnalyzeEdges contract
+- Merge extension-edge ownership fix and named-dispatch extension
+
+
 ## 12.0.0 - 2026-09-24
 
 - Read the package version and run pragmas without branches to keep Database.fs above its branch floor

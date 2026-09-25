@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.0.0 - 2026-09-25
+
 - fix!: extension edges are a function of the tree, not of index history.
   `ITestPruneExtension.AnalyzeEdges` no longer takes the run's changed files: it returns
   the extension's complete edge set for the tree as it stands, and the new
