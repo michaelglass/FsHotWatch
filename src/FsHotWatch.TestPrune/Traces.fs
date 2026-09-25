@@ -54,3 +54,145 @@ module TraceSettings =
         | "full-runs" -> Some RecordFullRuns
         | "every-run" -> Some RecordEveryRun
         | _ -> None
+
+/// How a traced project is launched: its woven apphost, run directly.
+type TracedLaunchSpec =
+    {
+        /// The shadow apphost, `<projectDir>/bin/Traced/<tfm>/<AssemblyName>`.
+        Command: string
+        /// The app's own arguments, unquoted; `TracedLaunch.argsLine` joins them.
+        Args: string list
+        /// The project's configured environment plus `DOTNET_ROOT`.
+        Environment: (string * string) list
+    }
+
+/// Deriving a traced launch from a project's `dotnet run` configuration. Pure: nothing
+/// here touches the file system or starts a process.
+///
+/// A traced project runs its woven apphost from `bin/Traced/<tfm>/` directly, because
+/// `dotnet run --no-build` resolves the ORIGINAL output path and would run the unwoven
+/// binary. So the `dotnet run` options are consumed and the app's own arguments kept; an
+/// option this does not understand refuses the traced launch rather than guessing, and
+/// the project then runs untraced exactly as it does today.
+[<RequireQualifiedAccess>]
+module TracedLaunch =
+    /// `dotnet run` options consumed together with the value that follows them.
+    let private withValue =
+        set [ "--project"; "-p"; "-c"; "--configuration"; "-f"; "--framework" ]
+
+    /// `dotnet run` flags consumed on their own.
+    let private flags = set [ "--no-build"; "--no-restore" ]
+
+    let private tokens (s: string) =
+        FsHotWatch.ProcessHelper.splitArgs s |> Option.map List.ofArray
+
+    /// The app arguments a `dotnet run …` config line passes to the app, or why they
+    /// cannot be derived. `extraArgs` (filter, CTRF and coverage arguments, each a
+    /// command-line fragment) are appended in order; every standalone `--` is dropped.
+    let appArgs (configCommand: string) (configArgs: string) (extraArgs: string list) : Result<string list, string> =
+        let rec consume (ts: string list) (acc: string list) =
+            match ts with
+            | [] -> Ok(List.rev acc)
+            | "--" :: rest -> Ok(List.rev acc @ (rest |> List.filter ((<>) "--")))
+            | t :: _ :: rest when withValue.Contains t -> consume rest acc
+            | t :: rest when flags.Contains t -> consume rest acc
+            | t :: _ -> Error $"unrecognized-run-option:%s{t}"
+
+        let extra =
+            extraArgs
+            |> List.map tokens
+            |> List.fold
+                (fun acc next ->
+                    match acc, next with
+                    | Some a, Some n -> Some(a @ n)
+                    | _ -> None)
+                (Some [])
+
+        match configCommand, tokens configArgs, extra with
+        | _, None, _
+        | _, _, None -> Error "unparseable-args"
+        | "dotnet", Some("run" :: rest), Some extra ->
+            consume rest []
+            |> Result.map (fun head -> head @ (extra |> List.filter ((<>) "--")))
+        | _ -> Error "not-a-dotnet-run-command"
+
+    /// The shadow apphost: `<projectDir>/bin/Traced/<tfm>/<assemblyName>`, with `.exe` on
+    /// Windows. A sibling of `bin/Debug/<tfm>/` at the same depth, so tests that probe
+    /// upward for a repository marker behave identically.
+    let apphostPath (isWindows: bool) (projectDir: string) (tfm: string) (assemblyName: string) =
+        let name = if isWindows then assemblyName + ".exe" else assemblyName
+        System.IO.Path.Combine(projectDir, "bin", "Traced", tfm, name)
+
+    /// The `DOTNET_ROOT` a directly launched apphost needs; `dotnet run` sets it for its
+    /// child, an apphost started by fshw does not get it. In order:
+    ///
+    /// 1. a non-empty `DOTNET_ROOT` in the environment, as is;
+    /// 2. the directory of the resolved `dotnet` muxer (`DOTNET_HOST_PATH`), if a runtime
+    ///    lives there (a wrapper script's directory, as on Nix, has none);
+    /// 3. the root of the runtime `runtimeDir` names (`…/shared/Microsoft.NETCore.App/<v>/`,
+    ///    three levels up), if a runtime lives there.
+    ///
+    /// `None` when no candidate holds a runtime: the caller refuses the traced launch.
+    let dotnetRoot (getEnv: string -> string option) (hasRuntime: string -> bool) (runtimeDir: string) : string option =
+        let nonEmpty key =
+            getEnv key |> Option.filter (System.String.IsNullOrEmpty >> not)
+
+        match nonEmpty "DOTNET_ROOT" with
+        | Some root -> Some root
+        | None ->
+            let muxerDir =
+                nonEmpty "DOTNET_HOST_PATH"
+                |> Option.bind (System.IO.Path.GetDirectoryName >> Option.ofObj)
+
+            let runtimeRoot =
+                System.IO.Path.GetFullPath(System.IO.Path.Combine(runtimeDir, "..", "..", ".."))
+
+            [ yield! Option.toList muxerDir; runtimeRoot ] |> List.tryFind hasRuntime
+
+    /// `dotnetRoot` for this process: its environment (with `DOTNET_HOST_PATH` realpath'd),
+    /// a runtime present when `shared/Microsoft.NETCore.App` exists, and the runtime this
+    /// process itself runs on.
+    let dotnetRootOfThisProcess () : string option =
+        let getEnv (key: string) =
+            match System.Environment.GetEnvironmentVariable key with
+            | null -> None
+            | value when key = "DOTNET_HOST_PATH" && value <> "" ->
+                try
+                    match System.IO.File.ResolveLinkTarget(value, returnFinalTarget = true) with
+                    | null -> Some value
+                    | target -> Some target.FullName
+                with _ ->
+                    Some value
+            | value -> Some value
+
+        let hasRuntime (root: string) =
+            System.IO.Directory.Exists(System.IO.Path.Combine(root, "shared", "Microsoft.NETCore.App"))
+
+        dotnetRoot getEnv hasRuntime (System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory())
+
+    /// The launch of `apphost` for a project configured as `configCommand configArgs`
+    /// with `projectEnv`. The project's own `DOTNET_ROOT`, if it sets one, is kept.
+    let spec
+        (apphost: string)
+        (dotnetRoot: string)
+        (configCommand: string)
+        (configArgs: string)
+        (extraArgs: string list)
+        (projectEnv: (string * string) list)
+        : Result<TracedLaunchSpec, string> =
+        appArgs configCommand configArgs extraArgs
+        |> Result.map (fun args ->
+            let env =
+                if projectEnv |> List.exists (fun (k, _) -> k = "DOTNET_ROOT") then
+                    projectEnv
+                else
+                    projectEnv @ [ "DOTNET_ROOT", dotnetRoot ]
+
+            { Command = apphost
+              Args = args
+              Environment = env })
+
+    /// The argument line for `ProcessStartInfo.Arguments`, each argument quoted by
+    /// `ProcessHelper.quoteArg` so `splitArgs` yields it back verbatim.
+    let argsLine (args: string list) =
+        args |> List.map FsHotWatch.ProcessHelper.quoteArg |> String.concat " "
