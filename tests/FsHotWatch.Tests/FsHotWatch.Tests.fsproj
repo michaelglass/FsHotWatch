@@ -73,6 +73,7 @@
     <Compile Include="SharedWatchPoolTests.fs" />
     <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="SelfIncompatibleRecheckTests.fs" />
     <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="CheckerPartitionsTests.fs" />
     <Compile Include="PathFrameTests.fs" />

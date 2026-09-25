@@ -106,11 +106,24 @@ open System
 open System.Collections.Concurrent
 open FsHotWatch.ErrorLedger
 
-/// The FCS message families whose two `'…'` slots are both filled by
-/// `NicePrint.minimalStringsOfTwoTypes`. Each pair is (opening text, separator).
-///
-/// Taken verbatim from `FSStrings.resources` in FSharp.Compiler.Service
-/// 43.12.401 — not from memory:
+/// One FCS message family whose two `'…'` slots are both filled by
+/// `NicePrint.minimalStringsOfTwoTypes`: the text before the first slot, the text
+/// between the two, what may follow each closing quote, and whether the template
+/// ends in the `{2}` constraint slot.
+type private TwoTypeFamily =
+    {
+        Opening: string
+        Separator: string
+        /// Punctuation the template puts straight after each slot's closing quote.
+        AfterSlot: string
+        /// Whether the template carries the trailing `{2}` slot. A family without one
+        /// has nowhere to say that two identically-rendered type VARIABLES differ in
+        /// their constraints, so for it a render that names a type variable is refused.
+        HasConstraintSlot: bool
+    }
+
+/// Taken verbatim from `FSStrings.resources` / `FSComp.txt` in
+/// FSharp.Compiler.Service 43.12.401 — not from memory:
 ///
 ///   ErrorFromAddingTypeEquation1
 ///     "This expression was expected to have type\n    '{1}'    \nbut here has type\n    '{0}'    {2}"
@@ -118,6 +131,17 @@ open FsHotWatch.ErrorLedger
 ///     "Type mismatch. Expecting a\n    '{0}'    \nbut given a\n    '{1}'    {2}\n"
 ///   ErrorsFromAddingSubsumptionConstraint
 ///     "Type constraint mismatch. The type \n    '{0}'    \nis not compatible with type\n    '{1}'    {2}\n"
+///   ConstraintSolverTypesNotInEqualityRelation2
+///     "The type '{0}' does not match the type '{1}'"
+///   followingPatternMatchClauseHasWrongType
+///     "All branches of a pattern match expression must return values implicitly convertible
+///      to the type of the first branch, which here is '{0}'. This branch returns a value of type '{1}'."
+///   ifExpression
+///     "All branches of an 'if' expression must return values implicitly convertible to the
+///      type of the first branch, which here is '{0}'. This branch returns a value of type '{1}'."
+///
+/// The last three render their pair with the same two-type escalation and then DROP its
+/// constraint text, which is why they carry `HasConstraintSlot = false`.
 ///
 /// The tuple-shaped siblings (`ErrorFromAddingTypeEquation1Tuple`,
 /// `…2Tuple`, `…Tuples`) are deliberately NOT here. Those compare a tuple
@@ -125,9 +149,28 @@ open FsHotWatch.ErrorLedger
 /// are not two renderings of the same question and an identical render would
 /// not mean what it means above.
 let private twoTypeMessageFamilies =
-    [ "This expression was expected to have type", "but here has type"
-      "Type mismatch. Expecting a", "but given a"
-      "Type constraint mismatch. The type", "is not compatible with type" ]
+    let withConstraintSlot opening separator =
+        { Opening = opening
+          Separator = separator
+          AfterSlot = ""
+          HasConstraintSlot = true }
+
+    let branches (expression: string) =
+        { Opening =
+            $"All branches of %s{expression} must return values implicitly convertible to the type of the first branch, which here is"
+          Separator = "This branch returns a value of type"
+          AfterSlot = "."
+          HasConstraintSlot = false }
+
+    [ withConstraintSlot "This expression was expected to have type" "but here has type"
+      withConstraintSlot "Type mismatch. Expecting a" "but given a"
+      withConstraintSlot "Type constraint mismatch. The type" "is not compatible with type"
+      { Opening = "The type"
+        Separator = "does not match the type"
+        AfterSlot = ""
+        HasConstraintSlot = false }
+      branches "a pattern match expression"
+      branches "an 'if' expression" ]
 
 let private whitespaceRun =
     System.Text.RegularExpressions.Regex(@"[\s\p{Cc}]+", System.Text.RegularExpressions.RegexOptions.Compiled)
@@ -161,9 +204,26 @@ let private unquote (fragment: string) : string option =
     else
         None
 
+/// A type variable in a rendered type: `'a` or `^a`, at the start or after anything
+/// that cannot continue an identifier. A name that merely ENDS in a prime (`Foo'`)
+/// does not match.
+let private typeVariable =
+    System.Text.RegularExpressions.Regex(@"(^|[^\w.'^])['^]\w", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+/// One slot's rendered type: the fragment, less the punctuation the template puts
+/// after it, less its quotes.
+let private slotOf (family: TwoTypeFamily) (fragment: string) : string option =
+    let t = fragment.Trim()
+
+    if t.EndsWith(family.AfterSlot, StringComparison.Ordinal) then
+        unquote (t.Substring(0, t.Length - family.AfterSlot.Length))
+    else
+        None
+
 /// Split a two-type mismatch message into its two RENDERED type strings, in
-/// message order. `None` for anything that is not one of the three known
-/// families, or that carries a trailing constraint explanation.
+/// message order. `None` for anything that is not one of the known families,
+/// that carries a trailing constraint explanation, or — in a family with no
+/// constraint slot — that names a type variable on either side.
 ///
 /// Fails CLOSED in every branch: an unrecognised message yields `None`, and
 /// every caller reports a `None` as an ordinary diagnostic.
@@ -174,21 +234,25 @@ let tryRenderedTypePair (message: string) : (string * string) option =
         let collapsed = collapseWhitespace message
 
         twoTypeMessageFamilies
-        |> List.tryPick (fun (opening, separator) ->
-            if not (collapsed.StartsWith(opening, StringComparison.Ordinal)) then
+        |> List.tryPick (fun family ->
+            if not (collapsed.StartsWith(family.Opening, StringComparison.Ordinal)) then
                 None
             else
-                let rest = collapsed.Substring(opening.Length)
-                let padded = " " + separator + " "
+                let rest = collapsed.Substring(family.Opening.Length)
+                let padded = family.AfterSlot + " " + family.Separator + " "
 
                 match rest.IndexOf(padded, StringComparison.Ordinal) with
                 | -1 -> None
                 | i ->
-                    let left = rest.Substring(0, i)
+                    let left = rest.Substring(0, i + family.AfterSlot.Length)
                     let right = rest.Substring(i + padded.Length)
 
-                    match unquote left, unquote right with
-                    | Some a, Some b -> Some(a, b)
+                    match slotOf family left, slotOf family right with
+                    | Some a, Some b when
+                        family.HasConstraintSlot
+                        || not (typeVariable.IsMatch a || typeVariable.IsMatch b)
+                        ->
+                        Some(a, b)
                     | _ -> None)
 
 /// The rendered type name when a diagnostic declares a type incompatible with
@@ -292,16 +356,49 @@ let internal selfIncompatibleLedgerEntries
     faults
     |> List.map (fun d ->
         { Message =
-            $"fshw internal: FCS reported '%s{d.RenderedType}' as incompatible with ITSELF in %s{project}, and said so again after its checker state was dropped and the file re-checked. Both sides of the mismatch rendered identically, so the compiler named no difference to act on: this is NOT an error in your code. What causes it is not yet known — please report it."
+            $"fshw internal: FCS reported '%s{d.RenderedType}' as incompatible with ITSELF in %s{project}. Both sides of the mismatch rendered identically, so the compiler named no difference to act on: this is NOT an error in your code, and nothing else this check said about the file is trusted either. fshw re-checks such a file at most once, and the daemon log says whether this one was. What causes it is not yet known — please report it."
           Severity = DiagnosticSeverity.Info
           Line = d.Line
           Column = d.Column
           Detail = None })
 
+/// The ledger entries the OTHER diagnostics of a suspect check become: a check
+/// that reported a type incompatible with ITSELF has shown that its answer for this
+/// file is not a reading of the code, so none of what it said about the file is a
+/// finding — the errors that follow from the phantom mismatch (an inferred type
+/// that no longer unifies, a match that no longer looks complete) least of all, and
+/// no message parse can tell those apart from real ones.
+///
+/// They are NOT made informational. Some of them may be real, and demoting a real
+/// error to `Info` would let a broken file go green. Each keeps its severity and is
+/// reported under `fcs-internal`, which the verdict classifies as a checker fault:
+/// a run whose only failures are these has no verdict — neither red nor green — and
+/// a genuine error anywhere else still reddens it.
+let internal suspectCheckEntries (entries: ErrorEntry list) : ErrorEntry list =
+    entries
+    |> List.map (fun e ->
+        { e with
+            Message =
+                $"fshw internal: not a finding — this file's check also reported a type as incompatible with ITSELF, so nothing it said about the file is trusted. Re-run after `fshw stop` for a real answer. FCS said: %s{e.Message}" })
+
 /// The message logged when a project's checker state is dropped and the file
 /// re-checked.
 let internal recheckLogLine (project: string) (file: string) : string =
     $"%s{project}: FCS reported a type as incompatible with itself in %s{file} — dropping the project's checker state and re-checking once"
+
+/// The message logged when a self-incompatible answer was produced in a generation of
+/// the project's checker state that another check has since dropped: it is re-checked
+/// in the current one, which costs no budget because nothing is dropped.
+let internal generationRecheckLogLine (project: string) (file: string) (started: int64) (current: int64) : string =
+    $"%s{project}: FCS reported a type as incompatible with itself in %s{file}, checked in generation %d{started}; the project is now in generation %d{current}, so re-checking once there (no state dropped)"
+
+/// The message logged when a self-incompatible answer is kept: the generation it was
+/// produced in is still current and another file spent the budget for dropping it.
+let internal recheckDeniedLogLine (project: string) (file: string) (spentBy: string) (spentAt: DateTime) : string =
+    let at =
+        spentAt.ToString("HH:mm:ss.fff", Globalization.CultureInfo.InvariantCulture)
+
+    $"%s{project}: FCS reported a type as incompatible with itself in %s{file} — self-incompatible, budget spent by %s{spentBy} at %s{at}Z, first answer kept; its errors are reported as checker faults, not findings"
 
 /// Retry policy for the only remedy available: drop the project's FCS
 /// configuration and check the file again.
@@ -314,61 +411,145 @@ let internal recheckLogLine (project: string) (file: string) : string =
 /// Bounded per project rather than per occurrence. The observed incident
 /// produced 334 self-incompatible diagnostics in a single run; re-typechecking
 /// a whole project once per diagnostic would cost more than the bug does. One
-/// invalidation clears the stale entity for every file in the project, so one
-/// retry per project per cooldown is both sufficient and the ceiling.
+/// invalidation starts a new generation for every file in the project, so one
+/// DROP per project per cooldown is the ceiling. It bounds only drops: a check
+/// whose answer came from a generation someone else has already dropped is
+/// re-checked in the current one for free (see `recheckIfSelfIncompatible`).
 let internal shouldRecheckProject (cooldown: TimeSpan) (now: DateTime) (lastRetry: DateTime option) : bool =
     match lastRetry with
     | None -> true
     | Some last -> now - last >= cooldown
 
-/// Drop the checker's state for this project and ask again, once, when a first
-/// answer declares a type incompatible with itself.
+/// What became of one check's answer under `recheckIfSelfIncompatible`.
+[<RequireQualifiedAccess>]
+type RecheckOutcome =
+    /// The answer declared no type incompatible with itself; it was kept.
+    | NotNeeded
+    /// The answer came from a generation of the project's checker state that has since
+    /// been dropped, so the file was re-checked in the current one without a drop.
+    | RecheckedInCurrentGeneration of started: int64 * current: int64
+    /// This check dropped the project's checker state and re-checked.
+    | StateDropped
+    /// The generation it came from is still current and the drop budget was spent,
+    /// by `spentBy` at `spentAt`: the first answer was kept.
+    | BudgetSpent of spentBy: string * spentAt: DateTime
+
+/// Ask again, at most once, when a first answer declares a type incompatible with
+/// itself.
+///
+/// `decide` says whether and how (see `RecheckBudget.Decide`), and has already done
+/// any drop it decided on by the time it returns: a re-check that throws cannot
+/// leave the project eligible to be dropped again on the next file. `recheck` builds
+/// its snapshot when called, so it is in whatever generation is current by then.
 ///
 /// Generic in the answer so the whole recovery is exercisable without a
 /// compiler: FCS types appear only in the `messagesOf` projection the caller
-/// supplies. `shouldRetry` is the per-project budget, `onRetry` is the state
-/// drop and its bookkeeping, `recheck` is the second ask.
-///
-/// `onRetry` runs BEFORE `recheck` and exactly once, so the budget is spent even
-/// if the second ask throws — a re-check that fails must not leave the project
-/// eligible to be invalidated again on the next file.
+/// supplies.
 let internal recheckIfSelfIncompatible
     (messagesOf: 'answer -> string seq)
     (isSelfIncompatible: string -> bool)
-    (budgetAllows: bool)
-    (onRetry: unit -> unit)
+    (decide: unit -> RecheckOutcome)
     (recheck: unit -> Async<'answer>)
     (first: 'answer)
-    : Async<'answer> =
+    : Async<'answer * RecheckOutcome> =
     async {
-        let stale = messagesOf first |> Seq.exists isSelfIncompatible
-
-        if not (stale && budgetAllows) then
-            return first
+        if not (messagesOf first |> Seq.exists isSelfIncompatible) then
+            return first, RecheckOutcome.NotNeeded
         else
-            onRetry ()
-            return! recheck ()
+            match decide () with
+            | RecheckOutcome.NotNeeded
+            | RecheckOutcome.BudgetSpent _ as kept -> return first, kept
+            | RecheckOutcome.RecheckedInCurrentGeneration _
+            | RecheckOutcome.StateDropped as asked ->
+                let! second = recheck ()
+                return second, asked
     }
 
-/// The per-project budget for dropping checker state, kept here rather
-/// than as a bare dictionary in the pipeline so both of its answers can be
-/// exercised without a compiler in the loop.
+/// The per-project budget for dropping checker state, and the one place that decides
+/// how a self-incompatible answer is asked again, so its answers can be exercised
+/// without a compiler in the loop.
 type internal RecheckBudget(cooldown: TimeSpan) =
-    let lastRetry = ConcurrentDictionary<string, DateTime>()
+    let lastSpent = ConcurrentDictionary<string, DateTime * string>()
+    let gates = ConcurrentDictionary<string, obj>()
 
-    /// May this project's checker state be dropped right now?
-    member _.Allows(project: string, now: DateTime) : bool =
-        let last =
-            match lastRetry.TryGetValue project with
-            | true, t -> Some t
-            | false, _ -> None
+    /// How a self-incompatible answer to `file`, computed in generation `startedIn` of
+    /// `project`'s checker state, is asked again. Tried in this order:
+    ///
+    ///   * the project's generation has ADVANCED past `startedIn` — another check
+    ///     already dropped the state this answer came from — so it is re-checked in
+    ///     the current generation. No budget: nothing is dropped. Without this, every
+    ///     check of a project in flight when one of them dropped the state finished
+    ///     on the dropped generation and kept its answer, because the one drop the
+    ///     budget allowed had been spent by the first file to finish.
+    ///   * otherwise, if the budget allows, it is spent for `file` and `drop` runs.
+    ///   * otherwise the first answer is kept, naming who spent the budget and when.
+    ///
+    /// Atomic per project: the generation is read and the drop made under one lock, so
+    /// no check can see the budget spent by a drop whose new generation it cannot see
+    /// yet — that window would keep a poisoned answer the drop had already cured.
+    member _.Decide
+        (
+            project: string,
+            file: string,
+            now: DateTime,
+            startedIn: int64,
+            currentGeneration: unit -> int64,
+            drop: unit -> unit
+        ) : RecheckOutcome =
+        lock (gates.GetOrAdd(project, fun _ -> obj ())) (fun () ->
+            let current = currentGeneration ()
 
-        shouldRecheckProject cooldown now last
+            match lastSpent.TryGetValue project with
+            | _ when current > startedIn -> RecheckOutcome.RecheckedInCurrentGeneration(startedIn, current)
+            | true, (at, by) when not (shouldRecheckProject cooldown now (Some at)) ->
+                RecheckOutcome.BudgetSpent(by, at)
+            | _ ->
+                lastSpent[project] <- (now, file)
+                drop ()
+                RecheckOutcome.StateDropped)
 
-    /// Record that it was. Called before the re-check, so a re-check that throws
-    /// still costs the budget rather than leaving the project eligible again on
-    /// the very next file.
-    member _.Spend(project: string, now: DateTime) : unit = lastRetry[project] <- now
-
-/// Default gap between two self-incompatible retries of the SAME project.
+/// Default gap between two drops of the SAME project's checker state.
 let internal defaultRecheckCooldown = TimeSpan.FromMinutes 5.0
+
+/// `recheckIfSelfIncompatible` as the check pipeline runs it: decided by `budget`,
+/// with `dropState` as the drop, and every outcome but the ordinary one logged
+/// through `log`. `project` is the budget's key; its file name is what the log
+/// lines show. Kept apart from the pipeline so N concurrent checks of one project
+/// can be driven through the SAME code the pipeline runs, with a fake checker in
+/// place of FCS.
+let internal recheckWithBudget
+    (budget: RecheckBudget)
+    (project: string)
+    (file: string)
+    (now: unit -> DateTime)
+    (log: string -> unit)
+    (messagesOf: 'answer -> string seq)
+    (startedIn: int64)
+    (currentGeneration: unit -> int64)
+    (dropState: unit -> unit)
+    (recheck: unit -> Async<'answer>)
+    (first: 'answer)
+    : Async<'answer * RecheckOutcome> =
+    async {
+        let projectName = IO.Path.GetFileName project
+
+        let decide () =
+            let drop () =
+                log (recheckLogLine projectName file)
+                dropState ()
+
+            let outcome =
+                budget.Decide(project, file, now (), startedIn, currentGeneration, drop)
+
+            match outcome with
+            | RecheckOutcome.RecheckedInCurrentGeneration(started, current) ->
+                log (generationRecheckLogLine projectName file started current)
+            | RecheckOutcome.BudgetSpent(spentBy, spentAt) ->
+                log (recheckDeniedLogLine projectName file spentBy spentAt)
+            | RecheckOutcome.NotNeeded
+            | RecheckOutcome.StateDropped -> ()
+
+            outcome
+
+        return! recheckIfSelfIncompatible messagesOf isSelfIncompatibleTypeMessage decide recheck first
+    }

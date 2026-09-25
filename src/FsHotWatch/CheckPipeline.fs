@@ -50,15 +50,61 @@ let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
     | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
     | FSharpCheckFileAnswer.Aborted -> Seq.empty
 
+/// Where a check's answer came from: the generation of its project's checker state
+/// and the key of the snapshot it asked FCS about (`ProjectSnapshots.snapshotKey`).
+/// Two checks logging the same pair asked for the same project type-check.
+type internal CheckOrigin =
+    { Generation: int64
+      SnapshotKey: string }
+
+let private originText (project: string) (origin: CheckOrigin) =
+    $"%s{project} generation %d{origin.Generation}, snapshot %s{origin.SnapshotKey}"
+
 /// The line logged when a file's FCS check begins, so the log shows whether a slow
-/// result was slow to start or slow to finish.
-let internal checkStartLine (fileName: string) : string = $"check start %s{fileName}"
+/// result was slow to start or slow to finish, and which generation and snapshot it
+/// asked about.
+let internal checkStartLine (fileName: string) (project: string) (origin: CheckOrigin) : string =
+    $"check start %s{fileName} (%s{originText project origin})"
 
 /// The line logged when a file's FCS check succeeds: its total time, split between
-/// building the project snapshot and the checker's parse and type-check.
-let internal checkedLine (fileName: string) (total: TimeSpan) (snapshot: TimeSpan) (fcs: TimeSpan) : string =
+/// building the project snapshot and the checker's parse and type-check, and the
+/// generation and snapshot the answer it kept came from.
+let internal checkedLine
+    (fileName: string)
+    (project: string)
+    (origin: CheckOrigin)
+    (total: TimeSpan)
+    (snapshot: TimeSpan)
+    (fcs: TimeSpan)
+    : string =
     let ms (span: TimeSpan) = int64 span.TotalMilliseconds
-    $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms)"
+
+    $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms; %s{originText project origin})"
+
+/// The line logged when a new check of a file cancels one still in flight whose
+/// project type-check other in-flight checks are also waiting on.
+let internal sharedCancelLine (fileName: string) (project: string) (origin: CheckOrigin) (sharers: int) : string =
+    $"cancelling the in-flight check of %s{fileName} (%s{originText project origin}): %d{sharers} other in-flight check(s) share that project type-check"
+
+/// When `file` has a check in flight that other in-flight checks share — the same
+/// project, generation and snapshot, so the same project type-check — its project,
+/// origin and how many others share it.
+let internal sharedInFlight
+    (inFlight: seq<Collections.Generic.KeyValuePair<AbsFilePath, string * CheckOrigin>>)
+    (file: AbsFilePath)
+    : (string * CheckOrigin * int) option =
+    inFlight
+    |> Seq.tryFind (fun kv -> kv.Key = file)
+    |> Option.bind (fun mine ->
+        let project, origin = mine.Value
+
+        match
+            inFlight
+            |> Seq.filter (fun kv -> kv.Key <> file && kv.Value = mine.Value)
+            |> Seq.length
+        with
+        | 0 -> None
+        | sharers -> Some(project, origin, sharers))
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
@@ -100,6 +146,11 @@ type CheckPipeline
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
+
+    /// The checks between building their snapshot and returning, with where each one's
+    /// answer is coming from. Read only to say, when a check is cancelled, how many
+    /// others share its project type-check.
+    let inFlight = ConcurrentDictionary<AbsFilePath, string * CheckOrigin>()
     let upstreamFingerprints = UpstreamFingerprints(repoRoot)
 
     /// Content hashes shared by the upstream fingerprints and the snapshot versions,
@@ -327,6 +378,19 @@ type CheckPipeline
             else
                 CancellationTokenSource.CreateLinkedTokenSource(ct)
 
+        // Said before the cancellation rather than inside the update below, which a
+        // contended dictionary may run more than once.
+        match sharedInFlight inFlight filePath with
+        | Some(project, origin, sharers) ->
+            Logging.info
+                "check"
+                (sharedCancelLine
+                    (Path.GetFileName(AbsFilePath.value filePath))
+                    (Path.GetFileName project)
+                    origin
+                    sharers)
+        | None -> ()
+
         fileTokens.AddOrUpdate(
             filePath,
             newCts,
@@ -353,25 +417,52 @@ type CheckPipeline
             let source = openFile.Text
             let version = this.NextVersion()
 
+            let checkedFile = AbsFilePath.create absPath
+
+            // Only this check's own entry: a newer check of the file may have replaced it.
+            let forget entry =
+                inFlight.TryRemove(Collections.Generic.KeyValuePair(checkedFile, entry))
+                |> ignore
+
+            let started = ref None
+
             try
                 ct.ThrowIfCancellationRequested()
                 let fileName = Path.GetFileName absPath
-                activity.Log(checkStartLine fileName)
+                let project = options.ProjectFileName
+                let projectName = Path.GetFileName project
                 let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                let generationNow () =
+                    let (ProjectSnapshots.Generation n) = ProjectSnapshots.generationOf checker project
+                    n
 
                 // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
                 // project's new generation. A generation never changes the frame.
+                // Returned with the generation read BEFORE the build: if the project
+                // advances mid-build, the check is attributed to the older one, which
+                // can only cost a re-check, never skip one.
                 let framedNow () =
-                    ProjectSnapshots.buildFramed
-                        (ProjectSnapshots.generationOf checker)
-                        hashFile
-                        repoRoot
-                        frames
-                        openFile
-                        options
+                    let generation = generationNow ()
 
-                let framed = framedNow ()
+                    let framed =
+                        ProjectSnapshots.buildFramed
+                            (ProjectSnapshots.generationOf checker)
+                            hashFile
+                            repoRoot
+                            frames
+                            openFile
+                            options
+
+                    framed,
+                    { Generation = generation
+                      SnapshotKey = ProjectSnapshots.snapshotKey framed.Snapshot }
+
+                let framed, startOrigin = framedNow ()
                 let snapshotTime = sw.Elapsed
+                activity.Log(checkStartLine fileName projectName startOrigin)
+                inFlight[checkedFile] <- (project, startOrigin)
+                started.Value <- Some(project, startOrigin)
 
                 // What FCS may type against beyond the snapshot's versions, read before it does.
                 let outputs =
@@ -394,40 +485,42 @@ type CheckPipeline
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
                 // apart, so an identical render means it found no difference to tell.
-                // What produces it is not known (see `FcsDiagnosticFilter`), so
-                // asking again in a new generation of this project's checker state
-                // (`ProjectSnapshots.invalidateShared`, since a suspect entry under a
-                // virtual root is every sharing session's) is a guess at the class of thing
-                // that might clear it: cheap, bounded to ONCE
-                // per project per cooldown so a pathological tree cannot turn every
-                // file into a project re-typecheck, and never trusted to have worked
-                // — a survivor is reported as our fault, not swallowed.
-                let project = options.ProjectFileName
+                // What produces it is not known (see `FcsDiagnosticFilter`), so the
+                // file is asked again, once: in the current generation of the
+                // project's checker state if another check has already dropped the
+                // one this answer came from, and otherwise in a new generation this
+                // check starts (`ProjectSnapshots.invalidateShared`, since a suspect
+                // entry under a virtual root is every sharing session's) — at most
+                // once per project per cooldown, so a pathological tree cannot turn
+                // every file into a project re-typecheck. Never trusted to have
+                // worked: a survivor is reported as our fault, not swallowed.
+                let answeredFrom = ref startOrigin
 
-                // Asked on every check rather than behind the staleness test: it
-                // is a dictionary probe and a subtraction, and asking it
-                // unconditionally keeps the budget rule on the path every check
-                // takes instead of only the one nothing can provoke on demand.
-                let budgetAllows = recheckBudget.Allows(project, DateTime.UtcNow)
+                let recheck () =
+                    async {
+                        let framed, origin = framedNow ()
+                        answeredFrom.Value <- origin
+                        inFlight[checkedFile] <- (project, origin)
+                        started.Value <- Some(project, origin)
+                        return! ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+                    }
 
-                let retryLog =
-                    FcsDiagnosticFilter.recheckLogLine (Path.GetFileName project) (Path.GetFileName absPath)
-
-                let onRecheck () =
-                    recheckBudget.Spend(project, DateTime.UtcNow)
-                    Logging.warn "check" retryLog
-                    ProjectSnapshots.invalidateShared checker options
-
-                let! parseResults, checkAnswer =
-                    FcsDiagnosticFilter.recheckIfSelfIncompatible
+                let! (parseResults, checkAnswer), _ =
+                    FcsDiagnosticFilter.recheckWithBudget
+                        recheckBudget
+                        project
+                        fileName
+                        (fun () -> DateTime.UtcNow)
+                        (Logging.warn "check")
                         (snd >> answerMessages)
-                        FcsDiagnosticFilter.isSelfIncompatibleTypeMessage
-                        budgetAllows
-                        onRecheck
-                        (fun () -> ProjectSnapshots.parseAndCheck checker checkedPath (framedNow ()).Snapshot)
+                        startOrigin.Generation
+                        generationNow
+                        (fun () -> ProjectSnapshots.invalidateShared checker options)
+                        recheck
                         (firstParse, firstAnswer)
 
                 sw.Stop()
+                started.Value |> Option.iter forget
                 ct.ThrowIfCancellationRequested()
 
                 if sw.Elapsed.TotalSeconds > 2.0 then
@@ -435,7 +528,15 @@ type CheckPipeline
 
                 match checkAnswer with
                 | FSharpCheckFileAnswer.Succeeded checkResults ->
-                    activity.Log(checkedLine fileName sw.Elapsed snapshotTime (sw.Elapsed - snapshotTime))
+                    activity.Log(
+                        checkedLine
+                            fileName
+                            projectName
+                            answeredFrom.Value
+                            sw.Elapsed
+                            snapshotTime
+                            (sw.Elapsed - snapshotTime)
+                    )
 
                     return
                         Some(
@@ -463,6 +564,7 @@ type CheckPipeline
                             outputs
                         )
             with ex ->
+                started.Value |> Option.iter forget
                 Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                 return None
         }

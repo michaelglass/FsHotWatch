@@ -49,17 +49,53 @@ type private InMemoryCache() =
             store.Clear()
 
 [<Fact(Timeout = 15000)>]
-let ``per-file check lines name the file and split the time between snapshot and FCS`` () =
-    test <@ checkStartLine "Lib.fs" = "check start Lib.fs" @>
+let ``per-file check lines name the file, its generation and snapshot, and split the time between snapshot and FCS``
+    ()
+    =
+    let origin: CheckOrigin =
+        { Generation = 3L
+          SnapshotKey = "a1b2c3d4e5f6" }
+
+    test
+        <@
+            checkStartLine "Lib.fs" "Lib.fsproj" origin = "check start Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6)"
+        @>
 
     test
         <@
             checkedLine
                 "Lib.fs"
+                "Lib.fsproj"
+                origin
                 (TimeSpan.FromMilliseconds 1234.4)
                 (TimeSpan.FromMilliseconds 12.0)
-                (TimeSpan.FromMilliseconds 1222.0) = "checked Lib.fs in 1234ms (snapshot 12ms, fcs 1222ms)"
+                (TimeSpan.FromMilliseconds 1222.0) = "checked Lib.fs in 1234ms (snapshot 12ms, fcs 1222ms; Lib.fsproj generation 3, snapshot a1b2c3d4e5f6)"
         @>
+
+    test
+        <@
+            sharedCancelLine "Lib.fs" "Lib.fsproj" origin 4 = "cancelling the in-flight check of Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6): 4 other in-flight check(s) share that project type-check"
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a cancelled check names the other in-flight checks sharing its project type-check, and only those`` () =
+    let origin: CheckOrigin = { Generation = 2L; SnapshotKey = "k1" }
+    let file name = AbsFilePath.create $"/repo/%s{name}"
+
+    let entry name value =
+        Collections.Generic.KeyValuePair(file name, value)
+
+    let inFlight =
+        [ entry "A.fs" ("App.fsproj", origin)
+          entry "B.fs" ("App.fsproj", origin)
+          entry "C.fs" ("App.fsproj", origin)
+          // Another generation of the same project, and another project: not shared.
+          entry "D.fs" ("App.fsproj", { origin with Generation = 3L })
+          entry "E.fs" ("Lib.fsproj", origin) ]
+
+    test <@ sharedInFlight inFlight (file "A.fs") = Some("App.fsproj", origin, 2) @>
+    test <@ sharedInFlight inFlight (file "D.fs") = None @>
+    test <@ sharedInFlight inFlight (file "Z.fs") = None @>
 
 type private RecordingSink() =
     let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
@@ -97,9 +133,16 @@ let ``a file check logs its start before its timed result`` () =
 
         match sink.Lines with
         | [ start; finished ] ->
-            test <@ start = "check start Lib.fsx" @>
+            test
+                <@
+                    start.StartsWith "check start Lib.fsx ("
+                    && start.Contains " generation 0, snapshot "
+                @>
+
             test <@ finished.StartsWith "checked Lib.fsx in " @>
             test <@ finished.Contains "(snapshot " && finished.Contains ", fcs " @>
+            // The answer came from the snapshot the check started with: nothing re-checked it.
+            test <@ finished.EndsWith(start.Substring(start.IndexOf '(' + 1)) @>
         | other -> failwith $"expected a start line then a checked line, got %A{other}")
 
 [<Fact(Timeout = 15000)>]

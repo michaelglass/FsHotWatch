@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a failing `fcs-internal` entry is a `checker-fault` red cause. Those are the
+  errors of a check that also reported a type incompatible with itself; a run whose
+  only failures are checker faults has no verdict (exit 3), never a green, and a
+  genuine error anywhere else still reddens it.
+
 ## 0.14.0-alpha.63 - 2026-09-25
 
 - feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the

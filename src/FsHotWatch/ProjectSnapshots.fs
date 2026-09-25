@@ -396,6 +396,25 @@ let parseAndCheck
     : Async<FSharpParseFileResults * FSharpCheckFileAnswer> =
     checker.ParseAndCheckFileInProject(path, snapshot)
 
+/// A short name for what `snapshot` asks FCS to type-check: its project, its source
+/// versions and its references' stamps — the parts an edit or a new generation
+/// changes. For the log: two checks naming the same key ask FCS for the same
+/// project type-check, which it may compute once and hand to both.
+let snapshotKey (snapshot: FSharpProjectSnapshot) : string =
+    let parts =
+        seq {
+            yield snapshot.ProjectFileName
+
+            for file in snapshot.SourceFiles do
+                yield $"%s{file.FileName}@%s{file.Version}"
+
+            for reference in snapshot.ReferencesOnDisk do
+                yield $"%s{reference.Path}@%d{reference.LastModified.Ticks}"
+        }
+
+    let digest = SHA256.HashData(Encoding.UTF8.GetBytes(String.Join("\n", parts)))
+    Convert.ToHexString(digest, 0, 6).ToLowerInvariant()
+
 let private advance (checker: FSharpChecker) (name: string) =
     (generationsOf checker).AddOrUpdate(name, 1L, fun _ n -> n + 1L) |> ignore
 

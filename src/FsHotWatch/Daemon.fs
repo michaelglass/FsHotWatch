@@ -74,6 +74,54 @@ let internal classifyFcsDiagnostics
 
     reportable, selfIncompatible
 
+/// What one file's FCS diagnostics write to the ledger, by key.
+type internal FcsLedgerWrites =
+    {
+        /// Under `fcs`: findings about the reader's code.
+        Findings: ErrorEntry list
+        /// Under `fcs-internal`: faults in fshw's own checking.
+        Internal: ErrorEntry list
+        /// The self-incompatible diagnostics, for the warn lines.
+        SelfIncompatible: FcsDiagnosticFilter.SelfIncompatibleDiagnostic list
+    }
+
+/// The ledger writes one file's FCS diagnostics become. Pure, and over real
+/// `FSharpDiagnostic` values, so what reaches the verdict is asserted against the
+/// function the daemon reports through rather than a re-implementation of it.
+///
+/// A file whose diagnostics include ANY self-incompatible one is a SUSPECT check:
+/// every other diagnostic it produced goes under `fcs-internal` too (see
+/// `FcsDiagnosticFilter.suspectCheckEntries` for why at its own severity, and never
+/// as `Info`), so `Findings` is empty for it.
+let internal fcsLedgerWrites
+    (allSuppressed: Set<int>)
+    (frame: PathFrame.PathFrame option)
+    (project: string)
+    (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
+    : FcsLedgerWrites =
+    let reportable, selfIncompatible = classifyFcsDiagnostics allSuppressed diagnostics
+
+    // Checked under a virtual root, a diagnostic can name a path in its text: the
+    // reader gets the worktree's.
+    let reportable =
+        reportable
+        |> List.map (fun entry ->
+            { entry with
+                Message = PathFrame.textFrom frame entry.Message
+                Detail = entry.Detail |> Option.map (PathFrame.textFrom frame) })
+
+    match selfIncompatible with
+    | [] ->
+        { Findings = reportable
+          Internal = []
+          SelfIncompatible = [] }
+    | _ ->
+        { Findings = []
+          Internal =
+            selfIncompatibleLedgerEntries project selfIncompatible
+            @ suspectCheckEntries reportable
+          SelfIncompatible = selfIncompatible }
+
 let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
     match checkResult.CheckResults with
     | ParseOnly -> ()
@@ -94,32 +142,20 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         // this guard is the only thing between those diagnostics and a red gate,
         // so the conservative side must stay conservative.
         let allSuppressed = allSuppressedCodes suppressedCodes checkResult.Source
-
-        let diagnostics, selfIncompatible =
-            classifyFcsDiagnostics allSuppressed checkResults.Diagnostics
-
-        // Checked under a virtual root, a diagnostic can name a path in its text: the
-        // reader gets the worktree's.
-        let diagnostics =
-            diagnostics
-            |> List.map (fun entry ->
-                { entry with
-                    Message = PathFrame.textFrom checkResult.Frame entry.Message
-                    Detail = entry.Detail |> Option.map (PathFrame.textFrom checkResult.Frame) })
-
-        // Anything the compiler could not tell apart from itself survived a
-        // re-check in `CheckPipeline` and is still here, so it is a fault in THIS
-        // process. Say so, loudly enough to be counted — the point of the guard
-        // is to MEASURE how often this happens, not to make it invisible, and
-        // with the cause unknown (see `FcsDiagnosticFilter`) the count is the
-        // only evidence anyone will have to work from — and at a severity that
-        // cannot redden a run: a self-incompatible diagnostic is not a finding
-        // about the user's code under any policy, `warningsAreFailures`
-        // included.
         let fileName = AbsFilePath.value checkResult.File
         let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
 
-        selfIncompatibleLogLines project (Path.GetFileName fileName) selfIncompatible
+        let writes =
+            fcsLedgerWrites allSuppressed checkResult.Frame project checkResults.Diagnostics
+
+        // A self-incompatible diagnostic still here is a fault in THIS process. The
+        // check that produced it may have been re-checked once in `CheckPipeline`, or
+        // may not have been (the daemon log says which); either way it survived. Say
+        // so, loudly enough to be counted — the point of the guard is to MEASURE how
+        // often this happens, not to make it invisible, and with the cause unknown
+        // (see `FcsDiagnosticFilter`) the count is the only evidence anyone will
+        // have to work from.
+        selfIncompatibleLogLines project (Path.GetFileName fileName) writes.SelfIncompatible
         |> List.iter (Logging.warn "fcs")
 
         // Both ledger keys are written on EVERY check, one of them usually with
@@ -128,8 +164,8 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         // outlive its cause under `fcs-internal` exactly as a fixed compile error
         // would under `fcs`.
         for plugin, entries in
-            [ PluginActivity.FcsPluginName, diagnostics
-              PluginActivity.FcsInternalPluginName, selfIncompatibleLedgerEntries project selfIncompatible ] do
+            [ PluginActivity.FcsPluginName, writes.Findings
+              PluginActivity.FcsInternalPluginName, writes.Internal ] do
             if entries.IsEmpty then
                 host.ClearErrors(plugin, fileName, version = checkResult.Version)
             else

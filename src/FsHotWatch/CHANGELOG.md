@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- fix: a check whose answer declared a type incompatible with ITSELF is re-checked
+  whenever the project's checker state has been dropped since the check began, without
+  spending the drop budget. The budget allowed one drop per project per five minutes,
+  so under load the first faulty file to finish spent it and every other check of that
+  project already in flight kept its answer from the dropped state. The budget now
+  bounds only how often state is dropped, and the spend, the drop and the generation
+  read are one atomic decision per project.
+- fix: two more FS0001 shapes are recognised as a type incompatible with itself:
+  `The type 'T' does not match the type 'T'`, and the pattern-match and `if` branch
+  messages (`… which here is 'T'. This branch returns a value of type 'T'.`). These
+  templates drop the constraint text, so a render naming a type variable is refused.
+- fix: every other error of a check that reported a type incompatible with itself is
+  reported under `fcs-internal` at its own severity instead of under `fcs`. Such a
+  check has shown its answer for the file is not a reading of the code, and its
+  knock-on errors (an inferred type that no longer unifies, a match that no longer
+  looks complete) cannot be recognised by message. They are never demoted to `Info`,
+  which could let a genuinely broken file go green.
+- fix: the `fcs-internal` ledger text no longer claims every surfaced fault survived a
+  re-check.
+- obs: `check start` and `checked` lines name the project's checker generation and a
+  snapshot key; a denied re-check logs who spent the budget and when; a cancellation
+  of an in-flight check logs how many other in-flight checks share its project
+  type-check.
+
 ## 0.10.0-alpha.46 - 2026-09-25
 
 - feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),
