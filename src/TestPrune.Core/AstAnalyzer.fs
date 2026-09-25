@@ -1133,7 +1133,7 @@ let private lastNameSegment (n: string) : string =
 /// The operator/active-pattern split is F#'s own, not a heuristic: `(|||)` is a
 /// bitwise-or OPERATOR whose display name has the same outer shape as an active
 /// pattern, and only `PrettyNaming` tells them apart correctly.
-let private canonicalShortName (n: string) : string =
+let internal canonicalShortName (n: string) : string =
     let segment = lastNameSegment n
 
     let unbackticked =

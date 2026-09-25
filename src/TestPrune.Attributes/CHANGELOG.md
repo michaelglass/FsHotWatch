@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Attributes
 
 ## [Unreleased]
+- feat: `[<DispatchedAs(channel, name)>]` and `[<DispatchTemplate(channel, template)>]`,
+  the two declarations `TestPrune.NamedDispatch` reads.
 - feat: initial release. Four consumer-side marker attributes, three of which
   widen impact analysis and one of which narrows it:
   - `[<DependsOn(typeof<T>)>]` — reflection / DI-by-type / plug-in edges.
