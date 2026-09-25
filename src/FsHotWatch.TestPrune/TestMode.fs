@@ -71,3 +71,12 @@ module TestMode =
         match mode with
         | PassThrough -> true
         | ImpactSelection -> false
+
+    /// Whether a run launched under `mode` records per-test traces. `full-runs` records only
+    /// where every project runs in full (confirm/nightly); `every-run` also records the
+    /// impact-selected subset, which refreshes exactly the traces of the tests it ran.
+    let recordsTraces (policy: TraceRecordPolicy) (mode: TestMode) =
+        match policy with
+        | RecordOff -> false
+        | RecordEveryRun -> true
+        | RecordFullRuns -> requestsFullSuite mode
