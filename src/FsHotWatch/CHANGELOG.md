@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.47 - 2026-09-25
+
 - feat: `PluginWork.resultFirst work` lets a run's result fold ahead of the dispatched
   events queued before it. Once the result is in the mailbox, the plugin's own messages
   (`Custom`) fold in their own order until the result has, then dispatched events resume

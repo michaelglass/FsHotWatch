@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.39 - 2026-09-25
+
+- fix: an analyzer crash or finding on a suspect file is a checker fault, not a red
+
+
 ## 0.7.0-alpha.38 - 2026-09-25
 
 - Changed: an analyzer that raises is a FAILURE, no longer a clean file. The SDK

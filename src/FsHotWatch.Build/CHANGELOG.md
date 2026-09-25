@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.42 - 2026-09-25
+
+- TestPrune: a BuildSucceeded during a held tests lane queues its re-run without selecting
+
+
 ## 0.7.0-alpha.41 - 2026-09-25
 
 - coverage: BuildPlugin, RunOnceCheck, RunOnceOutput and AnalyzersPlugin meet their macOS floors

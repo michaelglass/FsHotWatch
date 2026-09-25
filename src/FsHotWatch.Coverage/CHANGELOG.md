@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-09-25
+
+- TestPrune: a BuildSucceeded during a held tests lane queues its re-run without selecting
+
+
 ## 0.7.0-alpha.25 - 2026-09-23
 
 - **fix: a coverage check trigger refused by a busy slot is no longer dropped.**

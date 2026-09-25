@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.47 - 2026-09-25
+
 - fix: a finished tests run's result no longer waits behind the file checks queued
   before it. Its runs are declared `PluginWork.resultFirst`, so the result folds once
   the fold in flight commits. Before this, the result held the "tests" key and its
