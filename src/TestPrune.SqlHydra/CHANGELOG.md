@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-25
+
 - chore!: `SqlHydraExtension` implements TestPrune.Core's
   `AnalyzeEdges: SymbolStore -> repoRoot` (no `changedFiles`). It already returned edges
   for the whole tree, so the edges themselves do not change.
