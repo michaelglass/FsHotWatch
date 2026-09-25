@@ -81,19 +81,24 @@ let affected = extension.FindAffectedTestClasses(changedFiles, repoRoot)
 // -> [{ TestProject = "MyApp.IntegrationTests"; TestClass = "UsersTests" }]
 ```
 
-To feed those couplings into TestPrune's dependency graph instead, use
-the `ITestPruneExtension` interface, which returns edges to inject:
+To feed those couplings into TestPrune's dependency graph instead, refresh
+the extension's edges on every index build, after the build's own analysis
+is written:
 
 ```fsharp
-let edges =
-    (extension :> ITestPruneExtension)
-        .AnalyzeEdges (toSymbolStore db) changedFiles repoRoot
-// -> Dependency list (test symbol -> handler symbol, kind SharedState)
+let outcome = refreshExtensionEdges db repoRoot [ extension ]
+// -> [ Refreshed("Falco Routes", edgeCount) ]
 ```
+
+The edges cover every route in the route table (test symbol -> handler
+symbol, kind SharedState) and replace the ones the previous build stored,
+so they never depend on which files changed: a route removed from the
+table, or repointed at another handler, loses its old edges.
 
 ## How it works
 
-1. Checks if any changed file is a known handler (from the route table)
+1. For `FindAffectedTestClasses`, checks if any changed file is a known
+   handler (from the route table); `AnalyzeEdges` takes every route in it
 2. Looks up which URL patterns that handler serves
 3. Scans your integration test `.fs` files for those URLs
    (`/api/users/{id}` matches `/api/users/123` in your test code).

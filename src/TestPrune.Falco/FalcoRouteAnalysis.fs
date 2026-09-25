@@ -53,44 +53,34 @@ type private RouteMatch =
 /// Scans integration test source files for URL patterns that map to changed handler files.
 type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string, routeStore: RouteStore) =
 
-    // Every source file under the repo, read once. Shared by the two additive resolvers below
-    // (Falco.UnionRoutes case→URL links and plain string-route URL constants), so the repo is
-    // walked and read a single time per extension instance rather than once per resolver.
-    let mutable repoFilesCache: (string * string) list option = None
+    // Every source file under the repo. Read afresh on every call: a daemon host keeps one
+    // extension instance for its whole life, so text kept from an earlier call would describe
+    // an older tree. Shared by the two additive resolvers below (Falco.UnionRoutes case→URL
+    // links and plain string-route URL constants), so one call walks and reads the repo once.
+    //
+    // What IS kept is each file's parsed URL constants, keyed by its path and full text:
+    // reusing one is indistinguishable from re-parsing the same text, and it spares a
+    // whole-tree refresh from re-parsing the files that did not change.
+    let constantParseCache = StringRouteConstants.ParseCache()
 
-    let getRepoFiles (repoRoot: string) : (string * string) list =
-        match repoFilesCache with
-        | Some files -> files
-        | None ->
-            let files =
-                if Directory.Exists repoRoot then
-                    SafeWalk.enumerateFiles "*.fs" repoRoot
-                    |> Seq.choose (fun path ->
-                        try
-                            Some(path, File.ReadAllText path)
-                        with _ ->
-                            None)
-                    |> List.ofSeq
-                else
-                    []
+    let readRepoFiles (repoRoot: string) : (string * string) list =
+        if Directory.Exists repoRoot then
+            SafeWalk.enumerateFiles "*.fs" repoRoot
+            |> Seq.choose (fun path ->
+                try
+                    Some(path, File.ReadAllText path)
+                with _ ->
+                    None)
+            |> List.ofSeq
+        else
+            []
 
-            repoFilesCache <- Some files
-            files
-
-    // Case → URL links for Falco.UnionRoutes symbolic navigation, derived once per repo from
-    // the route DU's `[<Route(Path=...)>]` attributes (empty for plain string-route repos).
-    let mutable linkMapCache: Map<string, Set<string>> option = None
-
-    let getLinkMap (repoRoot: string) : Map<string, Set<string>> =
-        match linkMapCache with
-        | Some m -> m
-        | None ->
-            let routeDuFiles =
-                getRepoFiles repoRoot |> List.filter (fun (_, text) -> text.Contains "[<Route(")
-
-            let m = UnionRouteLinks.buildLinkMap routeDuFiles
-            linkMapCache <- Some m
-            m
+    // Case → URL links for Falco.UnionRoutes symbolic navigation, derived from the route DU's
+    // `[<Route(Path=...)>]` attributes (empty for plain string-route repos).
+    let linkMapOf (repoFiles: (string * string) list) : Map<string, Set<string>> =
+        repoFiles
+        |> List.filter (fun (_, text) -> text.Contains "[<Route(")
+        |> UnionRouteLinks.buildLinkMap
 
     /// One `{param}` placeholder in a route pattern. Bound once because both readers of a
     /// route pattern strip placeholders — `carriesOnlySeparators` to see what literal text
@@ -312,12 +302,10 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // under-selection silently skips affected tests. A file whose ONLY declarations are
     // non-selectable therefore contributes no TEST CLASS, though it can still contribute
     // EDGE PARTICIPANTS — see `RouteMatch`.
-    let matchDeclarationsInFiles (testFiles: string list) (regexes: Regex list) : RouteMatch =
+    let matchDeclarationsInFiles (testFiles: (string * string) list) (regexes: Regex list) : RouteMatch =
         let perFile =
             testFiles
-            |> List.map (fun testFile ->
-                let content = File.ReadAllText(testFile)
-
+            |> List.map (fun (_, content) ->
                 if regexes |> List.exists (fun regex -> regex.IsMatch(content)) |> not then
                     [], []
                 else
@@ -401,7 +389,8 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         { TestClasses = perFile |> List.collect fst |> List.distinct
           EdgeParticipants = perFile |> List.collect snd |> List.distinct }
 
-    let findTestFiles (repoRoot: string) : string list =
+    /// Every integration test source file, with its text.
+    let readTestFiles (repoRoot: string) : (string * string) list =
         let testDir = Path.Combine(repoRoot, integrationTestDir)
 
         if not (Directory.Exists(testDir)) then
@@ -415,6 +404,8 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             // prunes bin/ and obj/ during traversal rather than filtering them
             // out afterwards, so their subtrees are never entered at all.
             SafeWalk.enumerateFiles "*.fs" testDir
+            |> Seq.map (fun path -> path, File.ReadAllText path)
+            |> List.ofSeq
 
     /// Find affected test classes using route-based matching.
     ///
@@ -445,19 +436,21 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             // qualified reference to any route case whose composed URL is affected, and join the
             // URL regexes so the symbolic-nav test's class is attributed exactly like a literal
             // match. Empty for string-route repos — no behaviour change there.
+            let repoFiles = readRepoFiles repoRoot
+
             let leafRegexes =
-                UnionRouteLinks.leafReferenceRegexes (getLinkMap repoRoot) affectedUrls
+                UnionRouteLinks.leafReferenceRegexes (linkMapOf repoFiles) affectedUrls
 
             // A test may also navigate via a NAMED URL CONSTANT (`navigateTo Routes.settingsUrl`)
             // whose literal lives in another file. These regexes match a reference to any constant
             // whose literal value is an affected route URL, attributed exactly like a literal match.
             let constantRegexes =
                 let constantMap =
-                    StringRouteConstants.buildConstantMap (getRepoFiles repoRoot) affectedUrls
+                    StringRouteConstants.buildConstantMapFrom (constantParseCache.Sources repoFiles) affectedUrls
 
                 StringRouteConstants.constantReferenceRegexes constantMap urlRegexes
 
-            let testFiles = findTestFiles repoRoot
+            let testFiles = readTestFiles repoRoot
 
             (matchDeclarationsInFiles testFiles (urlRegexes @ leafRegexes @ constantRegexes)).TestClasses
             |> List.map (fun cls ->
@@ -467,48 +460,79 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     interface ITestPruneExtension with
         member _.Name = "Falco Routes"
 
-        member _.AnalyzeEdges (symbolStore: SymbolStore) (changedFiles: string list) (repoRoot: string) =
-            let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
+        /// Edges for EVERY route in the route table, derived from the tree as it stands: the
+        /// host replaces this extension's stored edges with the answer, so a route missing
+        /// here loses its edges. Nothing about which files changed enters into it.
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (repoRoot: string) =
+            // One edge computation per distinct (URL, handler) pair: routes differing only
+            // by HTTP method share their tests and their handler, hence their edges. Sorted
+            // so the answer's order does not depend on the route table's row order.
+            let routes =
+                routeStore.GetAll()
+                |> List.map (fun entry -> entry.UrlPattern, entry.HandlerSourceFile, entry.HandlerFunction)
+                |> List.distinct
+                |> List.sort
 
-            let changedHandlerFiles =
-                changedFiles |> List.filter (fun f -> handlerSourceFiles |> Set.contains f)
-
-            if changedHandlerFiles.IsEmpty then
+            if routes.IsEmpty then
                 []
             else
-                let testFiles = findTestFiles repoRoot
+                let testFiles = readTestFiles repoRoot
+                let repoFiles = readRepoFiles repoRoot
+                let linkMap = linkMapOf repoFiles
+                let constantSources = constantParseCache.Sources repoFiles
                 let allSymbols = symbolStore.GetAllSymbols()
 
                 // Resolve the symbols belonging to a single declaration by the same
-                // suffix/contains idiom the file-level path uses.
-                let symbolsForDeclaration (declaration: string) =
-                    allSymbols
-                    |> List.filter (fun s ->
-                        s.FullName.Contains($".%s{declaration}.")
-                        || s.FullName.EndsWith($".%s{declaration}"))
+                // suffix/contains idiom the file-level path uses. Memoised: a declaration
+                // carrying several routes is resolved once per call, not once per route.
+                let declarationSymbols =
+                    System.Collections.Generic.Dictionary<string, SymbolInfo list>()
 
-                // Edges for one route served by a changed handler file. Tests are matched by
-                // THIS route's URL only (per-route regex), so an unrelated route in the same
-                // file contributes no edges — and each route's tests are scoped to the handler
-                // function serving it, via core's shared edge-emission helper. A seed that
-                // cannot name the function, or names one that no longer resolves, falls back
-                // to the whole file's symbols; dropping the route's tests would under-select.
+                let symbolsForDeclaration (declaration: string) =
+                    match declarationSymbols.TryGetValue declaration with
+                    | true, symbols -> symbols
+                    | false, _ ->
+                        let symbols =
+                            allSymbols
+                            |> List.filter (fun s ->
+                                s.FullName.Contains($".%s{declaration}.")
+                                || s.FullName.EndsWith($".%s{declaration}"))
+
+                        declarationSymbols[declaration] <- symbols
+                        symbols
+
+                let handlerFileSymbols =
+                    System.Collections.Generic.Dictionary<string, SymbolInfo list>()
+
+                let symbolsInHandlerFile (handlerFile: string) =
+                    match handlerFileSymbols.TryGetValue handlerFile with
+                    | true, symbols -> symbols
+                    | false, _ ->
+                        let symbols = symbolStore.GetSymbolsInFile handlerFile
+                        handlerFileSymbols[handlerFile] <- symbols
+                        symbols
+
+                // Edges for one route. Tests are matched by THIS route's URL only (per-route
+                // regex), so an unrelated route in the same handler file contributes no
+                // edges — and each route's tests are scoped to the handler function serving
+                // it, via core's shared edge-emission helper. A seed that cannot name the
+                // function, or names one that no longer resolves, falls back to the whole
+                // handler file's symbols; dropping the route's tests would under-select.
                 //
                 // This is the EDGE question, so it reads `RouteMatch.EdgeParticipants`, NOT
                 // `TestClasses` — see `RouteMatch`.
-                let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
-                    let regex = urlPatternToRegex entry.UrlPattern
-                    let affectedUrls = Set.singleton entry.UrlPattern
+                let edgesForRoute (urlPattern: string, handlerFile: string, handlerFunction: string option) =
+                    let regex = urlPatternToRegex urlPattern
+                    let affectedUrls = Set.singleton urlPattern
 
                     // Symbolic navigation to THIS route (see the run-selection path): a fixture or
                     // test that reaches the route via `Route.link (…)` or a named URL constant
                     // carries the route's edge too.
-                    let leafRegexes =
-                        UnionRouteLinks.leafReferenceRegexes (getLinkMap repoRoot) affectedUrls
+                    let leafRegexes = UnionRouteLinks.leafReferenceRegexes linkMap affectedUrls
 
                     let constantRegexes =
                         let constantMap =
-                            StringRouteConstants.buildConstantMap (getRepoFiles repoRoot) affectedUrls
+                            StringRouteConstants.buildConstantMapFrom constantSources affectedUrls
 
                         StringRouteConstants.constantReferenceRegexes constantMap [ regex ]
 
@@ -518,16 +542,10 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     let routeTestMethods = participants |> List.collect symbolsForDeclaration
 
                     let target =
-                        match entry.HandlerFunction with
-                        | Some handlerFunction -> NamedSymbol handlerFunction
+                        match handlerFunction with
+                        | Some name -> NamedSymbol name
                         | None -> UnnamedSymbol
 
-                    let fileSymbols = symbolStore.GetSymbolsInFile changedFile
+                    edgesTo "falco" SharedState (symbolsInHandlerFile handlerFile) target routeTestMethods
 
-                    edgesTo "falco" SharedState fileSymbols target routeTestMethods
-
-                changedHandlerFiles
-                |> List.collect (fun changedFile ->
-                    routeStore.GetRouteHandlersForSourceFile changedFile
-                    |> List.collect (edgesForRoute changedFile))
-                |> List.distinct
+                routes |> List.collect edgesForRoute |> List.distinct

@@ -160,27 +160,23 @@ module ExtensionExample =
         interface ITestPruneExtension with
             member _.Name = "example"
 
-            member _.AnalyzeEdges
-                (symbolStore: SymbolStore)
-                (changedFiles: string list)
-                (repoRoot: string)
-                : Dependency list =
+            member _.AnalyzeEdges (symbolStore: SymbolStore) (repoRoot: string) : Dependency list =
                 // The out-of-band fact this extension knows and the AST cannot: the tests in
-                // `tests/ApiTests.fs` exercise the handler `Handlers.getUser`.
+                // `tests/ApiTests.fs` exercise the handler `Handlers.getUser` in
+                // `src/Handlers.fs`. Return the edges for the WHOLE tree on every call —
+                // the host replaces this extension's stored edges with the answer, so an
+                // edge left out is an edge deleted.
                 let dependents = symbolStore.GetSymbolsInFile "tests/ApiTests.fs"
+                let candidates = symbolStore.GetSymbolsInFile "src/Handlers.fs"
 
-                changedFiles
-                |> List.collect (fun changedFile ->
-                    let candidates = symbolStore.GetSymbolsInFile changedFile
-
-                    // `edgesTo` scopes the edge to the symbol the fact names. A fact that
-                    // names none (`UnnamedSymbol`), or names one that no longer resolves,
-                    // falls back to every symbol in the changed file — coarse, but never
-                    // empty: a missing edge is a test that silently stops being re-run.
-                    // Never hand-roll a cross-product of all tests x all symbols.
-                    //
-                    // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
-                    // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
-                    // re-selects the test when anything getUser calls changes.
-                    edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents)
+                // `edgesTo` scopes the edge to the symbol the fact names. A fact that
+                // names none (`UnnamedSymbol`), or names one that no longer resolves,
+                // falls back to every symbol in the handler file — coarse, but never
+                // empty: a missing edge is a test that silently stops being re-run.
+                // Never hand-roll a cross-product of all tests x all symbols.
+                //
+                // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
+                // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
+                // re-selects the test when anything getUser calls changes.
+                edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents
 // sync:extension:end

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- chore!: `SqlExtension` and `AutoSqlExtension` implement TestPrune.Core's
+  `AnalyzeEdges: SymbolStore -> repoRoot` (no `changedFiles`). They already returned
+  edges for the whole tree, so the edges themselves do not change.
+
 ## 0.2.0 - 2026-09-24
 
 - fix!: a test method is never a shared-state writer. A test that seeds its own rows

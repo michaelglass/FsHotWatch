@@ -404,7 +404,7 @@ module ``Schema 13 to 14`` =
         """
 
     [<Fact>]
-    let ``a v13 database is recreated as v14 through the schema-version path`` () =
+    let ``a v13 database is recreated at the current schema through the schema-version path`` () =
         let path = tempDbPath ()
 
         try
@@ -427,7 +427,8 @@ module ``Schema 13 to 14`` =
             let db = Database.create path
 
             // The recreate path ran (the flag FsHotWatch uses to clear its check cache),
-            // the file is stamped v14, and nothing of the v13 store survived to mix in.
+            // the file is stamped with the current version, and nothing of the v13 store
+            // survived to mix in.
             test <@ db.WasRecreated @>
 
             let userVersion, columns =
@@ -447,7 +448,7 @@ module ``Schema 13 to 14`` =
                 SqliteConnection.ClearPool conn
                 v, List.ofSeq names
 
-            test <@ userVersion = 14 && SchemaVersion = 14 @>
+            test <@ userVersion = SchemaVersion @>
             test <@ not (columns |> List.contains "source_file") @>
             test <@ db.GetAllSymbolNames() |> Set.isEmpty @>
 

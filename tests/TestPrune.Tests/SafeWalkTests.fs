@@ -156,3 +156,58 @@ let ``enumerateFiles tolerates an unreadable subdirectory instead of faulting`` 
             Directory.Delete(root, true)
         with _ ->
             ()
+
+/// Another working copy checked out inside this one (`jj workspace add .workspaces/x`,
+/// `git worktree add`, a clone) is a different tree; a submodule is part of this one.
+[<Fact>]
+let ``enumerateFiles skips nested working copies but walks submodules`` () =
+    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+
+    let write (relative: string) (text: string) =
+        let path = Path.Combine(root, relative)
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, text)
+
+    try
+        write "src/real.fs" "// real"
+        write ".workspaces/other/src/copy.fs" "// another jj workspace"
+        Directory.CreateDirectory(Path.Combine(root, ".workspaces/other/.jj")) |> ignore
+        write "worktrees/feature/src/worktree.fs" "// a git worktree"
+        write "worktrees/feature/.git" "gitdir: /repo/.git/worktrees/feature\n"
+        write "clones/lib/src/clone.fs" "// an independent clone"
+        Directory.CreateDirectory(Path.Combine(root, "clones/lib/.git")) |> ignore
+        write "vendor/sub/src/submodule.fs" "// a submodule"
+        write "vendor/sub/.git" "gitdir: ../../.git/modules/sub\n"
+
+        let names =
+            SafeWalk.enumerateFiles "*.fs" root |> List.map Path.GetFileName |> List.sort
+
+        test <@ names = [ "real.fs"; "submodule.fs" ] @>
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+/// A `.git` pointer that cannot be read proves nothing, so its directory stays in the walk:
+/// dropping sources on a guess is the direction that loses tests.
+[<Fact>]
+let ``enumerateFiles walks a directory whose git pointer cannot be read`` () =
+    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+    let pointer = Path.Combine(root, "vendor/sub/.git")
+
+    try
+        Directory.CreateDirectory(Path.Combine(root, "vendor/sub")) |> ignore
+        File.WriteAllText(Path.Combine(root, "vendor/sub/kept.fs"), "// kept")
+        File.WriteAllText(pointer, "gitdir: /repo/.git/worktrees/sub\n")
+        File.SetUnixFileMode(pointer, UnixFileMode.None)
+
+        let names = SafeWalk.enumerateFiles "*.fs" root |> List.map Path.GetFileName
+
+        test <@ names = [ "kept.fs" ] @>
+    finally
+        try
+            File.SetUnixFileMode(pointer, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+            Directory.Delete(root, true)
+        with _ ->
+            ()

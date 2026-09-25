@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix!: `AnalyzeEdges` returns edges for every route in the route table on every call,
+  not only for handler files in the run's change set, so the stored route edges are the
+  same whatever the index's build history. A route removed from the table, or repointed
+  at another handler function, loses its old edges on the next refresh. The extension no
+  longer keeps repo text between calls: a daemon host holds one instance for its whole
+  life, and a URL constant or route DU case added after the first call went unseen.
+  BREAKING CHANGE: implements TestPrune.Core's `AnalyzeEdges: SymbolStore -> repoRoot`
+  (no `changedFiles`); store the result with `Extensions.refreshExtensionEdges`.
+
+- perf: URL constants are parsed once per file content and reused while the file is
+  unchanged, and only files containing `"/` are parsed at all. On a 297-route,
+  46,645-symbol consumer a whole-tree refresh went from 100-227 s to about 3 s warm
+  (8 s cold), with identical edges.
+
 ## 3.1.6 - 2026-09-24
 
 - docs: `RouteStore` can be built over `TestPrune.Ports.pluginStoreAt dbPath` when the

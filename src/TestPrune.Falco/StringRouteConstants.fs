@@ -83,19 +83,65 @@ module StringRouteConstants =
 
         List.ofSeq results
 
-    /// Build the `"Module.const" → { url literals }` map from in-memory `(fileName, source)` pairs
-    /// whose raw text contains one of `affectedUrls`. The `Contains` pre-filter bounds parsing to
-    /// files that mention a changed route — cheap, and it keeps precision (an app file defining
-    /// unrelated URL constants is only parsed when it also mentions an affected route, and even
-    /// then the constant contributes only if ITS value matches — see `constantReferenceRegexes`).
-    let buildConstantMap (files: (string * string) list) (affectedUrls: Set<string>) : Map<string, Set<string>> =
-        files
-        |> List.filter (fun (_, text) -> affectedUrls |> Set.exists (fun u -> text.Contains u))
-        |> List.collect (fun (path, text) ->
+    /// Source files ready for constant-map building, each parsed at most once however many
+    /// maps are built from them: a caller building one map per route over the same files pays
+    /// for each file's parse once.
+    type ConstantSources =
+        private
+            { Files: (string * Lazy<(string * string) list>) list }
+
+    /// The URL constants one file declares. A file with no `"/` in its text is never parsed:
+    /// a URL constant's value is a string literal starting with `/`, and every spelling of one
+    /// (`"/…"`, `@"/…"`, `"""/…"""`) puts a quote directly before that slash.
+    let private constantsOf (path: string) (text: string) : (string * string) list =
+        if not (text.Contains "\"/") then
+            []
+        else
             try
                 parseConstants path text
             with _ ->
-                [])
+                []
+
+    /// Wrap in-memory `(fileName, source)` pairs for `buildConstantMapFrom`.
+    let constantSources (files: (string * string) list) : ConstantSources =
+        { Files = files |> List.map (fun (path, text) -> text, lazy (constantsOf path text)) }
+
+    /// Parsed constants kept between calls, keyed by a file's path AND full text, so a
+    /// result read from it is exactly what parsing that text would give: an edited file
+    /// misses and is parsed afresh. Each `Sources` call keeps only the files it was given,
+    /// so the cache holds one tree, not the history of every tree it has seen.
+    type ParseCache() =
+        let gate = obj ()
+        let mutable parsed = Map.empty<string * string, Lazy<(string * string) list>>
+
+        /// `constantSources`, reusing the parse of every file whose path and text are
+        /// unchanged since the previous call.
+        member _.Sources(files: (string * string) list) : ConstantSources =
+            lock gate (fun () ->
+                let entries =
+                    files
+                    |> List.map (fun (path, text) ->
+                        let key = path, text
+
+                        match Map.tryFind key parsed with
+                        | Some constants -> key, constants
+                        | None -> key, lazy (constantsOf path text))
+
+                parsed <- Map.ofList entries
+
+                { Files = entries |> List.map (fun ((_, text), constants) -> text, constants) })
+
+    /// Build the `"Module.const" → { url literals }` map from the sources that declare a URL
+    /// constant and whose raw text contains one of `affectedUrls`. The `Contains` filter keeps
+    /// precision: an app file defining unrelated URL constants contributes only when it also
+    /// mentions an affected route, and even then a constant counts only if ITS value matches
+    /// — see `constantReferenceRegexes`.
+    let buildConstantMapFrom (sources: ConstantSources) (affectedUrls: Set<string>) : Map<string, Set<string>> =
+        sources.Files
+        |> List.filter (fun (text, constants) ->
+            not constants.Value.IsEmpty
+            && affectedUrls |> Set.exists (fun u -> text.Contains u))
+        |> List.collect (fun (_, constants) -> constants.Value)
         |> List.fold
             (fun acc (qualified, url) ->
                 let urls =
@@ -105,6 +151,11 @@ module StringRouteConstants =
 
                 Map.add qualified urls acc)
             Map.empty
+
+    /// Build the `"Module.const" → { url literals }` map from in-memory `(fileName, source)`
+    /// pairs. See `buildConstantMapFrom`.
+    let buildConstantMap (files: (string * string) list) (affectedUrls: Set<string>) : Map<string, Set<string>> =
+        buildConstantMapFrom (constantSources files) affectedUrls
 
     /// Boundary-anchored regexes matching a reference to any URL constant whose literal value
     /// matches an affected route URL. The affected URLs are supplied as the SAME regexes the

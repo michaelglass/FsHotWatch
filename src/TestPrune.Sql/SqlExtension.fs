@@ -10,7 +10,7 @@ type SqlExtension(facts: SqlFact list) =
     interface ITestPruneExtension with
         member _.Name = "SQL Coupling"
 
-        member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (_repoRoot: string) =
             SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames()) facts
 
 /// Extension that auto-discovers ReadsFrom/WritesTo attributes from the symbol store
@@ -56,6 +56,6 @@ type AutoSqlExtension() =
     interface ITestPruneExtension with
         member _.Name = "SQL Coupling (Auto)"
 
-        member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (_repoRoot: string) =
             let facts = AutoSqlExtension.ExtractFacts(symbolStore)
             SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames()) facts

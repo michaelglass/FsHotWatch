@@ -68,7 +68,9 @@
     <Compile Include="ProgramTests.fs" />
     <Compile Include="TestRunnerTests.fs" />
     <Compile Include="ProjectLoaderTests.fs" />
+    <Compile Include="ExtensionEdgeRefreshTests.fs" />
     <Compile Include="FalcoRouteExtensionTests.fs" />
+    <Compile Include="FalcoRouteEdgeDeterminismTests.fs" />
     <Compile Include="SqlCouplingTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
     <Compile Include="ReleaseEnrollmentTests.fs" />

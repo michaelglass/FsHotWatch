@@ -44,9 +44,27 @@ let ExcludedDirs =
           ".fshw"
           "node_modules" ]
 
+/// True when `dir` is the root of ANOTHER working copy nested inside the one being
+/// walked: a jj workspace (`.jj`), an independent clone (a `.git` directory), or a git
+/// worktree (a `.git` file pointing into some repository's `worktrees/`). Its files are
+/// a different tree, often a full copy of this one at another revision, so reading
+/// them makes a result depend on what else happens to be checked out alongside. A
+/// submodule (a `.git` file pointing into `modules/`) is part of this tree and is
+/// walked, as is a directory whose `.git` file cannot be read: unproven, it stays in.
+let isNestedWorkingCopy (dir: DirectoryInfo) : bool =
+    let gitPath = Path.Combine(dir.FullName, ".git")
+
+    Directory.Exists(Path.Combine(dir.FullName, ".jj"))
+    || Directory.Exists gitPath
+    || (File.Exists gitPath
+        && (try
+                File.ReadAllText(gitPath).Replace('\\', '/').Contains "/worktrees/"
+            with _ ->
+                false))
+
 /// Full paths of every file matching `searchPattern` under `root` (recursive,
-/// root included), skipping `ExcludedDirs` by leaf name and NEVER entering a
-/// symlinked directory. Empty for a missing root. `searchPattern` has the same
+/// root included), skipping `ExcludedDirs` by leaf name, nested working copies
+/// (`isNestedWorkingCopy`), and NEVER entering a symlinked directory. Empty for a missing root. `searchPattern` has the same
 /// glob semantics as `Directory.GetFiles` but is applied per-directory, since we
 /// own the recursion. Do not reintroduce `AllDirectories`.
 let enumerateFiles (searchPattern: string) (root: string) : string list =
@@ -68,7 +86,8 @@ let enumerateFiles (searchPattern: string) (root: string) : string list =
                         not (ExcludedDirs.Contains d.Name)
                         // A symlinked directory is a portal out of the tree, and
                         // possibly into a cycle. Every caller wants the REAL tree.
-                        && (d.Attributes &&& FileAttributes.ReparsePoint) = enum<FileAttributes> 0)
+                        && (d.Attributes &&& FileAttributes.ReparsePoint) = enum<FileAttributes> 0
+                        && not (isNestedWorkingCopy d))
                 with
                 | :? IOException
                 | :? System.UnauthorizedAccessException -> [||]

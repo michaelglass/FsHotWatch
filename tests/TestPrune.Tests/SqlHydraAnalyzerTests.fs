@@ -80,8 +80,7 @@ module ``SqlHydraExtension graph analysis`` =
     let ``invalid generated module prefix is rejected instead of disabling attribution`` (prefix: string) =
         let store = InMemoryStore.fromAnalysisResults []
 
-        raises<System.ArgumentException>
-            <@ (SqlHydraExtension(prefix) :> ITestPruneExtension).AnalyzeEdges store [] "" @>
+        raises<System.ArgumentException> <@ (SqlHydraExtension(prefix) :> ITestPruneExtension).AnalyzeEdges store "" @>
 
     [<Fact>]
     let ``detects read when function calls selectTask and generated table value`` () =
@@ -229,7 +228,7 @@ module ``SqlHydraExtension graph analysis`` =
         let extension = SqlHydraExtension("Generated")
 
         let edges =
-            (extension :> TestPrune.Extensions.ITestPruneExtension).AnalyzeEdges store [] ""
+            (extension :> TestPrune.Extensions.ITestPruneExtension).AnalyzeEdges store ""
 
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
@@ -478,7 +477,7 @@ module ``SqlHydra edge scoping`` =
         // ...and the edge the dropped write destroyed is back: the reader of `articles`
         // now depends on the upsert that writes it.
         let edges =
-            (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+            (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store ""
 
         let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
         test <@ pairs = set [ "Queries.listArticles", "Repo.upsertArticle" ] @>
@@ -564,7 +563,7 @@ module ``SqlHydra under-selection`` =
                 InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
 
             let sqlEdges =
-                (SqlHydraExtension("Intelligence.Database.Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+                (SqlHydraExtension("Intelligence.Database.Generated") :> ITestPruneExtension).AnalyzeEdges store ""
 
             let edgePairs = sqlEdges |> List.map (fun edge -> edge.FromSymbol, edge.ToSymbol)
 
@@ -615,7 +614,7 @@ module ``SqlHydra under-selection`` =
                 InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
 
             let sqlEdges =
-                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store ""
 
             db.RebuildProjects([ AnalysisResult.Create(symbols, coreDeps @ sqlEdges, testMethods) ])
 
@@ -664,7 +663,7 @@ module ``SqlHydra test writers`` =
                 InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
 
             let sqlEdges =
-                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store ""
 
             test <@ sqlEdges |> List.forall (fun edge -> edge.ToSymbol <> "Tests.testDelivery") @>
 
@@ -697,7 +696,7 @@ module ``SqlHydra test writers`` =
                 InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
 
             let sqlEdges =
-                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+                (SqlHydraExtension("Generated") :> ITestPruneExtension).AnalyzeEdges store ""
 
             db.RebuildProjects([ AnalysisResult.Create(symbols, coreDeps @ sqlEdges, testMethods) ])
 

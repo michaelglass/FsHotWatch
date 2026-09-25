@@ -180,7 +180,7 @@ type SqlHydraExtension(generatedModulePrefix: string) =
     interface ITestPruneExtension with
         member _.Name = "SqlHydra"
 
-        member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (_repoRoot: string) =
             SqlHydraExtension.extractFacts generatedModulePrefix symbolStore
             |> SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames())
             |> List.map (fun d -> { d with Source = "sql-hydra" })

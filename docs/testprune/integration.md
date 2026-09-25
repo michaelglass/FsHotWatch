@@ -208,11 +208,15 @@ a `getIncomingEdgesBatch` (available as `store.GetIncomingEdgesBatch`).
 Some dependencies don't show up in code — like HTTP routes mapping to
 handler files. Extensions let you teach TestPrune about these by
 implementing `ITestPruneExtension` to inject extra dependency edges.
+`AnalyzeEdges` answers for the whole tree on every call, and the host
+stores each answer in place of that extension's previous edges
+(`refreshExtensionEdges`), so the stored edges never depend on which files
+changed or on what earlier builds wrote.
 
 Build those edges with `EdgeEmission.edgesTo`: emit an edge from each
 dependent to the *specific* symbol it depends on across the boundary,
 scoped precisely when the fact names a symbol and degraded to the whole
-changed file when it doesn't. Both bugs TestPrune has shipped came from
+file the fact points at when it doesn't. Both bugs TestPrune has shipped came from
 an extension hand-rolling this step — one over-selected (a cross-product
 of every test and every symbol in the file), one under-selected (a
 scoping filter that kept only the first match). Scoping to the direct
@@ -229,29 +233,25 @@ type ExampleExtension() =
     interface ITestPruneExtension with
         member _.Name = "example"
 
-        member _.AnalyzeEdges
-            (symbolStore: SymbolStore)
-            (changedFiles: string list)
-            (repoRoot: string)
-            : Dependency list =
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (repoRoot: string) : Dependency list =
             // The out-of-band fact this extension knows and the AST cannot: the tests in
-            // `tests/ApiTests.fs` exercise the handler `Handlers.getUser`.
+            // `tests/ApiTests.fs` exercise the handler `Handlers.getUser` in
+            // `src/Handlers.fs`. Return the edges for the WHOLE tree on every call —
+            // the host replaces this extension's stored edges with the answer, so an
+            // edge left out is an edge deleted.
             let dependents = symbolStore.GetSymbolsInFile "tests/ApiTests.fs"
+            let candidates = symbolStore.GetSymbolsInFile "src/Handlers.fs"
 
-            changedFiles
-            |> List.collect (fun changedFile ->
-                let candidates = symbolStore.GetSymbolsInFile changedFile
-
-                // `edgesTo` scopes the edge to the symbol the fact names. A fact that
-                // names none (`UnnamedSymbol`), or names one that no longer resolves,
-                // falls back to every symbol in the changed file — coarse, but never
-                // empty: a missing edge is a test that silently stops being re-run.
-                // Never hand-roll a cross-product of all tests x all symbols.
-                //
-                // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
-                // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
-                // re-selects the test when anything getUser calls changes.
-                edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents)
+            // `edgesTo` scopes the edge to the symbol the fact names. A fact that
+            // names none (`UnnamedSymbol`), or names one that no longer resolves,
+            // falls back to every symbol in the handler file — coarse, but never
+            // empty: a missing edge is a test that silently stops being re-run.
+            // Never hand-roll a cross-product of all tests x all symbols.
+            //
+            // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
+            // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
+            // re-selects the test when anything getUser calls changes.
+            edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents
 ```
 <!-- sync:extension:end -->
 
@@ -274,8 +274,8 @@ let extension: ITestPruneExtension =
 ```
 
 Registration is explicit: referencing the assembly does not make the extension
-run. The host must call `AnalyzeEdges` after core symbols and dependencies have
-been indexed, then persist the returned edges with the core graph.
+run. The host calls `refreshExtensionEdges db repoRoot extensions` on every index
+build, after core symbols and dependencies have been written.
 The prefix must be a dot-separated qualified name with no empty segments;
 invalid input throws during extension construction rather than silently
 disabling SQL attribution.

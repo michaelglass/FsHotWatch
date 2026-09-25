@@ -339,7 +339,7 @@ module ``SqlExtension as ITestPruneExtension`` =
         let extension = SqlExtension(facts)
 
         let edges =
-            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) [] ""
+            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) ""
 
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
@@ -350,7 +350,7 @@ module ``SqlExtension as ITestPruneExtension`` =
         let extension = SqlExtension([])
 
         let edges =
-            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) [] ""
+            (extension :> ITestPruneExtension).AnalyzeEdges (TestPrune.InMemoryStore.fromAnalysisResults []) ""
 
         test <@ edges.IsEmpty @>
 
@@ -387,7 +387,7 @@ module ``SqlExtension auto-discovery`` =
 
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ result ]
         let extension = AutoSqlExtension()
-        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store ""
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
 
@@ -395,7 +395,7 @@ module ``SqlExtension auto-discovery`` =
     let ``no edges when no sql attributes`` () =
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ standardGraph ]
         let extension = AutoSqlExtension()
-        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store ""
         test <@ edges.IsEmpty @>
 
     /// The FalcoRoute cross-product bug is NOT present here.
@@ -435,7 +435,7 @@ module ``SqlExtension auto-discovery`` =
                         ArgsJson = "[\"articles\", \"*\"]" } ] }
 
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ result ]
-        let edges = (AutoSqlExtension() :> ITestPruneExtension).AnalyzeEdges store [] ""
+        let edges = (AutoSqlExtension() :> ITestPruneExtension).AnalyzeEdges store ""
         let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
         // Only the same-table pair couples. The file-mate `saveUser` writer is absent.

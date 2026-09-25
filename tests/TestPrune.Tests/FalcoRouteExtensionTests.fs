@@ -1496,7 +1496,6 @@ let private withAnalyzeEdges
     (routeEntries: RouteHandlerEntry list)
     (symbols: SymbolInfo list)
     (testFiles: (string * string) list)
-    (changedFiles: string list)
     (f: Dependency list -> unit)
     =
     let tempDir = createTempDir ()
@@ -1519,7 +1518,7 @@ let private withAnalyzeEdges
         let extension =
             FalcoRouteExtension("IntTests", "tests/IntTests", routeStore) :> ITestPruneExtension
 
-        let edges = extension.AnalyzeEdges symbolStore changedFiles tempDir
+        let edges = extension.AnalyzeEdges symbolStore tempDir
         f edges
     finally
         cleanupDir tempDir
@@ -1602,7 +1601,7 @@ module ``AnalyzeEdges function-scoped routes`` =
                                    TestClass = name } ]
                 @>)
 
-        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+        withAnalyzeEdges [ route ] symbols testFiles (fun edges ->
             test <@ edges.Length = 1 @>
             test <@ edges.Head.FromSymbol = sourceSymbol @>
             test <@ edges.Head.ToSymbol = "App.Handlers.Users.getUser" @>
@@ -1629,7 +1628,7 @@ module ``AnalyzeEdges function-scoped routes`` =
               fn "App.Tests.OtherTests.Exercises" "tests/IntTests/Tests.fs"
               fn "App.Handlers.Users.getUser" route.HandlerSourceFile ]
 
-        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+        withAnalyzeEdges [ route ] symbols testFiles (fun edges ->
             let sources = edges |> List.map _.FromSymbol |> Set.ofList
             test <@ sources = set [ "App.Tests.UsersTests.Exercises"; "App.Tests.OtherTests.Exercises" ] @>
             test <@ edges |> List.forall (fun edge -> edge.ToSymbol = "App.Handlers.Users.getUser") @>)
@@ -1655,7 +1654,7 @@ module ``AnalyzeEdges function-scoped routes`` =
               fn "Company.Product.Tests.OtherTests.Exercises" "tests/IntTests/Tests.fs"
               fn "App.Handlers.Users.getUser" route.HandlerSourceFile ]
 
-        withAnalyzeEdges [ route ] symbols testFiles [ route.HandlerSourceFile ] (fun edges ->
+        withAnalyzeEdges [ route ] symbols testFiles (fun edges ->
             test
                 <@
                     edges
@@ -1686,7 +1685,6 @@ module ``AnalyzeEdges function-scoped routes`` =
                 HandlerFunction = Some "Multi.getOrder" } ]
             symbols
             [ ("UsersTests.fs", usersTestFile); ("OrdersTests.fs", ordersTestFile) ]
-            [ "src/Handlers/Multi.fs" ]
             (fun edges ->
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
@@ -1724,7 +1722,6 @@ module ``AnalyzeEdges function-scoped routes`` =
                 HandlerFunction = Some "WellKnown.robots" } ]
             symbols
             [ ("RobotsTests.fs", robotsTest) ]
-            [ "src/Handlers/WellKnown.fs" ]
             (fun edges ->
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
@@ -1784,7 +1781,7 @@ type UsersTests(fixture: IntegrationTestFixture) =
               fn "App.Tests.IntegrationTestFixture.Login" "tests/IntTests/UsersTests.fs"
               fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs" ]
 
-        withAnalyzeEdges routes symbols [ ("UsersTests.fs", fixtureAndTest) ] [ "src/Handlers/Users.fs" ] (fun edges ->
+        withAnalyzeEdges routes symbols [ ("UsersTests.fs", fixtureAndTest) ] (fun edges ->
             let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
             test
@@ -1817,14 +1814,9 @@ type UsersTests(fixture: IntegrationTestFixture) =
             [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
               fn "App.Tests.TestServer.Login" "tests/IntTests/TestServerFixture.fs" ]
 
-        withAnalyzeEdges
-            routes
-            symbols
-            [ ("TestServerFixture.fs", fixtureOnly) ]
-            [ "src/Handlers/Users.fs" ]
-            (fun edges ->
-                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
-                test <@ pairs = set [ "App.Tests.TestServer.Login", "App.Handlers.Users.getUser" ] @>)
+        withAnalyzeEdges routes symbols [ ("TestServerFixture.fs", fixtureOnly) ] (fun edges ->
+            let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+            test <@ pairs = set [ "App.Tests.TestServer.Login", "App.Handlers.Users.getUser" ] @>)
 
     /// The one case where the edge path must still fall back: a URL in the file
     /// HEADER belongs to no declaration, so any of them could reach the route
@@ -1861,7 +1853,7 @@ type BrowserErrorTracker() =
             [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
               fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs" ]
 
-        withAnalyzeEdges routes symbols [ ("BrowserFixtures.fs", headerUrl) ] [ "src/Handlers/Users.fs" ] (fun edges ->
+        withAnalyzeEdges routes symbols [ ("BrowserFixtures.fs", headerUrl) ] (fun edges ->
             let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
             test <@ pairs = set [ "App.Tests.BrowserErrorTracker.Track", "App.Handlers.Users.getUser" ] @>)
 
@@ -1895,7 +1887,6 @@ type UsersTests(fixture: OrdersFixture) =
                 HandlerFunction = Some "Users.getUser" } ]
             symbols
             [ ("UsersTests.fs", fixtureAndTest) ]
-            [ "src/Handlers/Users.fs" ]
             (fun edges ->
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
@@ -1921,7 +1912,6 @@ module ``AnalyzeEdges fallback`` =
                 HandlerFunction = None } ]
             symbols
             [ ("UsersTests.fs", usersTestFile) ]
-            [ "src/Handlers/Multi.fs" ]
             (fun edges ->
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
@@ -1951,7 +1941,6 @@ module ``AnalyzeEdges fallback`` =
                 HandlerFunction = Some "Multi.renamedAwayGetUser" } ]
             symbols
             [ ("UsersTests.fs", usersTestFile) ]
-            [ "src/Handlers/Multi.fs" ]
             (fun edges ->
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
@@ -1961,21 +1950,6 @@ module ``AnalyzeEdges fallback`` =
                             [ "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getUser"
                               "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.helper" ]
                     @>)
-
-    /// A change to a handler file NOT in the route table yields no edges.
-    [<Fact>]
-    let ``changed file with no routes yields no edges`` () =
-        let symbols = [ fn "App.Handlers.Multi.getUser" "src/Handlers/Multi.fs" ]
-
-        withAnalyzeEdges
-            [ { UrlPattern = "/api/users/{id}"
-                HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Multi.fs"
-                HandlerFunction = Some "Multi.getUser" } ]
-            symbols
-            [ ("UsersTests.fs", usersTestFile) ]
-            [ "src/Handlers/Unrelated.fs" ]
-            (fun edges -> test <@ edges |> List.isEmpty @>)
 
 // -----------------------------------------------------------------------------
 // UnionRouteLinks: case → URL derivation from the route DU

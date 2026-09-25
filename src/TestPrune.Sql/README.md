@@ -41,8 +41,8 @@ be distinguished.
 
 For facts obtained outside source attributes, construct `SqlFact` values and
 register `SqlExtension(facts)` instead. Registration is explicit: merely
-referencing this package does not run either extension. The host persists the
-edges returned by `AnalyzeEdges` alongside the core graph.
+referencing this package does not run either extension. The host stores their
+edges with `refreshExtensionEdges` on every index build.
 
 See the repository's [integration guide](https://github.com/michaelglass/TestPrune/blob/main/docs/integration.md#extensions)
 for extension-host wiring and edge direction.

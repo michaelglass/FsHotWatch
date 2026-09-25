@@ -322,6 +322,12 @@ let private openConnection (dbPath: string) =
 ///          contributed them, so re-indexing one file replaces only that file's facts;
 ///          coverage points belong to the occurrence whose lines they were measured on.
 ///          See ADR 0004, which supersedes ADR 0002's synthetic signature nodes.
+/// v15    — extension edges are owned by their extension (`extensionEdgeOwner`) and
+///          replaced whole on every refresh (`ReplaceExtensionEdges`). Earlier hosts wrote
+///          them through `RebuildProjects` as `ExternSourceFile` rows that nothing ever
+///          deleted, so an existing index holds whatever mix of edges its build history
+///          left behind. The recreate drops those rows; the next refresh writes the
+///          current set.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -337,7 +343,13 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 14
+let SchemaVersion = 15
+
+/// The `dependencies.source_file` value that owns the edges an extension contributes
+/// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
+/// space of repo-relative paths, like `AstAnalyzer.ExternSourceFile`.
+let extensionEdgeOwner (extensionName: string) = $"_extension:%s{extensionName}"
+
 
 /// The TestPrune.Core package version this process links, for the schema-skew message: a
 /// consumer reading "upgrade TestPrune.Core" needs to know which one it is running. The
@@ -906,6 +918,107 @@ type Database(dbPath: string) =
                     pPkKey.Value <- key
                     pkCmd.ExecuteNonQuery() |> ignore
             | _ -> ()
+
+            txn.Commit()
+        with ex ->
+            txn.Rollback()
+            raise ex
+
+    /// Replace every edge `extensionName` contributed with `edges`, in one transaction.
+    ///
+    /// An extension's edges are owned by the extension (`extensionEdgeOwner`), not by a
+    /// source file, so re-indexing a file neither deletes them nor is needed to refresh
+    /// them. Each call is the extension's complete answer for the current tree: an edge
+    /// it no longer returns is removed, and the stored set never depends on what earlier
+    /// calls returned. Edges naming a symbol the index does not hold are skipped, exactly
+    /// as `RebuildProjects` skips them.
+    ///
+    /// Only the difference is written. A whole-tree answer is usually the same as the
+    /// last one, and rewriting tens of thousands of unchanged rows on every build would
+    /// cost more than computing them.
+    member _.ReplaceExtensionEdges(extensionName: string, edges: Dependency list) =
+        let owner = extensionEdgeOwner extensionName
+
+        let wanted =
+            edges
+            |> List.map (fun dep -> dep.FromSymbol, dep.ToSymbol, depKindToString dep.Kind, dep.Source)
+            |> HashSet
+
+        use conn = openConnection dbPath
+        use txn = conn.BeginTransaction()
+
+        try
+            let stored =
+                use readCmd = conn.CreateCommand()
+                readCmd.Transaction <- txn
+
+                readCmd.CommandText <-
+                    """
+                    SELECT d.from_symbol_id, d.to_symbol_id, d.dep_kind, d.source, f.full_name, t.full_name
+                    FROM dependencies d
+                    JOIN symbols f ON f.id = d.from_symbol_id
+                    JOIN symbols t ON t.id = d.to_symbol_id
+                    WHERE d.source_file = @owner
+                    """
+
+                readCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+                use reader = readCmd.ExecuteReader()
+
+                [ while reader.Read() do
+                      yield
+                          (reader.GetInt64 0, reader.GetInt64 1, reader.GetString 2),
+                          (reader.GetString 4, reader.GetString 5, reader.GetString 2, reader.GetString 3) ]
+
+            use delCmd = conn.CreateCommand()
+            delCmd.Transaction <- txn
+
+            delCmd.CommandText <-
+                """
+                DELETE FROM dependencies
+                WHERE from_symbol_id = @fromId AND to_symbol_id = @toId
+                  AND dep_kind = @depKind AND source_file = @owner
+                """
+
+            let pFromId = delCmd.Parameters.Add("@fromId", SqliteType.Integer)
+            let pToId = delCmd.Parameters.Add("@toId", SqliteType.Integer)
+            let pDelKind = delCmd.Parameters.Add("@depKind", SqliteType.Text)
+            delCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+
+            let kept = HashSet()
+
+            for (fromId, toId, depKind), key in stored do
+                if wanted.Contains key then
+                    kept.Add key |> ignore
+                else
+                    pFromId.Value <- fromId
+                    pToId.Value <- toId
+                    pDelKind.Value <- depKind
+                    delCmd.ExecuteNonQuery() |> ignore
+
+            use insCmd = conn.CreateCommand()
+            insCmd.Transaction <- txn
+
+            insCmd.CommandText <-
+                """
+                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file)
+                SELECT f.id, t.id, @depKind, @source, @owner
+                FROM symbols f, symbols t
+                WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
+                """
+
+            let pFromSymbol = insCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
+            let pToSymbol = insCmd.Parameters.Add("@toSymbol", SqliteType.Text)
+            let pInsKind = insCmd.Parameters.Add("@depKind", SqliteType.Text)
+            let pSource = insCmd.Parameters.Add("@source", SqliteType.Text)
+            insCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+
+            for (fromSymbol, toSymbol, depKind, source) as key in wanted do
+                if not (kept.Contains key) then
+                    pFromSymbol.Value <- fromSymbol
+                    pToSymbol.Value <- toSymbol
+                    pInsKind.Value <- depKind
+                    pSource.Value <- source
+                    insCmd.ExecuteNonQuery() |> ignore
 
             txn.Commit()
         with ex ->

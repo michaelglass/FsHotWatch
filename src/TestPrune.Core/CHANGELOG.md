@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- fix!: extension edges are a function of the tree, not of index history.
+  `ITestPruneExtension.AnalyzeEdges` no longer takes the run's changed files: it returns
+  the extension's complete edge set for the tree as it stands, and the new
+  `Extensions.refreshExtensionEdges db repoRoot extensions` stores each answer in place of
+  that extension's previous edges (`Database.ReplaceExtensionEdges`). Hosts used to write
+  extension edges through `RebuildProjects`, which filed them under `_extern` where no
+  re-index ever deleted them, while an extension scoped to changed files added edges only
+  for the files that changed in the run that happened to build them. Three indexes of one
+  near-identical tree held 112, 19,574 and 0 route edges, and a single routing change
+  selected 668 tests on one and 271 on another. An extension that throws keeps its
+  previous edges and is reported as `ExtensionRefresh.Failed`. BREAKING CHANGE: drop the
+  `changedFiles` parameter from `AnalyzeEdges` implementations and return edges for the
+  whole tree; replace `RebuildProjects` of extension edges with `refreshExtensionEdges`.
+
+- fix: `SafeWalk.enumerateFiles` no longer descends into another working copy nested
+  inside the root: a jj workspace (`.jj`), a clone (a `.git` directory) or a git worktree
+  (a `.git` file pointing into `worktrees/`). Submodules are still walked. A repository
+  keeping its jj workspaces under `.workspaces/` had 28,048 of the 30,382 `.fs` files a
+  whole-repo walk returned in those other checkouts, so results depended on what else was
+  checked out alongside. New `SafeWalk.isNestedWorkingCopy`.
+
+- SchemaVersion 14 -> 15: extension edges are owned by their extension
+  (`Database.extensionEdgeOwner`). An existing index is recreated on open, so the
+  `_extern`-owned extension edges it accumulated do not survive the upgrade.
+
 ## 12.0.0 - 2026-09-24
 
 - fix!: `Database.create` refuses a database whose `user_version` is newer than its own
