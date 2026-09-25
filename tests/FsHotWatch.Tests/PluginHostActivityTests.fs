@@ -53,6 +53,7 @@ let ``ctx.Log appears in host activity tail`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("logger") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "logger" 12000
     let hist = host.GetHistory("logger")
     test <@ hist.Length = 1 @>
     let r = List.head hist
@@ -76,6 +77,7 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("subtasker") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "subtasker" 12000
     test <@ observedDuring.Value |> List.length = 2 @>
     test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
@@ -92,6 +94,7 @@ let ``Completed verdict summary is captured in history`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("summarizer") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "summarizer" 12000
     let r = List.head (host.GetHistory("summarizer"))
     test <@ r.Summary = Some "did the thing" @>
 
@@ -108,6 +111,7 @@ let ``Completed verdict elapsed is recorded in history`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("timer") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "timer" 12000
     let r = List.head (host.GetHistory("timer"))
     // The verdict's measured duration, exactly — not a host wall-clock estimate.
     test <@ r.Elapsed = TimeSpan.FromMilliseconds 25.0 @>
@@ -122,6 +126,7 @@ let ``Terminal transition auto-ends open subtasks`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("leaker") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "leaker" 12000
     test <@ List.isEmpty (host.GetSubtasks("leaker")) @>
 
 // --- The Failed path can no longer manufacture a zero-length run -------------
@@ -164,6 +169,7 @@ let ``a Failed with no preceding Running still records the verdict's measured el
 
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("faller") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "faller" 12000
     let r = List.head (host.GetHistory("faller"))
 
     // NOT TimeSpan.Zero — the "started: with no elapsed:" signature is gone.
@@ -187,6 +193,7 @@ let ``a Failed run's history summary comes from the verdict, not a side-channel`
 
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("reporter") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "reporter" 12000
     let r = List.head (host.GetHistory("reporter"))
     test <@ r.Summary = Some "1 passed, 2 failed in 3 projects" @>
     test <@ r.Elapsed = TimeSpan.FromSeconds 9.0 @>

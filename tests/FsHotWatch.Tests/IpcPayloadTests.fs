@@ -93,6 +93,7 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("worker") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "worker" 12000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetStatus()
@@ -143,7 +144,9 @@ let ``a verified-nothing run reaches the CLI as the VerifiedNothing case, status
     host.RegisterHandler(completedHandlerWith "control" "6 passed, 0 failed in 6 projects" (fun _ -> async.Return()))
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("empty") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "empty" 12000
     waitUntil (fun () -> host.GetHistory("control") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "control" 12000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses (target.GetStatus())
@@ -170,6 +173,7 @@ let ``GetStatus payload preserves multi-line failure error`` () =
     host.RegisterHandler(failingHandler "breaker" multiline)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("breaker") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "breaker" 12000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetStatus()
@@ -198,6 +202,7 @@ let ``GetDiagnostics payload exposes structured per-plugin statuses`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("diag") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "diag" 12000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetDiagnostics("")

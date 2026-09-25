@@ -85,6 +85,7 @@ let ``running snapshot exposes 3 subtasks and 2 activity lines; final history ca
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("fake") |> List.isEmpty |> not) 10000
+    waitForTerminalStatus host "fake" 10000
 
     test <@ duringSnapshot.Value |> List.length = 3 @>
     test <@ duringTail.Value |> List.length >= 2 @>
@@ -109,6 +110,7 @@ let ``verbose renderer over final payload shows completion line with summary`` (
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("fake") |> List.isEmpty |> not) 10000
+    waitForTerminalStatus host "fake" 10000
 
     let parsed = parsedFor host "fake"
     let lines = renderPlugin Verbose true DateTime.UtcNow "fake" parsed
@@ -161,6 +163,7 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
     captured.Value <- lines
     gate.Set()
     waitUntil (fun () -> host.GetHistory("slow") |> List.isEmpty |> not) 10000
+    waitForTerminalStatus host "slow" 10000
 
     let joined = String.concat "\n" captured.Value
     test <@ joined.Contains "3 running" @>
