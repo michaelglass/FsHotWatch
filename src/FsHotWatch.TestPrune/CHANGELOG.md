@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING:** `create`'s `beforeRun` hook receives a `HookStep.Tracker` after the run
+  id (`Guid -> HookStep.Tracker -> unit`). A hook hands each step it runs to the tracker
+  once the step's child has started and disposes the handle when it exits; the plugin
+  holds the step as a subtask of the run, on the event-driven and the command-driven
+  path alike, so a wait or wedge inside the setup names the step. A hook that runs no
+  steps of its own ignores it (`fun runId _ -> …`).
+
 - fix: a red run names its failing tests when the runner coloured its console. MTP
   prints `ESC[31mfailed ESC[m <name> ESC[90m(10s 112ms)ESC[m` on a terminal-aware host;
   `parseFailedTests` and the daemon-log failure report matched the bytes, saw no

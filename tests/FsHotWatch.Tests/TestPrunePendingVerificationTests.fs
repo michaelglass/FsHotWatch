@@ -175,7 +175,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
         let configs =
             [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
 
-        let beforeRun = Some(fun _ -> failwith "beforeRun boom")
+        let beforeRun = Some(fun _ _ -> failwith "beforeRun boom")
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let mutable startedId: Guid option = None
@@ -254,7 +254,7 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
                 ReportVerificationFormat = AutoDetect } ]
 
         // A preflight failure, modelling a real csrf-gate step.
-        let beforeRun = Some(fun _ -> failwith "csrf-gate failed")
+        let beforeRun = Some(fun _ _ -> failwith "csrf-gate failed")
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
@@ -352,7 +352,7 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        let beforeRun = Some(fun _ -> ran.Value <- true)
+        let beforeRun = Some(fun _ _ -> ran.Value <- true)
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []

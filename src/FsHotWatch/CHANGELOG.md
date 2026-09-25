@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),
+  its one rendering (`HookStep.describe`), and a `Tracker` that holds it for as long as it
+  runs; `HookStep.asSubtasks` holds it as a plugin subtask, so the wait and wedge lines
+  name it.
+- feat: `ProcessHelper.runProcessObserved` — `runProcess`, telling a callback the child's
+  pid as soon as it is running.
+
 - feat: `CommandPreprocessor` — an `IFsHotWatchPreprocessor` over a configured command,
   for a generator that rewrites files in place before the build and the checks see
   them. Its writes are attributed by content (each declared path hashed before and

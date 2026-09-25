@@ -4193,7 +4193,10 @@ let private executeTests
     (launchDeadline: TimeSpan)
     // Receives the run id so the hook's own timings can be filed
     // under this run, beside the CTRF reports the verdict already reads.
-    (beforeRun: (Guid -> unit) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
+    // Where each step `beforeRun` runs is held while it runs: the plugin's subtasks, on
+    // every path, so a wait or wedge inside the setup names the step it is on.
+    (trackHookStep: HookStep.Tracker)
     (coveragePaths: (string -> CoveragePaths option) option)
     (coverageIngestFailed: CoverageIngestFailure -> unit)
     (afterRun: (TestResults -> unit) option)
@@ -4239,7 +4242,7 @@ let private executeTests
         match beforeRun with
         | Some setup ->
             Logging.info "test-prune" "Running beforeRun setup..."
-            setup runId
+            setup runId trackHookStep
             Logging.info "test-prune" "beforeRun complete"
         | None -> ()
 
@@ -5337,7 +5340,7 @@ let internal createWithQueries
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (Guid -> unit) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     // `dependsOn`: repo-root-relative globs naming EXTERNAL inputs (DB
@@ -6653,6 +6656,7 @@ let internal createWithQueries
                             repoRoot
                             launchDeadline
                             beforeRun
+                            (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
                             (coverageIngestFailed ctx)
                             afterRun
@@ -6770,6 +6774,7 @@ let internal createWithQueries
                             repoRoot
                             launchDeadline
                             beforeRun
+                            (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
                             (coverageIngestFailed ctx)
                             afterRun
@@ -9349,7 +9354,7 @@ let internal createWithLaunchDeadline
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (Guid -> unit) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)
@@ -9387,7 +9392,7 @@ let createWithScope
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (Guid -> unit) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)
@@ -9416,7 +9421,7 @@ let create
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (Guid -> unit) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)

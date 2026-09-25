@@ -4,6 +4,19 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### core, cli, test-prune: a wait inside a hook names the step it is on
+
+- **A `tests.beforeRun` step is a subtask while it runs.** A run's hook chain logged a
+  start and a completion per step, so a wait or wedge that fell inside the chain said only
+  that `test-prune` was running. Each step is now held as a subtask of the run from the
+  moment its child starts until it exits — green, red, or reaped by an interrupted run —
+  and the `[wait]` and `[wedge]` lines name it:
+  ``test-prune (4m 12s) [primary 4m 12s, beforeRun step 9/17 `dotnet run … -- csrf-gate` (pid 12345, bound 10m 0s) 4m 10s]``.
+- **Every hook step's start is logged with its pid and bound**, in the same words:
+  ``Started beforeRun step 9/17 `…` (pid 12345, bound 10m 0s)``. The run-level
+  `beforeRun`/`afterRun` hooks run in the CLI, outside any plugin, so this line is what a
+  hang inside one is traced from.
+
 ### tests, bench: a benchmark is a number, never a verdict
 
 - **`fshw-bench hash-cost`** (`mise run bench-hash-cost`) reports `merkleCacheKey`'s
