@@ -259,6 +259,28 @@ type ExampleExtension() =
 an extension for Falco web apps that maps URL routes to integration
 tests.
 
+### Named dispatch
+
+`TestPrune.NamedDispatch.NamedDispatchExtension` (in TestPrune.Core) couples a
+test to a handler it reaches only through a string name: a job runner, a
+message topic, a command table. Declare both sides in the tree, by attribute
+name (from TestPrune.Attributes, or your own types of the same names):
+
+```fsharp
+[<DispatchedAs("job", "Purge")>]
+let runPurge () = ...
+
+[<CompositionRoot>]
+[<DispatchTemplate("job", "/admin/jobs/{action}/{name}")>]
+let run (name: string) = ...
+```
+
+Every template match in a test-bearing file whose `{name}` is registered on
+that channel yields a `SharedState` edge (source `named-dispatch`) from the
+symbol enclosing the match to the handler, so the walk reaches the test even
+when the registry is a composition root. Register it like any other extension:
+`refreshExtensionEdges db repoRoot [ NamedDispatchExtension() ]`.
+
 ### SqlHydra table coupling
 
 `TestPrune.SqlHydra.SqlHydraExtension` derives table-level shared-state edges

@@ -35,8 +35,10 @@
   template match in a test-bearing file whose captured name is registered on that
   channel yields a `SharedState` edge (source `named-dispatch`) from the symbol
   enclosing the match to the handler, so the walk reaches the test even when the
-  registry is a composition root. Edges depend only on the indexed store and its source
-  files — never on the change set — so two index builds of one tree agree.
+  registry is a composition root. Each `AnalyzeEdges` call returns the complete edge set
+  for the tree, so a host stores it with `Extensions.refreshExtensionEdges` like any
+  other extension: two index builds of one tree store the same edges, and a dispatch
+  literal removed from a test loses its edge on the next refresh.
 
 ## 12.0.0 - 2026-09-24
 

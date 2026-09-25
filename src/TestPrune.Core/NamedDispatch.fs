@@ -171,9 +171,9 @@ let private enclosingSymbols
                 | found -> Some found)
             |> Option.defaultValue [])
 
-/// All named-dispatch edges the store's tree implies. Reads only the store and the
-/// source files it indexes — never a change set — so two index builds of one tree give
-/// the same edges.
+/// All named-dispatch edges the store's tree implies: the extension's complete edge set,
+/// as `ITestPruneExtension.AnalyzeEdges` requires. Reads only the store and the source
+/// files it indexes, so two index builds of one tree give the same edges.
 let buildEdges (checker: FSharpChecker) (store: SymbolStore) (repoRoot: string) : Dependency list =
     let registered =
         registrations store |> List.groupBy (fun r -> r.Channel, r.Name) |> Map.ofList
@@ -255,10 +255,11 @@ let buildEdges (checker: FSharpChecker) (store: SymbolStore) (repoRoot: string) 
         |> List.distinct
         |> List.sort
 
-/// The extension a host registers. Stateless between calls: every call recomputes the
-/// edges from the store and the files it indexes, and the change set is ignored, because
-/// an edge that exists only in the flush where one side changed disappears the next time
-/// the other side is re-indexed.
+/// The extension a host registers and refreshes with `Extensions.refreshExtensionEdges`,
+/// which stores each answer in place of the previous one (owned by
+/// `Database.extensionEdgeOwner "Named Dispatch"`). Stateless between calls: every call
+/// recomputes the whole edge set from the store and the files it indexes, so a dispatch
+/// literal removed from a test drops its edge on the next refresh.
 type NamedDispatchExtension(checker: FSharpChecker) =
 
     new() = NamedDispatchExtension(FSharpChecker.Create())
@@ -266,5 +267,4 @@ type NamedDispatchExtension(checker: FSharpChecker) =
     interface ITestPruneExtension with
         member _.Name = "Named Dispatch"
 
-        member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (repoRoot: string) =
-            buildEdges checker symbolStore repoRoot
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (repoRoot: string) = buildEdges checker symbolStore repoRoot

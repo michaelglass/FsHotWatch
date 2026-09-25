@@ -82,30 +82,69 @@ module ``named dispatch edges`` =
 
     /// Write the fixture to a fresh repo root and analyze each file for real, so the
     /// attributes and symbols come from FCS exactly as an indexer would store them.
+    /// Write `source` to `relative` under `root` (replacing what was there) and analyze it.
+    let private analyze (root: string) (relative: string) (projectName: string) (source: string) =
+        File.WriteAllText(Path.Combine(root, relative), source)
+        let fileName = Path.Combine(root, relative)
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        match
+            analyzeSource checker fileName source options projectName
+            |> Async.RunSynchronously
+        with
+        | Ok result -> result
+        | Error error -> failwith $"Analysis failed for {relative}: {error}"
+
     let private analyzeFixture (purgeUrl: string) =
         let root =
             Path.Combine(Path.GetTempPath(), $"testprune-dispatch-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory root |> ignore
 
-        let analyze (relative: string) (projectName: string) (source: string) =
-            File.WriteAllText(Path.Combine(root, relative), source)
-            let fileName = Path.Combine(root, relative)
-            let options = getScriptOptions checker fileName source |> Async.RunSynchronously
-
-            match
-                analyzeSource checker fileName source options projectName
-                |> Async.RunSynchronously
-            with
-            | Ok result -> result
-            | Error error -> failwith $"Analysis failed for {relative}: {error}"
-
-        let app = analyze "App.fsx" "App" appSource
-        let tests = analyze "Tests.fsx" "Tests" (testSource purgeUrl)
+        let app = analyze root "App.fsx" "App" appSource
+        let tests = analyze root "Tests.fsx" "Tests" (testSource purgeUrl)
         root, app, tests
 
-    let private edgesFor (root: string) (store: SymbolStore) (changedFiles: string list) =
-        (NamedDispatchExtension() :> ITestPruneExtension).AnalyzeEdges store changedFiles root
+    let private extension () =
+        NamedDispatchExtension(checker) :> ITestPruneExtension
+
+    let private edgesFor (root: string) (store: SymbolStore) = extension().AnalyzeEdges store root
+
+    /// An index of `results` at `root/name`, with the extension's edges refreshed into it
+    /// the way a host stores them.
+    let private indexWithRefresh (root: string) (name: string) (results: AnalysisResult list) =
+        let db = Database.create (Path.Combine(root, name))
+        db.RebuildProjects results
+        test <@ refreshExtensionEdges db root [ extension () ] |> List.forall _.IsRefreshed @>
+        db
+
+    /// The edges stored under the extension's owner, as (from, to) pairs.
+    let private storedEdges (db: Database) =
+        use conn = db.OpenConnection()
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT f.full_name, t.full_name
+            FROM dependencies d
+            JOIN symbols f ON f.id = d.from_symbol_id
+            JOIN symbols t ON t.id = d.to_symbol_id
+            WHERE d.source_file = @owner
+            """
+
+        cmd.Parameters.AddWithValue("@owner", extensionEdgeOwner "Named Dispatch")
+        |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        [ while reader.Read() do
+              yield reader.GetString 0, reader.GetString 1 ]
+        |> Set.ofList
+
+    let private selectedByMapper (db: Database) =
+        db.QueryAffectedTests [ "App.mapRow" ]
+        |> List.map _.SymbolFullName
+        |> Set.ofList
 
     let private pairs (edges: Dependency list) =
         edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
@@ -115,7 +154,7 @@ module ``named dispatch edges`` =
         let root, app, tests = analyzeFixture literalPurgeUrl
 
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ app; tests ]
-        let edges = edgesFor root store []
+        let edges = edgesFor root store
 
         // Exactly the two registered names dispatched. `PurgeAll` is not `Purge` plus a
         // suffix, and `NotAJob` is dispatched but never registered.
@@ -137,7 +176,7 @@ module ``named dispatch edges`` =
         let root, app, tests = analyzeFixture noLiteralPurgeUrl
 
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ app; tests ]
-        let edges = edgesFor root store []
+        let edges = edgesFor root store
 
         test <@ pairs edges = set [ "Tests.runsPurgeAll", "App.runPurgeAll" ] @>
 
@@ -145,16 +184,7 @@ module ``named dispatch edges`` =
     let ``the edge carries selection past a composition-root registry`` () =
         let selectAfterEditingMapper (purgeUrl: string) =
             let root, app, tests = analyzeFixture purgeUrl
-            let dbPath = Path.Combine(root, "cache.db")
-            let db = Database.create dbPath
-            db.RebuildProjects [ app; tests ]
-            let edges = edgesFor root (toSymbolStore db) [ Path.Combine(root, "App.fsx") ]
-
-            db.RebuildProjects [ AnalysisResult.Create([], edges, []) ]
-
-            db.QueryAffectedTests [ "App.mapRow" ]
-            |> List.map _.SymbolFullName
-            |> Set.ofList
+            indexWithRefresh root "cache.db" [ app; tests ] |> selectedByMapper
 
         // `mapRow` → `runPurge` → `run`, which is marked as a composition root: without
         // the edge the walk reaches no test at all.
@@ -162,30 +192,44 @@ module ``named dispatch edges`` =
         test <@ selectAfterEditingMapper noLiteralPurgeUrl |> Set.isEmpty @>
 
     [<Fact>]
-    let ``edges are a function of the tree - not of the change set or the index build`` () =
+    let ``two index builds of one tree store the same edges`` () =
         let root, app, tests = analyzeFixture literalPurgeUrl
 
-        let fromMemory = TestPrune.InMemoryStore.fromAnalysisResults [ app; tests ]
-        let fromMemoryReversed = TestPrune.InMemoryStore.fromAnalysisResults [ tests; app ]
+        let expected =
+            set
+                [ "Tests.schedulesPurge", "App.runPurge"
+                  "Tests.runsPurgeAll", "App.runPurgeAll" ]
 
-        let fromDb (results: AnalysisResult list) (name: string) =
-            let db = Database.create (Path.Combine(root, name))
-            db.RebuildProjects results
-            toSymbolStore db
+        let first = indexWithRefresh root "first.db" [ app; tests ]
+        let second = indexWithRefresh root "second.db" [ tests; app ]
 
-        let baseline = edgesFor root fromMemory []
+        test <@ storedEdges first = expected @>
+        test <@ storedEdges second = expected @>
 
-        let runs =
-            [ edgesFor root fromMemory [ Path.Combine(root, "App.fsx") ]
-              edgesFor root fromMemory [ Path.Combine(root, "Tests.fsx") ]
-              edgesFor root fromMemoryReversed []
-              edgesFor root (fromDb [ app; tests ] "first.db") []
-              edgesFor root (fromDb [ tests; app ] "second.db") [ "unrelated.fs" ] ]
+        // A repeat refresh of an unchanged tree changes nothing.
+        refreshExtensionEdges first root [ extension () ] |> ignore
+        test <@ storedEdges first = expected @>
 
-        test <@ not baseline.IsEmpty @>
+        // The in-memory store answers the same as the indexed one.
+        test <@ pairs (edgesFor root (TestPrune.InMemoryStore.fromAnalysisResults [ tests; app ])) = expected @>
 
-        for run in runs do
-            test <@ run = baseline @>
+    [<Fact>]
+    let ``removing a dispatch literal removes its edge on the next refresh`` () =
+        let root, app, tests = analyzeFixture literalPurgeUrl
+        let db = indexWithRefresh root "cache.db" [ app; tests ]
+
+        // Positive control: before the edit, the edge is stored and selects the test.
+        test <@ storedEdges db |> Set.contains ("Tests.schedulesPurge", "App.runPurge") @>
+        test <@ selectedByMapper db = set [ "Tests.schedulesPurge" ] @>
+
+        // Edit ONLY the test file, re-index it, and refresh: the handler side never
+        // changed, so nothing but the extension's own replace can drop the edge.
+        let edited = analyze root "Tests.fsx" "Tests" (testSource noLiteralPurgeUrl)
+        db.RebuildProjects [ edited ]
+        test <@ refreshExtensionEdges db root [ extension () ] |> List.forall _.IsRefreshed @>
+
+        test <@ storedEdges db = set [ "Tests.runsPurgeAll", "App.runPurgeAll" ] @>
+        test <@ selectedByMapper db |> Set.isEmpty @>
 
     /// The consumer shape: an xUnit class whose backticked member dispatches the name
     /// from inside an interpolated triple-quoted string (browser JS), beside a member
@@ -221,7 +265,7 @@ module ``named dispatch edges`` =
             | Error error -> failwith $"Analysis failed: {error}"
 
         let store = TestPrune.InMemoryStore.fromAnalysisResults [ app; classTests ]
-        let edges = edgesFor root store []
+        let edges = edgesFor root store
 
         test <@ edges |> List.map _.ToSymbol = [ "App.runPurge" ] @>
         test <@ edges[0].FromSymbol.Contains "schedules purge from the browser" @>
@@ -307,7 +351,7 @@ module ``unattributable and malformed input`` =
         [ "Tests.first", "App.runPurge"; "Tests.second", "App.runPurge" ]
 
     let private edges (root, store) =
-        (NamedDispatchExtension() :> ITestPruneExtension).AnalyzeEdges store [] root
+        (NamedDispatchExtension() :> ITestPruneExtension).AnalyzeEdges store root
         |> List.map (fun e -> e.FromSymbol, e.ToSymbol)
 
     [<Fact>]
