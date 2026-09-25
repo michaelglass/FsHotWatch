@@ -103,6 +103,62 @@ let ``heartbeatLine names the OLDEST op and the count when several are in flight
     test <@ heartbeatLine (t0.AddSeconds 9.0) state = "heartbeat: 3 in-flight, oldest WaitForComplete running 9s" @>
 
 [<Fact(Timeout = 5000)>]
+let ``gcPauseSuffix renders the pause share of the window, the pause and the window`` () =
+    test
+        <@
+            gcPauseSuffix (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 30.0) = "; gc-pause 1.00% (300ms of 30s)"
+        @>
+
+    test <@ gcPauseSuffix TimeSpan.Zero (TimeSpan.FromSeconds 30.0) = "; gc-pause 0.00% (0ms of 30s)" @>
+
+    test
+        <@ gcPauseSuffix (TimeSpan.FromMilliseconds 1.5) (TimeSpan.FromSeconds 60.0) = "; gc-pause 0.00% (1ms of 60s)" @>
+
+    test
+        <@
+            gcPauseSuffix (TimeSpan.FromSeconds 12.345) (TimeSpan.FromSeconds 30.0) = "; gc-pause 41.15% (12345ms of 30s)"
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``gcPauseSuffix is empty for a window with no length`` () =
+    test <@ gcPauseSuffix (TimeSpan.FromMilliseconds 5.0) TimeSpan.Zero = "" @>
+
+[<Fact(Timeout = 10000)>]
+let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbeat`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+    let clock = ref t0
+    let pause = ref (TimeSpan.FromSeconds 5.0)
+
+    use _w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromSeconds(30.0),
+            now = (fun () -> clock.Value),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            gcPauseTotal = (fun () -> pause.Value)
+        )
+
+    let heartbeats () =
+        logged |> Seq.filter (fun line -> line.StartsWith "heartbeat:") |> List.ofSeq
+
+    // The pause total before the watchdog started is not attributed to any window.
+    pause.Value <- TimeSpan.FromSeconds 5.3
+    clock.Value <- t0.AddSeconds 30.0
+    waitUntil (fun () -> not (List.isEmpty (heartbeats ()))) 5000
+    test <@ heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)" ] @>
+
+    pause.Value <- TimeSpan.FromSeconds 5.9
+    clock.Value <- t0.AddSeconds 90.0
+    waitUntil (fun () -> heartbeats().Length = 2) 5000
+
+    test
+        <@
+            heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)"
+                              "heartbeat: idle; gc-pause 1.00% (600ms of 60s)" ]
+        @>
+
+[<Fact(Timeout = 5000)>]
 let ``oldestOverrun picks the longest-running WEDGED op, ignoring young ones`` () =
     let ops =
         [ { Name = "young"

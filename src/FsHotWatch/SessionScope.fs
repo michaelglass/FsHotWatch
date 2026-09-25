@@ -81,11 +81,14 @@ let msbuildRelevant: EnvironmentKey list =
 /// (Ionide.ProjInfo `Init.init`) sets the MSBuild paths once it has resolved the SDK.
 /// They describe the host process, not a client's shell, so they are never compared;
 /// the SDK they point into is compared on its own (the host's toolchain check).
+/// `DOTNET_INTERNAL_ThreadSuspendInjection` is the GC setting the CLI launches a host
+/// with on macOS: it changes how the host's runtime suspends threads, not evaluation.
 let processOwned: string list =
     [ "DOTNET_HOST_PATH"
       "DOTNET_ROOT_ARM64"
       "DOTNET_ROOT_X64"
       "DOTNET_ROOT_X86"
+      "DOTNET_INTERNAL_ThreadSuspendInjection"
       "MSBUILD_EXE_PATH"
       "MSBuildExtensionsPath"
       "MSBuildSDKsPath" ]

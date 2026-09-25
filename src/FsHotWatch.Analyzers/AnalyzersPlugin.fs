@@ -596,7 +596,7 @@ let internal createWithSeams
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
         TimeSpan.FromSeconds(float secs)
 
-    { Name = PluginName.create "analyzers"
+    { Name = PluginName.create FsHotWatch.PluginActivity.AnalyzersPluginName
       Init =
         { DiagnosticsByFile = Map.empty
           CrashesByFile = Map.empty

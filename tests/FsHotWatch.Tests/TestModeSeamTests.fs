@@ -75,3 +75,41 @@ let ``the scan recognises a branch on the mode`` (line: string) =
 [<InlineData("        let url = \"https://example.invalid\" // PassThrough")>]
 let ``the scan leaves questions to the seam alone`` (line: string) =
     test <@ not (modeBranch.IsMatch(codeOf line)) @>
+
+// --- recordsTraces: the one place that decides when a run records traces ---
+
+[<Theory>]
+[<InlineData("off", false, false)>]
+[<InlineData("full-runs", false, true)>]
+[<InlineData("every-run", true, true)>]
+let ``recordsTraces follows the policy per mode`` (policy: string, underCheck: bool, underConfirm: bool) =
+    let p = (FsHotWatch.TestPrune.TraceSettings.parseRecord policy).Value
+    test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p FsHotWatch.TestPrune.ImpactSelection = underCheck @>
+    test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p FsHotWatch.TestPrune.PassThrough = underConfirm @>
+
+[<Theory>]
+[<InlineData("off", "full", false)>]
+[<InlineData("off", "", false)>]
+[<InlineData("full-runs", "full", true)>]
+[<InlineData("full-runs", "", false)>]
+[<InlineData("full-runs", "affected", false)>]
+[<InlineData("every-run", "full", true)>]
+[<InlineData("every-run", "", true)>]
+let ``recordsTraces follows the policy per trigger scope`` (policy: string, scope: string, records: bool) =
+    // `confirm` sets scope "full"; `check` (and any other scope) runs impact selection.
+    let p = (FsHotWatch.TestPrune.TraceSettings.parseRecord policy).Value
+    let mode = FsHotWatch.TestPrune.TestMode.ofScope scope
+    test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p mode = records @>
+
+[<Fact>]
+let ``a daemon session starts recording only under every-run`` () =
+    let at policy =
+        FsHotWatch.TestPrune.TestMode.recordsTraces policy FsHotWatch.TestPrune.TestMode.initial
+
+    test
+        <@
+            [ FsHotWatch.TestPrune.RecordOff
+              FsHotWatch.TestPrune.RecordFullRuns
+              FsHotWatch.TestPrune.RecordEveryRun ]
+            |> List.map at = [ false; false; true ]
+        @>

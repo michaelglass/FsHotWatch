@@ -100,6 +100,17 @@ let heartbeatLine (now: DateTime) (state: WatchdogState) : string =
         | 1 -> $"heartbeat: in-flight %s{running}"
         | n -> $"heartbeat: %d{n} in-flight, oldest %s{running}"
 
+/// The heartbeat's GC cost: the share of the heartbeat `window` the runtime spent with
+/// threads paused for garbage collection (`GC.GetTotalPauseDuration` over the window),
+/// as a suffix for `heartbeatLine`. Empty for a window with no length.
+let gcPauseSuffix (paused: TimeSpan) (window: TimeSpan) : string =
+    if window <= TimeSpan.Zero then
+        ""
+    else
+        let percent = 100.0 * paused.TotalMilliseconds / window.TotalMilliseconds
+
+        $"; gc-pause %.2f{percent}%% (%d{int64 paused.TotalMilliseconds}ms of %d{int64 window.TotalSeconds}s)"
+
 /// Live watchdog over the daemon's in-flight RPC operations.
 ///
 /// `Begin` mints an `OpToken` and records the op; `End token` retires exactly that
@@ -109,10 +120,21 @@ let heartbeatLine (now: DateTime) (state: WatchdogState) : string =
 /// by the first), plus a heartbeat at a coarser cadence. Thread-safe: mutations and
 /// timer reads share one lock.
 ///
-/// Injected deps keep it testable: `now` (clock) and `log` (sink). Production
-/// passes `DateTime.UtcNow` and `Logging.info "watchdog"`.
+/// Each heartbeat carries `gcPauseSuffix` for the time since the previous one.
+///
+/// Injected deps keep it testable: `now` (clock), `log` (sink) and `gcPauseTotal`
+/// (the process's cumulative GC pause). Production passes `DateTime.UtcNow`,
+/// `Logging.info "watchdog"` and the default, `GC.GetTotalPauseDuration`.
 type Watchdog
-    (threshold: TimeSpan, heartbeatEvery: TimeSpan, now: unit -> DateTime, log: string -> unit, ?tick: TimeSpan) =
+    (
+        threshold: TimeSpan,
+        heartbeatEvery: TimeSpan,
+        now: unit -> DateTime,
+        log: string -> unit,
+        ?tick: TimeSpan,
+        ?gcPauseTotal: unit -> TimeSpan
+    ) =
+    let gcPauseTotal = defaultArg gcPauseTotal GC.GetTotalPauseDuration
     let gate = obj ()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
@@ -120,6 +142,7 @@ type Watchdog
     let overrunLogged = HashSet<int64>()
     let mutable nextId = 0L
     let mutable lastHeartbeat = now ()
+    let mutable lastGcPause = gcPauseTotal ()
 
     let snapshotOps () = inFlight.Values |> List.ofSeq
 
@@ -141,13 +164,17 @@ type Watchdog
 
                 // Heartbeat at its own cadence regardless of wedge state.
                 if n - lastHeartbeat >= heartbeatEvery then
+                    let gcPause = gcPauseTotal ()
+                    let pauseSuffix = gcPauseSuffix (gcPause - lastGcPause) (n - lastHeartbeat)
                     lastHeartbeat <- n
+                    lastGcPause <- gcPause
 
                     logs.Add(
                         heartbeatLine
                             n
                             { InFlight = snapshotOps ()
                               Threshold = threshold }
+                        + pauseSuffix
                     )
 
                 logs |> List.ofSeq)

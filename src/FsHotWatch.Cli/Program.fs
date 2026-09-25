@@ -2409,6 +2409,13 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         eprintfn $"fshw host: %s{FsHotWatch.RepositoryIdentity.IdentityError.describe e}"
         2
     | Ok launchRoot ->
+        // The host's stderr is its log; see `ThreadSuspendInjection`.
+        eprintfn
+            "%s"
+            (ThreadSuspendInjection.startupLine
+                (ThreadSuspendInjection.osDescription ())
+                Environment.GetEnvironmentVariable)
+
         let pool = FsHotWatch.SharedWatchPool.WatchPool()
 
         // Sessions of one checker configuration check through one checker.
@@ -2842,6 +2849,12 @@ let executeCommandWith
                             $"Starting FsHotWatch daemon for %s{repoRoot} — claimed the singleton lock, %s{argvLine}"
 
                         eprintfn $"Pipe: %s{pipeName}"
+
+                        eprintfn
+                            "%s"
+                            (ThreadSuspendInjection.startupLine
+                                (ThreadSuspendInjection.osDescription ())
+                                Environment.GetEnvironmentVariable)
 
                         // Write our own PID so killStaleDaemon can find the actual daemon process,
                         // not the nohup wrapper that launched us.

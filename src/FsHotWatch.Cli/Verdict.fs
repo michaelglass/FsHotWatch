@@ -604,6 +604,12 @@ and RedCauseKind =
     /// `confirm` with four plugins `ok` and 9,064 tests passed, against code the session
     /// had not touched and MSBuild compiled cleanly. `fshw scan` (the documented remedy)
     /// did not clear them; `fshw stop` did, completely.
+    ///
+    /// Also every failing entry under `fcs-internal`: the errors of a check that
+    /// reported a type incompatible with ITSELF, which the daemon moves there because
+    /// such a check's answer for the file is not a reading of the code
+    /// (`FcsDiagnosticFilter.suspectCheckEntries`). They keep their severity so that,
+    /// alone, they yield no verdict rather than a green.
     | CheckerFault
 
 module RedCauseKind =
@@ -645,12 +651,30 @@ module RedCause =
     /// `BuildPlugin` passes the literal `<build>` and `CoveragePlugin` passes a Cobertura
     /// filename. A relative or synthetic key that does not exist on disk proves nothing,
     /// and treating it as proof would demote real reds.
-    let classifyWith (exists: string -> bool) (source: string) (file: string) (message: string) : RedCauseKind =
+    ///
+    /// Every failing `fcs-internal` entry is a checker fault by its source alone: the
+    /// daemon writes nothing else there. So is every `analyzers` entry against a file in
+    /// `suspect` (`suspectFiles`): the analyzers ran on the same check results, so a
+    /// crash or a finding there is no more a claim about the code than the check's own
+    /// errors.
+    let classifyWithSuspect
+        (exists: string -> bool)
+        (suspect: Set<string>)
+        (source: string)
+        (file: string)
+        (message: string)
+        : RedCauseKind =
         let isCheckerFault =
-            source = FsHotWatch.PluginActivity.FcsPluginName
-            && (message: string).TrimStart().StartsWith(checkerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
+            source = FsHotWatch.PluginActivity.FcsInternalPluginName
+            || source = FsHotWatch.PluginActivity.FcsPluginName
+               && (message: string)
+                   .TrimStart()
+                   .StartsWith(checkerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
 
-        if isCheckerFault then
+        let computedFromSuspectCheck =
+            source = FsHotWatch.PluginActivity.AnalyzersPluginName && suspect.Contains file
+
+        if isCheckerFault || computedFromSuspectCheck then
             CheckerFault
         elif
             not (System.String.IsNullOrWhiteSpace file)
@@ -661,9 +685,30 @@ module RedCause =
         else
             AboutThisTree
 
-    /// `classifyWith` against the real filesystem.
-    let classify (source: string) (file: string) (message: string) : RedCauseKind =
-        classifyWith System.IO.File.Exists source file message
+    /// `classifyWithSuspect` with no suspect files.
+    let classifyWith (exists: string -> bool) (source: string) (file: string) (message: string) : RedCauseKind =
+        classifyWithSuspect exists Set.empty source file message
+
+    /// `classifyWithSuspect` against the real filesystem.
+    let classify (suspect: Set<string>) (source: string) (file: string) (message: string) : RedCauseKind =
+        classifyWithSuspect System.IO.File.Exists suspect source file message
+
+    /// The files whose CURRENT FCS check is suspect: any file holding an `fcs-internal`
+    /// entry, at any severity. The daemon writes that key for a file on every check and
+    /// fills it only when the check reported a type incompatible with ITSELF, so it is
+    /// present exactly while the file's latest check is one whose answer is not a
+    /// reading of the code. Joined by FILE, not by check version (the ledger's wire form
+    /// carries none): an analyzer result from an earlier, clean check of a file whose
+    /// latest check is suspect is moved too. That can only turn a red into no verdict,
+    /// never into a green, and the next clean check clears the key.
+    let suspectFiles (entries: (string * string) seq) : Set<string> =
+        entries
+        |> Seq.choose (fun (file, source) ->
+            if source = FsHotWatch.PluginActivity.FcsInternalPluginName then
+                Some file
+            else
+                None)
+        |> Set.ofSeq
 
     /// The causes that are NOT claims about the tree on disk. ONE definition of the
     /// selection, asked by every surface that needs it: both transports count these to
@@ -812,7 +857,8 @@ module CheckProse =
 
     let staleDaemonState (unattributable: int) =
         $"NO VERDICT — all %d{unattributable} failing diagnostic(s) are ones this run cannot attribute to the tree on \
-           disk: an FCS `internal error:` (the checker crashed, so it found nothing) or a diagnostic against a file \
+           disk: an FCS fault (an `internal error:`, or an error from a check that reported a type incompatible \
+           with ITSELF — either way the checker found nothing) or a diagnostic against a file \
            that is no longer there.\nNothing is reported broken — do NOT go looking for a defect — and nothing is \
            reported sound either. This is stale daemon state: run `fshw stop`, then re-run. `fshw scan` does NOT \
            clear it. See `reddenedBy[].kind` in the verdict for which cause was which."

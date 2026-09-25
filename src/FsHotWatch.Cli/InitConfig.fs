@@ -78,7 +78,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       Coverage = true
                       CoverageArgsTemplate = None
                       TimeoutSec = None
-                      ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect }
+                      ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                      Traces = true }
             | SourceProject _ -> None)
 
     { Build =
@@ -107,7 +108,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                    Excluded = []
                    Solution = None
                    CoverageDir = "coverage"
-                   DependsOn = [] |}
+                   DependsOn = []
+                   Traces = None |}
       FileCommands = []
       Preprocessors = []
       Coverage = None

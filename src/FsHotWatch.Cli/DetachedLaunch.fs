@@ -159,12 +159,17 @@ let internal launchFailure (bound: TimeSpan) (command: string) (observation: Hel
 
 type private AssemblyAnchor = class end
 
-/// Run `command` through the helper from `workingDirectory` and wait at most `bound`
-/// for it. Raises when the helper cannot be started, fails, or has to be killed.
-let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command: string) : unit =
-    let host =
-        helperHost Environment.ProcessPath (RuntimeEnvironment.GetRuntimeDirectory()) File.Exists
-
+/// The start info for the helper that runs `command` with `host`. It inherits this
+/// process's environment, which the shell it execs and the daemon inherit in turn, plus
+/// the thread-suspend setting `ThreadSuspendInjection.launchOverride` decides from
+/// `isMacOS` and `getEnv`.
+let internal helperStartInfo
+    (isMacOS: bool)
+    (getEnv: string -> string)
+    (host: string)
+    (workingDirectory: string)
+    (command: string)
+    : ProcessStartInfo =
     let psi = ProcessStartInfo(host)
     psi.ArgumentList.Add(typeof<AssemblyAnchor>.Assembly.Location)
     psi.ArgumentList.Add(HelperFlag)
@@ -172,6 +177,20 @@ let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command:
     psi.WorkingDirectory <- workingDirectory
     psi.UseShellExecute <- false
     psi.RedirectStandardInput <- true
+
+    ThreadSuspendInjection.launchOverride isMacOS getEnv
+    |> Option.iter (fun (name, value) -> psi.Environment[name] <- value)
+
+    psi
+
+/// Run `command` through the helper from `workingDirectory` and wait at most `bound`
+/// for it. Raises when the helper cannot be started, fails, or has to be killed.
+let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command: string) : unit =
+    let host =
+        helperHost Environment.ProcessPath (RuntimeEnvironment.GetRuntimeDirectory()) File.Exists
+
+    let psi =
+        helperStartInfo (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable host workingDirectory command
 
     // FSHW-SPAWN-001 ok: the helper is started here rather than through ProcessHelper
     // because its environment passes, unmodified, to the shell it execs and so to the

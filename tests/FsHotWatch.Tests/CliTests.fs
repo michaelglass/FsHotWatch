@@ -155,7 +155,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Coverage = cov
               CoverageArgsTemplate = None
               TimeoutSec = None
-              ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect }
+              ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+              Traces = true }
 
         let covDir = "coverage"
 
@@ -184,7 +185,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                            Excluded = []
                            Solution = None
                            CoverageDir = covDir
-                           DependsOn = [] |} }
+                           DependsOn = []
+                           Traces = None |} }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)

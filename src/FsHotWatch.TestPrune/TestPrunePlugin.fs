@@ -1595,6 +1595,13 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Extensions whose last refresh THREW, by name, with the reason. Their stored
+        /// edges describe an older tree, so while this is non-empty the run takes the same
+        /// coarse fallback as `UnanalyzableFiles`, and the ledger carries an error for each.
+        /// An extension leaves the map when a refresh succeeds; a failed one is retried on
+        /// every flush. NOT persisted: a new process refreshes every extension on its
+        /// first flush.
+        FailedExtensions: Map<string, string>
         /// The reds no COVERING run has passed since. Rewritten on
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
         /// it passes. The shared error ledger is a projection of this list.
@@ -1658,6 +1665,9 @@ type TestRunInputs =
         /// Files whose symbol analysis failed: while non-empty, the run widens to
         /// every test project.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Extensions whose last refresh failed: while non-empty, the run widens to every
+        /// test project.
+        FailedExtensions: Map<string, string>
         /// Prior reds captured at launch. They are quarantined into this run's
         /// selection even when the current graph reaches different tests.
         OutstandingFailures: OutstandingFailure list
@@ -1681,6 +1691,7 @@ module TestRunInputs =
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles
+          FailedExtensions = state.FailedExtensions
           OutstandingFailures = state.OutstandingFailures
           Debt = state.Debt
           Mode = state.Mode
@@ -2926,6 +2937,21 @@ let internal unanalyzableFileDiagnostic (relPath: string) (reason: string) : Err
            this cycle (safe over-selection) until the file analyses cleanly. Fix the reported parse/check error — a \
            misplaced `///` doc comment (FS3520) is the usual cause."
 
+/// The ledger key an extension's refresh failure is reported under. Not a file: the
+/// `<...>` form other plugins use for a non-file source, so it can never collide with one.
+let internal extensionLedgerKey (extensionName: string) : string = $"<extension:%s{extensionName}>"
+
+/// The ledger diagnostic for an extension whose `AnalyzeEdges` threw. An ERROR, not a log
+/// line: TestPrune keeps the extension's previously stored edges, which describe an older
+/// tree, so selection over them can silently miss a test the current tree couples in.
+let internal extensionFailedDiagnostic (extensionName: string) (reason: string) : ErrorLedger.ErrorEntry =
+    ErrorLedger.ErrorEntry.errorWithDetail
+        $"test-impact extension '%s{extensionName}' failed: %s{reason}"
+        "The extension could not compute its dependency edges for the current tree, so the edges it stored on its \
+         last successful refresh describe an older one. Until it answers, every test project runs in full (safe \
+         over-selection) rather than trusting a selection made over those edges. It is retried on the next flush; \
+         this entry clears once it answers."
+
 /// Build the filter arg string for a config given affected classes. Each class name is
 /// quoted with `ProcessHelper.quoteArg` before the join, so a name containing spaces
 /// (a backticked sentence-style test module) reaches the runner as ONE argument instead
@@ -4152,6 +4178,7 @@ let internal failuresOf
 let private reportOutstanding
     (ctx: PluginCtx<TestPruneMsg>)
     (unanalyzable: Map<string, UnanalyzableFile>)
+    (failedExtensions: Map<string, string>)
     (outstanding: OutstandingFailure list)
     =
     ctx.ClearAllErrors()
@@ -4163,7 +4190,12 @@ let private reportOutstanding
         |> Map.toList
         |> List.map (fun (_, u) -> u.File, unanalyzableFileDiagnostic u.RelPath u.Reason)
 
-    failureEntries @ unanalyzableEntries
+    let extensionEntries =
+        failedExtensions
+        |> Map.toList
+        |> List.map (fun (name, reason) -> extensionLedgerKey name, extensionFailedDiagnostic name reason)
+
+    failureEntries @ unanalyzableEntries @ extensionEntries
     |> List.groupBy fst
     |> List.iter (fun (file, entries) -> ctx.ReportErrors file (entries |> List.map snd))
 
@@ -5356,6 +5388,15 @@ let internal createWithQueries
 
     /// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
     /// dependency fanout this launch consumes; an unavailable launch hands it back.
+    ///
+    /// Result-first: the completion fold sheds only the symbols the run launched with, so
+    /// a file check or build dispatched during the run stays owed whether it folds before
+    /// the result or after it. Folding after can only cost a run: a BootScan cohort that
+    /// would have joined a full run in flight (`joinsFullRun`) finds none and queues its
+    /// own. It never lets less evidence discharge anything. The run emits test lifecycle
+    /// events this plugin does not subscribe to. Without this, a result stuck behind a
+    /// storm of checks holds the "tests" key, and its green, for as long as those folds
+    /// take.
     let runTestHostExclusive
         (ctx: PluginCtx<TestPruneMsg>)
         (owed: Set<string>)
@@ -5364,8 +5405,8 @@ let internal createWithQueries
         =
         let workFor =
             function
-            | Ready -> work
-            | Invalid reason -> async { return ArtifactsUnavailable(reason, owed, reply) }
+            | Ready -> PluginWork.resultFirst work
+            | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
 
         // What this launch releases into the shared "build-artifacts" lease, which the
         // next claimant is handed. Only a verdict ABOUT the artifacts may change it.
@@ -5737,10 +5778,18 @@ let internal createWithQueries
         |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
         |> Set.unionMany
 
+    // True until this process's first extension refresh: the stored edges were written by
+    // an earlier process, over a tree that may differ. After that, a refresh is owed when a
+    // flush indexes something or an extension failed (`FailedExtensions`).
+    let extensionsUnrefreshed = ref true
+
     // Flush pending analysis to DB and merge the runtime obligations it names.
-    // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
-    // to the DB before QueryAffectedTests so they participate in impact traversal.
-    let flushPending (state: TestPruneState) =
+    // Extensions (if any) then replace their COMPLETE edge sets via
+    // `refreshExtensionEdges` — after the AST results are written, so they resolve
+    // against current symbols, and before QueryAffectedTests, so their edges
+    // participate in impact traversal. They re-run only when this flush indexed
+    // something or a refresh is owed: their answer is a function of the tree.
+    let flushPending (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
         // Capture OLD literal coupling before `RebuildProjects`
         // replaces a changed producer's outgoing graph. The unchanged test still
         // points at that old literal, but after the rebuild the producer does not;
@@ -5778,32 +5827,43 @@ let internal createWithQueries
         // crash-safety, batch-size fewer disk writes. See `persistQueueAdditions`.
         persistQueueAdditions state.Debt
 
+        let indexedSomething = not state.PendingAnalysis.IsEmpty
         let flushedState = flushPendingAnalysis db state
 
-        match extensions with
-        | Some exts when not exts.IsEmpty ->
-            let store = TestPrune.Ports.toSymbolStore db
+        let flushedState =
+            match extensions with
+            | Some exts when
+                not exts.IsEmpty
+                && (indexedSomething
+                    || extensionsUnrefreshed.Value
+                    || not flushedState.FailedExtensions.IsEmpty)
+                ->
+                extensionsUnrefreshed.Value <- false
 
-            let extensionDeps =
-                exts
-                |> List.collect (fun ext ->
-                    try
-                        ext.AnalyzeEdges store flushedState.ChangedFiles repoRoot
-                    with ex ->
-                        Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
-                        [])
+                let failedExtensions =
+                    refreshExtensionEdges db repoRoot exts
+                    |> List.fold
+                        (fun failed outcome ->
+                            match outcome with
+                            | ExtensionRefresh.Refreshed(name, edgeCount) ->
+                                ctx.ClearErrors(extensionLedgerKey name)
+                                Logging.debug "test-prune" $"Extension '%s{name}' stored %d{edgeCount} edge(s)"
+                                Map.remove name failed
+                            | ExtensionRefresh.Failed(name, ex) ->
+                                Logging.error
+                                    "test-prune"
+                                    $"Extension '%s{name}' failed: %s{ex.ToString()}; its previously stored edges are kept and every test project runs in full until it answers"
 
-            if not extensionDeps.IsEmpty then
-                let edgeResult =
-                    { Symbols = []
-                      Dependencies = extensionDeps
-                      TestMethods = []
-                      Attributes = []
-                      ParentLinks = []
-                      Diagnostics = AnalysisDiagnostics.Zero }
+                                ctx.ReportErrors
+                                    (extensionLedgerKey name)
+                                    [ extensionFailedDiagnostic name ex.Message ]
 
-                db.RebuildProjects([ edgeResult ])
-        | _ -> ()
+                                Map.add name ex.Message failed)
+                        flushedState.FailedExtensions
+
+                { flushedState with
+                    FailedExtensions = failedExtensions }
+            | _ -> flushedState
 
         let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
 
@@ -6145,8 +6205,8 @@ let internal createWithQueries
     /// Flush, then select, unless the mode skips `FlushSelection`: pass-through records
     /// the debt without selecting or classifying it, and only a full run's green
     /// discharges it.
-    let flushAndQueryAffected (state: TestPruneState) =
-        let flushedState, runtimeObligations = flushPending state
+    let flushAndQueryAffected (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+        let flushedState, runtimeObligations = flushPending ctx state
 
         if TestMode.skips FlushSelection flushedState.Mode then
             { flushedState with
@@ -6164,7 +6224,7 @@ let internal createWithQueries
     /// the one the stall detector failed.
     let flushAndQueryAffectedBounded (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
         use _declaration = ctx.DeclareBoundedWork "impact selection" ImpactSelectionDeadline
-        flushAndQueryAffected state
+        flushAndQueryAffected ctx state
 
     // Per-file FCS freshness sidecar, loaded once at plugin construction from
     // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
@@ -6223,6 +6283,7 @@ let internal createWithQueries
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
+          FailedExtensions = Map.empty
           // The previous session's reds, quarantined into the first run.
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
@@ -6299,13 +6360,22 @@ let internal createWithQueries
             // diagnostics.
             let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
 
+            // A failed extension is a hole in the graph exactly as an unanalysable file
+            // is: its stored edges describe an older tree. Same coarse fallback.
+            let coarseGaps =
+                inputs.FailedExtensions
+                |> Map.keys
+                |> Seq.map extensionLedgerKey
+                |> Set.ofSeq
+                |> Set.union unanalyzablePaths
+
             let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
 
             let runtimeForceProjects =
                 launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
 
             let forceRunProjects =
-                let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
+                let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
                 let widened = Set.union widened runtimeForceProjects
 
                 if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
@@ -6329,6 +6399,13 @@ let internal createWithQueries
                 Logging.warn
                     "test-prune"
                     "Scope: FULL SUITE (unreadable pending-verification ledger) — the record of what still needs testing could not be read, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without the ledger. Impact filtering resumes once a full suite passes."
+
+            if not (Map.isEmpty inputs.FailedExtensions) then
+                let names = inputs.FailedExtensions |> Map.keys |> String.concat ", "
+
+                Logging.warn
+                    "test-prune"
+                    $"%d{inputs.FailedExtensions.Count} test-impact extension(s) failed their last refresh (%s{names}) — their edges describe an older tree, so this run falls back to EVERY test project in full rather than trusting a selection made over them"
 
             if not (Set.isEmpty unanalyzablePaths) then
                 let names = unanalyzablePaths |> Set.toList |> String.concat ", "
@@ -6465,7 +6542,7 @@ let internal createWithQueries
                         wouldHaveRunSelection
                             configs
                             quarantinedAffectedByProject
-                            (coarseFallbackProjects configs unanalyzablePaths fanoutProjects)
+                            (coarseFallbackProjects configs coarseGaps fanoutProjects)
                             runtimeForceProjects
                             ledgerUnreadable
                         |> Some
@@ -8197,28 +8274,41 @@ let internal createWithQueries
                             { state with
                                 PriorProjectFingerprints = currentFingerprints }
 
-                        if ctx.IsRunning "tests" && joinsFullRun state false then
+                        // Asked BEFORE selection: a held key refuses the claim, and
+                        // selection is the expensive step (a flush and an impact query
+                        // over the whole index), so selecting only to be refused is
+                        // wasted work. A fold of a finished run holds the key as surely
+                        // as a live run does. The claim below still handles `SlotBusy`
+                        // for a key taken after this read.
+                        let heldBy =
+                            match ctx.SlotHolder "tests" with
+                            | SlotHolder.Free -> None
+                            | SlotHolder.LiveRun -> Some "tests already running"
+                            | SlotHolder.Fold -> Some "tests key held by an uncommitted fold"
+
+                        match heldBy with
+                        | Some reason when joinsFullRun state false ->
                             // A pass-through full run takes what is owed: no run follows
                             // it. The fanout is kept for whatever launches next.
-                            ctx.Log "  ↳ attached to the full run (tests already running)"
+                            ctx.Log $"  ↳ attached to the full run (%s{reason})"
 
                             Logging.info
                                 "test-prune"
-                                "BuildSucceeded received during a full-suite run — attaching debt to that run"
+                                $"BuildSucceeded received during a full-suite run (%s{reason}) — attaching debt to that run"
 
                             return
                                 { attachToFullRun state with
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                        elif ctx.IsRunning "tests" then
+                        | Some reason ->
                             // The leading two spaces nest this under the in-flight test
                             // run in the activity-fold `recent:` view (the renderer
                             // already indents every tail entry by 8), so it does not read
                             // as a sibling of the test-result lines.
-                            ctx.Log "  ↳ queued re-run (tests already running)"
+                            ctx.Log $"  ↳ queued re-run (%s{reason})"
 
                             Logging.info
                                 "test-prune"
-                                "BuildSucceeded received but tests already running — will re-run after"
+                                $"BuildSucceeded received but %s{reason} — will re-run after, without selecting now"
 
                             // Stash the fanout so the rerun runs it (don't lose a
                             // mid-run dependency change).
@@ -8227,7 +8317,7 @@ let internal createWithQueries
                             return
                                 { state with
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                        else
+                        | None ->
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
 
                             // Flush/query before announcing Running so the reported status never
@@ -8444,7 +8534,7 @@ let internal createWithQueries
                     // The ONLY path to the ledger: clear the slate, re-report the whole
                     // outstanding set. There is no wholesale clear a filtered run can
                     // reach for.
-                    reportOutstanding ctx unanalyzable outstandingFailures
+                    reportOutstanding ctx unanalyzable state.FailedExtensions outstandingFailures
 
                     // `LastCoverage` is the moment the process acquires test evidence — a
                     // run completed and we know what it covered. Until a state carrying it

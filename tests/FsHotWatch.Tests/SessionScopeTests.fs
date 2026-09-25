@@ -225,6 +225,16 @@ let ``variables a .NET process writes for itself never count as a mismatch`` () 
     test <@ List.isEmpty (SessionEnvironment.msbuildMismatches client host) @>
 
 [<Fact(Timeout = 15000)>]
+let ``the thread-suspend setting a launched host runs with is not a mismatch`` () =
+    // On macOS the CLI launches a repository host with thread-suspend injection off. A
+    // GC setting of the host process: it changes no evaluation, and a shell that does
+    // not set it must still attach.
+    let host = envOf "/r" [ "DOTNET_INTERNAL_ThreadSuspendInjection", "0" ]
+    let client = envOf "/b" []
+    test <@ List.isEmpty (SessionEnvironment.msbuildMismatches host client) @>
+    test <@ List.isEmpty (SessionEnvironment.msbuildMismatches client host) @>
+
+[<Fact(Timeout = 15000)>]
 let ``an irrelevant difference is not a mismatch`` () =
     let host = envOf "/r" [ "PATH", "/usr/bin"; "TERM", "xterm" ]
     let client = envOf "/b" [ "PATH", "/opt/bin"; "EDITOR", "vi" ]

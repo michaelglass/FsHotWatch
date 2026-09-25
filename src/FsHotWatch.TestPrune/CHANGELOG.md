@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- fix: a finished tests run's result no longer waits behind the file checks queued
+  before it. Its runs are declared `PluginWork.resultFirst`, so the result folds once
+  the fold in flight commits. Before this, the result held the "tests" key and its
+  green through every queued `FileChecked`/`BatchChecked` fold, and a restart in the
+  meantime discarded it.
+
+- fix: a `BuildSucceeded` arriving while a finished run's result fold holds the "tests"
+  key queues its re-run without selecting. It read the key as free, ran the whole
+  flush and impact query, and only then found the claim refused. The activity line
+  names the holder: `queued re-run (tests key held by an uncommitted fold)`.
+
+- **BREAKING:** TestPrune.Core 13.0.0. `ITestPruneExtension.AnalyzeEdges` takes no
+  `changedFiles` and returns the extension's complete edge set; the plugin stores it with
+  `Extensions.refreshExtensionEdges` (owner-scoped replacement) instead of
+  `RebuildProjects`. Extensions re-run when a flush indexes something, on a process's
+  first flush, and after a failure.
+
+- fix: an extension that throws is logged and reported as an error under
+  `<extension:NAME>` (`extensionLedgerKey`) until it answers again; its previous edges
+  are kept, and runs take the unanalysable-file coarse fallback (every test project in
+  full) meanwhile (`TestPruneState.FailedExtensions`). It used to be logged and treated
+  as having no edges.
+
+- TestPrune schema 14 → 15: an existing `test-impact.db` is recreated on first open.
+
 ## 0.13.0-alpha.46 - 2026-09-25
 
 - **BREAKING:** `create`'s `beforeRun` hook receives a `HookStep.Tracker` after the run

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0,
+  TestPrune.SqlHydra 0.2.0. Existing test-impact databases are recreated on first open
+  (schema 15).
+
+- feat: `{ "type": "named-dispatch" }` in `tests.extensions` registers
+  `TestPrune.NamedDispatch.NamedDispatchExtension()`, linking tests to handlers they
+  reach by a string name (`[<DispatchedAs>]` / `[<DispatchTemplate>]`, matched by
+  attribute name). It takes no other fields.
+
+- fix: a failing `fcs-internal` entry is a `checker-fault` red cause. Those are the
+  errors of a check that also reported a type incompatible with itself; a run whose
+  only failures are checker faults has no verdict (exit 3), never a green, and a
+  genuine error anywhere else still reddens it.
+- fix: an analyzer crash or finding on a file whose latest check reported a type
+  incompatible with itself is a `checker-fault` red cause too: the analyzers ran on the
+  same check results. An analyzer crash on a file whose check was clean still reddens.
+
+- fix: on macOS, a daemon or repository host the CLI launches runs with
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0`. Some macOS releases intermittently deliver
+  CoreCLR's GC thread-suspend activation signal with a NULL handler, killing the daemon
+  with SIGSEGV at pc=0; with injection off the GC reaches safe points through polls and
+  return-address hijacks instead. A value already in the environment (`DOTNET_` or
+  `COMPlus_` prefix) is left alone, and `FSHW_THREAD_SUSPEND_INJECTION=1` keeps the
+  runtime default. Daemon and host logs name the active mode and the OS version at
+  startup (`thread-suspend: …; os: macOS 27.0 (26A428)`).
+
 ## 0.14.0-alpha.63 - 2026-09-25
 
 - feat: each `tests.beforeRun` step is a subtask of the test run while it runs, so the

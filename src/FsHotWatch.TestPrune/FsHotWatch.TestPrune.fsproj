@@ -39,6 +39,7 @@
     <Compile Include="ArtifactFreshness.fs" />
     <Compile Include="StaleArtifactPreflight.fs" />
     <Compile Include="ImpactDbPool.fs" />
+    <Compile Include="Traces.fs" />
     <Compile Include="TestMode.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
@@ -50,6 +51,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="12.0.0" />
+    <PackageReference Include="TestPrune.Core" Version="13.0.0" />
       </ItemGroup>
 </Project>

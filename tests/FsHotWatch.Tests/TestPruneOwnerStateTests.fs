@@ -39,7 +39,7 @@ let private recordingCtx () : PluginCtx<TestPruneMsg> =
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> Claimed
       RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
-      IsRunning = fun _ -> false
+      SlotHolder = fun _ -> SlotHolder.Free
       DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none }
@@ -477,6 +477,36 @@ let ``a queued impact run launches owed fanout or queues again behind a held key
         Assert.Equal<(string * string option) list>([ "tests", Some "impact" ], Seq.toList intents)
         Assert.Equal<Set<string>>(Set.singleton "ProjA", next.PendingForceRunProjects)
 
+/// A tests run's result folds ahead of the file checks queued before it: its fold sheds
+/// only the symbols the run launched with, so checks that arrive during the run lose
+/// nothing by folding after it. Both of the run's shapes are declared: the run itself,
+/// and the refusal it becomes when the artifact lease is invalid.
+[<Fact(Timeout = 15000)>]
+let ``a tests run is declared result-first`` () =
+    let root = isolatedRoot ()
+    seedBaseline root [ "ProjA" ]
+
+    let handler =
+        create ":memory:" root (Some [ config "ProjA" ]) None None None None []
+
+    let runs = ResizeArray<SharedResourceState -> Async<TestPruneMsg>>()
+
+    let ctx =
+        { recordingCtx () with
+            RunExclusiveShared =
+                fun _ _ workFor _ _ ->
+                    runs.Add workFor
+                    SharedClaimed }
+
+    let owed =
+        { handler.Init with
+            PendingForceRunProjects = Set.singleton "ProjA" }
+
+    update ctx handler owed (Custom ImpactRunRequested) |> ignore
+    let workFor = Assert.Single runs
+    Assert.True(PluginWork.isResultFirst (workFor Ready), "the run")
+    Assert.True(PluginWork.isResultFirst (workFor (Invalid "stale artifacts")), "the refusal")
+
 [<Fact(Timeout = 15000)>]
 let ``a queued impact run without test projects only analyses`` () =
     let handler = create ":memory:" (isolatedRoot ()) None None None None None []
@@ -497,11 +527,53 @@ let ``a build landing while tests hold their key queues one impact run`` () =
 
     let busy =
         { ctx with
-            IsRunning = fun key -> key = "tests" }
+            SlotHolder =
+                fun key ->
+                    if key = "tests" then
+                        SlotHolder.LiveRun
+                    else
+                        SlotHolder.Free }
 
     update busy handler handler.Init (BuildCompleted BuildSucceeded) |> ignore
     Assert.Equal(0, claims ())
     Assert.Equal<(string * string option) list>([ "tests", Some "impact" ], Seq.toList intents)
+
+/// A finished run's result fold holds the key with no live worker, so a claim is refused.
+/// Selection is the expensive step, and the refused claim would discard it: the build
+/// queues its run before selecting anything. `effects` records every selection, claim and
+/// intent in the order the handler made them.
+[<Fact(Timeout = 15000)>]
+let ``a build landing while a result fold holds the tests key queues without selecting`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ config "ProjA" ]) None None None None []
+
+    let effects = ResizeArray<string>()
+    let activity = ResizeArray<string>()
+
+    let folding =
+        { recordingCtx () with
+            SlotHolder = fun key -> if key = "tests" then SlotHolder.Fold else SlotHolder.Free
+            DeclareBoundedWork =
+                fun label _ ->
+                    effects.Add $"select: %s{label}"
+
+                    { new IDisposable with
+                        member _.Dispose() = () }
+            RunExclusiveShared =
+                fun key _ _ _ _ ->
+                    effects.Add $"claim: %s{key}"
+                    LocalSlotBusy
+            EnqueueExclusiveIntent =
+                fun key _ _ ->
+                    effects.Add $"intent: %s{key}"
+                    Task.FromResult(())
+            Log = activity.Add }
+
+    update folding handler handler.Init (BuildCompleted BuildSucceeded) |> ignore
+    Assert.Equal<string list>([ "intent: tests" ], Seq.toList effects)
+    Assert.Contains(activity, fun line -> line.Contains "queued re-run" && line.Contains "uncommitted fold")
 
 /// A handler with a full-suite baseline and one passing full run: session coverage, an
 /// empty queue and no reds, so an ordinary `BuildCompleted` may replay a cached green.

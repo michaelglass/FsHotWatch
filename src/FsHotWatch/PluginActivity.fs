@@ -11,8 +11,11 @@ let FcsPluginName = "fcs"
 /// Ledger key for faults in fshw's OWN checking process rather than in the code being
 /// checked. Distinct from `FcsPluginName` on purpose: a reader scanning the ledger must
 /// be able to separate "your code is wrong" from "our checker went stale", and a shared
-/// key makes that impossible. Entries under this key are informational — they never
-/// redden a run, because they are not findings about the user's code.
+/// key makes that impossible. Nothing under this key is a finding about the user's
+/// code, so nothing here can redden a run: the self-incompatible diagnostics are
+/// `Info`, and the other errors of the check that produced one keep their severity
+/// but are classified as checker faults by the verdict — alone, they leave it with
+/// no verdict, never a green.
 [<Literal>]
 let FcsInternalPluginName = "fcs-internal"
 
@@ -25,6 +28,13 @@ let FcsInternalPluginName = "fcs-internal"
 /// drift, and a drifted copy answers "not about the tests" for every red there is.
 [<Literal>]
 let TestPrunePluginName = "test-prune"
+
+/// The analyzers plugin's registered name, and therefore its LEDGER KEY. Named here for
+/// the same reason as `TestPrunePluginName`: the verdict asks of an analyzer entry
+/// whether it was computed from a check that is itself a checker fault, and the only
+/// way to ask is by ledger source.
+[<Literal>]
+let AnalyzersPluginName = "analyzers"
 
 /// Convention: each plugin emits one long-lived "primary" subtask per run
 /// whose label is the user-facing status line. The renderer prefers this

@@ -3844,17 +3844,23 @@ let ``the stale-project retry is bounded to one per project per cooldown`` () =
 let private phantom = expectedButHasMessage "Foo.Bar" "Foo.Bar"
 let private realMismatch = expectedButHasMessage "int" "string"
 
-/// Drive `recheckIfSelfIncompatible` over lists of messages, recording whether the budget
-/// was spent. Returns (answer, retries).
+/// Drive `recheckIfSelfIncompatible` over lists of messages in a generation that has
+/// not moved, recording whether the state was dropped. Returns (answer, drops).
 let private runRecheck (budgetAllows: bool) (first: string list) (second: string list) =
     let retries = ref 0
 
-    let answer =
+    let decide () =
+        if budgetAllows then
+            incr retries
+            RecheckOutcome.StateDropped
+        else
+            RecheckOutcome.BudgetSpent("Other.fs", DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc))
+
+    let answer, _ =
         recheckIfSelfIncompatible
             Seq.ofList
             isSelfIncompatibleTypeMessage
-            budgetAllows
-            (fun () -> incr retries)
+            decide
             (fun () -> async { return second })
             first
         |> Async.RunSynchronously
@@ -3907,8 +3913,9 @@ let ``the budget is spent before the second ask, so a failing re-check cannot sp
         recheckIfSelfIncompatible
             Seq.ofList
             isSelfIncompatibleTypeMessage
-            true
-            (fun () -> incr retries)
+            (fun () ->
+                incr retries
+                RecheckOutcome.StateDropped)
             (fun () -> async { return failwith "re-check exploded" })
             [ phantom ]
         |> Async.RunSynchronously
@@ -3996,19 +4003,24 @@ let ``the per-project budget allows one drop, then holds until the cooldown`` ()
     let t0 = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
     let budget = FcsDiagnosticFilter.RecheckBudget(TimeSpan.FromMinutes 5.0)
 
-    let beforeAnySpend = budget.Allows("A.fsproj", t0)
-    budget.Spend("A.fsproj", t0)
+    let drops = ref 0
 
-    let insideCooldown = budget.Allows("A.fsproj", t0.AddMinutes 4.0)
-    let afterCooldown = budget.Allows("A.fsproj", t0.AddMinutes 5.0)
+    let decide project file (now: DateTime) =
+        budget.Decide(project, file, now, 0L, (fun () -> 0L), (fun () -> incr drops))
+
+    let first = decide "A.fsproj" "Admin.fs" t0
+    let insideCooldown = decide "A.fsproj" "Jobs.fs" (t0.AddMinutes 4.0)
+    let afterCooldown = decide "A.fsproj" "Jobs.fs" (t0.AddMinutes 5.0)
     // A spend on one project must not spend another's — each is invalidated on
     // its own, and a shared budget would leave the second one stale.
-    let otherProject = budget.Allows("B.fsproj", t0)
+    let otherProject = decide "B.fsproj" "Other.fs" t0
 
-    test <@ beforeAnySpend @>
-    test <@ insideCooldown = false @>
-    test <@ afterCooldown @>
-    test <@ otherProject @>
+    test <@ first = RecheckOutcome.StateDropped @>
+    // A refusal names who spent the budget and when, for the log line that says so.
+    test <@ insideCooldown = RecheckOutcome.BudgetSpent("Admin.fs", t0) @>
+    test <@ afterCooldown = RecheckOutcome.StateDropped @>
+    test <@ otherProject = RecheckOutcome.StateDropped @>
+    test <@ drops.Value = 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``the internal fault states the observation and does not claim a cause`` () =

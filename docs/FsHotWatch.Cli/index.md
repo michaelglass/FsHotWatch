@@ -35,7 +35,7 @@ non-zero on failures (exit 1) or when completeness cannot be confirmed
 (exit 2). `fshw status` is the read-only observer: it reports the daemon's
 current state without triggering anything.
 
-## SQL test attribution extensions
+## Test attribution extensions
 
 `tests.extensions` composes explicit TestPrune dependency attribution into the
 daemon's impact graph:
@@ -45,7 +45,8 @@ daemon's impact graph:
   "tests": {
     "extensions": [
       {"type": "sql"},
-      {"type": "sql-hydra", "generatedModulePrefix": "Intelligence.Database.Generated"}
+      {"type": "sql-hydra", "generatedModulePrefix": "MyApp.Database.Generated"},
+      {"type": "named-dispatch"}
     ]
   }
 }
@@ -54,7 +55,11 @@ daemon's impact graph:
 `sql` uses `AutoSqlExtension()` to discover `ReadsFrom` and `WritesTo`
 attributes. `sql-hydra` uses `SqlHydraExtension(prefix)` and requires the full,
 non-blank prefix before generated schema/table types. `sqlhydra` is accepted as
-a compatibility alias. Unknown or incomplete entries fail configuration.
+a compatibility alias. `named-dispatch` uses `NamedDispatchExtension()` to link
+tests to handlers they reach by a string name, from `[<DispatchedAs(channel, name)>]`
+registrations and `[<DispatchTemplate(channel, "/path/{name}")>]` shapes; it takes
+no other fields. Unknown or incomplete entries fail configuration. An extension
+that throws keeps its previous edges and is reported as an error until it answers.
 
 ## Commands
 
@@ -244,6 +249,13 @@ Two kinds of failing diagnostic are not claims about the tree on disk at all:
 * an FCS **`internal error:`** — the checker crashed, so it completed no analysis and
   found nothing. Under heavy churn these arrive in dozens, naming files you never
   touched, beside a build MSBuild compiled cleanly;
+* any error from a check that also reported a type **incompatible with itself**
+  (`'T' does not match the type 'T'`). Such a check has shown its answer for that
+  file is not a reading of the code, so none of its errors is a finding — the ones
+  that follow from the phantom mismatch least of all. They are reported under
+  `fcs-internal` at their own severity: never green, never a claim your code is broken.
+  An analyzer crash or finding on such a file ran on the same check results, and is
+  classified the same way;
 * a diagnostic against an absolute path **that is no longer on disk** — the ledger is
   still describing a tree you have already changed.
 
@@ -404,7 +416,7 @@ names.
 |--------|---------|
 | `about-this-tree` | A genuine claim about the tree on disk. The red is earned. The default — nothing reaches the others without proof. |
 | `vanished-file` | The diagnostic names an absolute path that is not on disk. The daemon is describing a tree that no longer exists. |
-| `checker-fault` | An FCS `internal error:` — the checker crashed, so it made no finding at all. |
+| `checker-fault` | An FCS `internal error:` — the checker crashed, so it made no finding at all — or an `fcs-internal` error: one from a check that also reported a type incompatible with itself — or an `analyzers` entry on a file whose check did. |
 
 When **every** failing diagnostic is one of the latter two and no plugin failed, there
 is no verdict to give: the outcome is `incomplete` and the exit code is **3**, not 1.

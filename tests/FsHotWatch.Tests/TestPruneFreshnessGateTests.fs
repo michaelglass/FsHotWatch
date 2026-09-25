@@ -23,7 +23,6 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
-open TestPrune.Extensions
 open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers

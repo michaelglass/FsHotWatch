@@ -106,8 +106,14 @@ let private failingEntriesWithKind
     (noWarnFail: bool)
     (resp: DiagnosticsResponse)
     : (string * DiagnosticEntry * Verdict.RedCauseKind) list =
+    let suspect =
+        resp.Files
+        |> Map.toSeq
+        |> Seq.collect (fun (file, entries) -> entries |> Seq.map (fun e -> file, e.Plugin))
+        |> Verdict.RedCause.suspectFiles
+
     failingDiagnosticEntries noWarnFail resp
-    |> List.map (fun (file, e) -> file, e, Verdict.RedCause.classify e.Plugin file e.Message)
+    |> List.map (fun (file, e) -> file, e, Verdict.RedCause.classify suspect e.Plugin file e.Message)
 
 /// The failing ledger entries as the verdict records them. `Plugin` is the LEDGER KEY,
 /// so an FCS diagnostic — which belongs to no plugin — names `fcs` and stops being

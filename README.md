@@ -322,7 +322,7 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 | `beforeRun` | `string` | — | Command to run before each test run (e.g. `"dotnet build"`). |
 | `dependsOn` | `string[]` | `[]` | Repo-root-relative globs (`*`, `?`, `**`) naming **external** test inputs the symbol-diff can't see — DB migrations, generated files, schemas. Their content hash salts the test cache key, so editing a matched file forces a real test re-run even when no test source changed. |
 | `coverageDir` | `string` | `"coverage"` | Directory (repo-root-relative) for per-project Cobertura artifacts. |
-| `extensions` | `array` | `[]` | Explicit TestPrune attribution extensions. `sql` discovers `ReadsFrom`/`WritesTo` attributes; `sql-hydra` maps generated SqlHydra table types and query operations. |
+| `extensions` | `array` | `[]` | Explicit TestPrune attribution extensions. `sql` discovers `ReadsFrom`/`WritesTo` attributes; `sql-hydra` maps generated SqlHydra table types and query operations; `named-dispatch` links tests to handlers they reach by a string name. |
 | `projects` | `array` | `[]` | List of test project configurations. |
 | `excluded` | `array` | `[]` | Solution test projects the gate deliberately does **not** run, each with the reason it does not. The only sanctioned way for a test project in the solution to be outside the scope — see [The scope must cover the solution](#the-scope-must-cover-the-solution). |
 | `solution` | `string` | — | The solution the test scope is reconciled against. Only needed when the repo root holds more than one `*.slnx`/`*.sln`, or when the authority is not at the root. |
@@ -334,8 +334,9 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
   { "type": "sql" },
   {
     "type": "sql-hydra",
-    "generatedModulePrefix": "Intelligence.Database.Generated"
-  }
+    "generatedModulePrefix": "MyApp.Database.Generated"
+  },
+  { "type": "named-dispatch" }
 ]
 ```
 
@@ -343,8 +344,22 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 `sql-hydra` constructs `SqlHydraExtension(prefix)`; its
 `generatedModulePrefix` is the required, non-blank, fully qualified prefix
 before the generated schema and table type. `sqlhydra` remains accepted as a
-compatibility alias. Unknown kinds and incomplete extension objects are
-configuration errors rather than silently disabling attribution.
+compatibility alias. `named-dispatch` constructs TestPrune's
+`NamedDispatchExtension()` and needs no other fields: it couples a test to a
+handler the test reaches only through a string name (a job runner, a message
+topic, a command table). Declare the handler with
+`[<DispatchedAs("job", "Purge")>]` and the dispatch shape with
+`[<DispatchTemplate("job", "/admin/jobs/{action}/{name}")>]`, both matched by
+attribute name; a test file containing a template match whose `{name}` is
+registered on that channel is linked to the handler. Unknown kinds and
+incomplete extension objects are configuration errors rather than silently
+disabling attribution.
+
+Every configured extension recomputes its complete edge set whenever the
+index changes and replaces the edges it stored before. An extension that
+throws keeps its previous edges and is reported as an error under
+`<extension:NAME>` until it answers again, so a green is not issued over edges
+that describe an older tree; meanwhile every test project runs in full.
 
 **`tests.projects[].coverage` schema:**
 

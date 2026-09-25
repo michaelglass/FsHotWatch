@@ -1043,7 +1043,7 @@ let createWith
 
     /// What a launch leaves owed. A claim the framework accepted owns the input. A
     /// refused one means "build" is held — by a finished build's result fold whenever
-    /// `IsRunning "build"` read false — and that fold runs `launchPending` when it is
+    /// `SlotHolder "build"` did not read `LiveRun` — and that fold runs `launchPending` when it is
     /// folded, so the input is kept for it to build rather than dropped.
     let retainedOn (claim: SharedRunClaim) (owed: FileChangeKind list) =
         match claim with
@@ -1172,7 +1172,7 @@ let createWith
         // State carries the prior idle lifecycle. The synchronous BuildDone
         // handler advances Lifecycle.start ▸ complete when the framework posts
         // the completion message back. "is the build running" is owned by
-        // ctx.IsRunning "build".
+        // ctx.SlotHolder "build".
         { LastBuild = idle
           PendingFiles = retainedOn claim owed
           SatisfiedDeps = Set.empty
@@ -1363,7 +1363,7 @@ let createWith
 
     let launchPending (ctx: PluginCtx<BuildMsg>) (state: BuildState) =
         if
-            ctx.IsRunning "build"
+            ctx.SlotHolder "build" = SlotHolder.LiveRun
             || not state.ActiveTestRuns.IsEmpty
             || not (allDepsSatisfied state.SatisfiedDeps)
         then
@@ -1461,7 +1461,7 @@ let createWith
                 // behind a test host's artifact lease. Preserve every later change:
                 // template builds close over the roots selected at claim time, so a
                 // second root arriving while queued is not covered by that work.
-                | FileChanged change when ctx.IsRunning "build" ->
+                | FileChanged change when ctx.SlotHolder "build" = SlotHolder.LiveRun ->
                     info "build" "Buffering file change — build already running or queued"
 
                     return

@@ -121,7 +121,7 @@ let private checkWork (configPath: string) (searchDir: string) (scope: RunScope)
 ///
 /// A claim the framework accepted owns the trigger, so nothing is owed. A refused one
 /// means "coverage-check" is held — by a live check, or by a finished check whose
-/// result fold has not committed yet, which is the case `IsRunning` reads as false.
+/// result fold has not committed yet (`SlotHolder.Fold`).
 /// Either way the holder's fold drains what is kept here, so the trigger waits rather
 /// than disappearing.
 let private startCheck

@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- feat: `PluginWork.resultFirst work` lets a run's result fold ahead of the dispatched
+  events queued before it. Once the result is in the mailbox, the plugin's own messages
+  (`Custom`) fold in their own order until the result has, then dispatched events resume
+  in theirs. So the result folds once the fold in flight commits, not after the whole
+  backlog. Undeclared runs keep the first-in, first-out mailbox. docs/writing-plugins.md,
+  "Result ordering", gives the contract and when a plugin may declare it.
+  `PluginWork.isResultFirst` reads the declaration.
+
+- **BREAKING:** `PluginCtx.IsRunning: string -> bool` is replaced by
+  `PluginCtx.SlotHolder: string -> SlotHolder` (`Free | LiveRun | Fold`). `IsRunning`
+  read false while a finished run's result fold still held the key, yet a claim on that
+  key returned `SlotBusy`; `SlotHolder.Fold` names that case. `ctx.IsRunning key` is
+  `ctx.SlotHolder key = SlotHolder.LiveRun`. `CommandCtx` and `CommandReadCtx` keep
+  `IsRunning`.
+
+- feat: the watchdog heartbeat carries the GC pause share since the previous heartbeat
+  (`GC.GetTotalPauseDuration` deltas), e.g. `heartbeat: idle; gc-pause 1.00% (300ms of
+  30s)`, so a daemon log shows what a runtime GC setting costs. `OperationWatchdog.Watchdog`
+  takes an optional `gcPauseTotal` source; `gcPauseSuffix` renders it.
+
+- fix: `DOTNET_INTERNAL_ThreadSuspendInjection` is in `SessionScope.processOwned`, so a
+  repository host the CLI launched with thread-suspend injection off still accepts a shell
+  that does not set it, instead of refusing the attach as an MSBuild environment mismatch.
+
+- perf: `CheckPipeline` observes a canceled check through `IsCancellationRequested`
+  instead of throwing `OperationCanceledException`, so a superseded check no longer
+  unwinds an exception (which, on macOS, walks the unwinder under dyld's loader lock and
+  prolongs GC thread suspension). Results, logging and caching are unchanged: a check
+  canceled before FCS logs `Cancelled: <file>` at debug level, one canceled after FCS
+  logs the same `Failed to check <path>: The operation was canceled.` error as before,
+  and neither returns nor caches a result.
+
+- fix: a check whose answer declared a type incompatible with ITSELF is re-checked
+  whenever the project's checker state has been dropped since the check began, without
+  spending the drop budget. The budget allowed one drop per project per five minutes,
+  so under load the first faulty file to finish spent it and every other check of that
+  project already in flight kept its answer from the dropped state. The budget now
+  bounds only how often state is dropped, and the spend, the drop and the generation
+  read are one atomic decision per project.
+- fix: two more FS0001 shapes are recognised as a type incompatible with itself:
+  `The type 'T' does not match the type 'T'`, and the pattern-match and `if` branch
+  messages (`… which here is 'T'. This branch returns a value of type 'T'.`). These
+  templates drop the constraint text, so a render naming a type variable is refused.
+- fix: every other error of a check that reported a type incompatible with itself is
+  reported under `fcs-internal` at its own severity instead of under `fcs`. Such a
+  check has shown its answer for the file is not a reading of the code, and its
+  knock-on errors (an inferred type that no longer unifies, a match that no longer
+  looks complete) cannot be recognised by message. They are never demoted to `Info`,
+  which could let a genuinely broken file go green.
+- feat: `PluginActivity.AnalyzersPluginName`, the analyzers plugin's ledger key.
+- fix: the `fcs-internal` ledger text no longer claims every surfaced fault survived a
+  re-check.
+- obs: `check start` and `checked` lines name the project's checker generation and a
+  snapshot key; a denied re-check logs who spent the budget and when; a cancellation
+  of an in-flight check logs how many other in-flight checks share its project
+  type-check.
+
 ## 0.10.0-alpha.46 - 2026-09-25
 
 - feat: `HookStep` — a running hook step (label, index and count, command, pid, bound),

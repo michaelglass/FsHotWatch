@@ -74,6 +74,41 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core, test-prune: a finished test run no longer waits behind a storm of checks
+
+- **A tests run's result folds once the fold in flight commits.** A plugin's mailbox
+  was strictly first in, first out, so a finished run's result waited behind every event
+  queued before it. Under a storm of `FileChecked`/`BatchChecked` events, each fold slow,
+  a green full-suite result could wait more than an hour, with the plugin still
+  `Running` and the tests key held. `PluginWork.resultFirst` lets a plugin declare that
+  a run's result may fold ahead of the dispatched events queued before it, and TestPrune
+  declares its tests runs. The plugin's own messages and the dispatched events each
+  keep their order. docs/writing-plugins.md, "Result ordering", gives the contract.
+
+### cli, test-prune: TestPrune 13, and the `named-dispatch` extension
+
+- **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0
+  and TestPrune.SqlHydra 0.2.0. An extension's `AnalyzeEdges` now returns its complete
+  edge set for the tree (no `changedFiles` argument), and the plugin stores each answer
+  with `refreshExtensionEdges`, replacing that extension's previous edges instead of
+  appending them through `RebuildProjects` where no re-index ever removed them. The
+  extensions re-run whenever a flush indexes something, and on the first flush of a
+  process.
+- **An extension that throws is reported, not swallowed.** Its previous edges are kept
+  (an extension that cannot answer has not said its edges are gone), it is logged, and an
+  error is recorded in the ledger under `<extension:NAME>` so a check is not green over
+  edges that describe an older tree. Until it answers, runs take the same coarse fallback
+  as an unanalysable file (every test project, in full). It is retried on every flush and
+  the entry clears once it answers.
+- **`{ "type": "named-dispatch" }`** in `tests.extensions` registers TestPrune's
+  `NamedDispatchExtension`, which links a test to a handler it reaches only by a string
+  name: `[<DispatchedAs(channel, name)>]` on the handler,
+  `[<DispatchTemplate(channel, "/path/{name}")>]` on the dispatch shape, both matched by
+  attribute name. It takes no other fields.
+- **Existing test-impact databases are recreated on first open** (TestPrune schema 14 →
+  15): extension edges are now owned by their extension, and the old `_extern`-owned ones
+  do not survive the upgrade. The first check after upgrading re-indexes from scratch.
+
 ### core, cli, test-prune: a wait inside a hook names the step it is on
 
 - **A `tests.beforeRun` step is a subtask while it runs.** A run's hook chain logged a

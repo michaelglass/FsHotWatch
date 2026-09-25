@@ -885,7 +885,7 @@ module AgentHints =
                             match c.Kind with
                             | Verdict.AboutThisTree -> ""
                             | Verdict.VanishedFile -> "  [NOT-THIS-TREE: file is not on disk]"
-                            | Verdict.CheckerFault -> "  [NOT-THIS-TREE: the checker crashed; it found nothing]"
+                            | Verdict.CheckerFault -> "  [NOT-THIS-TREE: the checker faulted; it found nothing]"
 
                         $"    %s{label} %s{c.Source}:%s{c.File}: %s{c.Severity} %s{msg}%s{mark}")
 

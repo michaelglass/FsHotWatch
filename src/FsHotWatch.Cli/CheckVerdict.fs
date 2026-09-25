@@ -221,7 +221,8 @@ type CheckOutcome =
     /// disk, and no plugin failed — stale daemon state failing in the RED direction.
     ///
     /// A red is a claim: "something in THIS tree is wrong." A ledger full of FCS
-    /// internal errors (the checker crashed) or of diagnostics against files that are
+    /// faults (an internal error, or a check that called a type incompatible with
+    /// itself) or of diagnostics against files that are
     /// no longer on disk supports no such claim — and reporting it as exit 1 sends the
     /// reader to look for a defect that is not there. It cost one agent ~40 minutes,
     /// and the incident that taught the opposite lesson (a cached build hiding a REAL

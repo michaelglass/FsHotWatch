@@ -63,6 +63,7 @@
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
     <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
     <Compile Include="PluginFrameworkQueuedResultTests.fs" />
+    <Compile Include="PluginFrameworkResultFirstTests.fs" />
     <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
@@ -73,6 +74,7 @@
     <Compile Include="SharedWatchPoolTests.fs" />
     <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="SelfIncompatibleRecheckTests.fs" />
     <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="CheckerPartitionsTests.fs" />
     <Compile Include="PathFrameTests.fs" />
@@ -110,6 +112,7 @@
          and MUST stay first: F# is order-dependent. -->
     <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="TestPruneNamedDispatchTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
@@ -125,6 +128,7 @@
     <Compile Include="TestPruneImpactQueryCountTests.fs" />
     <Compile Include="TestPruneConfirmPassThroughTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
+    <Compile Include="TracedLaunchTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
@@ -143,6 +147,7 @@
     <Compile Include="OutputCopyFreshnessTests.fs" />
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
+    <Compile Include="CheckPipelineCancellationTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />
@@ -163,6 +168,7 @@
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="DetachedLaunchTests.fs" />
+    <Compile Include="ThreadSuspendInjectionTests.fs" />
     <Compile Include="LauncherLifetimeTests.fs" />
     <Compile Include="LoadedConfigIdentityTests.fs" />
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />

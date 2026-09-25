@@ -88,15 +88,15 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 90,
+        "line": 86,
         "branch": 73,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line 86 -> 81 on 2026-09-16 (gate, but independent of it): three full local coverage-check runs - at the 09-15 floor commit mzwzmkxk, at main c6c0323c and at the merge - all measured 160/194 lines (82.5%) with an IDENTICAL uncovered set; the 8 lines between 160 and 168 are the body of CheckFileWithOptions, called only from Daemon.fs tier checks, which only the coverage-excluded integration tests drive. 1pp headroom under the observed minimum, three-run basis. Line 92 -> 90 on 2026-09-21, deliberately, for FOUR lines only an FCS-driven path can reach: the stale-checker recovery (drop the project's configuration and re-check once when FCS reports a type incompatible with ITSELF) — three statements in `onStaleProjectRetry` and the re-check thunk beside it. FCS goes stale by accident under load and cannot be provoked on cue, which is the same reason this file's floor already reads 'the deterministic unit-test-only floor'. Everything decidable WITHOUT a compiler was moved out to FcsDiagnosticFilter.fs — the two-type predicate, the per-project budget (`StaleProjectBudget`), the retry itself (`recheckIfStale`), every message — and that file measures 100% line and 100% branch. Covered lines ROSE 396 -> 432 in the same change, so no test stopped covering anything; the percentage fell only because four uncoverable lines were added (426 -> 470 total). Measured 91.91%: ~1.9pp headroom under the new floor, and it would have missed the old one by 0.09pp. Single local run — re-baseline from CI on both platforms when convenient.",
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line 86 -> 81 on 2026-09-16 (gate, but independent of it): three full local coverage-check runs - at the 09-15 floor commit mzwzmkxk, at main c6c0323c and at the merge - all measured 160/194 lines (82.5%) with an IDENTICAL uncovered set; the 8 lines between 160 and 168 are the body of CheckFileWithOptions, called only from Daemon.fs tier checks, which only the coverage-excluded integration tests drive. 1pp headroom under the observed minimum, three-run basis. Line 92 -> 90 on 2026-09-21, deliberately, for FOUR lines only an FCS-driven path can reach: the stale-checker recovery (drop the project's configuration and re-check once when FCS reports a type incompatible with ITSELF) — three statements in `onStaleProjectRetry` and the re-check thunk beside it. FCS goes stale by accident under load and cannot be provoked on cue, which is the same reason this file's floor already reads 'the deterministic unit-test-only floor'. Everything decidable WITHOUT a compiler was moved out to FcsDiagnosticFilter.fs — the two-type predicate, the per-project budget (`StaleProjectBudget`), the retry itself (`recheckIfStale`), every message — and that file measures 100% line and 100% branch. Covered lines ROSE 396 -> 432 in the same change, so no test stopped covering anything; the percentage fell only because four uncoverable lines were added (426 -> 470 total). Measured 91.91%: ~1.9pp headroom under the new floor, and it would have missed the old one by 0.09pp. Single local run — re-baseline from CI on both platforms when convenient. Line 90 -> 86 on 2026-09-25 at the alpha.64 merge: measured 313/358 lines (87.4%), branch 83.3%, in one full local coverage-check run (4515 tests). The merge combined two changes that each added lines no unit test reaches: the generation-aware self-incompatible re-check (the `recheck` thunk and the clock/invalidate lambdas it hands `FcsDiagnosticFilter.recheckWithBudget`, reached only when FCS answers a type incompatible with itself, which cannot be provoked on cue; the decision logic itself is in FcsDiagnosticFilter.fs), and cancel-without-throw's two in-body `IsCancellationRequested` guards in CheckFileCore, reachable only when a cancellation lands between CheckFileCached's own check and the core's (a race window with no hook). The FSharpCheckFileAnswer.Aborted arm was already uncovered. ~1.4pp headroom; single local run, re-baseline from CI.",
         "platform": "macos"
       },
       {
-        "line": 77,
+        "line": 73,
         "branch": 60,
-        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them. Line 77 -> 73 on 2026-09-25 (provisional, not yet measured on Linux): the alpha.64 merge lowered the macOS measurement 91.9% -> 87.4% by adding FCS-only and race-only lines (see the macOS entry); the Linux floor moves by the same margin until CI measures it.",
         "platform": "linux"
       }
     ],
@@ -935,6 +935,27 @@
         "branch": 96,
         "reason": "2026-09-24: Linux CI run 35990854779 (main 0ef05b1d) measured line=100% branch=96.7% (29/30 branches). The one uncovered branch is the compiler's rethrow arm of the `with :? Win32Exception` type test around runProcess: a spawn raises nothing else for any input a test can hand it, and the type test is the only way to turn a missing binary into a refusal. Linux counts 30 branch slots where macOS counts 16 for the same source.",
         "platform": "linux"
+      }
+    ],
+    "ThreadSuspendInjection.fs": [
+      {
+        "line": 87,
+        "branch": 88,
+        "reason": "(2026-09-25): new file. Measured line=87.2% branch=88.9% (16/18 branches) on macOS by mise run coverage-check at the alpha.64 merge (full FsHotWatch.Tests run). Uncovered on macOS: osDescription's non-macOS arm (RuntimeInformation.OSDescription) and macOSBuild's failure arms (sysctlbyname returning non-zero or throwing), neither reachable on a working macOS box. Single local run.",
+        "platform": "macos"
+      },
+      {
+        "line": 55,
+        "branch": 50,
+        "reason": "provisional Linux floor (2026-09-25): new file, not yet measured on Linux. Off macOS the macOS-only half of the file (macOSBuild's sysctlbyname call and osDescription's macOS arm) cannot run, so Linux covers less than macOS; launchOverride and startupLine are pure and fully covered by ThreadSuspendInjectionTests on both. Re-baseline from the first Linux CI run.",
+        "platform": "linux"
+      }
+    ],
+    "Traces.fs": [
+      {
+        "line": 98,
+        "branch": 100,
+        "reason": "(2026-09-25): new file. Measured line=98.5% branch=100% (26/26 branches) at the alpha.64 merge. The one uncovered line is the `hasRuntime` probe inside dotnetRootOfThisProcess, which runs only when neither DOTNET_HOST_PATH nor DOTNET_ROOT resolves a root in the test process's own environment; dotnetRoot's decision logic, including that probe's arm, is covered through TracedLaunchTests with an injected probe."
       }
     ]
   },
