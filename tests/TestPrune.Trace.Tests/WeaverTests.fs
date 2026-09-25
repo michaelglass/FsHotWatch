@@ -36,8 +36,44 @@ let deleteScratch (dir: string) =
 
 /// Weave FxLib (full) and FxDriver (sites-only) from a scratch copy of the driver's build
 /// output, then copy the woven files over the originals so the scratch dir runs woven.
-let weaveFx (passes: IWeavePass list) =
+/// A sequence point at an IL offset no instruction starts at (Cecil's public constructor
+/// only binds to an instruction).
+let private unboundSequencePoint (offset: int) (document: Document) =
+    typeof<SequencePoint>
+        .GetConstructor(
+            System.Reflection.BindingFlags.NonPublic
+            ||| System.Reflection.BindingFlags.Instance,
+            null,
+            [| typeof<int>; typeof<Document> |],
+            null
+        )
+        .Invoke([| box offset; box document |])
+    :?> SequencePoint
+
+/// Give every method of `dllPath` that has sequence points the hidden end-of-method point
+/// (IL offset = code size) older F# compilers emit and newer ones do not, so the tests of
+/// the weaver's handling of it see that shape whichever SDK built the fixture.
+let addEndOfMethodMarkers (dllPath: string) =
+    use asm =
+        AssemblyDefinition.ReadAssembly(dllPath, ReaderParameters(ReadWrite = true, ReadSymbols = true))
+
+    for t in asm.MainModule.GetTypes() do
+        for m in t.Methods do
+            if m.HasBody && m.DebugInformation.HasSequencePoints then
+                let sps = m.DebugInformation.SequencePoints
+                let size = m.Body.CodeSize
+
+                if not (sps |> Seq.exists (fun sp -> sp.Offset = size)) then
+                    let marker = unboundSequencePoint size sps.[0].Document
+                    marker.StartLine <- 0xfeefee
+                    marker.EndLine <- 0xfeefee
+                    sps.Add marker
+
+    asm.Write(WriterParameters(WriteSymbols = true))
+
+let private weaveFxPrepared (prepare: string -> unit) (passes: IWeavePass list) =
     let dir = copyFixture Fixtures.fxDriverDir
+    prepare dir
     let out = Path.Combine(dir, "woven")
 
     let r =
@@ -62,6 +98,9 @@ let weaveFx (passes: IWeavePass list) =
         )
 
     dir, r
+
+/// Weave FxLib (full) and FxDriver (sites-only); see `weaveFxPrepared`.
+let weaveFx (passes: IWeavePass list) = weaveFxPrepared ignore passes
 
 let private withWeave passes (f: string -> WeaveResult -> unit) =
     let dir, r = weaveFx passes
@@ -123,6 +162,39 @@ let private codeSizes (dllPath: string) =
           if m.RelativeVirtualAddress <> 0 then
               yield MetadataTokens.GetRowNumber h, pe.GetMethodBody(m.RelativeVirtualAddress).GetILBytes().Length ]
     |> Map.ofList
+
+/// Rows of the methods whose PDB (decoded with SRM) has a point exactly at the end of the IL.
+let private endMarkerRows (dllPath: string) =
+    let sizes = codeSizes dllPath
+
+    sequencePoints (Path.ChangeExtension(dllPath, ".pdb"))
+    |> Map.filter (fun row sps -> sps |> List.exists (fun (_, _, _, _, _, _, off) -> off = sizes.[row]))
+    |> Map.keys
+    |> Seq.toList
+
+/// `withWeave` over a FxLib and FxDriver given end-of-method markers first
+/// (`addEndOfMethodMarkers`): FxLib's methods are all probed, so their markers move; the
+/// sites-only FxDriver has no test methods, so its markers stay. `f` also gets FxLib's
+/// marked, pre-weave sequence points. Fails loudly if the shape under test is missing,
+/// rather than letting the assertions below pass over nothing.
+let private withMarkedWeave (f: string -> WeaveResult -> Map<int, _> -> unit) =
+    let mutable original = Map.empty
+
+    let dir, r =
+        weaveFxPrepared
+            (fun dir ->
+                for name in [ "FxLib.dll"; "FxDriver.dll" ] do
+                    let path = Path.Combine(dir, name)
+                    addEndOfMethodMarkers path
+                    test <@ not (endMarkerRows path).IsEmpty @>
+
+                original <- sequencePoints (Path.Combine(dir, "FxLib.pdb")))
+            []
+
+    try
+        f dir r original
+    finally
+        deleteScratch dir
 
 [<Fact>]
 let ``every product method gets an entry probe row that points at its source`` () =
@@ -196,50 +268,55 @@ let ``a sites-only test assembly probes its Fact and Theory methods`` () =
 
 [<Fact>]
 let ``woven PDBs decode with System.Reflection.Metadata and the end-of-method marker bug is exercised`` () =
-    withWeave [] (fun dir r ->
+    withMarkedWeave (fun dir r _ ->
         PdbCheck.decodeFailures (Path.Combine(dir, "FxLib.pdb")) =! []
         PdbCheck.decodeFailures (Path.Combine(dir, "FxDriver.pdb")) =! []
-        // F# emits the unbindable end-of-method hidden sequence point on ordinary methods;
-        // if this is 0 the regression below guards nothing.
+        // The unprobed driver's markers are left where they are, still at the body's end.
+        test <@ not (endMarkerRows (Path.Combine(dir, "FxDriver.dll"))).IsEmpty @>
+        // Every marked method is probed, so every marker had to move; if this is 0 the
+        // regression below guards nothing.
         test <@ r.Stats.EndOfMethodSequencePointsMoved > 0 @>)
+
+/// Assert the woven FxLib in `dir` keeps `original`'s sequence points but for their offsets,
+/// and that every offset lies inside the woven body.
+let private onlyShifted (dir: string) (original: Map<int, _>) =
+    let woven = sequencePoints (Path.Combine(dir, "FxLib.pdb"))
+    let sizes = codeSizes (Path.Combine(dir, "FxLib.dll"))
+    let strip = List.map (fun (d, sl, sc, el, ec, h, _) -> d, sl, sc, el, ec, h)
+
+    // Same methods, same lines, columns, documents and hidden flags: the inputs to
+    // line coverage are unchanged, so coverage with and without weaving is identical.
+    test <@ Map.keys woven |> Seq.toList = (Map.keys original |> Seq.toList) @>
+
+    let differing =
+        original
+        |> Map.filter (fun row sps -> strip sps <> strip woven.[row])
+        |> Map.keys
+        |> Seq.toList
+
+    differing =! []
+
+    let outside =
+        woven
+        |> Map.toList
+        |> List.collect (fun (row, sps) ->
+            sps
+            |> List.filter (fun (_, _, _, _, _, _, off) -> off > sizes.[row])
+            |> List.map (fun sp -> row, sp))
+
+    outside =! []
 
 [<Fact>]
 let ``woven sequence points match the original ones except for the probe's shift`` () =
-    withWeave [] (fun dir _ ->
-        let original = sequencePoints (Path.Combine(Fixtures.fxDriverDir, "FxLib.pdb"))
-        let woven = sequencePoints (Path.Combine(dir, "FxLib.pdb"))
-        let sizes = codeSizes (Path.Combine(dir, "FxLib.dll"))
-        let strip = List.map (fun (d, sl, sc, el, ec, h, _) -> d, sl, sc, el, ec, h)
+    withMarkedWeave (fun dir _ original ->
+        onlyShifted dir original
+        // Every method was marked and every marker still sits exactly at its body's end.
+        endMarkerRows (Path.Combine(dir, "FxLib.dll"))
+        =! (Map.keys original |> Seq.toList))
 
-        // Same methods, same lines, columns, documents and hidden flags: the inputs to
-        // line coverage are unchanged, so coverage with and without weaving is identical.
-        test <@ Map.keys woven |> Seq.toList = (Map.keys original |> Seq.toList) @>
-
-        let differing =
-            original
-            |> Map.filter (fun row sps -> strip sps <> strip woven.[row])
-            |> Map.keys
-            |> Seq.toList
-
-        differing =! []
-
-        // Every offset lies inside the woven body (the end-of-method marker exactly at its end).
-        let outside =
-            woven
-            |> Map.toList
-            |> List.collect (fun (row, sps) ->
-                sps
-                |> List.filter (fun (_, _, _, _, _, _, off) -> off > sizes.[row])
-                |> List.map (fun sp -> row, sp))
-
-        outside =! []
-
-        let endMarkers =
-            woven
-            |> Map.toList
-            |> List.filter (fun (row, sps) -> sps |> List.exists (fun (_, _, _, _, _, _, off) -> off = sizes.[row]))
-
-        test <@ not endMarkers.IsEmpty @>)
+[<Fact>]
+let ``woven sequence points of the compiler's own PDB match except for the probe's shift`` () =
+    withWeave [] (fun dir _ -> onlyShifted dir (sequencePoints (Path.Combine(Fixtures.fxDriverDir, "FxLib.pdb"))))
 
 [<Fact>]
 let ``the root local scope still spans the whole woven body`` () =
@@ -415,18 +492,6 @@ let ``the two-argument DebuggableAttribute form is read by its optimizer-disable
     test <@ not (withDebuggableArgs true true) @>
     test <@ withDebuggableArgs true false @>
 
-let private unboundSequencePoint (offset: int) (document: Document) =
-    typeof<SequencePoint>
-        .GetConstructor(
-            System.Reflection.BindingFlags.NonPublic
-            ||| System.Reflection.BindingFlags.Instance,
-            null,
-            [| typeof<int>; typeof<Document> |],
-            null
-        )
-        .Invoke([| box offset; box document |])
-    :?> SequencePoint
-
 [<Fact>]
 let ``a sequence point that binds to no instruction and is not the end marker is refused`` () =
     let dir = copyFixture Fixtures.fxLibDir
@@ -467,6 +532,9 @@ let ``PdbCheck catches the corrupt blob plain Cecil writes after an insertion`` 
 
     try
         let path = Path.Combine(dir, "FxLib.dll")
+        // The corruption needs the end-of-method marker; newer compilers do not emit it.
+        addEndOfMethodMarkers path
+        test <@ not (endMarkerRows path).IsEmpty @>
 
         do
             use asm =

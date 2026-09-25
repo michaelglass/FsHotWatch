@@ -15,10 +15,19 @@
       "branch": 87.5,
       "reason": "SRM decode check. Both the healthy and the failing path are tested; the remaining branch half is the compiler-generated disposal null check on the `use` bindings."
     },
-    "Weaver.fs": {
-      "line": 97.0,
-      "branch": 84.8,
-      "reason": "Cecil weaver. Uncovered: the missing-internal-SequencePoint-constructor guard (Cecil is pinned to 0.11.6, which has it), the PdbCorrupt refusal (unreachable once the end-of-method fix is in; PdbCheck's own tests prove the check fires on the unfixed Cecil output), the empty-document-hash arm (the F# compiler always records a SHA256), the unresolvable-attribute name fallback in test detection (the resolver also searches the recorder's directory, which holds xunit in the test host), and compiler-generated null/short-circuit branch halves."
-    }
+    "Weaver.fs": [
+      {
+        "line": 97.0,
+        "branch": 84.8,
+        "reason": "Cecil weaver. Uncovered: the missing-internal-SequencePoint-constructor guard (Cecil is pinned to 0.11.6, which has it), the PdbCorrupt refusal (unreachable once the end-of-method fix is in; PdbCheck's own tests prove the check fires on the unfixed Cecil output), the empty-document-hash arm (the F# compiler always records a SHA256), the unresolvable-attribute name fallback in test detection (the resolver also searches the recorder's directory, which holds xunit in the test host), and compiler-generated null/short-circuit branch halves.",
+        "platform": "macos"
+      },
+      {
+        "line": 97.0,
+        "branch": 83.3,
+        "reason": "Linux floor, measured line=97.1% branch=83.3% (85/102 branches) with the .NET SDK 10.0.401 CI uses. Line coverage matches macOS (10.0.3xx) exactly; the branch count differs because the newer F# compiler emits different sequence points for the same source (it drops several redundant hidden points, including the end-of-method one), so coverage attributes 16 more branch halves to Weaver.fs. The extra uncovered halves: the missing-SequencePoint-constructor guard and the PdbCorrupt refusal (both explained in the macOS entry), and the null-scope and scope-starts-at-end-of-method halves of the root-scope check (no fixture method lacks a root scope or has one starting at its end).",
+        "platform": "linux"
+      }
+    ]
   }
 }
