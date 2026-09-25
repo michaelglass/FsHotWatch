@@ -2065,3 +2065,56 @@ let ``a later preprocessor sees the files an earlier one rewrote`` () =
         @>
 
     test <@ run.Modified = [ "/repo/src/Gen.fs" ] @>
+
+let private idleHandler (name: string) =
+    { Name = PluginName.create name
+      Init = ()
+      Update = fun _ctx state _event -> async { return state }
+      Commands = []
+      Subscriptions = PluginSubscriptions.none
+      PrepareCommit = None
+      CacheKey = None
+      Teardown = None }
+
+/// Status reads answer from the last published statuses, whatever the writer is doing.
+/// The scan's build wait, `WaitForComplete`, the RPC status and the wedge monitor all
+/// read them; one stuck or starved writer must not fail every one of those reads.
+[<Fact(Timeout = 60000)>]
+let ``status reads answer while a status write is held`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    host.RegisterHandler(idleHandler "held-status")
+    use release = new ManualResetEventSlim(false)
+    host.HoldStatusWritesForTest release
+
+    try
+        test <@ host.GetStatus "held-status" = Some Idle @>
+        test <@ host.GetAllStatuses() |> Map.tryFind "held-status" = Some Idle @>
+    finally
+        release.Set()
+
+/// A status write is visible to the very next read on any thread, with no thread-pool
+/// thread free to apply it.
+[<Fact(Timeout = 60000)>]
+let ``a status write is visible to the next read with every pool thread held`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    host.RegisterHandler(idleHandler "starved-status")
+
+    let status, all =
+        withEveryPoolThreadBusy (fun () ->
+            host.RegisterPreprocessor(
+                { new IFsHotWatchPreprocessor with
+                    member _.Name = "starved-pre"
+
+                    member _.Process _ _ =
+                        Result.Ok
+                            { Modified = []
+                              Considered = 0
+                              Evidence = "none" }
+
+                    member _.Dispose() = () }
+            )
+
+            host.GetStatus "starved-status", host.GetAllStatuses())
+
+    test <@ status = Some Idle @>
+    test <@ all |> Map.tryFind "starved-pre" = Some Idle @>

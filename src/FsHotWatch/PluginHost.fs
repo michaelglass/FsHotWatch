@@ -7,13 +7,6 @@ open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
-/// Internal messages for the status agent.
-[<NoComparison; NoEquality>]
-type private StatusMsg =
-    | SetStatus of string * PluginStatus
-    | GetStatus of string * AsyncReplyChannel<PluginStatus option>
-    | GetAllStatuses of AsyncReplyChannel<Map<string, PluginStatus>>
-
 /// What one pass of every registered preprocessor did, for the caller that needs more
 /// than the suppression set: `fshw format` renders `Lines` as its reply and `Refused`
 /// as its failure, so the reply names the formatter that ran — or the reason none did.
@@ -30,24 +23,6 @@ type PreprocessorsRun =
     }
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
-/// How long a reader waits for the agent before failing loudly.
-///
-/// `PostAndReply` with no timeout waits FOREVER. A mailbox that stops draining —
-/// a handler that threw, a message whose reply channel is never filled — then
-/// hangs every caller permanently rather than the agent, and these readers are on
-/// the gate's path: an unbounded wait here is a daemon that never answers and a
-/// `check` that never returns.
-///
-/// On expiry `PostAndReply` RAISES, and that is the behaviour this wants. An
-/// agent that cannot answer must not be read as an agent with nothing to say:
-/// returning an empty result on timeout would turn a wedged ledger into a green
-/// verdict, which is the one failure this system must never produce quietly.
-///
-/// Generous on purpose. These are in-memory agents answering from a map; if one
-/// has not replied within this budget it is not slow, it is stuck.
-[<Literal>]
-let private agentReplyTimeoutMs = 30_000
-
 type PluginHost
     (
         checker: FSharpChecker,
@@ -112,15 +87,14 @@ type PluginHost
     let touchActivity () =
         System.Threading.Volatile.Write(&lastActivityAtTicks, System.DateTime.UtcNow.Ticks)
 
-    // statusChanged.Trigger dispatch is owned by its own agent: the status
-    // agent posts the (name, status) pair here AFTER applying the mutation, and
-    // this loop fires the trigger serially, in mutation order, OUTSIDE the
-    // status agent's serialization boundary. Two invariants hang off that:
-    //   1. A subscriber doing GetAllStatuses (PostAndReply to the status agent)
-    //      from inside the trigger callback cannot deadlock — the status agent
-    //      is not blocked inside the trigger.
-    //   2. By the time a trigger fires, the status agent has already applied
-    //      the mutation, so a re-entrant read observes the new value (or newer).
+    // statusChanged.Trigger dispatch is owned by its own agent: `setStatus` posts
+    // the (name, status) pair here AFTER publishing the mutation, and this loop
+    // fires the trigger serially, in mutation order, OUTSIDE the status write
+    // lock. Two invariants hang off that:
+    //   1. A subscriber that writes a status from inside the trigger callback
+    //      cannot deadlock — no status write is in progress inside the trigger.
+    //   2. By the time a trigger fires, the mutation is already published, so a
+    //      re-entrant read observes the new value (or newer).
     // A subscriber that throws must not kill this loop (it would silently stop
     // ALL future status notifications), so the exception is logged and the loop
     // continues.
@@ -140,67 +114,63 @@ type PluginHost
 
             loop ())
 
-    // Status tracking is owned by a MailboxProcessor: the loop's recursion holds
-    // the statuses and serializes mutations. statusChanged.Trigger fires OUTSIDE
-    // this loop, via `triggerAgent` — see its two invariants above.
-    let statusAgent =
-        MailboxProcessor<StatusMsg>.Start(fun inbox ->
-            let rec loop (statuses: Map<string, PluginStatus>) =
-                async {
-                    let! msg = inbox.Receive()
+    // Plugin statuses are one immutable map, replaced wholesale under `statusGate`
+    // and published with a volatile write. Readers take no lock and post no message:
+    // they read the last published map. The scan's build wait, `WaitForComplete`,
+    // the RPC status and the wedge monitor all read it on the gate's path, so no read
+    // depends on a thread-pool thread being scheduled for it: under a saturated pool
+    // that dependence turns a healthy daemon's reads into timeouts.
+    //
+    // Writers apply the mutation on their own thread inside the lock, so a status is
+    // visible to the next read on any thread as soon as `setStatus` returns. The lock
+    // guards a map insert and two leaf-locked records; nothing inside it waits on
+    // another thread.
+    let statusGate = obj ()
+    let mutable statuses: Map<string, PluginStatus> = Map.empty
 
-                    match msg with
-                    | SetStatus(name, status) ->
-                        let prev = Map.tryFind name statuses
+    let readStatuses () =
+        System.Threading.Volatile.Read(&statuses)
 
-                        touchActivity ()
+    let applyStatus (name: string) (status: PluginStatus) =
+        let prev = Map.tryFind name statuses
 
-                        // Every terminal status carries its verdict, so the run record
-                        // derives startedAt from it rather than guessing.
-                        match status with
-                        | Completed(at, verdict) ->
-                            let outcome = RunOutcome.ofCompletedVerdict verdict
-                            activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at)
-                        | Failed(err, at, verdict) ->
-                            activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
-                        | Idle
-                        | Running _ -> ()
+        touchActivity ()
 
-                        // Wall-time attribution rework. The plugin's WHOLE `Running` interval, not
-                        // the run it measured itself: test-prune is `Running` through symbol
-                        // analysis and selection long before `executeTests` starts its
-                        // stopwatch, and a check blocked on `WaitForComplete` waits for all
-                        // of it. Recorded for EVERY terminal transition, so a run a later
-                        // re-run supersedes is still on the ledger when the verdict asks.
-                        match prev, status with
-                        | Some(Running since), Completed(at, verdict)
-                        | Some(Running since), Failed(_, at, verdict) ->
-                            phases.Record(DaemonPhases.Phase.PluginRun name, since, at - since, Some verdict.Summary)
-                        | _, Completed(at, verdict)
-                        | _, Failed(_, at, verdict) ->
-                            phases.Record(
-                                DaemonPhases.Phase.PluginRun name,
-                                at - verdict.Elapsed,
-                                verdict.Elapsed,
-                                Some verdict.Summary
-                            )
-                        | _, Idle
-                        | _, Running _ -> ()
+        // Every terminal status carries its verdict, so the run record
+        // derives startedAt from it rather than guessing.
+        match status with
+        | Completed(at, verdict) ->
+            let outcome = RunOutcome.ofCompletedVerdict verdict
+            activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at)
+        | Failed(err, at, verdict) -> activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
+        | Idle
+        | Running _ -> ()
 
-                        // Mutation applied — hand the notification to the
-                        // trigger agent (fires outside this loop, in order).
-                        triggerAgent.Post(name, status)
+        // The plugin's WHOLE `Running` interval, not the run it measured itself:
+        // test-prune is `Running` through symbol analysis and selection long before
+        // `executeTests` starts its stopwatch, and a check blocked on
+        // `WaitForComplete` waits for all of it. Recorded for EVERY terminal
+        // transition, so a run a later re-run supersedes is still on the ledger when
+        // the verdict asks.
+        match prev, status with
+        | Some(Running since), Completed(at, verdict)
+        | Some(Running since), Failed(_, at, verdict) ->
+            phases.Record(DaemonPhases.Phase.PluginRun name, since, at - since, Some verdict.Summary)
+        | _, Completed(at, verdict)
+        | _, Failed(_, at, verdict) ->
+            phases.Record(
+                DaemonPhases.Phase.PluginRun name,
+                at - verdict.Elapsed,
+                verdict.Elapsed,
+                Some verdict.Summary
+            )
+        | _, Idle
+        | _, Running _ -> ()
 
-                        return! loop (Map.add name status statuses)
-                    | GetStatus(name, reply) ->
-                        reply.Reply(Map.tryFind name statuses)
-                        return! loop statuses
-                    | GetAllStatuses reply ->
-                        reply.Reply(statuses)
-                        return! loop statuses
-                }
+        System.Threading.Volatile.Write(&statuses, Map.add name status statuses)
 
-            loop Map.empty)
+        // Posted inside the lock so notifications keep mutation order.
+        triggerAgent.Post(name, status)
 
     let setStatus (name: string) status =
         // Route the verdict's summary into the activity log here, at the one
@@ -214,16 +184,10 @@ type PluginHost
         | Idle
         | Running _ -> ()
 
-        // Non-blocking by design: setStatus is called from plugin
-        // MailboxProcessor agent threads (via ReportStatus inside handler Update
-        // bodies). Blocking on the status agent's reply would pin a pool thread
-        // per concurrent caller, and enough simultaneous blocked reporters starve
-        // the status agent of the very pool thread it needs to reply. A plain Post
-        // keeps every agent thread free; ordering and visibility survive because
-        // (a) the status agent's mailbox is FIFO, so any GetStatus/GetAllStatuses
-        // posted after this SetStatus observes it, and (b) the statusChanged
-        // trigger is fired by the trigger agent only after the mutation is applied.
-        statusAgent.Post(SetStatus(name, status))
+        // Called from plugin agent threads (via ReportStatus inside handler Update
+        // bodies). The write never waits for another thread to be scheduled: it is
+        // applied here, under a lock whose holders only update memory.
+        lock statusGate (fun () -> applyStatus name status)
 
     let setPluginStatus (name: PluginFramework.PluginName) status =
         setStatus (PluginFramework.PluginName.value name) status
@@ -573,11 +537,28 @@ type PluginHost
 
     /// Get the status of a specific plugin by name.
     member _.GetStatus(pluginName: string) : PluginStatus option =
-        statusAgent.PostAndReply(((fun ch -> GetStatus(pluginName, ch))), agentReplyTimeoutMs)
+        readStatuses () |> Map.tryFind pluginName
 
     /// Get all plugin statuses as an immutable map.
-    member _.GetAllStatuses() : Map<string, PluginStatus> =
-        statusAgent.PostAndReply(((fun ch -> GetAllStatuses ch)), agentReplyTimeoutMs)
+    member _.GetAllStatuses() : Map<string, PluginStatus> = readStatuses ()
+
+    /// Test seam: hold the status write lock on another thread until `release` is set,
+    /// and return once it is held — a writer that cannot finish, for proving that reads
+    /// do not wait for one.
+    member internal _.HoldStatusWritesForTest(release: System.Threading.ManualResetEventSlim) =
+        use held = new System.Threading.ManualResetEventSlim(false)
+
+        let holder =
+            System.Threading.Thread(
+                (fun () ->
+                    lock statusGate (fun () ->
+                        held.Set()
+                        release.Wait())),
+                IsBackground = true
+            )
+
+        holder.Start()
+        held.Wait()
 
     /// UTC timestamp of the most recent host activity: an event dispatch or a
     /// plugin status transition. Used by `WaitForComplete` to enforce a

@@ -20,13 +20,12 @@ let private allSeverities () =
     |> Array.map (fun c -> Microsoft.FSharp.Reflection.FSharpValue.MakeUnion(c, [||]) :?> DiagnosticSeverity)
     |> Array.toList
 
-/// The trap: wrapping the agent's mailbox loop in `with ex -> log; loop state`
-/// swallows programming bugs silently. Unhandled exceptions must reach the
-/// MailboxProcessor `Error` event, published as `AgentCrashed`. The fault is
-/// injected through the internal `RaiseFaultForTest` seam because production
-/// messages have no natural failure mode inside a typed match.
+/// The trap: catching a failed write with `with ex -> log; carry on` swallows
+/// programming bugs silently. A write that throws must reach `AgentCrashed`. The
+/// fault is injected through the internal `RaiseFaultForTest` seam because
+/// production writes have no natural failure mode.
 [<Fact(Timeout = 5000)>]
-let ``F12: programming-bug exception in agent loop surfaces via AgentCrashed instead of being swallowed`` () =
+let ``F12: programming-bug exception in a write surfaces via AgentCrashed instead of being swallowed`` () =
     let ledger = ErrorLedger()
 
     let crashed =
@@ -34,7 +33,7 @@ let ``F12: programming-bug exception in agent loop surfaces via AgentCrashed ins
 
     use _ = ledger.AgentCrashed.Subscribe(fun ex -> crashed.TrySetResult(ex) |> ignore)
 
-    let bug = InvalidOperationException("simulated programming bug inside agent loop")
+    let bug = InvalidOperationException("simulated programming bug inside a write")
     ledger.RaiseFaultForTest(bug)
 
     let observed = crashed.Task.Wait(TimeSpan.FromSeconds(2.0))
@@ -622,3 +621,75 @@ let ``Transport.takeDetail spends nothing on an entry that has no detail`` () =
 
     test <@ spent = 0 @>
     test <@ carried |> List.forall Option.isNone @>
+
+/// A read answers from what is already recorded, whatever the writer is doing. The
+/// verdict, the RPC status and the wedge monitor all read the ledger; a write that
+/// cannot finish — or a writer that cannot get a thread on a saturated pool — must not
+/// turn every one of those reads into a timeout that fails the gate.
+[<Fact(Timeout = 60000)>]
+let ``reads answer from what is recorded while a write is held`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "a.fs", [ entry "boom" DiagnosticSeverity.Error 3 ])
+    use release = new System.Threading.ManualResetEventSlim(false)
+    ledger.HoldWritesForTest release
+
+    try
+        let byPlugin = ledger.GetByPlugin "lint"
+        let all = ledger.GetAll()
+        let counts = ledger.GetCountsByPlugin()
+        let failing = ledger.FailingReasons false
+        let hasFailing = ledger.HasFailingReasons false
+        let keys = ledger.SnapshotKeys()
+
+        test <@ byPlugin |> Map.containsKey "a.fs" @>
+        test <@ all |> Map.containsKey "a.fs" @>
+        test <@ counts |> Map.tryFind "lint" = Some { Errors = 1; Warnings = 0 } @>
+        test <@ failing |> Map.containsKey "a.fs" @>
+        test <@ hasFailing @>
+        test <@ keys |> List.map (fun k -> k.Plugin, k.File) = [ "lint", "a.fs" ] @>
+    finally
+        release.Set()
+
+/// A write is visible to the very next read on any thread: a plugin that reports its
+/// findings and then goes terminal must never be read as terminal-and-clean.
+[<Fact(Timeout = 60000)>]
+let ``a report is visible to the next read with every pool thread held`` () =
+    let ledger = ErrorLedger()
+
+    let byPlugin, hasFailing =
+        withEveryPoolThreadBusy (fun () ->
+            ledger.Report("lint", "a.fs", [ entry "boom" DiagnosticSeverity.Error 3 ])
+            ledger.GetByPlugin "lint", ledger.HasFailingReasons false)
+
+    test <@ byPlugin |> Map.containsKey "a.fs" @>
+    test <@ hasFailing @>
+
+/// A ledger that lost a write must never answer as a ledger with nothing to say:
+/// that is a green verdict over findings it failed to record. After a failed write
+/// every read raises, and later writes are refused rather than half-applied.
+[<Fact(Timeout = 15000)>]
+let ``after a failed write every read raises instead of answering`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "a.fs", [ entry "boom" DiagnosticSeverity.Error 3 ])
+    let keys = ledger.SnapshotKeys()
+    ledger.RaiseFaultForTest(InvalidOperationException "simulated programming bug inside a write")
+    ledger.Report("lint", "b.fs", [ entry "later" DiagnosticSeverity.Error 1 ])
+
+    let refuses (read: unit -> unit) =
+        try
+            read ()
+            false
+        with :? InvalidOperationException as ex ->
+            ex.Message.Contains "stopped"
+
+    let refusals =
+        [ "GetAll", refuses (fun () -> ledger.GetAll() |> ignore)
+          "GetByPlugin", refuses (fun () -> ledger.GetByPlugin "lint" |> ignore)
+          "GetCountsByPlugin", refuses (fun () -> ledger.GetCountsByPlugin() |> ignore)
+          "FailingReasons", refuses (fun () -> ledger.FailingReasons false |> ignore)
+          "HasFailingReasons", refuses (fun () -> ledger.HasFailingReasons false |> ignore)
+          "SnapshotKeys", refuses (fun () -> ledger.SnapshotKeys() |> ignore)
+          "PruneIfCurrent", refuses (fun () -> ledger.PruneIfCurrent keys |> ignore) ]
+
+    let answered = refusals |> List.filter (snd >> not) |> List.map fst
+    test <@ List.isEmpty answered @>

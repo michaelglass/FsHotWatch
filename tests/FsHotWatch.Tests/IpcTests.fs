@@ -469,12 +469,17 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("failed-p") with
-            | Some(Failed _) -> true
-            | _ -> false)
-        5000
+    // Each plugin handles the event on its own agent, so one reaching its status says
+    // nothing about the others: wait for every one that changes.
+    let reported =
+        waitUntilTrue
+            (fun () ->
+                match host.GetStatus "running-p", host.GetStatus "completed-p", host.GetStatus "failed-p" with
+                | Some(Running _), Some(Completed _), Some(Failed _) -> true
+                | _ -> false)
+            5000
+
+    test <@ reported @>
 
     let serverTask =
         Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -2043,3 +2048,45 @@ let ``a client is served while every acceptor is busy with an earlier one`` () =
 
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+/// The gate's own RPCs answer while the status writer cannot make progress. A status
+/// read that times out reaches the client as a TimeoutException, which the CLI prints
+/// as "Could not connect to daemon" for a daemon that is alive and working. The RPCs
+/// read the published statuses, so a held writer cannot fail them.
+[<Fact(Timeout = 90000)>]
+let ``WaitForComplete and GetStatus answer the client while the status writer is held`` () =
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let cts = new CancellationTokenSource()
+
+    host.RegisterHandler(
+        { Name = PluginName.create "held-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+    )
+
+    let serverTask =
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    test <@ IpcServer.acceptsConnection pipeName @>
+    use release = new ManualResetEventSlim(false)
+    host.HoldStatusWritesForTest release
+
+    try
+        let completed = IpcClient.waitForComplete pipeName 0 |> Async.RunSynchronously
+        let status = IpcClient.getStatus pipeName |> Async.RunSynchronously
+        test <@ (parseStatuses completed).ContainsKey "held-plugin" @>
+        test <@ (parseStatuses status).ContainsKey "held-plugin" @>
+    finally
+        release.Set()
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()

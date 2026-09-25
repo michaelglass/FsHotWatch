@@ -243,6 +243,52 @@ let ``waitForPluginTerminalIfRunningWith returns after timeout when plugin stays
     |> Async.RunSynchronously
 // No assertion on elapsed — test that the function completes (doesn't deadlock).
 
+/// One status read that times out is "unknown", not the end of the scan: under a
+/// saturated thread pool the read failed while the build it was waiting on was still
+/// running, and `performScan` failed with the read's TimeoutException.
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith keeps waiting through a timed-out status read`` () =
+    let calls = ref 0
+
+    let getStatus _ =
+        calls.Value <- calls.Value + 1
+
+        match calls.Value with
+        | 2 -> raise (TimeoutException "MailboxProcessor.PostAndReply timed out.")
+        | n when n < 5 -> Some(PluginStatus.Running(since = DateTime.UtcNow))
+        | _ -> Some(completedAt DateTime.UtcNow)
+
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
+    |> Async.RunSynchronously
+
+    // Returned on the terminal read, not on the unknown one.
+    test <@ calls.Value = 5 @>
+
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith treats a timed-out first read as unknown, not as absent`` () =
+    let calls = ref 0
+
+    let getStatus _ =
+        calls.Value <- calls.Value + 1
+
+        match calls.Value with
+        | 1 -> raise (TimeoutException "MailboxProcessor.PostAndReply timed out.")
+        | 2 -> Some(PluginStatus.Running(since = DateTime.UtcNow))
+        | _ -> Some(completedAt DateTime.UtcNow)
+
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
+    |> Async.RunSynchronously
+
+    test <@ calls.Value = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith ends at its own deadline when no read answers`` () =
+    let getStatus _ =
+        raise (TimeoutException "MailboxProcessor.PostAndReply timed out.")
+
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromMilliseconds(300.0))
+    |> Async.RunSynchronously
+
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>

@@ -19,6 +19,23 @@
   receive, whether or not the batch held them. `PluginHost.PreprocessorNames` lists
   them in run order.
 
+- fix: a gate no longer fails because a read of in-memory state timed out. Plugin
+  statuses and the error ledger were each owned by an agent that answered reads from
+  its mailbox, so with the thread pool saturated — a daemon busy running the very
+  tests the check asked for — a read waited 30s for the agent to be scheduled and
+  raised. One such read failed `WaitForComplete`, `GetStatus` or the whole scan, and
+  the CLI reported "Could not connect to daemon" for a daemon that was alive and
+  working. Both are now written under a lock on the writer's own thread and publish an
+  immutable snapshot; `PluginHost.GetStatus`/`GetAllStatuses` and every `ErrorLedger`
+  read answer from the last snapshot without waiting on any other thread. A write is
+  visible to the next read on any thread as soon as it returns, so a plugin that
+  reports findings and then goes terminal is never read as terminal and clean.
+- fix: an `ErrorLedger` write that throws now stops the ledger at once: every later
+  read raises, instead of timing out after 30s. `AgentCrashed` still reports it.
+- fix: the scan's wait for the build to leave `Running` treats a status read that
+  timed out as unknown and keeps polling to its own deadline, logging the thread
+  pool's thread count and queued work items, rather than failing the scan.
+
 - fix: a caller waiting for a supervised or debounced queue's admission or close,
   or for the daemon's scan admission, gives up within its bound however busy the
   thread pool is. The bound was kept by a timer whose callback needs a pool thread,
