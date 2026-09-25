@@ -312,6 +312,16 @@ type private WriteOutcome<'r> =
     | Refused of exn
     | Failed of exn
 
+/// A notification the reporters are owed for one write, delivered in write order.
+[<NoComparison; NoEquality>]
+type private ReporterJob =
+    | ReportJob of plugin: string * file: string * entries: ErrorEntry list
+    /// `dropsFailureAlarm`: an empty report is a clean re-report, so once the reporters
+    /// have heard it the file's reporter-failure alarm goes, even if an earlier report's
+    /// failure was recorded after the ledger itself cleared it.
+    | ClearJob of plugin: string * file: string * dropsFailureAlarm: bool
+    | ClearPluginJob of plugin: string
+
 /// Accumulates per-file errors from plugins. Errors auto-clear when a file
 /// is re-checked and passes. Supports optional version-guarded updates: when a
 /// version is provided, stale updates (version < last accepted) are silently ignored.
@@ -324,13 +334,22 @@ type private WriteOutcome<'r> =
 /// turns a healthy daemon's reads into timeouts. Because a write is applied before
 /// `Report`/`Clear` returns, it is visible to the next read on any thread: a plugin
 /// that reports findings and then goes terminal is never read as terminal and clean.
+///
+/// Reporters are NOT called under that lock. The production reporter writes files, and
+/// a lock held across disk I/O would park every plugin thread that writes behind it —
+/// the pool starvation this design exists to avoid. And `lock` is re-entrant: a
+/// reporter that wrote back into the ledger from inside a write would publish, only for
+/// the outer write to overwrite it with a state computed before, losing the nested
+/// findings. So each write queues its notifications, in write order, while it holds the
+/// lock, and one dedicated thread delivers them outside it. A reporter that fails is
+/// recorded by a follow-up write of the synthetic failure entry.
 type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string -> unit) =
     let reporters = defaultArg reporters []
 
     // Reporter-failure log sink. Injectable so a test can capture it without
-    // redirecting process-global `System.Console.Error`: emission happens on
-    // whichever thread wrote, so a `Console.Error` capture would race any
-    // concurrent `Console.SetError`.
+    // redirecting process-global `System.Console.Error`: emission happens on the
+    // reporter thread, so a `Console.Error` capture would race any concurrent
+    // `Console.SetError`.
     let logError = defaultArg logError Logging.error
 
     // IErrorReporter is a third-party-extension boundary, so the broad catch keeps a
@@ -345,7 +364,14 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             try
                 action r
             with ex ->
-                logError "error-ledger" $"Reporter failed: %s{ex.ToString()}"
+                // The log sink writes a file too, and the disk that refused the
+                // reporter may refuse the log line. That must not escape: the failure
+                // is still recorded as an entry below, which is what the verdict reads.
+                try
+                    logError "error-ledger" $"Reporter failed: %s{ex.ToString()}"
+                with _ ->
+                    ()
+
                 failures <- ex :: failures
 
         List.rev failures
@@ -364,6 +390,12 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     let mutable fault: exn option = None
     let crashed = Event<exn>()
 
+    // Reporter notifications not yet delivered, in write order. `delivering` is true
+    // from the first enqueue until the delivery thread finds the queue empty.
+    let queueGate = obj ()
+    let pending = System.Collections.Generic.Queue<ReporterJob>()
+    let mutable delivering = false
+
     let report plugin file (entries: ErrorEntry list) version (state: LedgerState) =
         let key = struct (plugin, file)
 
@@ -377,35 +409,41 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
         let failureKey = struct (reporterFailurePlugin, file)
 
         if not accepted then
-            state'
+            state', []
         elif entries.IsEmpty then
-            notifyReporters (fun r -> r.Clear plugin file) |> ignore
-
             { state' with
                 Errors = state'.Errors |> Map.remove key |> Map.remove failureKey }
             |> markAbsent key
+            |> markAbsent failureKey,
+            [ ClearJob(plugin, file, true) ]
+        else
+            { state' with
+                Errors = Map.add key entries state'.Errors }
+            |> markPresent key,
+            [ ReportJob(plugin, file, entries) ]
+
+    /// The follow-up write for a delivered report: reporters that persisted it cleanly
+    /// drop the file's failure alarm; reporters that could not raise one, so the
+    /// aggregate verdict is non-clean rather than falsely green (the diagnostics may be
+    /// lost on disk).
+    let recordDelivery plugin file (entryCount: int) (failures: exn list) (state: LedgerState) =
+        let failureKey = struct (reporterFailurePlugin, file)
+
+        if List.isEmpty failures then
+            { state with
+                Errors = Map.remove failureKey state.Errors }
             |> markAbsent failureKey
         else
-            let failures = notifyReporters (fun r -> r.Report plugin file entries)
+            { state with
+                Errors = Map.add failureKey [ syntheticReporterFailure plugin entryCount failures ] state.Errors }
+            |> markPresent failureKey
 
-            let errors = Map.add key entries state'.Errors
+    let dropFailureAlarm file (state: LedgerState) =
+        let failureKey = struct (reporterFailurePlugin, file)
 
-            let errors =
-                if List.isEmpty failures then
-                    // Reporters persisted cleanly: drop any prior failure alarm.
-                    Map.remove failureKey errors
-                else
-                    // A reporter could not persist these diagnostics. Self-report so the
-                    // aggregate verdict / exit code is non-clean rather than falsely
-                    // green (the diagnostics may be lost on disk).
-                    Map.add failureKey [ syntheticReporterFailure plugin entries.Length failures ] errors
-
-            let next = { state' with Errors = errors } |> markPresent key
-
-            if List.isEmpty failures then
-                next |> markAbsent failureKey
-            else
-                next |> markPresent failureKey
+        { state with
+            Errors = Map.remove failureKey state.Errors }
+        |> markAbsent failureKey
 
     let clear plugin file version (state: LedgerState) =
         let key = struct (plugin, file)
@@ -419,33 +457,32 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             // A failed Clear is logged but not self-reported: unlike a failed Report, it
             // can only leave a stale-red on-disk file — never a false-green — and the
             // verdict reads the in-memory ledger (cleared here) regardless.
-            notifyReporters (fun r -> r.Clear plugin file) |> ignore
-
             { state' with
                 Errors = Map.remove key state'.Errors }
-            |> markAbsent key
+            |> markAbsent key,
+            [ ClearJob(plugin, file, false) ]
         else
-            state'
+            state', []
 
     let clearPlugin plugin (state: LedgerState) =
         // See the Clear symmetry note: a failed ClearPlugin is stale-red, not
         // false-green, so it is logged but not self-reported.
-        notifyReporters (fun r -> r.ClearPlugin plugin) |> ignore
-
         { state with
             Errors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
             Versions = state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
-            EntryRevisions = state.EntryRevisions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin) }
+            EntryRevisions = state.EntryRevisions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin) },
+        [ ClearPluginJob plugin ]
 
     let pruneIfCurrent (candidates: LedgerKeyRevision list) (state: LedgerState) =
         let mutable next = state
+        let mutable jobs = []
         let mutable removed = 0
 
         for candidate in candidates do
             let key = struct (candidate.Plugin, candidate.File)
 
             if Map.tryFind key next.EntryRevisions = Some candidate.Revision then
-                notifyReporters (fun r -> r.Clear candidate.Plugin candidate.File) |> ignore
+                jobs <- ClearJob(candidate.Plugin, candidate.File, false) :: jobs
 
                 next <-
                     { next with
@@ -454,14 +491,15 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
                 removed <- removed + 1
 
-        next, removed
+        next, List.rev jobs, removed
 
     let stopped (fault: exn) =
         System.InvalidOperationException("The error ledger stopped after a failed write.", fault)
 
-    /// Apply one write under the lock and publish its result. `Error` carries the fault
-    /// the ledger has latched, before or during this write.
-    let write (mutation: LedgerState -> LedgerState * 'r) : Result<'r, exn> =
+    /// Apply one write under the lock, publish its result and queue its reporter
+    /// notifications, still under the lock so they keep write order. `Error` carries the
+    /// fault the ledger has latched, before or during this write.
+    let rec write (mutation: LedgerState -> LedgerState * ReporterJob list * 'r) : Result<'r, exn> =
         let outcome =
             lock writeGate (fun () ->
                 match fault with
@@ -470,8 +508,9 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
                     // No inner recovery: anything that throws here is a programming bug.
                     // It latches, so every later read raises it rather than answering.
                     try
-                        let next, result = mutation state
+                        let next, jobs, result = mutation state
                         System.Threading.Volatile.Write(&state, next)
+                        enqueue jobs
                         Applied result
                     with ex ->
                         System.Threading.Volatile.Write(&fault, Some ex)
@@ -487,8 +526,58 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             crashed.Trigger ex
             Result.Error ex
 
-    let writeState (mutation: LedgerState -> LedgerState) =
-        write (fun s -> mutation s, ()) |> ignore
+    and writeState (mutation: LedgerState -> LedgerState * ReporterJob list) =
+        write (fun s ->
+            let next, jobs = mutation s
+            next, jobs, ())
+        |> ignore
+
+    /// Queue notifications and, if no delivery thread is running, start one. A ledger
+    /// with no reporters owes nobody anything.
+    and enqueue (jobs: ReporterJob list) =
+        if not (reporters.IsEmpty || jobs.IsEmpty) then
+            let start =
+                lock queueGate (fun () ->
+                    for job in jobs do
+                        pending.Enqueue job
+
+                    let idle = not delivering
+                    delivering <- true
+                    idle)
+
+            if start then
+                System.Threading.Thread(deliverAll, IsBackground = true, Name = "error-ledger-reporters").Start()
+
+    /// The delivery thread: drain the queue in order, then exit. A dedicated thread, not
+    /// a pool work item, so a saturated pool delays no notification. Reporters may write
+    /// back into the ledger from here: their writes queue behind this one.
+    and deliverAll () =
+        let mutable job = takeNext ()
+
+        while job.IsSome do
+            deliver job.Value
+            job <- takeNext ()
+
+    and takeNext () : ReporterJob option =
+        lock queueGate (fun () ->
+            if pending.Count = 0 then
+                delivering <- false
+                System.Threading.Monitor.PulseAll queueGate
+                None
+            else
+                Some(pending.Dequeue()))
+
+    and deliver (job: ReporterJob) =
+        match job with
+        | ReportJob(plugin, file, entries) ->
+            let failures = notifyReporters (fun r -> r.Report plugin file entries)
+            writeState (fun s -> recordDelivery plugin file entries.Length failures s, [])
+        | ClearJob(plugin, file, dropsFailureAlarm) ->
+            notifyReporters (fun r -> r.Clear plugin file) |> ignore
+
+            if dropsFailureAlarm then
+                writeState (fun s -> dropFailureAlarm file s, [])
+        | ClearPluginJob plugin -> notifyReporters (fun r -> r.ClearPlugin plugin) |> ignore
 
     /// The last published state, or the latched fault.
     let read () : LedgerState =
@@ -592,6 +681,19 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// failure mode (Map/list ops don't throw on valid state), so without this the
     /// contract is unobservable. Internal, via `InternalsVisibleTo`.
     member internal _.RaiseFaultForTest(ex: exn) = writeState (fun _ -> raise ex)
+
+    /// Wait until every reporter notification queued so far has been delivered (and any
+    /// failure it met recorded). True if that happened within `timeout`. Test seam: the
+    /// ledger's answer never waits for its reporters, so only a test that asserts on what
+    /// a reporter saw needs to.
+    member internal _.WaitForReportersForTest(timeout: System.TimeSpan) : bool =
+        // One wait suffices: the delivery thread pulses only when it goes idle, and
+        // `Monitor.Wait` does not wake spuriously.
+        lock queueGate (fun () ->
+            if delivering then
+                System.Threading.Monitor.Wait(queueGate, timeout) |> ignore
+
+            not delivering)
 
     /// Test seam: hold the write lock on another thread until `release` is set, and
     /// return once it is held — a writer that cannot finish, for proving that reads

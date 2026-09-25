@@ -2164,3 +2164,75 @@ let ``an activity sink records subtasks and log lines for its plugin`` () =
     test <@ snapshot.Subtasks |> List.map _.Key = [ "parse" ] @>
     test <@ snapshot.ActivityTail = [ "checked Lib.fs" ] @>
     test <@ host.GetActivitySnapshot "other" |> _.ActivityTail |> List.isEmpty @>
+
+/// The headline invariant of the lock-free reads: a plugin reports run N's findings
+/// and then goes Completed for run N, and a reader that reads the status and THEN the
+/// ledger never sees Completed for run N without run N's findings (or a later run's).
+/// One writer thread (the plugin's handler) and one reader thread, released together.
+[<Fact(Timeout = 60000)>]
+let ``a reader never sees Completed for a run without that run's findings`` () =
+    let runs = 300
+    let host = PluginHost.create nullChecker "/tmp/test"
+    use go = new ManualResetEventSlim(false)
+
+    let runOf (text: string) =
+        match text.Split(' ') with
+        | [| "run"; n |] -> int n
+        | _ -> 0
+
+    let handler =
+        { idleHandler "invariant" with
+            Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            go.Wait()
+
+                            for n in 1..runs do
+                                ctx.ReportErrors "a.fs" [ ErrorEntry.error $"run %d{n}" ]
+                                ctx.ReportStatus(PluginStatus.completedNow $"run %d{n}" TimeSpan.Zero)
+                        | _ -> ()
+
+                        return state
+                    }
+            Subscriptions = Set.ofList [ SubscribeFileChanged ] }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    let reader =
+        Tasks.Task.Factory.StartNew(
+            (fun () ->
+                let violations = ResizeArray<string>()
+                let mutable lastSeen = 0
+                let deadline = Diagnostics.Stopwatch.StartNew()
+                go.Set()
+
+                while lastSeen < runs && deadline.Elapsed < TimeSpan.FromSeconds 45.0 do
+                    let status = host.GetStatus "invariant"
+                    let findings = host.GetErrorsByPlugin "invariant"
+
+                    match status with
+                    | Some(Completed(_, verdict)) ->
+                        let completedRun = runOf verdict.Summary
+                        lastSeen <- completedRun
+
+                        let reportedRun =
+                            findings
+                            |> Map.tryFind "a.fs"
+                            |> Option.map (List.map (fun e -> runOf e.Message) >> List.max)
+                            |> Option.defaultValue 0
+
+                        if reportedRun < completedRun then
+                            violations.Add $"Completed run %d{completedRun} read with findings of run %d{reportedRun}"
+                    | _ -> ()
+
+                violations |> List.ofSeq, lastSeen),
+            Tasks.TaskCreationOptions.LongRunning
+        )
+
+    test <@ reader.Wait(TimeSpan.FromSeconds 50.0) @>
+    let violations, lastSeen = reader.Result
+    test <@ lastSeen = runs @>
+    test <@ violations = [] @>

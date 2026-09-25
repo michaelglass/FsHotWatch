@@ -10,6 +10,11 @@ open FsHotWatch.Tests.TestHelpers
 
 let private entry msg sev line = { errorEntry msg sev with Line = line }
 
+/// Reporters hear about writes on the ledger's delivery thread, after the write
+/// returns; a test asserting on what a reporter saw waits for delivery first.
+let private delivered (ledger: ErrorLedger) =
+    test <@ ledger.WaitForReportersForTest(TimeSpan.FromSeconds 10.0) @>
+
 /// Every `DiagnosticSeverity` case, enumerated BY REFLECTION rather than by hand.
 /// A hand-written list is exactly what an earlier change found already broken: a case
 /// added later was simply absent from it, so a test that claimed to walk "every
@@ -301,7 +306,7 @@ let ``ErrorLedger notifies reporters on Report`` () =
 
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
-    ledger.GetAll() |> ignore // sync barrier: ensures all prior Posts have been processed
+    delivered ledger
     test <@ reported.Length = 1 @>
     test <@ let (p, f, _) = reported.[0] in p = "lint" && f = "/src/A.fs" @>
 
@@ -319,7 +324,7 @@ let ``ErrorLedger notifies reporters on Clear`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Clear("lint", "/src/A.fs")
-    ledger.GetAll() |> ignore
+    delivered ledger
     test <@ cleared.Length = 1 @>
 
 /// An empty report is a clear, and reporters must hear it as one: otherwise the
@@ -338,6 +343,7 @@ let ``ErrorLedger notifies reporters on an empty Report`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Report("lint", "/src/A.fs", [])
+    delivered ledger
     test <@ cleared = [ "lint", "/src/A.fs" ] @>
     test <@ ledger.GetAll().IsEmpty @>
 
@@ -358,7 +364,7 @@ let ``ErrorLedger notifies reporters on ClearPlugin`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "a" DiagnosticSeverity.Warning 1 ])
     ledger.ClearPlugin("lint")
-    ledger.GetAll() |> ignore
+    delivered ledger
     test <@ clearedPlugins = [ "lint" ] @>
 
 [<Fact(Timeout = 15000)>]
@@ -375,7 +381,7 @@ let ``ErrorLedger does not notify reporters on stale version`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry "new" DiagnosticSeverity.Error 1 ], version = 2L)
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry "stale" DiagnosticSeverity.Error 1 ], version = 1L)
-    ledger.GetAll() |> ignore
+    delivered ledger
     test <@ reportCount = 1 @>
 
 [<Fact(Timeout = 15000)>]
@@ -385,7 +391,7 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
     // a misbehaving reporter needs debugging. The log must carry the exception type
     // and ToString() text, so the reporter is debuggable from logs alone.
     //
-    // The ledger emits this on its MailboxProcessor thread, so a `Console.SetError`
+    // The ledger emits this on its reporter delivery thread, so a `Console.SetError`
     // capture raced any concurrent redirect in the suite and lost the line. Assert on
     // an injected log sink instead: no process-global state, no race.
     let logged = System.Collections.Concurrent.ConcurrentQueue<string * string>()
@@ -403,7 +409,7 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
         ErrorLedger([ throwingReporter ], logError = (fun tag msg -> logged.Enqueue(tag, msg)))
 
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
-    ledger.GetAll() |> ignore // sync barrier: the agent has run notifyReporters
+    delivered ledger
 
     let output =
         logged |> Seq.map (fun (tag, msg) -> $"%s{tag} %s{msg}") |> String.concat "\n"
@@ -428,7 +434,7 @@ let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synt
 
     let ledger = ErrorLedger([ throwingReporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "real error" DiagnosticSeverity.Error 1 ])
-    ledger.GetAll() |> ignore // sync barrier
+    delivered ledger
 
     test <@ ledger.HasFailingReasons(warningsAreFailures = false) @>
 
@@ -718,3 +724,288 @@ let ``after a failed write every read raises instead of answering`` () =
 
     let answered = refusals |> List.filter (snd >> not) |> List.map fst
     test <@ List.isEmpty answered @>
+
+// ---------------------------------------------------------------------------
+// Reporters run off the ledger lock, in write order, on one delivery thread.
+// ---------------------------------------------------------------------------
+
+/// A reporter that runs `report` on every Report and ignores everything else.
+let private onReport (report: string -> string -> ErrorEntry list -> unit) =
+    { new IErrorReporter with
+        member _.Report plugin file entries = report plugin file entries
+        member _.Clear _ _ = ()
+        member _.ClearPlugin _ = ()
+        member _.ClearAll() = () }
+
+let private silentReporter () = onReport (fun _ _ _ -> ())
+
+/// The production reporter writes files. A reporter stuck in I/O must not hold the
+/// ledger: every plugin thread writing behind it would park, which is the pool
+/// starvation the lock-free ledger exists to prevent.
+[<Fact(Timeout = 30000)>]
+let ``a reporter stuck in I/O blocks no other writer and no reader`` () =
+    use entered = new System.Threading.ManualResetEventSlim(false)
+    use release = new System.Threading.ManualResetEventSlim(false)
+
+    let stuck =
+        onReport (fun _ _ _ ->
+            entered.Set()
+            release.Wait())
+
+    let ledger = ErrorLedger([ stuck ])
+
+    let first =
+        Task.Factory.StartNew(
+            (fun () -> ledger.Report("lint", "a.fs", [ entry "first" DiagnosticSeverity.Error 1 ])),
+            TaskCreationOptions.LongRunning
+        )
+
+    try
+        // The reporter is now inside its Report, holding whatever it holds.
+        test <@ entered.Wait(TimeSpan.FromSeconds 10.0) @>
+
+        let other =
+            Task.Factory.StartNew(
+                (fun () ->
+                    ledger.Report("fcs", "b.fs", [ entry "second" DiagnosticSeverity.Error 1 ])
+                    ledger.GetAll()),
+                TaskCreationOptions.LongRunning
+            )
+
+        test <@ other.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ other.Result |> Map.containsKey "a.fs" @>
+        test <@ other.Result |> Map.containsKey "b.fs" @>
+    finally
+        release.Set()
+
+    test <@ first.Wait(TimeSpan.FromSeconds 10.0) @>
+    delivered ledger
+
+/// `lock` is re-entrant. A reporter that writes back into the ledger from inside a
+/// write under the lock would publish its state, then the outer write would publish one
+/// computed before it and silently drop the nested findings.
+[<Fact(Timeout = 15000)>]
+let ``a reporter that writes back into the ledger loses nothing`` () =
+    let mutable ledgerRef: ErrorLedger option = None
+
+    let echoing =
+        onReport (fun plugin file entries ->
+            if plugin = "lint" then
+                ledgerRef.Value.Report("echo", file, entries))
+
+    let ledger = ErrorLedger([ echoing ])
+    ledgerRef <- Some ledger
+    ledger.Report("lint", "a.fs", [ entry "boom" DiagnosticSeverity.Error 1 ])
+    delivered ledger
+
+    test <@ ledger.GetByPlugin "lint" |> Map.containsKey "a.fs" @>
+    test <@ ledger.GetByPlugin "echo" |> Map.containsKey "a.fs" @>
+
+/// The on-disk mirror is only right if it hears the writes in the order they happened:
+/// a clear delivered before the report it followed leaves a stale red file.
+[<Fact(Timeout = 15000)>]
+let ``reporters hear writes in write order`` () =
+    let heard = ResizeArray<string>()
+    let note (s: string) = lock heard (fun () -> heard.Add s)
+
+    let recording =
+        { new IErrorReporter with
+            member _.Report plugin file _ = note $"report %s{plugin} %s{file}"
+            member _.Clear plugin file = note $"clear %s{plugin} %s{file}"
+            member _.ClearPlugin plugin = note $"clear-plugin %s{plugin}"
+            member _.ClearAll() = note "clear-all" }
+
+    let ledger = ErrorLedger([ recording ])
+    let e = [ entry "x" DiagnosticSeverity.Error 1 ]
+
+    for i in 1..50 do
+        ledger.Report("lint", $"%d{i}.fs", e)
+        ledger.Clear("lint", $"%d{i}.fs")
+
+    ledger.Report("fcs", "b.fs", e)
+    ledger.ClearPlugin "fcs"
+    ledger.Report("lint", "c.fs", [])
+    delivered ledger
+
+    let expected =
+        [ for i in 1..50 do
+              $"report lint %d{i}.fs"
+              $"clear lint %d{i}.fs"
+          "report fcs b.fs"
+          "clear-plugin fcs"
+          "clear lint c.fs" ]
+
+    test <@ List.ofSeq heard = expected @>
+
+/// A full disk fails the reporter AND the log line about it. Neither may stop the
+/// ledger: its fault latch is for programming bugs, and a ledger that stopped for a
+/// full disk would refuse every read for the rest of the daemon's life.
+[<Fact(Timeout = 15000)>]
+let ``a reporter that throws with a log sink that throws leaves the ledger answering`` () =
+    let diskFull () =
+        raise (System.IO.IOException "No space left on device")
+
+    let failing = onReport (fun _ _ _ -> diskFull ())
+
+    let ledger = ErrorLedger([ failing ], logError = (fun _ _ -> diskFull ()))
+    ledger.Report("lint", "a.fs", [ entry "real" DiagnosticSeverity.Error 1 ])
+    delivered ledger
+
+    let all = ledger.GetAll()
+    test <@ all.["a.fs"] |> List.exists (fun (plugin, _) -> plugin = "lint") @>
+
+    test
+        <@
+            all.["a.fs"]
+            |> List.exists (fun (plugin, e) -> plugin = reporterFailurePlugin && e.Message.Contains "IOException")
+        @>
+
+/// A clean re-report of the file drops the reporter-failure alarm, whether the
+/// re-report carries findings or clears them — including when the clear lands before
+/// the failed report has even been delivered.
+[<Fact(Timeout = 15000)>]
+let ``a clean re-report drops the reporter-failure alarm`` () =
+    let mutable failNext = true
+
+    let flaky =
+        onReport (fun _ _ _ ->
+            if failNext then
+                failNext <- false
+                raise (System.IO.IOException "transient"))
+
+    let ledger = ErrorLedger([ flaky ], logError = (fun _ _ -> ()))
+    ledger.Report("lint", "a.fs", [ entry "one" DiagnosticSeverity.Error 1 ])
+    delivered ledger
+    test <@ ledger.GetByPlugin reporterFailurePlugin |> Map.containsKey "a.fs" @>
+
+    ledger.Report("lint", "a.fs", [ entry "two" DiagnosticSeverity.Error 1 ])
+    delivered ledger
+    test <@ ledger.GetByPlugin reporterFailurePlugin |> Map.isEmpty @>
+    test <@ (ledger.GetByPlugin "lint").["a.fs"] |> List.map _.Message = [ "two" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``an empty report drops the failure alarm of a report delivered after it`` () =
+    let failing = onReport (fun _ _ _ -> raise (System.IO.IOException "always"))
+
+    let ledger = ErrorLedger([ failing ], logError = (fun _ _ -> ()))
+    // Both writes are applied before either is delivered, so the failure of the first
+    // is recorded after the ledger itself already cleared the file.
+    ledger.Report("lint", "a.fs", [ entry "one" DiagnosticSeverity.Error 1 ])
+    ledger.Report("lint", "a.fs", [])
+    delivered ledger
+
+    test <@ ledger.GetAll().IsEmpty @>
+
+// ---------------------------------------------------------------------------
+// Concurrency: the lock-free reads are correct by construction; these pin it.
+// ---------------------------------------------------------------------------
+
+let private writers = 8
+let private writesPerWriter = 200
+
+/// Run `write w i` for every writer `w` and index `i`, each writer on its own thread,
+/// all released together by a barrier.
+let private hammer (write: int -> int -> unit) =
+    use barrier = new System.Threading.Barrier(writers)
+
+    let threads =
+        [ for w in 1..writers ->
+              System.Threading.Thread(
+                  (fun () ->
+                      barrier.SignalAndWait()
+
+                      for i in 1..writesPerWriter do
+                          write w i),
+                  IsBackground = true
+              ) ]
+
+    for t in threads do
+        t.Start()
+
+    for t in threads do
+        test <@ t.Join(TimeSpan.FromSeconds 30.0) @>
+
+[<Fact(Timeout = 60000)>]
+let ``concurrent writers lose no update`` () =
+    let ledger = ErrorLedger([ silentReporter () ])
+
+    hammer (fun w i -> ledger.Report($"p%d{w}", $"%d{w}-%d{i}.fs", [ entry "x" DiagnosticSeverity.Error i ]))
+
+    delivered ledger
+    let expected = writers * writesPerWriter
+    test <@ ledger.GetAll().Count = expected @>
+    test <@ ledger.SnapshotKeys().Length = expected @>
+    test <@ ledger.GetCountsByPlugin() |> Map.forall (fun _ c -> c.Errors = writesPerWriter) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a write on one thread is visible to a read on another afterwards`` () =
+    let ledger = ErrorLedger()
+    use written = new System.Threading.ManualResetEventSlim(false)
+
+    let writer =
+        System.Threading.Thread(
+            (fun () ->
+                ledger.Report("lint", "a.fs", [ entry "x" DiagnosticSeverity.Error 1 ])
+                written.Set()),
+            IsBackground = true
+        )
+
+    writer.Start()
+
+    let seen =
+        Task.Factory
+            .StartNew(
+                (fun () ->
+                    written.Wait()
+                    ledger.GetByPlugin "lint"),
+                TaskCreationOptions.LongRunning
+            )
+            .Result
+
+    test <@ seen |> Map.containsKey "a.fs" @>
+
+/// Every read answers from ONE published state: a write's entries appear together or
+/// not at all, and a file's findings and its revision are never seen half-applied.
+[<Fact(Timeout = 60000)>]
+let ``every read sees each write whole while writers run`` () =
+    let ledger = ErrorLedger()
+    use stop = new System.Threading.ManualResetEventSlim(false)
+    let torn = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let pair (i: int) =
+        [ entry $"first %d{i}" DiagnosticSeverity.Error 1
+          entry $"second %d{i}" DiagnosticSeverity.Error 2 ]
+
+    let reader =
+        Task.Factory.StartNew(
+            (fun () ->
+                let mutable reads = 0
+
+                while not stop.IsSet || reads = 0 do
+                    reads <- reads + 1
+
+                    for KeyValue(file, entries) in ledger.GetAll() do
+                        match entries |> List.map (snd >> _.Message) with
+                        | [ a; b ] when a.Replace("first ", "") = b.Replace("second ", "") -> ()
+                        | other -> torn.Enqueue $"%s{file}: %A{other}"),
+            TaskCreationOptions.LongRunning
+        )
+
+    try
+        hammer (fun w i ->
+            // Replace, then clear every tenth: a reader may see a file absent, or with
+            // one write's pair, and nothing else.
+            ledger.Report("lint", $"%d{w}.fs", pair i)
+
+            if i % 10 = 0 then
+                ledger.Clear("lint", $"%d{w}.fs"))
+    finally
+        stop.Set()
+
+    test <@ reader.Wait(TimeSpan.FromSeconds 30.0) @>
+    test <@ List.ofSeq torn = [] @>
+
+    // At rest, the files with findings and the keys with revisions are the same set.
+    let files = ledger.GetAll() |> Map.keys |> Set.ofSeq
+    let revisioned = ledger.SnapshotKeys() |> List.map _.File |> Set.ofList
+    test <@ files = revisioned @>

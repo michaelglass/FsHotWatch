@@ -2090,3 +2090,31 @@ let ``WaitForComplete and GetStatus answer the client while the status writer is
             serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
         with _ ->
             ()
+
+/// The diagnostics reply must read the statuses BEFORE the ledger. A plugin that
+/// reports its findings and then goes Completed between a ledger-first reply's two
+/// reads is returned as "Completed, 0 errors": a false green. Read status-first, the
+/// same interleaving yields "Running" (with or without the findings), which denies a
+/// green, and a Completed status is only ever read with its findings behind it.
+[<Fact(Timeout = 15000)>]
+let ``diagnostics never read a plugin as Completed without the findings it reported first`` () =
+    let mutable status = Running(since = DateTime.UtcNow)
+    let mutable findings: string list = []
+
+    let readStatuses () = status
+
+    let readLedger () =
+        let seen = findings
+        // The plugin runs to completion right after this read: findings, then status.
+        findings <- [ "boom" ]
+        status <- PluginStatus.completedNow "1 error" TimeSpan.Zero
+        seen
+
+    let readStatus, readFindings = readStatusesThenLedger readStatuses readLedger
+
+    let completed =
+        match readStatus with
+        | Completed _ -> true
+        | _ -> false
+
+    test <@ not completed || not readFindings.IsEmpty @>

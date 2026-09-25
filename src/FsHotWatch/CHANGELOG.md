@@ -32,9 +32,16 @@
   reports findings and then goes terminal is never read as terminal and clean.
 - fix: an `ErrorLedger` write that throws now stops the ledger at once: every later
   read raises, instead of timing out after 30s. `AgentCrashed` still reports it.
-- fix: the scan's wait for the build to leave `Running` treats a status read that
-  timed out as unknown and keeps polling to its own deadline, logging the thread
-  pool's thread count and queued work items, rather than failing the scan.
+- fix: `ErrorLedger` reporters (the `.fshw/errors` file mirror) no longer run under
+  the ledger's lock. Each write queues its notifications in write order and one
+  dedicated thread delivers them, so a plugin thread never waits on another plugin's
+  disk I/O, and a reporter that writes back into the ledger no longer loses those
+  findings. A reporter that fails is still recorded as a `failed to record` error
+  entry, and a reporter or log sink that throws (a full disk) no longer stops the
+  ledger.
+- fix: `fshw` diagnostics read plugin statuses before the error ledger, so a plugin
+  that reported findings and finished between the two reads is no longer returned as
+  "Completed, 0 errors".
 
 - fix: a caller waiting for a supervised or debounced queue's admission or close,
   or for the daemon's scan admission, gives up within its bound however busy the

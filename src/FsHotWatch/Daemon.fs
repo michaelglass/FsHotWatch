@@ -2130,29 +2130,12 @@ let internal waitForPluginTerminalIfRunningWith
             else
                 System.DateTime.UtcNow + timeout
 
-        // `Some running`, or `None` when the read itself timed out. A status read that
-        // could not answer says nothing about the plugin: it is not "not Running", which
-        // would start the FCS tiers under a build still rewriting obj/, and it is not a
-        // reason to fail the scan. Unknown keeps the wait going, to its own deadline.
-        // Logged on the first unknown read, then at most once per 10s.
-        let mutable lastUnknownLog = System.DateTime.MinValue
-
-        let probe () =
-            try
-                match getStatus pluginName with
-                | Some(Running _) -> Some true
-                | _ -> Some false
-            with :? System.TimeoutException as ex ->
-                let now = System.DateTime.UtcNow
-
-                if (now - lastUnknownLog).TotalSeconds >= 10.0 then
-                    lastUnknownLog <- now
-
-                    Logging.warn
-                        "scan"
-                        $"waitForPluginTerminalIfRunning: status read for '%s{pluginName}' timed out (%s{ex.Message}); treating it as unknown and polling on. thread pool: %d{System.Threading.ThreadPool.ThreadCount} threads, %d{System.Threading.ThreadPool.PendingWorkItemCount} queued work items"
-
-                None
+        // A status read is a snapshot read (`PluginHost.GetStatus`): it cannot time
+        // out or wait on another thread, so there is no "unknown" answer to handle.
+        let running () =
+            match getStatus pluginName with
+            | Some(Running _) -> true
+            | _ -> false
 
         let before (limit: System.DateTime) = System.DateTime.UtcNow < limit
 
@@ -2163,22 +2146,20 @@ let internal waitForPluginTerminalIfRunningWith
         let settleDeadline =
             System.DateTime.UtcNow + System.TimeSpan.FromMilliseconds(200.0)
 
-        let mutable last = probe ()
+        let mutable last = running ()
 
-        while last <> Some true && before settleDeadline do
+        while not last && before settleDeadline do
             do! Async.Sleep 25
-            last <- probe ()
+            last <- running ()
 
         // If the plugin never entered Running (not registered, or finished
         // before we polled), there's nothing to wait for.
-        last <- probe ()
+        last <- running ()
 
-        if last = Some false then
-            return ()
-        else
+        if last then
             let mutable lastLogTime = System.DateTime.UtcNow
 
-            while last <> Some false && (timeout = System.TimeSpan.MaxValue || before deadline) do
+            while last && (timeout = System.TimeSpan.MaxValue || before deadline) do
                 let now = System.DateTime.UtcNow
 
                 if (now - lastLogTime).TotalSeconds >= 10.0 then
@@ -2186,18 +2167,12 @@ let internal waitForPluginTerminalIfRunningWith
                     Logging.info "scan" $"Waiting for plugin '%s{pluginName}' to leave Running..."
 
                 do! Async.Sleep 50
-                last <- probe ()
+                last <- running ()
 
-            match last with
-            | Some false -> ()
-            | Some _ ->
+            if last then
                 Logging.warn
                     "scan"
                     $"waitForPluginTerminalIfRunning: '%s{pluginName}' still Running after %O{timeout}; proceeding anyway"
-            | None ->
-                Logging.warn
-                    "scan"
-                    $"waitForPluginTerminalIfRunning: '%s{pluginName}' status still unreadable after %O{timeout}; proceeding anyway"
     }
 
 let internal waitForPluginTerminalIfRunning

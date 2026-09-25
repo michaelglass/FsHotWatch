@@ -154,6 +154,16 @@ let private pluginStatusPayload
     :> obj
 
 /// Configuration record for DaemonRpcTarget.
+/// The diagnostics reply's two reads, statuses FIRST. A plugin reports its findings and
+/// then goes terminal, so a status read before the ledger can only be older than the
+/// ledger it is paired with: a Completed status is never read without the findings
+/// reported ahead of it. Ledger first, a plugin that finished between the two reads
+/// would be returned as "Completed, 0 errors" — a false green.
+let internal readStatusesThenLedger (readStatuses: unit -> 'S) (readLedger: unit -> 'L) : 'S * 'L =
+    let statuses = readStatuses ()
+    let ledger = readLedger ()
+    statuses, ledger
+
 [<NoComparison; NoEquality>]
 type DaemonRpcConfig =
     {
@@ -380,13 +390,16 @@ type DaemonRpcTarget
     /// so an admitted run that the daemon had already FINISHED died here, at the very
     /// last call, and reported as an out-of-memory fault that named the wrong process.
     member _.GetDiagnostics(pluginFilter: string) : string =
-        let ledger: (string * (string * ErrorLedger.ErrorEntry) list) list =
+        let readLedger () : (string * (string * ErrorLedger.ErrorEntry) list) list =
             if System.String.IsNullOrEmpty(pluginFilter) then
                 config.Host.GetErrors() |> Map.toList
             else
                 config.Host.GetErrorsByPlugin(pluginFilter)
                 |> Map.toList
                 |> List.map (fun (file, entries) -> file, entries |> List.map (fun e -> pluginFilter, e))
+
+        let rawStatuses, ledger =
+            readStatusesThenLedger config.Host.GetAllStatuses readLedger
 
         // `Map.toList` order, then one fold across the whole response: the budget is
         // spent in a deterministic order, so the same ledger always produces the same
@@ -421,7 +434,7 @@ type DaemonRpcTarget
         let counts = config.Host.GetDiagnosticCountsByPlugin()
 
         let statuses =
-            config.Host.GetAllStatuses()
+            rawStatuses
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
         // Wall-time attribution rework. Every phase the daemon spent wall time in — its own
