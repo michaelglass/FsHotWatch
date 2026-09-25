@@ -837,6 +837,44 @@ let ``reporters hear writes in write order`` () =
 
     test <@ List.ofSeq heard = expected @>
 
+/// A cold scan makes thousands of writes, with the queue draining between many of
+/// them. Delivery runs on one long-lived thread per ledger, so those writes create no
+/// threads: every notification, across idle gaps, is heard on the same thread.
+[<Fact(Timeout = 15000)>]
+let ``every delivery runs on one thread across idle gaps`` () =
+    let threads = ResizeArray<System.Threading.Thread>()
+
+    let note () =
+        lock threads (fun () -> threads.Add System.Threading.Thread.CurrentThread)
+
+    let recording =
+        { new IErrorReporter with
+            member _.Report _ _ _ = note ()
+            member _.Clear _ _ = note ()
+            member _.ClearPlugin _ = note ()
+            member _.ClearAll() = note () }
+
+    let ledger = ErrorLedger([ recording ])
+    let e = [ entry "x" DiagnosticSeverity.Error 1 ]
+
+    for i in 1..20 do
+        ledger.Report("lint", $"%d{i}.fs", e)
+        ledger.Clear("lint", $"%d{i}.fs")
+        ledger.ClearPlugin "fcs"
+        // Drained: the next write finds the queue empty.
+        delivered ledger
+
+    let seen = lock threads (fun () -> List.ofSeq threads)
+    // By reference too: a managed thread id can be reused once its thread exits.
+    let distinctThreads =
+        System.Collections.Generic.HashSet(seen, HashIdentity.Reference)
+
+    let distinctIds = seen |> List.map _.ManagedThreadId |> List.distinct
+
+    test <@ seen.Length = 60 @>
+    test <@ distinctIds.Length = 1 @>
+    test <@ distinctThreads.Count = 1 @>
+
 /// A full disk fails the reporter AND the log line about it. Neither may stop the
 /// ledger: its fault latch is for programming bugs, and a ledger that stopped for a
 /// full disk would refuse every read for the rest of the daemon's life.

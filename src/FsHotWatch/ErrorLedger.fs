@@ -341,8 +341,10 @@ type private ReporterJob =
 /// reporter that wrote back into the ledger from inside a write would publish, only for
 /// the outer write to overwrite it with a state computed before, losing the nested
 /// findings. So each write queues its notifications, in write order, while it holds the
-/// lock, and one dedicated thread delivers them outside it. A reporter that fails is
-/// recorded by a follow-up write of the synthetic failure entry.
+/// lock, and one dedicated thread delivers them outside it. That thread lives as long as
+/// the ledger and blocks while the queue is empty, so a burst of writes creates no
+/// threads. A reporter that fails is recorded by a follow-up write of the synthetic
+/// failure entry.
 type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string -> unit) =
     let reporters = defaultArg reporters []
 
@@ -391,10 +393,13 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     let crashed = Event<exn>()
 
     // Reporter notifications not yet delivered, in write order. `delivering` is true
-    // from the first enqueue until the delivery thread finds the queue empty.
+    // from the first enqueue until the delivery thread finds the queue empty. `wake`
+    // releases the idle delivery thread; it is separate from `queueGate` so waking the
+    // thread never wakes `WaitForReportersForTest`.
     let queueGate = obj ()
     let pending = System.Collections.Generic.Queue<ReporterJob>()
     let mutable delivering = false
+    let wake = new System.Threading.AutoResetEvent(false)
 
     let report plugin file (entries: ErrorEntry list) version (state: LedgerState) =
         let key = struct (plugin, file)
@@ -532,31 +537,28 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             next, jobs, ())
         |> ignore
 
-    /// Queue notifications and, if no delivery thread is running, start one. A ledger
-    /// with no reporters owes nobody anything.
+    /// Queue notifications and wake the delivery thread. A ledger with no reporters owes
+    /// nobody anything.
     and enqueue (jobs: ReporterJob list) =
         if not (reporters.IsEmpty || jobs.IsEmpty) then
-            let start =
-                lock queueGate (fun () ->
-                    for job in jobs do
-                        pending.Enqueue job
+            lock queueGate (fun () ->
+                for job in jobs do
+                    pending.Enqueue job
 
-                    let idle = not delivering
-                    delivering <- true
-                    idle)
+                delivering <- true)
 
-            if start then
-                System.Threading.Thread(deliverAll, IsBackground = true, Name = "error-ledger-reporters").Start()
+            wake.Set() |> ignore
 
-    /// The delivery thread: drain the queue in order, then exit. A dedicated thread, not
-    /// a pool work item, so a saturated pool delays no notification. Reporters may write
-    /// back into the ledger from here: their writes queue behind this one.
-    and deliverAll () =
-        let mutable job = takeNext ()
-
-        while job.IsSome do
-            deliver job.Value
-            job <- takeNext ()
+    /// The delivery thread: drain the queue in order, then block until the next write.
+    /// A dedicated thread, not a pool work item, so a saturated pool delays no
+    /// notification. Reporters may write back into the ledger from here: their writes
+    /// queue behind this one. A write that lands between an empty `takeNext` and the
+    /// wait has already set `wake`, so the wait returns at once.
+    and deliverForever () =
+        while true do
+            match takeNext () with
+            | Some job -> deliver job
+            | None -> wake.WaitOne() |> ignore
 
     and takeNext () : ReporterJob option =
         lock queueGate (fun () ->
@@ -578,6 +580,12 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             if dropsFailureAlarm then
                 writeState (fun s -> dropFailureAlarm file s, [])
         | ClearPluginJob plugin -> notifyReporters (fun r -> r.ClearPlugin plugin) |> ignore
+
+    // One delivery thread per ledger that has reporters, started once. Background, so
+    // it never keeps the process alive.
+    do
+        if not reporters.IsEmpty then
+            System.Threading.Thread(deliverForever, IsBackground = true, Name = "error-ledger-reporters").Start()
 
     /// The last published state, or the latched fault.
     let read () : LedgerState =
