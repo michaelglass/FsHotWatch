@@ -10,8 +10,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="QuotationWarmup.fs" />
     <Compile Include="Fixtures.fs" />
     <Compile Include="ScaffoldTests.fs" />
+    <Compile Include="RecorderStateTests.fs" />
+    <Compile Include="XunitContextTests.fs" />
+    <Compile Include="DumpRoundTripTests.fs" />
+    <Compile Include="RuntimeTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

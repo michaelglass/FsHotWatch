@@ -22,7 +22,17 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune.Trace.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
         <Compile Include="Contract.fs" />
+        <Compile Include="Scope.fs" />
+        <Compile Include="ContextSource.fs" />
+        <Compile Include="RecorderState.fs" />
+        <Compile Include="DumpWriter.fs" />
         <Compile Include="Probes.fs" />
     </ItemGroup>
 

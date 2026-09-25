@@ -26,6 +26,7 @@
 
     <ItemGroup>
         <Compile Include="Model.fs" />
+        <Compile Include="DumpReader.fs" />
     </ItemGroup>
 
     <ItemGroup>
