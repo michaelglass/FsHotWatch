@@ -20,6 +20,20 @@
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "default"
+      },
+      {
+        "project": "TestPrune.Trace.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/TestPrune.Trace.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "trace"
+      }
+    ],
+    "excluded": [
+      {
+        "project": "tests/TraceFixtures/tests/FxTests",
+        "reason": "fixture, not a suite: TestPrune.Trace.Tests builds it and runs it woven to check per-test attribution"
       }
     ]
   }

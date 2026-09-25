@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>test-prune-traces</ToolCommandName>
+        <PackageId>TestPrune.Trace.Cli</PackageId>
+        <Version>0.1.0</Version>
+        <Authors>Michael Glass</Authors>
+        <Description>Measurements over recorded per-test traces: census, isolation audit, CPU overhead and file census.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;test-impact-analysis;tracing;cli;dotnet-tool</PackageTags>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Program.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Trace/TestPrune.Trace.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

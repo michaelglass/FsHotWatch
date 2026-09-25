@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Trace</PackageId>
+        <Version>0.1.0</Version>
+        <Authors>Michael Glass</Authors>
+        <Description>Recorded per-test dependencies for TestPrune: IL weaver, shadow bin, trace store and symbol joiner.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;test-impact-analysis;tracing;il-weaving</PackageTags>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune.Trace.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Model.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+        <ProjectReference Include="../TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Mono.Cecil" />
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

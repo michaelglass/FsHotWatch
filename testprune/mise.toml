@@ -16,12 +16,19 @@ depends = ["restore"]
 
 [tasks.test]
 description = "Run tests with coverage"
+# One cobertura per test project, in coverage/<project without .Tests>/, the same layout
+# CI's reusable build workflow produces and the coverage-ratchet-<project>.json files check.
 run = """
-dotnet test --project tests/TestPrune.Tests/TestPrune.Tests.fsproj \
-  --coverage \
-  --coverage-settings "$PWD/coverage.settings.xml" \
-  --coverage-output-format cobertura \
-  --coverage-output "$PWD/coverage/TestPrune/coverage.cobertura.xml"
+set -e
+for proj in $(find tests -name '*.Tests.fsproj' | sort); do
+  project_name=$(basename "$(dirname "$proj")" | sed 's/\\.Tests$//')
+  echo "Testing $proj (coverage -> coverage/$project_name/)"
+  dotnet test --project "$proj" \
+    --coverage \
+    --coverage-settings "$PWD/coverage.settings.xml" \
+    --coverage-output-format cobertura \
+    --coverage-output "$PWD/coverage/$project_name/coverage.cobertura.xml"
+done
 """
 depends = ["build"]
 
@@ -52,12 +59,26 @@ depends = ["build", "tool-restore"]
 
 [tasks.coverage-check]
 description = "Check per-file coverage meets thresholds"
-run = "(cd coverage/TestPrune && dotnet tool run coverageratchet check ../../coverage-ratchet-TestPrune.json)"
+run = """
+set -e
+for config in coverage-ratchet-*.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Checking $project..."
+  (cd "coverage/$project" && dotnet tool run coverageratchet check "../../$config")
+done
+"""
 depends = ["test"]
 
 [tasks.coverage-ratchet]
 description = "Tighten per-file coverage thresholds to current values"
-run = "(cd coverage/TestPrune && dotnet tool run coverageratchet ratchet ../../coverage-ratchet-TestPrune.json)"
+run = """
+set -e
+for config in coverage-ratchet-*.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Ratcheting $project..."
+  (cd "coverage/$project" && dotnet tool run coverageratchet ratchet "../../$config")
+done
+"""
 depends = ["test"]
 
 [tasks.dead-code]

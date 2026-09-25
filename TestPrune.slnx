@@ -6,10 +6,19 @@
     <Project Path="src/TestPrune.Falco/TestPrune.Falco.fsproj" />
     <Project Path="src/TestPrune.Sql/TestPrune.Sql.fsproj" />
     <Project Path="src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
+    <Project Path="src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj" />
+    <Project Path="src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj" />
+    <Project Path="src/TestPrune.Trace/TestPrune.Trace.fsproj" />
     <Project Path="src/TestPrune/TestPrune.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TestPrune.Tests/TestPrune.Tests.fsproj" />
+    <Project Path="tests/TestPrune.Trace.Tests/TestPrune.Trace.Tests.fsproj" />
+  </Folder>
+  <Folder Name="/tests/TraceFixtures/">
+    <Project Path="tests/TraceFixtures/src/FxLib/FxLib.fsproj" />
+    <Project Path="tests/TraceFixtures/src/FxDriver/FxDriver.fsproj" />
+    <Project Path="tests/TraceFixtures/tests/FxTests/FxTests.fsproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/TestPrune.Benchmarks/TestPrune.Benchmarks.fsproj" />
