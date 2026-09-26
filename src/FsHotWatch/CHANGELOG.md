@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a change batch that re-discovers the project model now seals the new model even
+  when it has no checkable files, as the cold scan already does for an empty cohort. An
+  analysis-only daemon (no test projects) used to earn no receipt for that model, so
+  `check` reported "no evidence receipt … at project model generation N" and exited 2
+  until something re-scanned. On macOS a watcher echo of a project file under a
+  symlinked root (`/var` → `/private/var`) could trigger that re-discovery on its own.
+
 ## 0.10.0-alpha.49 - 2026-09-26
 
 - fix: a timed call (`runWithCancellableTimeout`, `runWithCancellableTimeoutTracked`,

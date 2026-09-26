@@ -1585,6 +1585,23 @@ let private processBatchAttempt
         let batchStartedAt = System.DateTime.UtcNow
         let dispatchedFiles = ResizeArray<AbsFilePath>()
 
+        let seal () =
+            publishCurrent (fun () ->
+                let nextGen =
+                    System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+
+                let completedAt = System.DateTime.UtcNow
+
+                ctx.Host.EmitBatchChecked
+                    { Trigger = InSessionBatch changes
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = nextGen
+                      ModelGeneration = modelGenerationOf batchModel
+                      StartedAt = batchStartedAt
+                      CompletedAt = completedAt }
+
+                Logging.info "check" (settledLine nextGen (completedAt - seenAt) dispatchedFiles.Count))
+
         if not allSourceFiles.IsEmpty then
             let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
             // A file a preprocessor rewrote is what the build must now see, whether or not
@@ -1692,25 +1709,20 @@ let private processBatchAttempt
             // results from the pipeline) skip the emit — there's nothing to
             // "flush and decide" against.
             if dispatchedFiles.Count > 0 then
-                publishCurrent (fun () ->
-                    let nextGen =
-                        System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
-
-                    let completedAt = System.DateTime.UtcNow
-
-                    ctx.Host.EmitBatchChecked
-                        { Trigger = InSessionBatch changes
-                          Files = dispatchedFiles |> List.ofSeq
-                          Generation = nextGen
-                          ModelGeneration = modelGenerationOf batchModel
-                          StartedAt = batchStartedAt
-                          CompletedAt = completedAt }
-
-                    Logging.info "check" (settledLine nextGen (completedAt - seenAt) dispatchedFiles.Count))
+                seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
         else
+            // A batch that REPLACED the model with one that has no checkable files still
+            // owes the new model its seal, exactly as the cold scan seals an empty cohort:
+            // "every checkable file of this generation has been dealt with" is true of an
+            // empty model too. Unsealed, the previous generation's seal no longer describes
+            // the model, an analysis-only daemon earns no receipt for the new one, and its
+            // check reports "no evidence receipt" (exit 2) until something else re-scans.
+            if modelGenerationOf batchModel <> modelGenerationOf initialModel then
+                seal ()
+
             return remainingSuppressed
     }
 

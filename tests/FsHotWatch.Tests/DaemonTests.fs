@@ -1810,6 +1810,101 @@ let ``a cold daemon does not re-discover on a watcher echo of an unchanged proje
 
         test <@ loader.Loads = 2 @>)
 
+[<Fact(Timeout = 60000)>]
+let ``a project change that replaces the model seals the new model even with no checkable files`` () =
+    // The cold scan seals an EMPTY cohort, because "every checkable file of this model has
+    // been dealt with" is an answer a model with no checkable files has too. A change batch
+    // that re-discovers the project replaces that model with a new generation — and the new
+    // one is owed the same answer. Unsealed, an analysis-only daemon never earns a receipt
+    // for it and its check can never be green.
+    withTempDir "daemon-empty-model-change" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Empty.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptPath = Path.Combine(srcDir, "Probe.fsx")
+
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(scriptPath, FSharp.Compiler.Text.SourceText.ofString "")
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [||] }
+
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                watcher
+
+        let bootSeals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+        let batchSeals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "seal-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch ->
+                            match batch.Trigger with
+                            | InSessionBatch _ -> batchSeals.Enqueue batch
+                            | BootScan -> bootSeals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not bootSeals.IsEmpty), TimeSpan.FromSeconds 20.0),
+            "the cold scan must seal its empty cohort"
+        )
+
+        let bootModel = (bootSeals.ToArray() |> Array.head).ModelGeneration
+        test <@ bootModel.IsSome @>
+
+        // A real edit of the project file: new bytes, so the batch re-discovers and the
+        // model moves to a new generation — which still has no checkable files.
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        let deliver = callback.Value |> Option.get
+        deliver (ProjectChanged [ projectPath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not batchSeals.IsEmpty), TimeSpan.FromSeconds 20.0),
+            "a batch that replaced the model must seal the new model, even with nothing to check"
+        )
+
+        test <@ loader.Loads = 2 @>
+        let seal = batchSeals.ToArray() |> Array.head
+        test <@ seal.Files.IsEmpty @>
+        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>)
+
 [<Fact(Timeout = 90000)>]
 let ``a scan whose model changes on every attempt fails by name instead of looping`` () =
     withTempDir "daemon-scan-model-storm" (fun tmpDir ->
