@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-09-26
+
 - docs: ships the TestPrune.Trace README, which documents every verb, as its package README.
 - feat: `test-prune-traces` tool scaffold. It prints its usage and exits 2; the
   measurement verbs arrive with the trace store.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-09-26
+
 - docs: ships the TestPrune.Trace README as its package README.
 - feat: package scaffold. `Probes` and `Scopes` carry their final signatures with no-op
   bodies, and `Contract` names every probe the weaver emits. Targets net8.0 and pins

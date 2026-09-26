@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-09-26
+
 - docs: the README documents the `test-prune-traces` verbs (flags, exit codes, bars and
   caveats), what is refused or not recorded, and the first measurements on TestPrune's own
   suite; its code blocks are compiled and kept in sync by `syncdocs`. Decision records
