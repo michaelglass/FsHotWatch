@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "SpawnHelper.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Fully covered on macOS.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 86,
+        "reason": "lower branch count on Linux CI: SDK 10.0.401 attributes 143 branches here and measures 127 (88.8%, CI run 36266994675); lines are 100% on both platforms. The 16-branch gap is larger than the usual SDK difference, so re-measure which halves are missing in the Linux coverage batch. Floor ~3pp under the measurement.",
+        "platform": "linux"
+      }
+    ],
     "TraceRun.fs": [
       {
         "line": 100,
