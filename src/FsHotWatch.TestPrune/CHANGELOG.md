@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: after a project model change, or in a daemon that has not yet run every project
+  whole, `check` earns a green in one run instead of refusing until a `confirm`. The
+  evidence a run earns vouches for a filtered or skipped project only through a
+  whole-project run under the current model, and a model change (a merge that touches a
+  project file, a restart) leaves none. The launch still filtered those projects, so its
+  evidence refused ("filtered execution without a whole-project baseline", "no result or
+  baseline"), and the next `check`, owing nothing, selected nothing and kept the refusing
+  evidence. The launch now runs in full every runnable project that the current model's
+  evidence does not cover whole (logged as `Evidence gap: …`, and named when the
+  zero-affected skip is refused). Under an unchanged model with evidence in hand, the
+  selection is unchanged. Breaking: `TestRunInputs` has a new field, `Earned`.
 - fix: an analysis-only daemon (no test projects) now earns a clean receipt after a
   scoped project-file change and after a restart over an unchanged tree. It carries the
   seal's retained files' analysis into the new model. A `FileChecked` replayed from the

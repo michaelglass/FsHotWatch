@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `EarnedEvidence.wholeProjectGap` names the runnable projects the current model's
+  evidence does not cover with a whole-project run, so a launch can run them in full and
+  earn evidence that supports a green.
 - fix: a project-file change that re-discovers the model on the scoped path no longer
   leaves the projects it did not re-check without results for the new model. The seal
   (`BatchChecked.Retained`, new `RetainedResults`) names the files whose standing results

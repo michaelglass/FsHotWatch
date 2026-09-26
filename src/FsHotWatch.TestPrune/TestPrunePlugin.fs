@@ -1304,6 +1304,9 @@ type internal ZeroAffectedWidening =
     /// No full-suite baseline vouches for what a filtered run would
     /// skip — none recorded, or it never executed a project configured since.
     | NoFullSuiteBaseline of reason: string
+    /// These projects have no whole-project run under the current project model, so the
+    /// evidence a run earns refuses them unless it runs them in full.
+    | NoCurrentModelEvidence of projects: Set<string>
 
 module internal ZeroAffectedWidening =
     let describe (cause: ZeroAffectedWidening) =
@@ -1311,6 +1314,9 @@ module internal ZeroAffectedWidening =
         | ZeroAffectedWidening.NoSessionBaseline ->
             "no run has completed in this session yet (no baseline to be equivalent to)"
         | ZeroAffectedWidening.NoFullSuiteBaseline reason -> reason
+        | ZeroAffectedWidening.NoCurrentModelEvidence projects ->
+            let names = projects |> Set.toList |> String.concat ", "
+            $"no whole-project run under the current project model for %s{names}"
         | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
         | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
             $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
@@ -1336,6 +1342,7 @@ let internal zeroAffectedWidening
     (runtimeObligations: RuntimeCoverageObligations)
     (outstandingFailures: int)
     (fullSuiteBaselineInvalid: string option)
+    (evidenceGap: Set<string>)
     : ZeroAffectedWidening list =
     [ if not hasSessionBaseline then
           ZeroAffectedWidening.NoSessionBaseline
@@ -1361,7 +1368,10 @@ let internal zeroAffectedWidening
           ZeroAffectedWidening.RuntimeCoverageDebt(files, Set.count namedProjects)
 
       if outstandingFailures > 0 then
-          ZeroAffectedWidening.OutstandingFailures outstandingFailures ]
+          ZeroAffectedWidening.OutstandingFailures outstandingFailures
+
+      if not (Set.isEmpty evidenceGap) then
+          ZeroAffectedWidening.NoCurrentModelEvidence evidenceGap ]
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -1693,6 +1703,9 @@ type TestRunInputs =
         /// Seed receipt captured at dispatch. A later BatchChecked may replace the
         /// live state's LastSeeds while this run is still executing.
         Seeds: string list
+        /// The evidence earned so far. Projects it does not cover whole under the current
+        /// model run in full, so this run's own evidence can support a green.
+        Earned: EarnedEvidence option
     }
 
 module TestRunInputs =
@@ -1707,7 +1720,8 @@ module TestRunInputs =
           Debt = state.Debt
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
-          Seeds = state.LastSeeds }
+          Seeds = state.LastSeeds
+          Earned = state.Earned }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -6396,9 +6410,18 @@ let internal createWithQueries
             let runtimeForceProjects =
                 launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
 
+            // A project with no whole-project run under the current model can only be
+            // vouched for by running it in full: filtered or skipped, it is a refusal in
+            // the evidence this run earns, and a later run that selects nothing keeps that
+            // refusal. After a model change or a restart, this is every project the
+            // current model has not yet seen run whole.
+            let evidenceGap =
+                EarnedEvidence.wholeProjectGap (observeModelGeneration ctx) (fullSuiteProjects configs) inputs.Earned
+
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
                 let widened = Set.union widened runtimeForceProjects
+                let widened = Set.union widened evidenceGap
 
                 if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
                     Set.union widened (fullSuiteProjects configs)
@@ -6409,6 +6432,13 @@ let internal createWithQueries
                 Logging.info
                     "test-prune"
                     "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
+
+            if not (Set.isEmpty evidenceGap) then
+                let names = evidenceGap |> Set.toList |> String.concat ", "
+
+                Logging.info
+                    "test-prune"
+                    $"Evidence gap: %d{Set.count evidenceGap} project(s) have no whole-project run under the current project model (%s{names}) — running them in full, so this run's evidence can support a green"
 
             match baselineInvalid with
             | Some reason when not ledgerUnreadable ->
@@ -6564,7 +6594,7 @@ let internal createWithQueries
                         wouldHaveRunSelection
                             configs
                             quarantinedAffectedByProject
-                            (coarseFallbackProjects configs coarseGaps fanoutProjects)
+                            (Set.union (coarseFallbackProjects configs coarseGaps fanoutProjects) evidenceGap)
                             runtimeForceProjects
                             ledgerUnreadable
                         |> Some
@@ -6690,6 +6720,7 @@ let internal createWithQueries
                                 inputs.Debt.RuntimeObligations
                                 (List.length inputs.OutstandingFailures)
                                 baselineInvalid
+                                evidenceGap
 
                         // An EMPTY selection is not "a few projects": `selectionOf` reads
                         // it as no selection at all and every configured project runs in
