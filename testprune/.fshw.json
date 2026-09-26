@@ -27,8 +27,7 @@
         "args": "run --project tests/TestPrune.Trace.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "trace",
-        "traces": false
+        "group": "trace"
       }
     ],
     "traces": {
