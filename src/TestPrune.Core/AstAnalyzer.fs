@@ -237,9 +237,66 @@ let internal tryName (access: unit -> string) : string option =
     with _ ->
         None
 
+/// The qualifier every symbol rooted in a type of the GLOBAL namespace is indexed under:
+/// `namespace global` + `type StartupHook` is stored as `<global>.StartupHook`, its
+/// members as `<global>.StartupHook.Initialize`.
+///
+/// FCS names such a type by its bare identifier (`StartupHook`), and a bare non-module
+/// name is exactly what `symbols_full_name_is_qualified` rejects — rightly, because a bare
+/// name is how unrelated things merge into one repo-wide hub. But .NET REQUIRES some types
+/// to live there (a `DOTNET_STARTUP_HOOKS` hook is a global `StartupHook` class), so the
+/// analyzer must name them rather than drop them.
+///
+/// Why not F#'s own `global.StartupHook`: `global` is a keyword, but ``` ``global`` ``` is
+/// a legal namespace name, compiled to the CLR namespace `global`, whose types FCS
+/// reports as `global.StartupHook` — a DIFFERENT type that would share the row. C#
+/// allows the same with `namespace @global`. Angle brackets follow the CLR's convention
+/// for names no source language can speak (the global pseudo-type is `<Module>`, F#'s
+/// startup code `<StartupCode$…>`): C# cannot declare the identifier `<global>` at all,
+/// and F# only as a deliberately perverse backticked namespace.
+///
+/// Modules are NOT qualified: `Module` is the one kind the constraint exempts, and a
+/// global-namespace module is the same CLR entity as a top-level `module X`, which has
+/// always been indexed as bare `X`.
+[<Literal>]
+let GlobalNamespaceQualifier = "<global>"
+
+/// Whether `entity`, which FCS names `fullName`, is a type directly in the global
+/// namespace. A dot-free name is the evidence: every namespaced or module-nested entity
+/// carries its qualifier in `FullName`, and F# cannot nest a type inside a type. (A CLR
+/// type nested in a global-namespace type is named `Outer.Inner` — already qualified.)
+///
+/// Deliberately does NOT walk `DeclaringEntity`: for a namespaced type FCS resolves the
+/// namespace on every call, and walking it per symbol use took the captured large-file
+/// replay (`FsHotCaptureReplayTests`) from under its 512 MB allocation budget to 5.8 GB.
+let private isGlobalNamespaceType (entity: FSharpEntity) (fullName: string) : bool =
+    not (fullName.Contains '.')
+    && not entity.IsNamespace
+    && not entity.IsFSharpModule
+
+/// The indexed name of an entity: FCS `FullName`, qualified by
+/// `GlobalNamespaceQualifier` for a global-namespace type. Throws where `FullName` throws.
+let internal entityName (entity: FSharpEntity) : string =
+    let fullName = entity.FullName
+
+    if isGlobalNamespaceType entity fullName then
+        GlobalNamespaceQualifier + "." + fullName
+    else
+        fullName
+
+/// Qualify `name` — a member's or union case's — when its declaring entity is a
+/// global-namespace type, so it stays under that type's indexed name.
+let private withGlobalQualifier (declaring: FSharpEntity option) (name: string) : string =
+    match declaring with
+    | Some entity ->
+        match tryName (fun () -> entity.FullName) with
+        | Some owner when isGlobalNamespaceType entity owner -> GlobalNamespaceQualifier + "." + name
+        | _ -> name
+    | None -> name
+
 let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) option =
     try
-        let fullName = entity.FullName
+        let fullName = entityName entity
 
         // Every entity flavor is listed explicitly, with `else None` for the rest, rather
         // than a `Some(Type, fullName)` catch-all. Namespaces in particular are not
@@ -303,21 +360,29 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
 /// records for that member (`M.QBuilder.Where`), so the edge lands on the real member and
 /// a change to the builder selects its consumers, instead of both vanishing into a node
 /// named after a keyword.
+///
+/// A member of a global-namespace type is also qualified by `GlobalNamespaceQualifier`,
+/// so it stays under its type's indexed name.
 let private qualifyThroughDeclaringEntity (mfv: FSharpMemberOrFunctionOrValue) (reported: string) : string =
     if reported.Contains '.' then
-        reported
+        withGlobalQualifier mfv.DeclaringEntity reported
     else
         let declaringName =
             mfv.DeclaringEntity
-            |> Option.bind (fun entity -> tryName (fun () -> entity.FullName))
+            |> Option.bind (fun entity -> tryName (fun () -> entityName entity))
 
         match declaringName, tryName (fun () -> mfv.LogicalName) with
         | Some owner, Some logical -> owner + "." + logical
         | _ -> reported
 
+/// The indexed name of a member, function or value — the name its DEFINITION is stored
+/// under. Throws where `FullName` throws.
+let internal memberName (mfv: FSharpMemberOrFunctionOrValue) : string =
+    qualifyThroughDeclaringEntity mfv mfv.FullName
+
 let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
     try
-        let fullName = qualifyThroughDeclaringEntity mfv mfv.FullName
+        let fullName = memberName mfv
 
         // Locals and parameters must never become symbols. FCS reports `FullName` for a
         // parameter or a local `let` as the BARE identifier (`name`, `question`, `kind`),
@@ -365,7 +430,7 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
 
 let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) option =
     try
-        Some(DuCase, uc.FullName)
+        Some(DuCase, withGlobalQualifier (Some uc.DeclaringEntity) uc.FullName)
     with _ ->
         None
 
@@ -651,7 +716,7 @@ let private boundedDepthFirst maxDepth tryStableName children roots =
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
     // `TypeDefinition.FullName` can throw on un-nameable parent types — see `tryName`.
-    | :? FSharpUnionCase as uc -> tryName (fun () -> uc.ReturnType.TypeDefinition.FullName)
+    | :? FSharpUnionCase as uc -> tryName (fun () -> entityName uc.ReturnType.TypeDefinition)
     | _ -> None
 
 /// Recursively extract all concrete type argument entity full names from a type.
@@ -678,7 +743,7 @@ let private extractGenericTypeArgsWithBudget
                 |> List.choose (fun t ->
                     try
                         if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
-                            Some t.TypeDefinition.FullName
+                            Some(entityName t.TypeDefinition)
                         else
                             None
                     with _ ->
@@ -825,14 +890,14 @@ let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
             match mfv.DeclaringEntity with
-            | Some entity when entity.IsFSharpRecord -> Some entity.FullName
+            | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
             | _ -> None
         with _ ->
             None
     | :? FSharpField as f ->
         try
             match f.DeclaringEntity with
-            | Some entity when entity.IsFSharpRecord -> Some entity.FullName
+            | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
             | _ -> None
         with _ ->
             None
@@ -2134,7 +2199,7 @@ let private extractResults
             let tryFullName (t: FSharpType) : string option =
                 try
                     if t.HasTypeDefinition && not t.IsGenericParameter then
-                        Some t.TypeDefinition.FullName
+                        Some(entityName t.TypeDefinition)
                     else
                         None
                 with _ ->
@@ -2258,7 +2323,7 @@ let private extractResults
                     match u.Symbol with
                     | :? FSharpEntity as entity ->
                         try
-                            let entityFullName = entity.FullName
+                            let entityFullName = entityName entity
 
                             for attr in entity.Attributes do
                                 try
@@ -2348,8 +2413,8 @@ let private extractResults
                             match mfv.DeclaringEntity with
                             | Some entity when not entity.IsFSharpModule ->
                                 parentLinks <-
-                                    { Child = mfv.FullName
-                                      Parent = entity.FullName }
+                                    { Child = memberName mfv
+                                      Parent = entityName entity }
                                     :: parentLinks
                             | _ -> ()
                         with _ ->
@@ -2371,7 +2436,7 @@ let private extractResults
                                     | _ -> fallbackClass
 
                                 testMethods <-
-                                    { SymbolFullName = mfv.FullName
+                                    { SymbolFullName = memberName mfv
                                       TestProject = projectName
                                       TestClass = testClass
                                       TestMethod = testMethod }
@@ -2391,19 +2456,19 @@ let private extractResults
                                 match mfv.DeclaringEntity with
                                 | Some entity when not entity.IsFSharpModule ->
                                     for fixtureFullName in collectFixtureTypes entity do
-                                        if fixtureFullName <> mfv.FullName then
+                                        if fixtureFullName <> memberName mfv then
                                             fixtureEdges <-
-                                                { FromSymbol = mfv.FullName
+                                                { FromSymbol = memberName mfv
                                                   ToSymbol = fixtureFullName
                                                   Kind = UsesType
                                                   Source = "core" }
                                                 :: fixtureEdges
 
-                                    match collectionMemberships |> Map.tryFind entity.FullName with
+                                    match collectionMemberships |> Map.tryFind (entityName entity) with
                                     | Some names ->
                                         for name in names do
                                             fixtureEdges <-
-                                                { FromSymbol = mfv.FullName
+                                                { FromSymbol = memberName mfv
                                                   ToSymbol = SyntheticCollectionPrefix + name
                                                   Kind = UsesType
                                                   Source = "core" }
@@ -2417,7 +2482,7 @@ let private extractResults
                             for attr in mfv.Attributes do
                                 try
                                     attributes <-
-                                        { SymbolFullName = mfv.FullName
+                                        { SymbolFullName = memberName mfv
                                           AttributeName = attr.AttributeType.DisplayName
                                           ArgsJson = serializeAttributeArgs attr }
                                         :: attributes

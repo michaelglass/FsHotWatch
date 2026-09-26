@@ -334,6 +334,16 @@ let private openConnection (dbPath: string) =
 ///          own attributes and payload rather than the line its name is on. A file not
 ///          re-indexed would otherwise keep old-style hashes, and its first edit would
 ///          report every type in it as modified and purge their coverage.
+/// v17    — no schema text change; a REBUILD, because stored NAMES changed meaning. A
+///          type rooted in the global namespace, with its members and union cases, is
+///          now named under `AstAnalyzer.GlobalNamespaceQualifier` (`<global>.StartupHook`,
+///          `<global>.StartupHook.Initialize`). Its bare type name was rejected by
+///          `symbols_full_name_is_qualified`, failing the flush that defined it, but its
+///          members' and cases' names were already qualified (`StartupHook.Initialize`)
+///          and could be stored by any other flush that referenced them — an extern
+///          placeholder, and the edges to it. A file not re-indexed would keep edges to
+///          that old name, which the renamed definition no longer reaches, so a change
+///          to the type would silently not select its tests.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -349,7 +359,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 16
+let SchemaVersion = 17
 
 /// The `dependencies.source_file` value that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
@@ -689,14 +699,25 @@ type Database(dbPath: string) =
                     // SQLite reports only the constraint name
                     // (`symbols_full_name_is_qualified`), never the offending row. Since the
                     // whole point of the constraint is to surface a bad name, the failure
-                    // has to carry that name and its file.
+                    // has to carry that name and its file — and, because the reader is
+                    // usually someone whose test run just went red for a reason that is not
+                    // theirs, what it means and what to do about it.
+                    //
+                    // It stays a hard failure of the whole flush rather than a skipped row:
+                    // a dropped symbol silently loses its edges, and an index that quietly
+                    // under-selects looks exactly like one that is right.
                     let symbolId =
                         try
                             cmd.ExecuteScalar()
                         with :? SqliteException as ex ->
                             raise (
                                 SqliteException(
-                                    $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}",
+                                    $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}. "
+                                    + "Every indexed name except a module's must be qualified (contain a '.'): an unqualified one would merge "
+                                    + "every same-named symbol in the repo into one node, so nothing from this flush was stored. "
+                                    + "This is a TestPrune analyzer bug, not a problem in your code: report it at "
+                                    + $"https://github.com/michaelglass/TestPrune/issues with the declaration of '%s{sym.FullName}' in %s{sym.SourceFile}. "
+                                    + "Until it is fixed, this index cannot select tests; run the full test suite.",
                                     ex.SqliteErrorCode,
                                     ex.SqliteExtendedErrorCode
                                 )

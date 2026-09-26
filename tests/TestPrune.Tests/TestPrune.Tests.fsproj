@@ -84,6 +84,7 @@
     <Compile Include="SoundnessHarnessTests.fs" />
     <Compile Include="SymbolOccurrenceStoreTests.fs" />
     <Compile Include="SignatureOccurrenceTests.fs" />
+    <Compile Include="GlobalNamespaceTests.fs" />
     <!-- ADR 0001 drift alarm: assert the AST case->URL composition matches Falco.UnionRoutes'
          canonical Route.enumerate over the synthetic corpus. TEST-ONLY use of Falco.UnionRoutes;
          the shipped TestPrune.Falco takes no dependency on it. Both files name the library, so both
