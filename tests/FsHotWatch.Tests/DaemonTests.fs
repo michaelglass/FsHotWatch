@@ -4175,3 +4175,17 @@ let ``a scan requested before the running scan read the tree is answered by it``
         // Control: a request admitted AFTER a scan read the tree is a real scan.
         daemon.ScanAll() |> Async.RunSynchronously
         test <@ daemon.GetScanGeneration() = 2L @>)
+
+[<Fact(Timeout = 5000)>]
+let ``the batch line names the changed files that caused it and counts the dependents`` () =
+    let triggers = [ for i in 1..12 -> $"/repo/src/F%d{i}.fs" ]
+
+    test
+        <@
+            Daemon.checkingAfterChangeLine "/repo" triggers 40 = "Checking 40 files after change — 12 changed [src/F1.fs, src/F2.fs, src/F3.fs, src/F4.fs, src/F5.fs, src/F6.fs, src/F7.fs, src/F8.fs, src/F9.fs, src/F10.fs and 2 more], 28 dependent"
+        @>
+
+    test
+        <@
+            Daemon.checkingAfterChangeLine "/repo" [ "/repo/a/A.fs" ] 1 = "Checking 1 files after change — 1 changed [a/A.fs], 0 dependent"
+        @>

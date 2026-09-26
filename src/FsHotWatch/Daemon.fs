@@ -1338,6 +1338,28 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 
         $"format refused — %s{reasons}"
 
+/// How many paths a log line names before it summarizes the rest.
+let private namedPathLimit = 10
+
+/// The line a change batch writes before it checks: how many files it will check and the
+/// changed files that caused it (the rest are dependents), repository-relative, the first
+/// `namedPathLimit` by name. Info level, because a batch that re-checks a thousand files
+/// is the question the log has to answer, and at debug it answered nothing.
+let internal checkingAfterChangeLine (repoRoot: string) (triggers: string list) (total: int) : string =
+    let rel (path: string) =
+        Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+
+    let named =
+        triggers |> List.truncate namedPathLimit |> List.map rel |> String.concat ", "
+
+    let more =
+        if triggers.Length > namedPathLimit then
+            $" and %d{triggers.Length - namedPathLimit} more"
+        else
+            ""
+
+    $"Checking %d{total} files after change — %d{triggers.Length} changed [%s{named}%s{more}], %d{max 0 (total - triggers.Length)} dependent"
+
 /// The line naming the project inputs whose content changed, repository-relative, or
 /// `None` when none did. An `obj/project.assets.json` is a restore's write (package
 /// graph), a `.fsproj` / `.props` an edit of the project itself.
@@ -1599,7 +1621,7 @@ let private processBatchAttempt
             publishCurrent (fun () ->
                 ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
 
-            Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
+            Logging.info "daemon" (checkingAfterChangeLine ctx.RepoRoot allSourceFiles allFilesToCheck.Length)
             let mutable checkedFiles = Set.empty
             let filesToCheckSet = allFilesToCheck |> Set.ofList
             let tiers = ctx.Graph.GetParallelTiers()
@@ -1650,7 +1672,8 @@ let private processBatchAttempt
                             for file in projFiles do
                                 tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
 
-                let! results = tierChecks |> Seq.toList |> Async.Parallel
+                let! results = tierChecks |> Seq.toList |> Async.Parallel |> CheckCaller.within "change batch"
+
                 emitResults results
 
             // Check files not belonging to any project (e.g. standalone .fsx files)
@@ -1661,6 +1684,7 @@ let private processBatchAttempt
                     uncovered
                     |> List.map (fun file -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
                     |> Async.Parallel
+                    |> CheckCaller.within "change batch"
 
                 emitResults results
 
@@ -3336,7 +3360,9 @@ let private performScan
                                 { state with
                                     ScanState = Scanning(total, completed, System.DateTime.UtcNow) })
 
-                    let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+                    let! tierOutcome =
+                        runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+                        |> CheckCaller.within "scan"
 
                     match tierOutcome with
                     | ScanCheckOutcome.AllChecked _ -> ()

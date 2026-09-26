@@ -195,3 +195,117 @@ let ``a check canceled while FCS runs returns None after it, is logged as before
 
         test <@ cache.Count = 0 @>
         test <@ throws = 0 @>)
+
+/// An activity sink that, on the FIRST check start, starts `second` and holds the first
+/// check until the second has joined it (or a bound passes), so the second call is
+/// guaranteed to arrive while the first is in flight.
+type private JoinProbe() =
+    let starts = ref 0
+    let joined = new ManualResetEventSlim(false)
+    member val Second: Threading.Tasks.Task<FileCheckResult option> option = None with get, set
+    member val StartSecond: unit -> Threading.Tasks.Task<FileCheckResult option> = (fun () -> null) with get, set
+    member _.Starts = starts.Value
+    member _.Joined = joined.IsSet
+
+    interface PluginActivity.IActivitySink with
+        member _.StartSubtask(_, _) = ()
+        member _.UpdateSubtask(_, _) = ()
+        member _.EndSubtask _ = ()
+
+        member this.Log message =
+            if message.StartsWith "check start" then
+                if Interlocked.Increment starts = 1 then
+                    this.Second <- Some(this.StartSecond())
+                    joined.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+            elif message.StartsWith "joining the in-flight check" then
+                joined.Set()
+
+        member _.SetSummary _ = ()
+
+[<Fact(Timeout = 60000)>]
+let ``a second check of the same unchanged file joins the first instead of cancelling it`` () =
+    withTempDir "join-identical" (fun tmpDir ->
+        let probe = JoinProbe()
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 1, keepAssemblyContents = true)
+
+        let pipeline = CheckPipeline(checker, activity = probe)
+        let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Mod.fs"))
+        File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
+        let file = AbsFilePath.create sourceFile
+        probe.StartSecond <- fun () -> Async.StartAsTask(pipeline.CheckFile file)
+
+        let first = pipeline.CheckFile file |> Async.RunSynchronously
+
+        let second =
+            probe.Second.Value.WaitAsync(TimeSpan.FromSeconds 30.0).GetAwaiter().GetResult()
+
+        test <@ probe.Joined @>
+        test <@ probe.Starts = 1 @>
+        test <@ first.IsSome && second.IsSome @>
+        test <@ first.Value.Version = second.Value.Version @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a newer check of a changed file still supersedes the running one`` () =
+    withTempDir "supersede-changed" (fun tmpDir ->
+        let starts = ref 0
+        let mutable second: Threading.Tasks.Task<FileCheckResult option> option = None
+
+        let mutable startSecond: unit -> Threading.Tasks.Task<FileCheckResult option> =
+            fun () -> null
+
+        let secondStarted = new ManualResetEventSlim(false)
+        let sourceFile = ref ""
+
+        let sink =
+            { new PluginActivity.IActivitySink with
+                member _.StartSubtask(_, _) = ()
+                member _.UpdateSubtask(_, _) = ()
+                member _.EndSubtask _ = ()
+
+                member _.Log message =
+                    if message.StartsWith "check start" then
+                        match Interlocked.Increment starts with
+                        | 1 ->
+                            // Change the file, then check it again while this check runs.
+                            File.WriteAllLines(sourceFile.Value, [| "module Mod"; "let x = 2" |])
+                            second <- Some(startSecond ())
+                            secondStarted.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+                        | _ -> secondStarted.Set()
+
+                member _.SetSummary _ = () }
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 1, keepAssemblyContents = true)
+
+        let pipeline = CheckPipeline(checker, activity = sink)
+        sourceFile.Value <- Path.GetFullPath(Path.Combine(tmpDir, "Mod.fs"))
+        File.WriteAllLines(sourceFile.Value, [| "module Mod"; "let x = 1" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                sourceFile.Value,
+                SourceText.ofString (File.ReadAllText sourceFile.Value)
+            )
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
+        let file = AbsFilePath.create sourceFile.Value
+        startSecond <- fun () -> Async.StartAsTask(pipeline.CheckFile file)
+
+        let first = pipeline.CheckFile file |> Async.RunSynchronously
+
+        let latest =
+            second.Value.WaitAsync(TimeSpan.FromSeconds 30.0).GetAwaiter().GetResult()
+
+        test <@ starts.Value = 2 @>
+        test <@ first = None @>
+        test <@ latest.IsSome @>
+        test <@ latest.Value.Source.Contains "let x = 2" @>)

@@ -74,7 +74,25 @@ let ``per-file check lines name the file, its generation and snapshot, and split
 
     test
         <@
-            sharedCancelLine "Lib.fs" "Lib.fsproj" origin 4 = "cancelling the in-flight check of Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6): 4 other in-flight check(s) share that project type-check"
+            supersedeLine
+                "Lib.fs"
+                "Lib.fsproj"
+                "scan"
+                origin
+                "change batch"
+                { origin with
+                    SnapshotKey = "0f0f0f0f0f0f" }
+                4 = "cancelling the in-flight check of Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6) started by scan, for change batch (generation 3): snapshot key changed a1b2c3d4e5f6 -> 0f0f0f0f0f0f; 4 other in-flight check(s) share the cancelled project type-check"
+        @>
+
+    test
+        <@
+            supersedeLine "Lib.fs" "Lib.fsproj" "scan" origin "change batch" { origin with Generation = 4L } 0 = "cancelling the in-flight check of Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6) started by scan, for change batch (generation 4): same snapshot key, different generation; 0 other in-flight check(s) share the cancelled project type-check"
+        @>
+
+    test
+        <@
+            joinLine "Lib.fs" "scan" "change batch" "Lib.fsproj generation 3, snapshot a1b2c3d4e5f6" = "joining the in-flight check of Lib.fs (Lib.fsproj generation 3, snapshot a1b2c3d4e5f6) started by scan, for change batch: same snapshot, one FCS check"
         @>
 
 [<Fact(Timeout = 15000)>]

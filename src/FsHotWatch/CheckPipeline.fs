@@ -81,11 +81,6 @@ let internal checkedLine
 
     $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms; %s{originText project origin})"
 
-/// The line logged when a new check of a file cancels one still in flight whose
-/// project type-check other in-flight checks are also waiting on.
-let internal sharedCancelLine (fileName: string) (project: string) (origin: CheckOrigin) (sharers: int) : string =
-    $"cancelling the in-flight check of %s{fileName} (%s{originText project origin}): %d{sharers} other in-flight check(s) share that project type-check"
-
 /// When `file` has a check in flight that other in-flight checks share — the same
 /// project, generation and snapshot, so the same project type-check — its project,
 /// origin and how many others share it.
@@ -105,6 +100,74 @@ let internal sharedInFlight
         with
         | 0 -> None
         | sharers -> Some(project, origin, sharers))
+
+/// Who asked for a check — `scan`, `change batch` — so the log can say which caller
+/// joined or superseded which. Ambient, because the check API is shared by callers that
+/// never pass it; unset reads as `unnamed caller`.
+module CheckCaller =
+    let private ambient = AsyncLocal<string>()
+
+    /// Run `work` with checks it starts attributed to `caller`.
+    let within (caller: string) (work: Async<'a>) : Async<'a> =
+        async {
+            let previous = ambient.Value
+            ambient.Value <- caller
+
+            try
+                return! work
+            finally
+                ambient.Value <- previous
+        }
+
+    /// The caller checks started here are attributed to.
+    let current () : string =
+        match ambient.Value with
+        | null -> "unnamed caller"
+        | caller -> caller
+
+/// A check that is running: what it asked FCS, who started it and its answer.
+[<NoComparison; NoEquality>]
+type internal RunningCheck =
+    { Project: string
+      Origin: CheckOrigin
+      Caller: string
+      Ticket: int64
+      Cts: CancellationTokenSource
+      Task: Threading.Tasks.Task<(FileCheckResult * (string * string) list) option> }
+
+/// What a check call does about the check of its file that is already running.
+[<NoComparison; NoEquality>]
+type internal CheckDecision =
+    /// The running check asks the identical question: wait for its answer.
+    | Join of RunningCheck
+    /// A newer call already started a check of this file: this one gives way.
+    | GiveWay
+    /// Start a check, superseding the running one (a different snapshot) if any.
+    | Start of started: RunningCheck * superseded: RunningCheck option
+
+/// The line logged when a check call joins the identical running check of its file.
+let internal joinLine (fileName: string) (runningCaller: string) (joiningCaller: string) (origin: string) : string =
+    $"joining the in-flight check of %s{fileName} (%s{origin}) started by %s{runningCaller}, for %s{joiningCaller}: same snapshot, one FCS check"
+
+/// The line logged when a newer check supersedes a running check of a DIFFERENT snapshot:
+/// both callers, both origins, and whether the keys matched (they cannot, or it would
+/// have joined — said anyway, because the log is where that claim gets checked).
+let internal supersedeLine
+    (fileName: string)
+    (runningProject: string)
+    (runningCaller: string)
+    (running: CheckOrigin)
+    (newCaller: string)
+    (next: CheckOrigin)
+    (sharers: int)
+    : string =
+    let keys =
+        if running.SnapshotKey = next.SnapshotKey then
+            "same snapshot key, different generation"
+        else
+            $"snapshot key changed %s{running.SnapshotKey} -> %s{next.SnapshotKey}"
+
+    $"cancelling the in-flight check of %s{fileName} (%s{originText runningProject running}) started by %s{runningCaller}, for %s{newCaller} (generation %d{next.Generation}): %s{keys}; %d{sharers} other in-flight check(s) share the cancelled project type-check"
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
@@ -145,7 +208,20 @@ type CheckPipeline
 
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
+    /// The check of each file that is running now, joined by an identical request and
+    /// superseded by a newer different one. See `CheckFileCore`.
+    let running = ConcurrentDictionary<AbsFilePath, RunningCheck>()
+    /// Tokens handed out by `CancelPreviousCheck`, cancelled by the next one for the
+    /// same file and by `PrepareForRediscovery`.
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
+    /// The ticket of the newest check started for each file; an older call gives way.
+    let lastStarted = ConcurrentDictionary<AbsFilePath, int64>()
+    /// Every call takes a ticket on entry, so "newer" means entered later.
+    let mutable nextTicket = 0L
+    /// A call that entered before the last rediscovery gives way: its options are gone.
+    let mutable rediscoveredAt = 0L
+    /// Serializes the join-or-start decision; held for dictionary updates only.
+    let gate = obj ()
 
     /// The checks between building their snapshot and returning, with where each one's
     /// answer is coming from. Read only to say, when a check is cancelled, how many
@@ -272,10 +348,19 @@ type CheckPipeline
     member _.PrepareForRediscovery(?clearCheckCache: bool) =
         let clearCheckCache = defaultArg clearCheckCache true
 
+        lock gate (fun () ->
+            rediscoveredAt <- Interlocked.Increment(&nextTicket)
+
+            for kvp in running do
+                kvp.Value.Cts.Cancel()
+
+            running.Clear())
+
         for kvp in fileTokens do
             cancelAndDispose kvp.Value
 
         fileTokens.Clear()
+
         projectOptionsByFile.Clear()
         projectOptionsByProject.Clear()
         projectOptionsHashCache.Clear()
@@ -373,15 +458,14 @@ type CheckPipeline
     /// Get all registered source files across all projects.
     member _.GetAllRegisteredFiles() : AbsFilePath list = projectOptionsByFile.Keys |> Seq.toList
 
-    /// Cancel any in-flight check for the given file and return a new CancellationTokenSource.
-    /// If a caller token is provided, the returned CTS is linked to it so that daemon-level
-    /// cancellation also cancels the per-file check.
+    /// Supersede whatever check of `filePath` is running and return a new
+    /// CancellationTokenSource, linked to `ct` when one is given.
     ///
-    /// Required for correctness, not a hot-path optimization: the scan and change-batch
-    /// supervisors in Daemon.fs can issue concurrent CheckFile calls for the same file.
-    /// Without cancellation a slow scan-side check can emit a stale FileChecked AFTER
-    /// the batch-side check emitted the fresh one, and plugins would observe
-    /// newer-then-older ordering and re-publish stale errors.
+    /// A newer check of a file wins: the running one is cancelled and any older call that
+    /// has not yet started its check returns nothing, so a slow scan-side check can never
+    /// emit a stale FileChecked AFTER the batch-side check emitted the fresh one. `CheckFile`
+    /// no longer calls this on entry — it supersedes only a running check whose snapshot
+    /// differs from its own, and joins one whose snapshot is the same (see `CheckFileCore`).
     member _.CancelPreviousCheck(filePath: AbsFilePath, ?ct: CancellationToken) : CancellationTokenSource =
         let ct = defaultArg ct CancellationToken.None
 
@@ -391,18 +475,14 @@ type CheckPipeline
             else
                 CancellationTokenSource.CreateLinkedTokenSource(ct)
 
-        // Said before the cancellation rather than inside the update below, which a
-        // contended dictionary may run more than once.
-        match sharedInFlight inFlight filePath with
-        | Some(project, origin, sharers) ->
-            Logging.info
-                "check"
-                (sharedCancelLine
-                    (Path.GetFileName(AbsFilePath.value filePath))
-                    (Path.GetFileName project)
-                    origin
-                    sharers)
-        | None -> ()
+        let ticket = Interlocked.Increment(&nextTicket)
+
+        lock gate (fun () ->
+            lastStarted[filePath] <- ticket
+
+            match running.TryGetValue filePath with
+            | true, previous -> previous.Cts.Cancel()
+            | false, _ -> ())
 
         fileTokens.AddOrUpdate(
             filePath,
@@ -415,188 +495,313 @@ type CheckPipeline
 
         newCts
 
+    /// The FCS half of a check: parse+check `openFile` against the snapshot already built,
+    /// honouring `cts` before and after FCS. Run once per (file, project, generation,
+    /// snapshot) no matter how many callers wait on it.
+    member private this.RunCheck
+        (
+            openFile: ProjectSnapshots.OpenFile,
+            options: FSharpProjectOptions,
+            framed: ProjectSnapshots.Framed,
+            startOrigin: CheckOrigin,
+            snapshotTime: TimeSpan,
+            sw: Diagnostics.Stopwatch,
+            framedNow: unit -> ProjectSnapshots.Framed * CheckOrigin,
+            generationNow: unit -> int64,
+            cts: CancellationTokenSource
+        ) : Async<(FileCheckResult * (string * string) list) option> =
+        async {
+            let absPath = openFile.Path
+            let source = openFile.Text
+            let version = this.NextVersion()
+            let checkedFile = AbsFilePath.create absPath
+            let fileName = Path.GetFileName absPath
+            let project = options.ProjectFileName
+            let projectName = Path.GetFileName project
+
+            // Only this check's own entry: a newer check of the file may have replaced it.
+            let forget entry =
+                inFlight.TryRemove(Collections.Generic.KeyValuePair(checkedFile, entry))
+                |> ignore
+
+            let started = ref None
+
+            try
+                activity.Log(checkStartLine fileName projectName startOrigin)
+                inFlight[checkedFile] <- (project, startOrigin)
+                started.Value <- Some(project, startOrigin)
+
+                // What FCS may type against beyond the snapshot's versions, read before it does.
+                let outputs =
+                    framed.RealProjectOutputs |> List.map (fun output -> output, hashFile output)
+
+                // The name FCS knows the file by: under the virtual root when its project is.
+                let checkedPath =
+                    match framed.Frame with
+                    | Some frame ->
+                        ProjectSnapshots.recordFrame
+                            checker
+                            options.ProjectFileName
+                            (PathFrame.toVirtual frame options.ProjectFileName)
+
+                        PathFrame.toVirtual frame absPath
+                    | None -> absPath
+
+                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+
+                // A diagnostic that declares a type incompatible with ITSELF is not
+                // code feedback — the compiler renders two types so they can be told
+                // apart, so an identical render means it found no difference to tell.
+                // What produces it is not known (see `FcsDiagnosticFilter`), so the
+                // file is asked again, once: in the current generation of the
+                // project's checker state if another check has already dropped the
+                // one this answer came from, and otherwise in a new generation this
+                // check starts (`ProjectSnapshots.invalidateShared`, since a suspect
+                // entry under a virtual root is every sharing session's) — at most
+                // once per project per cooldown, so a pathological tree cannot turn
+                // every file into a project re-typecheck. Never trusted to have
+                // worked: a survivor is reported as our fault, not swallowed.
+                let answeredFrom = ref startOrigin
+
+                let recheck () =
+                    async {
+                        let framed, origin = framedNow ()
+                        answeredFrom.Value <- origin
+                        inFlight[checkedFile] <- (project, origin)
+                        started.Value <- Some(project, origin)
+                        return! ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+                    }
+
+                let! (parseResults, checkAnswer), _ =
+                    FcsDiagnosticFilter.recheckWithBudget
+                        recheckBudget
+                        project
+                        fileName
+                        (fun () -> DateTime.UtcNow)
+                        (Logging.warn "check")
+                        (snd >> answerMessages)
+                        startOrigin.Generation
+                        generationNow
+                        (fun () -> ProjectSnapshots.invalidateShared checker options)
+                        recheck
+                        (firstParse, firstAnswer)
+
+                sw.Stop()
+                started.Value |> Option.iter forget
+
+                if cts.IsCancellationRequested then
+                    return None
+                else
+                    if sw.Elapsed.TotalSeconds > 2.0 then
+                        Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
+
+                    let checkResults =
+                        match checkAnswer with
+                        | FSharpCheckFileAnswer.Succeeded checkResults ->
+                            activity.Log(
+                                checkedLine
+                                    fileName
+                                    projectName
+                                    answeredFrom.Value
+                                    sw.Elapsed
+                                    snapshotTime
+                                    (sw.Elapsed - snapshotTime)
+                            )
+
+                            FullCheck checkResults
+                        | FSharpCheckFileAnswer.Aborted -> ParseOnly
+
+                    return
+                        Some(
+                            { File = checkedFile
+                              Source = source
+                              ParseResults = parseResults
+                              CheckResults = checkResults
+                              ProjectOptions = options
+                              Version = version
+                              ModelGeneration = None
+                              Frame = framed.Frame },
+                            outputs
+                        )
+            with ex ->
+                started.Value |> Option.iter forget
+                Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                return None
+        }
+
     /// FCS-only check: takes already-read source text, performs parse+check,
     /// returns the result. Pure of disk I/O and cache concerns so it can be
     /// composed by callers that manage caching separately.
-    /// The ct token is checked before and after the expensive FCS call so that
-    /// CancelPreviousCheck cancellations are observed even when the async CE's
-    /// implicit token differs from the per-file token.
+    ///
+    /// JOINS a running check of the same file whose project, checker generation and
+    /// snapshot key equal this call's: both callers ask FCS the identical question, so
+    /// they share one answer. Cancelling it and asking again — what every second check of
+    /// a file used to do — threw away finished FCS work: on a cold scan that a build's
+    /// change batch overlapped, about half of all checks were cancelled and re-asked for the
+    /// same snapshot. A running check of a DIFFERENT snapshot is superseded (cancelled)
+    /// when this call is newer, and this call gives way when it is older.
     member private this.CheckFileCore
-        (openFile: ProjectSnapshots.OpenFile, options: FSharpProjectOptions, ct: CancellationToken)
+        (openFile: ProjectSnapshots.OpenFile, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64)
         : Async<(FileCheckResult * (string * string) list) option> =
         async {
+            let absPath = openFile.Path
+
             if ct.IsCancellationRequested then
-                logCanceled openFile.Path
+                logCanceled absPath
                 return None
             else
-                let absPath = openFile.Path
-                let source = openFile.Text
-                let version = this.NextVersion()
-
                 let checkedFile = AbsFilePath.create absPath
+                let fileName = Path.GetFileName absPath
+                let project = options.ProjectFileName
+                let projectName = Path.GetFileName project
+                let caller = CheckCaller.current ()
+                let sw = Diagnostics.Stopwatch.StartNew()
 
-                // Only this check's own entry: a newer check of the file may have replaced it.
-                let forget entry =
-                    inFlight.TryRemove(Collections.Generic.KeyValuePair(checkedFile, entry))
-                    |> ignore
+                let generationNow () =
+                    let (ProjectSnapshots.Generation n) = ProjectSnapshots.generationOf checker project
+                    n
 
-                let started = ref None
+                // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
+                // project's new generation. A generation never changes the frame.
+                // Returned with the generation read BEFORE the build: if the project
+                // advances mid-build, the check is attributed to the older one, which
+                // can only cost a re-check, never skip one.
+                let framedNow () =
+                    let generation = generationNow ()
 
-                try
-                    if ct.IsCancellationRequested then
-                        logCanceledAsFailure absPath ct
-                        return None
-                    else
-                        let fileName = Path.GetFileName absPath
-                        let project = options.ProjectFileName
-                        let projectName = Path.GetFileName project
-                        let sw = System.Diagnostics.Stopwatch.StartNew()
+                    let framed =
+                        ProjectSnapshots.buildFramed
+                            (ProjectSnapshots.generationOf checker)
+                            hashFile
+                            repoRoot
+                            frames
+                            openFile
+                            options
 
-                        let generationNow () =
-                            let (ProjectSnapshots.Generation n) = ProjectSnapshots.generationOf checker project
-                            n
+                    framed,
+                    { Generation = generation
+                      SnapshotKey = ProjectSnapshots.snapshotKey framed.Snapshot }
 
-                        // Built per check, so a check after `ProjectSnapshots.invalidate` is in the
-                        // project's new generation. A generation never changes the frame.
-                        // Returned with the generation read BEFORE the build: if the project
-                        // advances mid-build, the check is attributed to the older one, which
-                        // can only cost a re-check, never skip one.
-                        let framedNow () =
-                            let generation = generationNow ()
+                let built =
+                    try
+                        Ok(framedNow ())
+                    with ex ->
+                        Result.Error ex
 
-                            let framed =
-                                ProjectSnapshots.buildFramed
-                                    (ProjectSnapshots.generationOf checker)
-                                    hashFile
-                                    repoRoot
-                                    frames
-                                    openFile
-                                    options
-
-                            framed,
-                            { Generation = generation
-                              SnapshotKey = ProjectSnapshots.snapshotKey framed.Snapshot }
-
-                        let framed, startOrigin = framedNow ()
-                        let snapshotTime = sw.Elapsed
-                        activity.Log(checkStartLine fileName projectName startOrigin)
-                        inFlight[checkedFile] <- (project, startOrigin)
-                        started.Value <- Some(project, startOrigin)
-
-                        // What FCS may type against beyond the snapshot's versions, read before it does.
-                        let outputs =
-                            framed.RealProjectOutputs |> List.map (fun output -> output, hashFile output)
-
-                        // The name FCS knows the file by: under the virtual root when its project is.
-                        let checkedPath =
-                            match framed.Frame with
-                            | Some frame ->
-                                ProjectSnapshots.recordFrame
-                                    checker
-                                    options.ProjectFileName
-                                    (PathFrame.toVirtual frame options.ProjectFileName)
-
-                                PathFrame.toVirtual frame absPath
-                            | None -> absPath
-
-                        let! firstParse, firstAnswer =
-                            ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
-
-                        // A diagnostic that declares a type incompatible with ITSELF is not
-                        // code feedback — the compiler renders two types so they can be told
-                        // apart, so an identical render means it found no difference to tell.
-                        // What produces it is not known (see `FcsDiagnosticFilter`), so the
-                        // file is asked again, once: in the current generation of the
-                        // project's checker state if another check has already dropped the
-                        // one this answer came from, and otherwise in a new generation this
-                        // check starts (`ProjectSnapshots.invalidateShared`, since a suspect
-                        // entry under a virtual root is every sharing session's) — at most
-                        // once per project per cooldown, so a pathological tree cannot turn
-                        // every file into a project re-typecheck. Never trusted to have
-                        // worked: a survivor is reported as our fault, not swallowed.
-                        let answeredFrom = ref startOrigin
-
-                        let recheck () =
-                            async {
-                                let framed, origin = framedNow ()
-                                answeredFrom.Value <- origin
-                                inFlight[checkedFile] <- (project, origin)
-                                started.Value <- Some(project, origin)
-                                return! ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
-                            }
-
-                        let! (parseResults, checkAnswer), _ =
-                            FcsDiagnosticFilter.recheckWithBudget
-                                recheckBudget
-                                project
-                                fileName
-                                (fun () -> DateTime.UtcNow)
-                                (Logging.warn "check")
-                                (snd >> answerMessages)
-                                startOrigin.Generation
-                                generationNow
-                                (fun () -> ProjectSnapshots.invalidateShared checker options)
-                                recheck
-                                (firstParse, firstAnswer)
-
-                        sw.Stop()
-                        started.Value |> Option.iter forget
-
-                        if ct.IsCancellationRequested then
-                            logCanceledAsFailure absPath ct
-                            return None
-                        else
-
-                            if sw.Elapsed.TotalSeconds > 2.0 then
-                                Logging.debug "check" $"SLOW: %s{fileName} took %.1f{sw.Elapsed.TotalSeconds}s"
-
-                            match checkAnswer with
-                            | FSharpCheckFileAnswer.Succeeded checkResults ->
-                                activity.Log(
-                                    checkedLine
-                                        fileName
-                                        projectName
-                                        answeredFrom.Value
-                                        sw.Elapsed
-                                        snapshotTime
-                                        (sw.Elapsed - snapshotTime)
-                                )
-
-                                return
-                                    Some(
-                                        { File = AbsFilePath.create absPath
-                                          Source = source
-                                          ParseResults = parseResults
-                                          CheckResults = FullCheck checkResults
-                                          ProjectOptions = options
-                                          Version = version
-                                          ModelGeneration = None
-                                          Frame = framed.Frame },
-                                        outputs
-                                    )
-                            | FSharpCheckFileAnswer.Aborted ->
-                                return
-                                    Some(
-                                        { File = AbsFilePath.create absPath
-                                          Source = source
-                                          ParseResults = parseResults
-                                          CheckResults = ParseOnly
-                                          ProjectOptions = options
-                                          Version = version
-                                          ModelGeneration = None
-                                          Frame = framed.Frame },
-                                        outputs
-                                    )
-                with ex ->
-                    started.Value |> Option.iter forget
+                match built with
+                | Result.Error ex ->
                     Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                     return None
+                | Ok(framed, origin) ->
+                    let snapshotTime = sw.Elapsed
+
+                    let decision =
+                        lock gate (fun () ->
+                            let alive =
+                                match running.TryGetValue checkedFile with
+                                | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted -> Some r
+                                | _ -> None
+
+                            let newerStarted =
+                                ticket < rediscoveredAt
+                                || (match lastStarted.TryGetValue checkedFile with
+                                    | true, latest -> latest > ticket
+                                    | false, _ -> false)
+
+                            match alive with
+                            | Some r when r.Project = project && r.Origin = origin -> Join r
+                            | _ when newerStarted -> GiveWay
+                            | _ ->
+                                let cts = new CancellationTokenSource()
+
+                                let task =
+                                    Async.StartAsTask(
+                                        this.RunCheck(
+                                            openFile,
+                                            options,
+                                            framed,
+                                            origin,
+                                            snapshotTime,
+                                            sw,
+                                            framedNow,
+                                            generationNow,
+                                            cts
+                                        )
+                                    )
+
+                                let started =
+                                    { Project = project
+                                      Origin = origin
+                                      Caller = caller
+                                      Ticket = ticket
+                                      Cts = cts
+                                      Task = task }
+
+                                lastStarted[checkedFile] <- ticket
+                                running[checkedFile] <- started
+                                Start(started, alive))
+
+                    match decision with
+                    | GiveWay ->
+                        logCanceledAsFailure absPath ct
+                        return None
+                    | Join r ->
+                        let line = joinLine fileName r.Caller caller (originText projectName r.Origin)
+
+                        activity.Log line
+                        Logging.debug "check" line
+                        return! this.AwaitRunning(r, checkedFile, absPath, ct)
+                    | Start(started, superseded) ->
+                        match superseded with
+                        | Some previous ->
+                            let sharers =
+                                match sharedInFlight inFlight checkedFile with
+                                | Some(_, _, sharers) -> sharers
+                                | None -> 0
+
+                            Logging.info
+                                "check"
+                                (supersedeLine
+                                    fileName
+                                    (Path.GetFileName previous.Project)
+                                    previous.Caller
+                                    previous.Origin
+                                    caller
+                                    origin
+                                    sharers)
+
+                            previous.Cts.Cancel()
+                        | None -> ()
+
+                        return! this.AwaitRunning(started, checkedFile, absPath, ct)
+        }
+
+    /// Wait for a running check without throwing, however the wait ends. A caller whose
+    /// own token is cancelled, or whose check was superseded, gets nothing.
+    member private _.AwaitRunning
+        (r: RunningCheck, checkedFile: AbsFilePath, absPath: string, ct: CancellationToken)
+        : Async<(FileCheckResult * (string * string) list) option> =
+        async {
+            let! result = r.Task |> Async.AwaitTask
+
+            // Retire the entry once, so its answer (and the typed tree it holds) is not
+            // kept alive by the registry after every waiter has it.
+            lock gate (fun () ->
+                match running.TryGetValue checkedFile with
+                | true, current when obj.ReferenceEquals(current, r) -> running.TryRemove checkedFile |> ignore
+                | _ -> ())
+
+            if ct.IsCancellationRequested || r.Cts.IsCancellationRequested then
+                logCanceledAsFailure absPath ct
+                return None
+            else
+                return result
         }
 
     /// Cache-aware wrapper: looks up the cache, on miss reads disk and calls
     /// CheckFileCore, then stores FullCheck results back into the cache.
     member private this.CheckFileCached
-        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken)
+        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64)
         : Async<FileCheckResult option> =
         async {
             if ct.IsCancellationRequested then
@@ -616,7 +821,7 @@ type CheckPipeline
                     return Some cached
                 | None ->
                     let openFile = ProjectSnapshots.readOpenFile hashFile absPath
-                    let! result = this.CheckFileCore(openFile, options, ct)
+                    let! result = this.CheckFileCore(openFile, options, ct, ticket)
 
                     match result, cacheBackend, cacheKey with
                     | Some(r, outputs), Some backend, Some key ->
@@ -647,8 +852,8 @@ type CheckPipeline
         async {
             let ct = defaultArg ct CancellationToken.None
             let absPath = AbsFilePath.value filePath
-            let fileCts = this.CancelPreviousCheck(filePath, ct)
-            let fileToken = fileCts.Token
+            let ticket = Interlocked.Increment(&nextTicket)
+            let fileToken = ct
 
             try
                 if fileToken.IsCancellationRequested then
@@ -660,7 +865,7 @@ type CheckPipeline
                     | false, _ ->
                         Logging.debug "check" $"No project options for: %s{absPath}"
                         return None
-                    | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken)
+                    | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken, ticket)
                     | true, [] ->
                         Logging.debug "check" $"No project options for: %s{absPath}"
                         return None
@@ -677,15 +882,15 @@ type CheckPipeline
         async {
             let ct = defaultArg ct CancellationToken.None
             let absPath = AbsFilePath.value filePath
-            let fileCts = this.CancelPreviousCheck(filePath, ct)
-            let fileToken = fileCts.Token
+            let ticket = Interlocked.Increment(&nextTicket)
+            let fileToken = ct
 
             try
                 if fileToken.IsCancellationRequested then
                     logCanceled absPath
                     return None
                 else
-                    return! this.CheckFileCached(absPath, options, fileToken)
+                    return! this.CheckFileCached(absPath, options, fileToken, ticket)
             with :? OperationCanceledException ->
                 logCanceled absPath
                 return None
