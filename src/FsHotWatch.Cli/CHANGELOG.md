@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the solution-scope check now counts a project as a test project when it
+  references any xUnit v3 package that brings the Microsoft.Testing.Platform runner —
+  `xunit.v3`, `xunit.v3.mtp-v1`/`-v2`, `xunit.v3.core.mtp-v1`/`-v2` — not only
+  `xunit.v3.mtp-v2`. The package-id pattern is the one CTRF auto-detection is built
+  from, so the two agree on which ids carry the runner.
+
 ## 0.14.0-alpha.69 - 2026-09-26
 
 - feat: `tests.traces` is acted on. With `"record": "full-runs"` (or `"every-run"`), the

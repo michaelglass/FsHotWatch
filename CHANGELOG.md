@@ -84,6 +84,11 @@ configured: it lost per-test outcomes, and per-test trace recording refused it w
 Microsoft.Testing.Platform, and a dependency of every xUnit v3 package id that ships
 that runner — and reads the xUnit major from its version as before.
 
+The solution-scope check's "is this a test project?" test had the same blind spot: it
+recognised `xunit.v3.mtp-v2` but not `xunit.v3.mtp-v1`, `xunit.v3.core.mtp-v*`, or a
+bare `xunit.v3` reference. It now matches all of them, using the same package-id
+pattern as CTRF auto-detection.
+
 ### core: a type incompatible with itself — the cause, and the fix
 
 The guard added for diagnostics like `expected 'Domain.Types.UserId' but here

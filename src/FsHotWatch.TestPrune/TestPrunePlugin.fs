@@ -3536,20 +3536,30 @@ let internal ctrfArguments (family: CtrfRunnerFamily) (reportName: string) (resu
     | Xunit4 ->
         $"--report-xunit-ctrf --report-xunit-ctrf-filename %s{reportName} --results-directory \"%s{resultsDirectory}\""
 
-/// The package that registers xUnit's CTRF report switches with
-/// Microsoft.Testing.Platform: `xunit.v3.core.mtp-v<N>`, whose `xunit.v3.mtp-v<N>`
-/// assembly is xUnit's MTP bridge. Every xUnit v3 package id that ships the MTP
-/// runner (`xunit.v3`, `xunit.v3.mtp-v1`, `xunit.v3.mtp-v2`, and the
-/// `xunit.v3.core.mtp-v*` packages themselves) depends on it, and restored
-/// `libraries` lists the whole transitive closure, so detecting the carrier finds
-/// the capability whichever id the project references. Its presence alone is not
-/// enough to pick switches, so its version still selects the family.
-let private ctrfReporterPackageId =
+/// The xUnit v3 MTP bridge, `xunit.v3.core.mtp-v<N>`: its `xunit.v3.mtp-v<N>`
+/// assembly registers xUnit with Microsoft.Testing.Platform, CTRF report switches
+/// included. Every package id that ships the MTP runner is this bridge or depends on it.
+let private xunitMtpBridgeIdPattern = "xunit\\.v3\\.core\\.mtp-v[0-9]+"
+
+let private packageIdRegex (pattern: string) =
     System.Text.RegularExpressions.Regex(
-        "^xunit\\.v3\\.core\\.mtp-v[0-9]+$",
+        $"^(?:%s{pattern})$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant
         ||| System.Text.RegularExpressions.RegexOptions.IgnoreCase
     )
+
+/// The package that registers xUnit's CTRF report switches: the MTP bridge alone.
+/// Restored `libraries` lists the whole transitive closure, so the bridge is present
+/// whichever runner-bearing id the project references; its version still selects
+/// the switch family.
+let internal ctrfReporterPackageId = packageIdRegex xunitMtpBridgeIdPattern
+
+/// Every xUnit v3 package id a project can REFERENCE to get the MTP runner: the
+/// bridge itself, the `xunit.v3.mtp-v<N>` packages that depend on it, and the
+/// `xunit.v3` package that depends on one of those. For matching direct references
+/// (e.g. `PackageReference` ids in project XML), where the closure is not visible.
+let internal xunitMtpRunnerPackageId =
+    packageIdRegex $"xunit\\.v3|xunit\\.v3\\.mtp-v[0-9]+|%s{xunitMtpBridgeIdPattern}"
 
 /// Resolve the actual xUnit runner family from NuGet's restored graph. The
 /// project file can contain central versions, properties, ranges, or stale
