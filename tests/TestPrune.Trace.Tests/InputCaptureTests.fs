@@ -260,6 +260,24 @@ let ``a started child inherits the parent scope and is noted with its pid`` () =
     test <@ pid = p.Id && file = "echo" && env @>
 
 [<Fact>]
+let ``a child sent to another dump directory starts its own trace, outside the parent's scope`` () =
+    let state = recorderWithRoot Fixtures.repoRoot
+    state.EnterScope "T:parent"
+
+    let child (out: string) =
+        let psi = ProcessStartInfo("/bin/echo", UseShellExecute = false)
+        psi.Environment.[Contract.OutEnv] <- out
+        psi.Environment.[Contract.ParentScopeEnv] <- "T:stale"
+        psi
+
+    let elsewhere = child "/another/run/dumps"
+    test <@ not (ProcessShims.PrepareWith(state, elsewhere, "/this/run/dumps")) @>
+    test <@ not (elsewhere.Environment.ContainsKey Contract.ParentScopeEnv) @>
+    let sameRun = child "/this/run/dumps"
+    test <@ ProcessShims.PrepareWith(state, sameRun, "/this/run/dumps") @>
+    test <@ sameRun.Environment.[Contract.ParentScopeEnv] = "T:parent" @>
+
+[<Fact>]
 let ``a shell-executed child cannot inherit and is noted as such`` () =
     let state = recorderWithRoot Fixtures.repoRoot
     state.EnterScope "T:parent"

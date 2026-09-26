@@ -19,8 +19,13 @@ let internal dotnetRootFrom (environmentValue: string) : string =
 let dotnetRoot () : string =
     dotnetRootFrom (Environment.GetEnvironmentVariable "DOTNET_ROOT")
 
+/// Prefix of every variable the recorder reads.
+[<Literal>]
+let internal TraceEnvPrefix = "TESTPRUNE_TRACE_"
+
 /// Run `exe` to completion (or kill its process tree at `timeout`), returning the exit
-/// code and the combined output. Both pipes are drained concurrently.
+/// code and the combined output. Both pipes are drained concurrently. The child inherits
+/// this process's environment except its `TESTPRUNE_TRACE_*` variables.
 let run
     (exe: string)
     (args: string list)
@@ -41,6 +46,15 @@ let run
         psi.ArgumentList.Add a
 
     psi.Environment.["DOTNET_ROOT"] <- dotnetRoot ()
+
+    // The child is its own run, never part of this process's trace: when this process runs
+    // traced, an inherited TESTPRUNE_TRACE_* would make a woven child dump into this run's
+    // directory. The child gets only the trace variables `env` names.
+    for k in
+        psi.Environment.Keys
+        |> Seq.filter (fun k -> k.StartsWith TraceEnvPrefix)
+        |> Seq.toList do
+        psi.Environment.Remove k |> ignore
 
     for k, v in env do
         psi.Environment.[k] <- v

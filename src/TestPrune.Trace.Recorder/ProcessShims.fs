@@ -1,5 +1,6 @@
 namespace TestPrune.Trace.Recorder
 
+open System
 open System.Collections.Generic
 open System.Diagnostics
 open System.IO
@@ -12,13 +13,30 @@ open System.IO
 [<AbstractClass; Sealed>]
 type ProcessShims =
     /// Passes the note scope's key to the child's environment. False when there is no
-    /// recorder, or when the child is shell-executed and so gets no environment from us.
-    static member internal PrepareWith(state: RecorderState, psi: ProcessStartInfo) : bool =
+    /// recorder, when the child is shell-executed and so gets no environment from us, or
+    /// when the child dumps somewhere other than `ownOut` (this process's dump directory):
+    /// it is then a trace of its own, and any parent scope it inherited is removed.
+    static member internal PrepareWith(state: RecorderState, psi: ProcessStartInfo, ownOut: string) : bool =
         if isNull state || psi.UseShellExecute then
             false
         else
-            psi.Environment.[Contract.ParentScopeEnv] <- state.NoteScope().Key
-            true
+            let orEmpty (v: string) = if isNull v then "" else v
+
+            let childOut =
+                match psi.Environment.TryGetValue Contract.OutEnv with
+                | true, v -> v
+                | _ -> null
+
+            if orEmpty childOut <> orEmpty ownOut then
+                psi.Environment.Remove Contract.ParentScopeEnv |> ignore
+                false
+            else
+                psi.Environment.[Contract.ParentScopeEnv] <- state.NoteScope().Key
+                true
+
+    /// `PrepareWith` against this process's own dump directory.
+    static member internal PrepareWith(state: RecorderState, psi: ProcessStartInfo) : bool =
+        ProcessShims.PrepareWith(state, psi, Environment.GetEnvironmentVariable Contract.OutEnv)
 
     /// Notes a started child on the note scope.
     static member internal RecordWith(state: RecorderState, p: Process, injected: bool) : unit =

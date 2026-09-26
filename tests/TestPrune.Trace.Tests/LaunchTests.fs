@@ -24,6 +24,34 @@ let ``run returns the exit code and both output streams, and passes the environm
     test <@ output.Contains "out-yes" && output.Contains "err" @>
 
 [<Fact>]
+let ``run starts the child outside the caller's trace, passing only the trace variables it is given`` () =
+    // A traced test process holds TESTPRUNE_TRACE_*: a child that inherited them would dump
+    // into the parent's directory. This name is unique and read by nothing, so setting it on
+    // this process cannot disturb a concurrent test.
+    let inherited = "TESTPRUNE_TRACE_LAUNCH_TEST_" + Guid.NewGuid().ToString "N"
+    Environment.SetEnvironmentVariable(inherited, "from-parent")
+
+    try
+        let code, output =
+            Launch.run
+                "/usr/bin/env"
+                []
+                [ Recorder.Contract.OutEnv, "/explicit/dumps" ]
+                (Path.GetTempPath())
+                (TimeSpan.FromMinutes 1.0)
+
+        // Only the trace lines: a failure message must not print the rest of the environment.
+        let traceVars =
+            output.Split '\n'
+            |> Array.filter (fun l -> l.StartsWith "TESTPRUNE_TRACE_")
+            |> Array.sort
+
+        test <@ code = 0 @>
+        test <@ traceVars = [| "TESTPRUNE_TRACE_OUT=/explicit/dumps" |] @>
+    finally
+        Environment.SetEnvironmentVariable(inherited, null)
+
+[<Fact>]
 let ``run kills a process that outlives its timeout`` () =
     let started = Diagnostics.Stopwatch.StartNew()
 

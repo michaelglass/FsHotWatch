@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `Launch.run` no longer passes the calling process's `TESTPRUNE_TRACE_*` variables to
+  the child. Run inside a traced test process, a woven child used to inherit its dump
+  directory and id count and write its dump into the parent's run.
+
 ## 0.1.0 - 2026-09-26
 
 - docs: the README documents the `test-prune-traces` verbs (flags, exit codes, bars and
