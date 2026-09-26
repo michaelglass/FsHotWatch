@@ -47,6 +47,7 @@
         <Compile Include="ShadowBin.fs" />
         <Compile Include="TraceIngest.fs" />
         <Compile Include="TraceSession.fs" />
+        <Compile Include="Census.fs" />
     </ItemGroup>
 
     <ItemGroup>

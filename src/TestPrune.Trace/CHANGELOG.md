@@ -66,3 +66,9 @@
   refused at prepare time, before the project runs. `Ctrf.parse` reads per-test outcomes from a
   CTRF report. The package README documents the host flow and the `Scopes` contract for tests that
   call an in-process server.
+- feat: census (`TestPrune.Trace.Census`): reads each project's newest recorded run (or a named
+  run) back out of the trace store and measures it against the phase-1 bars: traced / executed
+  at least 0.99, and ambient / total hits under 0.001 or every ambient symbol listed for a human to
+  explain. It also reports executed tests with no test scope, tests per incomplete-reason kind, and
+  each pool scope with its symbols, inputs and linked tests. A missing database is refused, never
+  created.

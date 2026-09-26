@@ -40,6 +40,8 @@
     <Compile Include="TraceIngestTests.fs" />
     <Compile Include="CtrfTests.fs" />
     <Compile Include="EndToEndTests.fs" />
+    <Compile Include="CensusTests.fs" />
+    <Compile Include="CensusCliTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
