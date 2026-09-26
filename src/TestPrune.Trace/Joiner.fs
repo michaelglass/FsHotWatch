@@ -63,14 +63,35 @@ let private stripModuleSuffix (segment: string) =
     else
         segment
 
+/// Whether a CLR type name has no namespace: its outermost type (before any `+`) is
+/// dot-free. Such a type is either a global-namespace type or a top-level module.
+let private isNamespaceless (clrName: string) =
+    let outermost =
+        match clrName.IndexOf '+' with
+        | -1 -> clrName
+        | i -> clrName.Substring(0, i)
+
+    not (outermost.Contains '.')
+
 /// The index names a CLR type could have, most specific first: the dotted name, then
 /// without generic arity, then without F#'s implicit `Module` suffix on any segment.
+/// A namespace-less CLR name (`StartupHook`) is a global-namespace type, which the index
+/// names under `GlobalNamespaceQualifier` (`<global>.StartupHook`), or a top-level module,
+/// which keeps its bare name; both are tried, qualified first. A `Module`-suffixed name
+/// is a module's, so its suffix-stripped form stays bare.
 /// Callers check each with `Exists`, so a wrong candidate never matches.
 let typeCandidates (clrName: string) : string list =
     let dotted = clrName.Replace('+', '.')
     let noArity = arity.Replace(dotted, "")
     let noSuffix = noArity.Split '.' |> Seq.map stripModuleSuffix |> String.concat "."
-    List.distinct [ dotted; noArity; noSuffix ]
+
+    let qualifiedThenBare name =
+        if isNamespaceless clrName then
+            [ GlobalNamespaceQualifier + "." + name; name ]
+        else
+            [ name ]
+
+    List.distinct [ yield! qualifiedThenBare dotted; yield! qualifiedThenBare noArity; noSuffix ]
 
 /// Split a nested CLR name at its last `+`: (declaring type, last segment).
 let private splitNested (clr: string) =

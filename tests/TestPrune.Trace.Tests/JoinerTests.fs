@@ -165,6 +165,39 @@ let ``type candidates cover arity and module suffix, most specific first`` () =
     test <@ typeCandidates "N.Module" = [ "N.Module" ] @>
     test <@ join (row GeneratedMethod "N.ShapeModule" "helper" None 0) = ToSymbol "N.Shape" @>
 
+/// A global-namespace type (`namespace global` + `type StartupHook`, as .NET requires of
+/// a startup hook) has no CLR namespace; the index names it and its members and cases
+/// under `GlobalNamespaceQualifier`. A top-level module has no CLR namespace either, and
+/// keeps its bare name.
+let private globalIx =
+    index
+        [ sym $"{GlobalNamespaceQualifier}.StartupHook" Type "src/Hook.fs" 3
+          sym $"{GlobalNamespaceQualifier}.StartupHook.Initialize" Function "src/Hook.fs" 4
+          sym $"{GlobalNamespaceQualifier}.Signal" Type "src/Hook.fs" 8
+          sym $"{GlobalNamespaceQualifier}.Signal.Go" DuCase "src/Hook.fs" 9
+          sym "Top" Module "src/Top.fs" 1
+          sym "Top.run" Function "src/Top.fs" 2 ]
+
+[<Fact>]
+let ``a global-namespace type and its members join to the qualified index name`` () =
+    let join = joinRow globalIx (set [ "Signal" ])
+    let q name = GlobalNamespaceQualifier + "." + name
+    let hook = Some "/r/src/Hook.fs"
+
+    test <@ typeCandidates "StartupHook" = [ q "StartupHook"; "StartupHook" ] @>
+    test <@ typeCandidates "Box`1" = [ q "Box`1"; "Box`1"; q "Box"; "Box" ] @>
+    test <@ typeCandidates "TopModule" = [ q "TopModule"; "TopModule"; "Top" ] @>
+    test <@ join (row TypeUse "StartupHook" "" None 0) = ToSymbol(q "StartupHook") @>
+    test <@ join (row GeneratedMethod "StartupHook" "Initialize" None 0) = ToSymbol(q "StartupHook.Initialize") @>
+    test <@ join (row UserMethod "StartupHook" "Initialize" hook 4) = ToSymbol(q "StartupHook.Initialize") @>
+    test <@ join (row UserMethod "StartupHook" ".ctor" hook 3) = ToSymbol(q "StartupHook") @>
+    test <@ join (row UnionCase "Signal" "Go" None 0) = ToSymbol(q "Signal.Go") @>
+    test <@ join (row GeneratedMethod "Signal+Go" ".ctor" None 0) = ToSymbol(q "Signal.Go") @>
+    test <@ join (row GeneratedMethod "Signal" "get_Tag" None 0) = Dropped @>
+    // A top-level module keeps its bare name.
+    test <@ join (row GeneratedMethod "Top" "run" None 0) = ToSymbol "Top.run" @>
+    test <@ join (row GeneratedMethod "TopModule" "run" None 0) = ToSymbol "Top.run" @>
+
 [<Fact>]
 let ``joinManifest indexes targets by probe id and finds union types itself`` () =
     let rows =

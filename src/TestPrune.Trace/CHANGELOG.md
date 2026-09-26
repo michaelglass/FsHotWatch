@@ -32,6 +32,9 @@
   declaration, so a line drift between the index and the binary cannot re-attribute it. Union
   members map to their case, closures to the binding they were written in, and generated members
   without a document to their owner member, type or enclosing module.
+  A CLR type with no namespace maps to TestPrune.Core's `<global>.`-qualified name for a
+  global-namespace type (`StartupHook` → `<global>.StartupHook`) or, for a top-level module,
+  its bare name.
 - feat: shadow bin (`TestPrune.Trace.ShadowBin`): a woven copy of a test app under
   `bin/Traced/<tfm>/`, beside `bin/Debug/<tfm>/`. Every file is re-hardlinked on each prepare
   (`HardLink.mirror`); woven files are written to a temp file and renamed over their link, never
