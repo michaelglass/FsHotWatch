@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a run interrupted while its `beforeRun` hook was launching no longer escapes with
+  an `OperationCanceledException`. The run's process scope refuses a hook launched after
+  it shut down, including one spawned just before the shutdown and admitted just after;
+  that refusal is now the hook's failed outcome, so the run exits 2 like a run whose
+  hook the interruption killed.
+
 ## 0.14.0-alpha.64 - 2026-09-25
 
 - **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0,
