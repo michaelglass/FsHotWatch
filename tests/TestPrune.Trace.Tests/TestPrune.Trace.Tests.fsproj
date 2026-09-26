@@ -30,12 +30,16 @@
     <Compile Include="ManifestTests.fs" />
     <Compile Include="LaunchTests.fs" />
     <Compile Include="WeaverTests.fs" />
+    <Compile Include="FixtureIndex.fs" />
+    <Compile Include="JoinerTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/TestPrune.Trace/TestPrune.Trace.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj" />
+    <!-- The real indexer, for the joiner's fixture index. -->
+    <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
     <!-- Build order only: the fixtures must be built before these tests read them. -->
     <ProjectReference Include="../TraceFixtures/src/FxDriver/FxDriver.fsproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="../TraceFixtures/tests/FxTests/FxTests.fsproj" ReferenceOutputAssembly="false" PrivateAssets="all" />

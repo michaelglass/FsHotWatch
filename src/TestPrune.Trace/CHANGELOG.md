@@ -15,3 +15,9 @@
 - feat: weaver core (`TestPrune.Trace.Weaver`): Mono.Cecil method-entry probes with a manifest; refuses
   optimized builds; re-anchors F#'s end-of-method hidden sequence points at the woven code size so
   portable PDBs stay decodable (checked for every woven method by `PdbCheck`).
+- feat: joiner (`TestPrune.Trace.Joiner`): maps each manifest row to an indexed symbol, a file-level
+  entry, or `Dropped` (compiler plumbing whose inner probes attribute elsewhere). A method with a
+  source document matches a same-named symbol in its own file before the nearest preceding
+  declaration, so a line drift between the index and the binary cannot re-attribute it. Union
+  members map to their case, closures to the binding they were written in, and generated members
+  without a document to their owner member, type or enclosing module.
