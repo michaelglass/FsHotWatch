@@ -6,6 +6,7 @@ module FsHotWatch.Tests.TestPruneTracesPluginTests
 
 open System
 open System.IO
+open System.Threading
 open System.Text.Json
 open Xunit
 open Swensen.Unquote
@@ -163,7 +164,7 @@ let ``a traced project runs its woven copy, and its traces are stored and logged
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
-              Decide = TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
+              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
 
         let json, activity =
             runTests root [ config "T" "dotnet" "run --project tests/T --no-build" ] (Some wiring)
@@ -173,6 +174,25 @@ let ``a traced project runs its woven copy, and its traces are stored and logged
         test <@ activity |> List.contains "traces: T 1/1 traced, 1 complete" @>
         let run = runsOf root "T" |> List.exactlyOne
         test <@ (run.Status, run.Kind) = (TraceStore.Recorded, TraceStore.FullRun) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``trace preparation is given the run's cancellation token`` () =
+    withTempDir "tp-token" (fun root ->
+        let runner = Path.Combine(root, "runner.sh")
+        writeRunner runner (Path.Combine(root, "ran")) false
+        let tokens = ResizeArray<CancellationToken>()
+
+        let wiring =
+            { Policy = settings RecordEveryRun
+              OptedOut = Set.empty
+              Decide =
+                fun ct _ _ _ _ ->
+                    tokens.Add ct
+                    Untraced None }
+
+        runTests root [ config "T" runner "" ] (Some wiring) |> ignore
+
+        test <@ tokens.Count = 1 && tokens.[0].CanBeCanceled @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a refused project runs as configured with the same verdict, and the refusal is stored and logged`` () =
@@ -224,7 +244,7 @@ let ``a traced launch that verified nothing re-runs untraced, and the refusal sa
 
         // The configured command is the untraced one; the stand-in decision traces it
         // with the failing "woven" script.
-        let decide rt (project: TraceProject) runDir extraArgs =
+        let decide _ rt (project: TraceProject) runDir extraArgs =
             match TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/r") rt project runDir extraArgs with
             | Untraced(Some "not-a-dotnet-run-command") ->
                 match

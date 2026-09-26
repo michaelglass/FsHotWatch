@@ -133,6 +133,7 @@
     <Compile Include="TracedLaunchTests.fs" />
     <Compile Include="TestPruneTracesTests.fs" />
     <Compile Include="TestPruneTracesPluginTests.fs" />
+    <Compile Include="TraceLauncherTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />

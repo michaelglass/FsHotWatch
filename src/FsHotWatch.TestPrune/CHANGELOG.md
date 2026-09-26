@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a traced run's JIT-verification child is now launched through fshw's process
+  helper, so it joins the run's process scope. A daemon or run shutting down mid-verify
+  kills it with the run's other children (it used to run on until the verify timeout), and
+  it is visible to leak reporting.
+- fix: cancelling a traced run stops trace preparation: the weave stops between assemblies
+  and the verification child is killed, instead of the cancelled run waiting minutes for
+  them to finish. A cancelled preparation is not stored as a refusal.
+- Bundle TestPrune.Trace 0.2.0 (cancellable `TraceSession.prepareProjectWith` with an
+  injectable process launcher).
+
 ## 0.13.0-alpha.51 - 2026-09-26
 
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless

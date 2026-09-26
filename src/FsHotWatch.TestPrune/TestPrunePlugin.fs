@@ -4508,6 +4508,9 @@ let private executeTests
             groups
             |> List.map (fun (_, groupConfigs) ->
                 async {
+                    // The run's token: trace preparation (weave + JIT verification) stops
+                    // when the run is cancelled.
+                    let! runToken = Async.CancellationToken
                     let mutable results = []
 
                     for config in groupConfigs do
@@ -4622,6 +4625,7 @@ let private executeTests
                                             $"preparing traces for {config.Project}"
 
                                     host.TraceWiring.Decide
+                                        runToken
                                         host.TraceRuntime
                                         { Project = config.Project
                                           Command = config.Command

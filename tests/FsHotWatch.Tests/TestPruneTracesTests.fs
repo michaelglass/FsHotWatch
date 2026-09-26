@@ -6,6 +6,7 @@ module FsHotWatch.Tests.TestPruneTracesTests
 
 open System
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune
@@ -197,9 +198,17 @@ let ``a project with no build output is refused with the weaver's reason, and so
     let root = tempRoot ()
     let rt = runtime root RecordEveryRun Set.empty PassThrough
 
-    match TraceRun.decide rt (project root "T") (Path.Combine(root, "run")) [] with
+    match TraceRun.decide CancellationToken.None rt (project root "T") (Path.Combine(root, "run")) [] with
     | Untraced(Some reason) -> test <@ reason.Contains "no build output" @>
     | other -> failwith $"%A{other}"
+
+[<Fact>]
+let ``a cancelled run stops preparation instead of refusing the project`` () =
+    let root = tempRoot ()
+    let rt = runtime root RecordEveryRun Set.empty PassThrough
+
+    raises<OperationCanceledException>
+        <@ TraceRun.decide (CancellationToken(true)) rt (project root "T") (Path.Combine(root, "run")) [] @>
 
 [<Fact>]
 let ``a preparation refusal is passed through verbatim`` () =
