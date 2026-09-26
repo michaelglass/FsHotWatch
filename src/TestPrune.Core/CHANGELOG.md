@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.2.1 - 2026-09-26
+
+- fix(cli): return not-in-a-repo exit code to main instead of Environment.Exit
+
+
 ## 13.2.0 - 2026-09-26
 
 - feat: `AstAnalyzer.canonicalShortName` is public, so a host that maps compiled names back
