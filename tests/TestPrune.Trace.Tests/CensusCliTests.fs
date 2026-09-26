@@ -78,6 +78,36 @@ let ``census --run reads that run`` () =
     test <@ (census cwd [ "--db"; db ]).Exit = 0 @>
     test <@ (census cwd [ "--db"; db; "--run"; "r1" ]).Exit = 1 @>
 
+/// Records a run of project `project` that stored no traces.
+let private recordUntraced (path: string) (project: string) (status: RunStatus) (reason: string) =
+    use store = Store.Open path
+
+    store.RecordRunWithoutTraces
+        { RunId = "r2"
+          TestProject = project
+          TreeHash = "t"
+          EnvFingerprint = "E"
+          RecordedAt = DateTimeOffset.UtcNow
+          Kind = FullRun
+          Status = status
+          Reason = reason
+          StatsJson = "{}" }
+
+[<Fact>]
+let ``census reports a newer refused run as refused and still exits 0, a failed one exits 1`` () =
+    let cwd = dir ()
+    let db = Path.Combine(cwd, "x.db")
+    recordAt db "r1" 100
+    recordUntraced db "P" Refused "the app ships its own recorder build"
+    let refused = census cwd [ "--db"; db ]
+    test <@ refused.Exit = 0 @>
+    test <@ refused.Stdout = "P  run r2  REFUSED\n  reason     the app ships its own recorder build\n" @>
+
+    recordUntraced db "Q" FailedToRecord "no dump"
+    let failed = census cwd [ "--db"; db ]
+    test <@ failed.Exit = 1 @>
+    test <@ failed.Stdout.EndsWith "Q  run r2  FAILED\n  reason     no dump\n" @>
+
 [<Fact>]
 let ``census --json prints one report per project`` () =
     let cwd = dir ()
@@ -109,7 +139,7 @@ let ``census with no recorded run fails rather than passing vacuously`` () =
     recordAt db "r1" 100
     let o = census cwd [ "--db"; db; "--run"; "nope" ]
     test <@ o.Exit = 1 @>
-    test <@ o.Stderr.Contains "no recorded run" @>
+    test <@ o.Stderr.Contains "no trace run" @>
 
 [<Fact>]
 let ``census of a database with no recorded run at all fails`` () =
@@ -118,7 +148,7 @@ let ``census of a database with no recorded run at all fails`` () =
     (Store.Open db :> IDisposable).Dispose()
     let o = census cwd [ "--db"; db ]
     test <@ o.Exit = 1 @>
-    test <@ o.Stderr.Contains "no recorded run (any run)" @>
+    test <@ o.Stderr.Contains "no trace run (any run)" @>
 
 [<Fact>]
 let ``census of a file that is not a database exits 2 naming the error`` () =

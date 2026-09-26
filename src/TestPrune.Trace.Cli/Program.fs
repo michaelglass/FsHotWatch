@@ -62,11 +62,11 @@ let private census (cwd: string) (args: string list) : Outcome =
             | [] ->
                 let which = a.Run |> Option.map (sprintf "run %s") |> Option.defaultValue "any run"
 
-                fail 1 $"no recorded run (%s{which}) in %s{db}: nothing to measure"
+                fail 1 $"no trace run (%s{which}) in %s{db}: nothing to measure"
             | cs ->
                 let bars = Census.defaultBars
 
-                { Exit = if cs |> List.forall (Census.passes bars) then 0 else 1
+                { Exit = if cs |> List.exists (Census.fails bars) then 1 else 0
                   Stdout =
                     if a.Json then
                         JsonSerializer.Serialize(cs |> List.map (Census.report bars)) + "\n"

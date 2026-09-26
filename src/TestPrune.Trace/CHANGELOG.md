@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `Census.latest` takes each project's newest run of any status. A project whose newest run
+  was refused or failed to record used to be reported from an older recorded run; it is now
+  reported with that run's `Status` and `Reason` (new `ProjectCensus` fields) and measures
+  nothing. `Census.passes` is false for a run that stored no traces; `Census.fails` is true for
+  one that misses the bars or failed to record, and false for a refused one.
 - fix: `ShadowBin.prepare` refuses an app that ships its own recorder build
   (`AppShipsOwnRecorder`: "the app ships its own TestPrune.Trace.Recorder build; tracing would
   replace it"), before weaving anything: its deps.json lists the recorder as a project, or its

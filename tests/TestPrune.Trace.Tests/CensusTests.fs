@@ -102,6 +102,8 @@ let ``the ratios of an empty run are the passing identities`` () =
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 0
           Traced = 0
           Complete = 0
@@ -121,6 +123,8 @@ let ``ambient hits over the bar pass only when they are listed for explanation``
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 10
           Traced = 10
           Complete = 10
@@ -178,27 +182,52 @@ let ``reason counts count tests per reason kind, not reasons`` () =
     test <@ c.ReasonCounts = Map.ofList [ "not-passed", 1; "unmapped-code", 2 ] @>
 
 [<Fact>]
-let ``latest takes each project's newest recorded run and skips runs that stored no traces`` () =
+let ``latest takes each project's newest run of any status, with its reason`` () =
     let path = tempDb ()
+
+    let untraced project runId status reason =
+        { run project runId status "{}" with
+            Reason = reason }
 
     do
         use store = Store.Open path
         store.RecordRun(run "P" "r1" Recorded (stats 4 2 2 (counters 1L 0L)), [], [])
-        store.RecordRun(run "P" "r2" TreeMovedDuringRun (stats 4 3 0 (counters 1L 0L)), [], [])
-        store.RecordRunWithoutTraces(run "P" "r3" FailedToRecord "{}")
+        store.RecordRun(run "P" "r2" TreeMovedDuringRun (stats 4 4 0 (counters 1L 0L)), [], [])
         store.RecordRun(run "Q" "r1" Recorded (stats 5 5 5 (counters 1L 0L)), [], [])
-        store.RecordRunWithoutTraces(run "R" "r1" Refused "{}")
+        store.RecordRunWithoutTraces(untraced "Q" "r2" FailedToRecord "no dump")
+        store.RecordRunWithoutTraces(untraced "R" "r1" Refused "own recorder")
+        // Recorded, then refused: the refusal is the project's state, not the old recording.
+        store.RecordRun(run "S" "r1" Recorded (stats 5 5 5 (counters 1L 0L)), [], [])
+        store.RecordRunWithoutTraces(untraced "S" "r2" Refused "own recorder")
 
-    let byProject =
-        Census.latest path None |> List.map (fun c -> c.TestProject, c.RunId, c.Traced)
+    let rows (cs: Census.ProjectCensus list) =
+        cs |> List.map (fun c -> c.TestProject, c.RunId, c.Status, c.Reason, c.Traced)
 
-    test <@ byProject = [ "P", "r2", 3; "Q", "r1", 5 ] @>
+    let newest = Census.latest path None
 
-    let r1 =
-        Census.latest path (Some "r1")
-        |> List.map (fun c -> c.TestProject, c.RunId, c.Traced)
+    test
+        <@
+            rows newest = [ "P", "r2", "tree-moved", "", 4
+                            "Q", "r2", "failed", "no dump", 0
+                            "R", "r1", "refused", "own recorder", 0
+                            "S", "r2", "refused", "own recorder", 0 ]
+        @>
 
-    test <@ r1 = [ "P", "r1", 2; "Q", "r1", 5 ] @>
+    // Only a run that stored traces can pass; only a refused one fails nothing.
+    let verdicts =
+        newest
+        |> List.map (fun c -> Census.passes Census.defaultBars c, Census.fails Census.defaultBars c)
+
+    test <@ verdicts = [ true, false; false, true; false, false; false, false ] @>
+
+    test
+        <@
+            rows (Census.latest path (Some "r1")) = [ "P", "r1", "recorded", "", 2
+                                                      "Q", "r1", "recorded", "", 5
+                                                      "R", "r1", "refused", "own recorder", 0
+                                                      "S", "r1", "recorded", "", 5 ]
+        @>
+
     test <@ List.isEmpty (Census.latest path (Some "nope")) @>
 
 [<Fact>]
@@ -230,6 +259,8 @@ let ``render prints the ratios, the untraced line, ambient symbols, reasons and 
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 200
           Traced = 199
           Complete = 190
@@ -263,6 +294,8 @@ let ``render marks a failing project and omits empty sections`` () =
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 10
           Traced = 5
           Complete = 5
@@ -284,10 +317,47 @@ let ``render marks a failing project and omits empty sections`` () =
         @>
 
 [<Fact>]
+let ``render prints a run that stored no traces as its status and reason, in project order`` () =
+    let recorded: Census.ProjectCensus =
+        { TestProject = "A"
+          RunId = "r"
+          Status = "recorded"
+          Reason = ""
+          Executed = 1
+          Traced = 1
+          Complete = 1
+          TotalHits = 1L
+          AmbientHits = 0L
+          AmbientSymbols = []
+          ReasonCounts = Map.empty
+          Pools = [] }
+
+    let refused =
+        { recorded with
+            TestProject = "B"
+            Status = "refused"
+            Reason = "the app ships its own recorder build" }
+
+    let lines =
+        (Census.render [ recorded; refused; { recorded with TestProject = "C" } ]).Split('\n')
+        |> Array.filter (fun l -> not (l.StartsWith "  traced" || l.StartsWith "  ambient"))
+
+    test
+        <@
+            lines = [| "A  run r  PASS"
+                       "B  run r  REFUSED"
+                       "  reason     the app ships its own recorder build"
+                       "C  run r  PASS"
+                       "" |]
+        @>
+
+[<Fact>]
 let ``render omits the untraced line when every executed test was traced`` () =
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 1
           Traced = 1
           Complete = 1
@@ -304,6 +374,8 @@ let ``a report carries the ratios and the verdict for json`` () =
     let c: Census.ProjectCensus =
         { TestProject = "P"
           RunId = "r"
+          Status = "recorded"
+          Reason = ""
           Executed = 4
           Traced = 3
           Complete = 3

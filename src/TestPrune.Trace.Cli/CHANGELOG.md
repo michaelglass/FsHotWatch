@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: `census` reports each project's newest run whatever its status: a refused run prints
+  `REFUSED` with its reason and does not fail the census, a failed one prints `FAILED` with its
+  reason and exits 1. With no run at all it says "no trace run" (was "no recorded run").
 - fix: `overhead` exits 2 with "cannot measure CPU overhead: getrusage is macOS/Linux only" on
   Windows, before preparing or launching anything, instead of crashing on the missing `getrusage`;
   any other failure reading `getrusage` is that exit-2 error too.
