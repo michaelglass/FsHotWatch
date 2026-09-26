@@ -125,15 +125,18 @@ let ``parseConfig fsEventsLatencyMs zero is valid (no coalescing)`` () =
     let config = parseConfig """{"fsEventsLatencyMs": 0}""" defaults
     test <@ config.FsEventsLatencyMs = 0 @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig fsEventsLatencyMs negative falls back to default 250`` () =
-    let config = parseConfig """{"fsEventsLatencyMs": -10}""" defaults
-    test <@ config.FsEventsLatencyMs = 250 @>
-
-[<Fact(Timeout = 15000)>]
-let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
-    let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
-    test <@ config.FsEventsLatencyMs = 250 @>
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"fsEventsLatencyMs": -10}""", "-10")>]
+[<InlineData("""{"fsEventsLatencyMs": "nope"}""", "nope")>]
+[<InlineData("""{"fsEventsLatencyMs": 2.5}""", "2.5")>]
+let ``parseConfig fsEventsLatencyMs that is not a non-negative integer is a ConfigError naming it``
+    (json: string, bad: string)
+    =
+    // Was a warning and a silent fall-back to 250 — a mistyped latency then measured
+    // the default while the config claimed otherwise.
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "fsEventsLatencyMs" @>
+    test <@ ex.message.Contains bad @>
 
 // --- parseConfig: checker.cacheSizeFactor ---
 
@@ -223,27 +226,33 @@ let ``parseConfig runHookCommands empty array is legal and brackets nothing`` ()
     let config = parseConfig """{"runHookCommands": []}""" defaults
     test <@ Set.isEmpty config.RunHookCommands @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig runHookCommands falls back to BOTH when nothing parses`` () =
-    // A typo must never un-gate: unrecognised entries would leave the set empty and
-    // silently disable the bracket, so a non-empty array yielding nothing usable
-    // resolves to the safe default instead.
-    let config = parseConfig """{"runHookCommands": ["chekc", "confrim"]}""" defaults
-    test <@ config.RunHookCommands = DefaultRunHookCommands @>
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"runHookCommands": ["chekc", "confrim"]}""", "chekc")>]
+[<InlineData("""{"runHookCommands": ["confirm", "chekc"]}""", "chekc")>]
+let ``parseConfig runHookCommands with an unknown verb is a ConfigError naming it and the accepted verbs``
+    (json: string, bad: string)
+    =
+    // A typo must never change which verbs are bracketed. Dropping it used to
+    // silently un-bracket the verb the typo was meant to name (`["confirm", "chekc"]`
+    // bracketed confirm only), and a warning scrolls past inside a long gate.
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "runHookCommands" @>
+    test <@ ex.message.Contains bad @>
+    test <@ ex.message.Contains "check" && ex.message.Contains "confirm" @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"runHookCommands": "confirm"}""")>]
+[<InlineData("""{"runHookCommands": 3}""")>]
+[<InlineData("""{"runHookCommands": {"confirm": true}}""")>]
+[<InlineData("""{"runHookCommands": ["confirm", 3]}""")>]
+let ``parseConfig runHookCommands of the wrong shape is a ConfigError`` (json: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "runHookCommands" @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig runHookCommands keeps the verbs it understood, dropping a typo`` () =
-    let config = parseConfig """{"runHookCommands": ["confirm", "chekc"]}""" defaults
-    test <@ config.RunHookCommands = Set.singleton RunHookCommand.Confirm @>
-
-[<Fact(Timeout = 15000)>]
-let ``parseConfig runHookCommands of the wrong type falls back to BOTH`` () =
-    for json in
-        [ """{"runHookCommands": "confirm"}"""
-          """{"runHookCommands": 3}"""
-          """{"runHookCommands": {"confirm": true}}"""
-          """{"runHookCommands": false}"""
-          """{"runHookCommands": null}""" ] do
+let ``parseConfig runHookCommands false or null is the default, bracketing BOTH`` () =
+    // `false` reads as "I am not using this key", like the sibling run-hook keys.
+    for json in [ """{"runHookCommands": false}"""; """{"runHookCommands": null}""" ] do
         let config = parseConfig json defaults
         test <@ config.RunHookCommands = DefaultRunHookCommands @>
 
@@ -477,6 +486,24 @@ let ``parseConfig format check string returns Check`` () =
     let config = parseConfig """{"format": "check"}""" defaults
     test <@ config.Format = Check @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"format": "chek"}""", "chek")>]
+[<InlineData("""{"format": 1}""", "1")>]
+let ``parseConfig format unknown value is a ConfigError naming it and the accepted values``
+    (json: string, bad: string)
+    =
+    // Was a warning and a silent fall-back to Auto — so `"chek"` quietly REWROTE files.
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "format" @>
+    test <@ ex.message.Contains bad @>
+
+    test
+        <@
+            ex.message.Contains "check"
+            && ex.message.Contains "auto"
+            && ex.message.Contains "off"
+        @>
+
 // --- parseConfig: lint ---
 
 [<Fact(Timeout = 15000)>]
@@ -696,10 +723,14 @@ let ``parseConfig raises ConfigError on the removed file cache backend`` (value:
     Assert.Contains(value, ex.Message)
     Assert.Contains("\"cache\": \"memory\"", ex.Message)
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig cache unknown string returns defaults cache`` () =
-    let config = parseConfig """{"cache": "redis"}""" defaults
-    test <@ config.Cache = defaults.Cache @>
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"cache": "redis"}""", "redis")>]
+[<InlineData("""{"cache": 5}""", "5")>]
+let ``parseConfig cache unknown value is a ConfigError naming it and the accepted values`` (json: string, bad: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "cache" @>
+    test <@ ex.message.Contains bad @>
+    test <@ ex.message.Contains "memory" && ex.message.Contains "none" @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig cache missing uses defaults`` () =
@@ -745,17 +776,21 @@ let ``analyzers config parses explicit failOnSeverity`` () =
                    BootstrapHints = Map.empty |}
         @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig analyzers unknown failOnSeverity falls back to Hint`` () =
-    let config =
-        parseConfig """{"analyzers":{"paths":["p1"],"failOnSeverity":"bogus"}}""" defaults
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":"bogus"}}""", "bogus")>]
+[<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":"Warning"}}""", "Warning")>]
+[<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":2}}""", "2")>]
+let ``parseConfig analyzers unknown failOnSeverity is a ConfigError naming it and the accepted values``
+    (json: string, bad: string)
+    =
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "analyzers.failOnSeverity" @>
+    test <@ ex.message.Contains bad @>
 
     test
         <@
-            config.Analyzers = Some
-                {| Paths = [ "p1" ]
-                   FailOnSeverity = DiagnosticSeverity.Hint
-                   BootstrapHints = Map.empty |}
+            [ "error"; "warning"; "info"; "hint" ]
+            |> List.forall (fun accepted -> ex.message.Contains accepted)
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -764,7 +799,6 @@ let ``parseConfig format string variants land deterministically`` () =
     test <@ (parseConfig """{"format":"check"}""" defaults).Format = Check @>
     test <@ (parseConfig """{"format":"off"}""" defaults).Format = Off @>
     test <@ (parseConfig """{"format":"false"}""" defaults).Format = Off @>
-    test <@ (parseConfig """{"format":"weird"}""" defaults).Format = Auto @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig build entry parses buildTemplate`` () =
@@ -932,7 +966,7 @@ let ``parseConfig tests with explicit coverageDir`` () =
     test <@ config.Tests.Value.CoverageDir = "artifacts/cov" @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off and warns on unknown`` () =
+let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off`` () =
     let parseFmt (v: string) =
         let json =
             """{"tests": {"projects": [{"project": "T", "reportVerificationFormat": "__V__"}]}}""".Replace("__V__", v)
@@ -947,7 +981,29 @@ let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off and warns 
     test <@ parseFmt "auto" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
     test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf @>
     test <@ parseFmt "off" = FsHotWatch.TestPrune.TestPrunePlugin.Disabled @>
-    test <@ parseFmt "bogus" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"bogus\"", "bogus")>]
+[<InlineData("\"crtf\"", "crtf")>]
+[<InlineData("false", "false")>]
+let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError naming it and the accepted values``
+    (value: string, bad: string)
+    =
+    // Was a warning and a silent fall-back to AutoDetect — the same typo class that
+    // `tests.traces.record` and `tests.extensions` types already reject.
+    let json =
+        """{"tests": {"projects": [{"project": "T", "reportVerificationFormat": __V__}]}}""".Replace("__V__", value)
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "reportVerificationFormat" @>
+    test <@ ex.message.Contains bad @>
+
+    test
+        <@
+            ex.message.Contains "ctrf"
+            && ex.message.Contains "auto"
+            && ex.message.Contains "off"
+        @>
 
 // --- parseConfig: fileCommands ---
 

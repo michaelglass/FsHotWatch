@@ -628,10 +628,11 @@ verdict alone, stale against the new tree.
 
 Failure modes lean **safe**, because silently un-gating is the dangerous direction:
 
-- **Absent → both verbs**, exactly the behaviour from before the key existed. Adding
-  the key to fshw changed no existing config's meaning.
-- **Unrecognised or wrongly-typed → both verbs**, with a warning. A typo
-  (`["comfirm"]`) can never un-gate a run.
+- **Absent (or `false` / `null`) → both verbs**, exactly the behaviour from before the
+  key existed. Adding the key to fshw changed no existing config's meaning.
+- **Unrecognised or wrongly-typed → a config error** naming the bad entry and the
+  accepted verbs. A typo (`["confirm", "chek"]`) can neither un-gate a run nor be
+  quietly dropped.
 - **Explicitly `[]` → bracket nothing.** Legal — the config said so plainly — but
   warned about at load.
 

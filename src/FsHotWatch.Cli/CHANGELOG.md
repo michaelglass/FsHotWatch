@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **BREAKING (config):** an unknown value for an enumerated `.fshw.json` setting is now a
+  config error naming the value and the accepted ones, where it used to log a warning
+  and fall back to the default. A config that loaded with such a warning now fails to
+  load; fix the value it names. Affected: `format`, `cache`, `analyzers.failOnSeverity`,
+  `tests.projects[].reportVerificationFormat`, `runHookCommands` (an unknown verb was
+  dropped, so `["confirm", "chek"]` silently bracketed confirm only; a non-array or a
+  non-string entry is an error too), and `fsEventsLatencyMs` (negative or not a whole
+  number). A non-string value where a string was expected (e.g.
+  `"reportVerificationFormat": false`) is an error rather than a silent default. `null`
+  still means "use the default"; `"runHookCommands": []` still brackets nothing, with a
+  warning.
+
 ## 0.14.0-alpha.64 - 2026-09-25
 
 - **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0,
