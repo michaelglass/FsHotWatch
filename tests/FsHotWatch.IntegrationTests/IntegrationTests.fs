@@ -178,7 +178,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let gResearchPath =
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".nuget/packages/g-research.fsharp.analyzers/0.22.0/analyzers/dotnet/fs"
+            ".nuget/packages/g-research.fsharp.analyzers/0.25.0/analyzers/dotnet/fs"
         )
 
     let analyzerPaths =

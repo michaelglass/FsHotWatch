@@ -4,7 +4,7 @@
     <EnableSourceLink Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceLink>
     <EnableSourceControlManagerQueries Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceControlManagerQueries>
 
-    <!-- NU1608: FSharp.Analyzers.SDK 0.37.2 pins old FCS/FSharp.Core; we use newer. -->
+    <!-- NU1608: FSharp.Analyzers.SDK pins exact FCS/FSharp.Core versions; we float newer. -->
     <NoWarn>$(NoWarn);NU1608</NoWarn>
   </PropertyGroup>
 

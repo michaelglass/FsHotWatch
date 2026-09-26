@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Changed: hosts `FSharp.Analyzers.SDK` 0.39 (was 0.37.2). The SDK's loader only
+  loads an analyzer built against the host's SDK major.minor and skips the rest
+  without an error, so analyzer packages must be built against SDK 0.39 to load:
+  g-research `G-Research.FSharp.Analyzers` 0.25.0+, `FSharpLintAnalyzerShim`
+  0.4.0-alpha.2+. A configured path that ends up loading zero analyzers is still
+  refused at startup (`Analyzer path(s) loaded 0 analyzers`). With g-research
+  0.25.0 all eleven of its typed-tree rules run on the typed tree this host
+  offers, where 0.23.0 raised `MissingMethodException` on every file.
+
 ## 0.7.0-alpha.39 - 2026-09-25
 
 - fix: an analyzer crash or finding on a suspect file is a checker fault, not a red

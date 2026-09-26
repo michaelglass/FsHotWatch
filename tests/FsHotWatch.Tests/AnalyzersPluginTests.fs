@@ -1294,30 +1294,61 @@ let private gResearchAnalyzerDir =
         |> Option.defaultWith (fun () ->
             IO.Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages"))
 
-    IO.Path.Combine(root, "g-research.fsharp.analyzers", "0.23.0", "analyzers", "dotnet", "fs")
+    IO.Path.Combine(root, "g-research.fsharp.analyzers", "0.25.0", "analyzers", "dotnet", "fs")
+
+/// One planted violation per g-research typed rule. Each binding is the smallest shape
+/// its rule reports; the logging rules match calls into the logging abstractions, so
+/// the probe references the copy this test project ships beside itself.
+let private gResearchPlants =
+    let logging =
+        IO.Path.Combine(AppContext.BaseDirectory, "Microsoft.Extensions.Logging.Abstractions.dll")
+
+    $"#r @\"{logging}\"\n"
+    + "open System\n"
+    + "open System.Collections.Immutable\n"
+    + "open Microsoft.Extensions.Logging\n"
+    + "let starts (s: string) = s.StartsWith(\"a\")\n"
+    + "let ends (s: string) = s.EndsWith(\"a\")\n"
+    + "let index (s: string) = s.IndexOf(\"a\")\n"
+    + "let lastIndex (s: string) = s.LastIndexOf(\"a\")\n"
+    + "let interpolated (n: int) = $\"{n}\"\n"
+    + "let annotate (n: int) = string n\n"
+    + "let virtualCall (xs: int list) = Seq.length xs\n"
+    + "let immutableEq (a: ImmutableHashSet<int>) (b: ImmutableHashSet<int>) = a = b\n"
+    + "let json (x: int) = Text.Json.JsonSerializer.Serialize(x, Text.Json.JsonSerializerOptions())\n"
+    + "let add (x: int) (y: int) = x + y\n"
+    + "let partial (log: ILogger) = log.LogInformation(\"{Sum}\", add 1)\n"
+    + "let missing (log: ILogger) = log.LogInformation(\"{A} {B}\", 1)\n"
 
 [<Fact(Timeout = 120000)>]
-let ``the configured analyzer set cannot walk a typed tree from this FCS`` () =
-    // WHY the host withholds the typed tree after a mismatch, measured rather than
-    // assumed. g-research 0.23.0 is compiled against an older FSharp.Compiler.Service;
-    // while `TypedTree` is `None` its analyzers return before touching the differing
-    // types, and handed a real typed tree they raise
-    // `Method not found: FSharp.Compiler.Symbols.FSharpType.get_BasicQualifiedName()`.
-    //
-    // If the analyzer packages are ever rebuilt against this FCS this test FAILS, which
-    // is the intended signal: the degradation in `AnalyzersPlugin` is then dead weight
-    // and typed-tree rules can be armed for real.
+let ``the configured analyzer set walks a typed tree from this FCS and fires every typed rule`` () =
+    // g-research 0.25.0 is built against FSharp.Analyzers.SDK 0.39 and this FCS, so
+    // handed a real typed tree its rules RUN instead of raising `MissingMethodException`
+    // on every file (the 0.23.0 state, which `isFcsBinaryMismatch` still classifies).
+    // "No failures" alone would pass for an empty set or a tree nobody walked, so each
+    // typed rule must also REPORT its planted violation.
     Assert.True(IO.Directory.Exists gResearchAnalyzerDir, $"analyzer package missing at {gResearchAnalyzerDir}")
 
-    let source = "module Probe\nlet f (s: string) = s.StartsWith(\"a\")\n"
-
     let checkResults, options, parseResults =
-        checkResultsWith true "typedtree-differential" source
+        checkResultsWith true "typedtree-differential" gResearchPlants
 
     let checkResultsObj =
         match checkResults with
         | FullCheck cr -> box cr
         | ParseOnly -> null
+
+    // A plant that does not compile yields a partial tree the rules may skip, so the
+    // probe itself must check clean before its silence could mean anything.
+    let compileErrors =
+        match checkResults with
+        | FullCheck cr ->
+            cr.Diagnostics
+            |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            |> Array.map (fun d -> d.Message)
+            |> List.ofArray
+        | ParseOnly -> [ "parse only" ]
+
+    test <@ List.isEmpty compileErrors @>
 
     // NOT `typedTreeOf`: the real tree is wanted even if a latch would withhold it.
     let realTypedTree =
@@ -1331,30 +1362,49 @@ let ``the configured analyzer set cannot walk a typed tree from this FCS`` () =
     let loaded = client.LoadAnalyzers gResearchAnalyzerDir
     Assert.True(loaded.Analyzers > 0, "no analyzers loaded — every assertion below would be vacuous")
 
-    let failuresFor (typedTree: obj) =
-        let context =
-            createCliContext
-                (box "Probe.fsx")
-                (box (FSharp.Compiler.Text.SourceText.ofString source))
-                (box parseResults)
-                checkResultsObj
-                typedTree
-                (box options)
-
-        client.RunAnalyzersSafely context
+    let results =
+        createCliContext
+            (box "Probe.fsx")
+            (box (FSharp.Compiler.Text.SourceText.ofString gResearchPlants))
+            (box parseResults)
+            checkResultsObj
+            realTypedTree
+            (box options)
+        |> client.RunAnalyzersSafely
         |> Async.RunSynchronously
+
+    let failures =
+        results
         |> List.choose (fun r ->
             match r.Output with
             | Result.Ok _ -> None
-            | Result.Error ex -> Some ex)
+            | Result.Error ex -> Some $"{r.AnalyzerName}: {ex.Message}")
 
-    // Control: withholding the typed tree is the state the host ran in before this
-    // change, and nothing fails there.
-    test <@ failuresFor noTypedTree |> List.isEmpty @>
+    let codes =
+        results
+        |> List.collect (fun r ->
+            match r.Output with
+            | Result.Ok messages -> messages |> List.map (fun m -> m.Code)
+            | Result.Error _ -> [])
+        |> Set.ofList
 
-    let withTypedTree = failuresFor realTypedTree
-    test <@ not (List.isEmpty withTypedTree) @>
-    test <@ withTypedTree |> List.forall isFcsBinaryMismatch @>
+    test <@ List.isEmpty failures @>
+
+    let expected =
+        set
+            [ "GRA-STRING-001"
+              "GRA-STRING-002"
+              "GRA-STRING-003"
+              "GRA-STRING-004"
+              "GRA-INTERPOLATED-001"
+              "GRA-TYPE-ANNOTATE-001"
+              "GRA-VIRTUALCALL-001"
+              "GRA-IMMUTABLECOLLECTIONEQUALITY-001"
+              "GRA-JSONOPTS-001"
+              "GRA-LOGARGFUNCFULLAPP-001"
+              "GRA-LOGTEMPLMISSVALS-001" ]
+
+    test <@ Set.difference expected codes = Set.empty @>
 
 [<Fact>]
 let ``isFcsBinaryMismatch names the assembly mismatch and nothing else`` () =

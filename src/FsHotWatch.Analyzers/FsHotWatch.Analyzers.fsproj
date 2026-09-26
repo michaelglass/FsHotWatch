@@ -41,7 +41,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.37.2" />
+    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.39.2" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.*" />
   </ItemGroup>
 </Project>
