@@ -122,6 +122,7 @@ let ``a flush classifies its whole queue with one grouped query`` () =
                 None
                 None
                 []
+                None
         )
 
         host.EmitBuildCompleted(BuildSucceeded)

@@ -2234,8 +2234,18 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             SolutionScope.createExclusionResolver repoRoot t.Solution t.Excluded (fun () ->
                 daemon.Graph.GetAllProjects() |> List.map AbsProjectPath.value)
 
+        // `tests.traces`: recorded per project unless it says `"traces": false`. `None`
+        // (the key absent) launches every project exactly as it does without traces.
+        let untracedProjects =
+            t.Projects
+            |> List.filter (fun p -> not p.Traces)
+            |> List.map (fun p -> p.Project)
+            |> Set.ofList
+
         let handler =
-            createWithScope
+            createWithTraces
+                t.Traces
+                untracedProjects
                 excludedProjects
                 dbPath
                 repoRoot

@@ -377,6 +377,7 @@ let private runScenario (root: string) (setup: Setup) =
                 None
                 (Some coveragePaths)
                 []
+                None
         )
 
         match setup.Scope with

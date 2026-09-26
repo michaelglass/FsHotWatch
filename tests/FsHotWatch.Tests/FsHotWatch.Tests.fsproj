@@ -129,6 +129,8 @@
     <Compile Include="TestPruneConfirmPassThroughTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
     <Compile Include="TracedLaunchTests.fs" />
+    <Compile Include="TestPruneTracesTests.fs" />
+    <Compile Include="TestPruneTracesPluginTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />

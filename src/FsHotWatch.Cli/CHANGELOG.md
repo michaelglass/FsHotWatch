@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `tests.traces` is acted on. With `"record": "full-runs"` (or `"every-run"`), the
+  runs that policy covers record a trace for each test of every project not marked
+  `"traces": false`, into `.fshw/test-traces.db` (or `tests.traces.db`). Refused projects
+  run untraced and name their reason in `fshw status test-prune`. With no `tests.traces`
+  key, nothing changes.
+- **pin:** TestPrune.Core 13.2.1 (index schema 17, unchanged, so existing test-impact
+  databases are kept). A consumer that pins TestPrune.Core itself must move to 13.2.1
+  with this release.
+
 ## 0.14.0-alpha.67 - 2026-09-26
 
 - **BREAKING (pin):** TestPrune.Core 13.1.1 (index schema 17). A type declared in the

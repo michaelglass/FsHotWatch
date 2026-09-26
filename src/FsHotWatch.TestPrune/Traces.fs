@@ -176,6 +176,14 @@ module TracedLaunch =
 
         dotnetRoot getEnv hasRuntime (System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory())
 
+    /// A traced launch's environment: the project's own, plus `dotnetRoot` as `DOTNET_ROOT`
+    /// unless the project sets one itself.
+    let environment (dotnetRoot: string) (projectEnv: (string * string) list) =
+        if projectEnv |> List.exists (fun (k, _) -> k = "DOTNET_ROOT") then
+            projectEnv
+        else
+            projectEnv @ [ "DOTNET_ROOT", dotnetRoot ]
+
     /// The launch of `apphost` for a project configured as `configCommand configArgs`
     /// with `projectEnv`. The project's own `DOTNET_ROOT`, if it sets one, is kept.
     let spec
@@ -188,15 +196,9 @@ module TracedLaunch =
         : Result<TracedLaunchSpec, string> =
         appArgs configCommand configArgs extraArgs
         |> Result.map (fun args ->
-            let env =
-                if projectEnv |> List.exists (fun (k, _) -> k = "DOTNET_ROOT") then
-                    projectEnv
-                else
-                    projectEnv @ [ "DOTNET_ROOT", dotnetRoot ]
-
             { Command = apphost
               Args = args
-              Environment = env })
+              Environment = environment dotnetRoot projectEnv })
 
     /// The argument line for `ProcessStartInfo.Arguments`, each argument quoted by
     /// `ProcessHelper.quoteArg` so `splitArgs` yields it back verbatim.
