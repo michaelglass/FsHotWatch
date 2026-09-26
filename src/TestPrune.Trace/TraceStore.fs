@@ -432,6 +432,15 @@ type Store private (conn: SqliteConnection) =
             (fun r -> r.GetString 0)
         |> Set.ofList
 
+    /// The scope keys stored for one run, sorted.
+    member _.RunScopeKeys(runId: string, testProject: string) : string list =
+        readRows
+            conn
+            """SELECT s.scope_key FROM trace_scopes s JOIN trace_runs r ON r.id = s.trace_run_id
+               WHERE r.run_id = @r AND r.test_project = @p ORDER BY s.scope_key"""
+            [ "@r", box runId; "@p", box testProject ]
+            (fun r -> r.GetString 0)
+
     /// A project's runs, newest first.
     member _.Runs(testProject: string) : TraceRun list =
         readRows conn """SELECT run_id, tree_hash, env_fingerprint, recorded_at, kind, status, reason, stats_json
@@ -448,7 +457,8 @@ type Store private (conn: SqliteConnection) =
 
     /// A full run passes the tests it saw as `liveTestKeys`: every other trace of the
     /// project under that fingerprint belongs to a test that no longer exists. Then drop
-    /// scopes no test links, runs no test or scope references (keeping the newest 50 run
+    /// scopes no test links (except the static-init and ambient scopes of each project's
+    /// latest recorded run), runs no test or scope references (keeping the newest 50 run
     /// rows per project as history), and versions no entry references. The test-key set
     /// travels as one JSON parameter through `json_each` (ADR 0003), never as an `IN` list.
     member _.CollectGarbage(testProject: string, envFingerprint: string, liveTestKeys: Set<string> option) : unit =
@@ -466,7 +476,15 @@ type Store private (conn: SqliteConnection) =
                       "@live", box (JsonSerializer.Serialize(Set.toArray live)) ]
             | None -> ()
 
-            exec conn tx "DELETE FROM trace_scopes WHERE id NOT IN (SELECT scope_id FROM trace_test_scopes)" []
+            // Run-level scopes (static init, ambient) are linked to no test; the latest
+            // recorded run of each project keeps them for the census.
+            exec
+                conn
+                tx
+                """DELETE FROM trace_scopes WHERE id NOT IN (SELECT scope_id FROM trace_test_scopes)
+                     AND NOT (scope_key IN ('S:static-init', 'A:ambient') AND trace_run_id IN
+                         (SELECT MAX(id) FROM trace_runs WHERE status IN ('recorded', 'tree-moved') GROUP BY test_project))"""
+                []
 
             exec
                 conn

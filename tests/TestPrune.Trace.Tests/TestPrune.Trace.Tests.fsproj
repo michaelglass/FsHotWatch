@@ -37,6 +37,7 @@
     <Compile Include="FixtureIndex.fs" />
     <Compile Include="JoinerTests.fs" />
     <Compile Include="ShadowBinTests.fs" />
+    <Compile Include="TraceIngestTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -530,11 +530,18 @@ let ``every refusal has a one-line description`` () =
           RecorderVersionSkew("1", "2")
           DepsJsonUnreadable "why"
           JitInvalid [ "T::m" ]
-          VerifyFailed(1, "out") ]
+          VerifyFailed(1, "out")
+          VerifyFailed(134, "Could not load file or assembly 'FSharp.Core, Version=8.0.0.0'") ]
 
     let lines = all |> List.map describeRefusal
     test <@ lines |> List.forall (fun l -> l <> "" && not (l.Contains "\n")) @>
     test <@ lines |> List.distinct |> List.length = all.Length @>
+
+    test
+        <@
+            (List.last lines).Contains "C#-only"
+            && not (lines.[lines.Length - 2].Contains "C#-only")
+        @>
 
 [<Fact>]
 let ``only assemblies built from the repository are woven`` () =

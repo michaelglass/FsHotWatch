@@ -43,3 +43,19 @@
   injected into the copy's deps.json (`DepsJson.injectRecorder`) without its PDB, so it stays out of
   the app's coverage. A new weave is accepted only after every touched method JIT-compiles in the
   app's own runtime.
+  A JIT-verification failure whose output names FSharp.Core says why: the recorder is F#, and an
+  app that ships no FSharp.Core (a C#-only test app) cannot load it.
+- feat: ingestion (`TestPrune.Trace.TraceIngest.ingest`): merges every process's dump by scope (a
+  traced child records into the scope that started it, static init included), joins probe ids to
+  symbols at their current version hash (`versionHashes`), hashes file inputs as they are now
+  (repo-relative, `bin/Traced/` keyed as `bin/Debug/`), matches CTRF outcomes (display name, else
+  class and method; theory rows union, the worst outcome wins) and links each test to the fixture,
+  collection and pool scopes it inherited. A trace is complete only when its test passed, every
+  executed file still matches its PDB hash, every executed id mapped and every child process it
+  started left a dump; otherwise its reasons are stored. An empty weave set is stored as a
+  `refused` run with a reason naming the likely cause (PDB paths mapped to `/_/`), never as a set
+  of empty verified traces. A dump from another weave (a different id count, or an id outside the
+  manifest) is rejected. No usable main-process dump stores a `failed` run and no tests.
+- feat: `DumpReader.readEach` returns every dump with its file.
+- feat: `TraceStore.RunScopeKeys`; garbage collection keeps the static-init and ambient scopes of
+  each project's latest recorded run.

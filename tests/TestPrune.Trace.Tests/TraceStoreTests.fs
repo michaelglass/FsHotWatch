@@ -264,6 +264,35 @@ let ``garbage collection drops dead tests, unreferenced scopes and versions`` ()
     test <@ scalarAt path "SELECT COUNT(*) FROM trace_inputs" = 1L @>
 
 [<Fact>]
+let ``garbage collection keeps the run scopes of each project's latest recorded run only`` () =
+    use store = Store.Open(tempPath ())
+
+    let runScopes id project =
+        store.RecordRun(
+            { run id with TestProject = project },
+            [ testScope "T:1" [ "Lib.f", "h1" ]
+              testScope "S:static-init" [ "Lib.init", "h" ]
+              testScope "A:ambient" [ "Lib.tick", "h" ]
+              testScope "C:unlinked" [ "Lib.c", "h" ] ],
+            [ passed $"%s{project}|Ns.C|m" [ "T:1" ] ]
+        )
+
+    runScopes "r1" "P"
+    runScopes "r1" "Q"
+    runScopes "r2" "P"
+    // A later run that recorded nothing does not make the last recording's scopes history.
+    store.RecordRunWithoutTraces(
+        { run "r3" with
+            Status = FailedToRecord }
+    )
+
+    store.CollectGarbage("P", "E1", None)
+    test <@ List.isEmpty (store.RunScopeKeys("r1", "P")) @>
+    test <@ store.RunScopeKeys("r2", "P") = [ "A:ambient"; "S:static-init"; "T:1" ] @>
+    test <@ store.RunScopeKeys("r1", "Q") = [ "A:ambient"; "S:static-init"; "T:1" ] @>
+    test <@ List.isEmpty (store.RunScopeKeys("r3", "P")) @>
+
+[<Fact>]
 let ``garbage collection without a live set keeps every test`` () =
     use store = Store.Open(tempPath ())
     store.RecordRun(run "r1", [ testScope "T:1" [ "Lib.f", "h1" ] ], [ passed "P|Ns.C|m" [ "T:1" ] ])

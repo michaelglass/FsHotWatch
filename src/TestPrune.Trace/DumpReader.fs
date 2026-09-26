@@ -100,21 +100,25 @@ let readFile (path: string) : Result<ProcessDump, string> =
     with ex ->
         Error ex.Message
 
+/// Read every `trace-*.ndjson` in `dir` (never the `.tmp` files of unfinished writes),
+/// sorted by path, each with its file. A missing directory is empty.
+let readEach (dir: string) : (string * Result<ProcessDump, string>) list =
+    if not (Directory.Exists dir) then
+        []
+    else
+        Directory.GetFiles(dir, "trace-*.ndjson")
+        |> List.ofArray
+        |> List.sort
+        |> List.map (fun f -> f, readFile f)
+
 /// Read every `trace-*.ndjson` in `dir` (never the `.tmp` files of unfinished writes):
 /// the good dumps, and a `(file, reason)` for each rejected one. A missing directory is empty.
 let readDirectory (dir: string) : ProcessDump list * (string * string) list =
-    if not (Directory.Exists dir) then
-        [], []
-    else
-        let results =
-            Directory.GetFiles(dir, "trace-*.ndjson")
-            |> List.ofArray
-            |> List.sort
-            |> List.map (fun f -> f, readFile f)
+    let results = readEach dir
 
-        (results |> List.choose (fun (_, r) -> Result.toOption r)),
-        (results
-         |> List.choose (fun (f, r) ->
-             match r with
-             | Error e -> Some(f, e)
-             | Ok _ -> None))
+    (results |> List.choose (fun (_, r) -> Result.toOption r)),
+    (results
+     |> List.choose (fun (f, r) ->
+         match r with
+         | Error e -> Some(f, e)
+         | Ok _ -> None))

@@ -90,6 +90,11 @@ let describeRefusal =
     | RecorderVersionSkew(found, expected) -> $"the app references recorder %s{found}; this weaver needs %s{expected}"
     | DepsJsonUnreadable why -> $"deps.json: %s{why}"
     | JitInvalid ms -> "woven IL failed JIT verification: " + String.concat ", " ms
+    | VerifyFailed(code, out) when out.Contains "FSharp.Core" ->
+        // The recorder is F#: an app that ships no FSharp.Core (a C#-only test app) cannot
+        // load it, so the verify hook dies before it prepares anything.
+        $"JIT verification did not complete (exit %d{code}): the recorder needs FSharp.Core and this app ships none "
+        + $"(a C#-only test app); reference FSharp.Core from the test project to trace it. Output: %s{out}"
     | VerifyFailed(code, out) -> $"JIT verification did not complete (exit %d{code}): %s{out}"
 
 let private hex (bytes: byte[]) =

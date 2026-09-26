@@ -39,6 +39,7 @@
         <Compile Include="HardLink.fs" />
         <Compile Include="DepsJson.fs" />
         <Compile Include="ShadowBin.fs" />
+        <Compile Include="TraceIngest.fs" />
     </ItemGroup>
 
     <ItemGroup>
