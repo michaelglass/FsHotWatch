@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.52 - 2026-09-27
+
 - fix: CTRF auto-detection (`reportVerificationFormat: auto`, the default) now finds a
   test project that references any xUnit v3 package carrying the Microsoft.Testing.Platform
   runner — `xunit.v3.mtp-v1`, `xunit.v3.mtp-v2`, `xunit.v3.core.mtp-v1`/`-v2` — not only

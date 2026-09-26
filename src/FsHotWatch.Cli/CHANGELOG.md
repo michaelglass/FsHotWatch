@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.71 - 2026-09-27
+
 - **BREAKING (pin):** TestPrune.Core 13.2.2 (index schema 18: existing test-impact
   databases are recreated on first open; F# exception types are now indexed) and
   TestPrune.Trace 0.2.0. A consumer that pins TestPrune.Core itself must move to 13.2.2
