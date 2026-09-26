@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.65 - 2026-09-26
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.64 - 2026-09-25
 
 - **BREAKING (pin):** TestPrune.Core 13.0.0, TestPrune.Falco 4.0.0, TestPrune.Sql 0.3.0,

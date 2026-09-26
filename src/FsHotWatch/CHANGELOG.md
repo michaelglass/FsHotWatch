@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.48 - 2026-09-26
+
 - fix: a restore by a second tool no longer reads as a project change. The content
   tracker compares `obj/project.assets.json` with its `project.restore` block removed
   (raw bytes when it does not parse), so a rewrite that changes only restore metadata —
