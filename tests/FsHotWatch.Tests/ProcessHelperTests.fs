@@ -368,6 +368,78 @@ let ``a reused worker runs each call in its caller's async-local context`` () =
     Assert.Equal(1, pool.Created)
 
 [<Fact(Timeout = 20000)>]
+let ``a timed call made with execution-context flow suppressed still runs`` () =
+    // With flow suppressed there is no caller context to carry, so the worker runs the
+    // work in its own. The call must still complete, and the caller's async-locals must
+    // not reach the worker.
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    let ambient = Threading.AsyncLocal<string>()
+    ambient.Value <- "caller"
+
+    let outcome =
+        use _suppressed = Threading.ExecutionContext.SuppressFlow()
+
+        runWithCancellableDeadlineOn pool (within 10.0) (TimeSpan.FromSeconds 10.0) (fun _ -> ambient.Value)
+        |> fst
+
+    Assert.Equal(WorkCompleted null, outcome)
+
+/// A job that records the worker it ran on, and signals once that worker has
+/// published its outcome.
+let private recordingJob (ran: int ref) (published: Threading.ManualResetEventSlim) : FsHotWatch.DeadlineWorkers.Job =
+    fun () ->
+        ran.Value <- Threading.Thread.CurrentThread.ManagedThreadId
+        fun () -> published.Set()
+
+[<Fact(Timeout = 20000)>]
+let ``a deadline worker survives a job that throws`` () =
+    // An exception escaping a worker would crash the daemon. The worker swallows it,
+    // counts itself idle, and takes the next job.
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    let thrower = ref 0
+
+    pool.Post(fun () ->
+        thrower.Value <- Threading.Thread.CurrentThread.ManagedThreadId
+        failwith "job failed")
+
+    Assert.True(
+        Threading.SpinWait.SpinUntil((fun () -> pool.Idle = 1), TimeSpan.FromSeconds 10.0),
+        "the worker never came back idle after its job threw"
+    )
+
+    let later = ref 0
+    use published = new Threading.ManualResetEventSlim(false)
+    pool.Post(recordingJob later published)
+
+    Assert.True(published.Wait(TimeSpan.FromSeconds 10.0), "the job after the throw never ran")
+    Assert.Equal(thrower.Value, later.Value)
+    Assert.Equal(1, pool.Created)
+
+[<Fact(Timeout = 20000)>]
+let ``a deadline worker survives an outcome publish that throws`` () =
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    let first = ref 0
+    use publishing = new Threading.ManualResetEventSlim(false)
+
+    pool.Post(fun () ->
+        first.Value <- Threading.Thread.CurrentThread.ManagedThreadId
+
+        fun () ->
+            // The worker is already counted idle here, so the next Post queues for it.
+            publishing.Set()
+            failwith "publish failed")
+
+    Assert.True(publishing.Wait(TimeSpan.FromSeconds 10.0), "the first job never published")
+
+    let later = ref 0
+    use published = new Threading.ManualResetEventSlim(false)
+    pool.Post(recordingJob later published)
+
+    Assert.True(published.Wait(TimeSpan.FromSeconds 10.0), "the job after the failed publish never ran")
+    Assert.Equal(first.Value, later.Value)
+    Assert.Equal(1, pool.Created)
+
+[<Fact(Timeout = 20000)>]
 let ``runProcess succeeds for echo`` () =
     runProcess "echo" "hello" "." [] |> expectStdout "hello"
 
@@ -1666,6 +1738,22 @@ let ``a throwing sink is disabled, never fatal, and never corrupts the capture``
 
     // Disabled after the first throw rather than retried per chunk — one warning,
     // not one per 4 KB.
+    Assert.Equal(1, calls)
+
+[<Fact(Timeout = 15000)>]
+let ``a throwing sink is not retried on the chunks after it failed`` () =
+    // 10000 bytes cannot arrive in one 4096-char read, so the pump reads again after the
+    // sink has thrown; those later chunks skip the sink and still reach the capture.
+    let mutable calls = 0
+
+    let alwaysThrows _ =
+        calls <- calls + 1
+        raise (IO.IOException "disk full")
+
+    match runProcessTo (Some alwaysThrows) "sh" "-c \"printf '%10000s' | tr ' ' x\"" "." [] quick with
+    | Succeeded(ProcessOutput.Drained text) -> Assert.Equal(String('x', 10000), text)
+    | other -> Assert.Fail $"expected Succeeded with a COMPLETE (Drained) capture, got %A{other}"
+
     Assert.Equal(1, calls)
 
 [<Fact(Timeout = 15000)>]

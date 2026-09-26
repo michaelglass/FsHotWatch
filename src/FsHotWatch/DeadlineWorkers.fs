@@ -34,32 +34,35 @@ type internal Pool() =
     let mutable idle = 0
     let mutable created = 0
 
-    let work (first: Job) =
-        let mutable next = first
-
-        while true do
-            let publish =
-                try
-                    next ()
-                with _ ->
-                    ignore
-
-            lock gate (fun () -> idle <- idle + 1)
-
+    // Never returns: the self tail call compiles to a jump, so a worker loops without
+    // growing its stack (and without a `while true` exit branch no run can take).
+    let rec work (job: Job) : unit =
+        let publish =
             try
-                publish ()
+                job ()
             with _ ->
-                ()
+                ignore
 
-            next <-
-                lock gate (fun () ->
-                    while pending.Count = 0 do
-                        Monitor.Wait gate |> ignore
+        lock gate (fun () -> idle <- idle + 1)
 
-                    idle <- idle - 1
-                    pending.Dequeue())
+        try
+            publish ()
+        with _ ->
+            ()
+
+        work (
+            lock gate (fun () ->
+                while pending.Count = 0 do
+                    Monitor.Wait gate |> ignore
+
+                idle <- idle - 1
+                pending.Dequeue())
+        )
 
     member _.Created: int = lock gate (fun () -> created)
+
+    /// Workers counted idle: waiting for a job, or publishing one's outcome.
+    member _.Idle: int = lock gate (fun () -> idle)
 
     /// Run `job` on an idle worker, or on a new one when none is free.
     member _.Post(job: Job) : unit =
