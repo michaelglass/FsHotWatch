@@ -217,7 +217,7 @@ let ``a TestPrune v13 index is recreated at the current schema and the FCS check
         conn.Close()
         clearSqlitePool dbPath
 
-        test <@ userVersion = SchemaVersion && SchemaVersion = 15 @>
+        test <@ userVersion = SchemaVersion && SchemaVersion = 17 @>
         test <@ occurrenceTables = 1L @>)
 
 /// The name TestPrune.Core 9 queued for a `.fsi` edit: a synthetic signature node that

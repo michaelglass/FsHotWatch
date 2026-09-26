@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **BREAKING (pin):** TestPrune.Core 13.1.1 (index schema 17). A type declared in the
+  global namespace (e.g. a .NET startup hook) is now indexed as `<global>.Name`; the
+  bundled indexer used to reject it and fail the whole impact-analysis flush. Existing
+  test-impact databases are recreated on first open. A consumer that pins
+  TestPrune.Core itself must move to 13.1.1 with this release.
+
 ## 0.14.0-alpha.66 - 2026-09-26
 
 - **BREAKING (config):** an unknown value for an enumerated `.fshw.json` setting is now a
