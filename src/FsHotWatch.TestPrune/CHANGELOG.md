@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.49 - 2026-09-26
+
+- Bundle TestPrune.Core 13.1.1
+
+
 ## 0.13.0-alpha.48 - 2026-09-26
 
 - chore: an extension refresh logs each extension's stored edge count at info, with how

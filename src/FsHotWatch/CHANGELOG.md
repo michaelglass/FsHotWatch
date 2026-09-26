@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.50 - 2026-09-26
+
 - fix: a change batch that re-discovers the project model now seals the new model even
   when it has no checkable files, as the cold scan already does for an empty cohort. An
   analysis-only daemon (no test projects) used to earn no receipt for that model, so

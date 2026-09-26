@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.67 - 2026-09-26
+
 - **BREAKING (pin):** TestPrune.Core 13.1.1 (index schema 17). A type declared in the
   global namespace (e.g. a .NET startup hook) is now indexed as `<global>.Name`; the
   bundled indexer used to reject it and fail the whole impact-analysis flush. Existing
