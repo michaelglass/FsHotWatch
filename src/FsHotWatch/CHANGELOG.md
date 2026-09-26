@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a timed call (`runWithCancellableTimeout`, `runWithCancellableTimeoutTracked`,
+  `runWithTimeout`) no longer starts a new thread. Its work runs on a reused
+  `fshw-deadline-worker` thread; one is added only when none is idle, so work abandoned
+  at its deadline still never holds up the next call. Lint and the analyzers used to
+  create and retire one thread per file checked. Timeout, cancellation and outcome
+  reporting are unchanged.
+
 - fix: a restore by a second tool no longer reads as a project change. The content
   tracker compares `obj/project.assets.json` with its `project.restore` block removed
   (raw bytes when it does not parse), so a rewrite that changes only restore metadata —

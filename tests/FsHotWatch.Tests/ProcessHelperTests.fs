@@ -274,6 +274,100 @@ let ``an expired deadline keeps its token source alive through a late registrati
     Assert.True(registered.IsSet, "late token registration did not execute")
 
 [<Fact(Timeout = 20000)>]
+let ``sequential timed calls run on the long-lived deadline workers, not a thread each`` () =
+    // Every timed lint/analyzer call used to start a dedicated LongRunning thread: ~2000
+    // thread creations and exits per cold scan. The work must run on a reused, named worker.
+    let names =
+        [ for _ in 1..20 ->
+              match
+                  runWithCancellableTimeout (TimeSpan.FromSeconds 10.0) (fun _ -> Threading.Thread.CurrentThread.Name)
+              with
+              | WorkCompleted name -> name
+              | WorkTimedOut _ -> "timed out" ]
+
+    Assert.All(names, (fun name -> Assert.Equal(FsHotWatch.DeadlineWorkers.ThreadName, name)))
+
+/// A deadline wait with a real budget, for the calls expected to finish.
+let private within (seconds: float) (task: Threading.Tasks.Task) = task.Wait(TimeSpan.FromSeconds seconds)
+
+[<Fact(Timeout = 20000)>]
+let ``N sequential timed calls create one worker thread`` () =
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+
+    for i in 1..50 do
+        match runWithCancellableDeadlineOn pool (within 10.0) (TimeSpan.FromSeconds 10.0) (fun _ -> i) with
+        | WorkCompleted n, _ -> Assert.Equal(i, n)
+        | WorkTimedOut _, _ -> Assert.Fail "expected completion"
+
+    Assert.Equal(1, pool.Created)
+
+[<Fact(Timeout = 20000)>]
+let ``a call that ignores its token is abandoned at its deadline without blocking the next`` () =
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    use release = new Threading.ManualResetEventSlim(false)
+    let budget = TimeSpan.FromSeconds 3.0
+
+    // Non-cooperative: waits on its own gate, never on the token. The deadline expires
+    // without consulting the work, so "past its deadline" is fixed rather than raced.
+    let hung, hungCompletion =
+        runWithCancellableDeadlineOn pool (fun _ -> false) budget (fun _ignoresToken ->
+            release.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+            "late")
+
+    Assert.Equal(WorkTimedOut budget, hung)
+
+    // While the abandoned call still occupies its worker, the next call runs at once.
+    match runWithCancellableDeadlineOn pool (within 10.0) budget (fun _ -> "next") with
+    | WorkCompleted value, _ -> Assert.Equal("next", value)
+    | WorkTimedOut _, _ -> Assert.Fail "the next call was blocked behind the abandoned one"
+
+    Assert.Equal(2, pool.Created)
+
+    // Once the abandoned work unwinds, its worker is reused, not replaced.
+    release.Set()
+    Assert.True(within 10.0 hungCompletion, "the abandoned work never completed")
+
+    for _ in 1..10 do
+        runWithCancellableDeadlineOn pool (within 10.0) budget (fun _ -> ()) |> ignore
+
+    Assert.Equal(2, pool.Created)
+
+[<Fact(Timeout = 20000)>]
+let ``concurrent timed calls run in parallel`` () =
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    let callers = 4
+    use barrier = new Threading.Barrier(callers)
+
+    // Each call's work only returns once ALL of them are inside their work, so a pool
+    // that serialized them would leave every barrier short and time each call out.
+    let outcomes =
+        [| for _ in 1..callers ->
+               Threading.Tasks.Task.Run(fun () ->
+                   runWithCancellableDeadlineOn pool (within 15.0) (TimeSpan.FromSeconds 15.0) (fun _ ->
+                       barrier.SignalAndWait(TimeSpan.FromSeconds 10.0))
+                   |> fst) |]
+        |> Array.map (fun t -> t.Result)
+
+    Assert.All(outcomes, (fun outcome -> Assert.Equal(WorkCompleted true, outcome)))
+    Assert.True(pool.Created <= callers, $"created %d{pool.Created} threads for %d{callers} calls")
+
+[<Fact(Timeout = 20000)>]
+let ``a reused worker runs each call in its caller's async-local context`` () =
+    let pool = FsHotWatch.DeadlineWorkers.Pool()
+    let ambient = Threading.AsyncLocal<string>()
+
+    let seen value =
+        ambient.Value <- value
+
+        match runWithCancellableDeadlineOn pool (within 10.0) (TimeSpan.FromSeconds 10.0) (fun _ -> ambient.Value) with
+        | WorkCompleted observed, _ -> observed
+        | WorkTimedOut _, _ -> "timed out"
+
+    Assert.Equal("first", seen "first")
+    Assert.Equal("second", seen "second")
+    Assert.Equal(1, pool.Created)
+
+[<Fact(Timeout = 20000)>]
 let ``runProcess succeeds for echo`` () =
     runProcess "echo" "hello" "." [] |> expectStdout "hello"
 

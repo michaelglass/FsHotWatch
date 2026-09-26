@@ -1446,26 +1446,43 @@ let runProcessObserved
     : ProcessOutcome =
     runProcessCore false None onStarted command args workDir env bounds |> fst
 
-/// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait
-/// injected: `awaitWork task` returns true iff the work finished inside the deadline,
-/// and `after` is the budget a timeout reports. Injected so the expiry can be fired at
-/// an exact point in the work rather than raced against a wall clock.
-let internal runWithCancellableDeadline
+/// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait and
+/// the worker pool injected: `awaitWork task` returns true iff the work finished inside
+/// the deadline, and `after` is the budget a timeout reports. Injected so the expiry can
+/// be fired at an exact point in the work rather than raced against a wall clock, and so
+/// a test can count the threads one pool creates.
+let internal runWithCancellableDeadlineOn
+    (pool: DeadlineWorkers.Pool)
     (awaitWork: Task -> bool)
     (after: TimeSpan)
     (work: CancellationToken -> 'a)
     : WorkOutcome<'a> * Task =
     let cts = new CancellationTokenSource()
 
-    // `TaskScheduler.Default`, never the caller's: a caller about to block on this
-    // task must not be the scheduler it waits for.
-    let task =
-        Task.Factory.StartNew(
-            (fun () -> ProcessRegistry.withChildScope cts.Token (fun () -> work cts.Token)),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default
-        )
+    // Continuations run synchronously on the worker as it publishes, as they did on the
+    // dedicated thread this replaces; the worker already counts itself idle by then.
+    let completion = TaskCompletionSource<'a>()
+
+    // The worker is a long-lived thread, so the caller's async-local state (its process
+    // scope above all) is carried explicitly, as `Task.Factory.StartNew` carried it.
+    let callerContext = ExecutionContext.Capture()
+
+    let run () =
+        try
+            let value = ProcessRegistry.withChildScope cts.Token (fun () -> work cts.Token)
+            fun () -> completion.TrySetResult value |> ignore
+        with ex ->
+            fun () -> completion.TrySetException ex |> ignore
+
+    pool.Post(fun () ->
+        match callerContext with
+        | null -> run ()
+        | context ->
+            let publish = ref ignore
+            ExecutionContext.Run(context, (fun _ -> publish.Value <- run ()), null)
+            publish.Value)
+
+    let task = completion.Task
 
     let mutable completionOwnsCts = false
 
@@ -1503,6 +1520,14 @@ let internal runWithCancellableDeadline
         if not completionOwnsCts then
             cts.Dispose()
 
+/// `runWithCancellableDeadlineOn` the daemon-wide deadline workers.
+let internal runWithCancellableDeadline
+    (awaitWork: Task -> bool)
+    (after: TimeSpan)
+    (work: CancellationToken -> 'a)
+    : WorkOutcome<'a> * Task =
+    runWithCancellableDeadlineOn DeadlineWorkers.shared awaitWork after work
+
 /// Run a synchronous unit of work with a wall-clock timeout, threading a
 /// `CancellationToken` into the work so a timed-out unit is ACTUALLY cancelled
 /// rather than orphaned. The token is cancelled the instant the wait expires;
@@ -1518,11 +1543,13 @@ let internal runWithCancellableDeadline
 /// Fantomas / analyzer work that honour their token, or `Thread.Sleep`-style
 /// waits replaced by `ct.WaitHandle.WaitOne`) now release on timeout.
 ///
-/// Uses `TaskCreationOptions.LongRunning` so the work runs on a dedicated
-/// thread rather than a pool worker. Plugin work can be CPU-heavy (FCS,
-/// analyzers) and the timeout-test path injects a cooperative wait to force
-/// expiry; both starve the default thread pool under parallel test load and
-/// caused 5s xUnit timeouts to fire spuriously on unrelated tests.
+/// The work runs on a long-lived `DeadlineWorkers` thread rather than a thread-pool
+/// worker. Plugin work can be CPU-heavy (FCS, analyzers) and the timeout-test path
+/// injects a cooperative wait to force expiry; both starve the default thread pool
+/// under parallel test load and caused 5s xUnit timeouts to fire spuriously on
+/// unrelated tests. The workers are reused, so a scan does not create and retire a
+/// thread per file, and a new one is added whenever none is idle, so work abandoned at
+/// its deadline never holds up the next call.
 ///
 /// The work runs in a process scope of its own (`ProcessRegistry.withChildScope`).
 /// Cancellation cannot stop an OS child, so on expiry the scope tears down the
