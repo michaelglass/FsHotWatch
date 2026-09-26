@@ -100,6 +100,10 @@ All notable changes to FsHotWatch packages are documented here.
 - Each helper child's output is delivered from a queue of its own, so a sink that
   blocks holds up only that child. A child's streams count as stopped only after all of
   its earlier output has been delivered.
+- Every spawn logs `spawn via=helper|direct cmd=<basename> pid=<n>` at info, and
+  `.fshw/scan-metrics.jsonl` records gain `directSpawns` and `helperSpawns`: the
+  children forked by the daemon itself and started by a helper, cumulative since the
+  daemon started. The difference between two records is the forks in between.
 - `ProcessRegistry` owns children through `IOwnedChild`, so it can hold a child that
   has no local `Process`. `Registry.Snapshot` still lists local `Process` handles.
   `LivePids` lists every owned child.

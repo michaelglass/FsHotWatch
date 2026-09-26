@@ -27,6 +27,8 @@ let private sample generation rss =
       ManagedBytes = rss / 4L
       ForcedGc = true
       Gen2Collections = 3
+      DirectSpawns = 12L
+      HelperSpawns = 30L
       Scope = DaemonHosting.ResourceScope.Process
       SampledAt = DateTime(2026, 9, 4, 10, 0, 0, DateTimeKind.Utc) }
 
@@ -248,6 +250,8 @@ let ``a record written before the skip fields still parses`` () =
         test <@ parsed.FilesSkipped = 0 @>
         test <@ parsed.FilesDepsGated = 0 @>
         test <@ parsed.FilesUncovered = 0 @>
+        test <@ parsed.DirectSpawns = 0L @>
+        test <@ parsed.HelperSpawns = 0L @>
 
 [<Fact>]
 let ``skipped and deps-gated counts round-trip`` () =

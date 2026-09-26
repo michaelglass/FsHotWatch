@@ -652,3 +652,35 @@ let ``once the helper is lost, a hook step starts directly`` () =
 
     // A local `Process` handle: this process started the child itself.
     Assert.Equal(1, List.length localHandles)
+
+[<Fact(Timeout = 30000)>]
+let ``every spawn is counted and logged with its route`` () =
+    use helper = new InProcessHelper()
+    let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _ =
+        Logging.installSink
+            { Write = lines.Enqueue
+              Level = Logging.LogLevel.Info }
+
+    let hookStep () =
+        runProcessObserved ignore "/bin/sh" (shell "exit 0") "/" [] tenSeconds |> ignore
+
+    let directBefore, helperBefore = spawnCounts ()
+
+    do
+        use _ = SpawnHelper.install helper.Connection
+        hookStep ()
+
+    hookStep ()
+    let directAfter, helperAfter = spawnCounts ()
+
+    // Only this collection routes spawns through a helper, and it runs serially.
+    Assert.Equal(helperBefore + 1L, helperAfter)
+    Assert.True(directAfter > directBefore, "the step without a helper must count as a direct spawn")
+
+    let spawnLines =
+        lines |> Seq.filter (fun line -> line.Contains "spawn via=") |> List.ofSeq
+
+    Assert.Contains(spawnLines, fun line -> line.Contains "spawn via=helper cmd=sh pid=")
+    Assert.Contains(spawnLines, fun line -> line.Contains "spawn via=direct cmd=sh pid=")

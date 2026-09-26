@@ -570,6 +570,28 @@ let internal isProcessAlive (pid: int) : Result<bool, string> =
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
+let mutable private directSpawns = 0L
+let mutable private helperSpawns = 0L
+
+/// Children started so far by this process: `(direct, throughHelper)`. `direct` counts
+/// every fork this process made itself; `throughHelper` counts children a spawn helper
+/// started for it. Cumulative, so a reader takes differences between two readings.
+let spawnCounts () : int64 * int64 =
+    Interlocked.Read &directSpawns, Interlocked.Read &helperSpawns
+
+/// Count a child and log one `spawn via=… cmd=… pid=…` line for it, so forks can be
+/// counted from the log.
+let private recordSpawn (throughHelper: bool) (command: string) (pid: int) =
+    let via =
+        if throughHelper then
+            Interlocked.Increment &helperSpawns |> ignore
+            "helper"
+        else
+            Interlocked.Increment &directSpawns |> ignore
+            "direct"
+
+    Logging.info "process" $"spawn via=%s{via} cmd=%s{IO.Path.GetFileName command} pid=%d{pid}"
+
 /// How long ONE read of the process table may take. `ps` returns in milliseconds; a
 /// box that cannot answer in this long is reported as "tree unknown", not waited on.
 let internal ProcessTableBudget = TimeSpan.FromSeconds 3.0
@@ -589,6 +611,7 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
             )
 
         use ps = Process.Start psi
+        recordSpawn false "ps" ps.Id
         let text = ps.StandardOutput.ReadToEndAsync()
 
         if
@@ -1295,10 +1318,14 @@ let internal runProcessCore
 
     let psi = makeChildProcessStartInfo command args workDir env
 
+    let helper =
+        SpawnHelper.current ()
+        |> Option.filter (fun connection -> viaHelper && not connection.IsLost)
+
     let child =
-        match SpawnHelper.current () with
-        | Some connection when viaHelper && not connection.IsLost -> launchViaHelper connection psi
-        | _ -> launchDirect psi
+        match helper with
+        | Some connection -> launchViaHelper connection psi
+        | None -> launchDirect psi
 
     use _release =
         { new IDisposable with
@@ -1308,6 +1335,7 @@ let internal runProcessCore
     // to hunt down a tree we failed to kill, and it must still be reportable on the
     // path where everything else about the child has gone wrong.
     let pid = child.Pid
+    recordSpawn helper.IsSome command pid
 
     // Register so shutdown can tear down in-flight children. A scope that shut down
     // while this child was starting has already reaped it, and refuses it here.

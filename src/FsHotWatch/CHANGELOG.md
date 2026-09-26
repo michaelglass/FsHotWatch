@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `ProcessHelper.spawnCounts` (children forked directly and started through a
+  spawn helper, cumulative), a `spawn via=… cmd=… pid=…` log line per spawn, and the
+  same counts in scan metrics. Breaking: `ScanMetrics.ScanSample` has new fields
+  `DirectSpawns` and `HelperSpawns`. A record written before them parses with 0.
 - feat: `SpawnHelper`, a small long-lived process that starts children on the daemon's
   behalf so the daemon need not fork. When a helper is installed,
   `ProcessHelper.runProcessObserved` (hook steps) starts through it; once the helper is lost,
