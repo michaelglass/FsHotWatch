@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.2.2 - 2026-09-26
+
 - fix: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 17 -> 18).**
   F# `exception` declarations are now indexed, so a change to an exception's fields
   selects the tests that raise or match it.

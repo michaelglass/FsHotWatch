@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.2.2 - 2026-09-26
+
 - fix: an F# `exception` declaration is indexed as a `Type` symbol, and raising or matching
   it (`raise (Boom 1)`, `| Boom c ->`) is an edge to it. Before, exceptions were not indexed,
   so a change to an exception's fields selected none of the tests that raise or match it,
