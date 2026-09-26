@@ -74,6 +74,28 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a spawn helper can start hook steps so the daemon does not fork
+
+- **Not enabled yet: nothing installs a helper, so every spawn is unchanged.** Each
+  `Process.Start` forks the calling process, and forking a multi-gigabyte daemon takes
+  longer than forking a small process (measured: median 15.5 ms at a 0.3 GB working
+  set, 26 ms at 1.8 GB; p90 18 ms vs 48 ms). On macOS 27 a fork that overlaps a
+  garbage-collection thread suspension has coincided with daemon crashes. `SpawnHelper`
+  is a small long-lived process that starts, kills and releases children for the daemon
+  over a pair of pipes and streams their output and exit back. When a helper is
+  installed, hook steps (`runProcessObserved`: `tests.beforeRun` steps and run-level
+  hooks, the most frequent spawns in a scan) start through it. Every other spawn stays
+  direct.
+- A helper child keeps every guarantee a local child has. The caller's process scope
+  admits it, refuses it when closed, and kills it on shutdown. Timeouts and the
+  launch deadline kill its tree, and its output streams to the sink while it runs.
+  A helper that stops answering leaves its children recorded as leaks, never as
+  reaped. When the daemon's end of the pipe closes, the helper kills every child it
+  still holds.
+- `ProcessRegistry` owns children through `IOwnedChild`, so it can hold a child that
+  has no local `Process`. `Registry.Snapshot` still lists local `Process` handles.
+  `LivePids` lists every owned child.
+
 ### core, test-prune: a finished test run no longer waits behind a storm of checks
 
 - **A tests run's result folds once the fold in flight commits.** A plugin's mailbox

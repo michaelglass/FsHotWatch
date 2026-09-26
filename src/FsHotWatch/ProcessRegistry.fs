@@ -90,28 +90,54 @@ let private observe (p: Process) : ExitObservation =
     with ex when isExpectedProcessException ex ->
         ExitObservation.Unobservable ex
 
-/// Kill one handle's tree and wait, within the budget, for positive evidence of exit.
-let private terminateHandle (p: Process) : Termination =
-    match observe p with
+/// What a registry needs from a child it owns: to see whether it is still running, to
+/// kill its tree, and to wait for it. A child this process started is a `Process`
+/// (`ownedProcess`); a child a spawn helper started for us is reached through the helper
+/// and has no `Process` here.
+type internal IOwnedChild =
+    /// The child's pid, read once while it was certainly live.
+    abstract Pid: int
+    abstract Observe: unit -> ExitObservation
+    /// Kill the child and its descendants. Throws what `Process.Kill` would.
+    abstract KillTree: unit -> unit
+    /// Wait up to `milliseconds` for the child to exit.
+    abstract WaitForExit: milliseconds: int -> unit
+
+/// A `Process` as an owned child. The pid is read now, while the caller holds a live
+/// handle, so a later disposal cannot erase it.
+let internal ownedProcess (p: Process) : IOwnedChild =
+    let pid = p.Id
+
+    { new IOwnedChild with
+        member _.Pid = pid
+        member _.Observe() = observe p
+        member _.KillTree() = p.Kill(entireProcessTree = true)
+
+        member _.WaitForExit milliseconds =
+            p.WaitForExit(milliseconds: int) |> ignore }
+
+/// Kill one child's tree and wait, within the budget, for positive evidence of exit.
+let private terminateHandle (child: IOwnedChild) : Termination =
+    match child.Observe() with
     | ExitObservation.Running ->
         let killFailure =
             try
-                p.Kill(entireProcessTree = true)
+                child.KillTree()
                 None
             with ex when isExpectedProcessException ex ->
                 Some ex
 
         try
-            p.WaitForExit(int TerminationBudget.TotalMilliseconds) |> ignore
+            child.WaitForExit(int TerminationBudget.TotalMilliseconds)
         with ex when isExpectedProcessException ex ->
             ()
 
-        classifyTermination (observe p) killFailure
+        classifyTermination (child.Observe()) killFailure
     | settled -> classifyTermination settled None
 
 /// Tear every child down side by side, all bounded by ONE wait. A kill call that has
 /// not come back by then is reported as uncertain rather than waited on.
-let private terminateAll (children: Process array) : Termination array =
+let private terminateAll (children: IOwnedChild array) : Termination array =
     let attempts =
         children
         |> Array.map (fun child ->
@@ -150,9 +176,9 @@ type Registry internal (parent: Registry option) =
     // One lock for admission, untrack and the shutdown snapshot, so "closed" and "the
     // set of children" are never observed out of step. OS calls stay outside it.
     let gate = obj ()
-    // Keyed by handle identity. The pid is captured at admission, while the caller
-    // certainly holds a live handle, so a later disposal cannot erase it.
-    let live = Dictionary<Process, int>(HashIdentity.Reference)
+    // Keyed by the identity of the caller's handle: the `Process` for a child this
+    // process started, the helper's child object for one a spawn helper started.
+    let live = Dictionary<obj, IOwnedChild>(HashIdentity.Reference)
     let mutable closed = false
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
@@ -170,15 +196,13 @@ type Registry internal (parent: Registry option) =
         lock gate (fun () -> closed)
         || (parent |> Option.exists (fun owner -> owner.IsClosed))
 
-    /// Admit `p`, or refuse it: a registry that has begun shutting down reaps a child
-    /// arriving afterwards instead of letting it escape the snapshot it already took.
-    /// The parent is asked first; a refusing parent has already reaped the handle.
-    member internal this.Admit(p: Process) : bool =
-        let pid = p.Id
-
+    /// Admit `child` under `key`, or refuse it: a registry that has begun shutting down
+    /// reaps a child arriving afterwards instead of letting it escape the snapshot it
+    /// already took. The parent is asked first; a refusing parent has already reaped it.
+    member internal this.AdmitChild(key: obj, child: IOwnedChild) : bool =
         let parentAdmitted =
             match parent with
-            | Some owner -> owner.Admit p
+            | Some owner -> owner.AdmitChild(key, child)
             | None -> true
 
         if not parentAdmitted then
@@ -187,33 +211,50 @@ type Registry internal (parent: Registry option) =
             let admitted =
                 lock gate (fun () ->
                     if not closed then
-                        live[p] <- pid
+                        live[key] <- child
 
                     not closed)
 
             if not admitted then
-                match terminateAll [| p |] with
-                | [| Termination.Uncertain reason |] -> this.ReportLeak(uncertain pid reason)
+                match terminateAll [| child |] with
+                | [| Termination.Uncertain reason |] -> this.ReportLeak(uncertain child.Pid reason)
                 | _ -> ()
 
-                parent |> Option.iter (fun owner -> owner.Untrack p)
+                parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
             admitted
 
+    member internal this.Admit(p: Process) : bool = this.AdmitChild(p, ownedProcess p)
+
     member this.Track(p: Process) = this.Admit p |> ignore
 
-    member _.Untrack(p: Process) =
-        lock gate (fun () -> live.Remove p) |> ignore
-        parent |> Option.iter (fun owner -> owner.Untrack p)
+    member internal _.UntrackChild(key: obj) =
+        lock gate (fun () -> live.Remove key) |> ignore
+        parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
-    /// The observably live tracked children. A handle that cannot be observed is not
-    /// listed; whether its child is GONE is `KillAll`'s question, not this view's.
+    member this.Untrack(p: Process) = this.UntrackChild p
+
+    /// The observably live tracked children this process started itself. A handle that
+    /// cannot be observed is not listed; whether its child is GONE is `KillAll`'s
+    /// question, not this view's. Children a spawn helper started have no `Process`
+    /// here: `LivePids` lists every owned child.
     member _.Snapshot() : Process list =
         lock gate (fun () -> List.ofSeq live.Keys)
-        |> List.filter (fun p ->
-            match observe p with
-            | ExitObservation.Running -> true
-            | _ -> false)
+        |> List.choose (fun key ->
+            match key with
+            | :? Process as p ->
+                match observe p with
+                | ExitObservation.Running -> Some p
+                | _ -> None
+            | _ -> None)
+
+    /// The pids of every observably live owned child, however it was started.
+    member internal _.LivePids() : int list =
+        lock gate (fun () -> List.ofSeq live.Values)
+        |> List.choose (fun child ->
+            match child.Observe() with
+            | ExitObservation.Running -> Some child.Pid
+            | _ -> None)
 
     /// Record a process tree whose termination we could NOT establish. Append-only,
     /// and never cleared by `KillAll` — the point of the record is to outlive the
@@ -239,14 +280,14 @@ type Registry internal (parent: Registry option) =
                 closed <- true
                 live |> Seq.map (fun kv -> kv.Key, kv.Value) |> Array.ofSeq)
 
-        let outcomes = terminateAll (Array.map fst children)
+        let outcomes = terminateAll (Array.map snd children)
 
-        for (child, pid), outcome in Array.zip children outcomes do
-            let stillOwned = lock gate (fun () -> live.Remove child)
-            parent |> Option.iter (fun owner -> owner.Untrack child)
+        for (key, child), outcome in Array.zip children outcomes do
+            let stillOwned = lock gate (fun () -> live.Remove key)
+            parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
             match outcome with
-            | Termination.Uncertain reason when stillOwned -> this.ReportLeak(uncertain pid reason)
+            | Termination.Uncertain reason when stillOwned -> this.ReportLeak(uncertain child.Pid reason)
             | _ -> ()
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
@@ -332,35 +373,43 @@ let internal ensureAdmitting (what: string) =
 ///
 /// A child spawned with NO registry in scope can never be reaped — it outlives the
 /// daemon as an init-reparented orphan — so the miss is warned, never swallowed.
-let internal admit (p: Process) : bool =
+let internal admitChild (key: obj) (child: IOwnedChild) : bool =
     match currentOpt () with
-    | Some r -> r.Admit p
+    | Some r -> r.AdmitChild(key, child)
     | None ->
         Logging.warn
             "process-registry"
-            $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
+            $"spawned pid %d{child.Pid} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
 
         true
+
+let internal admit (p: Process) : bool = admitChild p (ownedProcess p)
 
 /// Register `p` with the current scope's registry so daemon shutdown can tear it down.
 let track (p: Process) = admit p |> ignore
 
-/// Admit a child that was just launched, or raise `OperationCanceledException`. A
-/// scope that shut down while the child was starting has already reaped it, so
-/// whatever it would exit with is not the target's outcome and must not be reported
-/// as one.
-let internal admitOrRefuse (p: Process) (what: string) =
-    if not (admit p) then
+/// Admit a child that was just launched under `key`, or raise
+/// `OperationCanceledException`. A scope that shut down while the child was starting
+/// has already reaped it, so whatever it would exit with is not the target's outcome
+/// and must not be reported as one.
+let internal admitChildOrRefuse (key: obj) (child: IOwnedChild) (what: string) =
+    if not (admitChild key child) then
         raise (
             OperationCanceledException(
                 $"%s{what} was terminated at launch: its process scope shut down while it started"
             )
         )
 
-let untrack (p: Process) =
+/// `admitChildOrRefuse` for a child this process started itself.
+let internal admitOrRefuse (p: Process) (what: string) =
+    admitChildOrRefuse p (ownedProcess p) what
+
+let internal untrackChild (key: obj) =
     match currentOpt () with
-    | Some r -> r.Untrack p
+    | Some r -> r.UntrackChild key
     | None -> ()
+
+let untrack (p: Process) = untrackChild p
 
 /// Register a process tree whose termination we could NOT establish, so shutdown can
 /// name it. `reason` says WHY we cannot vouch for it — a refusal, or a kill call that

@@ -38,6 +38,7 @@
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />
+    <Compile Include="SpawnHelperTests.fs" />
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
