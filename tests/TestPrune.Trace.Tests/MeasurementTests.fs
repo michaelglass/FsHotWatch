@@ -78,11 +78,50 @@ let ``a getrusage that fails before a launch launches nothing, and after one is 
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 9 @>
+        test <@ report.Sampled = 11 @>
         test <@ report.ExtraTotal = 0 @>
-        test <@ report.Tests |> List.forall (fun t -> t.IsolatedFound) @>
+
+        test
+            <@
+                report.Tests
+                |> List.forall (fun t -> t.IsolatedFound && t.IsolationError.IsNone)
+            @>
+        // Rows whose names hold a filter wildcard, parentheses and quotes are each run alone.
+        test
+            <@
+                report.Tests
+                |> List.filter (fun t -> t.Display.Contains "b theory row names")
+                |> List.map (fun t -> t.Display.Contains "*") = [ true; true ]
+            @>
+
         test <@ report.Incomplete = Map [ "child-process-untraced:echo", 1 ] @>
         test <@ Audit.passes report @>)
+
+[<Fact>]
+let ``a sampled test the isolated run cannot select is an audit error`` () =
+    withScratch (fun req ->
+        let launch = TraceSession.prepareProject req |> ok
+        let dir name = Path.Combine(req.RunDir, name)
+        let parallelIds = Map [ "No.Such.test", set [ 1 ] ]
+
+        let alone args display =
+            Audit.auditAlone launch req.RepoRoot Map.empty parallelIds args timeout (dir display) display
+
+        let unmatched = alone [] "No.Such.test"
+
+        test <@ unmatched.IsolationError = Some "could not isolate No.Such.test: the filter selected nothing" @>
+        test <@ List.isEmpty unmatched.Extra @>
+
+        // A run that ends before it reports (an option the app rejects) is an error too,
+        // even in a directory where an earlier run left its report.
+        let crashed = alone [ "--no-such-option" ] "No.Such.test"
+
+        test
+            <@
+                crashed.IsolationError
+                |> Option.exists (fun e ->
+                    e.StartsWith "could not isolate No.Such.test: no CTRF report from the run alone (exit ")
+            @>)
 
 [<Fact>]
 let ``overhead reports medians and a ratio over interleaved runs`` () =

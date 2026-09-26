@@ -107,34 +107,6 @@ let render (r: FileCensusReport) : string =
 
     sb.ToString()
 
-/// Run `exe` with a CTRF report into `resultsDir` and return the report's outcomes.
-let private ctrfRun (where: string) exe appArgs env workDir resultsDir timeout =
-    let args =
-        appArgs
-        @ [ "--report-xunit-ctrf"
-            "--report-xunit-ctrf-filename"
-            "census.ctrf.json"
-            "--results-directory"
-            resultsDir ]
-
-    let code, output = Launch.run exe args env workDir timeout
-    let report = Path.Combine(resultsDir, "census.ctrf.json")
-
-    if File.Exists report then
-        Ok(Ctrf.parse (File.ReadAllText report))
-    else
-        // The last lines usually say why: a test that ended the process, a crash at startup.
-        let tail =
-            output.Split '\n'
-            |> Seq.filter (String.IsNullOrWhiteSpace >> not)
-            |> Seq.toList
-            |> List.rev
-            |> List.truncate 5
-            |> List.rev
-            |> String.concat "\n"
-
-        Error $"no CTRF report from the run %s{where} (exit %d{code}); its output ends:\n%s{tail}"
-
 /// Prepare the project; run the woven app in the repository with CTRF; copy (never link)
 /// the original `bin/Debug/<tfm>/` under the temp directory and run it there untraced.
 /// `Error` when the project cannot be prepared or a run wrote no CTRF report.
@@ -147,7 +119,7 @@ let run
     |> Result.bind (fun launch ->
         let resultsIn = Path.Combine(req.RunDir, "file-census", "in")
 
-        ctrfRun "in the repository" launch.Apphost appArgs launch.Env req.RepoRoot resultsIn timeout
+        Ctrf.run "in the repository" launch.Apphost appArgs launch.Env req.RepoRoot resultsIn timeout
         |> Result.bind (fun inRepo ->
             let dumps, _ = DumpReader.readDirectory launch.DumpDir
             let tfm = Path.GetFileName launch.Shadow.Dir
@@ -162,7 +134,7 @@ let run
                     Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
                     File.Copy(f, dst)
 
-                ctrfRun
+                Ctrf.run
                     "outside the repository"
                     (Path.Combine(copy, Path.GetFileName launch.Apphost))
                     appArgs

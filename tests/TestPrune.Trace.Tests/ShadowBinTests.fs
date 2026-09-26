@@ -6,6 +6,7 @@ open System.Reflection
 open System.Runtime.Loader
 open System.Security.Cryptography
 open System.Text.Json
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open Mono.Cecil
@@ -118,6 +119,16 @@ let ``the recorder is injected as a project library the app depends on, idempote
 
     test <@ not changedAgain && again = json @>
     test <@ DepsJson.injectRecorder json "App" "0.2.0" = Error(DepsJson.SkewPrefix + "0.1.0") @>
+
+[<Fact>]
+let ``the recorder's library type says whether the app builds it or references the package`` () =
+    let injected, _ =
+        DepsJson.injectRecorder deps "App" "0.1.0" |> Result.defaultWith failwith
+
+    test <@ DepsJson.recorderLibraryType injected = Some "project" @>
+    test <@ DepsJson.recorderLibraryType (injected.Replace("\"project\"", "\"package\"")) = Some "package" @>
+    test <@ DepsJson.recorderLibraryType deps = None @>
+    test <@ DepsJson.recorderLibraryType "not json" = None @>
 
 [<Fact>]
 let ``an app with no dependencies gets one, and unreadable deps are an error`` () =
@@ -292,6 +303,15 @@ let ``verification that never writes a report is a failure, not a pass`` () =
 
 // ---------------------------------------------------------------- prepare
 
+/// `deps` listing the recorder at `version` as a package reference, not a project.
+let private withRecorderPackage (deps: string) (version: string) =
+    let injected, _ =
+        DepsJson.injectRecorder deps "FxTests" version |> Result.defaultWith failwith
+
+    let root = Nodes.JsonNode.Parse injected
+    root.["libraries"].[DepsJson.RecorderName + "/" + version].["type"] <- Nodes.JsonValue.Create "package"
+    root.ToJsonString()
+
 /// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net10.0`.
 let scratchProject () =
     let projectDir =
@@ -458,6 +478,114 @@ let ``a weave whose woven IL is invalid is refused and never cached as good`` ()
     finally
         deleteProject projectDir
 
+let private doneMarkers projectDir =
+    Directory.GetFiles(Path.Combine(projectDir, "obj", "traced"), "done", SearchOption.AllDirectories)
+
+[<Fact>]
+let ``prepare verifies with the launcher it is given, and a reused weave launches nothing`` () =
+    let projectDir = scratchProject ()
+
+    try
+        let launched = ResizeArray<Launch.LaunchRequest>()
+
+        let recording: Launch.Launcher =
+            fun req ct ->
+                launched.Add req
+                Launch.direct req ct
+
+        let prepareRecording () =
+            prepareWith recording CancellationToken.None (request projectDir)
+            |> Result.defaultWith (fun e -> failwith (describeRefusal e))
+
+        let shadow = prepareRecording ()
+        let verifyLaunch = Seq.exactlyOne launched
+        let env = Map.ofList verifyLaunch.Env
+
+        test <@ verifyLaunch.Exe = shadow.Apphost && verifyLaunch.WorkDir = shadow.Dir @>
+        test <@ env.["DOTNET_STARTUP_HOOKS"] = Path.Combine(shadow.Dir, DepsJson.RecorderName + ".dll") @>
+        test <@ env.["DOTNET_ROOT"] = Launch.dotnetRoot () @>
+        test <@ verifyLaunch.Timeout = (request projectDir).VerifyTimeout @>
+
+        let again = prepareRecording ()
+        test <@ again.Reused && launched.Count = 1 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``a prepare whose verify child the host ended on cancellation raises, and the next prepare starts over`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        // A host that owns its children ends the verify child when its scope closes and
+        // returns what the child exited with: never a verdict once the token is cancelled.
+        let endedByHost: Launch.Launcher =
+            fun _ _ ->
+                cts.Cancel()
+                137, "killed"
+
+        raises<OperationCanceledException> <@ prepareWith endedByHost cts.Token (request projectDir) @>
+        test <@ Array.isEmpty (doneMarkers projectDir) @>
+
+        let next = prepared (request projectDir)
+        test <@ not next.Reused && List.isEmpty next.Verify.Invalid && next.Verify.Prepared > 0 @>
+        test <@ doneMarkers projectDir |> Array.length = 1 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``cancelling a prepare mid-verify kills the verify child promptly`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        // The default launcher, running a verify that would take 30 seconds.
+        let slowVerify: Launch.Launcher =
+            fun req ct ->
+                cts.CancelAfter(TimeSpan.FromMilliseconds 200.0)
+
+                Launch.direct
+                    { req with
+                        Exe = "/bin/sleep"
+                        Args = [ "30" ] }
+                    ct
+
+        let started = Diagnostics.Stopwatch.StartNew()
+        raises<OperationCanceledException> <@ prepareWith slowVerify cts.Token (request projectDir) @>
+        test <@ started.Elapsed < TimeSpan.FromSeconds 20.0 @>
+        test <@ Array.isEmpty (doneMarkers projectDir) @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``a prepare cancelled mid-weave raises, caches nothing, and the next prepare succeeds`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        let cancelling =
+            { new Weaver.IWeavePass with
+                member _.Prepare _ = cts.Cancel()
+                member _.Rewrite(_, _, _, _) = false }
+
+        raises<OperationCanceledException>
+            <@
+                prepareWith
+                    Launch.direct
+                    cts.Token
+                    { request projectDir with
+                        Passes = [ cancelling ] }
+            @>
+
+        // Cancelled before anything was written: no cache entry at all.
+        test <@ not (Directory.Exists(Path.Combine(projectDir, "obj", "traced"))) @>
+        test <@ not (prepared (request projectDir)).Reused @>
+    finally
+        deleteProject projectDir
+
 [<Fact>]
 let ``prepare refuses what it cannot shadow`` () =
     let projectDir = scratchProject ()
@@ -498,11 +626,7 @@ let ``prepare refuses what it cannot shadow`` () =
                 | _ -> false
             @>
 
-        let skewed, _ =
-            DepsJson.injectRecorder goodDeps "FxTests" "9.9.9"
-            |> Result.defaultWith failwith
-
-        File.WriteAllText(depsPath, skewed)
+        File.WriteAllText(depsPath, withRecorderPackage goodDeps "9.9.9")
 
         test
             <@ prepare req = Error(RecorderVersionSkew("9.9.9", typeof<Probes>.Assembly.GetName().Version.ToString 3)) @>
@@ -521,6 +645,46 @@ let ``prepare refuses what it cannot shadow`` () =
         deleteProject projectDir
 
 [<Fact>]
+let ``an app that ships its own recorder build is refused rather than given the weaver's`` () =
+    let projectDir = scratchProject ()
+
+    try
+        let req = request projectDir
+        let debug = debugDir projectDir
+        let depsPath = Path.Combine(debug, "FxTests.deps.json")
+        let goodDeps = File.ReadAllText depsPath
+        let bundled = typeof<Probes>.Assembly.Location
+        let version = typeof<Probes>.Assembly.GetName().Version.ToString 3
+        let shipped = Path.Combine(debug, DepsJson.RecorderName + ".dll")
+        let traced = Path.Combine(projectDir, "obj", "traced")
+
+        // A project reference to the recorder: the app's own build, even at the same version.
+        let asProject, _ =
+            DepsJson.injectRecorder goodDeps "FxTests" version
+            |> Result.defaultWith failwith
+
+        File.WriteAllText(depsPath, asProject)
+        File.Copy(bundled, shipped)
+        test <@ prepare req = Error(AppShipsOwnRecorder "its deps.json lists the recorder as a project") @>
+        test <@ not (Directory.Exists traced) @>
+
+        // The package, but a recorder assembly that is not the weaver's.
+        File.WriteAllText(depsPath, withRecorderPackage goodDeps version)
+        File.Copy(Path.ChangeExtension(bundled, ".pdb"), Path.ChangeExtension(shipped, ".pdb"))
+        rebuild shipped (fun asm -> asm.MainModule.Mvid <- Guid.NewGuid())
+
+        test <@ prepare req = Error(AppShipsOwnRecorder $"%s{shipped} differs from the weaver's recorder") @>
+        test <@ not (Directory.Exists traced) @>
+
+        // The same package the weaver bundles: identical bytes, traced.
+        File.Delete shipped
+        File.Delete(Path.ChangeExtension(shipped, ".pdb"))
+        File.Copy(bundled, shipped)
+        test <@ (prepared req).Manifest.IdCount > 0 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
 let ``every refusal has a one-line description`` () =
     let all =
         [ NoBuildOutput "/b"
@@ -528,6 +692,7 @@ let ``every refusal has a one-line description`` () =
           NoApphost "/x"
           WeaveRefused(Weaver.Optimized "L")
           RecorderVersionSkew("1", "2")
+          AppShipsOwnRecorder "evidence"
           DepsJsonUnreadable "why"
           JitInvalid [ "T::m" ]
           VerifyFailed(1, "out")

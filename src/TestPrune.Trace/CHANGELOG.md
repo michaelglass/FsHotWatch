@@ -12,7 +12,34 @@
   to its symbol instead of `unmapped-code … (type-not-indexed)`. Core's `SchemaVersion` moved
   17 -> 18, which is the environment fingerprint's hash scheme, so traces recorded before it
   are recorded again.
-
+- feat: hosts can own and cancel a traced prepare. `TraceSession.prepareProjectWith launcher ct`
+  (with `ShadowBin.prepareWith`, `ShadowBin.verifyWith` and `Weaver.weaveWith` beneath it) takes a
+  `Launch.Launcher`, which starts the JIT-verification child so a host can admit it into its own
+  process scope, and a `CancellationToken`, checked between assemblies while weaving and used to
+  abandon the verification launch. A cancelled prepare raises `OperationCanceledException` rather
+  than returning a refusal, and leaves no cache entry a later prepare would reuse. `Launch.direct`
+  is the default launcher; it now kills the child's process tree when its token is cancelled.
+  `prepareProject`, `ShadowBin.prepare`, `ShadowBin.verify`, `Weaver.weave` and `Launch.run` are
+  unchanged.
+- fix: `Census.latest` takes each project's newest run of any status. A project whose newest run
+  was refused or failed to record used to be reported from an older recorded run; it is now
+  reported with that run's `Status` and `Reason` (new `ProjectCensus` fields) and measures
+  nothing. `Census.passes` is false for a run that stored no traces; `Census.fails` is true for
+  one that misses the bars or failed to record, and false for a refused one.
+- fix: `ShadowBin.prepare` refuses an app that ships its own recorder build
+  (`AppShipsOwnRecorder`: "the app ships its own TestPrune.Trace.Recorder build; tracing would
+  replace it"), before weaving anything: its deps.json lists the recorder as a project, or its
+  build output holds a recorder assembly that differs from the weaver's. The shadow bin used to
+  swap in the weaver's recorder silently, so the recorder's own suite ran against a different,
+  live recorder and failed. `DepsJson.recorderLibraryType` reads the listed library's type.
+- fix: the isolation audit selects every sampled test alone. The display name is escaped for
+  xUnit's `--filter-display-name` (`Audit.displayFilter`), which rejects a `*` anywhere but at
+  either end, so a theory row such as `f(body: "let f (p: int * string) = p")` used to select
+  nothing and every id it ran counted as extra. A sampled test the isolated run does not select
+  is now an audit `ERROR` (`TestAudit.IsolationError`: "could not isolate <test>: the filter
+  selected nothing") with no extra ids, never a comparison against nothing.
+- feat: `Ctrf.run` launches a test app with a CTRF report and returns its outcomes; a report an
+  earlier run left in the results directory is removed first.
 - fix: `Launch.run` no longer passes the calling process's `TESTPRUNE_TRACE_*` variables to
   the child. Run inside a traced test process, a woven child used to inherit its dump
   directory and id count and write its dump into the parent's run.

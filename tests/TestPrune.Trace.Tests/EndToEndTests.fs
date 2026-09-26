@@ -2,6 +2,7 @@ module TestPrune.Trace.Tests.EndToEndTests
 
 open System
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open TestPrune.Trace
@@ -129,14 +130,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 9 && s.Traced = 9 @>
+    test <@ s.Executed = 11 && s.Traced = 11 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Nine CTRF rows are eight tests (the theory's two rows share one trace). Only the test
+    // Eleven CTRF rows are nine tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 8 @>
-    test <@ s.Complete = 7 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 9 @>
+    test <@ s.Complete = 8 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -224,6 +225,40 @@ let ``a project with nothing woven is refused before it runs`` () =
 
         test <@ result = Error(TraceIngest.nothingWovenReason elsewhere) @>
         test <@ not (Directory.Exists(Path.Combine(elsewhere, "traces"))) @>
+    finally
+        ShadowBinTests.deleteProject projectDir
+
+[<Fact>]
+let ``a cancelled preparation raises instead of refusing`` () =
+    let projectDir = ShadowBinTests.scratchProject ()
+    let runDir = Directory.CreateTempSubdirectory("tp-e2e-cancel-").FullName
+
+    try
+        use cts = new CancellationTokenSource()
+
+        let cancelling: Launch.Launcher =
+            fun _ _ ->
+                cts.Cancel()
+                137, "killed"
+
+        raises<OperationCanceledException> <@ prepareProjectWith cancelling cts.Token (request projectDir runDir) @>
+        test <@ not (Directory.Exists(Path.Combine(runDir, "traces"))) @>
+    finally
+        ShadowBinTests.deleteProject projectDir
+
+[<Fact>]
+let ``a launcher's cancellation that is not the run's is a refusal`` () =
+    let projectDir = ShadowBinTests.scratchProject ()
+
+    try
+        let timedOut: Launch.Launcher =
+            fun _ _ -> raise (OperationCanceledException "the launcher gave up")
+
+        test
+            <@
+                prepareProjectWith timedOut CancellationToken.None (request projectDir projectDir) = Error
+                    "trace preparation failed: the launcher gave up"
+            @>
     finally
         ShadowBinTests.deleteProject projectDir
 

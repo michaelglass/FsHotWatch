@@ -3,8 +3,10 @@
 /// hits under 0.1 % of all hits, or every ambient symbol listed so a human can explain
 /// it; and a table of pool scopes with the tests that inherit them.
 ///
-/// Only the run's `stats_json` and its stored scopes are read, so a census of the
-/// newest run of a project is exact. An older run (`--run`) is partial: later runs take
+/// Each project's newest run is reported whatever its status: a run that was refused or
+/// failed to record is reported as such, with its reason, never replaced by an older run
+/// that did record. Only the run's `stats_json` and its stored scopes are read, so a
+/// census of the newest run of a project is exact. An older run (`--run`) is partial: later runs take
 /// over the traces of the tests they re-record, and store GC keeps the ambient scope for
 /// each project's newest run only.
 module TestPrune.Trace.Census
@@ -27,6 +29,11 @@ type ProjectCensus =
     {
         TestProject: string
         RunId: string
+        /// The run's status: `recorded` or `tree-moved` (traces stored), `refused` (the
+        /// project ran untraced) or `failed` (the recorder produced nothing usable).
+        Status: string
+        /// Why a `refused` or `failed` run stored no traces; empty otherwise.
+        Reason: string
         /// CTRF tests that ran (every outcome except skipped).
         Executed: int
         /// Executed tests matched to a recorded test scope.
@@ -85,12 +92,23 @@ let ambientRatio (c: ProjectCensus) =
 /// Neither is a recorder failure: a recorder that wrote nothing stores a `failed` run.
 let untraced (c: ProjectCensus) = c.Executed - c.Traced
 
+/// True when the run stored traces (`recorded` or `tree-moved`).
+let stored (c: ProjectCensus) =
+    c.Status = "recorded" || c.Status = "tree-moved"
+
 /// Whether a project meets the bars. The ambient bar reads "under the threshold, or
 /// explained": over the threshold it passes only when the ambient symbols are listed for
-/// a human to sign off. The census never claims an explanation is good.
+/// a human to sign off. The census never claims an explanation is good. A run that stored
+/// no traces never passes.
 let passes (bars: Bars) (c: ProjectCensus) =
-    tracedRatio c >= bars.TracedAtLeast
+    stored c
+    && tracedRatio c >= bars.TracedAtLeast
     && (ambientRatio c < bars.AmbientBelow || not c.AmbientSymbols.IsEmpty)
+
+/// Whether a project fails the census: it misses the bars, or its recorder failed. A
+/// `refused` project ran untraced by design, with its reason recorded, and fails nothing.
+let fails (bars: Bars) (c: ProjectCensus) =
+    not (passes bars c) && c.Status <> "refused"
 
 /// The census with its derived numbers and verdict under `bars`.
 let report (bars: Bars) (c: ProjectCensus) : ProjectReport =
@@ -117,7 +135,22 @@ let private readRows (conn: SqliteConnection) (sql: string) (ps: (string * obj) 
 
 let private reasonKind (code: string) = code.Split(':').[0]
 
-let private censusOf conn (rowId: int64, project: string, runId: string, statsJson: string) =
+/// The census of a run that stored no traces: its status and reason, nothing measured.
+let private untracedRun (project: string) (runId: string) (status: string) (reason: string) =
+    { TestProject = project
+      RunId = runId
+      Status = status
+      Reason = reason
+      Executed = 0
+      Traced = 0
+      Complete = 0
+      TotalHits = 0L
+      AmbientHits = 0L
+      AmbientSymbols = []
+      ReasonCounts = Map.empty
+      Pools = [] }
+
+let private tracedRun conn (rowId: int64, project: string, runId: string, status: string, statsJson: string) =
     let stats = JsonSerializer.Deserialize<RunStats> statsJson
     let c = stats.counters
     let ps = [ "@id", box rowId ]
@@ -161,6 +194,8 @@ let private censusOf conn (rowId: int64, project: string, runId: string, statsJs
 
     { TestProject = project
       RunId = runId
+      Status = status
+      Reason = ""
       Executed = stats.executed
       Traced = stats.traced
       Complete = stats.complete
@@ -178,7 +213,7 @@ let private censusOf conn (rowId: int64, project: string, runId: string, statsJs
       Pools = pools }
 
 /// One census per project, by project name: of run `runId` when given, else of the
-/// project's newest run that stored traces (`recorded` or `tree-moved`). Raises
+/// project's newest run, whatever its status. Raises
 /// `FileNotFoundException` for a missing database (a census never creates one) and
 /// `TraceStore.TraceSchemaNewerThanConsumer` for a newer one.
 let latest (dbPath: string) (runId: string option) : ProjectCensus list =
@@ -195,48 +230,57 @@ let latest (dbPath: string) (runId: string option) : ProjectCensus list =
 
         readRows
             conn
-            """SELECT r.id, r.test_project, r.run_id, r.stats_json FROM trace_runs r
+            """SELECT r.id, r.test_project, r.run_id, r.status, r.reason, r.stats_json FROM trace_runs r
                WHERE r.id = (SELECT MAX(x.id) FROM trace_runs x WHERE x.test_project = r.test_project
-                             AND x.status IN ('recorded', 'tree-moved') AND (@run IS NULL OR x.run_id = @run))
+                             AND (@run IS NULL OR x.run_id = @run))
                ORDER BY r.test_project"""
             [ "@run",
               (match runId with
                | Some r -> box r
                | None -> box System.DBNull.Value) ]
-            (fun r -> r.GetInt64 0, r.GetString 1, r.GetString 2, r.GetString 3)
-        |> List.map (censusOf conn)
+            (fun r -> r.GetInt64 0, r.GetString 1, r.GetString 2, r.GetString 3, r.GetString 4, r.GetString 5)
+        |> List.map (fun (rowId, project, runId, status, reason, statsJson) ->
+            match status with
+            | "recorded"
+            | "tree-moved" -> tracedRun conn (rowId, project, runId, status, statsJson)
+            | _ -> untracedRun project runId status reason)
     finally
         SqliteConnection.ClearPool conn
         conn.Dispose()
 
 /// The human table: per project, its verdict, the traced and ambient ratios with their
-/// bars, untraced tests, each ambient symbol, tests per incomplete-reason kind and pools.
+/// bars, untraced tests, each ambient symbol, tests per incomplete-reason kind and pools;
+/// for a run that stored no traces, its status and reason alone.
 let render (cs: ProjectCensus list) : string =
     let sb = StringBuilder()
     let line (s: string) = sb.Append(s).Append('\n') |> ignore
 
     for c in cs do
-        let verdict = if passes defaultBars c then "PASS" else "FAIL"
-        line $"%s{c.TestProject}  run %s{c.RunId}  %s{verdict}"
+        if not (stored c) then
+            line $"%s{c.TestProject}  run %s{c.RunId}  %s{c.Status.ToUpperInvariant()}"
+            line $"  reason     %s{c.Reason}"
+        else
+            let verdict = if passes defaultBars c then "PASS" else "FAIL"
+            line $"%s{c.TestProject}  run %s{c.RunId}  %s{verdict}"
 
-        line
-            $"  traced     %d{c.Traced}/%d{c.Executed} (%.4f{tracedRatio c}, bar >= %g{defaultBars.TracedAtLeast})  complete %d{c.Complete}"
-
-        if untraced c > 0 then
             line
-                $"  untraced   %d{untraced c} executed test(s) recorded no test scope: hit no probe, or name not joined (see no-outcome)"
+                $"  traced     %d{c.Traced}/%d{c.Executed} (%.4f{tracedRatio c}, bar >= %g{defaultBars.TracedAtLeast})  complete %d{c.Complete}"
 
-        line
-            $"  ambient    %d{c.AmbientHits}/%d{c.TotalHits} (%.5f{ambientRatio c}, bar < %g{defaultBars.AmbientBelow}, or listed)"
+            if untraced c > 0 then
+                line
+                    $"  untraced   %d{untraced c} executed test(s) recorded no test scope: hit no probe, or name not joined (see no-outcome)"
 
-        for s in c.AmbientSymbols do
-            line $"    ambient symbol: %s{s}"
+            line
+                $"  ambient    %d{c.AmbientHits}/%d{c.TotalHits} (%.5f{ambientRatio c}, bar < %g{defaultBars.AmbientBelow}, or listed)"
 
-        // A list, not the map: enumerating a Map compiles a disposal null check no input takes.
-        for r, n in Map.toList c.ReasonCounts do
-            line $"  incomplete %-28s{r} %d{n}"
+            for s in c.AmbientSymbols do
+                line $"    ambient symbol: %s{s}"
 
-        for p in c.Pools do
-            line $"  pool %s{p.Key}: %d{p.Symbols} symbols, %d{p.Inputs} inputs, %d{p.LinkedTests} tests"
+            // A list, not the map: enumerating a Map compiles a disposal null check no input takes.
+            for r, n in Map.toList c.ReasonCounts do
+                line $"  incomplete %-28s{r} %d{n}"
+
+            for p in c.Pools do
+                line $"  pool %s{p.Key}: %d{p.Symbols} symbols, %d{p.Inputs} inputs, %d{p.LinkedTests} tests"
 
     sb.ToString()

@@ -158,14 +158,16 @@ run that wrote no CTRF report).
 
 | Verb | Measures | Bar |
 |---|---|---|
-| `census [--db <path>] [--run <runId>] [--json]` | A recorded run in the trace store: traced / executed tests, unattributed (ambient) hits, tests per incomplete reason, pool scopes | traced ≥ 0.99; ambient < 0.1 % of hits, or every ambient symbol listed for review |
+| `census [--db <path>] [--run <runId>] [--json]` | Each project's newest run in the trace store: traced / executed tests, unattributed (ambient) hits, tests per incomplete reason, pool scopes | traced ≥ 0.99; ambient < 0.1 % of hits, or every ambient symbol listed for review |
 | `audit … [--sample 0.01] [--seed 1]` | Runs the project once in parallel, then a seeded sample of its tests one at a time, and compares each test's own probe ids | no id attributed in parallel that the test never hits alone |
 | `overhead … [--reps 3]` | Interleaved untraced and traced launches, median CPU (user + system) of each | traced median ≤ 1.15 × untraced median, and every launch exits the same way |
 | `file-census …` | Tests whose trace holds a repository file input vs tests that fail when the build output runs outside the repository | the two sets differ by ≤ 5 % of their union |
 
 `census` reads `.fshw/test-traces.db` when it exists, else `.test-prune-traces.db`. A
-missing database is refused (exit 2), never created. With no recorded run to measure it
-exits 1.
+missing database is refused (exit 2), never created. With no run to measure it exits 1.
+It reports each project's newest run whatever its status, never an older run that
+recorded: a `REFUSED` project (it ran untraced) is listed with its reason and does not
+fail the census; a `FAILED` one (the recorder produced nothing usable) does.
 
 The three process-driving verbs (`audit`, `overhead`, `file-census`) take the same
 options:
@@ -186,8 +188,9 @@ What to know before trusting a number:
 
 - **`audit` adds `--filter-display-name <name>`** to each isolated launch. Microsoft Testing
   Platform refuses to mix filter kinds, so a filter of your own after `--` conflicts with
-  it. A display name containing `*` acts as a wildcard in that filter and can select more
-  than the one test.
+  it. The name is escaped, so a theory row whose name holds `*`, parentheses or quotes is
+  selected alone. A sampled test the isolated launch does not select is an audit `ERROR`
+  (`could not isolate <test>: the filter selected nothing`), never compared with nothing.
 - **`audit` samples only tests that recorded a test scope** in the parallel run. A test
   that hit no probe is not sampled, so it cannot fail the audit; `census` is where an
   untraced test shows up.
@@ -242,6 +245,11 @@ A refused project runs untraced, exactly as it would without TestPrune.Trace.
   build output has a portable PDB naming a source file under the repository root, most
   often because `ContinuousIntegrationBuild`, `DeterministicSourcePaths` or a `PathMap`
   rewrote the PDB paths to `/_/`.
+- **An app that ships its own recorder build is refused.** When the app's deps.json
+  references `TestPrune.Trace.Recorder` as a project, or its build output holds a recorder
+  assembly that differs from the weaver's, tracing would swap in a different recorder than
+  the one the app was built and tested with. An app that references the same recorder
+  package the weaver bundles is traced.
 - **A test app without FSharp.Core fails verification.** The recorder is written in F# and
   loads FSharp.Core 8.0 or later from the app, so a C#-only test app cannot load it. The
   verification error says so.
