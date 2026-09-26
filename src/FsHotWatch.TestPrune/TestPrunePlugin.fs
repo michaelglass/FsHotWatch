@@ -8335,7 +8335,8 @@ let internal createWithQueries
                         // fanout in the pending set (consumed by the queued rerun).
                         let state =
                             { state with
-                                PriorProjectFingerprints = currentFingerprints }
+                                PriorProjectFingerprints =
+                                    DependencyFanout.advance state.PriorProjectFingerprints currentFingerprints }
 
                         // Asked BEFORE selection: a held key refuses the claim, and
                         // selection is the expensive step (a flush and an impact query

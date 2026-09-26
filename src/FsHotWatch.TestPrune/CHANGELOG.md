@@ -13,6 +13,12 @@
   evidence does not cover whole (logged as `Evidence gap: …`, and named when the
   zero-affected skip is refused). Under an unchanged model with evidence in hand, the
   selection is unchanged. Breaking: `TestRunInputs` has a new field, `Earned`.
+- fix: a build that lands while the project graph is being rediscovered no longer erases
+  the dependency fingerprints the next build compares against. It fingerprinted no
+  project and replaced the stored fingerprints with that empty set, so the next build saw
+  every project as new and fanned out none of them. A dependency changed across a
+  rediscovery now fans out as it does anywhere else.
+
 - fix: an analysis-only daemon (no test projects) now earns a clean receipt after a
   scoped project-file change and after a restart over an unchanged tree. It carries the
   seal's retained files' analysis into the new model. A `FileChecked` replayed from the

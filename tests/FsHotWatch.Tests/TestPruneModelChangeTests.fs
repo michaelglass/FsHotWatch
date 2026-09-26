@@ -216,6 +216,51 @@ let ``with no project model nothing is widened, because no evidence can be earne
 
     test <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
 
+/// A build that lands while the project graph is being rediscovered sees no projects and
+/// fingerprints none. The fingerprints the next build compares against must still be the
+/// last ones computed, or a dependency that changed across the rediscovery never fans out.
+[<Fact(Timeout = 30000)>]
+let ``a build over an empty graph does not erase the fingerprints the next build compares against`` () =
+    let f = fixture ()
+    let root = f.Ctx.RepoRoot
+    let testProject = Path.Combine(root, "ProjB.fsproj")
+    let library = Path.Combine(root, "Lib.fsproj")
+    let libraryDll = Path.Combine(root, "Lib.dll")
+    File.WriteAllText(libraryDll, "build one")
+    let mutable rediscovering = false
+
+    let graph =
+        { ProjectGraphAccessor.none with
+            GetAllProjects = fun () -> if rediscovering then [] else [ testProject; library ]
+            GetProjectReferences = fun project -> if project = testProject then [ library ] else []
+            GetCanonicalDllPath = fun project -> if project = library then Some libraryDll else None }
+
+    // No model: the evidence gap stays out of the way, so any project run in full is the
+    // dependency fanout's doing.
+    let f =
+        { f with
+            Ctx = { f.Ctx with ProjectGraph = graph } }
+
+    let settle state =
+        let launched, launch = buildAndLaunch f state
+        launch, update f launched (finishedGreen launch)
+
+    let verified =
+        update f f.Handler.Init (finishedGreen (fullSuiteLaunch [ "ProjA"; "ProjB" ]))
+
+    // Positive control: with the graph available, an unchanged build fans out nothing.
+    let quiet, afterFirst = settle verified
+    test <@ Map.isEmpty quiet.Selection @>
+
+    rediscovering <- true
+    let _, afterRediscovery = settle afterFirst
+    rediscovering <- false
+
+    File.WriteAllText(libraryDll, "build two")
+    let fannedOut, _ = settle afterRediscovery
+
+    test <@ Map.tryFind "ProjB" fannedOut.Selection = Some ProjectInFull @>
+
 /// Where the evidence of the current model already covers every project, a change that no
 /// test covers runs nothing: the gap is empty, and the nothing-to-verify skip holds.
 [<Fact(Timeout = 30000)>]

@@ -103,3 +103,12 @@ let internal changedProjects (prior: Map<string, string>) (current: Map<string, 
         | Some old when old <> fp -> Some proj
         | _ -> None)
     |> Set.ofList
+
+/// The fingerprints the next build compares against: this build's, and the prior one for
+/// every project this build could not fingerprint. A build whose graph lacks a project
+/// (an empty graph while it is being rediscovered, or a project not yet registered) has
+/// not observed it; forgetting its prior would make the next observation a "first build"
+/// that `changedProjects` never reports, so a dependency changed across that gap would
+/// never fan out.
+let internal advance (prior: Map<string, string>) (current: Map<string, string>) : Map<string, string> =
+    Map.fold (fun kept project fingerprint -> Map.add project fingerprint kept) prior current
