@@ -210,6 +210,6 @@
     <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.0" />
     <PackageReference Include="Unquote" Version="7.0.1" />
     <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.9.0" />
-    <PackageReference Include="G-Research.FSharp.Analyzers" Version="0.23.0" />
+    <PackageReference Include="G-Research.FSharp.Analyzers" Version="0.25.0" />
   </ItemGroup>
 </Project>

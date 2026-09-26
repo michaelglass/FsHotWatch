@@ -115,3 +115,35 @@ let ``an interrupted run leaves no hook process behind`` () =
 let ``an interrupted confirm fast path leaves no hook process behind`` () =
     interruptedMidHook (fun signals config root ->
         withRunHooksUnclaimedUsingSignals signals FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))
+
+/// Signal handlers that deliver the "signal" the moment they are installed: the run is
+/// interrupted, and its process scope shut, before its beforeRun can launch. The same
+/// ordering as a signal landing between the hook's spawn and its admission, without
+/// having to win that race.
+let private signalledOnInstall (finalize: unit -> unit) (_exitWith: int -> unit) =
+    finalize ()
+
+    { new IDisposable with
+        member _.Dispose() = () }
+
+/// A hook launched after its run was interrupted is refused by the run's shut scope. The
+/// refusal is how the run ended, so the bracket reports it as the failed beforeRun it is
+/// (exit 2), and no process of the hook's ever runs.
+let private refusedAtLaunch (bracket: DaemonConfiguration -> string -> int) =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-refused" (fun root ->
+            let hookPid = Path.Combine(root, "hook.pid")
+            let exitCode = bracket (hooks (Some $"echo $$ > '%s{hookPid}'") None) root
+
+            test <@ exitCode = 2 @>
+            test <@ not (File.Exists hookPid) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a run interrupted before its beforeRun launches refuses the hook and exits 2`` () =
+    refusedAtLaunch (fun config root ->
+        withRunHooksCommandUsingSignals signalledOnInstall FsHotWatch.Cli.Verdict.Check root config (fun _ -> 0))
+
+[<Fact(Timeout = 30000)>]
+let ``a confirm fast path interrupted before its beforeRun launches refuses the hook and exits 2`` () =
+    refusedAtLaunch (fun config root ->
+        withRunHooksUnclaimedUsingSignals signalledOnInstall FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))

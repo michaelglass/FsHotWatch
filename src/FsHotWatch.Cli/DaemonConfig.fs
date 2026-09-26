@@ -459,6 +459,26 @@ let private defaultConfigFor (repoRoot: string) =
 /// Carries a user-facing message.
 exception ConfigError of message: string
 
+/// The user-facing text of a JSON value in a config message: a string's contents,
+/// otherwise its raw JSON (`5`, `false`, `{...}`).
+let private describeValue (v: JsonElement) =
+    if v.ValueKind = JsonValueKind.String then
+        v.GetString()
+    else
+        v.GetRawText()
+
+/// Refuse a value outside a key's enumerated set, naming the value and every
+/// accepted one (`accepted` holds JSON literals: `"\"check\""`, `"true"`). An unknown
+/// enumerated value is a `ConfigError`, never a warning and a fall-back to the
+/// default: a warning scrolls past inside a long gate, so a typo would silently select
+/// behaviour the config never asked for.
+let private refuseUnknown (key: string) (bad: string) (accepted: string list) : 'a =
+    let choices = String.concat ", " accepted
+    raise (ConfigError $"%s{key}: unknown value '%s{bad}' — expected one of %s{choices}")
+
+/// JSON string literals, for `refuseUnknown`'s accepted list.
+let private jsonStrings (values: string list) = values |> List.map (sprintf "\"%s\"")
+
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
@@ -505,6 +525,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | _ -> defaults.Build
 
     let format =
+        let refuse (v: JsonElement) =
+            refuseUnknown
+                "format"
+                (describeValue v)
+                (jsonStrings [ "check"; "auto"; "off"; "false" ] @ [ "true"; "false" ])
+
         match root.TryGetProperty("format") with
         | true, v when v.ValueKind = JsonValueKind.String ->
             match v.GetString().ToLowerInvariant() with
@@ -512,11 +538,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             | "auto" -> Auto
             | "off"
             | "false" -> Off
-            | other ->
-                Logging.warn "config" $"Unknown format value '%s{other}', using Auto"
-                Auto
+            | _ -> refuse v
         | true, v when v.ValueKind = JsonValueKind.True -> Auto
         | true, v when v.ValueKind = JsonValueKind.False -> Off
+        | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
         | _ -> Auto
 
     let lint =
@@ -527,6 +552,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     let cache =
         let refuse (detail: string) =
             raise (ConfigError $"cache: %s{detail}")
+
+        let refuseValue (v: JsonElement) =
+            refuseUnknown
+                "cache"
+                (describeValue v)
+                (jsonStrings [ "memory"; "none"; "false" ] @ [ "true"; "false"; "{ ... }" ])
 
         let globs (settings: JsonElement) (name: string) =
             match settings.TryGetProperty name with
@@ -588,9 +619,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         + "\"cache\": \"memory\" for a real (in-process) cache."
                     )
                 )
-            | other ->
-                Logging.warn "config" $"Unknown cache value '%s{other}', using default"
-                defaults.Cache
+            | _ -> refuseValue v
+        | true, v when v.ValueKind <> JsonValueKind.Null -> refuseValue v
         | _ -> defaults.Cache
 
     let analyzers =
@@ -603,17 +633,26 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             let failOnSeverity =
                 match v.TryGetProperty("failOnSeverity") with
+                | true, s when s.ValueKind = JsonValueKind.Null -> DiagnosticSeverity.Hint
                 | true, s ->
-                    let str = s.GetString()
+                    let fromConfig =
+                        if s.ValueKind = JsonValueKind.String then
+                            match s.GetString() with
+                            | "error"
+                            | "warning"
+                            | "info"
+                            | "hint" as str -> DiagnosticSeverity.fromString str
+                            | _ -> None
+                        else
+                            None
 
-                    match str with
-                    | "error"
-                    | "warning"
-                    | "info"
-                    | "hint" -> DiagnosticSeverity.fromString str |> Option.get
-                    | other ->
-                        Logging.warn "config" $"Unknown failOnSeverity value '%s{other}', using default 'hint'"
-                        DiagnosticSeverity.Hint
+                    match fromConfig with
+                    | Some severity -> severity
+                    | None ->
+                        refuseUnknown
+                            "analyzers.failOnSeverity"
+                            (describeValue s)
+                            (jsonStrings [ "error"; "warning"; "info"; "hint" ])
                 | _ -> DiagnosticSeverity.Hint
 
             let bootstrapHints =
@@ -781,6 +820,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         // `reportVerificationFormat`: how fshw obtains the structured
                         // test report the verdict is derived from. Absent → AutoDetect.
                         let reportVerificationFormat =
+                            let refuse (v: JsonElement) =
+                                refuseUnknown
+                                    $"tests.projects[%s{project}].reportVerificationFormat"
+                                    (describeValue v)
+                                    (jsonStrings
+                                        [ "auto"; "autodetect"; "detect"; "ctrf"; "off"; "none"; "disabled"; "false" ])
+
                             match p.TryGetProperty("reportVerificationFormat") with
                             | true, v when v.ValueKind = JsonValueKind.String ->
                                 match v.GetString().ToLowerInvariant() with
@@ -792,12 +838,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                                 | "none"
                                 | "disabled"
                                 | "false" -> Disabled
-                                | other ->
-                                    Logging.warn
-                                        "config"
-                                        $"Unknown reportVerificationFormat value '%s{other}', using AutoDetect"
-
-                                    AutoDetect
+                                | _ -> refuse v
+                            | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
                             | _ -> AutoDetect
 
                         // `traces`: every project takes part in `tests.traces`
@@ -1126,28 +1168,29 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | _ -> defaults.TimeoutSec
 
     // `fsEventsLatencyMs`: absent → default (250); a non-negative integer is used
-    // verbatim (0 is valid — no coalescing); a present-but-invalid value
-    // (negative, or non-number) warns and falls back to the default.
+    // verbatim (0 is valid — no coalescing); anything else is a `ConfigError`, like
+    // `checker.cacheSizeFactor` — a mistyped latency silently falling back would run
+    // the default while the config claimed otherwise.
     let fsEventsLatencyMs =
         match root.TryGetProperty("fsEventsLatencyMs") with
         | false, _ -> defaults.FsEventsLatencyMs
-        | true, v when v.ValueKind = JsonValueKind.Number ->
-            let ms = v.GetInt32()
+        | true, v when v.ValueKind = JsonValueKind.Null -> defaults.FsEventsLatencyMs
+        | true, v ->
+            let ms =
+                if v.ValueKind = JsonValueKind.Number then
+                    match v.TryGetInt32() with
+                    | true, ms when ms >= 0 -> Some ms
+                    | _ -> None
+                else
+                    None
 
-            if ms >= 0 then
-                ms
-            else
-                Logging.warn
-                    "config"
-                    $"fsEventsLatencyMs must be >= 0, got %d{ms}; using default %d{defaults.FsEventsLatencyMs}"
-
-                defaults.FsEventsLatencyMs
-        | true, _ ->
-            Logging.warn
-                "config"
-                $"fsEventsLatencyMs must be a non-negative integer; using default %d{defaults.FsEventsLatencyMs}"
-
-            defaults.FsEventsLatencyMs
+            match ms with
+            | Some ms -> ms
+            | None ->
+                raise (
+                    ConfigError
+                        $"fsEventsLatencyMs must be a non-negative whole number of milliseconds (e.g. 250), got %s{v.GetRawText()}"
+                )
 
     // `checker.cacheSizeFactor`: a positive integer, else a hard ConfigError — a
     // mistyped factor silently falling back would make a benchmark row measure the
@@ -1222,35 +1265,28 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             if n > 0 then Some n else None
         | _ -> None
 
-    // `runHookCommands`: which verbs the run-level hooks bracket. Every failure mode
-    // leans towards KEEPING the bracket rather than quietly stopping — an un-gated heavy
-    // run is far worse than a redundantly-gated one. Only an explicitly empty array can
-    // disable bracketing, and even that is announced.
+    // `runHookCommands`: which verbs the run-level hooks bracket. An unknown verb or a
+    // wrong shape is a `ConfigError`: dropping a typo used to un-bracket the verb it was
+    // meant to name, silently but for a warning. Only an explicitly empty array can
+    // disable bracketing, and that is announced.
     let runHookCommands =
-        let parseVerb (s: string) =
-            match s.Trim().ToLowerInvariant() with
-            | "check" -> Some RunHookCommand.Check
-            | "confirm" -> Some RunHookCommand.Confirm
-            | other ->
-                Logging.warn
-                    "config"
-                    $"Unknown runHookCommands entry '%s{other}' (expected \"check\" or \"confirm\") — ignoring it"
+        let accepted = jsonStrings [ "check"; "confirm" ]
 
-                None
+        let parseVerb (e: JsonElement) =
+            let verb =
+                if e.ValueKind = JsonValueKind.String then
+                    e.GetString().Trim().ToLowerInvariant()
+                else
+                    ""
+
+            match verb with
+            | "check" -> RunHookCommand.Check
+            | "confirm" -> RunHookCommand.Confirm
+            | _ -> refuseUnknown "runHookCommands" (describeValue e) accepted
 
         match root.TryGetProperty("runHookCommands") with
         | true, v when v.ValueKind = JsonValueKind.Array ->
             let entries = v.EnumerateArray() |> Seq.toList
-
-            let parsed =
-                entries
-                |> List.choose (fun e ->
-                    if e.ValueKind = JsonValueKind.String then
-                        parseVerb (e.GetString())
-                    else
-                        Logging.warn "config" "Ignoring a non-string runHookCommands entry"
-                        None)
-                |> Set.ofList
 
             if List.isEmpty entries then
                 // Explicit `[]`. Honoured — the config said it plainly — but never
@@ -1260,26 +1296,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     "runHookCommands is empty — the run-level beforeRun/afterRun hooks will not bracket ANY command"
 
                 Set.empty
-            elif Set.isEmpty parsed then
-                // Non-empty, but nothing survived parsing (a typo, most likely).
-                // Falling back to both verbs keeps the safe direction.
-                Logging.warn
-                    "config"
-                    "No usable entries in runHookCommands — falling back to bracketing both check and confirm"
-
-                DefaultRunHookCommands
             else
-                parsed
+                entries |> List.map parseVerb |> Set.ofList
         | true, v when
             v.ValueKind = JsonValueKind.String
             || v.ValueKind = JsonValueKind.Number
             || v.ValueKind = JsonValueKind.Object
             ->
-            Logging.warn
-                "config"
-                "runHookCommands must be an array of \"check\" / \"confirm\" — ignoring it and bracketing both"
-
-            DefaultRunHookCommands
+            raise (
+                ConfigError
+                    $"runHookCommands must be an array of \"check\" / \"confirm\", e.g. [\"confirm\"], got %s{v.GetRawText()}"
+            )
         // Absent, `null`, `false`, `true` → the default. `false` reads as "I am not
         // using this key", the same opt-out spirit as `runHookTimeoutSec`.
         | _ -> DefaultRunHookCommands

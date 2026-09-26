@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **BREAKING (config):** an unknown value for an enumerated `.fshw.json` setting is now a
+  config error naming the value and the accepted ones, where it used to log a warning
+  and fall back to the default. A config that loaded with such a warning now fails to
+  load; fix the value it names. Affected: `format`, `cache`, `analyzers.failOnSeverity`,
+  `tests.projects[].reportVerificationFormat`, `runHookCommands` (an unknown verb was
+  dropped, so `["confirm", "chek"]` silently bracketed confirm only; a non-array or a
+  non-string entry is an error too), and `fsEventsLatencyMs` (negative or not a whole
+  number). A non-string value where a string was expected (e.g.
+  `"reportVerificationFormat": false`) is an error rather than a silent default. `null`
+  still means "use the default"; `"runHookCommands": []` still brackets nothing, with a
+  warning.
+
+- fix: a run interrupted while its `beforeRun` hook was launching no longer escapes with
+  an `OperationCanceledException`. The run's process scope refuses a hook launched after
+  it shut down, including one spawned just before the shutdown and admitted just after;
+  that refusal is now the hook's failed outcome, so the run exits 2 like a run whose
+  hook the interruption killed.
+
 ## 0.14.0-alpha.65 - 2026-09-26
 
 - chore: rebuild to bundle updated dependencies

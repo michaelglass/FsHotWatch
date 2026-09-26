@@ -1830,7 +1830,19 @@ let internal makeRunHookRunner
         fun scope label cmd ->
             let startOffsetMs = Verdict.Invocation.elapsedMs invocation
             let stopwatch = Diagnostics.Stopwatch.StartNew()
-            let success, output = makeShellHookWithResult label timeoutSec repoRoot cmd ()
+            // A run-level hook takes no cancellation token: the only cancellation that
+            // reaches it is the run's process scope refusing the launch, because the run
+            // was interrupted before the hook started, or while it was starting (after
+            // the spawn, before its admission). That refusal is how the hook ended, not
+            // an escape from the run, so it is the hook's failed outcome like any hook
+            // the interruption killed after admitting it.
+            let success, output =
+                try
+                    makeShellHookWithResult label timeoutSec repoRoot cmd ()
+                with :? OperationCanceledException as refused ->
+                    FsHotWatch.Logging.error label $"%s{label} did not run: %s{refused.Message}"
+                    false, refused.Message
+
             stopwatch.Stop()
 
             lock hookEvidence (fun () ->
