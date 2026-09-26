@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: after a green run, an edit that changes no symbols (a comment, whitespace, a
+  non-source file under `src/` or `tests/`) is re-verified instead of ending `check` with
+  "no tests ran (the daemon did not say why)". Two things went wrong. First, the
+  `BuildCompleted` cache key names the changed symbols and project files, not the bytes,
+  so the build replayed the earlier green without running the handler. `test-scope` then
+  found its receipt bound to the old tree and sent no reason. Second, even when the
+  handler ran, the zero-affected skip ("already verified") earned nothing on the new tree.
+  Now a `BuildCompleted` never replays while no receipt is bound to the current input
+  tree, and the zero-affected skip is refused there (logged as "no test evidence is bound
+  to the tree as it is now"), so every runnable project runs in full once and earns a
+  receipt for the edited tree. A later build over the same tree skips as before.
+- fix: `test-scope` names why no tests ran whenever the completion behind it selected
+  tests: `no-run-yet`, `tree-moved`, `tree-unreadable`, `evidence-revoked` (with
+  `noTestsDetail`, the revocation reason) or `covers-nothing`. Before, all of these went
+  out with no `noTestsReason`.
+- Breaking: `TestPruneState` has a new field, `ReceiptRevoked`; `TestRunInputs` has a new
+  field, `EvidenceTree`; new public type `UnverifiedTree`.
+
 ## 0.13.0-alpha.51 - 2026-09-26
 
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless

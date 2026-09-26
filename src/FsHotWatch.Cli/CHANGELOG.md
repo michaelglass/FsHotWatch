@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a `check` with no test evidence for the current tree says why instead of "no tests
+  ran (the daemon did not say why)". `NoTestsReason` has new cases, `NoRunYet`,
+  `TreeMoved`, `TreeUnreadable`, `EvidenceRevoked` and `CoversNothing`, read from the
+  daemon's `noTestsReason`/`noTestsDetail` and round-tripped through `.fshw/verdict.json`
+  (`reason`, `detail`). `Unstated` remains for daemons older than this CLI. Breaking:
+  `NoTestsReason.ofToken` takes the detail as a new second argument.
+- fix: after a green run, an edit that changes no symbols (such as a comment) no longer
+  ends `check` with exit 3. The daemon runs the suite once on the edited tree (see
+  FsHotWatch.TestPrune).
+
 ## 0.14.0-alpha.69 - 2026-09-26
 
 - feat: `tests.traces` is acted on. With `"record": "full-runs"` (or `"every-run"`), the

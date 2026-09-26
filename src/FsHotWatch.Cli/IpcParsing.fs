@@ -141,6 +141,18 @@ module UnrunnableCoverage =
 type NoTestsReason =
     | AlreadyVerified
     | ChangesUncovered of symbols: string list * total: int * unrunnable: UnrunnableCoverage
+    /// No run has completed in the daemon's session.
+    | NoRunYet
+    /// The tree changed after the run that earned the daemon's evidence, and no run has
+    /// verified it since.
+    | TreeMoved
+    /// The daemon holds evidence but cannot read the current tree to bind it.
+    | TreeUnreadable
+    /// The last completion earned no evidence, for this reason.
+    | EvidenceRevoked of reason: string
+    /// The daemon's evidence is bound to this tree but covers no configured project.
+    | CoversNothing
+    /// A daemon older than this CLI sent no reason.
     | Unstated
     | UnknownReason of token: string
 
@@ -155,14 +167,27 @@ module NoTestsReason =
             let listed = String.concat ", " symbols
 
             $"no tests ran — %d{total} changed symbol(s) have NO covering test in the index: %s{listed}%s{suffix}%s{UnrunnableCoverage.describe unrunnable}"
+        | NoTestsReason.NoRunYet -> "no tests ran — no test run has completed in this daemon session yet"
+        | NoTestsReason.TreeMoved ->
+            "no tests ran on this tree — it changed after the last run that earned test evidence, and no run has verified it since"
+        | NoTestsReason.TreeUnreadable ->
+            "no tests ran on this tree — it could not be read, so the last run's evidence cannot be bound to it"
+        | NoTestsReason.EvidenceRevoked reason -> $"no tests ran — the last run earned no test evidence: %s{reason}"
+        | NoTestsReason.CoversNothing -> "no tests ran — the last run's results cover no configured test project"
         | NoTestsReason.Unstated -> "no tests ran (the daemon did not say why)"
         | NoTestsReason.UnknownReason token ->
             $"no tests ran (reason '%s{token}', which this build does not understand)"
 
-    let ofToken token symbols total (unrunnable: UnrunnableCoverage) =
+    let ofToken token (detail: string option) symbols total (unrunnable: UnrunnableCoverage) =
         match token with
         | None -> NoTestsReason.Unstated
         | Some "already-verified" -> NoTestsReason.AlreadyVerified
+        | Some "no-run-yet" -> NoTestsReason.NoRunYet
+        | Some "tree-moved" -> NoTestsReason.TreeMoved
+        | Some "tree-unreadable" -> NoTestsReason.TreeUnreadable
+        | Some "evidence-revoked" ->
+            NoTestsReason.EvidenceRevoked(detail |> Option.defaultValue "the daemon gave no detail")
+        | Some "covers-nothing" -> NoTestsReason.CoversNothing
         | Some "changes-uncovered" ->
             NoTestsReason.ChangesUncovered(symbols, max total (List.length symbols), unrunnable)
         | Some token -> NoTestsReason.UnknownReason token
@@ -743,6 +768,7 @@ let parseTestRunReport (json: string) : TestRunReport =
 
             NoTestsReason.ofToken
                 (tryGetStringProp root "noTestsReason")
+                (tryGetStringProp root "noTestsDetail")
                 symbols
                 (readInt "uncoveredSymbolCount" |> Option.defaultValue (List.length symbols))
                 unrunnable

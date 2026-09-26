@@ -1307,6 +1307,10 @@ type internal ZeroAffectedWidening =
     /// These projects have no whole-project run under the current project model, so the
     /// evidence a run earns refuses them unless it runs them in full.
     | NoCurrentModelEvidence of projects: Set<string>
+    /// Nothing is owed, but no test evidence is bound to the tree as it is now: it changed
+    /// since the last run that earned any, in a way the symbol diff does not see (a
+    /// comment, whitespace, a non-source file). Skipping would verify nothing on it.
+    | UnverifiedTree
 
 module internal ZeroAffectedWidening =
     let describe (cause: ZeroAffectedWidening) =
@@ -1323,6 +1327,9 @@ module internal ZeroAffectedWidening =
         | ZeroAffectedWidening.UnreadableLedger ->
             "the pending-verification ledger could not be read, so what is owed is UNKNOWN"
         | ZeroAffectedWidening.OutstandingFailures count -> $"%d{count} outstanding test failure(s) from a prior run"
+        | ZeroAffectedWidening.UnverifiedTree ->
+            "no test evidence is bound to the tree as it is now — it changed since the last run that earned any, \
+             in a way no symbol diff sees (a comment, whitespace, a non-source file)"
 
     let describeMany (causes: ZeroAffectedWidening list) =
         causes |> List.map describe |> String.concat "; "
@@ -1343,6 +1350,7 @@ let internal zeroAffectedWidening
     (outstandingFailures: int)
     (fullSuiteBaselineInvalid: string option)
     (evidenceGap: Set<string>)
+    (treeUnverified: bool)
     : ZeroAffectedWidening list =
     [ if not hasSessionBaseline then
           ZeroAffectedWidening.NoSessionBaseline
@@ -1371,7 +1379,11 @@ let internal zeroAffectedWidening
           ZeroAffectedWidening.OutstandingFailures outstandingFailures
 
       if not (Set.isEmpty evidenceGap) then
-          ZeroAffectedWidening.NoCurrentModelEvidence evidenceGap ]
+          ZeroAffectedWidening.NoCurrentModelEvidence evidenceGap
+      // Only once a session baseline exists: before it, the baseline run is owed anyway
+      // and naming this too would report two causes for one run.
+      if treeUnverified && hasSessionBaseline then
+          ZeroAffectedWidening.UnverifiedTree ]
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -1456,6 +1468,49 @@ type TestEvidenceReceipt =
       Coverage: RunCoverage
       Seeds: string list
       ZeroSelection: ZeroSelection }
+
+/// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
+/// behind the reading selected tests and so names no `ZeroSelection`. Every one of these
+/// is a "no tests ran" a reader must be able to act on, so none may reach the wire as
+/// silence.
+[<RequireQualifiedAccess>]
+type UnverifiedTree =
+    /// No run has completed in this session.
+    | NoRunYet
+    /// A run earned evidence, on a tree that has since changed, and no run has
+    /// verified the current one.
+    | TreeMoved
+    /// A run earned evidence, but the current tree cannot be read to bind it.
+    | TreeUnreadable
+    /// The last completion earned no evidence, for this reason.
+    | Revoked of reason: string
+    /// The evidence is bound to this tree but covers no configured project.
+    | CoversNothing
+
+module UnverifiedTree =
+    let classify
+        (stored: TestEvidenceReceipt option)
+        (currentTree: string option)
+        (revoked: string option)
+        (completedRuns: Guid list)
+        : UnverifiedTree =
+        match stored, revoked with
+        | Some evidence, _ when ReceiptInputTree.matches evidence.InputTreeHash currentTree ->
+            UnverifiedTree.CoversNothing
+        | Some _, _ when currentTree.IsNone -> UnverifiedTree.TreeUnreadable
+        | Some _, _ -> UnverifiedTree.TreeMoved
+        | None, Some reason -> UnverifiedTree.Revoked reason
+        | None, None when List.isEmpty completedRuns -> UnverifiedTree.NoRunYet
+        | None, None -> UnverifiedTree.Revoked "the last completed run recorded no test evidence"
+
+    /// The `noTestsReason` token, and the detail that goes with it.
+    let wire =
+        function
+        | UnverifiedTree.NoRunYet -> "no-run-yet", None
+        | UnverifiedTree.TreeMoved -> "tree-moved", None
+        | UnverifiedTree.TreeUnreadable -> "tree-unreadable", None
+        | UnverifiedTree.Revoked reason -> "evidence-revoked", Some reason
+        | UnverifiedTree.CoversNothing -> "covers-nothing", None
 
 /// What is still owed before a green is test-equivalent to the last full suite. It is
 /// published with the run results it depends on, so a reader of one snapshot reads one
@@ -1637,6 +1692,9 @@ type TestPruneState =
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
+        /// Why the receipt was last taken away, while none has been earned or kept since.
+        /// `test-scope` says it when it has no evidence to serve.
+        ReceiptRevoked: string option
         /// What the last completion EARNED for the current project model: the run, what it
         /// covered in full, and every reason it cannot support a green. Minted only by the
         /// completion fold, and published with this state (`IEarnedEvidenceState`).
@@ -1706,6 +1764,9 @@ type TestRunInputs =
         /// The evidence earned so far. Projects it does not cover whole under the current
         /// model run in full, so this run's own evidence can support a green.
         Earned: EarnedEvidence option
+        /// The input tree the held test-evidence receipt is bound to; `None` when there
+        /// is none. A launch over any other tree has nothing it may skip on.
+        EvidenceTree: string option
     }
 
 module TestRunInputs =
@@ -1721,7 +1782,8 @@ module TestRunInputs =
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds
-          Earned = state.Earned }
+          Earned = state.Earned
+          EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash) }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -6461,6 +6523,7 @@ let internal createWithQueries
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None
+          ReceiptRevoked = None
           Earned = None }
 
     /// The generation of the model the host currently publishes, when it is available.
@@ -6780,7 +6843,16 @@ let internal createWithQueries
                 //      an all-uncovered cold run falls through to the full suite and
                 //      hangs, never resolving WaitForComplete. A genuine cold start with
                 //      NO pending symbols leaves the flag false, so the baseline runs.
-                let baselineEquivalent = nothingOwed inputs.Debt && hasCachedResults
+                //
+                //  Route 1 also needs evidence bound to THIS tree. Test-equivalence is a
+                //  claim about symbols; a receipt is a claim about bytes, and an edit the
+                //  symbol diff does not see (a comment) moves the bytes. Skipping there
+                //  earns nothing, so `check` could only answer "no tests ran".
+                let treeUnverified =
+                    not (ReceiptInputTree.matches inputs.EvidenceTree launch.InputTreeHash)
+
+                let baselineEquivalent =
+                    nothingOwed inputs.Debt && hasCachedResults && not treeUnverified
 
                 let nothingToVerify = UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
 
@@ -6857,6 +6929,7 @@ let internal createWithQueries
                                 (List.length inputs.OutstandingFailures)
                                 baselineInvalid
                                 evidenceGap
+                                treeUnverified
 
                         // An EMPTY selection is not "a few projects": `selectionOf` reads
                         // it as no selection at all and every configured project runs in
@@ -7245,12 +7318,12 @@ let internal createWithQueries
                         // from mtimes.
                         // Check again at the read boundary: inputs may have changed
                         // after completion, even before the next watcher event arrives.
+                        let currentTree = lazy (ReceiptInputTree.read repoRoot)
+
                         let receipt =
                             match ctx.IsRunning "tests", state.EvidenceReceipt with
                             | false, Some evidence ->
-                                let current = ReceiptInputTree.read repoRoot
-
-                                if ReceiptInputTree.matches evidence.InputTreeHash current then
+                                if ReceiptInputTree.matches evidence.InputTreeHash currentTree.Value then
                                     Some evidence
                                 else
                                     None
@@ -7364,6 +7437,19 @@ let internal createWithQueries
                                     |> Option.map (fun receipt -> receipt.ZeroSelection)
                                     |> Option.defaultValue state.LastZeroSelection
 
+                                // A completion that selected tests names no zero reason, so
+                                // the reason is why no evidence speaks for this tree.
+                                let reason, detail =
+                                    match ZeroSelection.token zero with
+                                    | Some token -> token, None
+                                    | None ->
+                                        UnverifiedTree.classify
+                                            state.EvidenceReceipt
+                                            currentTree.Value
+                                            state.ReceiptRevoked
+                                            state.CompletedRuns
+                                        |> UnverifiedTree.wire
+
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
@@ -7375,10 +7461,8 @@ let internal createWithQueries
                                            runId = runId
                                            seeds = seeds
                                            seedCount = seedCount
-                                           noTestsReason =
-                                            (match ZeroSelection.token zero with
-                                             | Some token -> box token
-                                             | None -> null)
+                                           noTestsReason = reason
+                                           noTestsDetail = Option.toObj detail
                                            uncoveredSymbols =
                                             (ZeroSelection.symbols zero |> List.truncate 8 |> List.toArray)
                                            uncoveredSymbolCount = List.length (ZeroSelection.symbols zero)
@@ -7705,6 +7789,7 @@ let internal createWithQueries
 
         { endRun state with
             EvidenceReceipt = None
+            ReceiptRevoked = Some $"the test run could not start: %s{message}"
             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
             Replies =
                 reply
@@ -7727,6 +7812,7 @@ let internal createWithQueries
         | Claimed ->
             { state with
                 EvidenceReceipt = None
+                ReceiptRevoked = Some "a manual test run replaced it"
                 InFlight =
                     Some
                         { Scope = LaunchedSelection
@@ -8782,6 +8868,11 @@ let internal createWithQueries
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
                             EvidenceReceipt = evidenceReceipt
+                            ReceiptRevoked =
+                                match receiptTransition with
+                                | ReceiptTransition.Revoked reason -> Some reason
+                                | ReceiptTransition.Earned _ -> None
+                                | ReceiptTransition.Noop -> state.ReceiptRevoked
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
@@ -9629,6 +9720,19 @@ let internal createWithQueries
             // A full-suite request earns its evidence from a real run, never a replay. The
             // run's own entry is still written, from its `TestsFinished` window.
             | BuildCompleted _ when TestMode.requestsFullSuite state.Mode -> None
+            // No receipt binds the tree as it is now. The key names the changed symbols
+            // and the project files, not the bytes, so an edit that changes neither (a
+            // comment) computes the key of the green it follows. A replay would skip the
+            // handler, and with it the only run that can earn evidence for this tree.
+            | BuildCompleted BuildSucceeded when
+                not (Set.isEmpty runnableProjects)
+                && not (
+                    state.EvidenceReceipt
+                    |> Option.exists (fun evidence ->
+                        ReceiptInputTree.matches evidence.InputTreeHash (ReceiptInputTree.read repoRoot))
+                )
+                ->
+                None
             | _ ->
                 cacheKeyFor
                     changedSymbolsHash
