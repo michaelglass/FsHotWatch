@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.1.1 - 2026-09-26
+
+- fix(core): index global-namespace types under a qualified name
+
+
 ## 13.1.0 - 2026-09-25
 
 - Hash a type's header apart from its union cases and members

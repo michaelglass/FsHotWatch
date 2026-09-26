@@ -2572,7 +2572,13 @@ module ``Unqualified symbol names are rejected`` =
             // The constraint names itself but not the row that broke it, and an indexing
             // run that aborts without saying WHICH symbol is unactionable.
             Assert.Contains("name", ex.Message, StringComparison.Ordinal)
-            Assert.Contains("symbols_full_name_is_qualified", ex.Message, StringComparison.Ordinal))
+            Assert.Contains("symbols_full_name_is_qualified", ex.Message, StringComparison.Ordinal)
+            // And it says what the reader can do: whose bug it is, where to report it, and
+            // that the safe fallback is the full suite.
+            Assert.Contains("src/Thing.fs", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("TestPrune analyzer bug", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("github.com/michaelglass/TestPrune/issues", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("run the full test suite", ex.Message, StringComparison.Ordinal))
 
     /// The one legitimate unqualified category, and the reason the constraint is scoped
     /// rather than absolute: a top-level single-segment module has no qualifier to have.

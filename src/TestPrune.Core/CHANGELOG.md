@@ -6,6 +6,29 @@
   to indexed symbols (TestPrune.Trace's joiner) shares core's one definition of a symbol's
   short name instead of copying it.
 
+## 13.1.1 - 2026-09-26
+
+- fix: a type declared in the global namespace (`namespace global` + `type StartupHook`,
+  which .NET requires of a startup hook) is indexed instead of failing the whole index
+  flush with `CHECK constraint failed: symbols_full_name_is_qualified`. FCS names such a
+  type by its bare identifier, which the constraint rightly rejects; the type, its
+  members and its union cases are now named under the new
+  `AstAnalyzer.GlobalNamespaceQualifier`: `<global>.StartupHook`,
+  `<global>.StartupHook.Initialize`. Not F#'s `global.StartupHook`: a namespace spelled
+  ``` ``global`` ``` (or C#'s `@global`) is legal and FCS names its types
+  `global.StartupHook`, so that spelling would merge two different types. A
+  global-namespace module keeps its bare name, as a top-level `module X` always has.
+  Test classes keep their CLR names for `--filter-class`.
+
+- fix: when a symbol is still rejected by the symbols table, the error says what it
+  means and what to do: it is an analyzer bug, where to report it, and that the full
+  test suite is the safe fallback until it is fixed. The flush still fails as a whole,
+  because a silently dropped symbol would under-select.
+
+- SchemaVersion 16 -> 17: stored names of global-namespace members and union cases
+  changed meaning. An existing index is recreated on open, so no file keeps edges to a
+  pre-fix name.
+
 ## 13.1.0 - 2026-09-25
 
 - feat: a type's content hash covers only its header, so an edit to one union case or
