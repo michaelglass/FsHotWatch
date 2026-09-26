@@ -193,6 +193,21 @@ test that names its URL and another that only clicks through the UI still
 drops the second. **Until your browser tests name the URLs they visit,
 don't mark a composition root.**
 
+## Recorded per-test traces (preview)
+
+Static analysis decides what a test *could* reach. The trace packages record what each
+test *did* execute: a woven copy of a Debug test build notes, per test, which TestPrune
+symbols ran (at which content hash), which repository files were read, and which fixture
+scopes were inherited, and stores that in its own SQLite file beside the index.
+
+This is **record only**: traces are stored and measured, and no selection uses them yet.
+They are the evidence for checking the static graph against what really ran. A runner
+hosts [`TestPrune.Trace`](https://www.nuget.org/packages/TestPrune.Trace), and the
+`test-prune-traces` tool measures the traces against the phase-1 bars (traced share,
+isolation, CPU overhead, file inputs). See the
+[TestPrune.Trace README](https://github.com/michaelglass/TestPrune/blob/main/src/TestPrune.Trace/README.md)
+for hosting, the measurement verbs and what cannot be traced.
+
 ## Packages
 
 | Package | What it's for |
@@ -203,6 +218,9 @@ don't mark a composition root.**
 | [`TestPrune.Sql`](https://www.nuget.org/packages/TestPrune.Sql) | Manual SQL read/write declarations and schema-aware shared-state coupling |
 | [`TestPrune.SqlHydra`](https://www.nuget.org/packages/TestPrune.SqlHydra) | Automatic table-level coupling for typed SqlHydra queries |
 | [`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers) | Opt-in F# analyzer that flags anonymous records (invisible to impact analysis) |
+| [`TestPrune.Trace`](https://www.nuget.org/packages/TestPrune.Trace) | Preview: record which code and files each test executed (host library) |
+| [`TestPrune.Trace.Recorder`](https://www.nuget.org/packages/TestPrune.Trace.Recorder) | Preview: the recorder the weaver adds to a traced test app; not referenced directly |
+| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | Preview: `test-prune-traces` measurement verbs over recorded traces |
 | `TestPrune` | CLI tool (reference implementation) |
 
 ## Going deeper

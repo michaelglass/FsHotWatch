@@ -42,6 +42,9 @@ mise run release-alpha  # Tag an alpha pre-release
 - `src/TestPrune.Core/` — Core library: AST analysis, SQLite graph, symbol diffing, impact selection
 - `src/TestPrune/` — CLI tool (index, run, status, dead-code)
 - `src/TestPrune.Falco/` — Falco route-based integration test filtering extension
+- `src/TestPrune.Trace/`, `src/TestPrune.Trace.Recorder/`, `src/TestPrune.Trace.Cli/` — recorded
+  per-test traces (preview, record only): weaver and trace store, in-process recorder,
+  `test-prune-traces` measurement verbs
 - `tests/TestPrune.Tests/` — All tests (xUnit v3 + MTP v2)
 - `examples/SampleSolution/` — Example F# solution for smoke testing
 
@@ -76,9 +79,13 @@ Packable projects use separate semantic release tags unless noted:
 - `analyzers-v*` — TestPrune.Analyzers
 - `sql-v*` — TestPrune.Sql
 - `sqlhydra-v*` — TestPrune.SqlHydra (release only after its referenced TestPrune.Sql version is available from NuGet)
+- `trace-v*` — TestPrune.Trace + TestPrune.Trace.Recorder + TestPrune.Trace.Cli (one tag: the
+  weaver calls recorder methods by name, so the three never ship apart; after Core)
 
-Use `mise run release`, which invokes the semantic tagger once per package in
-dependency order and waits for each package to become restorable: Core, Sql,
-Falco, SqlHydra, then Analyzers. Never replace it with an unscoped
+Use `mise run release`, which invokes the semantic tagger once per level of the
+ProjectReference DAG and waits for every package of a level to become restorable
+before tagging the next: Analyzers and Core; then Falco, Sql and Trace; then
+SqlHydra. `ReleaseOrchestrationTests` derives those levels from
+`semantic-tagger.json` and fails when `mise.toml` disagrees. Never replace it with an unscoped
 `fssemantictagger release`; independent tag workflows cannot enforce cross-tag
 NuGet dependency ordering.

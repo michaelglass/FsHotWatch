@@ -45,6 +45,7 @@
     <Compile Include="MeasurementLogicTests.fs" />
     <Compile Include="MeasurementTests.fs" />
     <Compile Include="MeasurementCliTests.fs" />
+    <Compile Include="ReadmeSnippets.fs" />
   </ItemGroup>
 
   <ItemGroup>

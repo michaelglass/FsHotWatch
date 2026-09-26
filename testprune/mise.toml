@@ -173,6 +173,9 @@ dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune.Sql/TestPrune.Sql.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace/TestPrune.Trace.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj -c Release -o artifacts
 """
 depends = ["build"]
 
@@ -205,9 +208,12 @@ dotnet tool run fssemantictagger release --only TestPrune.Analyzers,TestPrune.Co
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Analyzers src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Core src/TestPrune.Core/TestPrune.Core.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune src/TestPrune/TestPrune.fsproj
-dotnet tool run fssemantictagger release --only TestPrune.Falco,TestPrune.Sql
+dotnet tool run fssemantictagger release --only TestPrune.Falco,TestPrune.Sql,TestPrune.Trace
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Falco src/TestPrune.Falco/TestPrune.Falco.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Sql src/TestPrune.Sql/TestPrune.Sql.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace src/TestPrune.Trace/TestPrune.Trace.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Recorder src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Cli src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj
 dotnet tool run fssemantictagger release --only TestPrune.SqlHydra
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.SqlHydra src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj
 """
@@ -225,9 +231,12 @@ dotnet tool run fssemantictagger alpha --only TestPrune.Analyzers,TestPrune.Core
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Analyzers src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Core src/TestPrune.Core/TestPrune.Core.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune src/TestPrune/TestPrune.fsproj
-dotnet tool run fssemantictagger alpha --only TestPrune.Falco,TestPrune.Sql
+dotnet tool run fssemantictagger alpha --only TestPrune.Falco,TestPrune.Sql,TestPrune.Trace
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Falco src/TestPrune.Falco/TestPrune.Falco.fsproj
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Sql src/TestPrune.Sql/TestPrune.Sql.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace src/TestPrune.Trace/TestPrune.Trace.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Recorder src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Cli src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj
 dotnet tool run fssemantictagger alpha --only TestPrune.SqlHydra
 dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.SqlHydra src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj
 """

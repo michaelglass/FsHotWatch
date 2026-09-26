@@ -94,3 +94,45 @@ let ``SQL packages are enrolled in every release authority`` () =
     let readme = read root "README.md"
     test <@ readme.Contains("[`TestPrune.Sql`](https://www.nuget.org/packages/TestPrune.Sql)") @>
     test <@ readme.Contains("[`TestPrune.SqlHydra`](https://www.nuget.org/packages/TestPrune.SqlHydra)") @>
+
+[<Fact>]
+let ``trace packages release together under one tag in every release authority`` () =
+    let root = repoRoot ()
+    let trace = "src/TestPrune.Trace/TestPrune.Trace.fsproj"
+    let recorder = "src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj"
+    let cli = "src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj"
+
+    test <@ configuredPackages root |> Set.contains ("TestPrune.Trace", trace, "trace-v") @>
+
+    // The weaver emits calls to recorder methods by name: the recorder and the CLI share the
+    // tooling's tag rather than releasing on their own.
+    let shared =
+        use document = JsonDocument.Parse(read root "semantic-tagger.json")
+
+        document.RootElement.GetProperty("packages").EnumerateArray()
+        |> Seq.filter (fun package -> package.GetProperty("name").GetString() = "TestPrune.Trace")
+        |> Seq.collect (fun package -> package.GetProperty("fsProjsSharingSameTag").EnumerateArray())
+        |> Seq.map _.GetString()
+        |> Set.ofSeq
+
+    test <@ shared = set [ recorder; cli ] @>
+
+    let mise = read root "mise.toml"
+
+    for projectPath in [ trace; recorder; cli ] do
+        test <@ mise.Contains($"dotnet pack %s{projectPath} -c Release -o artifacts") @>
+
+    let releaseWorkflow = read root ".github/workflows/release.yml"
+    let releaseJob = yamlJob releaseWorkflow "release-trace"
+    let publishJob = yamlJob releaseWorkflow "publish-trace"
+    test <@ releaseWorkflow.Contains("- 'trace-v*'") @>
+    test <@ releaseJob.Contains("package-name: TestPrune.Trace") @>
+    test <@ releaseJob.Contains("tag-prefix: trace-v") @>
+    test <@ releaseJob.Contains($"fsproj-path: %s{trace}") @>
+    test <@ releaseJob.Contains($"extra-fsproj-paths: '%s{recorder},%s{cli}'") @>
+    test <@ publishJob.Contains("needs: release-trace") @>
+
+    let readme = read root "README.md"
+
+    for packageId in [ "TestPrune.Trace"; "TestPrune.Trace.Recorder"; "TestPrune.Trace.Cli" ] do
+        test <@ readme.Contains($"[`%s{packageId}`](https://www.nuget.org/packages/%s{packageId})") @>

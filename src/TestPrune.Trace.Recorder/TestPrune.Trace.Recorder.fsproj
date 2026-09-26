@@ -11,6 +11,7 @@
         <RepositoryType>git</RepositoryType>
         <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;tracing</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <Optimize>true</Optimize>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -25,6 +26,11 @@
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
             <_Parameter1>TestPrune.Trace.Tests</_Parameter1>
         </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- The three trace packages share one README. -->
+        <None Include="../TestPrune.Trace/README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
     <ItemGroup>

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- docs: ships the TestPrune.Trace README, which documents every verb, as its package README.
 - feat: `test-prune-traces` tool scaffold. It prints its usage and exits 2; the
   measurement verbs arrive with the trace store.
 - feat: `test-prune-traces census [--db <path>] [--run <runId>] [--json]`: prints each project's

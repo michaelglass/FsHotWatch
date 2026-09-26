@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- docs: the README documents the `test-prune-traces` verbs (flags, exit codes, bars and
+  caveats), what is refused or not recorded, and the first measurements on TestPrune's own
+  suite; its code blocks are compiled and kept in sync by `syncdocs`. Decision records
+  0005–0008 cover the exit-time dump, the separate store, packaging and the deferred options.
 - feat: package scaffold with the shared trace model (`TestPrune.Trace.Model`).
 - feat: `DumpReader` parses recorder dumps; a dump without its end marker is rejected as
   truncated, and `readDirectory` reports each rejected file with its reason.
