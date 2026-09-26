@@ -24,6 +24,14 @@
         "reason": "Linux floor from before the restructure (the `use` disposal null checks, since replaced by `using`). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
       }
     ],
+    "SiteProbes.fs": [
+      {
+        "line": 100.0,
+        "branch": 94.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 counts 96 branches here and measures 93 (96.9%, CI run 36228681947); lines are 100% on both platforms and macOS measures 100/100. Floor ~3pp under the Linux measurement.",
+        "platform": "linux"
+      }
+    ],
     "Weaver.fs": [
       {
         "line": 97.0,
