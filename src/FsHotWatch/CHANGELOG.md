@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- fix: a restore by a second tool no longer reads as a project change. The content
+  tracker compares `obj/project.assets.json` with its `project.restore` block removed
+  (raw bytes when it does not parse), so a rewrite that changes only restore metadata —
+  a JavaScript compiler's project cracker records its own `restoreLockProperties` — no
+  longer re-runs MSBuild evaluation and re-checks the project and its dependents. The
+  change batch logs the project inputs whose content changed by their own paths.
+
+- fix: a scan request admitted before a running scan began reading the tree is answered
+  by that scan instead of running a second full scan. `check` against a daemon still in
+  its cold scan used to queue one extra full scan per waiting client. A request admitted
+  later is still a real scan; a scan that left files unchecked, or whose project files
+  changed after its model was captured, answers nothing.
+
+- fix: a check of a file joins a running check with the same project, checker generation
+  and snapshot key instead of cancelling it and asking FCS again; a running check of a
+  different snapshot is still superseded by a newer call, and an older call gives way.
+  Cancel and join lines name both callers (`scan`, `change batch`) and whether the
+  snapshot key changed; `Checking N files after change` is logged at info with the
+  changed files that caused it.
+
+- feat: the heartbeat adds the 1-minute load average, the GC heap size and the
+  gen0/gen1/gen2 collections since the previous heartbeat. `OperationWatchdog.Watchdog`
+  takes an optional `resources` reader; `ResourceReading`, `readResources`,
+  `loadAverage` and `resourceSuffix` are new.
+
 ## 0.10.0-alpha.47 - 2026-09-25
 
 - feat: `PluginWork.resultFirst work` lets a run's result fold ahead of the dispatched

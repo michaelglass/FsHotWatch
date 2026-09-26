@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- chore: an extension refresh logs each extension's stored edge count at info, with how
+  long the refresh took.
+
 ## 0.13.0-alpha.47 - 2026-09-25
 
 - fix: a finished tests run's result no longer waits behind the file checks queued
