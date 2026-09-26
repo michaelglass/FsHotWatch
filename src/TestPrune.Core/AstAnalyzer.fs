@@ -313,6 +313,12 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
             Some(Type, fullName)
         elif entity.IsFSharpRecord then
             Some(Type, fullName)
+        elif entity.IsFSharpExceptionDeclaration then
+            // `exception Boom of int`: FCS reports both its declaration and every
+            // `raise (Boom 1)` / `| Boom c ->` use as this entity. Unclassified, it had no
+            // symbol, so a change to its fields selected none of the code that raises or
+            // matches it.
+            Some(Type, fullName)
         elif entity.IsEnum then
             Some(Type, fullName)
         elif entity.IsFSharpAbbreviation then
@@ -886,19 +892,20 @@ module internal TestHelpers =
 
 /// When a record field is used, extract the containing record type's full name.
 let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
+    let ofEntity (entity: FSharpEntity option) =
+        match entity with
+        | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
+        | _ -> None
+
     match symbol with
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
-            match mfv.DeclaringEntity with
-            | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
-            | _ -> None
+            ofEntity mfv.DeclaringEntity
         with _ ->
             None
     | :? FSharpField as f ->
         try
-            match f.DeclaringEntity with
-            | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
-            | _ -> None
+            ofEntity f.DeclaringEntity
         with _ ->
             None
     | _ -> None
@@ -1023,6 +1030,14 @@ let private walkImplDecls (tree: ParsedInput) (visitDecl: SynModuleDecl -> unit)
                 walk d
     | ParsedInput.SigFile _ -> ()
 
+/// An exception declaration's name: `exception Boom of int` declares `Boom`.
+let private exceptionName (SynExceptionDefn(exnRepr = SynExceptionDefnRepr(caseName = caseName))) =
+    let (SynUnionCase(ident = SynIdent(id, _))) = caseName
+    id.idText
+
+/// The attributes written on an exception declaration (`[<Serializable>] exception …`).
+let private exceptionAttributes (SynExceptionDefn(exnRepr = SynExceptionDefnRepr(attributes = attributes))) = attributes
+
 /// Extract a binding's name and compute its full range (from attributes through body end).
 /// Shared by module-level and type member range collection.
 let private addBindingRange
@@ -1077,36 +1092,36 @@ let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
 let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
     let results = ResizeArray()
 
+    let rec walkMember (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
+
+        // `interface I with member _.Do x = ...` nests its members in their own
+        // list rather than as `Member`s. Without this recursion `Do` gets no
+        // AST-side name, the short-name lookup against FCS's `M.Thing.Do`
+        // misses, and the implementation drops out of the graph with no
+        // diagnostic — a silent under-selection.
+        | SynMemberDefn.Interface(members = Some members) ->
+            for m in members do
+                walkMember m
+
+        // Same for `abstract member Do: int -> int`. A slot implemented in the
+        // same file gets its name from the implementation by luck; an interface
+        // declared on its own has no other name-bearing syntax, so without this
+        // every consumer's edge points at a hash-less `ExternRef` that no edit
+        // can change.
+        | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
+            results.Add(id.idText, slotRange)
+
+        // INT-WILDCARD-001:ok — local `let` bindings and implicit constructors
+        // deliberately do NOT contribute names: a local is not a symbol, and a
+        // constructor's content is covered by its declaring type's hash range.
+        | _ -> ()
+
     walkImplDecls tree (fun decl ->
         match decl with
         | SynModuleDecl.Types(typeDefns = typeDefns) ->
             for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
-                let rec walkMember (memberDefn: SynMemberDefn) =
-                    match memberDefn with
-                    | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
-
-                    // `interface I with member _.Do x = ...` nests its members in their own
-                    // list rather than as `Member`s. Without this recursion `Do` gets no
-                    // AST-side name, the short-name lookup against FCS's `M.Thing.Do`
-                    // misses, and the implementation drops out of the graph with no
-                    // diagnostic — a silent under-selection.
-                    | SynMemberDefn.Interface(members = Some members) ->
-                        for m in members do
-                            walkMember m
-
-                    // Same for `abstract member Do: int -> int`. A slot implemented in the
-                    // same file gets its name from the implementation by luck; an interface
-                    // declared on its own has no other name-bearing syntax, so without this
-                    // every consumer's edge points at a hash-less `ExternRef` that no edit
-                    // can change.
-                    | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
-                        results.Add(id.idText, slotRange)
-
-                    // INT-WILDCARD-001:ok — local `let` bindings and implicit constructors
-                    // deliberately do NOT contribute names: a local is not a symbol, and a
-                    // constructor's content is covered by its declaring type's hash range.
-                    | _ -> ()
-
                 for m in extraMembers do
                     walkMember m
 
@@ -1115,6 +1130,9 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
                     for m in members do
                         walkMember m
                 | _ -> ()
+        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) ->
+            for m in members do
+                walkMember m
         | _ -> ())
 
     results |> Seq.toList
@@ -1130,6 +1148,8 @@ let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
             for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
                 let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
                 results.Add(name, fullRange)
+        | SynModuleDecl.Exception(exnDefn = exceptionDefinition; range = fullRange) ->
+            results.Add(exceptionName exceptionDefinition, fullRange)
         | _ -> ())
 
     results |> Seq.toList
@@ -1170,6 +1190,31 @@ let private isStructAttribute (attributes: SynAttributes) =
 let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
     let results = ResizeArray()
 
+    let rec walkMember (children: ResizeArray<TypeChild>) (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Member(
+            memberDefn = SynBinding(attributes = bindingAttributes; headPat = headPat); range = memberRange) ->
+            match extractMemberName headPat with
+            | Some n ->
+                children.Add
+                    { Name = n
+                      Range = rangeWithAttributes bindingAttributes memberRange
+                      IsCase = false }
+            | None -> ()
+        | SynMemberDefn.Interface(members = Some members) ->
+            for m in members do
+                walkMember children m
+        // INT-WILDCARD-001:ok — every other member form (implicit constructor,
+        // `let`/`do` bindings, `inherit`, `val` fields, auto-properties,
+        // get/set properties, abstract slots) has no symbol hashing its whole
+        // text, so it stays in the type's header.
+        | _ -> ()
+
+    let sortedChildren (children: ResizeArray<TypeChild>) =
+        children
+        |> Seq.sortBy (fun c -> c.Range.StartLine, c.Range.StartColumn)
+        |> Seq.toList
+
     walkImplDecls tree (fun decl ->
         match decl with
         | SynModuleDecl.Types(typeDefns = typeDefns) ->
@@ -1179,26 +1224,7 @@ let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
                 members = extraMembers
                 range = fullRange) in typeDefns do
                 let children = ResizeArray<TypeChild>()
-
-                let rec walkMember (memberDefn: SynMemberDefn) =
-                    match memberDefn with
-                    | SynMemberDefn.Member(
-                        memberDefn = SynBinding(attributes = bindingAttributes; headPat = headPat); range = memberRange) ->
-                        match extractMemberName headPat with
-                        | Some n ->
-                            children.Add
-                                { Name = n
-                                  Range = rangeWithAttributes bindingAttributes memberRange
-                                  IsCase = false }
-                        | None -> ()
-                    | SynMemberDefn.Interface(members = Some members) ->
-                        for m in members do
-                            walkMember m
-                    // INT-WILDCARD-001:ok — every other member form (implicit constructor,
-                    // `let`/`do` bindings, `inherit`, `val` fields, auto-properties,
-                    // get/set properties, abstract slots) has no symbol hashing its whole
-                    // text, so it stays in the type's header.
-                    | _ -> ()
+                let walkMember = walkMember children
 
                 match typeRepr with
                 | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(unionCases = cases), _) ->
@@ -1219,10 +1245,21 @@ let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
                     { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
                       Range = rangeWithAttributes attributes fullRange
                       IsStruct = isStructAttribute attributes
-                      Children =
-                        children
-                        |> Seq.sortBy (fun c -> c.Range.StartLine, c.Range.StartColumn)
-                        |> Seq.toList }
+                      Children = sortedChildren children }
+        // An exception's header is its name and fields, like a record's; its members are
+        // children, cut out when their own symbols hash them.
+        | SynModuleDecl.Exception(
+            exnDefn = SynExceptionDefn(members = members) as exceptionDefinition; range = fullRange) ->
+            let children = ResizeArray<TypeChild>()
+
+            for m in members do
+                walkMember children m
+
+            results.Add
+                { Name = exceptionName exceptionDefinition
+                  Range = rangeWithAttributes (exceptionAttributes exceptionDefinition) fullRange
+                  IsStruct = false
+                  Children = sortedChildren children }
         | _ -> ())
 
     results |> Seq.toList
@@ -1241,6 +1278,11 @@ let private collectSignatureRanges (tree: ParsedInput) =
                 | SyntaxNode.SynTypeDefnSig(SynTypeDefnSig(
                     typeInfo = SynComponentInfo(longId = ids); range = declarationRange)) ->
                     bindings, (ids |> List.map _.idText |> String.concat ".", declarationRange) :: types
+                | SyntaxNode.SynModuleSigDecl(SynModuleSigDecl.Exception(
+                    exnSig = SynExceptionSig(exnRepr = SynExceptionDefnRepr(caseName = caseName))
+                    range = declarationRange)) ->
+                    let (SynUnionCase(ident = SynIdent(id, _))) = caseName
+                    bindings, (id.idText, declarationRange) :: types
                 | _ -> bindings, types)
             ([], [])
             tree

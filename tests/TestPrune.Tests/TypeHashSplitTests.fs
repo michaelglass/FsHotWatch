@@ -471,3 +471,79 @@ let usesBuilder () =
             selected (analyze (mk "Option.bind f x")) (analyze (mk "Option.bind f (Option.map id x)"))
 
         test <@ chosen |> Set.contains "usesBuilder" @>
+
+[<Collection("FCS-TypeHashSplit")>]
+module ``Exception declarations`` =
+
+    let private source fields memberBody =
+        $"""
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+exception Boom of code: %s{fields}
+    with
+        member this.Describe = %s{memberBody}
+
+exception Plain of string
+
+[<Fact>]
+let raises () =
+    try
+        raise (Boom 1)
+    with _ ->
+        ()
+
+[<Fact>]
+let matches () =
+    try
+        failwith "x"
+    with
+    | Boom c -> ignore c
+    | _ -> ()
+
+[<Fact>]
+let unrelated () = raise (Plain "x")
+"""
+
+    let private original = source "int" "\"boom\""
+
+    [<Fact>]
+    let ``an exception declaration is indexed as a type`` () =
+        let names =
+            (analyze original).Symbols
+            |> List.filter (fun s -> s.Kind = Type)
+            |> List.map _.FullName
+            |> Set.ofList
+
+        test <@ names |> Set.contains "M.Boom" @>
+        test <@ names |> Set.contains "M.Plain" @>
+
+    [<Fact>]
+    let ``raising or matching an exception is an edge to it`` () =
+        let edges =
+            (analyze original).Dependencies
+            |> List.map (fun d -> d.FromSymbol, d.ToSymbol)
+            |> Set.ofList
+
+        test <@ edges |> Set.contains ("M.raises", "M.Boom") @>
+        test <@ edges |> Set.contains ("M.matches", "M.Boom") @>
+
+    [<Fact>]
+    let ``changing an exception's fields changes its header`` () =
+        let changed =
+            changedBetween (analyze original) (analyze (source "int64" "\"boom\""))
+
+        test <@ changed = set [ Type, "M.Boom" ] @>
+
+    [<Fact>]
+    let ``editing an exception's member leaves its header alone`` () =
+        let changed = changedBetween (analyze original) (analyze (source "int" "\"bang\""))
+        test <@ changed = set [ Property, "M.Boom.Describe" ] @>
+
+    [<Fact>]
+    let ``changing an exception's fields selects the tests that raise or match it`` () =
+        let chosen = selected (analyze original) (analyze (source "int64" "\"boom\""))
+
+        test <@ chosen = set [ "raises"; "matches" ] @>

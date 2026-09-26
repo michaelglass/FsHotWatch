@@ -15,11 +15,17 @@ open TestPrune.Database
 open TestPrune.InMemoryStore
 open TestPrune.Ports
 
-let private signatureSource =
+/// The signature, with its exception's field type as given. The field sits on its own
+/// line, so only a hash of the whole declaration sees it.
+let private signatureWith (fieldType: string) =
     "module Library\ntype Token =\n    { Value: int }\nval calculate:\n    Token -> int\n"
+    + $"exception Failed of\n    code: %s{fieldType}\n"
+
+let private signatureSource = signatureWith "int"
 
 let private implementationSource =
     "module Library\ntype Token = { Value: int }\nlet calculate (token: Token) = token.Value + 1\n"
+    + "exception Failed of code: int\n"
 
 let private plainSource = "module Plain\nlet helper x = x * 2\n"
 
@@ -28,14 +34,14 @@ let private consumerSource =
 
 /// Analyze the four-file fixture through the real compiler and return each file's
 /// result keyed by file name, with symbol paths relative to the fixture directory.
-let private analyzeFixture () =
+let private analyzeFixtureWith (signature: string) =
     let directory =
         Path.Combine(Path.GetTempPath(), $"signature-occurrence-{Guid.NewGuid():N}")
 
     Directory.CreateDirectory directory |> ignore
 
     let sources =
-        [ "Library.fsi", signatureSource
+        [ "Library.fsi", signature
           "Library.fs", implementationSource
           "Plain.fs", plainSource
           "Consumer.fs", consumerSource ]
@@ -66,6 +72,8 @@ let private analyzeFixture () =
         |> Map.ofList
     finally
         Directory.Delete(directory, true)
+
+let private analyzeFixture () = analyzeFixtureWith signatureSource
 
 let private realSymbols (result: AnalysisResult) =
     result.Symbols |> List.filter (fun symbol -> not symbol.IsExtern)
@@ -118,6 +126,20 @@ module ``Analysis seam`` =
                 signature.Dependencies
                 |> List.exists (fun edge -> edge.FromSymbol = "Library.calculate" && edge.ToSymbol = "Library.Token")
             @>
+
+    [<Fact>]
+    let ``a signature's exception declaration is an occurrence hashed over its fields`` () =
+        let hashIn (signature: string) =
+            let result = (analyzeFixtureWith signature)["Library.fsi"]
+
+            let failed =
+                realSymbols result
+                |> List.find (fun symbol -> symbol.FullName = "Library.Failed")
+
+            test <@ failed.Kind = Type && failed.SourceFile = "Library.fsi" @>
+            failed.ContentHash
+
+        test <@ hashIn (signatureWith "int") <> hashIn (signatureWith "int64") @>
 
     [<Fact>]
     let ``files without a signature keep their ordinary graph`` () =

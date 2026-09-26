@@ -344,6 +344,12 @@ let private openConnection (dbPath: string) =
 ///          placeholder, and the edges to it. A file not re-indexed would keep edges to
 ///          that old name, which the renamed definition no longer reaches, so a change
 ///          to the type would silently not select its tests.
+/// v18    — no schema text change; a REBUILD, because the graph gained symbols and edges
+///          an unchanged file would never get. An F# `exception` declaration is now a
+///          `Type` symbol hashed over its header (name and fields; its members apart), and
+///          every `raise`/match of it is an edge to it. Before, it was not indexed at all,
+///          so a file not re-indexed would keep no edge to an exception it raises, and a
+///          change to the exception's fields would silently not select its tests.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -359,7 +365,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 17
+let SchemaVersion = 18
 
 /// The `dependencies.source_file` value that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

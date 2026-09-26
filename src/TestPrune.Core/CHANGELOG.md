@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: an F# `exception` declaration is indexed as a `Type` symbol, and raising or matching
+  it (`raise (Boom 1)`, `| Boom c ->`) is an edge to it. Before, exceptions were not indexed,
+  so a change to an exception's fields selected none of the tests that raise or match it,
+  and runtime traces reported the exception's type as unmapped code. Its hash covers its
+  header like a record's (attributes, name and fields); each member hashes apart. A
+  signature file's exception declaration is hashed over its whole declaration too.
+
+- SchemaVersion 17 -> 18: the graph gained exception symbols and edges that an unchanged
+  file would not get. An existing index is recreated on open.
+
 ## 13.2.1 - 2026-09-26
 
 - fix(cli): return not-in-a-repo exit code to main instead of Environment.Exit

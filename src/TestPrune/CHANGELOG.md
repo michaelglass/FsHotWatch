@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 17 -> 18).**
+  F# `exception` declarations are now indexed, so a change to an exception's fields
+  selects the tests that raise or match it.
+
 ## 13.2.1 - 2026-09-26
 
 - fix(cli): outside a jj/git repository, `runCommand` now returns exit code 1 to `main` instead of calling `Environment.Exit(1)`, so callers (including tests) keep their process; message and exit code are unchanged. New `runCommandFrom startDir` resolves the repo root from an explicit directory.
