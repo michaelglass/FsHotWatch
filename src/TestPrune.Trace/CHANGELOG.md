@@ -59,3 +59,9 @@
 - feat: `DumpReader.readEach` returns every dump with its file.
 - feat: `TraceStore.RunScopeKeys`; garbage collection keeps the static-init and ambient scopes of
   each project's latest recorded run.
+- feat: census (`TestPrune.Trace.Census`): reads each project's newest recorded run (or a named
+  run) back out of the trace store and measures it against the phase-1 bars: traced / executed
+  at least 0.99, and ambient / total hits under 0.001 or every ambient symbol listed for a human to
+  explain. It also reports executed tests with no test scope, tests per incomplete-reason kind, and
+  each pool scope with its symbols, inputs and linked tests. A missing database is refused, never
+  created.
