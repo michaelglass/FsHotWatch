@@ -120,6 +120,16 @@ let ``the recorder is injected as a project library the app depends on, idempote
     test <@ DepsJson.injectRecorder json "App" "0.2.0" = Error(DepsJson.SkewPrefix + "0.1.0") @>
 
 [<Fact>]
+let ``the recorder's library type says whether the app builds it or references the package`` () =
+    let injected, _ =
+        DepsJson.injectRecorder deps "App" "0.1.0" |> Result.defaultWith failwith
+
+    test <@ DepsJson.recorderLibraryType injected = Some "project" @>
+    test <@ DepsJson.recorderLibraryType (injected.Replace("\"project\"", "\"package\"")) = Some "package" @>
+    test <@ DepsJson.recorderLibraryType deps = None @>
+    test <@ DepsJson.recorderLibraryType "not json" = None @>
+
+[<Fact>]
 let ``an app with no dependencies gets one, and unreadable deps are an error`` () =
     let bare = deps.Replace("\"dependencies\": { \"FSharp.Core\": \"10.1.0\" }, ", "")
 
@@ -291,6 +301,15 @@ let ``verification that never writes a report is a failure, not a pass`` () =
         WeaverTests.deleteScratch dir
 
 // ---------------------------------------------------------------- prepare
+
+/// `deps` listing the recorder at `version` as a package reference, not a project.
+let private withRecorderPackage (deps: string) (version: string) =
+    let injected, _ =
+        DepsJson.injectRecorder deps "FxTests" version |> Result.defaultWith failwith
+
+    let root = Nodes.JsonNode.Parse injected
+    root.["libraries"].[DepsJson.RecorderName + "/" + version].["type"] <- Nodes.JsonValue.Create "package"
+    root.ToJsonString()
 
 /// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net10.0`.
 let scratchProject () =
@@ -498,11 +517,7 @@ let ``prepare refuses what it cannot shadow`` () =
                 | _ -> false
             @>
 
-        let skewed, _ =
-            DepsJson.injectRecorder goodDeps "FxTests" "9.9.9"
-            |> Result.defaultWith failwith
-
-        File.WriteAllText(depsPath, skewed)
+        File.WriteAllText(depsPath, withRecorderPackage goodDeps "9.9.9")
 
         test
             <@ prepare req = Error(RecorderVersionSkew("9.9.9", typeof<Probes>.Assembly.GetName().Version.ToString 3)) @>
@@ -521,6 +536,46 @@ let ``prepare refuses what it cannot shadow`` () =
         deleteProject projectDir
 
 [<Fact>]
+let ``an app that ships its own recorder build is refused rather than given the weaver's`` () =
+    let projectDir = scratchProject ()
+
+    try
+        let req = request projectDir
+        let debug = debugDir projectDir
+        let depsPath = Path.Combine(debug, "FxTests.deps.json")
+        let goodDeps = File.ReadAllText depsPath
+        let bundled = typeof<Probes>.Assembly.Location
+        let version = typeof<Probes>.Assembly.GetName().Version.ToString 3
+        let shipped = Path.Combine(debug, DepsJson.RecorderName + ".dll")
+        let traced = Path.Combine(projectDir, "obj", "traced")
+
+        // A project reference to the recorder: the app's own build, even at the same version.
+        let asProject, _ =
+            DepsJson.injectRecorder goodDeps "FxTests" version
+            |> Result.defaultWith failwith
+
+        File.WriteAllText(depsPath, asProject)
+        File.Copy(bundled, shipped)
+        test <@ prepare req = Error(AppShipsOwnRecorder "its deps.json lists the recorder as a project") @>
+        test <@ not (Directory.Exists traced) @>
+
+        // The package, but a recorder assembly that is not the weaver's.
+        File.WriteAllText(depsPath, withRecorderPackage goodDeps version)
+        File.Copy(Path.ChangeExtension(bundled, ".pdb"), Path.ChangeExtension(shipped, ".pdb"))
+        rebuild shipped (fun asm -> asm.MainModule.Mvid <- Guid.NewGuid())
+
+        test <@ prepare req = Error(AppShipsOwnRecorder $"%s{shipped} differs from the weaver's recorder") @>
+        test <@ not (Directory.Exists traced) @>
+
+        // The same package the weaver bundles: identical bytes, traced.
+        File.Delete shipped
+        File.Delete(Path.ChangeExtension(shipped, ".pdb"))
+        File.Copy(bundled, shipped)
+        test <@ (prepared req).Manifest.IdCount > 0 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
 let ``every refusal has a one-line description`` () =
     let all =
         [ NoBuildOutput "/b"
@@ -528,6 +583,7 @@ let ``every refusal has a one-line description`` () =
           NoApphost "/x"
           WeaveRefused(Weaver.Optimized "L")
           RecorderVersionSkew("1", "2")
+          AppShipsOwnRecorder "evidence"
           DepsJsonUnreadable "why"
           JitInvalid [ "T::m" ]
           VerifyFailed(1, "out")

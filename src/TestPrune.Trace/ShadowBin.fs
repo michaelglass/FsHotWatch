@@ -43,6 +43,10 @@ type ShadowRefusal =
     | NoApphost of path: string
     | WeaveRefused of Weaver.WeaveError
     | RecorderVersionSkew of found: string * expected: string
+    /// The app ships its own recorder build (a project reference, or a recorder assembly
+    /// that differs from the weaver's): the shadow bin would swap it for the weaver's and
+    /// the app would run against a recorder it was not built with.
+    | AppShipsOwnRecorder of evidence: string
     | DepsJsonUnreadable of reason: string
     | JitInvalid of methods: string list
     | VerifyFailed of exitCode: int * output: string
@@ -88,6 +92,8 @@ let describeRefusal =
     | NoApphost p -> $"no apphost at %s{p}"
     | WeaveRefused e -> $"weave refused: %A{e}"
     | RecorderVersionSkew(found, expected) -> $"the app references recorder %s{found}; this weaver needs %s{expected}"
+    | AppShipsOwnRecorder evidence ->
+        $"the app ships its own %s{DepsJson.RecorderName} build; tracing would replace it (%s{evidence})"
     | DepsJsonUnreadable why -> $"deps.json: %s{why}"
     | JitInvalid ms -> "woven IL failed JIT verification: " + String.concat ", " ms
     | VerifyFailed(code, out) when out.Contains "FSharp.Core" ->
@@ -170,6 +176,23 @@ let verify
     | Some report when report.Invalid.IsEmpty -> Ok report
     | Some report -> Error(JitInvalid report.Invalid)
 
+/// Why the app's own recorder build would be replaced, if it ships one: its deps.json lists
+/// the recorder as a `project` (built with the app), or `sourceDir` holds a recorder
+/// assembly that is not byte-identical to the weaver's. An app that references the same
+/// recorder package the weaver bundles ships identical bytes, and is traced.
+let private ownRecorder (sourceDir: string) (depsJson: string) =
+    let shipped = Path.Combine(sourceDir, DepsJson.RecorderName + ".dll")
+
+    if DepsJson.recorderLibraryType depsJson = Some "project" then
+        Some "its deps.json lists the recorder as a project"
+    elif
+        File.Exists shipped
+        && sha256File shipped <> sha256File typeof<Probes>.Assembly.Location
+    then
+        Some $"%s{shipped} differs from the weaver's recorder"
+    else
+        None
+
 /// A cache entry is usable only when a previous prepare finished it: woven files, a
 /// readable manifest and a verify report that found nothing invalid.
 let private tryCache (cacheDir: string) =
@@ -213,8 +236,9 @@ let private weaveKey (req: ShadowRequest) (inputs: Weaver.WeaveInput list) =
                   yield $"%s{Path.GetFileName i.Path}|%A{i.Mode}|%s{sha256File i.Path}|%s{sha256File pdb}" ]
     )
 
-/// Build (or reuse) the shadow bin for `req`: mirror `bin/Debug/<tfm>`, weave every
-/// assembly built from the repository (cached under `obj/traced/<weave key>`), inject the
+/// Build (or reuse) the shadow bin for `req`: refuse an app that ships its own recorder
+/// build (`AppShipsOwnRecorder`), mirror `bin/Debug/<tfm>`, weave every assembly built
+/// from the repository (cached under `obj/traced/<weave key>`), inject the
 /// recorder into deps.json (without its PDB, so it never enters the app's coverage),
 /// JIT-verify a new weave and write the stamp.
 let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
@@ -241,104 +265,107 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
 
         HardLink.mirror sourceDir shadowDir |> ignore
 
+        let originalDeps =
+            File.ReadAllText(Path.Combine(sourceDir, req.AssemblyName + ".deps.json"))
+
         if not (File.Exists apphost) then
             Error(NoApphost apphost)
         else
-            let rootPrefix =
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath req.RepoRoot)
-                + string Path.DirectorySeparatorChar
+            match ownRecorder sourceDir originalDeps with
+            | Some evidence -> Error(AppShipsOwnRecorder evidence)
+            | None ->
+                let rootPrefix =
+                    Path.TrimEndingDirectorySeparator(Path.GetFullPath req.RepoRoot)
+                    + string Path.DirectorySeparatorChar
 
-            let inputs: Weaver.WeaveInput list =
-                Directory.GetFiles(sourceDir, "*.dll")
-                |> Array.filter (fun f ->
-                    Path.GetFileNameWithoutExtension f <> DepsJson.RecorderName
-                    && builtFromRepo rootPrefix f)
-                |> Array.sort
-                |> Array.map (fun f ->
-                    { Weaver.WeaveInput.Path = f
-                      Weaver.WeaveInput.Mode =
-                        if Path.GetFileNameWithoutExtension f = req.AssemblyName then
-                            req.WeaveTests
-                        else
-                            Full })
-                |> List.ofArray
+                let inputs: Weaver.WeaveInput list =
+                    Directory.GetFiles(sourceDir, "*.dll")
+                    |> Array.filter (fun f ->
+                        Path.GetFileNameWithoutExtension f <> DepsJson.RecorderName
+                        && builtFromRepo rootPrefix f)
+                    |> Array.sort
+                    |> Array.map (fun f ->
+                        { Weaver.WeaveInput.Path = f
+                          Weaver.WeaveInput.Mode =
+                            if Path.GetFileNameWithoutExtension f = req.AssemblyName then
+                                req.WeaveTests
+                            else
+                                Full })
+                    |> List.ofArray
 
-            let key = weaveKey req inputs
-            let tracedDir = Path.Combine(req.ProjectDir, "obj", "traced")
-            let cacheDir = Path.Combine(tracedDir, key)
-            let manifestDir = Path.Combine(cacheDir, "manifest")
-            let recorderVersion = typeof<Probes>.Assembly.GetName().Version.ToString 3
+                let key = weaveKey req inputs
+                let tracedDir = Path.Combine(req.ProjectDir, "obj", "traced")
+                let cacheDir = Path.Combine(tracedDir, key)
+                let manifestDir = Path.Combine(cacheDir, "manifest")
+                let recorderVersion = typeof<Probes>.Assembly.GetName().Version.ToString 3
 
-            let originalDeps =
-                File.ReadAllText(Path.Combine(sourceDir, req.AssemblyName + ".deps.json"))
+                let woven =
+                    match tryCache cacheDir with
+                    | Some(outputs, manifest, report) -> Ok(outputs, manifest, Choice1Of2 report)
+                    | None ->
+                        match Weaver.weave req.Passes inputs (Path.Combine(cacheDir, "woven")) with
+                        | Error e -> Error(WeaveRefused e)
+                        | Ok r ->
+                            Manifest.write manifestDir r.Manifest
+                            Ok(r.Outputs, r.Manifest, Choice2Of2 r.Stats.Touched)
 
-            let woven =
-                match tryCache cacheDir with
-                | Some(outputs, manifest, report) -> Ok(outputs, manifest, Choice1Of2 report)
-                | None ->
-                    match Weaver.weave req.Passes inputs (Path.Combine(cacheDir, "woven")) with
-                    | Error e -> Error(WeaveRefused e)
-                    | Ok r ->
-                        Manifest.write manifestDir r.Manifest
-                        Ok(r.Outputs, r.Manifest, Choice2Of2 r.Stats.Touched)
+                let injected =
+                    match DepsJson.injectRecorder originalDeps req.AssemblyName recorderVersion with
+                    | Error e when e.StartsWith DepsJson.SkewPrefix ->
+                        Error(RecorderVersionSkew(e.Substring DepsJson.SkewPrefix.Length, recorderVersion))
+                    | Error e -> Error(DepsJsonUnreadable e)
+                    | Ok(json, _) -> Ok json
 
-            let injected =
-                match DepsJson.injectRecorder originalDeps req.AssemblyName recorderVersion with
-                | Error e when e.StartsWith DepsJson.SkewPrefix ->
-                    Error(RecorderVersionSkew(e.Substring DepsJson.SkewPrefix.Length, recorderVersion))
-                | Error e -> Error(DepsJsonUnreadable e)
-                | Ok(json, _) -> Ok json
+                match woven, injected with
+                | Error e, _
+                | _, Error e -> Error e
+                | Ok(outputs, manifest, verdict), Ok deps ->
+                    for dll in outputs do
+                        copyOver shadowDir dll
+                        copyOver shadowDir (Path.ChangeExtension(dll, ".pdb"))
 
-            match woven, injected with
-            | Error e, _
-            | _, Error e -> Error e
-            | Ok(outputs, manifest, verdict), Ok deps ->
-                for dll in outputs do
-                    copyOver shadowDir dll
-                    copyOver shadowDir (Path.ChangeExtension(dll, ".pdb"))
+                    HardLink.replaceWith (Path.Combine(shadowDir, req.AssemblyName + ".deps.json")) (fun tmp ->
+                        File.WriteAllText(tmp, deps))
 
-                HardLink.replaceWith (Path.Combine(shadowDir, req.AssemblyName + ".deps.json")) (fun tmp ->
-                    File.WriteAllText(tmp, deps))
+                    copyOver shadowDir typeof<Probes>.Assembly.Location
+                    // Never the recorder's PDB: MS CodeCoverage skips symbol-less modules, so the
+                    // recorder stays out of the app's coverage report.
+                    File.Delete(Path.Combine(shadowDir, DepsJson.RecorderName + ".pdb"))
 
-                copyOver shadowDir typeof<Probes>.Assembly.Location
-                // Never the recorder's PDB: MS CodeCoverage skips symbol-less modules, so the
-                // recorder stays out of the app's coverage report.
-                File.Delete(Path.Combine(shadowDir, DepsJson.RecorderName + ".pdb"))
-
-                let verified =
-                    match verdict with
-                    | Choice1Of2 report -> Ok report
-                    | Choice2Of2 touched ->
-                        verify shadowDir apphost touched (Path.Combine(cacheDir, "verify.json")) req.VerifyTimeout
-
-                match verified with
-                | Error e -> Error e
-                | Ok report ->
-                    let reused =
+                    let verified =
                         match verdict with
-                        | Choice1Of2 _ -> true
-                        | Choice2Of2 _ ->
-                            File.WriteAllText(Path.Combine(cacheDir, "done"), key)
-                            false
+                        | Choice1Of2 report -> Ok report
+                        | Choice2Of2 touched ->
+                            verify shadowDir apphost touched (Path.Combine(cacheDir, "verify.json")) req.VerifyTimeout
 
-                    let stamp: ShadowStamp =
-                        { weaveKey = key
-                          manifestDir = manifestDir
-                          ids = manifest.IdCount
-                          verified = report.Prepared
-                          invalid = report.Invalid.Length }
+                    match verified with
+                    | Error e -> Error e
+                    | Ok report ->
+                        let reused =
+                            match verdict with
+                            | Choice1Of2 _ -> true
+                            | Choice2Of2 _ ->
+                                File.WriteAllText(Path.Combine(cacheDir, "done"), key)
+                                false
 
-                    HardLink.replaceWith (Path.Combine(shadowDir, StampName)) (fun tmp ->
-                        File.WriteAllText(tmp, JsonSerializer.Serialize stamp))
+                        let stamp: ShadowStamp =
+                            { weaveKey = key
+                              manifestDir = manifestDir
+                              ids = manifest.IdCount
+                              verified = report.Prepared
+                              invalid = report.Invalid.Length }
 
-                    evict tracedDir key
+                        HardLink.replaceWith (Path.Combine(shadowDir, StampName)) (fun tmp ->
+                            File.WriteAllText(tmp, JsonSerializer.Serialize stamp))
 
-                    Ok
-                        { Dir = shadowDir
-                          Apphost = apphost
-                          ManifestDir = manifestDir
-                          Manifest = manifest
-                          WeaveKey = key
-                          Reused = reused
-                          OriginalDepsJsonSha256 = sha256Text originalDeps
-                          Verify = report }
+                        evict tracedDir key
+
+                        Ok
+                            { Dir = shadowDir
+                              Apphost = apphost
+                              ManifestDir = manifestDir
+                              Manifest = manifest
+                              WeaveKey = key
+                              Reused = reused
+                              OriginalDepsJsonSha256 = sha256Text originalDeps
+                              Verify = report }

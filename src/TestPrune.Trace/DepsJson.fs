@@ -28,6 +28,17 @@ let private targetEntry () =
     o.["runtime"] <- runtime
     o
 
+/// The `type` of the recorder's library entry (`project` for an app that builds the
+/// recorder itself, `package` for one that references it from a feed); `None` when the
+/// app does not list the recorder or the JSON is unreadable (`injectRecorder` reports that).
+let recorderLibraryType (depsJson: string) : string option =
+    try
+        JsonNode.Parse(depsJson).["libraries"].AsObject()
+        |> Seq.tryFind (fun kv -> kv.Key.StartsWith(RecorderName + "/"))
+        |> Option.map (fun kv -> kv.Value.["type"].GetValue<string>())
+    with _ ->
+        None
+
 /// Add the recorder as a `project` library the app depends on. Returns (json, changed):
 /// unchanged when it is already listed at `recorderVersion`. An app listing the recorder
 /// at a DIFFERENT version is refused (`SkewPrefix` + that version): the woven IL

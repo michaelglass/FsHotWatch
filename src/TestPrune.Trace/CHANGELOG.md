@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `ShadowBin.prepare` refuses an app that ships its own recorder build
+  (`AppShipsOwnRecorder`: "the app ships its own TestPrune.Trace.Recorder build; tracing would
+  replace it"), before weaving anything: its deps.json lists the recorder as a project, or its
+  build output holds a recorder assembly that differs from the weaver's. The shadow bin used to
+  swap in the weaver's recorder silently, so the recorder's own suite ran against a different,
+  live recorder and failed. `DepsJson.recorderLibraryType` reads the listed library's type.
 - fix: the isolation audit selects every sampled test alone. The display name is escaped for
   xUnit's `--filter-display-name` (`Audit.displayFilter`), which rejects a `*` anywhere but at
   either end, so a theory row such as `f(body: "let f (p: int * string) = p")` used to select

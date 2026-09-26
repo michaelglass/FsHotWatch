@@ -243,6 +243,11 @@ A refused project runs untraced, exactly as it would without TestPrune.Trace.
   build output has a portable PDB naming a source file under the repository root, most
   often because `ContinuousIntegrationBuild`, `DeterministicSourcePaths` or a `PathMap`
   rewrote the PDB paths to `/_/`.
+- **An app that ships its own recorder build is refused.** When the app's deps.json
+  references `TestPrune.Trace.Recorder` as a project, or its build output holds a recorder
+  assembly that differs from the weaver's, tracing would swap in a different recorder than
+  the one the app was built and tested with. An app that references the same recorder
+  package the weaver bundles is traced.
 - **A test app without FSharp.Core fails verification.** The recorder is written in F# and
   loads FSharp.Core 8.0 or later from the app, so a C#-only test app cannot load it. The
   verification error says so.
