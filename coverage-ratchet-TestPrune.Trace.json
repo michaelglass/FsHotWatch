@@ -32,6 +32,30 @@
         "platform": "linux"
       }
     ],
+    "Program.fs": [
+      {
+        "line": 100.0,
+        "branch": 92.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 34/36 (94.4%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
+    "TraceIngest.fs": [
+      {
+        "line": 100.0,
+        "branch": 96.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 62/63 (98.4%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
+    "TraceSession.fs": [
+      {
+        "line": 100.0,
+        "branch": 80.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 5/6 (83.3%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
     "Weaver.fs": [
       {
         "line": 97.0,
