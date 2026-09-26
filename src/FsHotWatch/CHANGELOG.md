@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.53 - 2026-09-26
+
 - feat: `ProcessHelper.spawnCounts` (children forked directly and started through a
   spawn helper, cumulative), a `spawn via=… cmd=… pid=…` log line per spawn, and the
   same counts in scan metrics. Breaking: `ScanMetrics.ScanSample` has new fields

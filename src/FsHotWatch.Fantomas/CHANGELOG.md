@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.28 - 2026-09-26
+
 - perf: the format preprocessor no longer hands the pinned Fantomas bytes it has already
   left unchanged under the same version and `.editorconfig` files. `check` forces a scan
   of the whole tree, so every warm check re-ran the formatter over every registered file.

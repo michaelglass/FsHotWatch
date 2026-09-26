@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.70 - 2026-09-26
+
 - feat: `FSHW_SPAWN_HELPER=1` makes a starting daemon launch a spawn helper
   (`fshw __spawn-helper`, a hidden mode) before it builds anything, and start hook steps
   through it, so the grown daemon does not fork for them. Off by default. A helper
