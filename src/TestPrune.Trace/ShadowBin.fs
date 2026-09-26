@@ -67,6 +67,15 @@ type Shadow =
 [<Literal>]
 let StampName = ".testprune-trace.json"
 
+/// The stamp file's JSON shape. Field names are the serialized names; the type is public
+/// because System.Text.Json serializes a non-public F# record as `{}`.
+type ShadowStamp =
+    { weaveKey: string
+      manifestDir: string
+      ids: int
+      verified: int
+      invalid: int }
+
 /// How many weave keys `obj/traced` keeps.
 [<Literal>]
 let KeptWeaveKeys = 3
@@ -307,16 +316,15 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
                             File.WriteAllText(Path.Combine(cacheDir, "done"), key)
                             false
 
+                    let stamp: ShadowStamp =
+                        { weaveKey = key
+                          manifestDir = manifestDir
+                          ids = manifest.IdCount
+                          verified = report.Prepared
+                          invalid = report.Invalid.Length }
+
                     HardLink.replaceWith (Path.Combine(shadowDir, StampName)) (fun tmp ->
-                        File.WriteAllText(
-                            tmp,
-                            JsonSerializer.Serialize
-                                {| weaveKey = key
-                                   manifestDir = manifestDir
-                                   ids = manifest.IdCount
-                                   verified = report.Prepared
-                                   invalid = report.Invalid.Length |}
-                        ))
+                        File.WriteAllText(tmp, JsonSerializer.Serialize stamp))
 
                     evict tracedDir key
 
