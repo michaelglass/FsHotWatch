@@ -92,6 +92,9 @@ All notable changes to FsHotWatch packages are documented here.
   A helper that stops answering leaves its children recorded as leaks, never as
   reaped. When the daemon's end of the pipe closes, the helper kills every child it
   still holds.
+- Each helper child's output is delivered from a queue of its own, so a sink that
+  blocks holds up only that child. A child's streams count as stopped only after all of
+  its earlier output has been delivered.
 - `ProcessRegistry` owns children through `IOwnedChild`, so it can hold a child that
   has no local `Process`. `Registry.Snapshot` still lists local `Process` handles.
   `LivePids` lists every owned child.

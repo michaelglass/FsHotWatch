@@ -328,12 +328,24 @@ let internal serve (input: Stream) (output: Stream) : unit =
 // The daemon's side.
 // ---------------------------------------------------------------------------
 
+/// One item of a child's output stream, delivered in the order it arrived.
+[<RequireQualifiedAccess>]
+type private Delivery =
+    | Chunk of text: string
+    /// One of the child's two streams stopped.
+    | Stopped of reachedEof: bool
+
 /// A child the helper started for us. It is its own registry key and owned view, so
 /// `ProcessRegistry` scopes admit, kill and untrack it like a local `Process`.
 ///
-/// Output chunks that arrive before a reader attaches are held and replayed on
-/// `Attach`, in order. Events for one child all arrive on the connection's single
-/// reader thread, so the replay and the live chunks cannot interleave.
+/// Output is queued per child and delivered to the attached reader by one run at a
+/// time on a `DeadlineWorkers` thread, never on the connection's reader thread. A
+/// reader that blocks (a sink writing to a stalled disk) therefore holds up only its
+/// own child. The queue is unbounded: the in-memory capture holds the same text anyway,
+/// and a bound would have to either block the reader thread or drop output. A stream's
+/// stop is queued behind its output, so `Attach`'s task completes only after every
+/// chunk before it has been delivered. Output that arrives before a reader attaches
+/// waits in the queue.
 type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, release: int64 -> unit) =
     let gate = obj ()
 
@@ -351,8 +363,61 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     let mutable abandoned = false
     let mutable streamsStopped = 0
     let mutable bothReachedEof = true
-    let held = ResizeArray<string>()
+    let pending = Collections.Generic.Queue<Delivery>()
+    // True while a delivery run owns the queue.
+    let mutable delivering = false
     let mutable reader: (string -> unit) option = None
+
+    let stopped (reachedEof: bool) =
+        let both =
+            lock gate (fun () ->
+                streamsStopped <- streamsStopped + 1
+                bothReachedEof <- bothReachedEof && reachedEof
+                streamsStopped = 2)
+
+        if both then
+            drained.TrySetResult bothReachedEof |> ignore
+
+    // A reader that throws loses that chunk only; the run goes on to the next one.
+    let rec deliverAll (read: string -> unit) =
+        let next =
+            lock gate (fun () ->
+                if pending.Count = 0 then
+                    delivering <- false
+                    None
+                else
+                    Some(pending.Dequeue()))
+
+        match next with
+        | Some(Delivery.Chunk text) ->
+            attempt (fun () -> read text) |> ignore
+            deliverAll read
+        | Some(Delivery.Stopped reachedEof) ->
+            stopped reachedEof
+            deliverAll read
+        | None -> ()
+
+    // Called under `gate`: the reader a new delivery run must start with, when one is
+    // attached, something is queued and no run is going.
+    let claimRun () =
+        match reader with
+        | Some read when not delivering && pending.Count > 0 ->
+            delivering <- true
+            Some read
+        | _ -> None
+
+    let startRun (read: (string -> unit) option) =
+        read
+        |> Option.iter (fun read ->
+            DeadlineWorkers.shared.Post(fun () ->
+                deliverAll read
+                ignore))
+
+    let enqueue (item: Delivery) =
+        lock gate (fun () ->
+            pending.Enqueue item
+            claimRun ())
+        |> startRun
 
     member _.Id = id
 
@@ -381,21 +446,9 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     member internal _.OnStartFailed(failure: HelperFailure) =
         started.TrySetException(HelperFailure.toException failure) |> ignore
 
-    member internal _.OnOutput(text: string) =
-        lock gate (fun () ->
-            match reader with
-            | Some read -> read text
-            | None -> held.Add text)
+    member internal _.OnOutput(text: string) = enqueue (Delivery.Chunk text)
 
-    member internal _.OnEof(reachedEof: bool) =
-        let both =
-            lock gate (fun () ->
-                streamsStopped <- streamsStopped + 1
-                bothReachedEof <- bothReachedEof && reachedEof
-                streamsStopped = 2)
-
-        if both then
-            drained.TrySetResult bothReachedEof |> ignore
+    member internal _.OnEof(reachedEof: bool) = enqueue (Delivery.Stopped reachedEof)
 
     member internal _.OnExited(code: int) =
         lock gate (fun () -> exitCode <- Some code)
@@ -409,14 +462,13 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
         settled.Set()
 
     /// Deliver output to `read`, starting with anything already received. The task
-    /// completes once both streams have stopped: `true` only if both reached their end.
+    /// completes once both streams have stopped and everything before the stops has
+    /// been delivered: `true` only if both reached their end.
     member _.Attach(read: string -> unit) : Task<bool> =
         lock gate (fun () ->
-            for text in held do
-                read text
-
-            held.Clear()
-            reader <- Some read)
+            reader <- Some read
+            claimRun ())
+        |> startRun
 
         drained.Task
 

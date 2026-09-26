@@ -407,6 +407,53 @@ let ``output received before a reader attaches is replayed in order, and a broke
     Assert.Equal<string list>([ "first "; "second" ], List.ofSeq seen)
 
 [<Fact(Timeout = 30000)>]
+let ``a child whose reader blocks does not hold up another child's output`` () =
+    use helper = new ScriptedHelper()
+
+    let started (pid: int) =
+        let starting =
+            Task.Run(fun () -> helper.Connection.Start("/bin/sh", "", "/", [], StartBudget))
+
+        let id = startId (helper.NextRequest())
+        helper.Send(Event.Started(id, pid))
+        id, starting.Result
+
+    let a, childA = started 1
+    let b, childB = started 2
+    use release = new ManualResetEventSlim(false)
+
+    let blocked =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let seenA = Collections.Concurrent.ConcurrentQueue<string>()
+
+    let drainedA =
+        childA.Attach(fun text ->
+            seenA.Enqueue text
+            blocked.TrySetResult() |> ignore
+            release.Wait())
+
+    let arrivedB =
+        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    childB.Attach(fun text -> arrivedB.TrySetResult text |> ignore) |> ignore
+
+    helper.Send(Event.Output(a, "one"))
+    blocked.Task.Wait()
+    // Queued behind the blocked delivery of "one".
+    helper.Send(Event.Output(a, "two"))
+    helper.Send(Event.Eof(a, true))
+    helper.Send(Event.Eof(a, true))
+    helper.Send(Event.Output(b, "other"))
+
+    Assert.Equal("other", arrivedB.Task.Result)
+    Assert.False(drainedA.IsCompleted, "a child's streams stop only after its queued output is delivered")
+
+    release.Set()
+    Assert.True(drainedA.Result)
+    Assert.Equal<string list>([ "one"; "two" ], List.ofSeq seenA)
+
+[<Fact(Timeout = 30000)>]
 let ``events for children the connection does not hold are ignored`` () =
     use helper = new ScriptedHelper()
 

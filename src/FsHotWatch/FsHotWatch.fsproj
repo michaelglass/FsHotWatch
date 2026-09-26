@@ -74,8 +74,8 @@
     <Compile Include="PathFilter.fs" />
     <Compile Include="SafeWalk.fs" />
     <Compile Include="ProcessRegistry.fs" />
-    <Compile Include="SpawnHelper.fs" />
     <Compile Include="DeadlineWorkers.fs" />
+    <Compile Include="SpawnHelper.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="ContentHash.fs" />
