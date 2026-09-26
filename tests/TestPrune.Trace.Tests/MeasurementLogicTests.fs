@@ -386,3 +386,30 @@ let ``rusage decodes user plus system time and max rss, in bytes on either platf
 [<Fact>]
 let ``a failing getrusage raises`` () =
     raises<InvalidOperationException> <@ Rusage.childrenWith (fun _ -> -1) true @>
+
+[<Fact>]
+let ``overhead refuses Windows before preparing or reading anything`` () =
+    let req: TraceSession.PrepareRequest =
+        { RepoRoot = "/nonexistent"
+          ProjectDir = "/nonexistent/P"
+          AssemblyName = "P"
+          TestProject = "P"
+          WeaveTests = SitesOnly
+          RunDir = "/nonexistent/run"
+          VerifyTimeout = TimeSpan.FromMinutes 1.0 }
+
+    let read () : struct (TimeSpan * int64) = failwith "read on Windows"
+
+    test
+        <@
+            Overhead.runWith true read req [] 1 (TimeSpan.FromMinutes 1.0) = Error
+                "cannot measure CPU overhead: getrusage is macOS/Linux only"
+        @>
+
+[<Fact>]
+let ``an exception reading getrusage is the cannot-measure error`` () =
+    let read () : struct (TimeSpan * int64) =
+        raise (EntryPointNotFoundException "no getrusage in libc")
+
+    test <@ Overhead.readCpu read = Error "cannot measure CPU overhead: getrusage failed: no getrusage in libc" @>
+    test <@ Overhead.readCpu (fun () -> struct (ms 5.0, 7L)) = Ok(struct (ms 5.0, 7L)) @>

@@ -45,6 +45,36 @@ let ``getrusage sees a child's CPU`` () =
     test <@ after > before && rss > 0L @>
 
 [<Fact>]
+let ``a getrusage that fails before a launch launches nothing, and after one is an error too`` () =
+    let marker =
+        Path.Combine(Path.GetTempPath(), "tp-measure-" + Guid.NewGuid().ToString "N")
+
+    let launch read =
+        Overhead.measure read false "/bin/sh" [ "-c"; $"touch '%s{marker}'" ] [] "/" timeout
+
+    let failing () : struct (TimeSpan * int64) = invalidOp "getrusage failed (errno 38)"
+
+    let expected: Result<Overhead.Sample, string> =
+        Error "cannot measure CPU overhead: getrusage failed: getrusage failed (errno 38)"
+
+    test <@ launch failing = expected && not (File.Exists marker) @>
+
+    let reads = ref 0
+
+    let secondFails () =
+        reads.Value <- reads.Value + 1
+
+        if reads.Value = 1 then
+            struct (TimeSpan.Zero, 0L)
+        else
+            failing ()
+
+    try
+        test <@ launch secondFails = expected && File.Exists marker @>
+    finally
+        File.Delete marker
+
+[<Fact>]
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok

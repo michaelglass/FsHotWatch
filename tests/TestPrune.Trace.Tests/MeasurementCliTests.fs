@@ -193,6 +193,24 @@ let ``a measurement that cannot run exits 2 with its reason`` () =
     test <@ o.Exit = 2 && o.Stdout = "" && o.Stderr = "no build output under x\n" @>
 
 [<Fact>]
+let ``overhead on Windows exits 2 naming why`` () =
+    let m, _ = passing ()
+
+    let windows =
+        { m with
+            Overhead = Overhead.runWith true (fun () -> failwith "read on Windows") }
+
+    let o =
+        Program.runWith windows cwd [ "overhead"; "--project-dir"; "P"; "--assembly"; "P" ]
+
+    test
+        <@
+            o.Exit = 2
+            && o.Stdout = ""
+            && o.Stderr = "cannot measure CPU overhead: getrusage is macOS/Linux only\n"
+        @>
+
+[<Fact>]
 let ``usage errors exit 2 with the verb's usage`` () =
     let m, calls = passing ()
     let err args = Program.runWith m cwd args

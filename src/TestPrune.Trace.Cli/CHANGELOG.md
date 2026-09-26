@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `overhead` exits 2 with "cannot measure CPU overhead: getrusage is macOS/Linux only" on
+  Windows, before preparing or launching anything, instead of crashing on the missing `getrusage`;
+  any other failure reading `getrusage` is that exit-2 error too.
+
 ## 0.1.0 - 2026-09-26
 
 - docs: ships the TestPrune.Trace README, which documents every verb, as its package README.
