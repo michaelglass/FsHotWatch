@@ -4133,3 +4133,45 @@ let ``projectChangeLine names the write, and says when it was a restore`` () =
 [<Fact(Timeout = 5000)>]
 let ``projectChangeLine says nothing when no project input changed`` () =
     test <@ Daemon.projectChangeLine "/repo" [] = None @>
+
+/// A scan request admitted while another scan has not yet read the tree is answered by
+/// that scan: every file it checks is read after the request arrived. `fshw check`
+/// against a daemon still in its cold scan sends exactly that request, and running it
+/// as a second full scan re-checked every registered file for nothing.
+[<Fact(Timeout = 30000)>]
+let ``a scan requested before the running scan read the tree is answered by it`` () =
+    withTempDir "scan-coalesce" (fun tmpDir ->
+        let sourceDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(sourceDir) |> ignore
+        let projectPath = Path.Combine(sourceDir, "Probe.fsproj")
+        File.WriteAllText(projectPath, "<Project />")
+        let loaded = minimalLoadedProject projectPath
+        let loader = SequencedWorkspaceLoader([ [ loaded ] ])
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects ->
+                    projects
+                    |> List.map (fun project -> makeProjectOptions project.ProjectFileName [] []))
+
+        let first = Async.StartAsTask(daemon.ScanAll())
+        test <@ loader.Entered(0).Wait(TimeSpan.FromSeconds 10.0) @>
+
+        // Admitted while the first scan is still discovering — before it read any file.
+        let second =
+            daemon.AdmitScan().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+        loader.Resume(0)
+        first.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+        second.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+        test <@ daemon.GetScanGeneration() = 1L @>
+
+        // Control: a request admitted AFTER a scan read the tree is a real scan.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ daemon.GetScanGeneration() = 2L @>)

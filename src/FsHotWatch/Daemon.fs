@@ -1166,13 +1166,20 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
 /// The scan's published state. Discovery and checks never run in its writer.
 type private ScanAgentState =
-    { ScanState: ScanState
-      Generation: int64
-      LastFingerprint: Set<string * int64> }
+    {
+        ScanState: ScanState
+        Generation: int64
+        LastFingerprint: Set<string * int64>
+        /// The last completed scan that checked every file it dispatched: the moment it
+        /// began reading the tree (`Stopwatch` ticks) and its completed state. A request
+        /// admitted before that moment is answered by that scan — see `scanAnswers`.
+        Covered: (int64 * ScanState) option
+    }
 
 [<NoComparison; NoEquality>]
 type private ScanRequest =
-    | RunScan
+    /// A scan request and the moment it was admitted (`Stopwatch` ticks).
+    | RunScan of admittedAt: int64
     /// Test seam: replace the published scan state.
     | SetScanState of ScanState
 
@@ -1185,7 +1192,10 @@ type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanR
 /// receipt once the admission is published.
 let private admitScan (ScanAgent(owner, signal)) ct : Async<Task<unit>> =
     async {
-        match! owner.SubmitAsync(RunScan, ct) |> Async.AwaitTask with
+        match!
+            owner.SubmitAsync(RunScan(Diagnostics.Stopwatch.GetTimestamp()), ct)
+            |> Async.AwaitTask
+        with
         | Ok receipt ->
             signal.ObserveScan(receipt, fun () -> owner.State.Generation)
             return receipt
@@ -3019,6 +3029,20 @@ let internal runChecksWithRetry
 let internal partitionVanished (exists: string -> bool) (registered: string list) : string list * string list =
     registered |> List.partition exists
 
+/// Whether a scan request admitted at `admittedAt` is already answered by the last
+/// completed scan, `covered` = the moment that scan began reading the tree.
+///
+/// A scan request asks for every registered file to be checked as it is on disk NOW.
+/// A scan that began reading after the request was admitted did exactly that, so a
+/// second full pass would re-ask FCS the same questions about the same bytes. `fshw
+/// check` against a daemon still in its cold scan sends exactly such a request, and
+/// each one used to cost another full scan. A request admitted after that moment is
+/// a real scan: files read before it may have changed unseen.
+let internal scanAnswers (covered: (int64 * ScanState) option) (admittedAt: int64) : bool =
+    match covered with
+    | Some(readFrom, _) -> admittedAt < readFrom
+    | None -> false
+
 /// Which kind of scan this is, for the activity lease and the metrics record.
 /// Generation 0 means nothing has completed yet, so this is the daemon's cold
 /// scan — the phase the idle exit used to terminate.
@@ -3093,6 +3117,8 @@ let private performScan
             // when no project files have changed.
             let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
             let mutable lastFingerprint = fingerprintMemo.Value
+            // See `scanAnswers`; set once this attempt starts reading the tree.
+            let mutable readFrom: int64 option = None
 
             if currentFingerprint <> lastFingerprint then
                 let! completed, _ =
@@ -3156,6 +3182,19 @@ let private performScan
             // `.fsproj` byte-identical — a glob-matched file — never reaches it.
             // Checking existence here is the backstop that does not depend on how the
             // rename happened to touch the project files.
+            // The moment this scan starts reading the tree for its checks, taken
+            // BEFORE the existence probe and every source read. Kept only when the
+            // project files still match the fingerprint the model was captured under:
+            // discovery read them before this moment, so a changed fingerprint means a
+            // request admitted in between is NOT answered by this scan.
+            let readStartedAt = Diagnostics.Stopwatch.GetTimestamp()
+
+            readFrom <-
+                if fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns = lastFingerprint then
+                    Some readStartedAt
+                else
+                    None
+
             let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
             if not vanished.IsEmpty then
@@ -3408,7 +3447,11 @@ let private performScan
             return
                 { ScanState = finalScanState
                   Generation = newGeneration
-                  LastFingerprint = lastFingerprint }
+                  LastFingerprint = lastFingerprint
+                  Covered =
+                    match readFrom with
+                    | Some started when uncheckedCount = 0 -> Some(started, finalScanState)
+                    | _ -> None }
         }
 
     // A rediscovery that lands mid-scan is a NORMAL event — on a cold `check` the
@@ -3890,11 +3933,12 @@ module Daemon =
                     "scan",
                     { ScanState = ScanIdle
                       Generation = 0L
-                      LastFingerprint = Set.empty },
+                      LastFingerprint = Set.empty
+                      Covered = None },
                     Ipc.ambientRpcDeadline (),
                     (fun state request ->
                         match request with
-                        | RunScan ->
+                        | RunScan _ ->
                             { state with
                                 ScanState = Scanning(0, 0, DateTime.UtcNow) }
                         | SetScanState _ -> state),
@@ -3905,7 +3949,17 @@ module Daemon =
                         async {
                             match request with
                             | SetScanState value -> return { state with ScanState = value }
-                            | RunScan ->
+                            | RunScan admittedAt when scanAnswers state.Covered admittedAt ->
+                                let _, completedState = state.Covered.Value
+
+                                Logging.info
+                                    "scan"
+                                    "Scan request answered by the scan that read the tree after it was admitted — not scanning again"
+
+                                return
+                                    { state with
+                                        ScanState = completedState }
+                            | RunScan _ ->
                                 // Failure policy lives in `runDaemonStep`.
                                 match!
                                     runDaemonStep "performScan" (performScan batchCtx scanLeases state ct publish)
