@@ -25,7 +25,8 @@ let private auditReport extra : Audit.AuditReport =
             Extra = extra
             MissingByKind = Map.empty
             MissingUser = []
-            IsolatedFound = true } ]
+            IsolatedFound = true
+            IsolationError = None } ]
         Map.empty
 
 let private overheadReport (traced: float) : Overhead.OverheadReport =

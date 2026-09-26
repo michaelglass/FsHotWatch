@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the isolation audit selects every sampled test alone. The display name is escaped for
+  xUnit's `--filter-display-name` (`Audit.displayFilter`), which rejects a `*` anywhere but at
+  either end, so a theory row such as `f(body: "let f (p: int * string) = p")` used to select
+  nothing and every id it ran counted as extra. A sampled test the isolated run does not select
+  is now an audit `ERROR` (`TestAudit.IsolationError`: "could not isolate <test>: the filter
+  selected nothing") with no extra ids, never a comparison against nothing.
+- feat: `Ctrf.run` launches a test app with a CTRF report and returns its outcomes; a report an
+  earlier run left in the results directory is removed first.
 - fix: `Launch.run` no longer passes the calling process's `TESTPRUNE_TRACE_*` variables to
   the child. Run inside a traced test process, a woven child used to inherit its dump
   directory and id count and write its dump into the parent's run.

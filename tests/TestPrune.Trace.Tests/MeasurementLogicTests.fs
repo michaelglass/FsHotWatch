@@ -156,7 +156,8 @@ let private audited display extra found : Audit.TestAudit =
       Extra = extra
       MissingByKind = Map.empty
       MissingUser = []
-      IsolatedFound = found }
+      IsolatedFound = found
+      IsolationError = None }
 
 [<Fact>]
 let ``the audit passes only with tests sampled, no extra id and every test found alone`` () =
@@ -191,6 +192,37 @@ let ``the audit table names every extra id, missing user id and incomplete reaso
                   "  N.C.n  extra 0  missing -"
                   "    not recorded when run alone"
                   "  incomplete child-process-untraced:git  3"
+                  "" ]
+        @>
+
+[<Fact>]
+let ``a display filter escapes everything but letters, digits and spaces`` () =
+    test
+        <@
+            Audit.displayFilter "N+C.t(s: \"*a (b)\")" = "N&#x002B;C&#x002E;t&#x0028;s&#x003A; &#x0022;&#x002A;a &#x0028;b&#x0029;&#x0022;&#x0029;"
+        @>
+
+    test <@ Audit.displayFilter "plain 42" = "plain 42" @>
+
+[<Fact>]
+let ``a test the isolated run did not select is an audit error, compared with nothing`` () =
+    let lost = Audit.notIsolated "N.C.t(s: \"*\")" "the filter selected nothing"
+
+    test <@ lost.IsolationError = Some "could not isolate N.C.t(s: \"*\"): the filter selected nothing" @>
+    test <@ List.isEmpty lost.Extra && lost.MissingByKind.IsEmpty && not lost.IsolatedFound @>
+
+    let r = Audit.summarize [ audited "N.C.a" [] true; lost ] Map.empty
+    test <@ r.ExtraTotal = 0 && Audit.isError r && not (Audit.passes r) @>
+    test <@ not (Audit.isError (Audit.summarize [ audited "N.C.a" [] false ] Map.empty)) @>
+
+    test
+        <@
+            Audit.render r = String.concat
+                "\n"
+                [ "audit  ERROR  sampled 2  extra-in-parallel 0"
+                  "  N.C.a  extra 0  missing -"
+                  "  N.C.t(s: \"*\")  extra 0  missing -"
+                  "    could not isolate N.C.t(s: \"*\"): the filter selected nothing"
                   "" ]
         @>
 

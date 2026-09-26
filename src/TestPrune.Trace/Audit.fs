@@ -26,9 +26,13 @@ type TestAudit =
         MissingByKind: Map<string, int>
         /// `type::member` of every missing id that is not `cctor` or `gen`, for review.
         MissingUser: string list
-        /// False when the isolated run recorded no scope for the test: the display-name
-        /// filter matched nothing, or the test hit no probe alone. Its ids are all extra.
+        /// False when the isolated run recorded no scope for the test: the test hit no
+        /// probe alone, or the test could not be run alone at all (`IsolationError`).
         IsolatedFound: bool
+        /// Why the test could not be run alone (`could not isolate <test>: …`): the filter
+        /// selected no test, or the run wrote no report. Nothing is compared for such a
+        /// test, so it has no extra or missing ids; the audit is an error, not a pass.
+        IsolationError: string option
     }
 
 /// The audit of one project.
@@ -118,7 +122,29 @@ let compareTest
             match r with
             | Some r -> $"%s{r.TypeName}::%s{r.Member}"
             | None -> $"?::%d{id}")
-      IsolatedFound = isolatedIds.IsSome }
+      IsolatedFound = isolatedIds.IsSome
+      IsolationError = None }
+
+/// A sampled test its isolated run did not select: an audit error, compared with nothing.
+let notIsolated (display: string) (why: string) : TestAudit =
+    { Display = display
+      Extra = []
+      MissingByKind = Map.empty
+      MissingUser = []
+      IsolatedFound = false
+      IsolationError = Some $"could not isolate %s{display}: %s{why}" }
+
+/// The `--filter-display-name` value that selects exactly `display`. xUnit reads a `*` at
+/// either end as a wildcard, rejects one anywhere else, and decodes `&#xHHHH;` escapes; so
+/// every character but a letter, digit or space is escaped and the match is exact (xUnit
+/// compares display names ignoring case).
+let displayFilter (display: string) : string =
+    display
+    |> String.collect (fun c ->
+        if Char.IsAsciiLetterOrDigit c || c = ' ' then
+            string c
+        else
+            $"&#x%04X{int c};")
 
 /// Tests of a run per incomplete reason its dumps show without a join: each test's
 /// children that left no dump, plus overflow and rejected dumps, which touch every test.
@@ -158,17 +184,26 @@ let summarize (tests: TestAudit list) (incomplete: Map<string, int>) : AuditRepo
       Incomplete = incomplete }
 
 /// The bar: something was sampled, no id is extra in parallel, and every sampled test was
-/// recorded alone. Missing ids are reported for review, never failed.
+/// run and recorded alone. Missing ids are reported for review, never failed.
 let passes (r: AuditReport) =
     r.Sampled > 0
     && r.ExtraTotal = 0
     && r.Tests |> List.forall (fun t -> t.IsolatedFound)
 
+/// True when a sampled test could not be run alone: the audit measured nothing for it.
+let isError (r: AuditReport) =
+    r.Tests |> List.exists (fun t -> t.IsolationError.IsSome)
+
 /// The human report: the verdict, then per test its extra and missing ids.
 let render (r: AuditReport) : string =
     let sb = StringBuilder()
     let line (s: string) = sb.Append(s).Append('\n') |> ignore
-    let verdict = if passes r then "PASS" else "FAIL"
+
+    let verdict =
+        if isError r then "ERROR"
+        elif passes r then "PASS"
+        else "FAIL"
+
     line $"audit  %s{verdict}  sampled %d{r.Sampled}  extra-in-parallel %d{r.ExtraTotal}"
 
     for t in r.Tests do
@@ -185,27 +220,63 @@ let render (r: AuditReport) : string =
         for m in t.MissingUser do
             line $"    missing user %s{m}"
 
-        if not t.IsolatedFound then
-            line "    not recorded when run alone"
+        match t.IsolationError with
+        | Some why -> line $"    %s{why}"
+        | None when not t.IsolatedFound -> line "    not recorded when run alone"
+        | None -> ()
 
     for reason, n in Map.toList r.Incomplete do
         line $"  incomplete %s{reason}  %d{n}"
 
     sb.ToString()
 
-/// Launch the woven app with `env`, dumps to a fresh `dumpDir`, and read them.
-let private tracedRun (launch: TraceSession.TraceLaunch) workDir dumpDir args timeout =
+/// The launch's environment with its dumps going to a fresh `dumpDir`.
+let private dumpingTo (launch: TraceSession.TraceLaunch) dumpDir =
     Directory.CreateDirectory dumpDir |> ignore
 
-    let env =
-        launch.Env
-        |> List.map (fun (k, v) -> if k = Contract.OutEnv then k, dumpDir else k, v)
+    launch.Env
+    |> List.map (fun (k, v) -> if k = Contract.OutEnv then k, dumpDir else k, v)
 
-    Launch.run launch.Apphost args env workDir timeout |> ignore
+/// Launch the woven app, dumps to a fresh `dumpDir`, and read them.
+let private tracedRun (launch: TraceSession.TraceLaunch) workDir dumpDir args timeout =
+    Launch.run launch.Apphost args (dumpingTo launch dumpDir) workDir timeout
+    |> ignore
+
     DumpReader.readDirectory dumpDir
 
+/// Run one sampled test alone (`--filter-display-name`, escaped) with a CTRF report, and
+/// compare it; a run that selected no test is `notIsolated`, never a comparison with nothing.
+let internal auditAlone
+    (launch: TraceSession.TraceLaunch)
+    (workDir: string)
+    (rows: Map<int, ManifestRow>)
+    (inParallel: Map<string, Set<int>>)
+    (appArgs: string list)
+    (timeout: TimeSpan)
+    (dir: string)
+    (display: string)
+    : TestAudit =
+    let dumpDir = Path.Combine(dir, "dumps")
+
+    let isolated =
+        Ctrf.run
+            "alone"
+            launch.Apphost
+            (appArgs @ [ "--filter-display-name"; displayFilter display ])
+            (dumpingTo launch dumpDir)
+            workDir
+            (Path.Combine(dir, "results"))
+            timeout
+
+    match isolated with
+    | Error why -> notIsolated display why
+    | Ok [] -> notIsolated display "the filter selected nothing"
+    | Ok _ ->
+        let alone, _ = DumpReader.readDirectory dumpDir
+        compareTest rows display (Map.find display inParallel) ((ownIds alone).TryFind display)
+
 /// Prepare the project, run it once in parallel, then each of a seeded `sample` of its
-/// traced tests alone (`--filter-display-name`), and compare. `appArgs` go to every
+/// traced tests alone (`auditAlone`), and compare. `appArgs` go to every
 /// launch; a filter in them narrows the parallel run. `Error` when the project cannot be
 /// prepared.
 let run
@@ -228,10 +299,6 @@ let run
             choose sample seed (inParallel |> Map.keys |> List.ofSeq)
             |> List.mapi (fun i display ->
                 let dir = Path.Combine(req.RunDir, "audit", string i)
-
-                let alone, _ =
-                    tracedRun launch req.RepoRoot dir (appArgs @ [ "--filter-display-name"; display ]) timeout
-
-                compareTest rows display inParallel.[display] ((ownIds alone).TryFind display))
+                auditAlone launch req.RepoRoot rows inParallel appArgs timeout dir display)
 
         summarize tests (incomplete dumps rejected))

@@ -54,6 +54,14 @@ type ClassB() =
     member _.``b theory aboveThreshold``(x: int) =
         Assert.Equal(x > 42, Logic.aboveThreshold x)
 
+    // Row display names the isolation audit must still select one at a time: xUnit's
+    // display-name filter reads `*` as a wildcard and rejects one anywhere but the ends.
+    [<Theory>]
+    [<InlineData("f (p: int * string) = \"p\"")>]
+    [<InlineData("*lead and trail*")>]
+    member _.``b theory row names``(s: string) =
+        Assert.True(Logic.colorCode (Cyan s) > 0)
+
 type ClassC() =
     [<Fact>]
     member _.``c reads a repo file``() =

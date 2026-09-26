@@ -186,8 +186,9 @@ What to know before trusting a number:
 
 - **`audit` adds `--filter-display-name <name>`** to each isolated launch. Microsoft Testing
   Platform refuses to mix filter kinds, so a filter of your own after `--` conflicts with
-  it. A display name containing `*` acts as a wildcard in that filter and can select more
-  than the one test.
+  it. The name is escaped, so a theory row whose name holds `*`, parentheses or quotes is
+  selected alone. A sampled test the isolated launch does not select is an audit `ERROR`
+  (`could not isolate <test>: the filter selected nothing`), never compared with nothing.
 - **`audit` samples only tests that recorded a test scope** in the parallel run. A test
   that hit no probe is not sampled, so it cannot fail the audit; `census` is where an
   untraced test shows up.
