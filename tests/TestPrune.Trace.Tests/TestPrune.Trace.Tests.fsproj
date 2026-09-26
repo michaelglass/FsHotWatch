@@ -30,6 +30,7 @@
     <Compile Include="ManifestTests.fs" />
     <Compile Include="LaunchTests.fs" />
     <Compile Include="WeaverTests.fs" />
+    <Compile Include="InputCaptureTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

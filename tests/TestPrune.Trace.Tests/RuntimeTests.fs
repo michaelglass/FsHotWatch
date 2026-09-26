@@ -82,10 +82,11 @@ let ``an output directory installs a recorder that dumps at exit`` () =
             (env
                 [ Contract.OutEnv, out
                   Contract.IdsEnv, "12"
-                  Contract.ParentScopeEnv, "T:parent" ])
+                  Contract.ParentScopeEnv, "T:parent"
+                  Contract.RepoRootEnv, "/repo" ])
             (fun h -> handler <- h)
 
-    test <@ (state.IdCount, state.ParentScope) = (12, "T:parent") @>
+    test <@ (state.IdCount, state.ParentScope, state.RepoRoot) = (12, "T:parent", "/repo") @>
     state.Hit 3
     handler.Invoke(null, EventArgs.Empty)
 

@@ -15,3 +15,6 @@
 - feat: weaver core (`TestPrune.Trace.Weaver`): Mono.Cecil method-entry probes with a manifest; refuses
   optimized builds; re-anchors F#'s end-of-method hidden sequence points at the woven code size so
   portable PDBs stay decodable (checked for every woven method by `PdbCheck`).
+- feat: input-capture weave pass (`TestPrune.Trace.Redirects`): rewrites call, callvirt and
+  newobj sites of the redirected BCL methods (`Redirects.table`) into the recorder's `Io` and
+  `ProcessShims` shims. Method pointers (`ldftn`) are left alone.

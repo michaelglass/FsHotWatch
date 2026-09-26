@@ -33,6 +33,7 @@
         <Compile Include="PdbCheck.fs" />
         <Compile Include="Launch.fs" />
         <Compile Include="Weaver.fs" />
+        <Compile Include="Redirects.fs" />
     </ItemGroup>
 
     <ItemGroup>

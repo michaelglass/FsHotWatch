@@ -34,6 +34,8 @@
         <Compile Include="RecorderState.fs" />
         <Compile Include="DumpWriter.fs" />
         <Compile Include="Probes.fs" />
+        <Compile Include="Io.fs" />
+        <Compile Include="ProcessShims.fs" />
     </ItemGroup>
 
     <ItemGroup>

@@ -11,3 +11,9 @@
   bitset per scope; the hit path allocates nothing once a thread and context are known.
   With `TESTPRUNE_TRACE_OUT` set, the process writes one `testprune-trace/1` NDJSON dump
   at exit, via a `.tmp` file and a rename, ending in an `{"end":true}` marker.
+- feat: input capture. `Io` shims the BCL's file readers, existence probes and directory
+  listings, and `ProcessShims` shims `Process.Start`; a woven call site calls them with the
+  original's stack shape. A path under `TESTPRUNE_TRACE_REPO_ROOT` is noted on the scope
+  doing the I/O (static init, then the current scope, then ambient). A started child gets
+  the starting scope in `TESTPRUNE_TRACE_PARENT_SCOPE` and is noted with its pid, and with
+  whether the environment could be passed (not for shell-executed children).
