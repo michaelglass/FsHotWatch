@@ -8,10 +8,10 @@ open System.Runtime.InteropServices
 
 /// `dotnetRoot` given the DOTNET_ROOT value (null or empty when unset).
 let internal dotnetRootFrom (environmentValue: string) : string =
-    match environmentValue with
-    | null
-    | "" -> Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."))
-    | root -> root
+    if String.IsNullOrEmpty environmentValue then
+        Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."))
+    else
+        environmentValue
 
 /// The dotnet root an apphost needs. DOTNET_ROOT wins; otherwise the root of the
 /// runtime THIS process runs on (…/shared/Microsoft.NETCore.App/<v>/ → three levels up).
@@ -45,12 +45,14 @@ let run
     for k, v in env do
         psi.Environment.[k] <- v
 
-    use p = Process.Start psi
-    let out = p.StandardOutput.ReadToEndAsync()
-    let err = p.StandardError.ReadToEndAsync()
+    // `using` rather than `use`: `use` compiles a null check on the process that can never
+    // be taken (Process.Start returns null only for UseShellExecute=true).
+    using (Process.Start psi) (fun p ->
+        let out = p.StandardOutput.ReadToEndAsync()
+        let err = p.StandardError.ReadToEndAsync()
 
-    if not (p.WaitForExit timeout) then
-        p.Kill true
+        if not (p.WaitForExit timeout) then
+            p.Kill true
 
-    p.WaitForExit()
-    p.ExitCode, out.Result + err.Result
+        p.WaitForExit()
+        p.ExitCode, out.Result + err.Result)

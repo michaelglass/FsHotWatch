@@ -1,31 +1,34 @@
 {
   "overrides": {
-    "Launch.fs": {
-      "line": 100.0,
-      "branch": 83.3,
-      "reason": "Process launcher. The uncovered branch halves are compiler-generated: the null arm of the string pattern and the Process.Start null result, which cannot occur for UseShellExecute=false."
-    },
-    "Manifest.fs": {
-      "line": 100.0,
-      "branch": 71.4,
-      "reason": "Manifest TSV read/write. Round-trip, refusal and error paths are tested; the uncovered branch halves are compiler-generated array-literal and string-split null checks."
-    },
-    "PdbCheck.fs": {
-      "line": 100.0,
-      "branch": 87.5,
-      "reason": "SRM decode check. Both the healthy and the failing path are tested; the remaining branch half is the compiler-generated disposal null check on the `use` bindings."
-    },
+    "Launch.fs": [
+      {
+        "line": 100.0,
+        "branch": 83.3,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (the string-pattern null arm and the `use` disposal null check, both since removed). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
+    "Manifest.fs": [
+      {
+        "line": 100.0,
+        "branch": 71.4,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (FSharp.Core's inlined Array.map null checks, since replaced by Seq.map). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
+    "PdbCheck.fs": [
+      {
+        "line": 100.0,
+        "branch": 87.5,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (the `use` disposal null checks, since replaced by `using`). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
     "Weaver.fs": [
       {
         "line": 97.0,
-        "branch": 84.8,
-        "reason": "Cecil weaver. Uncovered: the missing-internal-SequencePoint-constructor guard (Cecil is pinned to 0.11.6, which has it), the PdbCorrupt refusal (unreachable once the end-of-method fix is in; PdbCheck's own tests prove the check fires on the unfixed Cecil output), the empty-document-hash arm (the F# compiler always records a SHA256), the unresolvable-attribute name fallback in test detection (the resolver also searches the recorder's directory, which holds xunit in the test host), and compiler-generated null/short-circuit branch halves.",
-        "platform": "macos"
-      },
-      {
-        "line": 97.0,
         "branch": 83.3,
-        "reason": "Linux floor, measured line=97.1% branch=83.3% (85/102 branches) with the .NET SDK 10.0.401 CI uses. Line coverage matches macOS (10.0.3xx) exactly; the branch count differs because the newer F# compiler emits different sequence points for the same source (it drops several redundant hidden points, including the end-of-method one), so coverage attributes 16 more branch halves to Weaver.fs. The extra uncovered halves: the missing-SequencePoint-constructor guard and the PdbCorrupt refusal (both explained in the macOS entry), and the null-scope and scope-starts-at-end-of-method halves of the root-scope check (no fixture method lacks a root scope or has one starting at its end).",
+        "reason": "Linux floor, measured line=97.1% branch=83.3% (85/102 branches) with the .NET SDK 10.0.401 CI uses, before the restructure that removed the missing-SequencePoint-constructor guard, the empty-hash arm and the inlined Seq.sumBy/list-comprehension branches, and before tests covered the PdbCorrupt refusal, the unresolvable-attribute fallback, generated-type detection and the null- and moved-root-scope halves. macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then.",
         "platform": "linux"
       }
     ],

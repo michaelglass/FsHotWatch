@@ -34,23 +34,29 @@ let private field (s: string) =
 let write (dir: string) (m: Manifest) =
     Directory.CreateDirectory dir |> ignore
 
+    // Seq.map rather than Array.map, which FSharp.Core inlines with a null check on the
+    // array; both are materialized before either file is touched, so a refused field
+    // leaves no partial manifest behind.
     let rows =
         m.Rows
-        |> Array.map (fun r ->
+        |> Seq.map (fun r ->
             String.Join(
                 "\t",
-                [| string r.Id
-                   kindCode r.Kind
-                   field r.Assembly
-                   field r.TypeName
-                   field r.Member
-                   field (defaultArg r.Document "")
-                   string r.FirstLine
-                   string r.LastLine |]
+                string r.Id,
+                kindCode r.Kind,
+                field r.Assembly,
+                field r.TypeName,
+                field r.Member,
+                field (defaultArg r.Document ""),
+                string r.FirstLine,
+                string r.LastLine
             ))
+        |> Seq.toArray
 
     let docs =
-        m.Documents |> Map.toArray |> Array.map (fun (p, h) -> field p + "\t" + field h)
+        m.Documents
+        |> Seq.map (fun (KeyValue(p, h)) -> field p + "\t" + field h)
+        |> Seq.toArray
 
     File.WriteAllLines(Path.Combine(dir, "manifest.tsv"), rows)
     File.WriteAllLines(Path.Combine(dir, "documents.tsv"), docs)
@@ -60,7 +66,7 @@ let read (dir: string) : Result<Manifest, string> =
     try
         let rows =
             File.ReadAllLines(Path.Combine(dir, "manifest.tsv"))
-            |> Array.map (fun line ->
+            |> Seq.map (fun line ->
                 let c = line.Split '\t'
 
                 match parseKind c.[1] with
@@ -74,13 +80,14 @@ let read (dir: string) : Result<Manifest, string> =
                       Document = if c.[5] = "" then None else Some c.[5]
                       FirstLine = int c.[6]
                       LastLine = int c.[7] })
+            |> Seq.toArray
 
         let docs =
             File.ReadAllLines(Path.Combine(dir, "documents.tsv"))
-            |> Array.map (fun l ->
+            |> Seq.map (fun l ->
                 let c = l.Split '\t'
                 c.[0], c.[1])
-            |> Map.ofArray
+            |> Map.ofSeq
 
         Ok
             { Rows = rows

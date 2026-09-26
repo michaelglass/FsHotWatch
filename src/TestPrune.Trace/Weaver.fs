@@ -118,15 +118,14 @@ let private isTestMethod (m: MethodDefinition) =
     m.HasCustomAttributes
     && m.CustomAttributes |> Seq.exists (fun a -> fact a.AttributeType 0)
 
+/// A document's recorded hash as lowercase hex ("" when it has none: Cecil gives an
+/// empty array, never null).
 let private hex (bytes: byte[]) =
-    if isNull bytes || bytes.Length = 0 then
-        ""
-    else
-        Convert.ToHexString(bytes).ToLowerInvariant()
+    Convert.ToHexString(bytes).ToLowerInvariant()
 
 /// Cecil 0.11.6's public SequencePoint constructor binds to an instruction; a point at
 /// a raw offset (the end-of-method marker) needs its internal (int, Document) one.
-let private unboundSequencePointCtor =
+let internal unboundSequencePointCtor =
     lazy
         (typeof<SequencePoint>
             .GetConstructor(
@@ -137,7 +136,7 @@ let private unboundSequencePointCtor =
             ))
 
 let private codeSize (body: MethodBody) =
-    body.Instructions |> Seq.sumBy (fun i -> i.GetSize())
+    body.Instructions |> Seq.fold (fun size i -> size + i.GetSize()) 0
 
 let private typeKey (t: TypeDefinition) = t.FullName.Replace('/', '+')
 
@@ -156,14 +155,15 @@ let private endOfMethodPoints asmName (t: TypeDefinition) (meth: MethodDefinitio
         let body = meth.Body
         let offsets = HashSet<int>(body.Instructions |> Seq.map (fun i -> i.Offset))
 
-        [ for ix in 0 .. dbg.SequencePoints.Count - 1 do
-              let sp = dbg.SequencePoints.[ix]
+        dbg.SequencePoints
+        |> Seq.indexed
+        |> Seq.filter (fun (_, sp) -> not (offsets.Contains sp.Offset))
+        |> Seq.map (fun (ix, sp) ->
+            if sp.Offset <> body.CodeSize then
+                raise (WeaveFailure(UnboundSequencePoint(asmName, typeKey t + "::" + meth.Name)))
 
-              if not (offsets.Contains sp.Offset) then
-                  if sp.Offset <> body.CodeSize then
-                      raise (WeaveFailure(UnboundSequencePoint(asmName, typeKey t + "::" + meth.Name)))
-
-                  yield ix, sp ]
+            ix, sp)
+        |> Seq.toList
 
 /// PDB INVARIANT, part 2: re-create each end-of-method point at the woven body's end,
 /// keeping its document, lines and columns. Returns how many moved.
@@ -221,7 +221,8 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
     let documents = Dictionary<string, string>()
     let touched = Dictionary<string, ResizeArray<string>>()
     let modules = ResizeArray<ModuleDefinition * WeaveMode>()
-    let mutable current = "?"
+    // The assembly being read, rewritten or written: named in a Cecil failure.
+    let current = ref "?"
     let mutable probed = 0
     let mutable moved = 0
 
@@ -310,11 +311,8 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
 
     try
         try
-            if isNull unboundSequencePointCtor.Value then
-                raise (WeaveFailure(CecilFailed("?", "SequencePoint(int, Document) constructor not found")))
-
             for input in inputs do
-                current <- Path.GetFileNameWithoutExtension input.Path
+                current.Value <- Path.GetFileNameWithoutExtension input.Path
                 modules.Add(readModule recorderPath input)
 
             let set =
@@ -327,7 +325,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
 
             for m, mode in modules do
                 let asmName = m.Assembly.Name.Name
-                current <- asmName
+                current.Value <- asmName
                 let hit = recorderMethod m Contract.ProbesType Contract.Hit
 
                 for t in m.GetTypes() |> Seq.toList do
@@ -338,19 +336,21 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
             Directory.CreateDirectory outputDir |> ignore
 
             let outputs =
-                [ for m, _ in modules do
-                      let asmName = m.Assembly.Name.Name
-                      current <- asmName
-                      let dst = Path.Combine(outputDir, asmName + ".dll")
+                modules
+                |> Seq.map (fun (m, _) ->
+                    let asmName = m.Assembly.Name.Name
+                    current.Value <- asmName
+                    let dst = Path.Combine(outputDir, asmName + ".dll")
 
-                      m.Write(
-                          dst,
-                          WriterParameters(WriteSymbols = true, SymbolWriterProvider = PortablePdbWriterProvider())
-                      )
+                    m.Write(
+                        dst,
+                        WriterParameters(WriteSymbols = true, SymbolWriterProvider = PortablePdbWriterProvider())
+                    )
 
-                      match PdbCheck.decodeFailures (Path.ChangeExtension(dst, ".pdb")) with
-                      | [] -> yield dst
-                      | failures -> raise (WeaveFailure(PdbCorrupt(asmName, failures.Length))) ]
+                    match PdbCheck.decodeFailures (Path.ChangeExtension(dst, ".pdb")) with
+                    | [] -> dst
+                    | failures -> raise (WeaveFailure(PdbCorrupt(asmName, failures.Length))))
+                |> Seq.toList
 
             Ok
                 { Manifest =
@@ -364,7 +364,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                       Touched = touched |> Seq.map (fun kv -> kv.Key, List.ofSeq kv.Value) |> Map.ofSeq } }
         with
         | WeaveFailure e -> Error e
-        | ex -> Error(CecilFailed(current, ex.Message))
+        | ex -> Error(CecilFailed(current.Value, ex.Message))
     finally
         for m, _ in modules do
             m.Dispose()
