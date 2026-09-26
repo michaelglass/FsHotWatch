@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.68 - 2026-09-26
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.67 - 2026-09-26
 
 - **BREAKING (pin):** TestPrune.Core 13.1.1 (index schema 17). A type declared in the

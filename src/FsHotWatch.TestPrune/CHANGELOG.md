@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.50 - 2026-09-26
+
 - fix: an analysis-only daemon (no test projects) now earns a clean receipt after a
   scoped project-file change and after a restart over an unchanged tree. It carries the
   seal's retained files' analysis into the new model. A `FileChecked` replayed from the

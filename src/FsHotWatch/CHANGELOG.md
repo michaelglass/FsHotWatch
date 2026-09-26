@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.51 - 2026-09-26
+
 - fix: a project-file change that re-discovers the model on the scoped path no longer
   leaves the projects it did not re-check without results for the new model. The seal
   (`BatchChecked.Retained`, new `RetainedResults`) names the files whose standing results
