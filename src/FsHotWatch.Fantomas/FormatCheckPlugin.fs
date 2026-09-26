@@ -24,6 +24,43 @@ let private formattable (isIgnored: string -> bool) (files: string list) : strin
         && (file.EndsWith(".fs") || file.EndsWith(".fsx") || file.EndsWith(".fsi"))
         && not (isIgnored file))
 
+/// What decides the pinned tool's output for a file: its version, the `.editorconfig`
+/// files above the file, and the file's bytes. `None` when the file cannot be read, so
+/// an unreadable file is never remembered as formatted. The configuration is read once
+/// per directory per call.
+let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string option =
+    let configByDir = Collections.Generic.Dictionary<string, string>()
+
+    fun (file: string) ->
+        let dir = Path.GetDirectoryName(Path.GetFullPath file)
+
+        let config =
+            match configByDir.TryGetValue dir with
+            | true, config -> config
+            | false, _ ->
+                let config =
+                    FsHotWatch.CacheInputs.editorConfigInputs repoRoot [ file ]
+                    |> List.map (fun (label, content) -> $"%s{label}\n%s{content}")
+                    |> String.concat "\n"
+
+                configByDir[dir] <- config
+                config
+
+        try
+            let bytes = File.ReadAllBytes file
+
+            use sha = Security.Cryptography.SHA256.Create()
+            let header = Text.Encoding.UTF8.GetBytes($"%s{pin.Version}\n%s{config}\n")
+            sha.TransformBlock(header, 0, header.Length, null, 0) |> ignore
+            sha.TransformFinalBlock(bytes, 0, bytes.Length) |> ignore
+            Some(Convert.ToHexString sha.Hash)
+        with ex ->
+            Logging.debug
+                "format"
+                $"not remembering %s{file}: could not read it: %s{ex.GetType().FullName}: %s{ex.Message}"
+
+            None
+
 /// Format-on-save preprocessor. Runs before other plugins receive events.
 /// Rewrites unformatted files with the repository's PINNED Fantomas
 /// (`dotnet tool run fantomas`, resolved from `.config/dotnet-tools.json`) and
@@ -41,9 +78,18 @@ let private formattable (isIgnored: string -> bool) (files: string list) : strin
 ///
 /// `runner` is the TEST SEAM: production uses `FantomasTool.dotnetToolRunner`; a
 /// test substitutes a recorder to prove which pin and arguments were handed over.
+///
+/// A scan hands it every registered file, and `check` forces a scan. Bytes the pinned
+/// tool has already left unchanged, under the same version and the same `.editorconfig`
+/// files, are not handed to it again: the tool is a pure function of those three, so the
+/// run would be a no-op. Only an unchanged file is remembered. A file the tool rewrote,
+/// could not format, or never finished (timeout) goes back to it on the next pass.
 type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
     let runner = defaultArg runner dotnetToolRunner
+
+    /// file → the key of the bytes the pinned tool last left unchanged.
+    let settled = System.Collections.Concurrent.ConcurrentDictionary<string, string>()
 
     let formatTimeout =
         TimeSpan.FromSeconds(float (defaultArg timeoutSec FormatTimeoutDefaultSec))
@@ -57,11 +103,35 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
             | Ok pin ->
                 let evidence = describe repoRoot pin
                 let files = formattable (ignoreCache.Get(repoRoot)) changedFiles
+                let keyOf = settledKeys repoRoot pin
+                // Keyed BEFORE the run, so a key only ever names bytes the tool was given.
+                let keyed = files |> List.map (fun file -> file, keyOf file)
 
-                match FantomasTool.format runner pin repoRoot formatTimeout files with
+                let pending =
+                    keyed
+                    |> List.filter (fun (file, key) ->
+                        match key, settled.TryGetValue file with
+                        | Some key, (true, prior) -> key <> prior
+                        | _ -> true)
+
+                let toRun = pending |> List.map fst
+
+                if toRun.Length < files.Length then
+                    Logging.debug
+                        "format"
+                        $"%d{files.Length - toRun.Length} of %d{files.Length} file(s) unchanged since the pinned formatter left them as they are — not re-run"
+
+                match FantomasTool.format runner pin repoRoot formatTimeout toRun with
                 | Ok report ->
                     for (file, reason) in report.FormatErrors do
                         Logging.error "format" $"could not format %s{file}: %s{reason}"
+
+                    let unsettled = Set.ofList (report.Modified @ List.map fst report.FormatErrors)
+
+                    for (file, key) in pending do
+                        match key with
+                        | Some key when not (unsettled.Contains file) -> settled[file] <- key
+                        | _ -> settled.TryRemove file |> ignore
 
                     Ok
                         { Modified = report.Modified
@@ -72,7 +142,7 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
                     // them, and the daemon must keep processing the batch.
                     Logging.error
                         "format"
-                        $"format TIMED OUT after %d{int after.TotalSeconds}s (%s{ProcessHelper.renderKillBrief kill}) — %d{files.Length} file(s) left unformatted"
+                        $"format TIMED OUT after %d{int after.TotalSeconds}s (%s{ProcessHelper.renderKillBrief kill}) — %d{toRun.Length} file(s) left unformatted"
 
                     Ok
                         { Modified = []

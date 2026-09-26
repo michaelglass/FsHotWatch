@@ -140,6 +140,7 @@
     <Compile Include="FantomasToolTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
     <Compile Include="FormatIgnoreTests.fs" />
+    <Compile Include="FormatPreprocessorMemoTests.fs" />
     <Compile Include="CommandPreprocessorTests.fs" />
     <Compile Include="PathFilterTests.fs" />
     <Compile Include="SafeWalkTests.fs" />
