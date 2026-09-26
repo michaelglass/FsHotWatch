@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: CTRF auto-detection finds every xUnit v3 MTP package id
+
+A test project that referenced `xunit.v3.mtp-v2` (or `xunit.v3.mtp-v1`, or a
+`xunit.v3.core.mtp-v*` package) instead of the bare `xunit.v3` id got no CTRF report
+configured: it lost per-test outcomes, and per-test trace recording refused it with
+`no-ctrf-report`. Auto-detection now looks for `xunit.v3.core.mtp-v*` in the restored
+`obj/project.assets.json` — the package that registers xUnit's CTRF switches with
+Microsoft.Testing.Platform, and a dependency of every xUnit v3 package id that ships
+that runner — and reads the xUnit major from its version as before.
+
 ### core: a type incompatible with itself — the cause, and the fix
 
 The guard added for diagnostics like `expected 'Domain.Types.UserId' but here

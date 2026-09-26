@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: CTRF auto-detection (`reportVerificationFormat: auto`, the default) now finds a
+  test project that references any xUnit v3 package carrying the Microsoft.Testing.Platform
+  runner — `xunit.v3.mtp-v1`, `xunit.v3.mtp-v2`, `xunit.v3.core.mtp-v1`/`-v2` — not only
+  `xunit.v3`. Detection keys on `xunit.v3.core.mtp-v*`, the package whose MTP bridge
+  registers the CTRF switches, in the restored `obj/project.assets.json`; its version
+  still picks the xUnit 3 or xUnit 4 switch names. Such a project previously got no CTRF
+  report, so it lost per-test outcomes and trace recording refused it (`no-ctrf-report`).
+
 ## 0.13.0-alpha.51 - 2026-09-26
 
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless

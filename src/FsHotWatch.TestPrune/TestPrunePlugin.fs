@@ -3536,6 +3536,21 @@ let internal ctrfArguments (family: CtrfRunnerFamily) (reportName: string) (resu
     | Xunit4 ->
         $"--report-xunit-ctrf --report-xunit-ctrf-filename %s{reportName} --results-directory \"%s{resultsDirectory}\""
 
+/// The package that registers xUnit's CTRF report switches with
+/// Microsoft.Testing.Platform: `xunit.v3.core.mtp-v<N>`, whose `xunit.v3.mtp-v<N>`
+/// assembly is xUnit's MTP bridge. Every xUnit v3 package id that ships the MTP
+/// runner (`xunit.v3`, `xunit.v3.mtp-v1`, `xunit.v3.mtp-v2`, and the
+/// `xunit.v3.core.mtp-v*` packages themselves) depends on it, and restored
+/// `libraries` lists the whole transitive closure, so detecting the carrier finds
+/// the capability whichever id the project references. Its presence alone is not
+/// enough to pick switches, so its version still selects the family.
+let private ctrfReporterPackageId =
+    System.Text.RegularExpressions.Regex(
+        "^xunit\\.v3\\.core\\.mtp-v[0-9]+$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant
+        ||| System.Text.RegularExpressions.RegexOptions.IgnoreCase
+    )
+
 /// Resolve the actual xUnit runner family from NuGet's restored graph. The
 /// project file can contain central versions, properties, ranges, or stale
 /// text, while `obj/project.assets.json` records the exact package version that
@@ -3585,18 +3600,9 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
             if assets.RootElement.TryGetProperty("libraries", &libraries) then
                 let xunitLibraries =
                     libraries.EnumerateObject()
-                    |> Seq.choose (fun package ->
+                    |> Seq.filter (fun package ->
                         let slash = package.Name.IndexOf('/')
-
-                        if
-                            slash <= 0
-                            || not (
-                                package.Name.AsSpan(0, slash).Equals("xunit.v3", StringComparison.OrdinalIgnoreCase)
-                            )
-                        then
-                            None
-                        else
-                            Some package)
+                        slash > 0 && ctrfReporterPackageId.IsMatch(package.Name.Substring(0, slash)))
                     |> Seq.toList
 
                 let completeNuGetVersion =
