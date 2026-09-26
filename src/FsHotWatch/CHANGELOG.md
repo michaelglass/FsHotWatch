@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.52 - 2026-09-26
+
 - fix: a project with more files than the checker keeps no longer reports its own types
   as incompatible with themselves (`'X' … but here has type 'X'`). FCS keys a file's
   type-check by the content of the file and of those before it, not by the upstream

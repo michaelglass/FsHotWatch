@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.69 - 2026-09-26
+
 - feat: `tests.traces` is acted on. With `"record": "full-runs"` (or `"every-run"`), the
   runs that policy covers record a trace for each test of every project not marked
   `"traces": false`, into `.fshw/test-traces.db` (or `tests.traces.db`). Refused projects

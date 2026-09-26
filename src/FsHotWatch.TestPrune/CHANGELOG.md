@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.51 - 2026-09-26
+
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless
   configured). A run whose mode the policy records (`full-runs`: `confirm`/nightly;
   `every-run`: every run) launches each traced project's woven copy from
