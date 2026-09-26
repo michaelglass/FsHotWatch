@@ -1228,7 +1228,7 @@ let internal registerHandlerForOwner
                                 ) }
                         | _ -> { Plugin = nameStr; File = None }
 
-                    /// Try to replay a cached result. Returns true if cache hit.
+                    /// Try to replay a cached result. Returns the replayed entry on a hit.
                     ///
                     /// `cacheKeyOpt` is the key for this event, computed ONCE by
                     /// the dispatch loop and threaded here so the lookup and the
@@ -1424,9 +1424,35 @@ let internal registerHandlerForOwner
                                         services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
                                     | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
-                                true
-                            | None -> false
-                        | _ -> false
+                                Some result
+                            | None -> None
+                        | _ -> None
+
+                    /// The state a replayed event leaves. A replay skips `Update`, but a
+                    /// `FileChecked` hit is a completed analysis of the same inputs, and a
+                    /// state that records per-file outcomes records this one too, against
+                    /// the model published now. See `IFileReplayState`.
+                    let replayedState
+                        (state: 'State)
+                        (event: PluginEvent<'Msg>)
+                        (replayed: TaskCache.TaskCacheResult)
+                        =
+                        match event, box state with
+                        | FileChecked result, (:? Events.IFileReplayState<'State> as holder) ->
+                            let currentModel =
+                                match services.ProjectGraph.ObserveModel() with
+                                | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+                                | _ -> None
+
+                            let analysis =
+                                match replayed.Status with
+                                | TaskCache.CachedFileCompleted _
+                                | TaskCache.CachedRunCompleted _ -> Result.Ok()
+                                | TaskCache.CachedFileFailed(err, _)
+                                | TaskCache.CachedRunFailed(err, _) -> Result.Error err
+
+                            holder.Replayed currentModel result analysis
+                        | _ -> state
 
                     /// Force a terminal `Failed` for a fault the plugin could not report
                     /// itself, so a handler that throws out of `Update` cannot leave the
@@ -1735,9 +1761,10 @@ let internal registerHandlerForOwner
                                             | Custom _ -> None
                                             | _ -> cacheKeyOpt
 
-                                        if tryReplayCache event replayKeyOpt then
-                                            return Result.Ok(state, None, false)
-                                        else
+                                        match tryReplayCache event replayKeyOpt with
+                                        | Some replayed ->
+                                            return Result.Ok(replayedState state event replayed, None, false)
+                                        | None ->
                                             let! result = runAndCache identity event state cacheKeyOpt
 
                                             return

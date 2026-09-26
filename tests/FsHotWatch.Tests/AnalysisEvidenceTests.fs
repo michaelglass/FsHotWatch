@@ -270,6 +270,71 @@ let ``analysis proof refuses missing stale and failed file outcomes and configur
         Assert.True((AnalysisEvidence.fromCompleted (Some 1L) files (Set.singleton "Tests.fsproj") outcomes).IsNone))
 
 [<Fact(Timeout = 30000)>]
+let ``a seal carries only the retained outcomes of the model it names as unchanged`` () =
+    withCheckedSource (fun root result ->
+        let sibling name generation =
+            let file = AbsFilePath.create (Path.Combine(root, name))
+
+            file,
+            AnalysisFileEvidence.fromResult
+                { result with
+                    File = file
+                    ModelGeneration = Some generation }
+                (Ok())
+
+        let carried, carriedOutcome = sibling "Carried.fs" 1L
+        let older, olderOutcome = sibling "Older.fs" 0L
+        let notRetained, notRetainedOutcome = sibling "NotRetained.fs" 1L
+        let files = Set.ofList [ carried; older; notRetained ]
+
+        let outcomes =
+            Map.ofList
+                [ carried, carriedOutcome
+                  older, olderOutcome
+                  notRetained, notRetainedOutcome ]
+
+        let refused (outcomes: Map<AbsFilePath, AnalysisFileEvidence>) =
+            (AnalysisEvidence.fromCompleted (Some 2L) files Set.empty outcomes |> Option.get).FailureReasons
+            |> List.map (fun reason -> reason.Split(':').[0] |> AbsFilePath.create)
+            |> Set.ofList
+
+        // Positive control: under model 2 nothing produced under 0 or 1 counts.
+        Assert.Equal<Set<AbsFilePath>>(files, refused outcomes)
+
+        let retained =
+            { FromModelGeneration = 1L
+              Files = Set.ofList [ carried; older ] }
+
+        // Only the retained file whose outcome is from the named model is carried. One from
+        // an older model, and one the seal did not vouch for, stay refused.
+        Assert.Equal<Set<AbsFilePath>>(
+            Set.ofList [ older; notRetained ],
+            refused (AnalysisFileEvidence.carryInto 2L retained outcomes)
+        ))
+
+[<Fact(Timeout = 30000)>]
+let ``a replayed FileChecked records the cached run's outcome only for the current model`` () =
+    withCheckedSource (fun root result ->
+        let handler = analysisHandler root "replay"
+        let files = Set.singleton result.File
+
+        let replay currentModel analysis =
+            let state =
+                (handler.Init :> IFileReplayState<TestPruneState>).Replayed currentModel result analysis
+
+            (AnalysisEvidence.fromCompleted (Some 1L) files Set.empty state.AnalysisFiles
+             |> Option.get)
+                .FailureReasons
+
+        // Positive control: a replayed clean analysis under the current model vouches.
+        Assert.Empty(replay (Some 1L) (Ok()))
+        // A replayed FAILED analysis is still a failed analysis.
+        Assert.NotEmpty(replay (Some 1L) (Error "symbol analysis failed"))
+        // A result stamped with another model, or replayed under none, describes nothing now.
+        Assert.NotEmpty(replay (Some 2L) (Ok()))
+        Assert.NotEmpty(replay None (Ok())))
+
+[<Fact(Timeout = 30000)>]
 let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =
     withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
         // Positive control: this source really does produce an incomplete-match WARNING.

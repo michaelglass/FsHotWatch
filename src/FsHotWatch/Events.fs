@@ -789,6 +789,17 @@ module internal EarnedEvidence =
         previous
         |> Option.filter (fun evidence -> Some evidence.Generation = currentModelGeneration)
 
+/// Checkable files of a model that a cohort did not re-check, because nothing that
+/// decides their results changed since the model named here: their project's compiler
+/// options are identical across the re-discovery and no change in the cohort reached them.
+/// Their results under that model stand for this one.
+type RetainedResults =
+    {
+        /// The completed model generation the files' standing results were produced under.
+        FromModelGeneration: int64
+        Files: Set<AbsFilePath>
+    }
+
 /// One file's completed analysis, kept as evidence without its compiler trees.
 type AnalysisFileEvidence =
     private
@@ -815,6 +826,25 @@ module internal AnalysisFileEvidence =
         { File = result.File
           ModelGeneration = result.ModelGeneration
           Refusals = List.distinct refusals }
+
+    /// The outcomes a seal carries into its own model: every retained file whose outcome
+    /// was produced under the model the seal names as unchanged is re-stamped with the
+    /// seal's model. An outcome from any other model is left as it is, and stays a refusal.
+    let carryInto
+        (modelGeneration: int64)
+        (retained: RetainedResults)
+        (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
+        : Map<AbsFilePath, AnalysisFileEvidence> =
+        outcomes
+        |> Map.map (fun file outcome ->
+            if
+                Set.contains file retained.Files
+                && outcome.ModelGeneration = Some retained.FromModelGeneration
+            then
+                { outcome with
+                    ModelGeneration = Some modelGeneration }
+            else
+                outcome)
 
 /// What an analysis-only daemon earned for one model: the checkable files of that model,
 /// and every reason the analysis cannot support a green. It makes no test claim.
@@ -903,6 +933,15 @@ type internal ICompletedBuildFailureState =
 type internal IAnalysisEvidenceState =
     abstract AnalysisEvidence: AnalysisEvidence option
 
+/// Implemented by a plugin state that records each file's completed analysis. A task-cache
+/// hit on `FileChecked` skips `Update`, and the hit is itself a completed analysis: its key
+/// names the same file, source and compiler result as the run that wrote the entry. The
+/// framework hands the replayed result here, with the published model and what the
+/// cached run's analysis concluded (`Error` when it failed), so the state records the
+/// outcome a live fold would have recorded.
+type internal IFileReplayState<'State> =
+    abstract Replayed: currentModel: int64 option -> result: FileCheckResult -> analysis: Result<unit, string> -> 'State
+
 /// Implemented by a plugin state that owns earned test evidence. The work owner projects it
 /// in the same publication as the state's work, so evidence and retirement cannot disagree.
 type internal IEarnedEvidenceState =
@@ -962,6 +1001,10 @@ type BatchChecked =
         /// The completed project-model generation the cohort was captured and sealed
         /// against. `None` when no daemon discovery captured it.
         ModelGeneration: int64 option
+        /// Files whose results the cohort carries from the model it replaced, without
+        /// re-checking them. `None` unless the cohort re-discovered the model on the scoped
+        /// path, which re-checks only the projects a change can reach.
+        Retained: RetainedResults option
         /// Wall-clock start of the cohort (first `CheckFile` dispatched).
         StartedAt: System.DateTime
         /// Wall-clock end (last `FileChecked` emitted before this `BatchChecked`).

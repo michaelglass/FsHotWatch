@@ -1308,6 +1308,7 @@ let ``plugin subscribing to BatchChecked receives event`` () =
           Files = [ AbsFilePath.create "/tmp/repo/Foo.fs" ]
           Generation = 7L
           ModelGeneration = None
+          Retained = None
           StartedAt = now
           CompletedAt = now.AddMilliseconds(50.0) }
 
@@ -1358,6 +1359,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
               Files = []
               Generation = 1L
               ModelGeneration = None
+              Retained = None
               StartedAt = now
               CompletedAt = now }
     )

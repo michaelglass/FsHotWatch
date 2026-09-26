@@ -1400,6 +1400,8 @@ let private processBatchAttempt
         let! initialModel = captureModel ()
         captureWaitLine captureStarted.Elapsed |> Option.iter (Logging.debug "daemon")
         let mutable batchModel = initialModel
+        // What the seal carries from the model this cohort replaced. See `RetainedResults`.
+        let mutable retained: RetainedResults option = None
 
         let publishCurrent write =
             ctx.Discovery.WithCurrent(batchModel, write)
@@ -1512,6 +1514,17 @@ let private processBatchAttempt
                     recheckProjects
                     |> List.choose (fun p -> ctx.Pipeline.GetProjectOptions(AbsProjectPath.value p))
 
+                // Every registered project's options, so the projects this path leaves warm
+                // can be shown to be unchanged by the re-discovery rather than assumed to be.
+                let registeredOptions () =
+                    ctx.Pipeline.GetRegisteredProjects()
+                    |> List.choose (fun p ->
+                        ctx.Pipeline.GetProjectOptions p
+                        |> Option.map (fun options -> AbsProjectPath.create p, options))
+                    |> Map.ofList
+
+                let optionsBefore = registeredOptions ()
+
                 for f in checkableFilesOf recheckProjects |> List.map AbsFilePath.create do
                     ctx.Pipeline.InvalidateFile f
 
@@ -1538,12 +1551,49 @@ let private processBatchAttempt
                 let! refreshedModel = captureModel ()
                 batchModel <- refreshedModel
 
+                // A project outside the re-check set whose options the re-discovery changed
+                // (or which it newly registered) cannot keep its results: it joins the
+                // re-check. Every other one kept its options, and so its results.
+                let recheckSet = Set.ofList recheckProjects
+                let optionsHash = CheckCache.getProjectOptionsHash
+
+                let drifted, unchanged =
+                    registeredOptions ()
+                    |> Map.toList
+                    |> List.filter (fun (project, _) -> not (Set.contains project recheckSet))
+                    |> List.partition (fun (project, options) ->
+                        Map.tryFind project optionsBefore |> Option.map optionsHash
+                        <> Some(optionsHash options))
+
+                if not drifted.IsEmpty then
+                    Logging.info
+                        "daemon"
+                        $"Scoped re-discovery changed the options of %d{drifted.Length} project(s) outside the change; re-checking them too"
+
+                    let driftedProjects = drifted |> List.map fst
+
+                    for f in checkableFilesOf driftedProjects |> List.map AbsFilePath.create do
+                        ctx.Pipeline.InvalidateFile f
+
+                    invalidateScoped (driftedProjects |> List.choose (fun p -> Map.tryFind p optionsBefore))
+
                 if not projFilesChanged.IsEmpty then
                     publishCurrent (fun () -> ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged))
 
                 // Re-derive source files from the refreshed graph (membership
                 // may have shifted) for the same project set.
-                allSourceFiles <- (allSourceFiles @ checkableFilesOf recheckProjects) |> List.distinct
+                allSourceFiles <-
+                    (allSourceFiles @ checkableFilesOf (recheckProjects @ List.map fst drifted))
+                    |> List.distinct
+
+                retained <-
+                    modelGenerationOf initialModel
+                    |> Option.map (fun generation ->
+                        { FromModelGeneration = generation
+                          Files =
+                            checkableFilesOf (List.map fst unchanged)
+                            |> List.map AbsFilePath.create
+                            |> Set.ofList })
 
             | _ ->
                 // ── Full path ────────────────────────────────────────────────
@@ -1597,6 +1647,7 @@ let private processBatchAttempt
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = nextGen
                       ModelGeneration = modelGenerationOf batchModel
+                      Retained = retained
                       StartedAt = batchStartedAt
                       CompletedAt = completedAt }
 
@@ -1641,6 +1692,15 @@ let private processBatchAttempt
             Logging.info "daemon" (checkingAfterChangeLine ctx.RepoRoot allSourceFiles allFilesToCheck.Length)
             let mutable checkedFiles = Set.empty
             let filesToCheckSet = allFilesToCheck |> Set.ofList
+
+            // A file this cohort checks is not carried, even if its check never completes:
+            // its standing result may describe content or dependencies this cohort changed.
+            retained <-
+                retained
+                |> Option.map (fun carried ->
+                    { carried with
+                        Files = Set.difference carried.Files filesToCheckSet })
+
             let tiers = ctx.Graph.GetParallelTiers()
 
             let emitResults (results: FileCheckResult option array) =
@@ -3447,6 +3507,7 @@ let private performScan
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = newGeneration
                       ModelGeneration = modelGeneration
+                      Retained = None
                       StartedAt = scanStartedAt
                       CompletedAt = System.DateTime.UtcNow })
 

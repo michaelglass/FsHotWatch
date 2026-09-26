@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a project-file change that re-discovers the model on the scoped path no longer
+  leaves the projects it did not re-check without results for the new model. The seal
+  (`BatchChecked.Retained`, new `RetainedResults`) names the files whose standing results
+  carry over from the replaced model. A project outside the changed set is carried only
+  when its compiler options are identical across the re-discovery. One whose options
+  moved is now re-checked, where before it kept results from the old options. Breaking:
+  `BatchChecked` has a new field.
+- fix: a `FileChecked` served from the task cache still reaches a plugin state that
+  records per-file outcomes. The framework hands it the replayed result, the published
+  model and the cached run's outcome, so a replay records the same result a run would.
+
 ## 0.10.0-alpha.50 - 2026-09-26
 
 - fix: a change batch that re-discovers the project model now seals the new model even

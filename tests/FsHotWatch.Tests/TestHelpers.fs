@@ -74,6 +74,7 @@ let fakeBatchChecked (files: string list) : BatchChecked =
       Files = files |> List.map AbsFilePath.create
       Generation = 1L
       ModelGeneration = Some fixtureModelGeneration
+      Retained = None
       StartedAt = now
       CompletedAt = now }
 

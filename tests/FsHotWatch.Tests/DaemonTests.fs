@@ -1905,6 +1905,308 @@ let ``a project change that replaces the model seals the new model even with no 
         test <@ seal.Files.IsEmpty @>
         test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>)
 
+/// Two independent projects, `Changed` and `Untouched`, under an analysis-only TestPrune
+/// daemon (no test configs, so the plugin mints analysis evidence). `Start` takes the
+/// Untouched project's extra defines, read at every re-discovery, so a test can change
+/// that project's options.
+type private AnalysisOnlyFixture =
+    { Root: string
+      ChangedProject: string
+      ChangedSource: string
+      UntouchedSource: string
+      Loader: CountingWorkspaceLoader
+      Start: (unit -> string list) -> Daemon.Daemon * (FileChangeKind -> unit) * (unit -> int) }
+
+let private withAnalysisOnlyFixture (name: string) (body: AnalysisOnlyFixture -> unit) =
+    withTempDir name (fun tmpDir ->
+        let project name =
+            let dir = Path.Combine(tmpDir, "src", name)
+            Directory.CreateDirectory(dir) |> ignore
+            let projectPath = Path.Combine(dir, name + ".fsproj")
+            File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+            let sourcePath = Path.Combine(dir, name + ".fs")
+            File.WriteAllText(sourcePath, $"module %s{name}\nlet value = 1\n")
+            projectPath, sourcePath
+
+        let changedProject, changedSource = project "Changed"
+        let untouchedProject, untouchedSource = project "Untouched"
+        let checker = sharedChecker.Value
+
+        let fcsOptionsFor (projectPath: string) (sourcePath: string) =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath)),
+                    assumeDotNetFramework = false
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        let optionsByProject =
+            Map.ofList
+                [ changedProject, fcsOptionsFor changedProject changedSource
+                  untouchedProject, fcsOptionsFor untouchedProject untouchedSource ]
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject changedProject with
+                      SourceFiles = [ changedSource ] }
+                  { minimalLoadedProject untouchedProject with
+                      SourceFiles = [ untouchedSource ] } ]
+            )
+
+        let start (untouchedDefines: unit -> string list) =
+            let callback = ref None
+
+            let watcher: Daemon.WatcherFactory =
+                fun _ onChange _ _ _ ->
+                    callback.Value <- Some onChange
+
+                    { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                      Disposables = [] }
+
+            let mapOptions (projects: Types.ProjectOptions list) =
+                projects
+                |> List.map (fun p ->
+                    let options = optionsByProject[p.ProjectFileName]
+
+                    if p.ProjectFileName = untouchedProject then
+                        { options with
+                            OtherOptions =
+                                Array.append
+                                    options.OtherOptions
+                                    (untouchedDefines () |> List.map (sprintf "--define:%s") |> Array.ofList) }
+                    else
+                        options)
+
+            let daemon =
+                Daemon.createWithWorkspaceLoaderAndWatcher
+                    checker
+                    tmpDir
+                    Daemon.DaemonOptions.defaults
+                    loader
+                    mapOptions
+                    watcher
+
+            let analysis =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    (Path.Combine(tmpDir, "analysis.db"))
+                    tmpDir
+                    None
+                    None
+                    None
+                    None
+                    None
+                    []
+
+            // Counts the FileChecked folds the plugin actually ran. A task-cache replay
+            // skips `Update`, so it is not counted.
+            let liveFolds = ref 0
+
+            daemon.RegisterHandler
+                { analysis with
+                    Update =
+                        fun ctx state event ->
+                            match event with
+                            | FileChecked _ -> Interlocked.Increment(&liveFolds.contents) |> ignore
+                            | _ -> ()
+
+                            analysis.Update ctx state event }
+
+            daemon,
+            (fun change -> (callback.Value |> Option.get) change),
+            (fun () -> Volatile.Read(&liveFolds.contents))
+
+        // A restore's output, newer than its project file, so the deps gate lets FCS check.
+        let restored (projectPath: string) =
+            let objDir = Path.Combine(Path.GetDirectoryName projectPath, "obj")
+            Directory.CreateDirectory(objDir) |> ignore
+            let assets = Path.Combine(objDir, "project.assets.json")
+            File.WriteAllText(assets, "{}")
+            File.SetLastWriteTimeUtc(assets, File.GetLastWriteTimeUtc(projectPath).AddSeconds 1.0)
+
+        restored changedProject
+        restored untouchedProject
+
+        body
+            { Root = tmpDir
+              ChangedProject = changedProject
+              ChangedSource = changedSource
+              UntouchedSource = untouchedSource
+              Loader = loader
+              Start = start })
+
+/// The daemon's current completed model generation.
+let private currentModel (daemon: Daemon.Daemon) =
+    match daemon.Host.WorkSnapshot.ProjectModel with
+    | Observation.Available model -> Some model.Generation
+    | other -> failwith $"expected an available model, got %A{other}"
+
+/// Wait for, then return, the daemon's analysis receipt for `generation`. The receipt is
+/// published with the fold that minted it, so its presence is the ordering signal.
+let private analysisReceiptFor (daemon: Daemon.Daemon) (generation: int64 option) =
+    let receipt () =
+        daemon.Host.WorkSnapshot.AnalysisEvidence
+        |> List.tryFind (fun proof -> Some proof.Generation = generation)
+
+    Assert.True(
+        SpinWait.SpinUntil((fun () -> (receipt ()).IsSome), TimeSpan.FromSeconds 30.0),
+        $"no analysis receipt for model %A{generation}"
+    )
+
+    (receipt ()).Value
+
+/// Record the in-session seals `daemon` publishes.
+let private recordBatchSeals (daemon: Daemon.Daemon) =
+    let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+    daemon.RegisterHandler
+        { Name = PluginName.create "seal-recorder"
+          Init = ()
+          Update =
+            fun _ state event ->
+                async {
+                    match event with
+                    | BatchChecked({ Trigger = InSessionBatch _ } as batch) -> seals.Enqueue batch
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+
+    fun () ->
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 30.0),
+            "the project change must seal its cohort"
+        )
+
+        seals.ToArray() |> Array.head
+
+/// Edit the Changed project file with new bytes (and its restore), and deliver it.
+let private editChangedProject (fixture: AnalysisOnlyFixture) deliver =
+    File.WriteAllText(fixture.ChangedProject, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+
+    let assets =
+        Path.Combine(Path.GetDirectoryName fixture.ChangedProject, "obj", "project.assets.json")
+
+    File.WriteAllText(assets, "{}")
+    File.SetLastWriteTimeUtc(assets, File.GetLastWriteTimeUtc(fixture.ChangedProject).AddSeconds 1.0)
+    deliver (ProjectChanged [ fixture.ChangedProject ])
+
+[<Fact(Timeout = 90000)>]
+let ``a scoped project change leaves an analysis-only daemon a complete receipt for the new model`` () =
+    // Editing one project file re-discovers the model (a new generation) but re-checks
+    // only that project: the other keeps its warm checker. The receipt for the new model
+    // must still vouch for every checkable file — the untouched project's inputs did not
+    // change, so its analysis under the previous model stands for this one.
+    withAnalysisOnlyFixture "daemon-scoped-analysis-receipt" (fun fixture ->
+        let daemon, deliver, _ = fixture.Start(fun () -> [])
+        use _ = daemon
+        let nextSeal = recordBatchSeals daemon
+
+        let bothFiles =
+            Set.ofList
+                [ AbsFilePath.create fixture.ChangedSource
+                  AbsFilePath.create fixture.UntouchedSource ]
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        let bootModel = currentModel daemon
+
+        // Positive control: the cold scan's receipt covers both projects, with no refusal.
+        let bootReceipt = analysisReceiptFor daemon bootModel
+        test <@ bootReceipt.CheckedFiles = bothFiles @>
+        test <@ List.isEmpty bootReceipt.FailureReasons @>
+
+        editChangedProject fixture deliver
+        let seal = nextSeal ()
+        test <@ fixture.Loader.Loads = 2 @>
+        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>
+        // The scoped path re-checked only the changed project, and carries the other.
+        test <@ seal.Files = [ AbsFilePath.create fixture.ChangedSource ] @>
+
+        test
+            <@
+                seal.Retained = Some
+                    { FromModelGeneration = bootModel.Value
+                      Files = Set.singleton (AbsFilePath.create fixture.UntouchedSource) }
+            @>
+
+        let receipt = analysisReceiptFor daemon seal.ModelGeneration
+        test <@ receipt.CheckedFiles = bothFiles @>
+        test <@ List.isEmpty receipt.FailureReasons @>)
+
+[<Fact(Timeout = 90000)>]
+let ``a scoped re-discovery that changes an untouched project's options re-checks it instead of carrying it`` () =
+    // "Outside the changed project" is not the same as "unchanged": the re-discovery
+    // evaluates every project, and one whose options moved cannot keep results produced
+    // under the old ones.
+    withAnalysisOnlyFixture "daemon-scoped-options-drift" (fun fixture ->
+        // The Untouched project's options change at the second evaluation, and only there.
+        let daemon, deliver, _ =
+            fixture.Start(fun () -> if fixture.Loader.Loads >= 2 then [ "DRIFTED" ] else [])
+
+        use _ = daemon
+        let nextSeal = recordBatchSeals daemon
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        let bootModel = currentModel daemon
+        test <@ List.isEmpty (analysisReceiptFor daemon bootModel).FailureReasons @>
+
+        editChangedProject fixture deliver
+        let seal = nextSeal ()
+        test <@ fixture.Loader.Loads = 2 @>
+
+        test
+            <@
+                Set.ofList seal.Files = Set.ofList
+                    [ AbsFilePath.create fixture.ChangedSource
+                      AbsFilePath.create fixture.UntouchedSource ]
+            @>
+
+        test <@ seal.Retained |> Option.forall (fun carried -> carried.Files.IsEmpty) @>
+        test <@ List.isEmpty (analysisReceiptFor daemon seal.ModelGeneration).FailureReasons @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a restarted analysis-only daemon vouches for replayed files without re-analysing them`` () =
+    // The task cache is on disk, so a second daemon over the same tree finds every
+    // FileChecked already cached. A hit is a completed analysis of byte-identical inputs
+    // (its key is the file, its source and its compiler result), so it must count as one
+    // for the new model — without the work running again.
+    withAnalysisOnlyFixture "daemon-restart-analysis-receipt" (fun fixture ->
+        let scanOnce () =
+            let daemon, _, liveFolds = fixture.Start(fun () -> [])
+
+            try
+                daemon.ScanAll() |> Async.RunSynchronously
+                let receipt = analysisReceiptFor daemon (currentModel daemon)
+                receipt, liveFolds ()
+            finally
+                (daemon :> IDisposable).Dispose()
+
+        // Positive control: a cold cache analyses both files.
+        let cold, coldFolds = scanOnce ()
+        test <@ coldFolds = 2 @>
+        test <@ cold.CheckedFiles.Count = 2 && List.isEmpty cold.FailureReasons @>
+
+        // Unchanged tree: every file replays, and every file is vouched for.
+        let restarted, restartedFolds = scanOnce ()
+        test <@ restartedFolds = 0 @>
+        test <@ restarted.CheckedFiles = cold.CheckedFiles @>
+        test <@ List.isEmpty restarted.FailureReasons @>
+
+        // Negative control: a changed source must not replay. Only that file is analysed.
+        File.WriteAllText(fixture.ChangedSource, "module Changed\nlet value = 2\n")
+        let edited, editedFolds = scanOnce ()
+        test <@ editedFolds = 1 @>
+        test <@ List.isEmpty edited.FailureReasons @>)
+
 [<Fact(Timeout = 90000)>]
 let ``a scan whose model changes on every attempt fails by name instead of looping`` () =
     withTempDir "daemon-scan-model-storm" (fun tmpDir ->

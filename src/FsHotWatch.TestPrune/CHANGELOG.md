@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: an analysis-only daemon (no test projects) now earns a clean receipt after a
+  scoped project-file change and after a restart over an unchanged tree. It carries the
+  seal's retained files' analysis into the new model. A `FileChecked` replayed from the
+  task cache now counts as that file's analysis for the current model, with the outcome
+  the cached run reached, without re-running it. Before, a replay left the file's
+  analysis at an older model (or absent after a restart), so the receipt refused every
+  replayed file ("no completed analysis for the current model") and `check` could not
+  be green.
+
 ## 0.13.0-alpha.49 - 2026-09-26
 
 - Bundle TestPrune.Core 13.1.1

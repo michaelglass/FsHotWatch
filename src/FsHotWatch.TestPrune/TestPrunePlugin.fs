@@ -1639,6 +1639,17 @@ type TestPruneState =
     interface IAnalysisEvidenceState with
         member this.AnalysisEvidence = this.AnalysisReceipt
 
+    // A replayed `FileChecked` is recorded by the rule a live fold applies: only a result
+    // published against the model published now describes it (see `notCurrent`).
+    interface IFileReplayState<TestPruneState> with
+        member this.Replayed currentModel result analysis =
+            if result.ModelGeneration.IsNone || result.ModelGeneration <> currentModel then
+                this
+            else
+                { this with
+                    AnalysisFiles =
+                        Map.add result.File (AnalysisFileEvidence.fromResult result analysis) this.AnalysisFiles }
+
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
 /// The run is an `Async` handed to `RunExclusive` and lives as long as the suite does:
@@ -8122,6 +8133,15 @@ let internal createWithQueries
                         // that runs tests earns test evidence instead, and mints none here
                         // (`AnalysisEvidence.fromCompleted` refuses when tests are configured).
                         let flushedState =
+                            // A seal that re-discovered the model on the scoped path names
+                            // the files it did not re-check because their inputs did not
+                            // change. Their outcomes stand for this model.
+                            let analysisFiles =
+                                match batch.Retained, modelGeneration with
+                                | Some carried, Some generation ->
+                                    AnalysisFileEvidence.carryInto generation carried flushedState.AnalysisFiles
+                                | _ -> flushedState.AnalysisFiles
+
                             let membership =
                                 match ctx.ProjectGraph.ObserveCheckableFiles() with
                                 | Some(generation, files) when Some generation = modelGeneration -> Some files
@@ -8129,6 +8149,7 @@ let internal createWithQueries
                                 | None -> None
 
                             { flushedState with
+                                AnalysisFiles = analysisFiles
                                 AnalysisReceipt =
                                     membership
                                     |> Option.bind (fun files ->
@@ -8136,7 +8157,7 @@ let internal createWithQueries
                                             modelGeneration
                                             files
                                             runnableProjects
-                                            flushedState.AnalysisFiles) }
+                                            analysisFiles) }
 
                         // ── DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are
