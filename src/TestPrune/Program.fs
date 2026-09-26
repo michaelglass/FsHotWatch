@@ -248,27 +248,36 @@ let runStatus (repoRoot: string) : int =
 let runRun (repoRoot: string) : int =
     withRepoAuditSink repoRoot (runRunWith jjDiffProvider repoRoot)
 
-let runCommand (parsed: ParsedCommand) : int =
-    let repoRoot =
+/// Run a parsed command, discovering the repo root by walking up from `startDir` when no
+/// `--repo` was given (help needs no repository). Failures come back as exit codes; only `main`
+/// ends the process.
+let runCommandFrom (startDir: string) (parsed: ParsedCommand) : int =
+    let repoRoot () =
         match parsed.RepoRoot with
-        | Some path -> Path.GetFullPath(path)
+        | Some path -> Some(Path.GetFullPath(path))
+        | None -> findRepoRoot startDir
+
+    let withRepoRoot (command: string -> int) : int =
+        match repoRoot () with
         | None ->
-            match findRepoRoot (Directory.GetCurrentDirectory()) with
-            | Some root -> root
-            | None ->
-                eprintfn "Error: not in a jj or git repository"
-                Environment.Exit(1)
-                "" // unreachable
+            eprintfn "Error: not in a jj or git repository"
+            1
+        | Some root -> command root
 
     match parsed.Command with
-    | Index -> runIndex repoRoot parsed.Parallelism
-    | Run -> runRun repoRoot
-    | Status -> runStatus repoRoot
-    | DeadCodeCmd(patterns, includeTests, verbose) ->
-        withRepoAuditSink repoRoot (runDeadCode repoRoot patterns includeTests verbose)
+    // Help needs no repository: it prints usage and succeeds anywhere.
     | Help ->
         showHelp ()
         0
+    | Index -> withRepoRoot (fun root -> runIndex root parsed.Parallelism)
+    | Run -> withRepoRoot runRun
+    | Status -> withRepoRoot runStatus
+    | DeadCodeCmd(patterns, includeTests, verbose) ->
+        withRepoRoot (fun root -> withRepoAuditSink root (runDeadCode root patterns includeTests verbose))
+
+/// Run a parsed command from the current working directory.
+let runCommand (parsed: ParsedCommand) : int =
+    runCommandFrom (Directory.GetCurrentDirectory()) parsed
 
 [<EntryPoint>]
 let main args =

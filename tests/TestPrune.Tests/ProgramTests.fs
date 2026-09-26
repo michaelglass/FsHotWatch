@@ -2180,6 +2180,58 @@ module ``runCommand`` =
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
 
+    [<Fact>]
+    let ``outside any repository returns 1 without exiting the process`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            // Precondition: nothing above the temp dir is a jj/git repository.
+            test <@ findRepoRoot tmpDir = None @>
+
+            let parsed =
+                { Command = Status
+                  RepoRoot = None
+                  Parallelism = 1 }
+
+            // Reaching the assertions at all proves the process was not hard-exited.
+            test <@ runCommandFrom tmpDir parsed = 1 @>
+            test <@ sw.ToString().Contains("Error: not in a jj or git repository") @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``Help outside any repository prints usage and returns 0`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let out = new StringWriter()
+        let err = new StringWriter()
+        let oldOut = Console.Out
+        let oldErr = Console.Error
+        Console.SetOut(out)
+        Console.SetError(err)
+
+        try
+            // Precondition: nothing above the temp dir is a jj/git repository.
+            test <@ findRepoRoot tmpDir = None @>
+
+            let parsed =
+                { Command = Help
+                  RepoRoot = None
+                  Parallelism = 1 }
+
+            test <@ runCommandFrom tmpDir parsed = 0 @>
+            test <@ out.ToString().Contains("TestPrune") @>
+            test <@ not (err.ToString().Contains("not in a jj or git repository")) @>
+        finally
+            Console.SetOut(oldOut)
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
 [<Collection("Console")>]
 module ``main`` =
 

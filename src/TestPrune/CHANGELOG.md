@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix(cli): outside a jj/git repository, `runCommand` now returns exit code 1 to `main` instead of calling `Environment.Exit(1)`, so callers (including tests) keep their process; message and exit code are unchanged. New `runCommandFrom startDir` resolves the repo root from an explicit directory.
+- fix(cli): `help` / `--help` / `-h` / no arguments print usage and exit 0 anywhere; they no longer require a jj/git repository (previously exit 1 outside one). Other commands' exit codes are unchanged.
+
 ## 13.2.0 - 2026-09-26
 
 - Merge main (global-namespace indexing, Core 13.1.1) into trace phase 1 group 2
