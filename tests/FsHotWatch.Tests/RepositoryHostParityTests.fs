@@ -525,10 +525,7 @@ let private runHostedBesideASibling (root: string) =
         CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
 
     let shared =
-        partitions.For(
-            FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create
-                Daemon.Daemon.DefaultCheckerCacheSizeFactor
-        )
+        partitions.For(Daemon.Daemon.checkerCacheSizes Daemon.Daemon.DefaultCheckerCacheSizeFactor)
 
     // Both worktrees under one virtual root: the observed session's projects are the
     // sibling's, so its checks are served from the sibling's.

@@ -771,13 +771,9 @@ let ``Daemon.create hands the configured cache size factor to the checker`` () =
                     CheckerCacheSizeFactor = 10 }
 
         test <@ daemon.RepoRoot = tmpDir @>
-        test <@ captured = Some(FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create 10) @>
+        test <@ captured = Some(Daemon.checkerCacheSizes 10) @>
 
-        test
-            <@
-                captured
-                <> Some(FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create 100)
-            @>)
+        test <@ captured <> Some(Daemon.checkerCacheSizes 100) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``Daemon.create logs the effective cache size factor as one key=value config line`` () =
