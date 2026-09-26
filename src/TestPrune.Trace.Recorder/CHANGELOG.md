@@ -11,3 +11,7 @@
   bitset per scope; the hit path allocates nothing once a thread and context are known.
   With `TESTPRUNE_TRACE_OUT` set, the process writes one `testprune-trace/1` NDJSON dump
   at exit, via a `.tmp` file and a rename, ending in an `{"end":true}` marker.
+- feat: JIT-verification mode. Loaded through `DOTNET_STARTUP_HOOKS` with
+  `TESTPRUNE_TRACE_VERIFY` set, the recorder's `StartupHook` JIT-prepares every listed woven
+  method in the app's own runtime, writes a report naming each method the JIT rejects, and
+  exits before `Main`. Without the variable the hook does nothing.

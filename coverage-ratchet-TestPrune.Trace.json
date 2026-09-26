@@ -42,6 +42,21 @@
         "reason": "GitHub ubuntu runner only: measured line=60.4% branch=31.8% (7/22) deterministically, while the same commit measures 100/100 on macOS and in the mcr.microsoft.com/dotnet/sdk:10.0.401 container running CI's exact step order (8/8 repeats, byte-identical recorder DLLs). The runner's per-line data is inconsistent with a single execution (a guarded line is hit while its guard shows 0; closures show 0 while their callers are hit), so the recorder module's counters look merged or overwritten on that runner. Root cause under investigation; this floor is removed once found.",
         "platform": "linux"
       }
-    ]
+    ],
+    "HardLink.fs": {
+      "line": 96.6,
+      "branch": 75.0,
+      "reason": "Hardlink mirror. Uncovered: the Windows CreateHardLinkW lambda (never runs off Windows; the copy fallback is tested through mirrorWith) and the compiler-generated enumerator-disposal halves of the two `for ... in` loops over sets."
+    },
+    "ShadowBin.fs": {
+      "line": 100.0,
+      "branch": 79.6,
+      "reason": "Shadow bin. Every refusal, the cache hit/miss/corrupt paths, eviction and the weave-set filter are tested. The uncovered branch halves are compiler-generated: enumerator-disposal checks of `for ... in` loops and comprehensions, `use` disposal null checks in the PDB probe, and closure null checks."
+    },
+    "JitVerify.fs": {
+      "line": 100.0,
+      "branch": 90.0,
+      "reason": "JIT verification. Prepared, invalid, generic, abstract, unloadable and malformed lines are all tested. The uncovered halves are compiler-generated: the enumerator-disposal checks of two `for ... in` loops and the null arm of the string pattern."
+    }
   }
 }

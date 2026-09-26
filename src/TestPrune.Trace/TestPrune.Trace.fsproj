@@ -33,6 +33,9 @@
         <Compile Include="PdbCheck.fs" />
         <Compile Include="Launch.fs" />
         <Compile Include="Weaver.fs" />
+        <Compile Include="HardLink.fs" />
+        <Compile Include="DepsJson.fs" />
+        <Compile Include="ShadowBin.fs" />
     </ItemGroup>
 
     <ItemGroup>

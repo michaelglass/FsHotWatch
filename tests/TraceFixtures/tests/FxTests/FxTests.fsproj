@@ -18,6 +18,9 @@
 
     <ItemGroup>
         <PackageReference Include="xunit.v3.mtp-v2" />
+        <!-- Central package management turns off the SDK's implicit FSharp.Core reference; without
+             this the app lists FSharp.Core in its deps.json but ships no FSharp.Core.dll and cannot start. -->
+        <PackageReference Include="FSharp.Core" />
     </ItemGroup>
 
 </Project>
