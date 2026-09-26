@@ -38,6 +38,7 @@
         <Compile Include="PdbCheck.fs" />
         <Compile Include="Launch.fs" />
         <Compile Include="Ctrf.fs" />
+        <Compile Include="ClosureDocuments.fs" />
         <Compile Include="Weaver.fs" />
         <Compile Include="SiteProbes.fs" />
         <Compile Include="Redirects.fs" />

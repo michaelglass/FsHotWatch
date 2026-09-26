@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a closure F# emits into a file's `<StartupCode$…>` class with no sequence points of its
+  own (a wrapper that only passes a function along, such as `List.map f` in a class's `let` or
+  member) now carries a source document in the weave manifest: the document of the method that
+  creates it, at the line in its compiled name (`urlRegexes@431`). The joiner then maps it to
+  its enclosing symbol, where it used to report `unmapped-code … (no-document)` and leave every
+  test that ran it incomplete. A closure whose creators name no single document stays unmapped.
+- fix: with TestPrune.Core indexing F# `exception` declarations, an exception type's probes join
+  to its symbol instead of `unmapped-code … (type-not-indexed)`. Core's `SchemaVersion` moved
+  17 -> 18, which is the environment fingerprint's hash scheme, so traces recorded before it
+  are recorded again.
+
 - fix: `Launch.run` no longer passes the calling process's `TESTPRUNE_TRACE_*` variables to
   the child. Run inside a traced test process, a woven child used to inherit its dump
   directory and id count and write its dump into the parent's run.

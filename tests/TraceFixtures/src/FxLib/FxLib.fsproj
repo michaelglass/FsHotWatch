@@ -10,6 +10,7 @@
         <Compile Include="Types.fs" />
         <Compile Include="Values.fs" />
         <Compile Include="Logic.fs" />
+        <Compile Include="Pipelines.fs" />
     </ItemGroup>
 
 </Project>

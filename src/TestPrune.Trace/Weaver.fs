@@ -235,7 +235,11 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
         let t = recorder.GetType typeName
         m.ImportReference(t.Methods |> Seq.find (fun x -> x.Name = name))
 
-    let entryRow asmName (t: TypeDefinition) (meth: MethodDefinition) =
+    let addDocument (d: Document) =
+        if not (documents.ContainsKey d.Url) then
+            documents.[d.Url] <- hex d.Hash
+
+    let entryRow (closures: ClosureDocuments.Resolver) asmName (t: TypeDefinition) (meth: MethodDefinition) =
         let dbg = meth.DebugInformation
 
         let sps =
@@ -245,22 +249,29 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                 []
 
         for sp in sps do
-            if not (documents.ContainsKey sp.Document.Url) then
-                documents.[sp.Document.Url] <- hex sp.Document.Hash
+            addDocument sp.Document
 
-        let first = List.tryHead sps
+        // Where the method's source is: its own first and last sequence points, else (a
+        // StartupCode closure with none) its creator's document at its name's line.
+        let location =
+            match sps with
+            | [] -> closures.Derive t |> Option.map (fun (d, line) -> d, line, line)
+            | first :: _ -> Some(first.Document, first.StartLine, (List.last sps).EndLine)
+
+        location |> Option.iter (fun (d, _, _) -> addDocument d)
 
         { Id = 0
           Kind = kindOf t meth
           Assembly = asmName
           TypeName = typeKey t
           Member = meth.Name
-          Document = first |> Option.map (fun s -> s.Document.Url)
-          FirstLine = first |> Option.map (fun s -> s.StartLine) |> Option.defaultValue 0
-          LastLine = sps |> List.tryLast |> Option.map (fun s -> s.EndLine) |> Option.defaultValue 0 }
+          Document = location |> Option.map (fun (d, _, _) -> d.Url)
+          FirstLine = location |> Option.map (fun (_, first, _) -> first) |> Option.defaultValue 0
+          LastLine = location |> Option.map (fun (_, _, last) -> last) |> Option.defaultValue 0 }
 
     let rewrite
         set
+        closures
         (m: ModuleDefinition)
         mode
         (hit: MethodReference)
@@ -288,7 +299,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                 changed <- true
 
         if mode = Full || isTestMethod meth then
-            let id = alloc (entryRow asmName t meth)
+            let id = alloc (entryRow closures asmName t meth)
             let il = body.GetILProcessor()
             let first = body.Instructions.[0]
             il.InsertBefore(first, il.Create(OpCodes.Ldc_I4, id))
@@ -327,11 +338,12 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                 let asmName = m.Assembly.Name.Name
                 current.Value <- asmName
                 let hit = recorderMethod m Contract.ProbesType Contract.Hit
+                let closures = ClosureDocuments.Resolver m
 
                 for t in m.GetTypes() |> Seq.toList do
                     for meth in t.Methods |> Seq.toList do
                         if meth.HasBody && meth.Body.Instructions.Count > 0 then
-                            rewrite set m mode hit asmName t meth
+                            rewrite set closures m mode hit asmName t meth
 
             Directory.CreateDirectory outputDir |> ignore
 

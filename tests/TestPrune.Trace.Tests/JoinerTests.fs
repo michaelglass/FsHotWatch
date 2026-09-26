@@ -253,6 +253,10 @@ let ``the woven fixture joins to the real index`` () =
         test <@ find "FxLib.Shape" "NewCircle" = ToSymbol "FxLib.Shape.Circle" @>
         test <@ find "FxLib.Dir" "get_IsNorth" = ToSymbol "FxLib.Dir.North" @>
         test <@ find "FxLib.Shape" "get_Tag" = Dropped @>
+        // A StartupCode closure with no sequence points joins through its derived document.
+        test <@ find "<StartupCode$FxLib>.$Pipelines+DoubleAll@12" "Invoke" = ToSymbol "FxLib.Pipeline.DoubleAll" @>
+        // An F# exception is an indexed type.
+        test <@ find "FxLib.Overflowed" "" = ToSymbol "FxLib.Overflowed" @>
 
         let fxLib = r.Manifest.Rows |> Array.filter (fun x -> x.Assembly = "FxLib")
 

@@ -226,6 +226,26 @@ let ``compiler-generated methods and type initializers get their own kinds`` () 
         test <@ kinds.Contains GeneratedMethod @>)
 
 [<Fact>]
+let ``a StartupCode closure with no sequence points takes its creator's document and its name's line`` () =
+    withWeave [] (fun _ r ->
+        // `List.map double` in a class member: the wrapper closure F# emits into the
+        // file's StartupCode class has no sequence points of its own.
+        let closure =
+            r.Manifest.Rows
+            |> Array.find (fun x ->
+                x.TypeName = "<StartupCode$FxLib>.$Pipelines+DoubleAll@12"
+                && x.Member = "Invoke")
+
+        test <@ closure.Document |> Option.exists (fun d -> d.EndsWith "Pipelines.fs") @>
+        test <@ closure.FirstLine = 12 && closure.LastLine = 12 @>
+
+        test
+            <@
+                r.Manifest.Documents
+                |> Map.exists (fun p h -> p.EndsWith "Pipelines.fs" && h.Length = 64)
+            @>)
+
+[<Fact>]
 let ``a sites-only assembly probes only its test entry points`` () =
     withWeave [] (fun _ r ->
         let driverRows = r.Manifest.Rows |> Array.filter (fun x -> x.Assembly = "FxDriver")
