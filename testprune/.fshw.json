@@ -27,9 +27,14 @@
         "args": "run --project tests/TestPrune.Trace.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "trace"
+        "group": "trace",
+        "traces": false
       }
     ],
+    "traces": {
+      "record": "full-runs",
+      "fingerprintInputs": ["global.json", "Directory.Packages.props"]
+    },
     "excluded": [
       {
         "project": "tests/TraceFixtures/tests/FxTests",
