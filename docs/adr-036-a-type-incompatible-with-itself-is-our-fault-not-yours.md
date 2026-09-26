@@ -126,3 +126,19 @@ the two a test can construct: `TypeMismatchDiagnosticExtendedData` has no public
 - **Naming.** The identifiers say `selfIncompatible` and `recheck`, never `staleEntity` or
   `assemblyIdentityConflict`. A name is a claim, and the only claim we can support is the
   observation: the compiler reported a type against itself.
+
+## Cause, found later
+
+One cause is now known, reproduced, and fixed (`CheckerEvictionTests`,
+`Daemon.checkerCacheSizes`). FCS keys a file's type-check (`TcIntermediate`) by the
+content of the file and of the files before it — not by the type-check results of the
+files above it that it was computed from — and releases entries least-recently-used
+first. A check reaches a project's files in dependency order, so once the files checked
+outnumber the entries kept strongly (`20 × cacheSizeFactor`), a project's first files are
+released first and a collection frees them. The next check computes them again, declaring
+their types a second time, and folds in the downstream entries it still holds, which name
+the first declaration. Cancellation and invalidation play no part.
+
+The daemon's checker now keeps every current per-file type-check, whatever the factor.
+The decision above is unchanged: the guard still reads what the compiler said, not why,
+and still stands between any other path and a red run.

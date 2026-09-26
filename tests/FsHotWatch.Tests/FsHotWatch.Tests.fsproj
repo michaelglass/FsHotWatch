@@ -74,6 +74,7 @@
     <Compile Include="SharedWatchPoolTests.fs" />
     <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="CheckerEvictionTests.fs" />
     <Compile Include="SelfIncompatibleRecheckTests.fs" />
     <Compile Include="DaemonHostingTests.fs" />
     <Compile Include="CheckerPartitionsTests.fs" />
@@ -117,6 +118,7 @@
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneOwnerStateTests.fs" />
+    <Compile Include="TestPruneModelChangeTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />
     <Compile Include="VerdictEvidenceTests.fs" />
     <Compile Include="TestPruneCheckReachSeamTests.fs" />

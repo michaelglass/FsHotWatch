@@ -1792,20 +1792,21 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         test <@ completed @>)
 
-// The "nothing to verify" completion path. A cycle whose changed/queued symbols all prove
-// to have no covering test must resolve as a clean green (0 ran) immediately, even on a
-// cold daemon with no session baseline — rather than falling through to the cold-start
-// full-suite run, which on a loaded box can wedge in executeTests and never resolve
-// WaitForComplete.
+// The "nothing to verify" path on a COLD daemon. A cycle whose changed/queued symbols all
+// prove to have no covering test selects nothing for them — but a daemon that has not run
+// its projects whole under its current model holds no evidence a green could be read
+// from, and a completion that ran nothing would earn none. So the cold cycle runs the
+// projects once, and must still resolve rather than wedge. The skip itself, where evidence
+// exists, is pinned in `TestPruneModelChangeTests`.
 [<Fact(Timeout = 30000)>]
-let ``all changed symbols with no covering test complete green without running`` () =
+let ``a cold cycle whose changes have no covering test runs once for evidence and completes`` () =
     withTempDir "tp-nothing-to-verify" (fun tmpDir ->
         // The nothing-to-verify skip is relative to a full-suite
         // baseline like every other green; without one the run widens to earn it.
         seedBaseline tmpDir [ "TestProject" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
-        // Created only if the suite runs — and it must not.
+        // Created when the suite runs: once, to earn evidence under the current model.
         let sentinel = Path.Combine(tmpDir, "ran")
 
         let configs =
@@ -1845,9 +1846,7 @@ let ``all changed symbols with no covering test complete green without running``
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
-        // No prior run this session ⇒ hasCachedResults = false, which used to force the
-        // cold-start branch into a FULL suite even though the only pending symbol is
-        // untestable.
+        // No prior run this session and no evidence under the current model.
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
@@ -1860,10 +1859,10 @@ let ``all changed symbols with no covering test complete green without running``
 
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
-        | other -> Assert.Fail($"Expected Completed (nothing to verify), got: %A{other}")
+        | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
-        // The discriminator: zero tests ran.
-        test <@ not (File.Exists sentinel) @>
+        // The run that earns the evidence.
+        test <@ File.Exists sentinel @>
 
         let waitTask =
             waitForAllTerminal host (TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
@@ -4030,7 +4029,14 @@ let ``no runtime obligation ledger transition may name zero projects`` () =
 [<Fact>]
 let ``a zero-affected widening names every outstanding debt`` () =
     let causes =
-        zeroAffectedWidening false true 3 (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ]) 2 None
+        zeroAffectedWidening
+            false
+            true
+            3
+            (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ])
+            2
+            None
+            (Set.ofList [ "Beta.Tests"; "Alpha.Tests" ])
 
     test
         <@
@@ -4038,13 +4044,15 @@ let ``a zero-affected widening names every outstanding debt`` () =
                        ZeroAffectedWidening.UnreadableLedger
                        ZeroAffectedWidening.QueuedSymbols 3
                        ZeroAffectedWidening.RuntimeCoverageDebt(1, 1)
-                       ZeroAffectedWidening.OutstandingFailures 2 ]
+                       ZeroAffectedWidening.OutstandingFailures 2
+                       ZeroAffectedWidening.NoCurrentModelEvidence(Set.ofList [ "Alpha.Tests"; "Beta.Tests" ]) ]
         @>
 
     let rendered = ZeroAffectedWidening.describeMany causes
     test <@ rendered.Contains "3 symbol(s)" @>
     test <@ rendered.Contains "1 file(s) naming 1 project(s)" @>
     test <@ rendered.Contains "2 outstanding test failure(s)" @>
+    test <@ rendered.Contains "no whole-project run under the current project model for Alpha.Tests, Beta.Tests" @>
 
 [<Fact>]
 let ``an obligation naming no project is not counted as a reason to widen`` () =
@@ -4054,17 +4062,18 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None Set.empty) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
     let mixed = Map.add "src/Traced.fs" (Map.ofList [ "IntegrationTests", 1L ]) phantom
 
-    test <@ zeroAffectedWidening true false 0 mixed 0 None = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
+    test
+        <@ zeroAffectedWidening true false 0 mixed 0 None Set.empty = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
 
 [<Fact>]
 let ``nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None Set.empty) @>
 
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared

@@ -22,6 +22,23 @@
   settings and the opted-out projects; `createWithScope` is unchanged and records nothing.
 - Bundle TestPrune.Core 13.2.1 (index schema 17, unchanged) and TestPrune.Trace 0.1.0.
 
+- fix: after a project model change, or in a daemon that has not yet run every project
+  whole, `check` earns a green in one run instead of refusing until a `confirm`. The
+  evidence a run earns vouches for a filtered or skipped project only through a
+  whole-project run under the current model, and a model change (a merge that touches a
+  project file, a restart) leaves none. The launch still filtered those projects, so its
+  evidence refused ("filtered execution without a whole-project baseline", "no result or
+  baseline"), and the next `check`, owing nothing, selected nothing and kept the refusing
+  evidence. The launch now runs in full every runnable project that the current model's
+  evidence does not cover whole (logged as `Evidence gap: …`, and named when the
+  zero-affected skip is refused). Under an unchanged model with evidence in hand, the
+  selection is unchanged. Breaking: `TestRunInputs` has a new field, `Earned`.
+- fix: a build that lands while the project graph is being rediscovered no longer erases
+  the dependency fingerprints the next build compares against. It fingerprinted no
+  project and replaced the stored fingerprints with that empty set, so the next build saw
+  every project as new and fanned out none of them. A dependency changed across a
+  rediscovery now fans out as it does anywhere else.
+
 - fix: an analysis-only daemon (no test projects) now earns a clean receipt after a
   scoped project-file change and after a restart over an unchanged tree. It carries the
   seal's retained files' analysis into the new model. A `FileChecked` replayed from the

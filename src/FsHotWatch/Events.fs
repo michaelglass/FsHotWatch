@@ -783,6 +783,29 @@ module internal EarnedEvidence =
                   Refusals = List.distinct refusals }
         | _ -> None
 
+    /// The runnable projects `evidence` does not cover with a whole-project run under the
+    /// current model: a filtered result for any of them, or no result at all, is a refusal
+    /// in the evidence the next completion earns. A launch that runs these in full can earn
+    /// a receipt that supports a green; one that filters or skips them cannot, however
+    /// often it is repeated.
+    ///
+    /// Empty when there is no current model, since no completion earns evidence then.
+    let wholeProjectGap
+        (currentModelGeneration: int64 option)
+        (runnable: Set<string>)
+        (evidence: EarnedEvidence option)
+        : Set<string> =
+        match currentModelGeneration with
+        | None -> Set.empty
+        | Some current ->
+            let covered =
+                evidence
+                |> Option.filter (fun earned -> earned.Generation = current)
+                |> Option.map (fun earned -> earned.WholeProjectCoverage)
+                |> Option.defaultValue Set.empty
+
+            Set.difference runnable covered
+
     /// A completion that selected nothing because everything was already verified keeps the
     /// evidence it was verified by, provided that evidence belongs to the current model.
     let retainedForZeroSelection (currentModelGeneration: int64 option) (previous: EarnedEvidence option) =

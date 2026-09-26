@@ -3617,13 +3617,15 @@ module Daemon =
     type WatcherFactory = DaemonHosting.WatcherFactory
 
     /// The TransparentCompiler cache size factor when `.fshw.json` sets none: FCS's
-    /// own default (its internal `TransparentCompiler.CacheSizes.Default` is `Create 100`), so
-    /// leaving the key out changes nothing.
+    /// own default (its internal `TransparentCompiler.CacheSizes.Default` is `Create 100`).
     ///
     /// The factor scales ENTRY counts, not bytes. At 100 the checker keeps roughly
-    /// 2,000 type-check intermediates strongly held, 5,000 parse results, and 100
-    /// strong plus 200 weak full check results. A smaller factor holds less and
-    /// re-typechecks more, so it trades memory for CPU. FsAutoComplete runs at 10.
+    /// 5,000 parse results, and 100 strong plus 200 weak full check results. A smaller
+    /// factor holds less and re-typechecks more, so it trades memory for CPU.
+    /// FsAutoComplete runs at 10. The per-file type-check intermediates are the
+    /// exception: every current one is kept whatever the factor, because releasing
+    /// some of a project's and keeping others is not a trade but a wrong answer. See
+    /// `checkerCacheSizes`.
     [<Literal>]
     let DefaultCheckerCacheSizeFactor = 100
 
@@ -4259,9 +4261,31 @@ module Daemon =
             transparentCompilerCacheSizes = cacheSizes
         )
 
+    /// The checker's cache sizes at `factor`: FCS's own, except that the per-file
+    /// type-checks (`TcIntermediate`) are never released while they are current.
+    ///
+    /// FCS keys a file's type-check by the content of the file and of the files before
+    /// it, not by the type-check results it was computed from, so a cached file holds
+    /// the types of one particular computation of each file above it. When an upstream
+    /// file's entry is released and a downstream one kept, the next check computes the
+    /// upstream file again and folds the kept entry, which names the first declaration
+    /// of its types, into an environment holding the second: the compiler reports a type
+    /// as incompatible with itself. Entries go in least-recently-used order and a check
+    /// reaches a project's files in dependency order, so once the checked files outnumber
+    /// the entries kept strongly (20 × factor), the top of the largest project goes first
+    /// and the next collection frees it.
+    ///
+    /// Unbounded is still bounded: the cache keeps one version of each (file, project)
+    /// strongly and demotes the others when a new one is computed, so it holds one
+    /// type-check per file the daemon checks — what a full check computes anyway. The
+    /// factor keeps bounding every other cache, including the superseded versions.
+    let checkerCacheSizes (factor: int) : TransparentCompiler.CacheSizes =
+        { TransparentCompiler.CacheSizes.Create factor with
+            TcIntermediateKeepStrongly = Int32.MaxValue }
+
     /// `createCheckerWithCacheSizes` at `DefaultCheckerCacheSizeFactor`.
     let createChecker () =
-        createCheckerWithCacheSizes (TransparentCompiler.CacheSizes.Create DefaultCheckerCacheSizeFactor)
+        createCheckerWithCacheSizes (checkerCacheSizes DefaultCheckerCacheSizeFactor)
 
     /// `create` with the checker constructor as a parameter, so a test can see the
     /// cache sizes that `opts.CheckerCacheSizeFactor` turns into.
@@ -4274,8 +4298,7 @@ module Daemon =
 
         let makeChecker = (DaemonHosting.seams opts.Hosting).Checker makeChecker
 
-        let checker =
-            makeChecker (TransparentCompiler.CacheSizes.Create opts.CheckerCacheSizeFactor)
+        let checker = makeChecker (checkerCacheSizes opts.CheckerCacheSizeFactor)
 
         createWith checker repoRoot opts
 

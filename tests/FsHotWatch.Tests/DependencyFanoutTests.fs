@@ -264,3 +264,20 @@ module ``changedProjects`` =
     let ``a project with no prior fingerprint is not reported`` () =
         let current = Map.ofList [ "A", "fp1" ]
         test <@ Set.isEmpty (changedProjects Map.empty current) @>
+
+module ``advance`` =
+
+    [<Fact>]
+    let ``a build's fingerprints replace the prior ones they observed`` () =
+        let prior = Map.ofList [ "A", "fp1"; "B", "fp1" ]
+        let current = Map.ofList [ "A", "fp2"; "B", "fp1" ]
+        test <@ advance prior current = current @>
+
+    [<Fact>]
+    let ``a project a build could not fingerprint keeps its prior`` () =
+        let prior = Map.ofList [ "A", "fp1"; "B", "fp1" ]
+        let partial = Map.ofList [ "A", "fp2" ]
+        test <@ advance prior partial = Map.ofList [ "A", "fp2"; "B", "fp1" ] @>
+        test <@ advance prior Map.empty = prior @>
+        // The next build that sees B again compares it against the kept prior.
+        test <@ changedProjects (advance prior Map.empty) (Map.ofList [ "B", "fp2" ]) = Set.ofList [ "B" ] @>
