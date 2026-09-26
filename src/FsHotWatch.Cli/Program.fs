@@ -2868,6 +2868,10 @@ let executeCommandWith
                                 (ThreadSuspendInjection.osDescription ())
                                 Environment.GetEnvironmentVariable)
 
+                        // Before the daemon exists, so the helper forks from a small process;
+                        // disposed after the daemon stops. Off unless FSHW_SPAWN_HELPER=1.
+                        use _spawnHelper = SpawnHelperMode.installForDaemon ()
+
                         // Write our own PID so killStaleDaemon can find the actual daemon process,
                         // not the nohup wrapper that launched us.
                         File.WriteAllText(pidFile, string Environment.ProcessId)
@@ -3699,4 +3703,8 @@ let main args =
     // The detached-launch helper is a copy of this CLI; it must never reach parsing.
     match DetachedLaunch.tryRun args with
     | Some exitCode -> exitCode
-    | None -> runCli args
+    | None ->
+        // So is the spawn helper: its stdout is a protocol stream.
+        match SpawnHelperMode.tryRun args with
+        | Some exitCode -> exitCode
+        | None -> runCli args

@@ -4,8 +4,9 @@
 
 - feat: `SpawnHelper`, a small long-lived process that starts children on the daemon's
   behalf so the daemon need not fork. When a helper is installed,
-  `ProcessHelper.runProcessObserved` (hook steps) starts through it. Nothing installs one
-  yet. New public type `SpawnHelperException`. `ProcessRegistry` now owns children
+  `ProcessHelper.runProcessObserved` (hook steps) starts through it; once the helper is lost,
+  spawns start directly again. The CLI installs one when `FSHW_SPAWN_HELPER=1`. New
+  public type `SpawnHelperException`. `ProcessRegistry` now owns children
   through an internal `IOwnedChild`, and its public members are unchanged.
 - fix: a project-file change that re-discovers the model on the scoped path no longer
   leaves the projects it did not re-check without results for the new model. The seal

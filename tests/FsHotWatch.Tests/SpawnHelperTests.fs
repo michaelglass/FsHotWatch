@@ -626,3 +626,29 @@ let ``a tracked child that has exited is not listed as live`` () =
     Assert.Empty(registry.LivePids())
     Assert.Empty(registry.Snapshot())
     registry.Untrack exited
+
+[<Fact(Timeout = 30000)>]
+let ``once the helper is lost, a hook step starts directly`` () =
+    use helper = new ScriptedHelper()
+    helper.Vanish()
+    helper.WaitUntilLost()
+    use _ = SpawnHelper.install helper.Connection
+    let registry = ProcessRegistry.Registry()
+    use _ = ProcessRegistry.install registry
+    let mutable localHandles = []
+
+    let outcome =
+        runProcessObserved
+            (fun _ -> localHandles <- registry.Snapshot())
+            "/bin/sh"
+            (shell "echo direct")
+            "/"
+            []
+            tenSeconds
+
+    match outcome with
+    | Succeeded(ProcessOutput.Drained "direct") -> ()
+    | other -> failwith $"expected the direct spawn to succeed, got %A{other}"
+
+    // A local `Process` handle: this process started the child itself.
+    Assert.Equal(1, List.length localHandles)

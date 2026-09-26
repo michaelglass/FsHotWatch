@@ -1267,7 +1267,9 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 ///
 /// `viaHelper`: when true and a spawn helper is installed in this scope
 /// (`SpawnHelper.install`), the helper starts the child and this process does not fork.
-/// Ownership, bounds, output and teardown are the same either way.
+/// Ownership, bounds, output and teardown are the same either way. Once the helper is
+/// lost, spawns start directly again: the fork a helper was avoiding is still cheaper
+/// than a check that cannot run.
 ///
 /// `onStarted` receives the child's pid once it is admitted, before the call waits on
 /// it: the one moment a caller can say which process it is waiting on while it waits.
@@ -1295,7 +1297,7 @@ let internal runProcessCore
 
     let child =
         match SpawnHelper.current () with
-        | Some connection when viaHelper -> launchViaHelper connection psi
+        | Some connection when viaHelper && not connection.IsLost -> launchViaHelper connection psi
         | _ -> launchDirect psi
 
     use _release =

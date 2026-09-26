@@ -76,7 +76,12 @@ All notable changes to FsHotWatch packages are documented here.
 
 ### core: a spawn helper can start hook steps so the daemon does not fork
 
-- **Not enabled yet: nothing installs a helper, so every spawn is unchanged.** Each
+- **Opt-in: `FSHW_SPAWN_HELPER=1` in the daemon's environment. Without it nothing
+  changes.** With it, the daemon launches `fshw __spawn-helper` before it builds
+  anything, logs the helper's pid, and starts hook steps through it. A helper that
+  cannot start, or is lost later, is reported with a warning, and spawns start directly
+  again; no second helper is forked from the grown daemon. The helper runs with
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0` unless you set that variable yourself. Each
   `Process.Start` forks the calling process, and forking a multi-gigabyte daemon takes
   longer than forking a small process (measured: median 15.5 ms at a 0.3 GB working
   set, 26 ms at 1.8 GB; p90 18 ms vs 48 ms). On macOS 27 a fork that overlaps a

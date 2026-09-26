@@ -282,6 +282,9 @@ let internal serve (input: Stream) (output: Stream) : unit =
         for key, value in env do
             psi.Environment[key] <- value
 
+        // FSHW-SPAWN-001 ok: this IS the spawn the daemon delegates to the helper. The
+        // daemon admits the child to its process scope when `Started` arrives, and the
+        // helper kills whatever it still holds when the daemon goes away.
         match attempt (fun () -> children[id] <- Process.Start psi) with
         | Some failure -> send (Event.StartFailed(id, HelperFailure.ofException failure))
         | None ->
@@ -527,9 +530,20 @@ type internal Connection(toHelper: Stream, fromHelper: Stream) =
     // Every child and every pending kill hears about the loss. A request made after
     // this point is refused by `send`, which checks under the same lock.
     let markLost (reason: string) =
-        lock gate (fun () ->
-            if lost.IsNone then
-                lost <- Some reason)
+        let first =
+            lock gate (fun () ->
+                let first = lost.IsNone
+
+                if first then
+                    lost <- Some reason
+
+                first)
+
+        if first then
+            Logging.warn
+                "spawn-helper"
+                $"the spawn helper is gone (%s{reason}). Its running children are recorded as leaks, and every \
+                  later spawn starts directly from this process; no new helper is started."
 
         children.Values |> Seq.iter (fun child -> child.OnLost reason)
 
