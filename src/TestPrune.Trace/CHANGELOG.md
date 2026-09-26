@@ -23,3 +23,20 @@
   initializers run inside a try/finally that routes their hits to the `S:static-init` scope. The tag
   getter, tag field and singleton fields are identified structurally, so a case named `Tag` and a
   case field named `tag` weave to valid IL.
+- feat: input-capture weave pass (`TestPrune.Trace.Redirects`): rewrites call, callvirt and
+  newobj sites of the redirected BCL methods (`Redirects.table`) into the recorder's `Io` and
+  `ProcessShims` shims. Method pointers (`ldftn`) are left alone.
+- feat: joiner (`TestPrune.Trace.Joiner`): maps each manifest row to an indexed symbol, a file-level
+  entry, or `Dropped` (compiler plumbing whose inner probes attribute elsewhere). A method with a
+  source document matches a same-named symbol in its own file before the nearest preceding
+  declaration, so a line drift between the index and the binary cannot re-attribute it. Union
+  members map to their case, closures to the binding they were written in, and generated members
+  without a document to their owner member, type or enclosing module.
+- feat: shadow bin (`TestPrune.Trace.ShadowBin`): a woven copy of a test app under
+  `bin/Traced/<tfm>/`, beside `bin/Debug/<tfm>/`. Every file is re-hardlinked on each prepare
+  (`HardLink.mirror`); woven files are written to a temp file and renamed over their link, never
+  written through it. Assemblies whose portable PDB names a document under the repository root are
+  woven; the weave is cached under `obj/traced/<content key>` (3 keys kept). The recorder is
+  injected into the copy's deps.json (`DepsJson.injectRecorder`) without its PDB, so it stays out of
+  the app's coverage. A new weave is accepted only after every touched method JIT-compiles in the
+  app's own runtime.

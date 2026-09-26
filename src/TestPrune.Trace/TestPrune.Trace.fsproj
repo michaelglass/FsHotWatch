@@ -34,6 +34,11 @@
         <Compile Include="Launch.fs" />
         <Compile Include="Weaver.fs" />
         <Compile Include="SiteProbes.fs" />
+        <Compile Include="Redirects.fs" />
+        <Compile Include="Joiner.fs" />
+        <Compile Include="HardLink.fs" />
+        <Compile Include="DepsJson.fs" />
+        <Compile Include="ShadowBin.fs" />
     </ItemGroup>
 
     <ItemGroup>

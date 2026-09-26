@@ -136,6 +136,32 @@ type ProjectResult =
 
 exception private ProjectAnalysisFailed of file: string * message: string
 
+exception private ProjectOptionsEmpty of message: string
+
+/// Reconcile a project's static `<Compile Include>` list with the source files of its
+/// LOADED project options — MSBuild's evaluated compile list, conditions applied.
+/// A static item whose `Condition` excluded it is absent from the evaluated list and is
+/// neither analyzed nor handed to the checker, which does not know it and would fail the
+/// whole project. Returns (the files to analyze, in compile order and spelled as the
+/// project options spell them; the static items the evaluation excluded).
+let private evaluatedCompileFiles
+    (compileFiles: string list)
+    (evaluatedSources: string array)
+    : string list * string list =
+    let normalize (path: string) = Path.GetFullPath path
+
+    let evaluatedByPath =
+        evaluatedSources
+        |> Array.map (fun source -> normalize source, source)
+        |> Array.distinctBy fst
+        |> Map.ofArray
+
+    let kept, excluded =
+        compileFiles
+        |> List.partition (fun file -> evaluatedByPath.ContainsKey(normalize file))
+
+    kept |> List.map (fun file -> evaluatedByPath[normalize file]), excluded
+
 /// Sort project infos into topological levels based on project references.
 let topoLevels
     (projectPathSet: Set<string>)
@@ -185,13 +211,31 @@ let indexProject
               Outcome = Cached compileFiles.Length
               Events = [ ProjectCacheHitEvent projName ] }
         | _ ->
-            let projOptions = lazy (getOptions checker fsprojPath)
+            let projOptions = getOptions checker fsprojPath
+
+            let filesToAnalyze, excludedFiles =
+                evaluatedCompileFiles compileFiles projOptions.SourceFiles
+
+            if not excludedFiles.IsEmpty then
+                let names =
+                    excludedFiles
+                    |> List.map (fun f -> Path.GetRelativePath(repoRoot, f).Replace('\\', '/'))
+                    |> String.concat ", "
+
+                eprintfn
+                    $"  %s{projName}: %d{excludedFiles.Length} compile item(s) excluded by the evaluated project (MSBuild condition), not analyzed: %s{names}"
+
+            if filesToAnalyze.IsEmpty && compileFiles |> List.exists File.Exists then
+                raise (
+                    ProjectOptionsEmpty
+                        $"the loaded project lists none of its %d{compileFiles.Length} compile item(s) as a source file"
+                )
 
             let projSnapshot =
-                lazy (createProjectSnapshot (projOptions.Force()) |> Async.RunSynchronously)
+                lazy (createProjectSnapshot projOptions |> Async.RunSynchronously)
 
             let finalAcc =
-                compileFiles
+                filesToAnalyze
                 |> List.fold
                     (fun
                         (idx, analyzedFiles, firstChangedIndex: int option, fileKeys, skippedFiles, events, results)
@@ -232,12 +276,21 @@ let indexProject
                                  FileCacheHitEvent(relPath, "file unchanged") :: events,
                                  r :: results)
                             else
-                                let source = File.ReadAllText(sourceFile)
+                                let analysis =
+                                    try
+                                        let source = File.ReadAllText(sourceFile)
 
-                                match
-                                    analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force()) projName
-                                    |> Async.RunSynchronously
-                                with
+                                        analyzeSourceWithSnapshot
+                                            checker
+                                            sourceFile
+                                            source
+                                            (projSnapshot.Force())
+                                            projName
+                                        |> Async.RunSynchronously
+                                    with ex ->
+                                        Error ex.Message
+
+                                match analysis with
                                 | Ok result ->
                                     let newFirstChanged =
                                         if firstChangedIndex.IsNone then
@@ -282,7 +335,7 @@ let indexProject
             let depCount = results |> List.sumBy _.Dependencies.Length
             let testCount = results |> List.sumBy _.TestMethods.Length
 
-            let fileCount = compileFiles.Length
+            let fileCount = filesToAnalyze.Length
 
             eprintfn
                 $"  %s{projName}: %d{symbolCount} symbols, %d{depCount} deps, %d{testCount} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
@@ -308,7 +361,11 @@ let indexProject
                       TotalFiles = fileCount }
               Events = allEvents }
     with ex ->
-        eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
+        match ex with
+        | ProjectAnalysisFailed(file, message) ->
+            eprintfn $"  Error analyzing %s{file} (project %s{projName}): %s{message}"
+        | ProjectOptionsEmpty message -> eprintfn $"  Error loading %s{projName}: %s{message}"
+        | _ -> eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
         { ProjectName = projName
           ProjectPath = fsprojPath

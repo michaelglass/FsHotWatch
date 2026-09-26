@@ -1399,7 +1399,8 @@ module ``runIndexWith`` =
     /// Fake build runner that always fails.
     let failBuild: BuildRunner = fun _ -> 1
 
-    /// Fake project options provider using script options (no MSBuild needed).
+    /// Fake project options provider using script options (no MSBuild needed). Like a
+    /// loaded project, its source files are the project's whole compile list.
     let scriptOptions: ProjectOptionsProvider =
         fun checker fsprojPath ->
             // Parse the fsproj to find source files, use script options for the first one
@@ -1408,7 +1409,11 @@ module ``runIndexWith`` =
             match compileFiles with
             | firstFile :: _ when File.Exists(firstFile) ->
                 let source = File.ReadAllText(firstFile)
-                getScriptOptions checker firstFile source |> Async.RunSynchronously
+
+                let options = getScriptOptions checker firstFile source |> Async.RunSynchronously
+
+                { options with
+                    SourceFiles = compileFiles |> List.filter File.Exists |> List.toArray }
             | _ ->
                 // Return minimal options
                 { ProjectFileName = fsprojPath
@@ -1479,6 +1484,136 @@ module ``runIndexWith`` =
 
             test <@ owns "src/Lib/Library.fsi" "Library.Token" @>
             test <@ owns "src/Lib/Library.fs" "Microsoft.FSharp.Core.Operators.(+)" @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    /// A test project whose middle compile item carries an MSBuild `Condition` that
+    /// evaluates false, and does not type-check on its own (it references a project
+    /// that is absent, the way an optional sibling checkout would be).
+    let private writeConditionalProject (tmpDir: string) =
+        let projectDir = Path.Combine(tmpDir, "tests", "T")
+        Directory.CreateDirectory(projectDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "T.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="Lib.fs" /><Compile Include="Optional.fs" Condition="Exists('../../../Absent/Absent.fsproj')" /><Compile Include="Tests.fs" /></ItemGroup></Project>"""
+        )
+
+        File.WriteAllText(Path.Combine(projectDir, "Lib.fs"), "module Lib\nlet add a b = a + b\n")
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Optional.fs"),
+            "module Optional\nlet routes = Absent.Route.enumerate ()\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Tests.fs"),
+            "module Tests\ntype FactAttribute() =\n    inherit System.Attribute()\n[<Fact>]\nlet ``adds`` () = Lib.add 1 2 |> ignore\n"
+        )
+
+        projectDir
+
+    /// What MSBuild evaluates for the project above: the conditional item is excluded.
+    let private conditionEvaluatedOptions (projectDir: string) : ProjectOptionsProvider =
+        fun checker fsprojPath ->
+            let options = scriptOptions checker fsprojPath
+
+            { options with
+                SourceFiles = [| Path.Combine(projectDir, "Lib.fs"); Path.Combine(projectDir, "Tests.fs") |] }
+
+    [<Fact>]
+    let ``a compile item an MSBuild condition excludes is skipped and the project's tests are still indexed`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let projectDir = writeConditionalProject tmpDir
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith
+                    successBuild
+                    (conditionEvaluatedOptions projectDir)
+                    tmpDir
+                    testChecker
+                    1
+                    (createNoopSink ())
+
+            Console.SetError(oldErr)
+            let stderr = sw.ToString()
+            test <@ exitCode = 0 @>
+
+            let db = Database.create (Path.Combine(tmpDir, ".test-prune.db"))
+
+            test <@ db.GetTestMethodsInFile "tests/T/Tests.fs" |> List.map _.TestMethod = [ "adds" ] @>
+
+            test <@ db.GetSymbolsInFile "tests/T/Optional.fs" |> List.isEmpty @>
+            test <@ stderr.Contains "not analyzed: tests/T/Optional.fs" @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``a file that cannot be analyzed fails the index naming the file and the reason`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let projectDir = writeConditionalProject tmpDir
+        let testsFile = Path.Combine(projectDir, "Tests.fs")
+
+        // The file is in the evaluated project, but it cannot be read.
+        File.SetUnixFileMode(testsFile, UnixFileMode.None)
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith
+                    successBuild
+                    (conditionEvaluatedOptions projectDir)
+                    tmpDir
+                    testChecker
+                    1
+                    (createNoopSink ())
+
+            Console.SetError(oldErr)
+            let stderr = sw.ToString()
+            test <@ exitCode = 1 @>
+            test <@ stderr.Contains "Error analyzing tests/T/Tests.fs (project T): " @>
+            test <@ stderr.Contains "denied" @>
+            test <@ stderr.Contains "Indexing failed for 1 project(s): T" @>
+            test <@ Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete() @>
+        finally
+            Console.SetError(oldErr)
+            File.SetUnixFileMode(testsFile, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``a loaded project listing none of its compile items fails the index`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        writeConditionalProject tmpDir |> ignore
+
+        let noSources: ProjectOptionsProvider =
+            fun checker fsprojPath ->
+                { scriptOptions checker fsprojPath with
+                    SourceFiles = [||] }
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild noSources tmpDir testChecker 1 (createNoopSink ())
+
+            Console.SetError(oldErr)
+            test <@ exitCode = 1 @>
+
+            test
+                <@
+                    sw.ToString().Contains
+                        "Error loading T: the loaded project lists none of its 3 compile item(s) as a source file"
+                @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)

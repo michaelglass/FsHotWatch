@@ -87,6 +87,19 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
     /// The scope a traced parent passed down, or null.
     member _.ParentScope = parentScope
 
+    /// Absolute repository root; file inputs outside it are not recorded. Null records none.
+    member val RepoRoot: string = null with get, set
+
+    /// Where a file read or a child process is noted: static init, then the current
+    /// scope, then ambient. Never null.
+    member this.NoteScope() : Scope =
+        if Threads.Get().StaticDepth > 0 then
+            staticInit
+        else
+            match this.CurrentScope() with
+            | null -> ambient
+            | s -> s
+
     /// Every scope created so far.
     member _.Scopes: seq<Scope> = byKey.Values :> seq<Scope>
 

@@ -21,6 +21,8 @@ module internal Runtime =
             let s =
                 RecorderState(ids, XunitContextSource.tryCreate (), getEnv Contract.ParentScopeEnv)
 
+            s.RepoRoot <- getEnv Contract.RepoRootEnv
+
             onExit (
                 EventHandler(fun _ _ ->
                     Directory.CreateDirectory outDir |> ignore

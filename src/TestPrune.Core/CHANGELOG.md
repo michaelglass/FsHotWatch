@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `AstAnalyzer.canonicalShortName` is public, so a host that maps compiled names back
+  to indexed symbols (TestPrune.Trace's joiner) shares core's one definition of a symbol's
+  short name instead of copying it.
+
 ## 13.1.0 - 2026-09-25
 
 - feat: a type's content hash covers only its header, so an edit to one union case or

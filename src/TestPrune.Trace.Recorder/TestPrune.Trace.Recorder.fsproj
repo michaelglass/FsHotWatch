@@ -34,6 +34,11 @@
         <Compile Include="RecorderState.fs" />
         <Compile Include="DumpWriter.fs" />
         <Compile Include="Probes.fs" />
+        <Compile Include="Io.fs" />
+        <Compile Include="ProcessShims.fs" />
+        <Compile Include="JitVerify.fs" />
+        <!-- Last: the runtime requires the startup hook type in no namespace. -->
+        <Compile Include="StartupHook.fs" />
     </ItemGroup>
 
     <ItemGroup>
