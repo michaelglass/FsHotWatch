@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-26
+
 - fix: `census` reports each project's newest run whatever its status: a refused run prints
   `REFUSED` with its reason and does not fail the census, a failed one prints `FAILED` with its
   reason and exits 1. With no run at all it says "no trace run" (was "no recorded run").

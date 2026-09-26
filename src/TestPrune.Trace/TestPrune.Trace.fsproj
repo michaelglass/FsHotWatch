@@ -4,7 +4,7 @@
         <TargetFramework>net10.0</TargetFramework>
         <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
         <PackageId>TestPrune.Trace</PackageId>
-        <Version>0.1.0</Version>
+        <Version>0.2.0</Version>
         <Authors>Michael Glass</Authors>
         <Description>Recorded per-test dependencies for TestPrune: IL weaver, shadow bin, trace store and symbol joiner.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>

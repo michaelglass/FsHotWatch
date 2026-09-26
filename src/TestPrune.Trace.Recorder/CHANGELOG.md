@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-26
+
 - fix: a started child whose `TESTPRUNE_TRACE_OUT` differs from this process's is a trace
   of its own: `ProcessShims` no longer gives it this process's scope as its parent scope,
   and removes an inherited one.

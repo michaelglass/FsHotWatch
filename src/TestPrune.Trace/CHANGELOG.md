@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-26
+
 - fix: a closure F# emits into a file's `<StartupCode$…>` class with no sequence points of its
   own (a wrapper that only passes a function along, such as `List.map f` in a class's `let` or
   member) now carries a source document in the weave manifest: the document of the method that
