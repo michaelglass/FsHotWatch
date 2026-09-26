@@ -299,7 +299,7 @@ type ``faithful FsHot FCS capture``() =
                 test <@ pluginResult |> Result.isOk @>
                 test <@ testsResult |> Result.isOk @>
 
-                test <@ (pluginResult |> Result.map _.Dependencies.Length) = Ok 1548 @>
+                test <@ (pluginResult |> Result.map _.Dependencies.Length) = Ok 1549 @>
                 test <@ (testsResult |> Result.map _.Dependencies.Length) = Ok 9629 @>
 
                 let lowPlugin, _ = analyze 4096 pluginFile pluginSource pluginParse pluginCheck

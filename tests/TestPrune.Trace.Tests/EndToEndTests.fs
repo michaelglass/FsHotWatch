@@ -263,6 +263,41 @@ let ``a launcher's cancellation that is not the run's is a refusal`` () =
         ShadowBinTests.deleteProject projectDir
 
 [<Fact>]
+let ``a host-launched preparation refuses an app that ships its own recorder before launching`` () =
+    let projectDir = ShadowBinTests.scratchProject ()
+    let runDir = Directory.CreateTempSubdirectory("tp-e2e-own-recorder-").FullName
+
+    try
+        let debug =
+            Directory.GetDirectories(Path.Combine(projectDir, "bin", "Debug"))
+            |> Array.exactlyOne
+
+        let depsPath = Path.Combine(debug, "FxTests.deps.json")
+        let version = typeof<Probes>.Assembly.GetName().Version.ToString 3
+
+        let asProject, _ =
+            DepsJson.injectRecorder (File.ReadAllText depsPath) "FxTests" version
+            |> Result.defaultWith failwith
+
+        File.WriteAllText(depsPath, asProject)
+        let launched = ref false
+
+        let launcher: Launch.Launcher =
+            fun req ct ->
+                launched.Value <- true
+                Launch.direct req ct
+
+        let expected =
+            ShadowBin.describeRefusal (ShadowBin.AppShipsOwnRecorder "its deps.json lists the recorder as a project")
+
+        test <@ prepareProjectWith launcher CancellationToken.None (request projectDir runDir) = Error expected @>
+        test <@ not launched.Value @>
+        test <@ not (Directory.Exists(Path.Combine(projectDir, "obj", "traced"))) @>
+        test <@ not (Directory.Exists(Path.Combine(runDir, "traces"))) @>
+    finally
+        ShadowBinTests.deleteProject projectDir
+
+[<Fact>]
 let ``preparation never throws`` () =
     match prepareProject (request null (Path.GetTempPath())) with
     | Error why -> test <@ why.StartsWith "trace preparation failed: " @>
