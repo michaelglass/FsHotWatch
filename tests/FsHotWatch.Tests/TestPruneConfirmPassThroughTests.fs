@@ -377,6 +377,7 @@ let private runScenario (root: string) (setup: Setup) =
                 None
                 (Some coveragePaths)
                 []
+                None
         )
 
         match setup.Scope with
@@ -583,19 +584,22 @@ let ``full-suite scope ends with the confirm's run`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``check, confirm, check in one daemon: the last check runs nothing`` () =
-    // The first check selects ProjA for `Lib.foo`; the confirm runs both; the last check
-    // is back under impact selection and owes nothing.
+    // The first check selects ProjA for `Lib.foo`, and runs ProjB too: a fresh daemon has
+    // no whole-project run of it under its model, so a filtered or skipped ProjB would
+    // leave that check's evidence refusing. The confirm runs both; the last check is back
+    // under impact selection and owes nothing.
     let executions = scopeSequence "tp-pt-ccc" [ checkStep; confirmStep; checkStep ]
-    test <@ executions = Map.ofList [ "ProjA", 2; "ProjB", 1 ] @>
+    test <@ executions = Map.ofList [ "ProjA", 2; "ProjB", 2 ] @>
 
 [<Fact(Timeout = 30000)>]
 let ``every confirm runs the suite, never a cached one`` () =
     // A confirm bypasses cache reads for its evidence. Each one in a warm daemon over an
-    // unchanged tree runs both projects again.
+    // unchanged tree runs both projects again. The first check runs both as well: a fresh
+    // daemon has no whole-project evidence under its model.
     let executions =
         scopeSequence "tp-pt-no-replay" [ checkStep; confirmStep; confirmStep; confirmStep ]
 
-    test <@ executions = Map.ofList [ "ProjA", 4; "ProjB", 3 ] @>
+    test <@ executions = Map.ofList [ "ProjA", 4; "ProjB", 4 ] @>
 
 [<Fact(Timeout = 30000)>]
 let ``set-scope impact ends pass-through before any run`` () =

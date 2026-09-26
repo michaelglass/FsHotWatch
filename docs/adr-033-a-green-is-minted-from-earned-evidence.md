@@ -132,3 +132,34 @@ separate defects, both fixed here.
   arrives with its own diagnosis already reported, so a second cause here would
   double-report one failure as two. This publisher adds no cause it did not find. A clean publication records no cause, which is what keeps this from becoming
   furniture on every green.
+
+## Amendment: the launch runs what the evidence cannot vouch for
+
+Evidence vouches for a filtered or skipped project only through a whole-project run under
+the current model. The selector did not know that. It filtered against the durable
+full-suite baseline, which survives a model change and a restart, while the evidence chain
+does not. After any model change (a merge that touches a project file) or in a fresh daemon,
+every filtered run earned refusing evidence. The next `check` owed nothing, selected
+nothing, and kept that evidence, so only `confirm` could end it.
+
+- **The launch closes the gap.** `EarnedEvidence.wholeProjectGap` names the runnable
+  projects the current model's evidence does not cover whole. The launch runs them in full
+  alongside the impact selection, and the zero-affected skip is refused while any remain.
+  With no current model, the gap is empty: no completion earns evidence then, so widening
+  could buy nothing.
+- **Cost.** One whole run per project per model change, and per daemon session. That is
+  the run a green already required. Before, it could only be bought as a full `confirm`.
+  Under an unchanged model with evidence in hand, the selection is unchanged.
+
+Rejected:
+
+- **Let the durable full-suite baseline vouch across a model change.** It would remove the
+  extra runs. But the selector's delta across a model change is incomplete: dependency
+  fanout does not see a version change to a test project's own centrally managed package
+  reference, and a change that only moves compiler options queues no symbol. The generation
+  rule is what catches those today. Carrying the baseline soundly needs a per-project key
+  over the model's inputs (the compiler options of the project's reference closure),
+  recorded with the baseline and compared at launch. That is a larger change, left for its
+  own decision.
+- **Widen only the projects a refusal named.** The refusal is known only after the run.
+  The gap is known at launch, and it names the same projects.

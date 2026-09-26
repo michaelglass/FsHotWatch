@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: a project with more files than the checker keeps no longer reports its own types
+  as incompatible with themselves (`'X' … but here has type 'X'`). FCS keys a file's
+  type-check by the content of the file and of those before it, not by the upstream
+  type-checks it was computed from, and it releases entries least-recently-used first —
+  which, since a check reaches a project's files in dependency order, means the top of the
+  project goes first. Once a collection freed a released upstream file, the next check
+  computed it again, declaring its types a second time, and folded in the downstream
+  files it still held, which name the first declaration. No cancellation or invalidation
+  is involved; the working set only has to exceed `20 × checker.cacheSizeFactor` files
+  (2,000 at the default). The daemon's checker now keeps every current per-file
+  type-check whatever the factor (new `Daemon.checkerCacheSizes`); FCS still keeps one
+  version per file and project, so this holds what a full check computes anyway, and the
+  factor still bounds every other cache.
+- feat: `EarnedEvidence.wholeProjectGap` names the runnable projects the current model's
+  evidence does not cover with a whole-project run, so a launch can run them in full and
+  earn evidence that supports a green.
+
 ## 0.10.0-alpha.51 - 2026-09-26
 
 - fix: a project-file change that re-discovers the model on the scoped path no longer

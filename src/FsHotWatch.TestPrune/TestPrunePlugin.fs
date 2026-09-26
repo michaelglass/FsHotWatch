@@ -1304,6 +1304,9 @@ type internal ZeroAffectedWidening =
     /// No full-suite baseline vouches for what a filtered run would
     /// skip — none recorded, or it never executed a project configured since.
     | NoFullSuiteBaseline of reason: string
+    /// These projects have no whole-project run under the current project model, so the
+    /// evidence a run earns refuses them unless it runs them in full.
+    | NoCurrentModelEvidence of projects: Set<string>
 
 module internal ZeroAffectedWidening =
     let describe (cause: ZeroAffectedWidening) =
@@ -1311,6 +1314,9 @@ module internal ZeroAffectedWidening =
         | ZeroAffectedWidening.NoSessionBaseline ->
             "no run has completed in this session yet (no baseline to be equivalent to)"
         | ZeroAffectedWidening.NoFullSuiteBaseline reason -> reason
+        | ZeroAffectedWidening.NoCurrentModelEvidence projects ->
+            let names = projects |> Set.toList |> String.concat ", "
+            $"no whole-project run under the current project model for %s{names}"
         | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
         | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
             $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
@@ -1336,6 +1342,7 @@ let internal zeroAffectedWidening
     (runtimeObligations: RuntimeCoverageObligations)
     (outstandingFailures: int)
     (fullSuiteBaselineInvalid: string option)
+    (evidenceGap: Set<string>)
     : ZeroAffectedWidening list =
     [ if not hasSessionBaseline then
           ZeroAffectedWidening.NoSessionBaseline
@@ -1361,7 +1368,10 @@ let internal zeroAffectedWidening
           ZeroAffectedWidening.RuntimeCoverageDebt(files, Set.count namedProjects)
 
       if outstandingFailures > 0 then
-          ZeroAffectedWidening.OutstandingFailures outstandingFailures ]
+          ZeroAffectedWidening.OutstandingFailures outstandingFailures
+
+      if not (Set.isEmpty evidenceGap) then
+          ZeroAffectedWidening.NoCurrentModelEvidence evidenceGap ]
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -1693,6 +1703,9 @@ type TestRunInputs =
         /// Seed receipt captured at dispatch. A later BatchChecked may replace the
         /// live state's LastSeeds while this run is still executing.
         Seeds: string list
+        /// The evidence earned so far. Projects it does not cover whole under the current
+        /// model run in full, so this run's own evidence can support a green.
+        Earned: EarnedEvidence option
     }
 
 module TestRunInputs =
@@ -1707,7 +1720,8 @@ module TestRunInputs =
           Debt = state.Debt
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
-          Seeds = state.LastSeeds }
+          Seeds = state.LastSeeds
+          Earned = state.Earned }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -4213,6 +4227,14 @@ let private reportOutstanding
 let private flakinessHistoryPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
 
+/// What a run's `executeTests` needs to record traces: the run's trace settings and
+/// mode, the decision function, and the plugin's activity log and subtasks.
+type internal TraceRunHost =
+    { TraceRuntime: TraceRuntime
+      TraceWiring: TraceWiring
+      TraceLog: string -> unit
+      HoldSubtask: string -> string -> IDisposable }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -4234,6 +4256,12 @@ let private executeTests
     (emitStarted: TestRunStarted -> unit)
     (repoRoot: string)
     (launchDeadline: TimeSpan)
+    // `tests.traces`, resolved for this run's mode, with the plugin's activity log (which
+    // a force run's `ctx = None` would otherwise lose); `None` when not configured, which
+    // leaves every launch exactly as it is without traces.
+    (traces: TraceRunHost option)
+    // The input tree hash the run was launched against, for the traces it records.
+    (launchTreeHash: string option)
     // Receives the run id so the hook's own timings can be filed
     // under this run, beside the CTRF reports the verdict already reads.
     (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
@@ -4354,6 +4382,11 @@ let private executeTests
         // the first's records).
         let mutable flakinessRecords: Flakiness.TestRunRecord list = []
         let flakinessLock = obj ()
+
+        // Each launched project's trace decision, ingested SERIALLY after the parallel
+        // section, beside coverage and for the same reason: one writer to one store.
+        let mutable traceRuns: TracedProjectRun list = []
+        let traceRunsLock = obj ()
 
         /// Write a line to the plugin's activity log when there is a host to write to.
         /// One binding for the whole run: the preflight, the refusal path and the per-
@@ -4573,6 +4606,44 @@ let private executeTests
                                 else
                                     config.Args
 
+                            // TRACES. Decided here, after the preflight certified the build
+                            // output fresh and before the spawn: a traced project launches its
+                            // woven copy; a refused one launches exactly as configured, and the
+                            // refusal is stored with its reason after the run.
+                            let decided =
+                                match traces with
+                                | None -> Untraced None
+                                | Some host ->
+                                    // Weaving and JIT verification can take minutes: held as a
+                                    // subtask, so a wait line names it rather than the run.
+                                    use _ =
+                                        host.HoldSubtask
+                                            $"{config.Project}:traces"
+                                            $"preparing traces for {config.Project}"
+
+                                    host.TraceWiring.Decide
+                                        host.TraceRuntime
+                                        { Project = config.Project
+                                          Command = config.Command
+                                          Args = config.Args
+                                          Environment = config.Environment
+                                          Target = deriveProjectBin config.Args repoRoot
+                                          CtrfPath = ctrfPath }
+                                        runDir
+                                        (List.ofSeq extraArgs)
+
+                            match decided with
+                            | Untraced(Some reason) ->
+                                Logging.warn
+                                    "test-prune"
+                                    $"%s{config.Project}: not tracing this run, launching as configured — %s{reason}"
+                            | Traced(spec, _) ->
+                                Logging.info "test-prune" $"%s{config.Project}: tracing, launching %s{spec.Command}"
+                            | Untraced None -> ()
+
+                            // A ref: the untraced retry below replaces it from inside `runOnce`.
+                            let traceDecision = ref decided
+
                             Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
 
                             let timeoutSpan =
@@ -4611,14 +4682,45 @@ let private executeTests
                             // no TimeoutSec at all.
                             let runOnce =
                                 async {
+                                    let command, args, environment =
+                                        TraceRun.launchOf
+                                            traceDecision.Value
+                                            (config.Command, finalArgs, config.Environment)
+
                                     return
                                         runProcessTo
                                             outputSink
-                                            config.Command
-                                            finalArgs
+                                            command
+                                            args
                                             repoRoot
-                                            config.Environment
+                                            environment
                                             (ProcessBounds.streaming timeoutSpan launchDeadline)
+                                }
+
+                            // A traced launch that verified nothing is repeated untraced
+                            // (see `TraceRun.untracedRetry`), so tracing cannot turn a run red.
+                            let runOnceTracedOrNot =
+                                async {
+                                    let! first = runOnce
+
+                                    match
+                                        TraceRun.untracedRetry
+                                            traceDecision.Value
+                                            (isSucceeded first)
+                                            (ctrfPath |> Option.exists File.Exists)
+                                    with
+                                    | Some reason ->
+                                        Logging.warn "test-prune" $"%s{config.Project}: %s{reason}"
+
+                                        RunLog.note
+                                            runLog
+                                            "the traced launch failed without writing a test report; relaunching \
+                                         untraced. Everything above is the TRACED attempt, everything below the \
+                                         untraced one."
+
+                                        traceDecision.Value <- Untraced(Some reason)
+                                        return! runOnce
+                                    | None -> return first
                                 }
 
                             // See `tryApphostPresent`; `looksLikeApphostMissing` is the
@@ -4645,7 +4747,7 @@ let private executeTests
                             // is DEFERRED ("waiting on build"), never FAILED.
                             let runTestWithRetry =
                                 async {
-                                    let! first = runOnce
+                                    let! first = runOnceTracedOrNot
 
                                     if detectApphostMissing first then
                                         Logging.warn
@@ -4858,6 +4960,15 @@ let private executeTests
                                 | :? UnauthorizedAccessException -> ()
                             | None, _ -> ()
 
+                            if Option.isSome traces then
+                                let traced: TracedProjectRun =
+                                    { Project = config.Project
+                                      Decision = traceDecision.Value
+                                      Filtered = wasFiltered
+                                      CtrfPath = ctrfPath }
+
+                                lock traceRunsLock (fun () -> traceRuns <- traced :: traceRuns)
+
                             results <- (config.Project, result) :: results
 
                     // Atomically fold this group's results into the shared
@@ -4928,6 +5039,24 @@ let private executeTests
             | :? IOException
             | :? UnauthorizedAccessException
             | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+
+        // Traces: after every project finished, before `tidyRunsDir` can rotate the run
+        // directory holding the dumps. `ingestAll` never throws, and nothing it does
+        // reaches `cumulative`: a trace failure is a log line and a stored row, never a
+        // changed result.
+        match traces with
+        | Some host ->
+            let runs = lock traceRunsLock (fun () -> List.rev traceRuns)
+
+            TraceRun.ingestAll
+                host.TraceRuntime
+                (TestPrune.Ports.toSymbolStore db)
+                (runId.ToString("N"))
+                launchTreeHash
+                (fun () -> ReceiptInputTree.read repoRoot)
+                runs
+                host.TraceLog
+        | None -> ()
 
         // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
         // Runs AFTER this run's reports were written, so the
@@ -5397,7 +5526,28 @@ let internal createWithQueries
     // forces a genuine re-run instead of replaying a stale verdict. `[]` → no
     // salt (key byte-identical to the pre-feature key).
     (dependsOn: string list)
+    // `tests.traces`: `None` records nothing and launches every project as configured.
+    (traces: TraceWiring option)
     =
+    /// The traces of a run launched under `mode`, when `tests.traces` is configured, with
+    /// the plugin's activity log and subtasks: a force run's `executeTests` has no `ctx`.
+    let tracesFor (ctx: PluginCtx<TestPruneMsg>) (mode: TestMode) : TraceRunHost option =
+        traces
+        |> Option.map (fun wiring ->
+            { TraceRuntime =
+                { Settings = wiring.Policy
+                  RepoRoot = repoRoot
+                  ExcludedProjects = wiring.OptedOut
+                  Mode = mode }
+              TraceWiring = wiring
+              TraceLog = ctx.Log
+              HoldSubtask =
+                fun key label ->
+                    ctx.StartSubtask key label
+
+                    { new IDisposable with
+                        member _.Dispose() = ctx.EndSubtask key } })
+
     let db = Database.create dbPath
     let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
@@ -6396,9 +6546,18 @@ let internal createWithQueries
             let runtimeForceProjects =
                 launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
 
+            // A project with no whole-project run under the current model can only be
+            // vouched for by running it in full: filtered or skipped, it is a refusal in
+            // the evidence this run earns, and a later run that selects nothing keeps that
+            // refusal. After a model change or a restart, this is every project the
+            // current model has not yet seen run whole.
+            let evidenceGap =
+                EarnedEvidence.wholeProjectGap (observeModelGeneration ctx) (fullSuiteProjects configs) inputs.Earned
+
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
                 let widened = Set.union widened runtimeForceProjects
+                let widened = Set.union widened evidenceGap
 
                 if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
                     Set.union widened (fullSuiteProjects configs)
@@ -6409,6 +6568,13 @@ let internal createWithQueries
                 Logging.info
                     "test-prune"
                     "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
+
+            if not (Set.isEmpty evidenceGap) then
+                let names = evidenceGap |> Set.toList |> String.concat ", "
+
+                Logging.info
+                    "test-prune"
+                    $"Evidence gap: %d{Set.count evidenceGap} project(s) have no whole-project run under the current project model (%s{names}) — running them in full, so this run's evidence can support a green"
 
             match baselineInvalid with
             | Some reason when not ledgerUnreadable ->
@@ -6564,7 +6730,7 @@ let internal createWithQueries
                         wouldHaveRunSelection
                             configs
                             quarantinedAffectedByProject
-                            (coarseFallbackProjects configs coarseGaps fanoutProjects)
+                            (Set.union (coarseFallbackProjects configs coarseGaps fanoutProjects) evidenceGap)
                             runtimeForceProjects
                             ledgerUnreadable
                         |> Some
@@ -6690,6 +6856,7 @@ let internal createWithQueries
                                 inputs.Debt.RuntimeObligations
                                 (List.length inputs.OutstandingFailures)
                                 baselineInvalid
+                                evidenceGap
 
                         // An EMPTY selection is not "a few projects": `selectionOf` reads
                         // it as no selection at all and every configured project runs in
@@ -6754,6 +6921,8 @@ let internal createWithQueries
                             emitStarted
                             repoRoot
                             launchDeadline
+                            (tracesFor ctx inputs.Mode)
+                            launch.InputTreeHash
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
@@ -6818,6 +6987,8 @@ let internal createWithQueries
     /// the normal BuildCompleted impact flow.
     let commandForceRun
         (ctx: PluginCtx<TestPruneMsg>)
+        // The mode the force run launches under: it decides whether it records traces.
+        (mode: TestMode)
         (configs: TestConfig list)
         (filter: string option)
         (reply: Tasks.TaskCompletionSource<string>)
@@ -6872,6 +7043,8 @@ let internal createWithQueries
                             emitStarted
                             repoRoot
                             launchDeadline
+                            (tracesFor ctx mode)
+                            commandLaunch.InputTreeHash
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
@@ -7546,8 +7719,9 @@ let internal createWithQueries
     // framework may cancel it once that client is gone. Its test hosts run in its own
     // process scope (reaped), its result publishes only through the fold it returns
     // (never folded when cancelled), and its `finally` closes the run it opened.
-    let requestTestRun (ctx: PluginCtx<TestPruneMsg>) state configs filter reply =
-        let work = PluginWork.cooperativeSafe (commandForceRun ctx configs filter reply)
+    let requestTestRun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) configs filter reply =
+        let work =
+            PluginWork.cooperativeSafe (commandForceRun ctx state.Mode configs filter reply)
 
         match runTestHostExclusive ctx Set.empty (Some reply) work with
         | Claimed ->
@@ -8304,7 +8478,8 @@ let internal createWithQueries
                         // fanout in the pending set (consumed by the queued rerun).
                         let state =
                             { state with
-                                PriorProjectFingerprints = currentFingerprints }
+                                PriorProjectFingerprints =
+                                    DependencyFanout.advance state.PriorProjectFingerprints currentFingerprints }
 
                         // Asked BEFORE selection: a held key refuses the claim, and
                         // selection is the expensive step (a flush and an impact query
@@ -9480,6 +9655,7 @@ let internal createWithLaunchDeadline
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)
+    (traces: TraceWiring option)
     =
     createWithQueries
         ImpactQueries.ofDatabase
@@ -9493,6 +9669,53 @@ let internal createWithLaunchDeadline
         afterRun
         coveragePaths
         dependsOn
+        traces
+
+/// Create a TestPrune handler that honors declared test-scope exclusions and records
+/// per-test traces as `tests.traces` asks.
+///
+/// `traces` is the parsed `tests.traces` block; `None` records nothing and launches every
+/// project exactly as `createWithScope` does. `untracedProjects` names the projects that
+/// opted out with `"traces": false`. A project tracing refuses (no build output, a refused
+/// weave, a failed JIT verification, an unknown `dotnet run` option) runs untraced, and
+/// the refusal is stored in the trace database and logged with its reason. No trace
+/// failure changes a test result or the verdict.
+///
+/// See `createWithScope` for `resolveExcludedProjects` and the launch policy.
+let createWithTraces
+    (traces: TraceSettings option)
+    (untracedProjects: Set<string>)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    let launchDeadline =
+        Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
+        |> Option.ofObj
+        |> resolveLaunchDeadline
+
+    createWithLaunchDeadline
+        launchDeadline
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
+        (traces
+         |> Option.map (fun settings ->
+             { Policy = settings
+               OptedOut = untracedProjects
+               Decide = TraceRun.decide }))
 
 /// Create a TestPrune handler that honors declared test-scope exclusions.
 ///
@@ -9519,13 +9742,9 @@ let createWithScope
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)
     =
-    let launchDeadline =
-        Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
-        |> Option.ofObj
-        |> resolveLaunchDeadline
-
-    createWithLaunchDeadline
-        launchDeadline
+    createWithTraces
+        None
+        Set.empty
         resolveExcludedProjects
         dbPath
         repoRoot

@@ -74,6 +74,25 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a type incompatible with itself — the cause, and the fix
+
+The guard added for diagnostics like `expected 'Domain.Types.UserId' but here
+has type 'Domain.Types.UserId'` said what caused them was unknown. It is now
+known and reproduced: FCS keeps each file's type-check under a key made of file content,
+not of the type-check of the files above it that it was computed from, and releases entries
+least-recently-used first. A check reaches a project's files in dependency order, so in a
+repository with more files than the checker keeps strongly (`20 × checker.cacheSizeFactor`,
+2,000 at the default) the first files of the largest project are released first, a
+collection frees them, and the next check computes them again while still holding
+downstream files that name the previous computation's types. No cancellation, invalidation
+or restore is needed — only a working set larger than the cache, and a collection.
+
+The daemon's checker now keeps every current per-file type-check, whatever the factor.
+Memory stays bounded: FCS holds one version per file and project strongly and demotes the
+rest, so this is one type-check per file checked. `checker.cacheSizeFactor` keeps bounding
+every other cache. The guard, its one re-check and the `fcs-internal` ledger entry stay,
+for any path this does not cover; a survivor is still worth a report.
+
 ### core, test-prune: a finished test run no longer waits behind a storm of checks
 
 - **A tests run's result folds once the fold in flight commits.** A plugin's mailbox

@@ -41,6 +41,7 @@
     <Compile Include="ImpactDbPool.fs" />
     <Compile Include="Traces.fs" />
     <Compile Include="TestMode.fs" />
+    <Compile Include="TraceRun.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
@@ -51,6 +52,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="13.1.1" />
-      </ItemGroup>
+    <PackageReference Include="TestPrune.Core" Version="13.2.1" />
+    <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
+         trace store. Needs the TestPrune.Core it was built against (13.2.x). -->
+    <PackageReference Include="TestPrune.Trace" Version="0.1.0" />
+  </ItemGroup>
 </Project>

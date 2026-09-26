@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless
+  configured). A run whose mode the policy records (`full-runs`: `confirm`/nightly;
+  `every-run`: every run) launches each traced project's woven copy from
+  `bin/Traced/<tfm>/` instead of its `dotnet run` line, then stores each test's trace
+  (the symbols and repository files it executed) in a separate trace database
+  (`.fshw/test-traces.db` by default). A project that opts out (`"traces": false`), or
+  that tracing refuses, launches exactly as configured. A refusal is stored in the trace
+  database and logged with its reason, one `traces:` line per project in the plugin's
+  activity log: no CTRF report, an unrecognized `dotnet run` option, a non-`dotnet run`
+  command, no build output, an empty weave (for example PDB paths mapped to `/_/`), a
+  C#-only test app, or failed JIT verification. A traced launch that fails without
+  writing its CTRF report re-runs untraced, so tracing cannot turn a run red. A traced
+  run that reported is never re-run, so a real failure or a flake is not re-rolled. A
+  trace that cannot back its claims (the input tree moved or was unreadable during the
+  run, a test with no outcome) is stored incomplete with its reasons. Test selection and
+  verdicts are unchanged.
+- feat: `TestPrunePlugin.createWithTraces` registers the plugin with `tests.traces`
+  settings and the opted-out projects; `createWithScope` is unchanged and records nothing.
+- Bundle TestPrune.Core 13.2.1 (index schema 17, unchanged) and TestPrune.Trace 0.1.0.
+
+- fix: after a project model change, or in a daemon that has not yet run every project
+  whole, `check` earns a green in one run instead of refusing until a `confirm`. The
+  evidence a run earns vouches for a filtered or skipped project only through a
+  whole-project run under the current model, and a model change (a merge that touches a
+  project file, a restart) leaves none. The launch still filtered those projects, so its
+  evidence refused ("filtered execution without a whole-project baseline", "no result or
+  baseline"), and the next `check`, owing nothing, selected nothing and kept the refusing
+  evidence. The launch now runs in full every runnable project that the current model's
+  evidence does not cover whole (logged as `Evidence gap: …`, and named when the
+  zero-affected skip is refused). Under an unchanged model with evidence in hand, the
+  selection is unchanged. Breaking: `TestRunInputs` has a new field, `Earned`.
+- fix: a build that lands while the project graph is being rediscovered no longer erases
+  the dependency fingerprints the next build compares against. It fingerprinted no
+  project and replaced the stored fingerprints with that empty set, so the next build saw
+  every project as new and fanned out none of them. A dependency changed across a
+  rediscovery now fans out as it does anywhere else.
+
 ## 0.13.0-alpha.50 - 2026-09-26
 
 - fix: an analysis-only daemon (no test projects) now earns a clean receipt after a

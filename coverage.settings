@@ -17,6 +17,8 @@
         <ModulePath>.*[/\\]TestPrune\.Falco\.dll$</ModulePath>
         <ModulePath>.*[/\\]TestPrune\.Sql\.dll$</ModulePath>
         <ModulePath>.*[/\\]TestPrune\.SqlHydra\.dll$</ModulePath>
+        <ModulePath>.*[/\\]TestPrune\.Trace\.dll$</ModulePath>
+        <ModulePath>.*[/\\]TestPrune\.Trace\.Recorder\.dll$</ModulePath>
         <!-- CoverageRatchet.Core is release tooling, not first-party FsHotWatch
              code. Exclude its portable-PDB sources from this repository's floors. -->
         <ModulePath>.*[/\\]CoverageRatchet\.Core\.dll$</ModulePath>

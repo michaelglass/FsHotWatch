@@ -316,6 +316,7 @@ let ``incident: a test child that never becomes a live process drives the run to
                 None
                 None
                 []
+                None
 
         host.RegisterHandler(handler)
 

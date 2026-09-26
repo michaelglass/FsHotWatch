@@ -326,6 +326,7 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 | `projects` | `array` | `[]` | List of test project configurations. |
 | `excluded` | `array` | `[]` | Solution test projects the gate deliberately does **not** run, each with the reason it does not. The only sanctioned way for a test project in the solution to be outside the scope — see [The scope must cover the solution](#the-scope-must-cover-the-solution). |
 | `solution` | `string` | — | The solution the test scope is reconciled against. Only needed when the repo root holds more than one `*.slnx`/`*.sln`, or when the authority is not at the root. |
+| `traces` | `object` | — | Opt-in per-test trace recording. Absent means off. `record`: `"off"`, `"full-runs"` (`confirm`/nightly) or `"every-run"`; `db` (default `".fshw/test-traces.db"`); `weaveTests`: `"sites"` (default) or `"full"`; `fingerprintInputs` / `fingerprintEnv`: repo-relative files and environment variable names that key a trace's environment; `verifyTimeoutSec` (default `300`). A run the policy records launches each project's woven copy from `bin/Traced/<tfm>/` (the configured command must be `dotnet run …`) and stores every test's trace after the run. A project tracing refuses runs untraced, and the refusal is stored and named in `fshw status test-prune`. Tracing never changes a verdict or a selection. |
 
 **Test attribution extensions:**
 
@@ -508,6 +509,7 @@ merge verdict without one.
 | `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
 | `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` reads `obj/project.assets.json` and injects the matching CTRF switches for a resolved xUnit 3 or 4 runner; missing, malformed, conflicting, and unknown versions receive no report switches. `ctrf` forces report switches, using the detected family when possible and the xUnit 3 names for an unknown custom runner. `off` never injects them and the exit code stays authoritative. |
+| `traces` | `bool` | `true` | `false` keeps this project out of `tests.traces` recording: it always launches as configured. |
 
 **`analyzers` fields:**
 
