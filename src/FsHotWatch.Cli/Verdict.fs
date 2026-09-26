@@ -1845,8 +1845,17 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
             (match reason with
              | NoTestsReason.AlreadyVerified -> box "already-verified"
              | NoTestsReason.ChangesUncovered _ -> box "changes-uncovered"
+             | NoTestsReason.NoRunYet -> box "no-run-yet"
+             | NoTestsReason.TreeMoved -> box "tree-moved"
+             | NoTestsReason.TreeUnreadable -> box "tree-unreadable"
+             | NoTestsReason.EvidenceRevoked _ -> box "evidence-revoked"
+             | NoTestsReason.CoversNothing -> box "covers-nothing"
              | NoTestsReason.UnknownReason token -> box token
              | NoTestsReason.Unstated -> null)
+           detail =
+            (match reason with
+             | NoTestsReason.EvidenceRevoked detail -> box detail
+             | _ -> null)
            uncoveredSymbols =
             (match reason with
              | NoTestsReason.ChangesUncovered(symbols, _, _) -> box (List.toArray symbols)
@@ -2587,7 +2596,7 @@ let private parseScope (el: JsonElement) : TestScope =
                     |> Seq.toList
                 | _ -> [] }
 
-        NoTestsReason.ofToken token symbols total unrunnable
+        NoTestsReason.ofToken token (tryString el "detail") symbols total unrunnable
 
     // A kind from another version, a label its counts contradict, outright garbage. The
     // file said something about its scope and this build cannot read it:

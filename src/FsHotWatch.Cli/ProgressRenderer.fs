@@ -701,6 +701,8 @@ module AgentHints =
                   "             `nothing needed re-verifying` nor `nothing covers this change`" ]
             | NoTestsRun(NoTestsReason.UnknownReason token) ->
                 [ $"             the daemon called this zero '%s{token}', which this build does not understand" ]
+            // No zero selection: the daemon holds no evidence for this tree, and says why.
+            | NoTestsRun reason -> [ $"             %s{NoTestsReason.describe reason}" ]
             | _ -> []
 
         // A check runs the tests in SEVERAL batches, each with its own

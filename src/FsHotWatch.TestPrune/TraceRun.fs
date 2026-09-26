@@ -12,12 +12,21 @@
 ///    its refusal, in the separate trace store, and log one line per project naming the
 ///    counts or the reason.
 ///
-/// Neither step throws. Tracing records evidence about a run; it never decides one, so no
-/// trace failure can change a test result, the verdict, or the run's lifecycle.
+/// Neither step throws, except that `decide` lets a cancelled run's
+/// `OperationCanceledException` through. Tracing records evidence about a run; it never
+/// decides one, so no trace failure can change a test result, the verdict, or the run's
+/// lifecycle.
+///
+/// Preparation's JIT-verification child is launched through `ProcessHelper`, so it joins
+/// the run's process scope: a daemon or run shutting down mid-verify kills it with the
+/// run's other children, and it is visible to leak reporting.
 namespace FsHotWatch.TestPrune
 
 open System
 open System.IO
+open System.Threading
+open FsHotWatch
+open FsHotWatch.ProcessHelper
 open TestPrune.Trace
 
 /// What tracing needs to know about the run a project launches in.
@@ -74,11 +83,12 @@ type TraceIngestion =
         -> Result<TraceIngest.IngestSummary, string>
 
 /// How a plugin instance traces: its `tests.traces` settings, the projects that opted
-/// out, and the decision function (`TraceRun.decide`, or a test's stand-in).
+/// out, and the decision function (`TraceRun.decide`, or a test's stand-in), given the
+/// run's cancellation token.
 type internal TraceWiring =
     { Policy: TraceSettings
       OptedOut: Set<string>
-      Decide: TraceRuntime -> TraceProject -> string -> string list -> TraceDecision }
+      Decide: CancellationToken -> TraceRuntime -> TraceProject -> string -> string list -> TraceDecision }
 
 /// Deciding which projects a run traces, and storing what they recorded.
 [<RequireQualifiedAccess>]
@@ -148,9 +158,50 @@ module TraceRun =
                             session
                         )
 
-    /// For one project about to launch: trace it or not, and how. Never throws.
-    let decide rt project runDir extraArgs =
-        decideWith TraceSession.prepareProject TracedLaunch.dotnetRootOfThisProcess rt project runDir extraArgs
+    /// The exit code a verify child reports when it overran its timeout and was killed.
+    [<Literal>]
+    let TimedOutExitCode = -1
+
+    /// `launcher`, telling `onStarted` the child's pid as soon as it is running.
+    let internal launcherWith (onStarted: int -> unit) : Launch.Launcher =
+        fun req ct ->
+            // A scope of its own inside the run's: cancelling `ct` kills this child (and
+            // only it), and closing the run's scope or the daemon's still reaches it.
+            let outcome =
+                ProcessRegistry.withChildScope ct (fun () ->
+                    runProcessObserved
+                        onStarted
+                        req.Exe
+                        (req.Args |> List.map quoteArg |> String.concat " ")
+                        req.WorkDir
+                        req.Env
+                        (ProcessBounds.silent req.Timeout))
+
+            ct.ThrowIfCancellationRequested()
+
+            match outcome with
+            | Succeeded output -> 0, ProcessOutput.text output
+            | Failed(code, output) -> code, ProcessOutput.text output
+            | TimedOut(after, tail, kill) ->
+                TimedOutExitCode,
+                $"timed out after %s{renderBudget after} (%s{renderKillBrief kill}): %s{ProcessOutput.text tail}"
+
+    /// TestPrune.Trace's process launcher on fshw's spawn: the JIT-verification child is
+    /// admitted into the current process scope. The verify output is silent until it
+    /// exits, so it is bounded by its timeout alone.
+    let launcher: Launch.Launcher = launcherWith ignore
+
+    /// For one project about to launch: trace it or not, and how. Preparation runs its
+    /// children in the current process scope and stops once `ct` is cancelled, raising
+    /// `OperationCanceledException`; nothing else throws.
+    let decide (ct: CancellationToken) rt project runDir extraArgs =
+        decideWith
+            (TraceSession.prepareProjectWith launcher ct)
+            TracedLaunch.dotnetRootOfThisProcess
+            rt
+            project
+            runDir
+            extraArgs
 
     /// The command, argument line and environment to launch: the traced ones, or `plain`.
     let launchOf (decision: TraceDecision) (plain: string * string * (string * string) list) =

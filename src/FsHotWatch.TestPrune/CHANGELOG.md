@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- fix: CTRF auto-detection (`reportVerificationFormat: auto`, the default) now finds a
+  test project that references any xUnit v3 package carrying the Microsoft.Testing.Platform
+  runner — `xunit.v3.mtp-v1`, `xunit.v3.mtp-v2`, `xunit.v3.core.mtp-v1`/`-v2` — not only
+  `xunit.v3`. Detection keys on `xunit.v3.core.mtp-v*`, the package whose MTP bridge
+  registers the CTRF switches, in the restored `obj/project.assets.json`; its version
+  still picks the xUnit 3 or xUnit 4 switch names. Such a project previously got no CTRF
+  report, so it lost per-test outcomes and trace recording refused it (`no-ctrf-report`).
+- fix: after a green run, an edit that changes no symbols (a comment, whitespace, a
+  non-source file under `src/` or `tests/`) is re-verified instead of ending `check` with
+  "no tests ran (the daemon did not say why)". Two things went wrong. First, the
+  `BuildCompleted` cache key names the changed symbols and project files, not the bytes,
+  so the build replayed the earlier green without running the handler. `test-scope` then
+  found its receipt bound to the old tree and sent no reason. Second, even when the
+  handler ran, the zero-affected skip ("already verified") earned nothing on the new tree.
+  Now a `BuildCompleted` never replays while no receipt is bound to the current input
+  tree, and the zero-affected skip is refused there (logged as "no test evidence is bound
+  to the tree as it is now"), so every runnable project runs in full once and earns a
+  receipt for the edited tree. A later build over the same tree skips as before.
+- fix: `test-scope` names why no tests ran whenever the completion behind it selected
+  tests: `no-run-yet`, `tree-moved`, `tree-unreadable`, `evidence-revoked` (with
+  `noTestsDetail`, the revocation reason) or `covers-nothing`. Before, all of these went
+  out with no `noTestsReason`.
+- Breaking: `TestPruneState` has a new field, `ReceiptRevoked`; `TestRunInputs` has a new
+  field, `EvidenceTree`; new public type `UnverifiedTree`.
+- fix: a traced run's JIT-verification child is now launched through fshw's process
+  helper, so it joins the run's process scope. A daemon or run shutting down mid-verify
+  kills it with the run's other children (it used to run on until the verify timeout), and
+  it is visible to leak reporting.
+- fix: cancelling a traced run stops trace preparation: the weave stops between assemblies
+  and the verification child is killed, instead of the cancelled run waiting minutes for
+  them to finish. A cancelled preparation is not stored as a refusal.
+- Bundle TestPrune.Trace 0.2.0 (cancellable `TraceSession.prepareProjectWith` with an
+  injectable process launcher).
+
 ## 0.13.0-alpha.51 - 2026-09-26
 
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless

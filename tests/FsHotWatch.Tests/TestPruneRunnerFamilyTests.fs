@@ -11,19 +11,70 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 // --- CTRF runner family: report flags follow the resolved xUnit major ---
 
-let private writeRunnerAssets (projectPath: string) (packageVersion: string) =
-    let objDir = Path.Combine(Path.GetDirectoryName(projectPath), "obj")
-    Directory.CreateDirectory(objDir) |> ignore
+/// A restored graph shaped as NuGet writes it for a project whose ONLY xUnit
+/// reference is `referencedId`: the reference, plus the transitive closure the
+/// xUnit v3 packages actually declare (`libraries` lists every package in the
+/// closure, not just direct references).
+let private restoredClosure (referencedId: string) (version: string) =
+    let closure =
+        match referencedId with
+        | "xunit.v3" ->
+            let mtp = if version.StartsWith "3." then "mtp-v1" else "mtp-v2"
+            [ "xunit.v3"; $"xunit.v3.%s{mtp}"; $"xunit.v3.core.%s{mtp}" ]
+        | "xunit.v3.mtp-v1" -> [ "xunit.v3.mtp-v1"; "xunit.v3.core.mtp-v1" ]
+        | "xunit.v3.mtp-v2" -> [ "xunit.v3.mtp-v2"; "xunit.v3.core.mtp-v2" ]
+        | other -> [ other ]
 
-    File.WriteAllText(
-        Path.Combine(objDir, "project.assets.json"),
-        $"""{{"version":3,"libraries":{{"xunit.v3/%s{packageVersion}":{{"type":"package"}}}}}}"""
-    )
+    let libraries =
+        closure
+        @ [ "xunit.v3.assert"
+            "xunit.v3.extensibility.core"
+            "xunit.v3.runner.inproc.console" ]
+        |> List.map (fun id -> $"\"%s{id}/%s{version}\":{{\"type\":\"package\"}}")
+        |> String.concat ","
+
+    $"""{{"version":3,"libraries":{{%s{libraries},"Microsoft.Testing.Platform/2.0.0":{{"type":"package"}}}}}}"""
 
 let private writeRunnerAssetsJson (projectPath: string) (json: string) =
     let objDir = Path.Combine(Path.GetDirectoryName(projectPath), "obj")
     Directory.CreateDirectory(objDir) |> ignore
     File.WriteAllText(Path.Combine(objDir, "project.assets.json"), json)
+
+let private writeRunnerAssets (projectPath: string) (packageVersion: string) =
+    writeRunnerAssetsJson projectPath (restoredClosure "xunit.v3" packageVersion)
+
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("xunit.v3", "3.2.2", 3)>]
+[<InlineData("xunit.v3", "4.0.0", 4)>]
+[<InlineData("xunit.v3.mtp-v1", "3.2.2", 3)>]
+[<InlineData("xunit.v3.mtp-v2", "3.2.2", 3)>]
+[<InlineData("xunit.v3.mtp-v2", "4.0.0", 4)>]
+[<InlineData("xunit.v3.core.mtp-v1", "3.2.2", 3)>]
+[<InlineData("xunit.v3.core.mtp-v2", "4.0.0", 4)>]
+let ``detectCtrfRunnerFamily detects every xUnit v3 package id that brings the MTP runner``
+    (referencedId: string)
+    (version: string)
+    (major: int)
+    =
+    withTempDir "fshw-detect-xunit-mtp-ids" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssetsJson proj (restoredClosure referencedId version)
+        let expected = if major = 3 then Xunit3 else Xunit4
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some expected @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily does not detect a project whose xUnit v3 packages carry no MTP runner`` () =
+    withTempDir "fshw-detect-xunit-no-runner" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        // An extensibility library and a plain MTP project: xUnit packages and the
+        // platform are present, but nothing that registers xUnit's CTRF reporter.
+        writeRunnerAssetsJson proj (restoredClosure "xunit.v3.common" "3.2.2")
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
 [<Fact(Timeout = 5000)>]
 let ``detectCtrfRunnerFamily resolves xUnit 3 from restored assets`` () =
@@ -103,7 +154,7 @@ let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicti
 
         writeRunnerAssetsJson
             proj
-            """{"version":3,"libraries":{"xunit.v3/3.2.2":{"type":"package"},"xunit.v3/4.0.0":{"type":"package"}}}"""
+            """{"version":3,"libraries":{"xunit.v3.core.mtp-v1/3.2.2":{"type":"package"},"xunit.v3.core.mtp-v2/4.0.0":{"type":"package"}}}"""
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
@@ -127,7 +178,7 @@ let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with 
 
         writeRunnerAssetsJson
             proj
-            $"""{{"version":3,"libraries":{{"xunit.v3/4.0.0":{{"type":"package"}},"xunit.v3/%s{unknownVersion}":{{"type":"package"}}}}}}"""
+            $"""{{"version":3,"libraries":{{"xunit.v3.core.mtp-v2/4.0.0":{{"type":"package"}},"xunit.v3.core.mtp-v2/%s{unknownVersion}":{{"type":"package"}}}}}}"""
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
@@ -150,7 +201,7 @@ let ``detectCtrfRunnerFamily requires the xUnit asset to be exactly a package`` 
     withTempDir "fshw-detect-xunit-library-type" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
         File.WriteAllText(proj, "<Project />")
-        writeRunnerAssetsJson proj $"""{{"version":3,"libraries":{{"xunit.v3/4.0.0":%s{library}}}}}"""
+        writeRunnerAssetsJson proj $"""{{"version":3,"libraries":{{"xunit.v3.core.mtp-v2/4.0.0":%s{library}}}}}"""
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 

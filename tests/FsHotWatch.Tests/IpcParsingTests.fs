@@ -323,6 +323,47 @@ let ``none scope preserves why no tests ran`` () =
 
     test <@ unstated = (NoTestsRun NoTestsReason.Unstated) @>
 
+    let noRunYet = scopeOf ",\"noTestsReason\":\"no-run-yet\""
+    let treeMoved = scopeOf ",\"noTestsReason\":\"tree-moved\""
+    let treeUnreadable = scopeOf ",\"noTestsReason\":\"tree-unreadable\""
+    let coversNothing = scopeOf ",\"noTestsReason\":\"covers-nothing\""
+
+    let revoked =
+        scopeOf ",\"noTestsReason\":\"evidence-revoked\",\"noTestsDetail\":\"the run aborted\""
+
+    test <@ noRunYet = NoTestsRun NoTestsReason.NoRunYet @>
+    test <@ treeMoved = NoTestsRun NoTestsReason.TreeMoved @>
+    test <@ treeUnreadable = NoTestsRun NoTestsReason.TreeUnreadable @>
+    test <@ coversNothing = NoTestsRun NoTestsReason.CoversNothing @>
+    test <@ revoked = NoTestsRun(NoTestsReason.EvidenceRevoked "the run aborted") @>
+
+    // A revocation with its detail missing is still named, never silent.
+    match scopeOf ",\"noTestsReason\":\"evidence-revoked\"" with
+    | NoTestsRun(NoTestsReason.EvidenceRevoked detail) -> test <@ detail.Contains "no detail" @>
+    | other -> failwith $"expected evidence-revoked, got %A{other}"
+
+[<Fact(Timeout = 10000)>]
+let ``every stated no-tests reason reads as a cause, never as silence`` () =
+    let described =
+        [ NoTestsReason.NoRunYet
+          NoTestsReason.TreeMoved
+          NoTestsReason.TreeUnreadable
+          NoTestsReason.EvidenceRevoked "the run aborted"
+          NoTestsReason.CoversNothing ]
+        |> List.map NoTestsReason.describe
+
+    test
+        <@
+            described
+            |> List.forall (fun text -> text.StartsWith "no tests ran" && not (text.Contains "did not say"))
+        @>
+
+    test <@ described.[0].Contains "no test run has completed" @>
+    test <@ described.[1].Contains "changed after the last run" @>
+    test <@ described.[2].Contains "could not be read" @>
+    test <@ described.[3].Contains "the run aborted" @>
+    test <@ described.[4].Contains "cover no configured test project" @>
+
 [<Fact(Timeout = 10000)>]
 let ``zero reasons are total across known unknown and truncated evidence`` () =
     let already = NoTestsReason.describe NoTestsReason.AlreadyVerified
@@ -337,9 +378,10 @@ let ``zero reasons are total across known unknown and truncated evidence`` () =
     test <@ unknown.Contains "future-zero" && unknown.Contains "does not understand" @>
 
     let widenedCount =
-        NoTestsReason.ofToken (Some "changes-uncovered") [ "A"; "B" ] 0 UnrunnableCoverage.none
+        NoTestsReason.ofToken (Some "changes-uncovered") None [ "A"; "B" ] 0 UnrunnableCoverage.none
 
-    let future = NoTestsReason.ofToken (Some "future-zero") [] 0 UnrunnableCoverage.none
+    let future =
+        NoTestsReason.ofToken (Some "future-zero") None [] 0 UnrunnableCoverage.none
 
     test <@ widenedCount = NoTestsReason.ChangesUncovered([ "A"; "B" ], 2, UnrunnableCoverage.none) @>
     test <@ future = NoTestsReason.UnknownReason "future-zero" @>

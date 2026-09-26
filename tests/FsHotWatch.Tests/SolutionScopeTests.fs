@@ -110,6 +110,34 @@ let ``isTestProject: a runner marker is what makes a test project`` () = test <@
 let ``isTestProject: a library that merely references xunit runs nothing`` () =
     test <@ not (isTestProject libraryXml) @>
 
+/// A project whose only runner marker is one xUnit v3 package reference.
+let private referencingOnly (packageId: string) =
+    $"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="%s{packageId}" Version="3.2.2" />
+  </ItemGroup>
+</Project>"""
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("xunit.v3")>]
+[<InlineData("xunit.v3.mtp-v1")>]
+[<InlineData("xunit.v3.mtp-v2")>]
+[<InlineData("xunit.v3.core.mtp-v1")>]
+[<InlineData("XUnit.V3.Core.MTP-v2")>]
+let ``isTestProject: every xUnit v3 package that brings the MTP runner is a runner marker`` (packageId: string) =
+    test <@ isTestProject (referencingOnly packageId) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("xunit.v3.assert")>]
+[<InlineData("xunit.v3.runner.inproc.console")>]
+[<InlineData("xunit.v3.mtp-v1.extras")>]
+let ``isTestProject: an xUnit v3 package without the MTP runner is not a runner marker`` (packageId: string) =
+    test <@ not (isTestProject (referencingOnly packageId)) @>
+
 [<Fact(Timeout = 15000)>]
 let ``isTestProject: the VSTest-era markers count too`` () =
     // A suite added with the older runner must not slip through a detector built

@@ -261,12 +261,19 @@ let isTestProject (projectXml: string) : bool =
         let referencesPackage (name: string) =
             Regex.IsMatch(projectXml, @"Include\s*=\s*""" + Regex.Escape name + @"""", RegexOptions.IgnoreCase)
 
+        // The same pattern CTRF auto-detection is built from, so the two agree on
+        // which xUnit v3 package ids bring the MTP runner.
+        let referencesXunitMtpRunner =
+            Regex.Matches(projectXml, @"Include\s*=\s*""([^""]+)""")
+            |> Seq.exists (fun m ->
+                FsHotWatch.TestPrune.TestPrunePlugin.xunitMtpRunnerPackageId.IsMatch(m.Groups[1].Value.Trim()))
+
         propertyIsTrue "UseMicrosoftTestingPlatformRunner"
         || propertyIsTrue "IsTestProject"
         || propertyIsTrue "TestingPlatformDotnetTestSupport"
+        || referencesXunitMtpRunner
         || [ "Microsoft.NET.Test.Sdk"
              "Microsoft.Testing.Platform"
-             "xunit.v3.mtp-v2"
              "xunit.runner.visualstudio"
              "NUnit3TestAdapter"
              "MSTest.TestAdapter" ]

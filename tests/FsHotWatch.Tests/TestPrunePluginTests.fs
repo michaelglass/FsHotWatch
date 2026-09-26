@@ -4037,6 +4037,8 @@ let ``a zero-affected widening names every outstanding debt`` () =
             2
             None
             (Set.ofList [ "Beta.Tests"; "Alpha.Tests" ])
+            // Owed but not named: without a session baseline, the baseline run is the cause.
+            true
 
     test
         <@
@@ -4062,18 +4064,29 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None Set.empty) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None Set.empty false) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
     let mixed = Map.add "src/Traced.fs" (Map.ofList [ "IntegrationTests", 1L ]) phantom
 
     test
-        <@ zeroAffectedWidening true false 0 mixed 0 None Set.empty = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
+        <@
+            zeroAffectedWidening true false 0 mixed 0 None Set.empty false = [ ZeroAffectedWidening.RuntimeCoverageDebt(
+                                                                                   1,
+                                                                                   1
+                                                                               ) ]
+        @>
 
 [<Fact>]
 let ``nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None Set.empty) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None Set.empty false) @>
+
+[<Fact>]
+let ``nothing owed over a tree no evidence is bound to is a named reason to widen`` () =
+    let causes = zeroAffectedWidening true false 0 Map.empty 0 None Set.empty true
+    test <@ causes = [ ZeroAffectedWidening.UnverifiedTree ] @>
+    test <@ (ZeroAffectedWidening.describeMany causes).Contains "a comment" @>
 
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared

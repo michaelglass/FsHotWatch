@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a `check` with no test evidence for the current tree says why instead of "no tests
+  ran (the daemon did not say why)". `NoTestsReason` has new cases, `NoRunYet`,
+  `TreeMoved`, `TreeUnreadable`, `EvidenceRevoked` and `CoversNothing`, read from the
+  daemon's `noTestsReason`/`noTestsDetail` and round-tripped through `.fshw/verdict.json`
+  (`reason`, `detail`). `Unstated` remains for daemons older than this CLI. Breaking:
+  `NoTestsReason.ofToken` takes the detail as a new second argument.
+- fix: after a green run, an edit that changes no symbols (such as a comment) no longer
+  ends `check` with exit 3. The daemon runs the suite once on the edited tree (see
+  FsHotWatch.TestPrune).
+- fix: the solution-scope check now counts a project as a test project when it
+  references any xUnit v3 package that brings the Microsoft.Testing.Platform runner —
+  `xunit.v3`, `xunit.v3.mtp-v1`/`-v2`, `xunit.v3.core.mtp-v1`/`-v2` — not only
+  `xunit.v3.mtp-v2`. The package-id pattern is the one CTRF auto-detection is built
+  from, so the two agree on which ids carry the runner.
+
 ## 0.14.0-alpha.70 - 2026-09-26
 
 - feat: `FSHW_SPAWN_HELPER=1` makes a starting daemon launch a spawn helper

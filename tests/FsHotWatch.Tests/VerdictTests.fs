@@ -1456,6 +1456,18 @@ let ``a check that ran no tests is told to re-run check rather than redirect its
     test <@ not (text.Contains "for a MERGE verdict use `fshw confirm`") @>
 
 [<Fact>]
+let ``a check with no evidence for its tree is told why`` () =
+    let v =
+        { greenVerdict "sha256:abc" 12 with
+            Command = Verdict.Check
+            Scope = NoTestsRun NoTestsReason.TreeMoved
+            Baseline = BaselineFixtures.reading }
+
+    let text = hintsFor v |> String.concat "\n"
+    test <@ text.Contains "changed after the last run that earned test evidence" @>
+    test <@ not (text.Contains "did not say") @>
+
+[<Fact>]
 let ``a check whose scope reply was unreadable is told to re-run check rather than redirect its workflow`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
@@ -1767,6 +1779,15 @@ let ``every scope round-trips through the file`` () =
         test <@ roundTrip (FullSuite 6) = FullSuite 6 @>
         test <@ roundTrip (ImpactFiltered(2, 6)) = ImpactFiltered(2, 6) @>
         test <@ roundTrip (NoTestsRun NoTestsReason.Unstated) = (NoTestsRun NoTestsReason.Unstated) @>
+
+        for reason in
+            [ NoTestsReason.NoRunYet
+              NoTestsReason.TreeMoved
+              NoTestsReason.TreeUnreadable
+              NoTestsReason.EvidenceRevoked "the run aborted: host died"
+              NoTestsReason.CoversNothing ] do
+            test <@ roundTrip (NoTestsRun reason) = NoTestsRun reason @>
+
         test <@ roundTrip ScopeUnknown = ScopeUnknown @>
         // The reason travels with it: a consumer that has to ask "unreadable why?" and
         // gets no answer will treat the check as flaky rather than as broken.

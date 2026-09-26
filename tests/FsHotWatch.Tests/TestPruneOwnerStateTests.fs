@@ -216,6 +216,7 @@ let private pendingDebtFixture () =
 
     let launch =
         { fullSuiteLaunch [ "ProjA" ] with
+            InputTreeHash = ReceiptInputTree.read root
             Symbols = Set.singleton symbol
             CoveringProjectsBySymbol = Map.ofList [ symbol, Set.singleton "ProjA" ] }
 
@@ -584,8 +585,14 @@ let private replayEligibleOwner () =
     let handler =
         create ":memory:" root (Some [ config "ProjA" ]) None None None None []
 
+    // Bound to the tree, as a real launch is: only evidence for the tree as it is may
+    // replay.
+    let launch =
+        { fullSuiteLaunch [ "ProjA" ] with
+            InputTreeHash = ReceiptInputTree.read root }
+
     let green =
-        update (recordingCtx ()) handler handler.Init (finished [ "ProjA", passing ] (fullSuiteLaunch [ "ProjA" ]))
+        update (recordingCtx ()) handler handler.Init (finished [ "ProjA", passing ] launch)
 
     Assert.True((buildKey handler green).IsSome, "positive control: a settled green may replay")
     handler, green

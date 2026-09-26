@@ -28,6 +28,10 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FsHotWatch.Tests</_Parameter1>
     </AssemblyAttribute>
+    <!-- The CLI's solution-scope check shares the xUnit MTP package-id patterns -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.Cli</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
@@ -55,6 +59,6 @@
     <PackageReference Include="TestPrune.Core" Version="13.2.1" />
     <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
          trace store. Needs the TestPrune.Core it was built against (13.2.x). -->
-    <PackageReference Include="TestPrune.Trace" Version="0.1.0" />
+    <PackageReference Include="TestPrune.Trace" Version="0.2.0-local.a995-ref.nrluvlzs.gca73500cd75a.dirty" />
   </ItemGroup>
 </Project>

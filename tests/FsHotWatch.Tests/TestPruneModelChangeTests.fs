@@ -245,8 +245,15 @@ let ``a build over an empty graph does not erase the fingerprints the next build
         let launched, launch = buildAndLaunch f state
         launch, update f launched (finishedGreen launch)
 
+    // Bound to the tree, as a real launch is: a receipt over no tree is no evidence
+    // for it, and the next build would run every project to earn some.
     let verified =
-        update f f.Handler.Init (finishedGreen (fullSuiteLaunch [ "ProjA"; "ProjB" ]))
+        update
+            f
+            f.Handler.Init
+            (finishedGreen
+                { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    InputTreeHash = ReceiptInputTree.read root })
 
     // Positive control: with the graph available, an unchanged build fans out nothing.
     let quiet, afterFirst = settle verified
