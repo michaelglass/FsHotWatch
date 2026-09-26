@@ -48,6 +48,7 @@
         <Compile Include="DaemonStartupFailure.fs" />
         <Compile Include="ThreadSuspendInjection.fs" />
         <Compile Include="DetachedLaunch.fs" />
+        <Compile Include="SpawnHelperMode.fs" />
         <Compile Include="RepositoryHostMode.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />

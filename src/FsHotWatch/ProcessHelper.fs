@@ -570,6 +570,28 @@ let internal isProcessAlive (pid: int) : Result<bool, string> =
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
+let mutable private directSpawns = 0L
+let mutable private helperSpawns = 0L
+
+/// Children started so far by this process: `(direct, throughHelper)`. `direct` counts
+/// every fork this process made itself; `throughHelper` counts children a spawn helper
+/// started for it. Cumulative, so a reader takes differences between two readings.
+let spawnCounts () : int64 * int64 =
+    Interlocked.Read &directSpawns, Interlocked.Read &helperSpawns
+
+/// Count a child and log one `spawn via=… cmd=… pid=…` line for it, so forks can be
+/// counted from the log.
+let private recordSpawn (throughHelper: bool) (command: string) (pid: int) =
+    let via =
+        if throughHelper then
+            Interlocked.Increment &helperSpawns |> ignore
+            "helper"
+        else
+            Interlocked.Increment &directSpawns |> ignore
+            "direct"
+
+    Logging.info "process" $"spawn via=%s{via} cmd=%s{IO.Path.GetFileName command} pid=%d{pid}"
+
 /// How long ONE read of the process table may take. `ps` returns in milliseconds; a
 /// box that cannot answer in this long is reported as "tree unknown", not waited on.
 let internal ProcessTableBudget = TimeSpan.FromSeconds 3.0
@@ -589,6 +611,7 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
             )
 
         use ps = Process.Start psi
+        recordSpawn false "ps" ps.Id
         let text = ps.StandardOutput.ReadToEndAsync()
 
         if
@@ -1138,6 +1161,102 @@ let internal killIfUndecided (kill: unit -> 'Killed) (decide: unit -> 'T) : 'T =
         kill () |> ignore
         reraise ()
 
+/// Read `reader` to its end on a DEDICATED thread (`LongRunning`), synchronously,
+/// handing each chunk to `onChunk`.
+///
+/// A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
+/// and under a saturated pool — a `check` running the full suite in parallel,
+/// exactly when a spawn's output matters most — the reader may never run, the 2 s
+/// drain window expires having read zero bytes, and the child's output comes back
+/// as `""`: the clock measuring the POOL, not the process.
+///
+/// Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
+/// captured from it is all there ever was. See `pumpReachedEof`.
+///
+/// The pump runs on `TaskScheduler.Default`, never the CALLER's scheduler. A
+/// parameterless `StartNew` inherits `TaskScheduler.Current`, and a caller running
+/// on a scheduler it is itself blocking — `runProcessCore` parks it in the watchdog
+/// loop — would never start it: the child's output would go unread and a healthy
+/// run would come back as a drain timeout.
+let private pumpReader (reader: IO.StreamReader) (onChunk: string -> unit) : Task<bool> =
+    Task.Factory.StartNew(
+        (fun () ->
+            let mutable failure = None
+
+            try
+                let buf = Array.zeroCreate<char> 4096
+                let mutable go = true
+
+                while go do
+                    let n = reader.Read(buf, 0, buf.Length)
+
+                    if n = 0 then go <- false else onChunk (String(buf, 0, n))
+            with ex ->
+                failure <- Some ex
+
+            pumpReachedEof failure),
+        CancellationToken.None,
+        TaskCreationOptions.LongRunning,
+        TaskScheduler.Default
+    )
+
+/// A launched child as `runProcessCore` watches it: one this process started, or one a
+/// spawn helper started on its behalf (`SpawnHelper`). Everything the watchdog, the
+/// drain and the teardown do to the child goes through here.
+[<NoComparison; NoEquality>]
+type internal Launched =
+    {
+        Pid: int
+        /// The registry's key and view of the child (`ProcessRegistry.admitChildOrRefuse`).
+        Key: obj
+        Owned: ProcessRegistry.IOwnedChild
+        HasExited: unit -> bool
+        /// A bounded wait for exit: the watchdog poll's "sleep".
+        WaitForExit: int -> unit
+        ExitCode: unit -> int
+        KillTree: unit -> unit
+        /// Start delivering the child's stdout and stderr to the handler. Each task
+        /// completes when its stream stops, `true` only at end of stream.
+        Pump: (string -> unit) -> Task<bool> * Task<bool>
+        /// Let go of the child's handle.
+        Release: unit -> unit
+    }
+
+let private launchDirect (psi: ProcessStartInfo) : Launched =
+    let proc = Process.Start psi
+
+    { Pid = proc.Id
+      Key = proc
+      Owned = ProcessRegistry.ownedProcess proc
+      HasExited = fun () -> proc.HasExited
+      WaitForExit = fun ms -> proc.WaitForExit(ms: int) |> ignore
+      ExitCode = fun () -> proc.ExitCode
+      KillTree = fun () -> proc.Kill(entireProcessTree = true)
+      Pump = fun onChunk -> pumpReader proc.StandardOutput onChunk, pumpReader proc.StandardError onChunk
+      Release = proc.Dispose }
+
+/// Start `psi` through the helper. The helper receives the child's complete
+/// environment; it resolves a bare command on its own PATH, which it inherited from
+/// the daemon.
+let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessStartInfo) : Launched =
+    let env = [ for KeyValue(key, value) in psi.Environment -> key, value ]
+
+    let child =
+        connection.Start(psi.FileName, psi.Arguments, psi.WorkingDirectory, env, SpawnHelper.StartBudget)
+
+    { Pid = child.Pid
+      Key = child
+      Owned = child
+      HasExited = fun () -> child.HasExited
+      WaitForExit = fun ms -> child.WaitForExit ms |> ignore
+      ExitCode = fun () -> child.ExitCode
+      KillTree = child.KillTree
+      Pump =
+        fun onChunk ->
+            let drained = child.Attach onChunk
+            drained, drained
+      Release = child.Dispose }
+
 /// THE spawn. Polls `HasExited` (never a single blocking `WaitForExit(-1)`, which
 /// a machine sleep turns into a permanent wait) and ALWAYS bounds the post-exit
 /// drain (never an unbounded `Task.WaitAll` on the redirected streams, which a
@@ -1169,11 +1288,18 @@ let internal killIfUndecided (kill: unit -> 'Killed) (decide: unit -> 'T) : 'T =
 /// the kill and names its survivors after it (`accountTeardown`), returned alongside
 /// the outcome. `runProcessTo` passes false; `runProcessAccounted` passes true.
 ///
+/// `viaHelper`: when true and a spawn helper is installed in this scope
+/// (`SpawnHelper.install`), the helper starts the child and this process does not fork.
+/// Ownership, bounds, output and teardown are the same either way. Once the helper is
+/// lost, spawns start directly again: the fork a helper was avoiding is still cheaper
+/// than a check that cannot run.
+///
 /// `onStarted` receives the child's pid once it is admitted, before the call waits on
 /// it: the one moment a caller can say which process it is waiting on while it waits.
 /// A throwing observer is logged and otherwise ignored, like a throwing sink — the child
 /// is already running and must stay watched.
 let internal runProcessCore
+    (viaHelper: bool)
     (accounted: bool)
     (sink: (string -> unit) option)
     (onStarted: int -> unit)
@@ -1192,16 +1318,28 @@ let internal runProcessCore
 
     let psi = makeChildProcessStartInfo command args workDir env
 
-    use proc = Process.Start(psi)
+    let helper =
+        SpawnHelper.current ()
+        |> Option.filter (fun connection -> viaHelper && not connection.IsLost)
+
+    let child =
+        match helper with
+        | Some connection -> launchViaHelper connection psi
+        | None -> launchDirect psi
+
+    use _release =
+        { new IDisposable with
+            member _.Dispose() = child.Release() }
 
     // Read ONCE, while the handle is certainly live: this is what an operator needs
     // to hunt down a tree we failed to kill, and it must still be reportable on the
     // path where everything else about the child has gone wrong.
-    let pid = proc.Id
+    let pid = child.Pid
+    recordSpawn helper.IsSome command pid
 
     // Register so shutdown can tear down in-flight children. A scope that shut down
     // while this child was starting has already reaped it, and refuses it here.
-    ProcessRegistry.admitOrRefuse proc $"`%s{command} %s{args}` (pid %d{pid})"
+    ProcessRegistry.admitChildOrRefuse child.Key child.Owned $"`%s{command} %s{args}` (pid %d{pid})"
 
     try
         onStarted pid
@@ -1242,51 +1380,13 @@ let internal runProcessCore
                       the sink was writing (a streamed run log) is now INCOMPLETE."
         | Some _ -> ()
 
-    // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
-    //
-    // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
-    // and under a saturated pool — a `check` running the full suite in parallel,
-    // exactly when a spawn's output matters most — the reader may never run, the 2 s
-    // drain window expires having read zero bytes, and the child's output comes back
-    // as `""`: the clock measuring the POOL, not the process.
-    //
-    // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
-    // captured from it is all there ever was. See `pumpReachedEof`.
-    //
-    // The pumps run on `TaskScheduler.Default`, never the CALLER's scheduler. A
-    // parameterless `StartNew` inherits `TaskScheduler.Current`, and a caller running
-    // on a scheduler it is itself blocking — this very call parks it in the watchdog
-    // loop — would never start them: the child's output would go unread and a healthy
-    // run would come back as a drain timeout.
-    let pump (reader: IO.StreamReader) : Task<bool> =
-        Task.Factory.StartNew(
-            (fun () ->
-                let mutable failure = None
+    // Each chunk marks the child alive, then joins the capture and the sink.
+    let onChunk (chunk: string) =
+        Volatile.Write(&sawOutput, 1)
 
-                try
-                    let buf = Array.zeroCreate<char> 4096
-                    let mutable go = true
-
-                    while go do
-                        let n = reader.Read(buf, 0, buf.Length)
-
-                        if n = 0 then
-                            go <- false
-                        else
-                            Volatile.Write(&sawOutput, 1)
-                            let chunk = String(buf, 0, n)
-
-                            lock outputLock (fun () ->
-                                output.Append(chunk) |> ignore
-                                emit chunk)
-                with ex ->
-                    failure <- Some ex
-
-                pumpReachedEof failure),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default
-        )
+        lock outputLock (fun () ->
+            output.Append(chunk) |> ignore
+            emit chunk)
 
     let drainedOutput () =
         lock outputLock (fun () -> output.ToString().Trim())
@@ -1298,7 +1398,7 @@ let internal runProcessCore
     let describe () = $"`%s{command} %s{args}` (pid %d{pid})"
 
     let plainKill () : KillOutcome =
-        killTreeWith TeardownBudget pid describe (fun () -> proc.Kill(entireProcessTree = true))
+        killTreeWith TeardownBudget pid describe child.KillTree
 
     let teardown: TreeTeardown option ref = ref None
 
@@ -1330,8 +1430,7 @@ let internal runProcessCore
         try
             let stdoutTask, stderrTask, outcome =
                 killIfUndecided killTree (fun () ->
-                    let stdoutTask = pump proc.StandardOutput
-                    let stderrTask = pump proc.StandardError
+                    let stdoutTask, stderrTask = child.Pump onChunk
 
                     // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
                     // the instant the child exits (so completion is observed promptly) but
@@ -1340,9 +1439,9 @@ let internal runProcessCore
                     // (`HasExited`) — the poll that closes the machine-sleep hole where a
                     // single blocking wait never returned.
                     let observe () =
-                        proc.HasExited, (Volatile.Read &sawOutput = 1)
+                        child.HasExited(), (Volatile.Read &sawOutput = 1)
 
-                    let sleep ms = proc.WaitForExit(ms: int) |> ignore
+                    let sleep ms = child.WaitForExit ms
 
                     stdoutTask,
                     stderrTask,
@@ -1371,10 +1470,9 @@ let internal runProcessCore
             | LaunchOutcome.Exited ->
                 let out = drainPumps ()
 
-                if proc.ExitCode = 0 then
-                    Succeeded out
-                else
-                    Failed(proc.ExitCode, out)
+                match child.ExitCode() with
+                | 0 -> Succeeded out
+                | exitCode -> Failed(exitCode, out)
             | LaunchOutcome.TimedOut ->
                 let killed = killTree ()
                 TimedOut(timeout, drainPumps (), killed)
@@ -1395,7 +1493,7 @@ let internal runProcessCore
                     )
                 )
         finally
-            ProcessRegistry.untrack proc
+            ProcessRegistry.untrackChild child.Key
 
     outcome, teardown.Value
 
@@ -1408,7 +1506,7 @@ let runProcessTo
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome =
-    runProcessCore false sink ignore command args workDir env bounds |> fst
+    runProcessCore false false sink ignore command args workDir env bounds |> fst
 
 /// `runProcess`, plus — when the child overran and was torn down — WHICH tree the
 /// kill was aimed at and which of its members survived (`TreeTeardown`). For callers
@@ -1420,7 +1518,7 @@ let internal runProcessAccounted
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome * TreeTeardown option =
-    runProcessCore true None ignore command args workDir env bounds
+    runProcessCore false true None ignore command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
@@ -1436,6 +1534,9 @@ let runProcess
 
 /// `runProcess`, telling `onStarted` the child's pid as soon as it is running — for a
 /// caller that has to name the process it is waiting on while it waits.
+///
+/// The one spawn routed through an installed spawn helper (`SpawnHelper.install`): the
+/// hook steps, the most frequent spawns in a scan, go through here.
 let runProcessObserved
     (onStarted: int -> unit)
     (command: string)
@@ -1444,7 +1545,7 @@ let runProcessObserved
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome =
-    runProcessCore false None onStarted command args workDir env bounds |> fst
+    runProcessCore true false None onStarted command args workDir env bounds |> fst
 
 /// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait and
 /// the worker pool injected: `awaitWork task` returns true iff the work finished inside

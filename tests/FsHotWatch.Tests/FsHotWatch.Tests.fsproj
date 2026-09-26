@@ -38,6 +38,8 @@
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />
+    <Compile Include="SpawnHelperTests.fs" />
+    <Compile Include="SpawnHelperModeTests.fs" />
     <Compile Include="RunLogTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
@@ -144,6 +146,7 @@
     <Compile Include="FantomasToolTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
     <Compile Include="FormatIgnoreTests.fs" />
+    <Compile Include="FormatPreprocessorMemoTests.fs" />
     <Compile Include="CommandPreprocessorTests.fs" />
     <Compile Include="PathFilterTests.fs" />
     <Compile Include="SafeWalkTests.fs" />

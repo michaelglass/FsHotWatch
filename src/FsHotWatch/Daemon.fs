@@ -3521,6 +3521,8 @@ let private performScan
                     && ScanMetrics.forceGcEnabled Environment.GetEnvironmentVariable
                 )
 
+            let directSpawns, helperSpawns = ProcessHelper.spawnCounts ()
+
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
                   Kind = ScanActivity.ScanKind.describe (scanKindFor state)
@@ -3536,6 +3538,8 @@ let private performScan
                   ManagedBytes = reading.ManagedBytes
                   ForcedGc = reading.ForcedGc
                   Gen2Collections = reading.Gen2Collections
+                  DirectSpawns = directSpawns
+                  HelperSpawns = helperSpawns
                   Scope = ctx.Seams.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 

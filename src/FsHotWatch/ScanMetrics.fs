@@ -62,6 +62,12 @@ type ScanSample =
         /// Cumulative gen-2 collections at sample time — lets a reader normalise
         /// a live `ManagedBytes` series by how much GC actually ran.
         Gen2Collections: int
+        /// Children this process had forked itself, cumulative at sample time
+        /// (`ProcessHelper.spawnCounts`). The difference between two records is the
+        /// forks made in between.
+        DirectSpawns: int64
+        /// Children a spawn helper had started for this process, cumulative.
+        HelperSpawns: int64
         /// Whose resources `RssBytes` and `ManagedBytes` measure.
         Scope: DaemonHosting.ResourceScope
         /// UTC sample instant, round-trip ("o") format.
@@ -131,6 +137,8 @@ let toJsonLine (sample: ScanSample) : string =
            managedBytes = sample.ManagedBytes
            forcedGc = sample.ForcedGc
            gen2Collections = sample.Gen2Collections
+           directSpawns = sample.DirectSpawns
+           helperSpawns = sample.HelperSpawns
            scope = DaemonHosting.ResourceScope.render sample.Scope
            sampledAt = sample.SampledAt.ToString("o") |}
     )
@@ -160,6 +168,11 @@ let tryParseLine (line: string) : ScanSample option =
                 | true, value -> value.GetInt32()
                 | false, _ -> 0
 
+            let optionalInt64 (name: string) =
+                match root.TryGetProperty name with
+                | true, value -> value.GetInt64()
+                | false, _ -> 0L
+
             Some
                 { Generation = (field "generation").GetInt64()
                   Kind = (field "kind").GetString()
@@ -175,6 +188,8 @@ let tryParseLine (line: string) : ScanSample option =
                   ManagedBytes = (field "managedBytes").GetInt64()
                   ForcedGc = (field "forcedGc").GetBoolean()
                   Gen2Collections = (field "gen2Collections").GetInt32()
+                  DirectSpawns = optionalInt64 "directSpawns"
+                  HelperSpawns = optionalInt64 "helperSpawns"
                   Scope =
                     DaemonHosting.ResourceScope.parse (
                         match root.TryGetProperty "scope" with

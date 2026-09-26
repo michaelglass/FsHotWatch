@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: the format preprocessor no longer hands the pinned Fantomas bytes it has already
+  left unchanged under the same version and `.editorconfig` files. `check` forces a scan
+  of the whole tree, so every warm check re-ran the formatter over every registered file.
+  Only an unchanged file is remembered: one the tool rewrote, could not format, or did
+  not finish goes back to it next time. The memory lasts as long as the daemon.
+
 ## 0.7.0-alpha.27 - 2026-09-20
 
 - Drop private-tracker references from comments and docs

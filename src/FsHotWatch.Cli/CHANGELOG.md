@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `FSHW_SPAWN_HELPER=1` makes a starting daemon launch a spawn helper
+  (`fshw __spawn-helper`, a hidden mode) before it builds anything, and start hook steps
+  through it, so the grown daemon does not fork for them. Off by default. A helper
+  that cannot start or is lost falls back to direct spawns with a warning and is not
+  replaced.
+
 ## 0.14.0-alpha.69 - 2026-09-26
 
 - feat: `tests.traces` is acted on. With `"record": "full-runs"` (or `"every-run"`), the

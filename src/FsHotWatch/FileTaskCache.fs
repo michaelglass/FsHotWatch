@@ -343,17 +343,26 @@ let private EntryFormatVersion = 5
 [<Literal>]
 let private ClearAllMarker = "*"
 
+/// Tags a ledger key written verbatim: a key that names no file on disk, such as the
+/// `<build>` a build reports under or the `<name>` of a file command. Only a store with
+/// no repo root writes one; such a store lives inside the checkout that reads it, so
+/// the key means the same thing on the way back in.
+[<Literal>]
+let private LedgerKeyPrefix = "ledger:"
+
 /// Encode an error's file path so the entry can be read in ANOTHER checkout of the
 /// same repository. Paths inside the repo become `repo:`-relative; anything outside
 /// stays explicitly machine-local and therefore cannot be rebound elsewhere — which
-/// is the honest answer, not a limitation to route around.
+/// is the honest answer, not a limitation to route around. Without a repo root, a key
+/// that is not a rooted path is a ledger key and is written verbatim (`LedgerKeyPrefix`).
 let private encodeErrorPath (repoRoot: string option) (file: string) =
     if file = ClearAllMarker then
         file
     else
         match repoRoot with
         | Some root -> CachePathIdentity.ofPath root file |> CachePathIdentity.toKey
-        | None -> CachePathIdentity.toKey (CachePathIdentity.ExternalAbsolute file)
+        | None when Path.IsPathRooted file -> CachePathIdentity.toKey (CachePathIdentity.ExternalAbsolute file)
+        | None -> LedgerKeyPrefix + file
 
 /// Resolve an encoded error path against THIS checkout. Returns None when the entry
 /// cannot honestly be replayed here — an unparseable encoding, or a repo-relative
@@ -363,6 +372,8 @@ let private encodeErrorPath (repoRoot: string option) (file: string) =
 let private decodeErrorPath (repoRoot: string option) (encoded: string) =
     if encoded = ClearAllMarker then
         Some encoded
+    elif encoded.StartsWith(LedgerKeyPrefix, StringComparison.Ordinal) then
+        Some(encoded.Substring LedgerKeyPrefix.Length)
     else
         match CachePathIdentity.tryParse encoded with
         | Some(CachePathIdentity.ExternalAbsolute absolute) -> Some absolute

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- feat: `ProcessHelper.spawnCounts` (children forked directly and started through a
+  spawn helper, cumulative), a `spawn via=… cmd=… pid=…` log line per spawn, and the
+  same counts in scan metrics. Breaking: `ScanMetrics.ScanSample` has new fields
+  `DirectSpawns` and `HelperSpawns`. A record written before them parses with 0.
+- feat: `SpawnHelper`, a small long-lived process that starts children on the daemon's
+  behalf so the daemon need not fork. When a helper is installed,
+  `ProcessHelper.runProcessObserved` (hook steps) starts through it; once the helper is lost,
+  spawns start directly again. The CLI installs one when `FSHW_SPAWN_HELPER=1`. New
+  public type `SpawnHelperException`. `ProcessRegistry` now owns children
+  through an internal `IOwnedChild`, and its public members are unchanged.
+
+- fix: the workspace-local task cache now reads back findings keyed by a plugin
+  identity rather than a file (`<build>`, a file command's `<name>`). It wrote them as
+  `external:<build>` and then refused that spelling on read, so the build and every file
+  command missed on every lookup: each warm `check` ran a real `dotnet build` even when
+  nothing had changed. Such keys are now stored verbatim as `ledger:<key>`. Entries
+  written before this read as a miss once and are rewritten.
+
 ## 0.10.0-alpha.52 - 2026-09-26
 
 - fix: a project with more files than the checker keeps no longer reports its own types
