@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.1.1 - 2026-09-26
+
 - fix: a type declared in the global namespace (`namespace global` + `type StartupHook`,
   which .NET requires of a startup hook) is indexed instead of failing the whole index
   flush with `CHECK constraint failed: symbols_full_name_is_qualified`. FCS names such a
