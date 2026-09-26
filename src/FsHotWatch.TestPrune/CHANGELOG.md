@@ -35,6 +35,9 @@
   them to finish. A cancelled preparation is not stored as a refusal.
 - Bundle TestPrune.Trace 0.2.0 (cancellable `TraceSession.prepareProjectWith` with an
   injectable process launcher).
+- **BREAKING (pin):** TestPrune.Core 13.2.2 (index schema 18: existing test-impact
+  databases are recreated on first open; F# exception types are now indexed). A consumer
+  that pins TestPrune.Core itself must move to 13.2.2 with this release.
 
 ## 0.13.0-alpha.51 - 2026-09-26
 

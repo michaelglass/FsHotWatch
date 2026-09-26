@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **BREAKING (pin):** TestPrune.Core 13.2.2 (index schema 18: existing test-impact
+  databases are recreated on first open; F# exception types are now indexed) and
+  TestPrune.Trace 0.2.0. A consumer that pins TestPrune.Core itself must move to 13.2.2
+  with this release.
 - fix: a `check` with no test evidence for the current tree says why instead of "no tests
   ran (the daemon did not say why)". `NoTestsReason` has new cases, `NoRunYet`,
   `TreeMoved`, `TreeUnreadable`, `EvidenceRevoked` and `CoversNothing`, read from the
