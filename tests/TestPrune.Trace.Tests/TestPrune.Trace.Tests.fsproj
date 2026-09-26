@@ -31,6 +31,8 @@
     <Compile Include="LaunchTests.fs" />
     <Compile Include="WeaverTests.fs" />
     <Compile Include="WeaverShapeTests.fs" />
+    <Compile Include="SiteProbeScenarioTests.fs" />
+    <Compile Include="SiteProbeShapeTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

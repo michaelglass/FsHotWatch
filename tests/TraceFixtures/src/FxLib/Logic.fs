@@ -36,6 +36,8 @@ let tricky t =
     match t with
     | Tag -> 0
     | Other s -> s.Length
+    | Third -> 3
+    | Fourth n -> n
 
 let (|Big|Small|) (p: Point) = if p.X + p.Y > 10 then Big else Small
 

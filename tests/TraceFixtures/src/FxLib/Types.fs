@@ -23,10 +23,13 @@ type SResult =
     | SErr of errValue: string
 
 /// A case literally named `Tag` and a case field named `tag`: the two shapes that
-/// produced invalid IL in the prototype.
+/// produced invalid IL in the prototype. Four cases, so the union stores its tag in a
+/// `_tag` field, which the case field's own `_tag` backing field must not be taken for.
 type Tricky =
     | Tag
     | Other of tag: string
+    | Third
+    | Fourth of int
 
 type Point = { X: int; Y: int }
 
@@ -41,6 +44,11 @@ type Dog() =
 type Cat() =
     inherit Animal()
     override _.Speak() = "meow"
+
+/// An enum: its values are inlined at their uses, so it gets no type row.
+type Level =
+    | Low = 0
+    | High = 1
 
 type IGreeter =
     abstract Greet: string -> string
