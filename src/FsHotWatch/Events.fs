@@ -806,6 +806,13 @@ module internal EarnedEvidence =
 
             Set.difference runnable covered
 
+    /// The evidence `runId` earned, while it belongs to the current model: what a run that
+    /// leaves an earlier run's receipt standing keeps, so the receipt and the evidence
+    /// the verdict looks it up by name the same run.
+    let retainedForRun (currentModelGeneration: int64 option) (runId: System.Guid) (previous: EarnedEvidence option) =
+        previous
+        |> Option.filter (fun evidence -> evidence.RunId = runId && Some evidence.Generation = currentModelGeneration)
+
     /// A completion that selected nothing because everything was already verified keeps the
     /// evidence it was verified by, provided that evidence belongs to the current model.
     let retainedForZeroSelection (currentModelGeneration: int64 option) (previous: EarnedEvidence option) =

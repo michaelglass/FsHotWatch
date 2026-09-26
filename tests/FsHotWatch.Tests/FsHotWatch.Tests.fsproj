@@ -167,6 +167,7 @@
     <Compile Include="RunClaimTests.fs" />
     <Compile Include="VerdictTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
+    <Compile Include="ConfirmModelChangeTests.fs" />
     <Compile Include="ProgressRendererTests.fs" />
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />

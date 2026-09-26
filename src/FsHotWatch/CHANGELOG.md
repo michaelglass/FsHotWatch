@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: internal `EarnedEvidence.retainedForRun`, the evidence a named run earned while
+  it belongs to the current model.
+
 ## 0.10.0-alpha.53 - 2026-09-26
 
 - feat: `ProcessHelper.spawnCounts` (children forked directly and started through a

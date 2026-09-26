@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: `confirm` no longer ends red with "nothing vouches for this green" after its full
+  suite passed and a later impact-selected run followed on the same tree, and it re-runs
+  the suite when the project model changed since the last run instead of grading that run
+  (FsHotWatch.TestPrune).
+- feat: the "no evidence receipt" refusal names every receipt the daemon did hold (`the
+  daemon holds: run … at generation …`), so it tells evidence for a different run from
+  evidence under a model that has since moved.
+
 ## 0.14.0-alpha.70 - 2026-09-26
 
 - feat: `FSHW_SPAWN_HELPER=1` makes a starting daemon launch a spawn helper

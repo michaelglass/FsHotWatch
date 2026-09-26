@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: a `confirm` could end red with "no evidence receipt for the graded run … — nothing
+  vouches for this green" right after its full suite passed. A later impact-selected run
+  over the same tree and model (`selected: yes`) kept the full suite's receipt, which
+  `test-scope` graded, but replaced the model evidence with its own, so no evidence named
+  the graded run. The narrower run now keeps both. Breaking: `ReceiptTransition` has a
+  new case `Narrower`, and `TestEvidenceReceipt` a new field `ModelGeneration`.
+- fix: a receipt earned under a replaced project model no longer grades. `test-scope`
+  serves it only while the model it was earned under is still current, and a narrower run
+  under a new model no longer keeps it. A `confirm` on a daemon whose model moved after
+  its last run therefore reads a scope that is not a full suite and runs one under the
+  current model, instead of grading the old run and ending red.
+- feat: logging. Every launch logs the project model generation it was selected under and
+  its mode (check or confirm). Every completion logs the generation it launched and completed under, what
+  happened to the receipt and which run it now grades, and which run and generation the
+  model evidence names. The end of a `confirm`'s full-suite scope is logged, and so is a
+  receipt `test-scope` withholds because the model moved.
+
 ## 0.13.0-alpha.51 - 2026-09-26
 
 - feat: opt-in per-test trace recording (`tests.traces` in `.fshw.json`; off unless

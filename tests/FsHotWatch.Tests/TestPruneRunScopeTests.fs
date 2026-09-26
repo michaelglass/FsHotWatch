@@ -3879,3 +3879,228 @@ let ``no two revocation causes render the same text`` () =
     test <@ unbound.Contains "UNBOUND" && unbound.Contains "defect" @>
     test <@ unreadable.Contains "READ" && unreadable.Contains "defect" @>
     test <@ moved.Contains "MOVED" && not (moved.Contains "defect") @>
+
+// ---------------------------------------------------------------------------
+// The run `test-scope` grades and the run the model evidence names are ONE run.
+// ---------------------------------------------------------------------------
+
+/// A recording ctx whose host publishes the project model at `generation ()`, read at
+/// every fold, so a test can move the model between two completions.
+let private ctxUnderModel (generation: unit -> int64) =
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    { recordingCtx with
+        ProjectGraph =
+            { recordingCtx.ProjectGraph with
+                ObserveModel = fun () -> fixtureModelOf (generation ()) } }
+
+/// `test-scope` as the daemon serves it while it publishes the model at `generation`.
+let private receiptScopeUnder repoRoot (handler: PluginHandler<TestPruneState, TestPruneMsg>) state generation =
+    let command = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let ctx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = repoRoot
+          Log = ignore
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+          IsRunning = fun _ -> false
+          ProjectGraph =
+            { ProjectGraphAccessor.none with
+                ObserveModel = fun () -> fixtureModelOf generation } }
+
+    PluginCommand.invoke command ctx state [||]
+    |> Async.RunSynchronously
+    |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+let private runIdOfFinished event =
+    match event with
+    | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+    | _ -> failwith "expected TestsFinished"
+
+/// The receipt gate `confirm` applies to a clean reading (`IpcOutput.publishVerdict`): the
+/// run `test-scope` names must hold model evidence for the generation the verdict is read
+/// under, with nothing refusing it. `None` is a green the gate lets through.
+let private receiptGate (report: FsHotWatch.Cli.IpcParsing.TestRunReport) (state: TestPruneState) generation =
+    let held =
+        (state :> IEarnedEvidenceState).EarnedEvidence
+        |> Option.toList
+        |> List.map (fun evidence -> evidence.RunId, evidence.Generation, evidence.FailureReasons)
+
+    match
+        held
+        |> List.filter (fun (runId, held, _) -> Some runId = report.RunId && held = generation)
+    with
+    | [] -> Some $"no evidence receipt for %A{report.RunId} at generation %d{generation}; held %A{held}"
+    | matching ->
+        match matching |> List.collect (fun (_, _, refusals) -> refusals) with
+        | [] -> None
+        | refusals -> Some(String.concat "; " refusals)
+
+[<Fact(Timeout = 20000)>]
+let ``a narrower run after a full suite on one tree and model keeps the full suite's receipt AND its evidence`` () =
+    // The confirm that went red on a long-lived daemon: its full-suite run passed every
+    // project, then a late cohort over the SAME tree and model launched an impact-filtered
+    // run (`selected: yes`). The receipt kept the full suite — the narrower run says
+    // nothing it does not — and `test-scope` graded it; but the model evidence was
+    // replaced by the narrower run's, so the gate found no receipt for the graded run and
+    // printed "nothing vouches for this green" over a tree a full suite had just passed.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx = ctxUnderModel (fun () -> 7L)
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                ({ filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let afterFull = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+        // Positive control: the full suite alone passes the gate.
+        test <@ receiptGate (receiptScopeUnder repoRoot handler afterFull 7L) afterFull 7L = None @>
+
+        let final = handler.Update ctx afterFull narrowRun |> Async.RunSynchronously
+        let report = receiptScopeUnder repoRoot handler final 7L
+
+        test <@ report.RunId = Some(runIdOfFinished fullRun) @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+        test <@ receiptGate report final 7L = None @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a narrower run under a NEW model does not keep a full-suite receipt earned under the old one`` () =
+    // A full suite under generation 6 says nothing about generation 7. A narrower run
+    // under 7 must therefore not be read as "says nothing the receipt does not": that kept
+    // a generation-6 receipt that `test-scope` graded as a full suite, while no evidence
+    // for 7 named it. The narrower run's own receipt is the honest one — filtered, so
+    // `confirm` escalates to a full suite under the new model instead of ending red.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let mutable generation = 6L
+        let ctx = ctxUnderModel (fun () -> generation)
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 6L }
+                 |> bindReceiptTree repoRoot)
+
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                ({ filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let afterFull = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+        generation <- 7L
+        let final = handler.Update ctx afterFull narrowRun |> Async.RunSynchronously
+        let report = receiptScopeUnder repoRoot handler final 7L
+
+        test <@ report.RunId = Some(runIdOfFinished narrowRun) @>
+        test <@ not (FsHotWatch.Cli.IpcParsing.TestScope.isFullSuite report.Scope) @>
+
+        // What `confirm` does with that reading: escalate, never grade the stale full suite.
+        test
+            <@ FsHotWatch.Cli.CheckVerdict.confirmNeedsFullRun FsHotWatch.Cli.CheckVerdict.Confirmation report.Scope @>
+
+        // And the evidence names the same run the receipt does.
+        test <@ (final :> IEarnedEvidenceState).EarnedEvidence |> Option.map _.RunId = report.RunId @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a receipt earned under a replaced model grades nothing, so confirm escalates instead of refusing`` () =
+    // The long-lived daemon: a full suite earned its receipt under generation 6, then a
+    // re-evaluation published 7 with no run since. `test-scope` served the generation-6
+    // run as a full suite, `confirm` graded it without escalating, and the gate found no
+    // evidence for it under 7 — red, with nothing re-run. Withheld, the reading is not a
+    // full suite, and `confirm` runs one under the model it is graded against.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 6L }
+                 |> bindReceiptTree repoRoot)
+
+        let state =
+            handler.Update (ctxUnderModel (fun () -> 6L)) handler.Init fullRun
+            |> Async.RunSynchronously
+
+        // Positive control: under the model it was earned under, the receipt grades.
+        let underSix = receiptScopeUnder repoRoot handler state 6L
+        test <@ underSix.RunId = Some(runIdOfFinished fullRun) @>
+        test <@ underSix.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+
+        let underSeven = receiptScopeUnder repoRoot handler state 7L
+        test <@ underSeven.RunId = None @>
+
+        test
+            <@
+                FsHotWatch.Cli.CheckVerdict.confirmNeedsFullRun
+                    FsHotWatch.Cli.CheckVerdict.Confirmation
+                    underSeven.Scope
+            @>)
+
+[<Fact>]
+let ``the completion line names both generations, the graded run and the evidence run`` () =
+    let runId = Guid.Parse("a0000000-1100-4000-8000-000000000001")
+    let receiptRun = Guid.Parse("a0000000-1100-4000-8000-000000000002")
+
+    let receipt: TestEvidenceReceipt =
+        { InputTreeHash = Some "tree"
+          ModelGeneration = Some 7L
+          RunId = receiptRun
+          Coverage = RunCoverage.none
+          Seeds = []
+          ZeroSelection = ZeroSelection.NotAZero }
+
+    let completion =
+        { RunId = receiptRun
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList [ "ProjA", passed false ]
+          Verification = RunVerification.ofResults (Map.ofList [ "ProjA", passed false ]) }
+
+    let evidence refusing =
+        EarnedEvidence.fromCompletion
+            receiptRun
+            (Some 7L)
+            (Some 7L)
+            (Set.ofList (if refusing then [ "ProjA"; "ProjB" ] else [ "ProjA" ]))
+            0
+            None
+            completion
+
+    let line transition receipt earned =
+        describeCompletionEvidence runId (Some 6L) None transition receipt earned
+
+    let n (id: Guid) = id.ToString("N")
+
+    let earned = line (ReceiptTransition.Earned receipt) (Some receipt) (evidence false)
+    test <@ earned.Contains $"Run %s{n runId} completed" @>
+    test <@ earned.Contains "launched under project model generation 6" @>
+    test <@ earned.Contains "completed under none (no available model)" @>
+    test <@ earned.Contains $"receipt earned; now grades run %s{n receiptRun}" @>
+    test <@ earned.Contains $"model evidence: run %s{n receiptRun} at generation 7, no refusals" @>
+
+    test <@ (line ReceiptTransition.Noop (Some receipt) None).Contains "receipt kept; now grades run" @>
+    test <@ (line ReceiptTransition.Noop (Some receipt) None).Contains "model evidence: none" @>
+    test <@ (line ReceiptTransition.Narrower (Some receipt) None).Contains "kept over a narrower run" @>
+
+    let revoked = line (ReceiptTransition.Revoked "the tree moved") None (evidence true)
+    test <@ revoked.Contains "receipt revoked (the tree moved); now grades no run" @>
+    test <@ revoked.Contains "refusing: ProjB" @>

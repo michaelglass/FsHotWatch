@@ -1025,10 +1025,27 @@ let private publishVerdictWithReason
                        | Some graded -> receipt.RunId = Some graded
                        | None -> receipt.RunId.IsNone
 
+                // What the daemon DID hold, so the refusal alone tells a run the evidence no
+                // longer names apart from a model that moved after the run earned it.
+                let held =
+                    match receipts with
+                    | [] -> "the daemon holds no receipt"
+                    | receipts ->
+                        receipts
+                        |> List.map (fun receipt ->
+                            let run =
+                                match receipt.RunId with
+                                | Some runId -> "run " + runId.ToString("N")
+                                | None -> "analysis"
+
+                            $"%s{run} at generation %d{receipt.Generation}")
+                        |> String.concat "; "
+                        |> sprintf "the daemon holds: %s"
+
                 match receipts |> List.filter forThisRun with
                 | [] ->
                     Some
-                        $"no evidence receipt for %s{describe} at project model generation %d{model.Generation} — nothing vouches for this green"
+                        $"no evidence receipt for %s{describe} at project model generation %d{model.Generation} — nothing vouches for this green (%s{held})"
                 | matching ->
                     let refusals = matching |> List.collect (fun receipt -> receipt.Refusals)
 
