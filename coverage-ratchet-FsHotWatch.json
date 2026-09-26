@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "DeadlineWorkers.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Fully covered, including a job that throws and an outcome publish that throws (the worker survives both).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 66,
+        "reason": "lower branch count on Linux CI: SDK 10.0.401 attributes 16 branches to this file where macOS sees 4 (lines are 100% on both). Measured 11/16 (68.8%) in CI run 36220188634; floor ~2pp under it.",
+        "platform": "linux"
+      }
+    ],
     "FcsDiagnosticFilter.fs": [
       {
         "line": 100,
