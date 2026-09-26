@@ -5387,3 +5387,10 @@ let ``a cold-start BuildCompleted must NOT replay a test result from the task ca
 
         let scope = host2.RunCommand("test-scope", [||]) |> Async.RunSynchronously
         test <@ scope.IsSome && scope.Value.Contains "\"scope\":\"full\"" @>)
+
+[<Fact(Timeout = 5000)>]
+let ``an extension refresh line names the extension, its edges and how long the refresh took`` () =
+    test
+        <@
+            FsHotWatch.TestPrune.TestPrunePlugin.extensionStoredLine "falco-routes" 42 1834L = "Extension 'falco-routes' stored 42 edge(s) (extension refresh took 1834ms)"
+        @>

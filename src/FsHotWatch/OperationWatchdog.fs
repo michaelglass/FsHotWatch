@@ -111,6 +111,59 @@ let gcPauseSuffix (paused: TimeSpan) (window: TimeSpan) : string =
 
         $"; gc-pause %.2f{percent}%% (%d{int64 paused.TotalMilliseconds}ms of %d{int64 window.TotalSeconds}s)"
 
+/// What the heartbeat reads about the machine and the managed heap: the 1-minute load
+/// average (`None` where the platform has none), the GC heap size, and the cumulative
+/// gen0/gen1/gen2 collection counts.
+[<NoComparison>]
+type ResourceReading =
+    { LoadAverage: float option
+      HeapBytes: int64
+      Gen0: int
+      Gen1: int
+      Gen2: int }
+
+module private Native =
+    [<Runtime.InteropServices.DllImport("libc", SetLastError = false)>]
+    extern int getloadavg(double[] loadavg, int nelem)
+
+/// The 1-minute load average, or `None` on Windows or when the call fails.
+let loadAverage () : float option =
+    if OperatingSystem.IsWindows() then
+        None
+    else
+        try
+            let values = Array.zeroCreate<double> 1
+
+            if Native.getloadavg (values, 1) = 1 then
+                Some values[0]
+            else
+                None
+        with
+        | :? DllNotFoundException
+        | :? EntryPointNotFoundException -> None
+
+/// The process's current `ResourceReading`.
+let readResources () : ResourceReading =
+    { LoadAverage = loadAverage ()
+      HeapBytes = GC.GetGCMemoryInfo().HeapSizeBytes
+      Gen0 = GC.CollectionCount 0
+      Gen1 = GC.CollectionCount 1
+      Gen2 = GC.CollectionCount 2 }
+
+/// The heartbeat's resource suffix: load average, GC heap size, and how many gen0/1/2
+/// collections ran since the previous heartbeat. A GC share near 100% with gen2 counts
+/// climbing and the heap flat says the live set is at the heap's limit — the reading the
+/// gc-pause figure alone could not distinguish from a burst of short-lived garbage.
+let resourceSuffix (previous: ResourceReading) (current: ResourceReading) : string =
+    let load =
+        match current.LoadAverage with
+        | Some value -> $"load %.2f{value}"
+        | None -> "load n/a"
+
+    let heapGb = float current.HeapBytes / 1073741824.0
+
+    $"; %s{load}; heap %.2f{heapGb} GB; collections gen0 +%d{current.Gen0 - previous.Gen0}, gen1 +%d{current.Gen1 - previous.Gen1}, gen2 +%d{current.Gen2 - previous.Gen2}"
+
 /// Live watchdog over the daemon's in-flight RPC operations.
 ///
 /// `Begin` mints an `OpToken` and records the op; `End token` retires exactly that
@@ -132,9 +185,11 @@ type Watchdog
         now: unit -> DateTime,
         log: string -> unit,
         ?tick: TimeSpan,
-        ?gcPauseTotal: unit -> TimeSpan
+        ?gcPauseTotal: unit -> TimeSpan,
+        ?resources: unit -> ResourceReading
     ) =
     let gcPauseTotal = defaultArg gcPauseTotal GC.GetTotalPauseDuration
+    let resources = defaultArg resources readResources
     let gate = obj ()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
@@ -143,6 +198,7 @@ type Watchdog
     let mutable nextId = 0L
     let mutable lastHeartbeat = now ()
     let mutable lastGcPause = gcPauseTotal ()
+    let mutable lastResources = resources ()
 
     let snapshotOps () = inFlight.Values |> List.ofSeq
 
@@ -166,8 +222,11 @@ type Watchdog
                 if n - lastHeartbeat >= heartbeatEvery then
                     let gcPause = gcPauseTotal ()
                     let pauseSuffix = gcPauseSuffix (gcPause - lastGcPause) (n - lastHeartbeat)
+                    let reading = resources ()
+                    let resourcePart = resourceSuffix lastResources reading
                     lastHeartbeat <- n
                     lastGcPause <- gcPause
+                    lastResources <- reading
 
                     logs.Add(
                         heartbeatLine
@@ -175,6 +234,7 @@ type Watchdog
                             { InFlight = snapshotOps ()
                               Threshold = threshold }
                         + pauseSuffix
+                        + resourcePart
                     )
 
                 logs |> List.ofSeq)

@@ -123,6 +123,13 @@ let ``gcPauseSuffix renders the pause share of the window, the pause and the win
 let ``gcPauseSuffix is empty for a window with no length`` () =
     test <@ gcPauseSuffix (TimeSpan.FromMilliseconds 5.0) TimeSpan.Zero = "" @>
 
+let private steadyResources: ResourceReading =
+    { LoadAverage = Some 1.0
+      HeapBytes = 1073741824L
+      Gen0 = 100
+      Gen1 = 50
+      Gen2 = 20 }
+
 [<Fact(Timeout = 10000)>]
 let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbeat`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
@@ -136,17 +143,20 @@ let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbe
             now = (fun () -> clock.Value),
             log = logged.Enqueue,
             tick = TimeSpan.FromMilliseconds(20.0),
-            gcPauseTotal = (fun () -> pause.Value)
+            gcPauseTotal = (fun () -> pause.Value),
+            resources = (fun () -> steadyResources)
         )
 
     let heartbeats () =
         logged |> Seq.filter (fun line -> line.StartsWith "heartbeat:") |> List.ofSeq
 
+    let steady = resourceSuffix steadyResources steadyResources
+
     // The pause total before the watchdog started is not attributed to any window.
     pause.Value <- TimeSpan.FromSeconds 5.3
     clock.Value <- t0.AddSeconds 30.0
     waitUntil (fun () -> not (List.isEmpty (heartbeats ()))) 5000
-    test <@ heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)" ] @>
+    test <@ heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)" + steady ] @>
 
     pause.Value <- TimeSpan.FromSeconds 5.9
     clock.Value <- t0.AddSeconds 90.0
@@ -154,9 +164,63 @@ let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbe
 
     test
         <@
-            heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)"
-                              "heartbeat: idle; gc-pause 1.00% (600ms of 60s)" ]
+            heartbeats () = [ "heartbeat: idle; gc-pause 1.00% (300ms of 30s)" + steady
+                              "heartbeat: idle; gc-pause 1.00% (600ms of 60s)" + steady ]
         @>
+
+[<Fact(Timeout = 10000)>]
+let ``Watchdog heartbeat carries load, heap and the collections since the previous heartbeat`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+    let clock = ref t0
+    let reading = ref steadyResources
+
+    use _w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromSeconds(30.0),
+            now = (fun () -> clock.Value),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            gcPauseTotal = (fun () -> TimeSpan.Zero),
+            resources = (fun () -> reading.Value)
+        )
+
+    reading.Value <-
+        { LoadAverage = Some 7.5
+          HeapBytes = 8L * 1073741824L
+          Gen0 = 112
+          Gen1 = 53
+          Gen2 = 22 }
+
+    clock.Value <- t0.AddSeconds 30.0
+
+    waitUntil (fun () -> logged |> Seq.exists (fun line -> line.StartsWith "heartbeat:")) 5000
+
+    let line = logged |> Seq.find (fun line -> line.StartsWith "heartbeat:")
+
+    test
+        <@
+            line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2"
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``resourceSuffix says when the platform has no load average`` () =
+    test
+        <@
+            resourceSuffix
+                steadyResources
+                { steadyResources with
+                    LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0"
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``readResources reads this process's heap and collection counts`` () =
+    let reading = readResources ()
+    test <@ reading.HeapBytes > 0L @>
+    test <@ reading.Gen0 >= reading.Gen1 && reading.Gen1 >= reading.Gen2 @>
+
+    if not (OperatingSystem.IsWindows()) then
+        test <@ reading.LoadAverage |> Option.exists (fun load -> load >= 0.0) @>
 
 [<Fact(Timeout = 5000)>]
 let ``oldestOverrun picks the longest-running WEDGED op, ignoring young ones`` () =

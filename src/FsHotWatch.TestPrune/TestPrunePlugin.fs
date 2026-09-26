@@ -5067,6 +5067,11 @@ let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
                 "test-prune"
                 $"Could not delete stale cache DB %s{dbPath}: %s{deleteEx.Message}. Delete it manually and restart the daemon."
 
+/// The line an extension refresh writes per extension that answered: its edge count and
+/// how long the whole refresh (every extension, one call) took.
+let internal extensionStoredLine (name: string) (edgeCount: int) (refreshMs: int64) : string =
+    $"Extension '%s{name}' stored %d{edgeCount} edge(s) (extension refresh took %d{refreshMs}ms)"
+
 /// Delete the FCS check cache (`.fshw/cache/*.json`) for `repoRoot`, returning the number
 /// of entries removed. Called when the TestPrune symbol DB was recreated (a schema bump):
 /// the persisted FCS cache would otherwise let unchanged files hit the cache and SKIP
@@ -5840,14 +5845,20 @@ let internal createWithQueries
                 ->
                 extensionsUnrefreshed.Value <- false
 
+                // Timed as a whole: the refresh runs every extension in one call. At info,
+                // because a refresh that holds the fold for minutes is otherwise invisible.
+                let refreshClock = Diagnostics.Stopwatch.StartNew()
+                let outcomes = refreshExtensionEdges db repoRoot exts
+                let refreshMs = refreshClock.ElapsedMilliseconds
+
                 let failedExtensions =
-                    refreshExtensionEdges db repoRoot exts
+                    outcomes
                     |> List.fold
                         (fun failed outcome ->
                             match outcome with
                             | ExtensionRefresh.Refreshed(name, edgeCount) ->
                                 ctx.ClearErrors(extensionLedgerKey name)
-                                Logging.debug "test-prune" $"Extension '%s{name}' stored %d{edgeCount} edge(s)"
+                                Logging.info "test-prune" (extensionStoredLine name edgeCount refreshMs)
                                 Map.remove name failed
                             | ExtensionRefresh.Failed(name, ex) ->
                                 Logging.error
