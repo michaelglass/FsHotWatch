@@ -9,6 +9,7 @@ open System.IO
 open System.Reflection.Metadata
 open System.Security.Cryptography
 open System.Text.Json
+open System.Threading
 open TestPrune.Trace.Model
 open TestPrune.Trace.Recorder
 
@@ -134,10 +135,12 @@ let private readReport (path: string) =
     with _ ->
         None
 
-/// JIT-verify `touched` (assembly -> "<Type>::<method>") by launching `apphost` with the
-/// recorder in `shadowDir` as its startup hook. The hook prepares every listed method in
-/// the app's own runtime, writes `reportPath` and exits before Main.
-let verify
+/// `verify`, launching the app with `launcher` and abandoning it once `ct` is cancelled:
+/// a cancelled verification raises `OperationCanceledException`, whatever the launcher
+/// returned for the child it ended, and is never read as a verdict.
+let verifyWith
+    (launcher: Launch.Launcher)
+    (ct: CancellationToken)
     (shadowDir: string)
     (apphost: string)
     (touched: Map<string, string list>)
@@ -156,19 +159,37 @@ let verify
     let recorder = Path.Combine(shadowDir, DepsJson.RecorderName + ".dll")
 
     let code, output =
-        Launch.run
-            apphost
-            []
-            [ "DOTNET_STARTUP_HOOKS", recorder
-              Contract.VerifyEnv, reportPath
-              Contract.VerifyAssembliesEnv, listPath ]
-            shadowDir
-            timeout
+        launcher
+            { Exe = apphost
+              Args = []
+              Env =
+                [ "DOTNET_STARTUP_HOOKS", recorder
+                  Contract.VerifyEnv, reportPath
+                  Contract.VerifyAssembliesEnv, listPath
+                  "DOTNET_ROOT", Launch.dotnetRoot () ]
+              WorkDir = shadowDir
+              Timeout = timeout }
+            ct
+
+    // A launcher that ends its child on cancellation may still return what it exited with.
+    ct.ThrowIfCancellationRequested()
 
     match (if code = 0 then readReport reportPath else None) with
     | None -> Error(VerifyFailed(code, output))
     | Some report when report.Invalid.IsEmpty -> Ok report
     | Some report -> Error(JitInvalid report.Invalid)
+
+/// JIT-verify `touched` (assembly -> "<Type>::<method>") by launching `apphost` with the
+/// recorder in `shadowDir` as its startup hook. The hook prepares every listed method in
+/// the app's own runtime, writes `reportPath` and exits before Main.
+let verify
+    (shadowDir: string)
+    (apphost: string)
+    (touched: Map<string, string list>)
+    (reportPath: string)
+    (timeout: TimeSpan)
+    : Result<VerifyReport, ShadowRefusal> =
+    verifyWith Launch.direct CancellationToken.None shadowDir apphost touched reportPath timeout
 
 /// A cache entry is usable only when a previous prepare finished it: woven files, a
 /// readable manifest and a verify report that found nothing invalid.
@@ -213,11 +234,17 @@ let private weaveKey (req: ShadowRequest) (inputs: Weaver.WeaveInput list) =
                   yield $"%s{Path.GetFileName i.Path}|%A{i.Mode}|%s{sha256File i.Path}|%s{sha256File pdb}" ]
     )
 
-/// Build (or reuse) the shadow bin for `req`: mirror `bin/Debug/<tfm>`, weave every
-/// assembly built from the repository (cached under `obj/traced/<weave key>`), inject the
-/// recorder into deps.json (without its PDB, so it never enters the app's coverage),
-/// JIT-verify a new weave and write the stamp.
-let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
+/// `prepare`, verifying with `launcher` and cancellable: `ct` is checked before the work
+/// starts, between assemblies while weaving, and abandons the verification launch. A
+/// cancelled prepare raises `OperationCanceledException` and leaves no cache entry a
+/// later prepare would reuse: an entry is reused only once its `done` marker is written,
+/// after a verification that found nothing invalid.
+let prepareWith
+    (launcher: Launch.Launcher)
+    (ct: CancellationToken)
+    (req: ShadowRequest)
+    : Result<Shadow, ShadowRefusal> =
+    ct.ThrowIfCancellationRequested()
     let binDebug = Path.Combine(req.ProjectDir, "bin", "Debug")
 
     let tfmDirs =
@@ -276,7 +303,7 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
                 match tryCache cacheDir with
                 | Some(outputs, manifest, report) -> Ok(outputs, manifest, Choice1Of2 report)
                 | None ->
-                    match Weaver.weave req.Passes inputs (Path.Combine(cacheDir, "woven")) with
+                    match Weaver.weaveWith ct req.Passes inputs (Path.Combine(cacheDir, "woven")) with
                     | Error e -> Error(WeaveRefused e)
                     | Ok r ->
                         Manifest.write manifestDir r.Manifest
@@ -309,7 +336,14 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
                     match verdict with
                     | Choice1Of2 report -> Ok report
                     | Choice2Of2 touched ->
-                        verify shadowDir apphost touched (Path.Combine(cacheDir, "verify.json")) req.VerifyTimeout
+                        verifyWith
+                            launcher
+                            ct
+                            shadowDir
+                            apphost
+                            touched
+                            (Path.Combine(cacheDir, "verify.json"))
+                            req.VerifyTimeout
 
                 match verified with
                 | Error e -> Error e
@@ -342,3 +376,10 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
                           Reused = reused
                           OriginalDepsJsonSha256 = sha256Text originalDeps
                           Verify = report }
+
+/// Build (or reuse) the shadow bin for `req`: mirror `bin/Debug/<tfm>`, weave every
+/// assembly built from the repository (cached under `obj/traced/<weave key>`), inject the
+/// recorder into deps.json (without its PDB, so it never enters the app's coverage),
+/// JIT-verify a new weave and write the stamp.
+let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
+    prepareWith Launch.direct CancellationToken.None req

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: hosts can own and cancel a traced prepare. `TraceSession.prepareProjectWith launcher ct`
+  (with `ShadowBin.prepareWith`, `ShadowBin.verifyWith` and `Weaver.weaveWith` beneath it) takes a
+  `Launch.Launcher`, which starts the JIT-verification child so a host can admit it into its own
+  process scope, and a `CancellationToken`, checked between assemblies while weaving and used to
+  abandon the verification launch. A cancelled prepare raises `OperationCanceledException` rather
+  than returning a refusal, and leaves no cache entry a later prepare would reuse. `Launch.direct`
+  is the default launcher; it now kills the child's process tree when its token is cancelled.
+  `prepareProject`, `ShadowBin.prepare`, `ShadowBin.verify`, `Weaver.weave` and `Launch.run` are
+  unchanged.
+
 ## 0.1.0 - 2026-09-26
 
 - docs: the README documents the `test-prune-traces` verbs (flags, exit codes, bars and

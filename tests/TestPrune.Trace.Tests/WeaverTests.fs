@@ -2,6 +2,7 @@ module TestPrune.Trace.Tests.WeaverTests
 
 open System
 open System.IO
+open System.Threading
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
@@ -423,6 +424,36 @@ let ``an unreadable assembly is a Cecil failure naming it`` () =
                 | Error(CecilFailed("FxLib", _)) -> true
                 | _ -> false
             @>
+    finally
+        deleteScratch dir
+
+[<Fact>]
+let ``a cancelled weave stops between assemblies and writes nothing`` () =
+    let dir = copyFixture Fixtures.fxDriverDir
+
+    try
+        use cts = new CancellationTokenSource()
+        // Cancels once every assembly is read, before the first is rewritten.
+        let cancelling =
+            { new IWeavePass with
+                member _.Prepare _ = cts.Cancel()
+                member _.Rewrite(_, _, _, _) = false }
+
+        let out = Path.Combine(dir, "woven")
+
+        raises<OperationCanceledException>
+            <@
+                weaveWith
+                    cts.Token
+                    [ cancelling ]
+                    [ { Path = Path.Combine(dir, "FxLib.dll")
+                        Mode = Full }
+                      { Path = Path.Combine(dir, "FxDriver.dll")
+                        Mode = SitesOnly } ]
+                    out
+            @>
+
+        test <@ not (Directory.Exists out) @>
     finally
         deleteScratch dir
 

@@ -8,6 +8,7 @@ open System
 open System.Collections.Generic
 open System.IO
 open System.Reflection
+open System.Threading
 open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
@@ -211,10 +212,16 @@ let private readModule (recorderPath: string) (input: WeaveInput) =
 
     m, input.Mode
 
-/// Weave `inputs` into `outputDir` (DLL + PDB per input), running `passes` on every method
-/// body. Refuses the whole set on the first error; nothing is written to `outputDir`
-/// before every body has been rewritten.
-let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string) : Result<WeaveResult, WeaveError> =
+/// `weave`, cancellable: `ct` is checked before each assembly is read, rewritten and
+/// written, and a cancellation raises `OperationCanceledException`. Cancelled before the
+/// writes, nothing is written to `outputDir`; cancelled during them, `outputDir` holds a
+/// partial set that no caller may treat as a finished weave.
+let weaveWith
+    (ct: CancellationToken)
+    (passes: IWeavePass list)
+    (inputs: WeaveInput list)
+    (outputDir: string)
+    : Result<WeaveResult, WeaveError> =
     let recorderPath = typeof<Probes>.Assembly.Location
     use recorder = ModuleDefinition.ReadModule recorderPath
     let rows = ResizeArray<ManifestRow>()
@@ -312,6 +319,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
     try
         try
             for input in inputs do
+                ct.ThrowIfCancellationRequested()
                 current.Value <- Path.GetFileNameWithoutExtension input.Path
                 modules.Add(readModule recorderPath input)
 
@@ -324,6 +332,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                 p.Prepare set
 
             for m, mode in modules do
+                ct.ThrowIfCancellationRequested()
                 let asmName = m.Assembly.Name.Name
                 current.Value <- asmName
                 let hit = recorderMethod m Contract.ProbesType Contract.Hit
@@ -338,6 +347,7 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
             let outputs =
                 modules
                 |> Seq.map (fun (m, _) ->
+                    ct.ThrowIfCancellationRequested()
                     let asmName = m.Assembly.Name.Name
                     current.Value <- asmName
                     let dst = Path.Combine(outputDir, asmName + ".dll")
@@ -364,7 +374,14 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
                       Touched = touched |> Seq.map (fun kv -> kv.Key, List.ofSeq kv.Value) |> Map.ofSeq } }
         with
         | WeaveFailure e -> Error e
+        | :? OperationCanceledException -> reraise ()
         | ex -> Error(CecilFailed(current.Value, ex.Message))
     finally
         for m, _ in modules do
             m.Dispose()
+
+/// Weave `inputs` into `outputDir` (DLL + PDB per input), running `passes` on every method
+/// body. Refuses the whole set on the first error; nothing is written to `outputDir`
+/// before every body has been rewritten.
+let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string) : Result<WeaveResult, WeaveError> =
+    weaveWith CancellationToken.None passes inputs outputDir

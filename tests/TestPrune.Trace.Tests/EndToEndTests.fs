@@ -2,6 +2,7 @@ module TestPrune.Trace.Tests.EndToEndTests
 
 open System
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open TestPrune.Trace
@@ -224,6 +225,40 @@ let ``a project with nothing woven is refused before it runs`` () =
 
         test <@ result = Error(TraceIngest.nothingWovenReason elsewhere) @>
         test <@ not (Directory.Exists(Path.Combine(elsewhere, "traces"))) @>
+    finally
+        ShadowBinTests.deleteProject projectDir
+
+[<Fact>]
+let ``a cancelled preparation raises instead of refusing`` () =
+    let projectDir = ShadowBinTests.scratchProject ()
+    let runDir = Directory.CreateTempSubdirectory("tp-e2e-cancel-").FullName
+
+    try
+        use cts = new CancellationTokenSource()
+
+        let cancelling: Launch.Launcher =
+            fun _ _ ->
+                cts.Cancel()
+                137, "killed"
+
+        raises<OperationCanceledException> <@ prepareProjectWith cancelling cts.Token (request projectDir runDir) @>
+        test <@ not (Directory.Exists(Path.Combine(runDir, "traces"))) @>
+    finally
+        ShadowBinTests.deleteProject projectDir
+
+[<Fact>]
+let ``a launcher's cancellation that is not the run's is a refusal`` () =
+    let projectDir = ShadowBinTests.scratchProject ()
+
+    try
+        let timedOut: Launch.Launcher =
+            fun _ _ -> raise (OperationCanceledException "the launcher gave up")
+
+        test
+            <@
+                prepareProjectWith timedOut CancellationToken.None (request projectDir projectDir) = Error
+                    "trace preparation failed: the launcher gave up"
+            @>
     finally
         ShadowBinTests.deleteProject projectDir
 

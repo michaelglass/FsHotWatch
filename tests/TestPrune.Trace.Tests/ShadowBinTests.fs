@@ -6,6 +6,7 @@ open System.Reflection
 open System.Runtime.Loader
 open System.Security.Cryptography
 open System.Text.Json
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open Mono.Cecil
@@ -455,6 +456,114 @@ let ``a weave whose woven IL is invalid is refused and never cached as good`` ()
 
         // Not reused: the next prepare weaves and verifies again.
         test <@ prepare (request projectDir) = r @>
+    finally
+        deleteProject projectDir
+
+let private doneMarkers projectDir =
+    Directory.GetFiles(Path.Combine(projectDir, "obj", "traced"), "done", SearchOption.AllDirectories)
+
+[<Fact>]
+let ``prepare verifies with the launcher it is given, and a reused weave launches nothing`` () =
+    let projectDir = scratchProject ()
+
+    try
+        let launched = ResizeArray<Launch.LaunchRequest>()
+
+        let recording: Launch.Launcher =
+            fun req ct ->
+                launched.Add req
+                Launch.direct req ct
+
+        let prepareRecording () =
+            prepareWith recording CancellationToken.None (request projectDir)
+            |> Result.defaultWith (fun e -> failwith (describeRefusal e))
+
+        let shadow = prepareRecording ()
+        let verifyLaunch = Seq.exactlyOne launched
+        let env = Map.ofList verifyLaunch.Env
+
+        test <@ verifyLaunch.Exe = shadow.Apphost && verifyLaunch.WorkDir = shadow.Dir @>
+        test <@ env.["DOTNET_STARTUP_HOOKS"] = Path.Combine(shadow.Dir, DepsJson.RecorderName + ".dll") @>
+        test <@ env.["DOTNET_ROOT"] = Launch.dotnetRoot () @>
+        test <@ verifyLaunch.Timeout = (request projectDir).VerifyTimeout @>
+
+        let again = prepareRecording ()
+        test <@ again.Reused && launched.Count = 1 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``a prepare whose verify child the host ended on cancellation raises, and the next prepare starts over`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        // A host that owns its children ends the verify child when its scope closes and
+        // returns what the child exited with: never a verdict once the token is cancelled.
+        let endedByHost: Launch.Launcher =
+            fun _ _ ->
+                cts.Cancel()
+                137, "killed"
+
+        raises<OperationCanceledException> <@ prepareWith endedByHost cts.Token (request projectDir) @>
+        test <@ Array.isEmpty (doneMarkers projectDir) @>
+
+        let next = prepared (request projectDir)
+        test <@ not next.Reused && List.isEmpty next.Verify.Invalid && next.Verify.Prepared > 0 @>
+        test <@ doneMarkers projectDir |> Array.length = 1 @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``cancelling a prepare mid-verify kills the verify child promptly`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        // The default launcher, running a verify that would take 30 seconds.
+        let slowVerify: Launch.Launcher =
+            fun req ct ->
+                cts.CancelAfter(TimeSpan.FromMilliseconds 200.0)
+
+                Launch.direct
+                    { req with
+                        Exe = "/bin/sleep"
+                        Args = [ "30" ] }
+                    ct
+
+        let started = Diagnostics.Stopwatch.StartNew()
+        raises<OperationCanceledException> <@ prepareWith slowVerify cts.Token (request projectDir) @>
+        test <@ started.Elapsed < TimeSpan.FromSeconds 20.0 @>
+        test <@ Array.isEmpty (doneMarkers projectDir) @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
+let ``a prepare cancelled mid-weave raises, caches nothing, and the next prepare succeeds`` () =
+    let projectDir = scratchProject ()
+
+    try
+        use cts = new CancellationTokenSource()
+
+        let cancelling =
+            { new Weaver.IWeavePass with
+                member _.Prepare _ = cts.Cancel()
+                member _.Rewrite(_, _, _, _) = false }
+
+        raises<OperationCanceledException>
+            <@
+                prepareWith
+                    Launch.direct
+                    cts.Token
+                    { request projectDir with
+                        Passes = [ cancelling ] }
+            @>
+
+        // Cancelled before anything was written: no cache entry at all.
+        test <@ not (Directory.Exists(Path.Combine(projectDir, "obj", "traced"))) @>
+        test <@ not (prepared (request projectDir)).Reused @>
     finally
         deleteProject projectDir
 

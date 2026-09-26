@@ -7,6 +7,7 @@ module TestPrune.Trace.TraceSession
 
 open System
 open System.IO
+open System.Threading
 open TestPrune.Trace.Model
 open TestPrune.Trace.Recorder
 
@@ -64,13 +65,21 @@ type Completion =
         FingerprintEnv: string list
     }
 
-/// Build the project's shadow bin and a fresh dump directory. `Error` carries a one-line
-/// reason: the project cannot be traced (no build output, a refused weave, failed JIT
-/// verification, or nothing woven at all) and runs untraced. Never throws.
-let prepareProject (req: PrepareRequest) : Result<TraceLaunch, string> =
+/// `prepareProject`, launching its JIT-verification child with `launcher` and cancellable
+/// through `ct` (checked between assemblies while weaving; abandons the verification
+/// launch). Once `ct` is cancelled it raises `OperationCanceledException`, the one
+/// exception it lets through; a later prepare of the same project starts over rather than
+/// reusing anything the cancelled one left.
+let prepareProjectWith
+    (launcher: Launch.Launcher)
+    (ct: CancellationToken)
+    (req: PrepareRequest)
+    : Result<TraceLaunch, string> =
     try
         let shadow =
-            ShadowBin.prepare
+            ShadowBin.prepareWith
+                launcher
+                ct
                 { RepoRoot = req.RepoRoot
                   ProjectDir = req.ProjectDir
                   AssemblyName = req.AssemblyName
@@ -102,8 +111,15 @@ let prepareProject (req: PrepareRequest) : Result<TraceLaunch, string> =
                       Contract.IdsEnv, string shadow.Manifest.IdCount
                       Contract.RepoRootEnv, req.RepoRoot
                       "DOTNET_ROOT", Launch.dotnetRoot () ] }
-    with ex ->
-        Error $"trace preparation failed: %s{ex.Message}"
+    with
+    | :? OperationCanceledException when ct.IsCancellationRequested -> reraise ()
+    | ex -> Error $"trace preparation failed: %s{ex.Message}"
+
+/// Build the project's shadow bin and a fresh dump directory. `Error` carries a one-line
+/// reason: the project cannot be traced (no build output, a refused weave, failed JIT
+/// verification, or nothing woven at all) and runs untraced. Never throws.
+let prepareProject (req: PrepareRequest) : Result<TraceLaunch, string> =
+    prepareProjectWith Launch.direct CancellationToken.None req
 
 /// Store the traces of a finished run. `repoRoot` is the root the joiner resolves PDB
 /// documents against (the repository root in production). Never throws.

@@ -84,6 +84,14 @@ with
 `store` is `TraceStore.Store.Open path`. `prepareProject` and `ingestProject` never throw.
 A trace failure never changes a test run's verdict.
 
+A host that owns its child processes, or cancels runs, calls
+`TraceSession.prepareProjectWith launcher ct request` instead. `launcher` (a
+`Launch.Launcher`) starts the JIT-verification child, so the host can admit it into its own
+process scope and end it with that scope; `Launch.direct` is the default. `ct` is checked
+between assemblies while weaving and abandons the verification launch; once it is cancelled,
+`prepareProjectWith` raises `OperationCanceledException` instead of returning a refusal, and
+the next prepare of the project starts over rather than reusing what the cancelled one left.
+
 `launch.Env` holds exactly `TESTPRUNE_TRACE_OUT` (the dump directory, created empty),
 `TESTPRUNE_TRACE_IDS` (the probe id count), `TESTPRUNE_TRACE_REPO_ROOT` (file inputs outside
 it are ignored) and `DOTNET_ROOT`.
