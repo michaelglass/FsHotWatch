@@ -126,21 +126,25 @@ module private Native =
     [<Runtime.InteropServices.DllImport("libc", SetLastError = false)>]
     extern int getloadavg(double[] loadavg, int nelem)
 
-/// The 1-minute load average, or `None` on Windows or when the call fails.
-let loadAverage () : float option =
-    if OperatingSystem.IsWindows() then
+/// `getloadavg` for one sample: how many samples it returned, and the 1-minute value.
+let private nativeLoad () : int * float =
+    let values = Array.zeroCreate<double> 1
+    let returned = Native.getloadavg (values, 1)
+    returned, values[0]
+
+/// The load average `read` reports, or `None` on Windows (no such figure) or when the
+/// read returned no sample. `read` is injected so every outcome is testable here.
+let internal loadAverageOf (isWindows: bool) (read: unit -> int * float) : float option =
+    if isWindows then
         None
     else
-        try
-            let values = Array.zeroCreate<double> 1
+        match read () with
+        | 1, value -> Some value
+        | _ -> None
 
-            if Native.getloadavg (values, 1) = 1 then
-                Some values[0]
-            else
-                None
-        with
-        | :? DllNotFoundException
-        | :? EntryPointNotFoundException -> None
+/// The 1-minute load average, or `None` on Windows or when the call fails.
+let loadAverage () : float option =
+    loadAverageOf (OperatingSystem.IsWindows()) nativeLoad
 
 /// The process's current `ResourceReading`.
 let readResources () : ResourceReading =

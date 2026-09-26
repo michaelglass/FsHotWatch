@@ -413,3 +413,9 @@ let ``a wedged op stays visible when a concurrent op begins and ends over it`` (
 
     test <@ w.State.InFlight |> List.map (fun o -> o.Name) = [ "WaitForComplete" ] @>
     test <@ heartbeatLine clock.Value w.State <> "heartbeat: idle" @>
+
+[<Fact(Timeout = 5000)>]
+let ``loadAverageOf reads one sample, and has none on Windows or when the read returned none`` () =
+    test <@ loadAverageOf false (fun () -> 1, 3.25) = Some 3.25 @>
+    test <@ loadAverageOf false (fun () -> -1, 0.0) = None @>
+    test <@ loadAverageOf true (fun () -> failwith "Windows must not read a load average") = None @>
