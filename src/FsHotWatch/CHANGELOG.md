@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the workspace-local task cache now reads back findings keyed by a plugin
+  identity rather than a file (`<build>`, a file command's `<name>`). It wrote them as
+  `external:<build>` and then refused that spelling on read, so the build and every file
+  command missed on every lookup: each warm `check` ran a real `dotnet build` even when
+  nothing had changed. Such keys are now stored verbatim as `ledger:<key>`. Entries
+  written before this read as a miss once and are rewritten.
 - fix: a project-file change that re-discovers the model on the scoped path no longer
   leaves the projects it did not re-check without results for the new model. The seal
   (`BatchChecked.Retained`, new `RetainedResults`) names the files whose standing results

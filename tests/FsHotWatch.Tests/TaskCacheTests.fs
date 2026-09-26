@@ -1850,3 +1850,31 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
         // A run in which nothing executed — which the bool could not express at all: it had
         // to be reported as either a full suite or a filtered run, neither of which happened.
         test <@ evt.Value.Verification = NothingExecuted @>)
+
+// A workspace-local store (no repo root) holds the plugins whose findings are keyed by
+// a plugin identity rather than a file: the build reports under `<build>`, a file
+// command under `<name>`. Their entries must read back, or the plugin never replays and
+// every warm check pays for the work again.
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache without a repo root replays findings keyed by a plugin identity`` () =
+    withTempDir "ftc-identity-keys" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir) :> ITaskCache
+        let key = ckPlugin "build"
+        let cacheKey = hash "k"
+        let absolute = IO.Path.Combine(tmpDir, "src", "A.fs")
+
+        let result =
+            { CacheKey = cacheKey
+              Errors =
+                [ "<build>", []
+                  "<changelog-gate>", [ ErrorEntry.error "bad bullet" ]
+                  absolute, [ ErrorEntry.error "type error" ] ]
+              Status = cachedFileDone
+              EmittedEvents = [] }
+
+        cache.Set key cacheKey result
+
+        match cache.Lookup key cacheKey with
+        | CacheHit replayed -> test <@ replayed.Errors = result.Errors @>
+        | CacheMiss reason -> failwith $"expected a hit, got a miss: %s{CacheMissReason.describe reason}")
