@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.40 - 2026-09-26
+
 - Changed: hosts `FSharp.Analyzers.SDK` 0.39 (was 0.37.2). The SDK's loader only
   loads an analyzer built against the host's SDK major.minor and skips the rest
   without an error, so analyzer packages must be built against SDK 0.39 to load:
@@ -10,6 +12,7 @@
   refused at startup (`Analyzer path(s) loaded 0 analyzers`). With g-research
   0.25.0 all eleven of its typed-tree rules run on the typed tree this host
   offers, where 0.23.0 raised `MissingMethodException` on every file.
+- build(deps): bump FSharp.Analyzers.SDK from 0.37.2 to 0.39.2
 
 ## 0.7.0-alpha.39 - 2026-09-25
 

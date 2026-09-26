@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.66 - 2026-09-26
+
 - **BREAKING (config):** an unknown value for an enumerated `.fshw.json` setting is now a
   config error naming the value and the accepted ones, where it used to log a warning
   and fall back to the default. A config that loaded with such a warning now fails to

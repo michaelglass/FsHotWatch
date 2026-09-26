@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.49 - 2026-09-26
+
 - fix: a timed call (`runWithCancellableTimeout`, `runWithCancellableTimeoutTracked`,
   `runWithTimeout`) no longer starts a new thread. Its work runs on a reused
   `fshw-deadline-worker` thread; one is added only when none is idle, so work abandoned
