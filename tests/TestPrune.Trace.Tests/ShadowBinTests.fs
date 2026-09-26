@@ -293,7 +293,7 @@ let ``verification that never writes a report is a failure, not a pass`` () =
 // ---------------------------------------------------------------- prepare
 
 /// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net10.0`.
-let private scratchProject () =
+let scratchProject () =
     let projectDir =
         Path.Combine(Fixtures.fixtureRoot, "bin-scratch", Guid.NewGuid().ToString "N", "FxTests")
 
@@ -306,7 +306,7 @@ let private scratchProject () =
 
     projectDir
 
-let private deleteProject (projectDir: string) =
+let deleteProject (projectDir: string) =
     WeaverTests.deleteScratch (Path.GetDirectoryName projectDir)
 
 let private request projectDir =

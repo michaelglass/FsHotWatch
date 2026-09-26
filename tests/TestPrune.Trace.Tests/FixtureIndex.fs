@@ -24,20 +24,24 @@ let private compileListOptions: ProjectOptionsProvider =
 /// The fixture library's project directory, relative to the fixture root.
 let private fxLib = Path.Combine("src", "FxLib")
 
-/// Index a scratch COPY of the fixture library's sources, each passed through
+/// The fixture xUnit v3 suite's project directory, relative to the fixture root.
+let private fxTests = Path.Combine("tests", "FxTests")
+
+/// Index a scratch COPY of the given fixture projects' sources, each passed through
 /// `edit fileName text`, so the real tree gets no .test-prune.db. The copy keeps the
 /// fixture root's relative layout, so a PDB document path made relative to the REAL
 /// fixture root matches the index's paths.
-let private indexCopy (edit: string -> string -> string) =
+let private indexProjects (projects: string list) (edit: string -> string -> string) =
     let scratch =
         Path.Combine(Path.GetTempPath(), "tp-fixture-index-" + Guid.NewGuid().ToString "N")
 
-    let source = Path.Combine(Fixtures.fixtureRoot, fxLib)
+    for project in projects do
+        let source = Path.Combine(Fixtures.fixtureRoot, project)
 
-    for f in Directory.EnumerateFiles(source, "*.fs*", SearchOption.TopDirectoryOnly) do
-        let dst = Path.Combine(scratch, fxLib, Path.GetFileName f)
-        Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
-        File.WriteAllText(dst, edit (Path.GetFileName f) (File.ReadAllText f))
+        for f in Directory.EnumerateFiles(source, "*.fs*", SearchOption.TopDirectoryOnly) do
+            let dst = Path.Combine(scratch, project, Path.GetFileName f)
+            Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
+            File.WriteAllText(dst, edit (Path.GetFileName f) (File.ReadAllText f))
 
     let code =
         runIndexWith
@@ -53,8 +57,14 @@ let private indexCopy (edit: string -> string -> string) =
 
     Database.create (Path.Combine(scratch, ".test-prune.db"))
 
+let private indexCopy = indexProjects [ fxLib ]
+
 /// The index of the fixture library as built.
 let build = lazy (indexCopy (fun _ text -> text))
+
+/// The index of the fixture library and its xUnit v3 suite as built: what a repository
+/// index holds, where test methods are symbols too.
+let withTests = lazy (indexProjects [ fxLib; fxTests ] (fun _ text -> text))
 
 /// Lines `driftedLogic` inserts above `Logic.fs`'s first binding.
 let driftLines = 4

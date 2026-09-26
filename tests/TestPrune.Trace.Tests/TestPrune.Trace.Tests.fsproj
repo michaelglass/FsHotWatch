@@ -38,6 +38,8 @@
     <Compile Include="JoinerTests.fs" />
     <Compile Include="ShadowBinTests.fs" />
     <Compile Include="TraceIngestTests.fs" />
+    <Compile Include="CtrfTests.fs" />
+    <Compile Include="EndToEndTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

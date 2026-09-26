@@ -12,6 +12,7 @@
         <RepositoryType>git</RepositoryType>
         <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;tracing;il-weaving</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <IncludeSymbols>true</IncludeSymbols>
@@ -25,6 +26,10 @@
     </ItemGroup>
 
     <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
         <Compile Include="Model.fs" />
         <Compile Include="DumpReader.fs" />
         <Compile Include="TraceStore.fs" />
@@ -32,6 +37,7 @@
         <Compile Include="Manifest.fs" />
         <Compile Include="PdbCheck.fs" />
         <Compile Include="Launch.fs" />
+        <Compile Include="Ctrf.fs" />
         <Compile Include="Weaver.fs" />
         <Compile Include="SiteProbes.fs" />
         <Compile Include="Redirects.fs" />
@@ -40,6 +46,7 @@
         <Compile Include="DepsJson.fs" />
         <Compile Include="ShadowBin.fs" />
         <Compile Include="TraceIngest.fs" />
+        <Compile Include="TraceSession.fs" />
     </ItemGroup>
 
     <ItemGroup>

@@ -59,3 +59,10 @@
 - feat: `DumpReader.readEach` returns every dump with its file.
 - feat: `TraceStore.RunScopeKeys`; garbage collection keeps the static-init and ambient scopes of
   each project's latest recorded run.
+- feat: host facade (`TestPrune.Trace.TraceSession`): `prepareProject` builds the shadow bin and a
+  fresh dump directory and returns the apphost and the exact environment a host launches it with;
+  `ingestProject` stores the run's traces; `recordRefusal` stores a project that could not be traced
+  as a `refused` run. Neither `prepareProject` nor `ingestProject` throws. An empty weave set is
+  refused at prepare time, before the project runs. `Ctrf.parse` reads per-test outcomes from a
+  CTRF report. The package README documents the host flow and the `Scopes` contract for tests that
+  call an in-process server.
