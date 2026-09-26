@@ -314,7 +314,7 @@ let private request projectDir =
       ProjectDir = projectDir
       AssemblyName = "FxTests"
       WeaveTests = SitesOnly
-      Passes = []
+      Passes = [ SiteProbes.pass (); Redirects.pass () ]
       VerifyTimeout = TimeSpan.FromMinutes 2.0 }
 
 let private prepared req =

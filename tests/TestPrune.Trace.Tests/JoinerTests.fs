@@ -200,7 +200,8 @@ let ``joinManifest indexes targets by probe id and finds union types itself`` ()
 
 [<Fact>]
 let ``the woven fixture joins to the real index`` () =
-    let dir, r = WeaverTests.weaveFx []
+    let dir, r =
+        WeaverTests.weaveFx [ TestPrune.Trace.SiteProbes.pass (); TestPrune.Trace.Redirects.pass () ]
 
     try
         let ix =
