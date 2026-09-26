@@ -173,6 +173,49 @@ let ``format check handles non-source change events without crashing`` () =
     test <@ summaryOf host = "no files to check" @>
 
 [<Fact(Timeout = 15000)>]
+let ``format-check folds an event other than FileChanged to the same state, silently`` () =
+    // The host only dispatches what the handler subscribes to (FileChanged), so this arm
+    // is reached by a direct fold: a bare context that records everything it is told.
+    let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
+    let handler = createFormatCheckWith runner "/tmp" None
+    let told = ResizeArray<string>()
+
+    let ctx: FsHotWatch.PluginFramework.PluginCtx<unit> =
+        { ReportStatus = fun s -> told.Add $"status %A{s}"
+          ReportErrors = fun file _ -> told.Add $"errors %s{file}"
+          ClearErrors = fun file -> told.Add $"clear %s{file}"
+          ClearAllErrors = fun () -> told.Add "clear all"
+          EmitBuildCompleted = fun _ -> told.Add "emit build"
+          EmitTestRunStarted = fun _ -> told.Add "emit test started"
+          EmitTestProgress = fun _ -> told.Add "emit test progress"
+          EmitTestRunCompleted = fun _ -> told.Add "emit test completed"
+          EmitCommandCompleted = fun _ -> told.Add "emit command"
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = "/tmp"
+          Post = fun _ -> told.Add "post"
+          EnqueueExclusiveIntent = fun _ _ _ -> Threading.Tasks.Task.FromResult(())
+          StartSubtask = fun key _ -> told.Add $"start %s{key}"
+          UpdateSubtask = fun key _ -> told.Add $"update %s{key}"
+          EndSubtask = fun key -> told.Add $"end %s{key}"
+          Log = fun line -> told.Add $"log %s{line}"
+          CompleteWithTimeout = fun _ -> told.Add "timeout"
+          RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
+          SlotHolder = fun _ -> FsHotWatch.PluginFramework.SlotHolder.Free
+          DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    let prior = { Unformatted = Set.ofList [ "/tmp/Prior.fs" ] }
+
+    let after =
+        Async.RunSynchronously(handler.Update ctx prior (BuildCompleted BuildSucceeded), timeout = 5000)
+
+    test <@ after = prior @>
+    test <@ List.isEmpty (List.ofSeq told) @>
+    test <@ List.isEmpty (calls ()) @>
+
+[<Fact(Timeout = 15000)>]
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     host.RegisterHandler(createFormatCheck "/tmp" None)

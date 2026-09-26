@@ -49,11 +49,8 @@ let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string
         try
             let bytes = File.ReadAllBytes file
 
-            use sha = Security.Cryptography.SHA256.Create()
             let header = Text.Encoding.UTF8.GetBytes($"%s{pin.Version}\n%s{config}\n")
-            sha.TransformBlock(header, 0, header.Length, null, 0) |> ignore
-            sha.TransformFinalBlock(bytes, 0, bytes.Length) |> ignore
-            Some(Convert.ToHexString sha.Hash)
+            Some(Convert.ToHexString(Security.Cryptography.SHA256.HashData(Array.append header bytes)))
         with ex ->
             Logging.debug
                 "format"
