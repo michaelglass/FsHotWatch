@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 13.2.0 - 2026-09-26
+
+- Merge main (global-namespace indexing, Core 13.1.1) into trace phase 1 group 2
+- Join woven probe ids to TestPrune symbols
+
+
 ## 13.1.1 - 2026-09-26
 
 - fix(core): index global-namespace types under a qualified name

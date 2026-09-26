@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.5 - 2026-09-26
+
+- Analyzers: build against FSharp.Analyzers.SDK 0.39
+
+
 ## 0.1.0-alpha.4 - 2026-07-15
 
 - **TP001 is now dogfooded: TestPrune runs this analyzer against TestPrune**.
