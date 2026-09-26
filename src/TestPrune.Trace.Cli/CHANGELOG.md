@@ -9,3 +9,8 @@
   1 when one misses a bar or no recorded run exists, and 2 on a usage error, a missing database or
   one written by a newer trace schema. Without `--db` it reads `.fshw/test-traces.db`, else
   `.test-prune-traces.db`.
+- feat: `test-prune-traces audit|overhead|file-census --project-dir <dir> --assembly <name>
+  [--repo <root>] [--timeout-min 30] [--json] [-- <app args>]`, with `audit [--sample 0.01]
+  [--seed 1]` and `overhead [--reps 3]`. Each prints its report (or JSON with `--json`) and exits 0
+  when the project meets its bar, 1 when it does not, and 2 on a usage error or a project that
+  cannot be prepared or measured.

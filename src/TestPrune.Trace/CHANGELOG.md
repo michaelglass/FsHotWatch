@@ -72,3 +72,14 @@
   explain. It also reports executed tests with no test scope, tests per incomplete-reason kind, and
   each pool scope with its symbols, inputs and linked tests. A missing database is refused, never
   created.
+- feat: process-driving measurements. `Audit.run` runs a woven project once in parallel, then a
+  seeded sample of its tests one at a time, and compares each test's own probe ids: an id
+  attributed in parallel that the test never hits alone is contamination (the bar is none);
+  ids missing in parallel are grouped by manifest kind, and every non-`cctor`/`gen` one is listed.
+  It also counts the parallel run's tests per incomplete reason the dumps show without a join
+  (`child-process-untraced:<file>`, overflow, rejected dumps). `Overhead.run` interleaves
+  untraced and traced launches and compares median CPU (user + system of the process tree, from
+  `getrusage`, never wall time), with each side's range. `FileCensus.run` compares the tests whose
+  traces hold a repository file input with the tests that fail when an untraced copy of the build
+  output runs outside the repository. `Rusage.children` reads `getrusage(RUSAGE_CHILDREN)` on macOS
+  and Linux.
