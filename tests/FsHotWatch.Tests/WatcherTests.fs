@@ -1254,3 +1254,70 @@ let ``parse still accepts leading-wildcard and literal patterns`` () =
     test <@ FilePattern.parse "coverage-ratchet.json" = FilePattern.Literal "coverage-ratchet.json" @>
     // A bare "*" (match everything) stays supported: both matchers agree on it.
     test <@ FilePattern.parse "*" = FilePattern.Wildcard "" @>
+
+// === project.assets.json: restore metadata is not a package-graph change ===
+// A restore run by another tool (Fable's project cracker is the observed one) rewrites
+// `obj/project.assets.json` with a different `project.restore` block — Fable records
+// `restoreLockProperties` naming its own lock file — while the resolved package graph
+// (targets, libraries, packageFolders, frameworks) is byte-for-byte what the build's
+// restore wrote. Reported as a change, it re-evaluated MSBuild and re-checked the
+// project and every dependent right after a cold scan.
+
+let private assetsJson (restoreExtra: string) (dependencyVersion: string) =
+    $$"""{
+  "version": 3,
+  "targets": { "net10.0": { "FSharp.Core/{{dependencyVersion}}": { "type": "package" } } },
+  "libraries": { "FSharp.Core/{{dependencyVersion}}": { "type": "package", "path": "fsharp.core/{{dependencyVersion}}" } },
+  "packageFolders": { "/home/u/.nuget/packages/": {} },
+  "project": {
+    "version": "1.0.0",
+    "restore": { "projectName": "App", "projectStyle": "PackageReference"{{restoreExtra}} },
+    "frameworks": { "net10.0": { "dependencies": { "FSharp.Core": { "version": "[{{dependencyVersion}}, )" } } } }
+  }
+}"""
+
+let private withAssetsFile (body: string -> unit) =
+    let dir = Path.Combine(Path.GetTempPath(), $"fshw-assets-{Guid.NewGuid():N}", "obj")
+    Directory.CreateDirectory dir |> ignore
+    let path = Path.Combine(dir, "project.assets.json")
+
+    try
+        body path
+    finally
+        Directory.Delete(Path.GetDirectoryName dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``an assets rewrite that changes only restore metadata is not a content change`` () =
+    withAssetsFile (fun path ->
+        File.WriteAllText(path, assetsJson "" "10.1.401")
+        let tracker = Tracker()
+        tracker.Observe path
+
+        File.WriteAllText(
+            path,
+            assetsJson
+                """, "restoreLockProperties": { "restorePackagesWithLockFile": "false", "nuGetLockFilePath": "Fable.lock" }"""
+                "10.1.401"
+        )
+
+        test <@ not (tracker.HasContentChanged path) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an assets rewrite that changes the resolved package graph is a content change`` () =
+    withAssetsFile (fun path ->
+        File.WriteAllText(path, assetsJson "" "10.1.401")
+        let tracker = Tracker()
+        tracker.Observe path
+        File.WriteAllText(path, assetsJson "" "10.1.402")
+
+        test <@ tracker.HasContentChanged path @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an assets file that is not valid JSON is still compared by its bytes`` () =
+    withAssetsFile (fun path ->
+        File.WriteAllText(path, "{ not json")
+        let tracker = Tracker()
+        tracker.Observe path
+        File.WriteAllText(path, "{ still not json")
+
+        test <@ tracker.HasContentChanged path @>)

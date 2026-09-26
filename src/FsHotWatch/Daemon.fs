@@ -1328,6 +1328,24 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 
         $"format refused — %s{reasons}"
 
+/// The line naming the project inputs whose content changed, repository-relative, or
+/// `None` when none did. An `obj/project.assets.json` is a restore's write (package
+/// graph), a `.fsproj` / `.props` an edit of the project itself.
+let internal projectChangeLine (repoRoot: string) (changed: string list) : string option =
+    match changed with
+    | [] -> None
+    | paths ->
+        let describe (path: string) =
+            let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+
+            if Path.GetFileName(path).Equals("project.assets.json", StringComparison.OrdinalIgnoreCase) then
+                $"%s{rel} (restore rewrote the package graph)"
+            else
+                rel
+
+        let named = paths |> List.map describe |> String.concat ", "
+        Some $"project input content changed: %d{paths.Length} [%s{named}]"
+
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files. Raises `ModelSupersededException`
 /// when a publication meets a model newer than the one the attempt captured.
@@ -1408,6 +1426,12 @@ let private processBatchAttempt
                     Logging.debug "daemon" $"content unchanged: %s{f}"
 
                 changed)
+
+        // The WRITE that made a project look changed, named by its own path. The scoped
+        // line below names the `.fsproj` a change maps to, which for an
+        // `obj/project.assets.json` rewrite is a file nobody touched.
+        projectChangeLine ctx.RepoRoot projFilesChanged
+        |> Option.iter (Logging.info "daemon")
 
         if hasSolution then
             publishCurrent (fun () -> ctx.Host.EmitFileChanged(SolutionChanged))

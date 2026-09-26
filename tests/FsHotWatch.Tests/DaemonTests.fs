@@ -4118,3 +4118,18 @@ let ``the two rendered types are found when FCS separates them with GROUP SEPARA
         separatedBy gs "Type mismatch. Expecting a" "but given a" "A.T" "A.T"
 
     test <@ tryRenderedTypePair expectingA = Some("A.T", "A.T") @>
+
+[<Fact(Timeout = 5000)>]
+let ``projectChangeLine names the write, and says when it was a restore`` () =
+    let line =
+        Daemon.projectChangeLine "/repo" [ "/repo/src/App/obj/project.assets.json"; "/repo/src/Lib/Lib.fsproj" ]
+
+    test
+        <@
+            line = Some
+                "project input content changed: 2 [src/App/obj/project.assets.json (restore rewrote the package graph), src/Lib/Lib.fsproj]"
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``projectChangeLine says nothing when no project input changed`` () =
+    test <@ Daemon.projectChangeLine "/repo" [] = None @>

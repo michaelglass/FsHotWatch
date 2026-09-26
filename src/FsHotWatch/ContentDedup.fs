@@ -5,6 +5,44 @@ open System.Collections.Concurrent
 open System.IO
 open System.Security.Cryptography
 
+/// The bytes of a `project.assets.json` that decide a check, as JSON with the
+/// `project.restore` block removed; `None` when the text is not a JSON object.
+///
+/// `project.restore` records how the restore that wrote the file was invoked — its
+/// output path, sources, config files, and (from a tool that restores on its own, such
+/// as a JavaScript compiler's project cracker) `restoreLockProperties` naming that
+/// tool's lock file. None of it is the resolved package graph a check types against:
+/// that is `targets`, `libraries`, `packageFolders` and `project.frameworks`, all kept.
+/// Two restores of an unchanged project by two different tools write different
+/// `project.restore` blocks, and reading that as a project change re-evaluated MSBuild
+/// and re-checked the project and every dependent for nothing.
+let internal assetsGraphBytes (content: byte[]) : byte[] option =
+    try
+        match System.Text.Json.Nodes.JsonNode.Parse(ReadOnlySpan content) with
+        | :? System.Text.Json.Nodes.JsonObject as root ->
+            match root["project"] with
+            | :? System.Text.Json.Nodes.JsonObject as project -> project.Remove("restore") |> ignore
+            | _ -> ()
+
+            Some(Text.Encoding.UTF8.GetBytes(root.ToJsonString()))
+        | _ -> None
+    with :? System.Text.Json.JsonException ->
+        None
+
+/// The hash a path's content is compared by: `assetsGraphBytes` for a
+/// `project.assets.json` that parses, the raw bytes for everything else.
+let internal comparableHash (path: string) (content: byte[]) : byte[] =
+    let isAssets =
+        Path.GetFileName(path).Equals("project.assets.json", StringComparison.OrdinalIgnoreCase)
+
+    let bytes =
+        if isAssets then
+            assetsGraphBytes content |> Option.defaultValue content
+        else
+            content
+
+    SHA256.HashData(bytes)
+
 /// Compute the change verdict for `path` against `store`, mutating `store`.
 /// Extracted so both the per-instance `Tracker` and the process-global default
 /// share one implementation. Returns true if the content actually changed since
@@ -16,7 +54,7 @@ let private evaluate (store: ConcurrentDictionary<string, byte[]>) (path: string
             true
         else
             let content = File.ReadAllBytes(path)
-            let hash = SHA256.HashData(content)
+            let hash = comparableHash path content
 
             match store.TryGetValue(path) with
             | true, previous when ReadOnlySpan(previous).SequenceEqual(ReadOnlySpan(hash)) -> false
