@@ -48,6 +48,10 @@
         <Compile Include="TraceIngest.fs" />
         <Compile Include="TraceSession.fs" />
         <Compile Include="Census.fs" />
+        <Compile Include="Rusage.fs" />
+        <Compile Include="Audit.fs" />
+        <Compile Include="Overhead.fs" />
+        <Compile Include="FileCensus.fs" />
     </ItemGroup>
 
     <ItemGroup>

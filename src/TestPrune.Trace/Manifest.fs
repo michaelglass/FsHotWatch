@@ -6,7 +6,7 @@ open System
 open System.IO
 open TestPrune.Trace.Model
 
-let private kindCode =
+let internal kindCode =
     function
     | UserMethod -> "user"
     | GeneratedMethod -> "gen"
