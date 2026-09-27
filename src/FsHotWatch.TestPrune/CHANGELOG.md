@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.57 - 2026-09-28
+
 - fix: a `check` right after an edit runs the tests the edit affects, instead of every
   project in full. A scan waits for the build before it type-checks, so `BuildSucceeded`
   arrived before the edited files' check results. With nothing owed, zero classes were
