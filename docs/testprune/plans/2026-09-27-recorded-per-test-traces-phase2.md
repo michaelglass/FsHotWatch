@@ -86,7 +86,7 @@ the tests that happened to run are still sound.
 
 | Case | Mitigation in this phase | Measured by |
 |---|---|---|
-| Once-per-process code (static init, module values) | `S:static-init` symbols are a fallback class (R6) | mutation harness |
+| Once-per-process code (static init, module values) | each initializer's `S:<type>` scope is inherited by the tests that touch the type (see the 2026-09-27 note under D2); what no test inherits stays a fallback class (R6) | mutation harness |
 | Memoised values (`Lazy`, a cached checker): only the first test to force them records the factory | order-unstable detector at ingestion (Task 4); those symbols are a fallback class (R6) | mutation harness; verified-failure misses |
 | Non-determinism | failures of tests FsHotWatch's flakiness history flags are recorded as `flaky`, not `unexplained` | verified-failure misses |
 | A change the content hash does not see | none by design; it surfaces as a test that failed while its trace verified | verified-failure misses |
@@ -187,6 +187,22 @@ the tests that happened to run are still sound.
   The static walk is today's `QueryAffectedTests`, with composition-root barriers and the per-seed fail-safe
   while they exist. Phase 3 retires them for eligible projects; this phase records each run's fallback seeds
   (`fallback_seeds`) so phase 3 has the data.
+
+  > **Note, 2026-09-27 (static-init inheritance landed after this plan).** Static-init hits no longer go to one
+  > `S:static-init` scope that no test links. The recorder keeps one `S:<type>` scope per type initializer, and
+  > ingestion (`RunScopes.staticInheritance`) links it to every test that ran code of that type or code in the
+  > source file its initializer is in, transitively through the initializers it touched. An initializer that
+  > cannot be placed (no manifest row names its type: a `SitesOnly` test assembly, or an unnamed one) is linked
+  > to every test. So a static-init symbol and the files its initializer read are in the traces of the tests
+  > that depend on them, and R2/R3 verify them like any other entry. What this changes for R6:
+  > - `StaticInit` is no longer needed for soundness where the scope was linked: R2 already selects those tests.
+  >   It is still needed for a symbol whose static-init scope no test of the run inherited (its type was
+  >   initialized but no test touched it: nothing links, so no trace would select on a change to it).
+  > - The fact can therefore narrow to "executed only in static-init scopes that no test linked", which is
+  >   computable at ingestion from `trace_test_scopes`. Keeping the broader "executed in any static
+  >   constructor" fact is still sound, only wider.
+  > - Everything in an unplaceable initializer reaches every test's trace, so a change there selects the
+  >   whole project through R2, not R6.
 - **Why the probed set is stored and not recomputed.** Selection runs before a run prepares its shadow bin, so the
   manifest of the build about to run is not available. The latest ingested weave's joined symbols are. A symbol
   added since then is `NotProbed` and falls back, which is conservative. It is stored per (project, E) as

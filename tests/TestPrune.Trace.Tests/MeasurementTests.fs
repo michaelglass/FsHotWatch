@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 12 @>
+        test <@ report.Sampled = 14 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -170,19 +170,30 @@ let ``the file census names the reading tests, those that break outside the repo
     // from the binary: outside the repository that walk fails, and so does the test. "c reads
     // a repo file" reads global.json at an absolute path (the recorder's repository root):
     // from outside it still reaches the repository and passes. Both traces hold the read.
+    // The test project's own module value reads LICENSE at startup; the test assembly is
+    // woven without method probes, so nothing places that initializer and every test
+    // inherits the read. Only the two "e" tests use it and fail outside; the census reports
+    // the rest as reading the repository while passing outside it.
     withScratch (fun req ->
         let r = FileCensus.run req [] timeout |> ok
+        let t (name: string) = "FxTests.AttributionTests." + name
+
+        let users =
+            set
+                [ t "ClassD.d reads a module value"
+                  t "ClassE.e first licence reader"
+                  t "ClassE.e second licence reader" ]
+
+        test <@ r.ReadsRepo.Count = 12 && Set.isSubset users r.ReadsRepo @>
+        test <@ r.FailOutside = users @>
+        test <@ r.ReachOutside = set [ t "ClassC.c reads a repo file" ] @>
+        test <@ r.FailInRepo = Set.empty @>
 
         test
             <@
-                r.ReadsRepo = set
-                    [ "FxTests.AttributionTests.ClassC.c reads a repo file"
-                      "FxTests.AttributionTests.ClassD.d reads a module value" ]
-            @>
-
-        test <@ r.FailOutside = set [ "FxTests.AttributionTests.ClassD.d reads a module value" ] @>
-        test <@ r.ReachOutside = set [ "FxTests.AttributionTests.ClassC.c reads a repo file" ] @>
-        test <@ r.FailInRepo = Set.empty && r.SymmetricDifference = Set.empty @>)
+                r.SymmetricDifference = Set.difference r.ReadsRepo (Set.add (t "ClassC.c reads a repo file") users)
+                && r.SymmetricDifference.Count = 8
+            @>)
 
 [<Fact>]
 let ``the file census refuses a run that wrote no CTRF report`` () =
@@ -191,7 +202,7 @@ let ``the file census refuses a run that wrote no CTRF report`` () =
         | Error why ->
             test <@ why.StartsWith "no CTRF report from the run in the repository (exit 0); its output ends:\n" @>
             // --list-tests prints the tests it would run: the tail shows what the app did.
-            test <@ why.Contains "c starts a child process" @>
+            test <@ why.Contains "e second licence reader" @>
         | Ok r -> failwith $"measured a run with no report: %A{r}")
 
 [<Fact>]

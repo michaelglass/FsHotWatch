@@ -101,7 +101,8 @@ let private traceOf (meth: string) =
         if meth.StartsWith "a " then "ClassA"
         elif meth.StartsWith "b " then "ClassB"
         elif meth.StartsWith "c " then "ClassC"
-        else "ClassD"
+        elif meth.StartsWith "d " then "ClassD"
+        else "ClassE"
 
     e.Store.TryRead(
         TraceIngest.testKey "FxTests" $"FxTests.AttributionTests+%s{cls}" meth,
@@ -131,14 +132,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 12 && s.Traced = 12 @>
+    test <@ s.Executed = 14 && s.Traced = 14 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Twelve CTRF rows are ten tests (each theory's two rows share one trace). Only the test
+    // Fourteen CTRF rows are twelve tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 10 @>
-    test <@ s.Complete = 9 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 12 @>
+    test <@ s.Complete = 11 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -212,6 +213,15 @@ let ``a file a module value reads while its type initializes is an input of the 
     test <@ user.Complete && readsToolConfig user @>
     test <@ names user |> Set.contains "FxLib.Settings.toolConfig" @>
     test <@ not (readsToolConfig (traceOf "a sync area")) @>
+
+[<Fact>]
+let ``a file a test-project module value reads while it initializes is an input of each test that uses it`` () =
+    // Whichever test triggers the initializer first, the other still depends on the read.
+    let readsLicence (t: TraceStore.StoredTrace) =
+        t.Inputs |> Set.exists (fun (k, key, _) -> k = "read" && key = "LICENSE")
+
+    test <@ readsLicence (traceOf "e first licence reader") @>
+    test <@ readsLicence (traceOf "e second licence reader") @>
 
 // ---------------------------------------------------------------- refusals
 

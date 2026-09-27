@@ -9,6 +9,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="SuiteFiles.fs" />
         <Compile Include="AttributionTests.fs" />
     </ItemGroup>
 

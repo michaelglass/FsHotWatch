@@ -2,7 +2,8 @@
 /// touched, not just which methods it entered. F# pattern matches compile to `get_Tag` plus
 /// a switch, to `isinst` on case classes, or to `castclass`/`ldfld` on a case class; type
 /// tests compile to `isinst`/`castclass`/`unbox.any` or FSharp.Core intrinsics. A type
-/// initializer is wrapped so what it runs is recorded in the static-init scope.
+/// initializer is wrapped, in either weave mode, so what it runs is recorded in its own
+/// static-init scope.
 module TestPrune.Trace.SiteProbes
 
 open System
@@ -438,7 +439,7 @@ type private Pass() =
                         elif isProductType t then
                             cat.TypeIds.[typeKey t] <- row set m TypeUse t ""
 
-        member _.Rewrite(set, m, mode, meth) =
+        member _.Rewrite(set, m, _mode, meth) =
             let r = refsFor set m
             let body = meth.Body
             let il = body.GetILProcessor()
@@ -473,7 +474,9 @@ type private Pass() =
                 | _ -> None
 
             tagBase |> Option.iter (probeTagReturns r il body)
-            let isStaticInit = mode = Full && meth.IsConstructor && meth.IsStatic
+            // In both modes: a SitesOnly assembly's initializer has no manifest row to place
+            // it by, so every test inherits its scope, whichever test triggered it.
+            let isStaticInit = meth.IsConstructor && meth.IsStatic
 
             if isStaticInit then
                 wrapStaticInit r il body

@@ -83,3 +83,12 @@ type ClassD() =
     [<Fact>]
     member _.``d reads a module value``() =
         Assert.True(Settings.toolConfigLines () > 0)
+
+type ClassE() =
+    [<Fact>]
+    member _.``e first licence reader``() =
+        Assert.Contains("License", SuiteFiles.licence)
+
+    [<Fact>]
+    member _.``e second licence reader``() =
+        Assert.Contains("License", SuiteFiles.licence)

@@ -36,7 +36,11 @@ A type initializer (a module's `let` values, a `static let`) runs once per proce
 whichever test touches the type first. What it runs and reads is recorded under that
 type's own static-init scope. Every test that runs code of the type, or code in the source
 file its initializer is in, inherits that scope, and so do the initializers it touches in
-turn. An initializer the recorder cannot tie to a type is inherited by every test.
+turn. An initializer the recorder cannot tie to a type is inherited by every test, and so
+is one in an assembly woven without method probes (the test project, by default): nothing
+records which of its types a test touched. A test project's module value that reads a file
+therefore puts that file in every test's trace, and `file-census` lists the tests that do not
+use it as reading the repository while passing outside it.
 
 A trace is either complete or stored with the reasons it is not. Examples: the test did
 not pass, a source file changed since the build, or the test started a child process that
