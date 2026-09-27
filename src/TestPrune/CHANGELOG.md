@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.2.3 - 2026-09-27
+
+- fix(core): apply composition-root fail-safe per seed so selection is monotone
+
+
 ## 13.2.2 - 2026-09-26
 
 - fix: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 17 -> 18).**

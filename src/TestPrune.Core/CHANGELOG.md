@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.2.3 - 2026-09-27
+
 - fix: with composition-root markers present, adding a changed symbol no longer removes
   tests from `QueryAffectedTests`. The fail-safe, which restores a test project's tests
   when a composition root empties it, used to be judged over the whole batch. So a
