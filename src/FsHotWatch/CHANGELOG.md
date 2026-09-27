@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.54 - 2026-09-27
+
 - feat: every published project model carries each project's compile-input identity
   (`ProjectModel.ProjectInputs`: its options hash folded with its reference closure),
   read through `HostSnapshot.ProjectModelInputs` and the new

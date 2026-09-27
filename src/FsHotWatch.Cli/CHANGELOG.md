@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.72 - 2026-09-27
+
 - fix: bundles TestPrune.Core 13.2.3, whose impact selection no longer drops tests when a
   batch mixes a changed symbol behind a composition root with one that has a direct test
   in the same test project; a batch now selects everything each of its symbols selects

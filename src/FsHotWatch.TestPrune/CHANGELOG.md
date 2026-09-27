@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.53 - 2026-09-27
+
 - fix: a project model re-evaluation no longer throws away a test run whose projects it
   did not touch. A long-lived daemon whose model was re-evaluated more often than a
   whole-project run takes (for example a build tool rebuilt in the same workspace) revoked
@@ -32,6 +34,8 @@
   happened to the receipt and which run it now grades, and which run and generation the
   model evidence names. The end of a `confirm`'s full-suite scope is logged, and so is a
   receipt `test-scope` withholds because the model moved.
+- build(deps): bump TestPrune.Core from 13.2.2 to 13.2.3
+- build(deps): bump TestPrune.Trace from 0.2.0 to 0.2.1
 
 ## 0.13.0-alpha.52 - 2026-09-27
 
