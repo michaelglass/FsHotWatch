@@ -119,9 +119,11 @@ let private storePath (root: string) =
 let private foldLinePrefix =
     "traces: the symbol index folded the events admitted before ingestion in "
 
-/// The per-project lines, without the fold line.
+/// The per-project lines, without the fold lines.
 let private projectLines (lines: ResizeArray<string>) =
-    lines |> List.ofSeq |> List.filter (fun l -> not (l.StartsWith foldLinePrefix))
+    lines
+    |> List.ofSeq
+    |> List.filter (fun l -> not (l.StartsWith foldLinePrefix || l = TraceRun.indexWaitLine))
 
 let private runsOf (root: string) name =
     use store = TraceStore.Store.Open(storePath root)
@@ -814,7 +816,12 @@ let ``an index still folding at the bound stores the project as not recorded, jo
     test <@ List.isEmpty summaries @>
     let run = runsOf root "T" |> List.exactlyOne
     test <@ (run.Status, run.Reason) = (TraceStore.FailedToRecord, TraceRun.indexUnsettledReason index.Bound) @>
-    test <@ List.ofSeq lines = [ $"traces: T not recorded — %s{TraceRun.indexUnsettledReason index.Bound}" ] @>
+
+    test
+        <@
+            List.ofSeq lines = [ TraceRun.indexWaitLine
+                                 $"traces: T not recorded — %s{TraceRun.indexUnsettledReason index.Bound}" ]
+        @>
 
 [<Fact(Timeout = 30000)>]
 let ``a run of refusals stores without waiting on the index`` () =
@@ -851,10 +858,11 @@ let ``every join logs how long the index took to fold, before the project's line
     ingestTypeUse root (slowFold (TimeSpan.FromMilliseconds 300.0) (fun () -> indexTypeM root) (ref 0)) lines
     |> ignore
 
-    test <@ lines.Count = 2 @>
-    let waitedMs = lines[0].Substring(foldLinePrefix.Length).TrimEnd('m', 's') |> int
-    test <@ lines[0].StartsWith foldLinePrefix && waitedMs >= 300 @>
-    test <@ lines[1] = "traces: T 1/1 traced, 1 complete" @>
+    test <@ lines.Count = 3 @>
+    test <@ lines[0] = TraceRun.indexWaitLine @>
+    let waitedMs = lines[1].Substring(foldLinePrefix.Length).TrimEnd('m', 's') |> int
+    test <@ lines[1].StartsWith foldLinePrefix && waitedMs >= 300 @>
+    test <@ lines[2] = "traces: T 1/1 traced, 1 complete" @>
 
 // --- untracedRetry: a traced launch that verified nothing is repeated untraced ---
 
