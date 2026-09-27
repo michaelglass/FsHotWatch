@@ -262,6 +262,24 @@ let private syntheticType (m: ModuleDefinition) name =
     m.Types.Add t
     t
 
+/// `isCircleOnly` laid out as SDK 10.0.3xx's F# emits it: a hidden point between `match shape
+/// with`'s visible point and its `isinst`, added when the compiler did not emit one. The
+/// conditional branch that follows the `isinst`.
+let private hideMatchTest (meth: MethodDefinition) =
+    let typeTest =
+        meth.Body.Instructions |> Seq.find (fun i -> i.OpCode = OpCodes.Isinst)
+
+    let points = meth.DebugInformation.SequencePoints
+    let line = points |> Seq.find (fun p -> not p.IsHidden)
+
+    if not (points |> Seq.exists (fun p -> p.Offset = typeTest.Previous.Offset)) then
+        points.Insert(
+            points.IndexOf line + 1,
+            SequencePoint(typeTest.Previous, line.Document, StartLine = 0xfeefee, EndLine = 0xfeefee)
+        )
+
+    typeTest.Next
+
 /// SDK 10.0.3xx's F# put a hidden sequence point between `match shape with`'s visible point and
 /// its `isinst`; 10.0.4xx does not. Under that hidden point, the probe after the `isinst` would
 /// hide the line's branch from MS CodeCoverage, so the weave gives the branch a copy of the line.
@@ -269,21 +287,36 @@ let private syntheticType (m: ModuleDefinition) name =
 /// on every SDK.
 [<Fact>]
 let ``a type test under a hidden point after its line gets the line's point again past its probe`` () =
+    weaveEdited (fun m -> methodOf m "FxLib.Logic" "isCircleOnly" |> hideMatchTest |> ignore) (fun _ path ->
+        use woven =
+            AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadSymbols = true))
+
+        let meth = methodOf woven.MainModule "FxLib.Logic" "isCircleOnly"
+
+        let branch =
+            meth.Body.Instructions
+            |> Seq.find (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch)
+
+        let probe = branch.Previous.Operand :?> MethodReference
+        let point = meth.DebugInformation.GetSequencePoint branch
+
+        test <@ probe.Name = Contract.HitIfNotNull @>
+        test <@ not (isNull point) && not point.IsHidden && point.StartLine = 11 @>)
+
+/// Where no point follows the prefix's last branch, the weave closes the copied line's range
+/// with a hidden point there, so the code after the branch is not counted as the line's.
+/// Both SDKs put a point after `isCircleOnly`'s branch; it is removed here.
+[<Fact>]
+let ``a copied line's range is closed by a hidden point after its last branch when none is there`` () =
     weaveEdited
         (fun m ->
             let meth = methodOf m "FxLib.Logic" "isCircleOnly"
-
-            let typeTest =
-                meth.Body.Instructions |> Seq.find (fun i -> i.OpCode = OpCodes.Isinst)
-
+            let branch = hideMatchTest meth
             let points = meth.DebugInformation.SequencePoints
-            let line = points |> Seq.find (fun p -> not p.IsHidden)
 
-            if not (points |> Seq.exists (fun p -> p.Offset = typeTest.Previous.Offset)) then
-                points.Insert(
-                    points.IndexOf line + 1,
-                    SequencePoint(typeTest.Previous, line.Document, StartLine = 0xfeefee, EndLine = 0xfeefee)
-                ))
+            points
+            |> Seq.tryFind (fun p -> p.Offset = branch.Next.Offset)
+            |> Option.iter (points.Remove >> ignore))
         (fun _ path ->
             use woven =
                 AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadSymbols = true))
@@ -294,11 +327,11 @@ let ``a type test under a hidden point after its line gets the line's point agai
                 meth.Body.Instructions
                 |> Seq.find (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch)
 
-            let probe = branch.Previous.Operand :?> MethodReference
-            let point = meth.DebugInformation.GetSequencePoint branch
+            let copy = meth.DebugInformation.GetSequencePoint branch
+            let closing = meth.DebugInformation.GetSequencePoint branch.Next
 
-            test <@ probe.Name = Contract.HitIfNotNull @>
-            test <@ not (isNull point) && not point.IsHidden && point.StartLine = 11 @>)
+            test <@ not (isNull copy) && copy.StartLine = 11 @>
+            test <@ not (isNull closing) && closing.IsHidden @>)
 
 /// Another compiler can give a nullary case of a union with fields its own class, `_X`; a type
 /// test on that class records the case.
