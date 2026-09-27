@@ -190,6 +190,7 @@
     <Compile Include="ReleaseOrchestrationTests.fs" />
     <Compile Include="AnalyzerMaterializationTests.fs" />
     <Compile Include="GatePurityTests.fs" />
+    <Compile Include="CiParityTests.fs" />
     <Compile Include="BenchmarkPlacementTests.fs" />
     <Compile Include="AnalyzerIdentityTests.fs" />
     <Compile Include="NuGetPublicationBarrierTests.fs" />
