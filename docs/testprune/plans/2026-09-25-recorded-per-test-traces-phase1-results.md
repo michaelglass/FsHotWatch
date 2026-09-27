@@ -188,3 +188,56 @@ deterministic: two traced runs wrote byte-identical reports.
 | Owner | Defect |
 |---|---|
 | TestPrune.Trace (weaver, site probes) | coverage of a woven assembly loses the branch points of union matches and union-case tests: 98 of 1,646 in TestPrune.Tests. Line coverage is unaffected. A consumer whose coverage ratchet reads per-project branch rates from a traced run would see them drop. Cause not yet confirmed; the tag-read probe before the `switch` is the likely one |
+
+
+## Coverage parity with the weaver fix (2026-09-27)
+
+`confirm` collects per-project cobertura by default. A traced and an untraced `confirm` on alpha.71 matched on
+lines but not on branches: the traced TestPrune.Tests report lost 98 of 1,646 branch points (1,196 / 1,548
+against 1,283 / 1,646), all on lines with a union `match`, a field comparison or a type test.
+
+### Cause
+
+MS CodeCoverage counts a conditional branch under a hidden sequence point only while no call lies between it
+and its line's visible point. F# puts a match's or comparison's test under a hidden point, and a site probe
+is a call inserted right there, so the line keeps its hits and loses its branch points. Observed on the IL:
+
+| Unwoven shape | Branch counted |
+|---|---|
+| `nop [L]; ldarg [hidden]; ldfld; …; ble` | yes |
+| `… [hidden]; callvirt get_IsCircle; brfalse` (an `if x.IsCase`) | no, even untraced |
+| the same `ldfld` shape with a probe call after the `ldfld` | no |
+| a probe, then a hidden copy of the enclosing point where the probe resumes | no |
+| a probe, then a visible copy of the line's point where the probe resumes | yes |
+
+### Fix (TestPrune.Trace, Unreleased)
+
+Where a probe precedes a conditional branch in a hidden chain that falls through from its line (before any
+call, transfer or jump target), the site-probe pass gives the instruction the probe resumes at a copy of the
+line's visible sequence point. Probes and ids are unchanged; only the woven PDB gains points.
+`CoverageParityTests` weaves the FxTests fixture and requires every FxLib line's hits and condition-coverage
+to match the untraced run.
+
+### Measurement
+
+The pinned fshw (alpha.71) bundles the released weaver, so `confirm` cannot measure an unreleased weaver
+fix. TestPrune.Tests was therefore woven with this tree's weaver and run twice with fshw's default coverage
+arguments (`--coverage --coverage-output-format cobertura`): the shadow apphost traced, and `bin/Debug`
+untraced. Both runs: 1,037 tests, 0 failed.
+
+| Report (repository files) | Lines covered / valid | Branches covered / valid | Files differing |
+|---|---|---|---|
+| untraced | 5,552 / 5,949 | 1,283 / 1,644 | — |
+| traced, released weaver (`confirm`, alpha.71) | identical | 1,196 / 1,548 (98 points lost) | 8 |
+| traced, fixed weaver | identical, hits identical | 1,279 / 1,640 (4 points lost) | 1 |
+
+The 4 remaining points are `Orchestration.fs` lines 679 and 741 (`match selection with`): a branch under a
+later hidden point, after calls, that counts unwoven because the chain's first hidden range holds no call.
+The copy that restores the line's first branch makes the later range the first one. Every attempt to close
+that range with a hidden point broke other lines, so the gap is recorded rather than patched. The traced
+report has no `TestPrune.Trace.Recorder` package when the recorder's PDB is absent (the released recorder).
+A recorder built in this tree has its PDB at its build path, and MS CodeCoverage then reports it.
+
+| Bar | Pass when | Measured | Verdict |
+|---|---|---|---|
+| coverage parity | identical per-file lines and branches; no recorder module | lines identical; branches 1,640 / 1,644 (2 lines differ); no recorder module with the released recorder | fail (4 points), until a `confirm` on a release bundling the fix |

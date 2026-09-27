@@ -145,7 +145,7 @@ let private typeKey (t: TypeDefinition) = t.FullName.Replace('/', '+')
 /// mark the end of a method. Cecil cannot bind it to an instruction and keeps its raw
 /// offset, so after any insertion it would write the point back BEFORE its predecessor:
 /// a negative delta in the portable-PDB blob, which SRM (and so MS CodeCoverage) rejects
-/// for the whole method. Collect those points (with their index) before rewriting. Any
+/// for the whole method. Collect those points before rewriting. Any
 /// other unbound point would carry a position we cannot place: refuse the assembly.
 let private endOfMethodPoints asmName (t: TypeDefinition) (meth: MethodDefinition) =
     let dbg = meth.DebugInformation
@@ -157,23 +157,23 @@ let private endOfMethodPoints asmName (t: TypeDefinition) (meth: MethodDefinitio
         let offsets = HashSet<int>(body.Instructions |> Seq.map (fun i -> i.Offset))
 
         dbg.SequencePoints
-        |> Seq.indexed
-        |> Seq.filter (fun (_, sp) -> not (offsets.Contains sp.Offset))
-        |> Seq.map (fun (ix, sp) ->
+        |> Seq.filter (fun sp -> not (offsets.Contains sp.Offset))
+        |> Seq.map (fun sp ->
             if sp.Offset <> body.CodeSize then
                 raise (WeaveFailure(UnboundSequencePoint(asmName, typeKey t + "::" + meth.Name)))
 
-            ix, sp)
+            sp)
         |> Seq.toList
 
 /// PDB INVARIANT, part 2: re-create each end-of-method point at the woven body's end,
-/// keeping its document, lines and columns. Returns how many moved.
-let private moveEndOfMethodPoints (meth: MethodDefinition) (points: (int * SequencePoint) list) =
+/// keeping its document, lines and columns. Returns how many moved. A point is found by
+/// reference, not by its index before rewriting: a pass may have inserted points before it.
+let private moveEndOfMethodPoints (meth: MethodDefinition) (points: SequencePoint list) =
     let newEnd = codeSize meth.Body
     let ctor = unboundSequencePointCtor.Value
 
     points
-    |> List.sumBy (fun (ix, sp) ->
+    |> List.sumBy (fun sp ->
         if sp.Offset = newEnd then
             0
         else
@@ -182,6 +182,7 @@ let private moveEndOfMethodPoints (meth: MethodDefinition) (points: (int * Seque
             moved.StartColumn <- sp.StartColumn
             moved.EndLine <- sp.EndLine
             moved.EndColumn <- sp.EndColumn
+            let ix = meth.DebugInformation.SequencePoints.IndexOf sp
             meth.DebugInformation.SequencePoints.[ix] <- moved
             1)
 
