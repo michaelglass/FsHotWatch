@@ -176,7 +176,27 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
             Assert.Equal(root, watchedRoot)
             Assert.False(unsubscribed)
 
+            // A notification for bytes the daemon already loaded (a late one for the
+            // write before Start, or an editor saving the same text) changes nothing.
+            Assert.False(configEventStops (computeConfigHashWith defaultFileOps root) identity)
+            onChange (configChangeReason configPath config)
+
+            Assert.True(
+                waitUntilTrue
+                    (fun () ->
+                        try
+                            Async.RunSynchronously(IpcClient.getStatus pipe, 1000) |> ignore
+                            true
+                        with _ ->
+                            false)
+                    10000,
+                "an unchanged config must leave the daemon serving"
+            )
+
+            Assert.False(run.IsCompleted, "an unchanged config must not stop the daemon")
+
             File.WriteAllText(configPath, """{"build":false,"format":false,"lint":false,"timeoutSec":42}""")
+            Assert.True(configEventStops (computeConfigHashWith defaultFileOps root) identity)
             onChange (configChangeReason configPath config)
             Assert.True(run.Wait(TimeSpan.FromSeconds 10.0), "a config edit must stop the daemon it owns")
             Assert.Equal(0, run.Result)

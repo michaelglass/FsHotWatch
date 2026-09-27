@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a daemon no longer stops, killing the checks and test runs in flight, when
+  `.fshw.json` is reported changed but holds the configuration it loaded. macOS can
+  deliver a file notification for a write made just before the daemon read the file,
+  and an editor can save identical bytes. The daemon now compares the file's content
+  with what it loaded and logs "holds the configuration this daemon loaded; still
+  running" instead of stopping.
+
 - fix: bundles TestPrune.Trace 0.4.0. With `tests.traces` on, a woven run's coverage now
   matches an untraced run's exactly, with no branch points lost. Its weave cache is keyed
   by the weaver, recorder and pass assemblies, so the upgraded weaver re-weaves once. A
