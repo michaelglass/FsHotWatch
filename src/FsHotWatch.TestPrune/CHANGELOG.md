@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.56 - 2026-09-28
+
 - fix: a traced run no longer joins its traces against a symbol index that is still
   folding. On a cold daemon, a run could finish while analysis events admitted during it
   were still queued in the plugin's mailbox. Ids those events would have indexed were then
@@ -27,6 +29,7 @@
   edit explains it (likely the test run; the watcher does not observe these paths):
   <paths>". An edit the watcher reports during the run, or a move that includes a
   removal, stays a plain MOVED.
+- build(deps): bump TestPrune.Trace from 0.3.0 to 0.4.0
 
 ## 0.13.0-alpha.55 - 2026-09-27
 

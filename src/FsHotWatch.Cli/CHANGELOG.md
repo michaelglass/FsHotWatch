@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.75 - 2026-09-28
+
 - fix: bundles TestPrune.Trace 0.4.0. With `tests.traces` on, a woven run's coverage now
   matches an untraced run's exactly, with no branch points lost. Its weave cache is keyed
   by the weaver, recorder and pass assemblies, so the upgraded weaver re-weaves once. A

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.41 - 2026-09-28
+
+- coverage: AnalyzerIdentity.fs's Linux gap was the checkout's depth; cover it in any checkout
+
+
 ## 0.7.0-alpha.40 - 2026-09-26
 
 - Changed: hosts `FSharp.Analyzers.SDK` 0.39 (was 0.37.2). The SDK's loader only
