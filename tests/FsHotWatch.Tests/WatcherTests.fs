@@ -1380,3 +1380,105 @@ let ``an assets file that is not valid JSON is still compared by its bytes`` () 
         File.WriteAllText(path, "{ still not json")
 
         test <@ tracker.HasContentChanged path @>)
+
+// === The macOS layout's seams, driven on any platform ===
+
+[<Fact(Timeout = 15000)>]
+let ``the macOS native path adds a recursive system watcher for each extra pattern`` () =
+    withTempDir "watcher-native-extras" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let specs = ResizeArray<FileWatcher.SystemWatcherSpec>()
+
+        let system _handle spec =
+            specs.Add spec
+            inert "system"
+
+        use watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                ignore
+                [ FilePattern.parse "*.ratchet.json" ]
+                0.05
+                FileWatcher.NativeStartRetry.none
+                (fun _dirs _onFile _onCoalesced _latency -> inert "native")
+                system
+                (fun _repo _onChange _extras -> inert "polling")
+
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>
+
+        let expected = [ [ "*.sln"; "*.slnx" ], false; [ "*.ratchet.json" ], true ]
+
+        test
+            <@
+                specs
+                |> Seq.map (fun spec -> spec.Filters, spec.IncludeSubdirectories)
+                |> Seq.toList = expected
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a coalesced native event rescans its subtree and emits only relevant files whose bytes changed`` () =
+    withTempDir "watcher-native-coalesced" (fun tmpDir ->
+        let src = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(src) |> ignore
+        let changes = ResizeArray<FileChangeKind>()
+        let mutable coalesced: (string -> unit) option = None
+
+        let native _dirs _onFile onCoalesced _latency : IDisposable =
+            coalesced <- Some onCoalesced
+            inert "native"
+
+        use _watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                changes.Add
+                []
+                0.05
+                FileWatcher.NativeStartRetry.none
+                native
+                inertSystem
+                (fun _repo _onChange _extras -> inert "polling")
+
+        let rescan =
+            coalesced
+            |> Option.defaultWith (fun () -> failwith "the macOS watcher never installed a coalesced callback")
+
+        let lib = Path.Combine(src, "Lib.fs")
+        File.WriteAllText(lib, "let x = 1")
+        File.WriteAllText(Path.Combine(src, "notes.txt"), "not an F# input")
+        rescan src
+        test <@ changes |> Seq.toList = [ SourceChanged [ lib ] ] @>
+
+        // Unchanged bytes, and a subtree that no longer exists, emit nothing.
+        changes.Clear()
+        rescan src
+        rescan (Path.Combine(tmpDir, "removed"))
+        test <@ changes |> Seq.toList |> List.isEmpty @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a native start fault falls back to the built-in content-polling watcher`` () =
+    withTempDir "watcher-native-fault" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let native _dirs _onFile _onCoalesced _latency : IDisposable =
+            raise (InvalidOperationException "no event stream")
+
+        use watcher =
+            FileWatcher.createWithNativeStream tmpDir ignore [] 0.05 FileWatcher.NativeStartRetry.none native
+
+        test <@ watcher.Mode = WatcherMode.ContentPolling "no event stream" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``forcing the macOS layout where FSEvents cannot load degrades to content polling`` () =
+    if RuntimeInformation.IsOSPlatform(OSPlatform.OSX) then
+        Assert.Skip("FSEvents loads on macOS; this is the host without it")
+    else
+        withTempDir "watcher-forced-macos" (fun tmpDir ->
+            Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+            use watcher = FileWatcher.create tmpDir ignore (Some true) [] 0.05
+
+            test
+                <@
+                    match watcher.Mode with
+                    | WatcherMode.ContentPolling _ -> true
+                    | _ -> false
+                @>)
