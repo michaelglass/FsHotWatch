@@ -3962,6 +3962,178 @@ let ``a receipt revoked because the tree moved names the file that moved`` () =
 
         test <@ moved |> Option.exists (fun l -> not (l.Contains "src/Value.fs")) @>)
 
+// --- the receipt binds to the tree the tests run against, once beforeRun is done ---
+
+/// A tree with one compiled source, the fixture the rebinding cases start from.
+let private withBeforeRunTree body =
+    withReceiptSource (fun repoRoot source ->
+        let launch = ReceiptInputTree.read repoRoot
+        Assert.True(launch.IsSome, "fixture tree must be readable")
+        body repoRoot source launch)
+
+let private noModel repoRoot =
+    ReceiptInputTree.feedsCompile repoRoot None
+
+[<Fact>]
+let ``output a beforeRun generates re-binds the receipt to the tree the tests run against`` () =
+    withBeforeRunTree (fun repoRoot _ launch ->
+        // What intelligence's bundle-preflight does: build output under a discovery root.
+        let bundle = Path.Combine(repoRoot, "src", "wwwroot", "js", "app.js")
+        Directory.CreateDirectory(Path.GetDirectoryName bundle) |> ignore
+        File.WriteAllText(bundle, "console.log(1)")
+
+        let after = ReceiptInputTree.read repoRoot
+
+        let binding, why = ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch after
+
+        test <@ binding = after && binding <> launch @>
+
+        test
+            <@
+                why
+                |> Option.exists (fun w -> w.Contains "binds to the tree the tests run against")
+            @>
+
+        test <@ why |> Option.exists (fun w -> w.Contains "added (1): src/wwwroot/js/app.js") @>)
+
+[<Fact>]
+let ``a compiled source that moves before the tests start keeps the launch binding`` () =
+    withBeforeRunTree (fun repoRoot source launch ->
+        // The binaries were built from the launch bytes: a receipt for these would be
+        // evidence about code no test ran.
+        File.WriteAllText(source, "module Value\nlet answer = 2\n")
+
+        let binding, why =
+            ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch (ReceiptInputTree.read repoRoot)
+
+        test <@ binding = launch @>
+
+        test
+            <@
+                why
+                |> Option.exists (fun w -> w.Contains "1 compile input(s)" && w.Contains "src/Value.fs")
+            @>)
+
+[<Theory>]
+[<InlineData("src/App/App.fsproj")>]
+[<InlineData("Directory.Build.props")>]
+[<InlineData("global.json")>]
+[<InlineData(".fshw.json")>]
+[<InlineData("!verdict-input:coverage.json")>]
+[<InlineData("src/App/obj/project.assets.json")>]
+let ``a build or toolchain input always counts as compiled`` (rel: string) =
+    test <@ ReceiptInputTree.feedsCompile "/repo" (Some Set.empty) rel @>
+
+[<Fact>]
+let ``under a model, only the sources it compiles count, so generated F# elsewhere may re-bind`` () =
+    let compiled =
+        Set.ofList [ FsHotWatch.Events.AbsFilePath.create "/repo/src/App/Program.fs" ]
+
+    // A Fable build copies package sources into its output: `.fs`, but compiled by no project.
+    test
+        <@ not (ReceiptInputTree.feedsCompile "/repo" (Some compiled) "src/Client/.fable-build/fable_modules/Html.fs") @>
+
+    test <@ ReceiptInputTree.feedsCompile "/repo" (Some compiled) "src/App/Program.fs" @>
+    // Without a model the watcher's rule decides, which calls any `.fs` source.
+    test <@ ReceiptInputTree.feedsCompile "/repo" None "src/Client/.fable-build/fable_modules/Html.fs" @>
+    test <@ not (ReceiptInputTree.feedsCompile "/repo" None "src/wwwroot/css/app.css") @>
+
+[<Fact>]
+let ``a tree that did not move, or cannot be read after beforeRun, keeps the launch binding`` () =
+    withBeforeRunTree (fun repoRoot _ launch ->
+        test <@ ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch launch = (launch, None) @>
+
+        let binding, why = ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch None
+        test <@ binding = launch @>
+        test <@ why |> Option.exists (fun w -> w.Contains "could not be read after beforeRun") @>
+
+        // An unbound launch stays unbound: a later readable tree is not the one launched.
+        test <@ ReceiptInputTree.afterBeforeRun (noModel repoRoot) None launch = (None, None) @>)
+
+/// End to end, the case that revoked intelligence's first gate run on every fresh
+/// workspace (fshw 0.14.0-alpha.72 and .73 alike): a `tests.beforeRun` that generates a
+/// bundle under `src/` after the launch bound the tree.
+/// One real `run-tests` over `repoRoot` whose `tests.beforeRun` generates a bundle under
+/// `src/`, with `configs` as the test projects; returns every line the run logged.
+let private runWithGeneratingBeforeRun repoRoot configs =
+    let beforeRun =
+        Some(fun (_: Guid) (_: FsHotWatch.HookStep.Tracker) ->
+            let bundle = Path.Combine(repoRoot, "src", "wwwroot", "js", "app.js")
+            Directory.CreateDirectory(Path.GetDirectoryName bundle) |> ignore
+            File.WriteAllText(bundle, "// built " + Guid.NewGuid().ToString("N")))
+
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _sink =
+        FsHotWatch.Logging.installSink
+            { Write = lines.Enqueue
+              Level = FsHotWatch.Logging.LogLevel.Debug }
+
+    let host = createModelHost (Unchecked.defaultof<_>) repoRoot
+    host.RegisterHandler(create ":memory:" repoRoot (Some configs) None beforeRun None None [])
+
+    host.RunCommand("run-tests", [| "{}" |])
+    |> Async.Ignore
+    |> fun run -> Async.RunSynchronously(run, 20000)
+
+    List.ofSeq lines
+
+[<Fact(Timeout = 30000)>]
+let ``a run whose beforeRun generates output is not revoked as moved`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let logged =
+            runWithGeneratingBeforeRun
+                repoRoot
+                [ { projConfig "ProjA" with
+                      FilterTemplate = None } ]
+
+        test
+            <@
+                logged
+                |> List.exists (fun l -> l.Contains "binds to the tree the tests run against")
+            @>
+
+        test
+            <@
+                not (
+                    logged
+                    |> List.exists (fun l -> l.Contains "MOVED between launch and completion")
+                )
+            @>)
+
+/// The control: the same generating `beforeRun`, but the TESTS write under `src/` while
+/// they run — the intelligence race itself. Binding after `beforeRun` must not launder
+/// that: the run is still revoked, and the line names the stylesheet the run wrote, not
+/// the bundle `beforeRun` did.
+[<Fact(Timeout = 30000)>]
+let ``a write while the tests run is still revoked as moved, naming only that write`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
+        Directory.CreateDirectory(Path.GetDirectoryName css) |> ignore
+
+        let logged =
+            runWithGeneratingBeforeRun
+                repoRoot
+                [ { projConfig "ProjA" with
+                      FilterTemplate = None
+                      Args = $"-c \"echo '.mt-probe{{}}' > '%s{css}'; exit 0\"" } ]
+
+        test
+            <@
+                logged
+                |> List.exists (fun l -> l.Contains "MOVED between launch and completion")
+            @>
+
+        let moved = logged |> List.tryFind (fun l -> l.Contains "moved paths")
+
+        test
+            <@
+                moved
+                |> Option.exists (fun l -> l.Contains "added (1): src/wwwroot/css/app.css")
+            @>
+
+        test <@ moved |> Option.exists (fun l -> not (l.Contains "app.js")) @>)
+
 [<Fact>]
 let ``a launch tree whose entries are no longer held says so instead of naming nothing`` () =
     let text =

@@ -85,3 +85,32 @@ Pinned by `a retained receipt beside an outstanding failure earns a refusal, nev
 still owes a failing project and asserts both halves: the failure is still owed afterwards,
 and the evidence the drain earned refuses. Retention of the receipt itself stays covered by
 `same-input already-verified drain retains a filtered receipt`.
+
+## Amendment: the identity binds once `tests.beforeRun` has finished (2026-09-27)
+
+"Capture a content identity … when a test run launches" bound the tree BEFORE
+`tests.beforeRun` ran. So any setup step that generates output under a discovery root
+revoked the run it preceded as "the input tree MOVED". Intelligence's bundle-preflight
+writes `src/Intelligence/wwwroot/js/app.js` and `src/Intelligence.Client/.fable-build/**`,
+and that revoked the first gate run of every fresh workspace. `beforeRun` is gate setup,
+and its outputs are not edits made while the run was in flight.
+
+The run now re-reads the tree once `beforeRun` completes (`ReceiptInputTree.afterBeforeRun`)
+and binds the receipt to that tree, the one the tests actually run against, with one
+exception. The test binaries were built before `beforeRun`, so a moved input that a BUILD
+consumed keeps the launch binding and the run is revoked as before. Those inputs are
+declarations, project/solution/props/targets files, `project.assets.json`, tool-known root
+files, `.fshw.json`, and every source the current project model compiles (without a model,
+the watcher's `isRelevantFile`). Otherwise a user's source edit made during `beforeRun`
+would be laundered into a receipt for binaries that do not contain it. Everything else the
+tests read at run time, after `beforeRun`, so the post-`beforeRun` tree is the correct
+binding for it. The completion comparison is unchanged: a write while the tests run still
+revokes. Both directions are logged with the paths that moved.
+
+Pinned by `a run whose beforeRun generates output is not revoked as moved` and its control
+`a write while the tests run is still revoked as moved, naming only that write`, plus
+`a compiled source that moves before the tests start keeps the launch binding`
+(TestPruneRunScopeTests).
+
+Not changed, and deliberately left open: the walk still hashes gitignored build output
+under a discovery root. Whether it should honour VCS ignores is a separate decision.
