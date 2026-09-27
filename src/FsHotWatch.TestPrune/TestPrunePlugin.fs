@@ -1494,6 +1494,68 @@ module internal ReceiptInputTree =
                 )
         | _ -> None
 
+    /// Whether a repo-relative receipt entry is something a BUILD consumed — and so was
+    /// fixed in the test binaries before `beforeRun` began. Declarations, project and
+    /// solution files, restore output and the root toolchain files always are; a source
+    /// file is when the current model compiles it, or (no model) when the watcher would
+    /// treat it as source. Everything else a test reads at run time, AFTER `beforeRun`.
+    let feedsCompile (repoRoot: string) (checkable: Set<AbsFilePath> option) (rel: string) : bool =
+        let name = Path.GetFileName(rel).ToLowerInvariant()
+        let ext = Path.GetExtension(rel).ToLowerInvariant()
+
+        rel.StartsWith(VerdictInputs.SentinelPrefix, StringComparison.Ordinal)
+        || List.contains ext [ ".fsproj"; ".props"; ".targets"; ".sln"; ".slnx" ]
+        || FsHotWatch.Watcher.isProjectAssetsJson rel
+        || VerdictInputs.ToolKnownRootFileNames.Contains name
+        || name = ".fshw.json"
+        || match checkable with
+           | Some files -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel)))
+           | None -> FsHotWatch.Watcher.isRelevantFile rel
+
+    /// The tree a run's receipt binds to, decided once `beforeRun` has finished: the tree
+    /// the TESTS run against, where that is provably the launch tree plus only what the
+    /// tests read at run time. A `beforeRun` that generates output under a discovery root
+    /// (a bundle, a stylesheet) otherwise revokes every run it precedes, though nothing
+    /// the tests were built from moved. A moved COMPILE input keeps the launch binding:
+    /// the binaries predate it, so the run is revoked exactly as before. Returns the
+    /// binding and, when the tree moved, a line saying which way it went and why.
+    let afterBeforeRun
+        (feedsCompile: string -> bool)
+        (launch: string option)
+        (afterSetup: string option)
+        : string option * string option =
+        match launch, afterSetup with
+        | Some before, Some after when not (String.Equals(before, after, StringComparison.Ordinal)) ->
+            match manifests.TryGetValue before, manifests.TryGetValue after with
+            | (true, was), (true, now) ->
+                let moved = delta was now
+
+                let compileInputs =
+                    moved.Changed @ moved.Added @ moved.Removed |> List.filter feedsCompile
+
+                if List.isEmpty compileInputs then
+                    afterSetup,
+                    Some(
+                        "beforeRun moved only paths no build compiles, so the receipt binds to the tree "
+                        + $"the tests run against — %s{describeDelta moved}"
+                    )
+                else
+                    launch,
+                    Some(
+                        "a compile input moved between launch and the end of beforeRun, so the receipt "
+                        + "keeps its launch binding and this run cannot earn one — "
+                        + $"%d{List.length compileInputs} compile input(s) among them; %s{describeDelta moved}"
+                    )
+            | _ ->
+                launch,
+                Some(
+                    "the input tree moved during beforeRun, but its per-file entries are no longer held, "
+                    + "so the receipt keeps its launch binding"
+                )
+        | Some _, None ->
+            launch, Some "the input tree could not be read after beforeRun, so the receipt keeps its launch binding"
+        | _ -> launch, None
+
     let matches expected current =
         match expected, current with
         | Some before, Some after -> String.Equals(before, after, StringComparison.Ordinal)
@@ -4646,6 +4708,9 @@ let private executeTests
     (traces: TraceRunHost option)
     // The input tree hash the run was launched against, for the traces it records.
     (launchTreeHash: string option)
+    // Which repo-relative paths a build consumed, observed once `beforeRun` finishes:
+    // decides whether the receipt may re-bind to the tree the tests actually run against.
+    (feedsCompile: unit -> string -> bool)
     // Receives the run id so the hook's own timings can be filed
     // under this run, beside the CTRF reports the verdict already reads.
     (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
@@ -4694,12 +4759,21 @@ let private executeTests
         let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
         emitStarted started
 
-        match beforeRun with
-        | Some setup ->
-            Logging.info "test-prune" "Running beforeRun setup..."
-            setup runId trackHookStep
-            Logging.info "test-prune" "beforeRun complete"
-        | None -> ()
+        // The tree this run's receipt binds to: re-read once `beforeRun` has done its
+        // generating, so its own output does not count as an edit made mid-run.
+        let boundTree =
+            match beforeRun with
+            | Some setup ->
+                Logging.info "test-prune" "Running beforeRun setup..."
+                setup runId trackHookStep
+                Logging.info "test-prune" "beforeRun complete"
+
+                let binding, why =
+                    ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTreeHash (ReceiptInputTree.read repoRoot)
+
+                why |> Option.iter (Logging.info "test-prune")
+                binding
+            | None -> launchTreeHash
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
@@ -5440,7 +5514,7 @@ let private executeTests
                 host.TraceRuntime
                 (TestPrune.Ports.toSymbolStore db)
                 (runId.ToString("N"))
-                launchTreeHash
+                boundTree
                 (fun () -> ReceiptInputTree.read repoRoot)
                 runs
                 host.TraceLog
@@ -5484,7 +5558,7 @@ let private executeTests
             "test-prune"
             $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
-        return testResults, started, completed
+        return testResults, started, completed, boundTree
     }
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
@@ -5917,6 +5991,11 @@ let internal createWithQueries
     // `tests.traces`: `None` records nothing and launches every project as configured.
     (traces: TraceWiring option)
     =
+    /// Which repo-relative paths a build consumed, under the model the host publishes when
+    /// asked — so `executeTests` observes it after `beforeRun`, not at launch.
+    let compileInputsOf (ctx: PluginCtx<TestPruneMsg>) () : string -> bool =
+        ReceiptInputTree.feedsCompile repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd)
+
     /// The traces of a run launched under `mode`, when `tests.traces` is configured, with
     /// the plugin's activity log and subtasks: a force run's `executeTests` has no `ctx`.
     let tracesFor (ctx: PluginCtx<TestPruneMsg>) (mode: TestMode) : TraceRunHost option =
@@ -7344,7 +7423,7 @@ let internal createWithQueries
                           %d{unfilteredProjects} of them UNFILTERED (whole-project), \
                           %d{totalClasses} class(es) named in total"
 
-                    let! results, started, completed =
+                    let! results, started, completed, boundTree =
                         executeTests
                             db
                             (Some ctx)
@@ -7353,6 +7432,7 @@ let internal createWithQueries
                             launchDeadline
                             (tracesFor ctx inputs.Mode)
                             launch.InputTreeHash
+                            (compileInputsOf ctx)
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
@@ -7367,7 +7447,14 @@ let internal createWithQueries
                     // emits per-group TestProgress live; the synchronous handler captures
                     // Completed for cache replay.
                     ignore results
-                    return TestsFinished(started, completed, launch)
+
+                    return
+                        TestsFinished(
+                            started,
+                            completed,
+                            { launch with
+                                InputTreeHash = boundTree }
+                        )
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
 
@@ -7470,7 +7557,7 @@ let internal createWithQueries
 
             try
                 try
-                    let! results, started, completed =
+                    let! results, started, completed, boundTree =
                         executeTests
                             db
                             None
@@ -7479,6 +7566,7 @@ let internal createWithQueries
                             launchDeadline
                             (tracesFor ctx mode)
                             commandLaunch.InputTreeHash
+                            (compileInputsOf ctx)
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
                             coveragePaths
@@ -7511,7 +7599,8 @@ let internal createWithQueries
                         CommandTestsFinished(
                             started,
                             completed,
-                            commandLaunch,
+                            { commandLaunch with
+                                InputTreeHash = boundTree },
                             reply,
                             formatTestResultsJson filter runReports results
                         )

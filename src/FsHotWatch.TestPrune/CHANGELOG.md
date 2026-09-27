@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a `tests.beforeRun` that generates files under a discovery root (a JS bundle, a
+  stylesheet) no longer revokes the run it precedes with "the input tree MOVED". The
+  receipt now binds to the tree as it is after `beforeRun`, the tree the tests actually
+  run against, provided nothing a build compiles moved in between: no project, solution,
+  props, restore or toolchain file, no declared verdict input, and no source file the
+  project model compiles. If one did, the launch binding is kept and the run is revoked
+  as before, because the test binaries predate the edit. The log says which way it went
+  and lists the paths.
 - obs: a receipt revoked because "the input tree MOVED" now names the paths that moved:
   `moved paths: changed (n): …; added (n): …; removed (n): …`, at most 10 per kind with
   the full count. The walk hashes files the watcher never reports, such as gitignored
