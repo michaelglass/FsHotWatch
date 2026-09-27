@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a repository's `.gitignore` / `.fantomasignore` no longer ignore files outside
+  the repository. `PathFilter.loadIgnoreFile` matched such a file by its `../`-relative
+  path, so a pattern like `tmp/` matched every file under Linux's `/tmp`, and the format
+  check reported "no files to check" for them. Out-of-repo paths are now never ignored,
+  as `PathFilter.isExcludedPath` already treated them.
 - fix: a cold `check` no longer reports "The namespace or module 'Xunit' is not defined"
   (or the same error for any package type) for code that compiles. A scan loads its
   project model, then waits for the build before type-checking. On a tree that was
