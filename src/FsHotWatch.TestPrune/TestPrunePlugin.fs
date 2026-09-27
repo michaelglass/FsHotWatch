@@ -2223,6 +2223,13 @@ type TestPruneMsg =
     /// `run-tests --only-failed`. Which projects failed is resolved by `Update` from the
     /// state it folds this message into, never from a snapshot the command read earlier.
     | RunFailedTestsRequested of filter: string option * reply: Tasks.TaskCompletionSource<string>
+    /// Posted by a traced run before it joins its traces against the symbol index, and
+    /// resolved when folded. Messages this plugin posts fold in the order they were
+    /// admitted, interleaved with dispatched events; they are folded ahead of those events
+    /// only while a result-first run's result is queued, and the only result-first run is
+    /// the test run that posts this, before its result exists. So once this folds, every
+    /// analysis event admitted before it has been folded into the index.
+    | IndexFoldProbe of folded: Tasks.TaskCompletionSource
 
 /// The test projects `run-tests --only-failed` re-runs: every non-green project of the
 /// last run, plus every project still owing an outstanding failure.
@@ -4735,12 +4742,17 @@ let private flakinessHistoryPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
 
 /// What a run's `executeTests` needs to record traces: the run's trace settings and
-/// mode, the decision function, and the plugin's activity log and subtasks.
+/// mode, the decision function, the plugin's activity log and subtasks, and a way to wait
+/// for the plugin to fold its symbol index.
 type internal TraceRunHost =
-    { TraceRuntime: TraceRuntime
-      TraceWiring: TraceWiring
-      TraceLog: string -> unit
-      HoldSubtask: string -> string -> IDisposable }
+    {
+        TraceRuntime: TraceRuntime
+        TraceWiring: TraceWiring
+        TraceLog: string -> unit
+        HoldSubtask: string -> string -> IDisposable
+        /// The plugin's own folds of the symbol index, which the traces are joined against.
+        IndexFold: IndexFold
+    }
 
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
@@ -5566,21 +5578,26 @@ let private executeTests
             | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
 
         // Traces: after every project finished, before `tidyRunsDir` can rotate the run
-        // directory holding the dumps. `ingestAll` never throws, and nothing it does
+        // directory holding the dumps. `ingestAll` first waits, bounded, for this plugin's
+        // mailbox to fold the analysis events admitted before now, so the traces join
+        // against the index those events write. The folds never wait on this run, whose
+        // result is posted only after it returns. It never throws, and nothing it does
         // reaches `cumulative`: a trace failure is a log line and a stored row, never a
         // changed result.
         match traces with
         | Some host ->
             let runs = lock traceRunsLock (fun () -> List.rev traceRuns)
 
-            TraceRun.ingestAll
-                host.TraceRuntime
-                (TestPrune.Ports.toSymbolStore db)
-                (runId.ToString("N"))
-                boundTree
-                (fun () -> ReceiptInputTree.read repoRoot)
-                runs
-                host.TraceLog
+            do!
+                TraceRun.ingestAll
+                    host.TraceRuntime
+                    (TestPrune.Ports.toSymbolStore db)
+                    host.IndexFold
+                    (runId.ToString("N"))
+                    boundTree
+                    (fun () -> ReceiptInputTree.read repoRoot)
+                    runs
+                    host.TraceLog
         | None -> ()
 
         // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
@@ -6076,7 +6093,16 @@ let internal createWithQueries
                     ctx.StartSubtask key label
 
                     { new IDisposable with
-                        member _.Dispose() = ctx.EndSubtask key } })
+                        member _.Dispose() = ctx.EndSubtask key }
+              IndexFold =
+                { Folded =
+                    fun () ->
+                        let folded =
+                            Tasks.TaskCompletionSource(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+
+                        ctx.Post(IndexFoldProbe folded)
+                        folded.Task
+                  Bound = TraceRun.indexFoldBound } })
 
     let db = Database.create dbPath
     let queries = queriesOf db
@@ -10275,6 +10301,10 @@ let internal createWithQueries
 
                 | Custom(RunTestsRequested(configs, filter, reply)) ->
                     return requestTestRun ctx state configs filter reply
+
+                | Custom(IndexFoldProbe folded) ->
+                    folded.TrySetResult() |> ignore
+                    return state
 
                 | Custom(RunFailedTestsRequested(filter, reply)) ->
                     match failedTestConfigs (defaultArg testConfigs []) state.LastResults state.OutstandingFailures with

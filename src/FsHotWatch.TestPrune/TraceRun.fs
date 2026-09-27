@@ -82,6 +82,20 @@ type TraceIngestion =
         -> TraceSession.Completion
         -> Result<TraceIngest.IngestSummary, string>
 
+/// The symbol index traces are joined against, as ingestion waits for it. The index is
+/// written by the plugin's own event folds, which run beside the test run: a traced run on
+/// a cold daemon can finish while the analysis events admitted before it are still being
+/// folded, and a join against that index reports symbols it has not written yet as not
+/// indexed.
+type IndexFold =
+    {
+        /// Completes once every analysis event admitted before the call has been folded
+        /// into the index.
+        Folded: unit -> Tasks.Task
+        /// How long ingestion waits for `Folded` before it gives up on joining.
+        Bound: TimeSpan
+    }
+
 /// How a plugin instance traces: its `tests.traces` settings, the projects that opted
 /// out, and the decision function (`TraceRun.decide`, or a test's stand-in), given the
 /// run's cancellation token.
@@ -93,6 +107,20 @@ type internal TraceWiring =
 /// Deciding which projects a run traces, and storing what they recorded.
 [<RequireQualifiedAccess>]
 module TraceRun =
+    /// An index with nothing left to fold: ingestion joins at once.
+    let foldedIndex: IndexFold =
+        { Folded = fun () -> Tasks.Task.CompletedTask
+          Bound = TimeSpan.Zero }
+
+    /// How long a run waits for the symbol index before ingesting its traces. A cold
+    /// daemon folds its first analysis in minutes; past this, the traces are stored as not
+    /// recorded rather than joined against a partial index.
+    let indexFoldBound = TimeSpan.FromMinutes 5.0
+
+    /// The reason stored for a traced project whose index did not settle in time.
+    let indexUnsettledReason (waited: TimeSpan) =
+        $"index-unsettled: the symbol index was still folding analysis events after %.0f{waited.TotalSeconds}s, so no probe id could be joined reliably"
+
     let private weaveMode (weave: TraceWeaveTests) =
         match weave with
         | WeaveTestSites -> Model.SitesOnly
@@ -256,82 +284,155 @@ module TraceRun =
         | Refusal of reason: string
         | Ingest of session: TraceSession.TraceLaunch
 
+    /// Wait for `index` to fold what was admitted before now: `Some waited` once it has,
+    /// `None` when `index.Bound` ran out first. Cancelled with the run.
+    let private awaitFolded (index: IndexFold) =
+        async {
+            let! ct = Async.CancellationToken
+            let started = Diagnostics.Stopwatch.StartNew()
+            // Cancelled once the fold wins, so the bound's timer does not outlive the wait.
+            use bound = CancellationTokenSource.CreateLinkedTokenSource ct
+            let folded = index.Folded()
+
+            let! first =
+                Tasks.Task.WhenAny(folded, Tasks.Task.Delay(index.Bound, bound.Token))
+                |> Async.AwaitTask
+
+            bound.Cancel()
+            ct.ThrowIfCancellationRequested()
+
+            return
+                if obj.ReferenceEquals(first, folded) then
+                    Some started.Elapsed
+                else
+                    None
+        }
+
+    /// Store every project of `recorded`. `index` is `Error reason` when the symbol index
+    /// had not folded what was admitted before ingestion began: a traced project is then
+    /// stored as not recorded, since a join against a partial index would report the
+    /// symbols it has not written yet as not indexed.
+    let private storeAll
+        (ingest: TraceIngestion)
+        (rt: TraceRuntime)
+        (symbols: TestPrune.Ports.SymbolStore)
+        (index: Result<unit, string>)
+        (runId: string)
+        (launchTreeHash: string option)
+        (currentTreeHash: unit -> string option)
+        (recorded: (TracedProjectRun * Recordable) list)
+        (log: string -> unit)
+        =
+        try
+            use store = TraceStore.Store.Open(dbPath rt)
+            let launch, current = treeHashes launchTreeHash (currentTreeHash ())
+
+            let failed (project: string) kind (reason: string) =
+                store.RecordRunWithoutTraces
+                    { RunId = runId
+                      TestProject = project
+                      TreeHash = launch
+                      EnvFingerprint = ""
+                      RecordedAt = DateTimeOffset.UtcNow
+                      Kind = kind
+                      Status = TraceStore.FailedToRecord
+                      Reason = reason
+                      StatsJson = "{}" }
+
+            recorded
+            |> List.iter (fun (run, work) ->
+                let kind =
+                    if run.Filtered then
+                        TraceStore.PartialRun
+                    else
+                        TraceStore.FullRun
+
+                try
+                    match work, index with
+                    | Refusal reason, _ ->
+                        TraceSession.recordRefusal store runId run.Project kind launch reason
+                        log $"traces: %s{run.Project} not recorded — %s{reason}"
+                    | Ingest _, Error reason ->
+                        failed run.Project kind reason
+                        log $"traces: %s{run.Project} not recorded — %s{reason}"
+                    | Ingest session, Ok() ->
+                        let outcomes = readOutcomes run.CtrfPath
+
+                        let completion: TraceSession.Completion =
+                            { RunId = runId
+                              Kind = kind
+                              LaunchTreeHash = launch
+                              CurrentTreeHash = current
+                              Outcomes = outcomes
+                              Symbols = symbols
+                              FingerprintFiles = rt.Settings.FingerprintInputs
+                              FingerprintEnv = rt.Settings.FingerprintEnv }
+
+                        match ingest store rt.RepoRoot session completion with
+                        | Ok summary -> log (summaryLine run.Project (not outcomes.IsEmpty) summary)
+                        | Error reason ->
+                            failed run.Project kind reason
+                            log $"traces: %s{run.Project} not recorded — %s{reason}"
+                with ex ->
+                    log $"traces: %s{run.Project} not recorded — trace storage failed: %s{ex.Message}"
+                    // A store that cannot take this row either is the outer handler's.
+                    failed run.Project kind $"trace storage failed: %s{ex.Message}")
+        with ex ->
+            log $"traces: not recorded — could not use the trace store at %s{dbPath rt}: %s{ex.Message}"
+
     /// `ingestAll`, with the per-project ingestion injected.
     let ingestAllWith
         (ingest: TraceIngestion)
         (rt: TraceRuntime)
         (symbols: TestPrune.Ports.SymbolStore)
+        (index: IndexFold)
         (runId: string)
         (launchTreeHash: string option)
         (currentTreeHash: unit -> string option)
         (runs: TracedProjectRun list)
         (log: string -> unit)
-        : unit =
-        let recorded =
-            runs
-            |> List.choose (fun r ->
-                match r.Decision with
-                | Untraced None -> None
-                | Untraced(Some reason) -> Some(r, Refusal reason)
-                | Traced(_, session) -> Some(r, Ingest session))
+        : Async<unit> =
+        async {
+            let recorded =
+                runs
+                |> List.choose (fun r ->
+                    match r.Decision with
+                    | Untraced None -> None
+                    | Untraced(Some reason) -> Some(r, Refusal reason)
+                    | Traced(_, session) -> Some(r, Ingest session))
 
-        if not recorded.IsEmpty then
-            try
-                use store = TraceStore.Store.Open(dbPath rt)
-                let launch, current = treeHashes launchTreeHash (currentTreeHash ())
-
-                let failed (project: string) kind (reason: string) =
-                    store.RecordRunWithoutTraces
-                        { RunId = runId
-                          TestProject = project
-                          TreeHash = launch
-                          EnvFingerprint = ""
-                          RecordedAt = DateTimeOffset.UtcNow
-                          Kind = kind
-                          Status = TraceStore.FailedToRecord
-                          Reason = reason
-                          StatsJson = "{}" }
-
+            let joins =
                 recorded
-                |> List.iter (fun (run, work) ->
-                    let kind =
-                        if run.Filtered then
-                            TraceStore.PartialRun
-                        else
-                            TraceStore.FullRun
+                |> List.exists (fun (_, work) ->
+                    match work with
+                    | Ingest _ -> true
+                    | Refusal _ -> false)
 
-                    try
-                        match work with
-                        | Refusal reason ->
-                            TraceSession.recordRefusal store runId run.Project kind launch reason
-                            log $"traces: %s{run.Project} not recorded — %s{reason}"
-                        | Ingest session ->
-                            let outcomes = readOutcomes run.CtrfPath
+            // Only a join reads the index; a run of refusals stores at once. Every join logs
+            // how long the index took to fold, so the fold's lag behind a run is visible.
+            let! indexState =
+                if joins then
+                    async {
+                        match! awaitFolded index with
+                        | Some waited ->
+                            log
+                                $"traces: the symbol index folded the events admitted before ingestion in %d{int waited.TotalMilliseconds}ms"
 
-                            let completion: TraceSession.Completion =
-                                { RunId = runId
-                                  Kind = kind
-                                  LaunchTreeHash = launch
-                                  CurrentTreeHash = current
-                                  Outcomes = outcomes
-                                  Symbols = symbols
-                                  FingerprintFiles = rt.Settings.FingerprintInputs
-                                  FingerprintEnv = rt.Settings.FingerprintEnv }
+                            return Ok()
+                        | None -> return Error(indexUnsettledReason index.Bound)
+                    }
+                else
+                    async.Return(Ok())
 
-                            match ingest store rt.RepoRoot session completion with
-                            | Ok summary -> log (summaryLine run.Project (not outcomes.IsEmpty) summary)
-                            | Error reason ->
-                                failed run.Project kind reason
-                                log $"traces: %s{run.Project} not recorded — %s{reason}"
-                    with ex ->
-                        log $"traces: %s{run.Project} not recorded — trace storage failed: %s{ex.Message}"
-                        // A store that cannot take this row either is the outer handler's.
-                        failed run.Project kind $"trace storage failed: %s{ex.Message}")
-            with ex ->
-                log $"traces: not recorded — could not use the trace store at %s{dbPath rt}: %s{ex.Message}"
+            if not recorded.IsEmpty then
+                storeAll ingest rt symbols indexState runId launchTreeHash currentTreeHash recorded log
+        }
 
-    /// After the run's parallel section: store each traced project's traces, or the
-    /// refusal of each project tracing refused, and log one line per project. Never
-    /// throws; a project tracing does not apply to stores and logs nothing.
-    let ingestAll rt symbols runId launchTreeHash currentTreeHash runs log =
-        ingestAllWith TraceSession.ingestProject rt symbols runId launchTreeHash currentTreeHash runs log
+    /// After the run's parallel section: wait (bounded by `index.Bound`) for the symbol
+    /// index to fold the analysis events admitted before now, then store each traced
+    /// project's traces, or the refusal of each project tracing refused, and log one line
+    /// per project. Never throws, except that a cancelled run's wait raises
+    /// `OperationCanceledException`; a project tracing does not apply to stores and logs
+    /// nothing.
+    let ingestAll rt symbols index runId launchTreeHash currentTreeHash runs log =
+        ingestAllWith TraceSession.ingestProject rt symbols index runId launchTreeHash currentTreeHash runs log
