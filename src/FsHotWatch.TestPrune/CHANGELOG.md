@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- obs: a receipt revoked because "the input tree MOVED" now names the paths that moved:
+  `moved paths: changed (n): …; added (n): …; removed (n): …`, at most 10 per kind with
+  the full count. The walk hashes files the watcher never reports, such as gitignored
+  build output under a discovery root, so without the paths a revocation with no change
+  event behind it could only be explained by reading ctimes.
+
 ## 0.13.0-alpha.54 - 2026-09-27
 
 - fix: after a green full suite, a later run that selected nothing because nothing

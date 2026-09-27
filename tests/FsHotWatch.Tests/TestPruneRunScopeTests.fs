@@ -3880,6 +3880,97 @@ let ``no two revocation causes render the same text`` () =
     test <@ unreadable.Contains "READ" && unreadable.Contains "defect" @>
     test <@ moved.Contains "MOVED" && not (moved.Contains "defect") @>
 
+// --- a MOVED revocation names the paths that moved ---
+
+[<Fact>]
+let ``the delta between two receipt manifests names every changed, added and removed path`` () =
+    let before = [ "src/A.fs", "h1"; "src/B.fs", "h2"; "src/Gone.fs", "h3" ]
+    let after = [ "src/A.fs", "h1"; "src/B.fs", "h2'"; "src/New.fs", "h4" ]
+
+    let delta = ReceiptInputTree.delta before after
+
+    test <@ delta.Changed = [ "src/B.fs" ] @>
+    test <@ delta.Added = [ "src/New.fs" ] @>
+    test <@ delta.Removed = [ "src/Gone.fs" ] @>
+    test <@ ReceiptInputTree.delta before before = ReceiptInputTree.TreeDelta.empty @>
+
+[<Fact>]
+let ``a long delta is capped per kind and says how many it left out`` () =
+    let paths n prefix =
+        [ for i in 1..n -> $"src/%s{prefix}%02d{i}.fs" ]
+
+    let rendered =
+        ReceiptInputTree.describeDelta
+            { Changed = paths 30 "C"
+              Added = paths 1 "A"
+              Removed = [] }
+
+    test <@ rendered.Contains "changed (30): src/C01.fs" @>
+    test <@ rendered.Contains "(+20 more)" @>
+    test <@ not (rendered.Contains "src/C11.fs") @>
+    test <@ rendered.Contains "added (1): src/A01.fs" @>
+    test <@ not (rendered.Contains "removed") @>
+
+/// The intelligence gate that could not be answered from its log (fshw 0.14.0-alpha.73,
+/// runs 51fb9374 / d94338ae / 18d93617): three receipts revoked with "the input tree
+/// MOVED", no watcher event in any of them, and the revocation named no path. What had
+/// moved was a GITIGNORED build output under a discovery root — a stylesheet one test
+/// project's fixture rebuilt while another planted probe files in the scanned tree — which
+/// the receipt walk hashes and the watcher does not report. Finding it took an hour of
+/// ctimes and ctrf timestamps; the revocation now says it.
+[<Fact(Timeout = 20000)>]
+let ``a receipt revoked because the tree moved names the file that moved`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
+        Directory.CreateDirectory(Path.GetDirectoryName css) |> ignore
+        File.WriteAllText(css, ".a{margin:0}")
+
+        let probe = Path.Combine(repoRoot, "src", "Views", ".scan-probe.txt")
+
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // Bound at launch, then edited while the run is in flight.
+        let ran = partialReceiptRun repoRoot
+        File.WriteAllText(css, ".a{margin:0}.mt-\\[9901px\\]{margin-top:9901px}")
+        Directory.CreateDirectory(Path.GetDirectoryName probe) |> ignore
+        File.WriteAllText(probe, "mt-[9901px]")
+
+        let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+        let recording, _, _ = makeTestPruneRecordingCtx ()
+        let ctx = { recording with Log = lines.Enqueue }
+
+        handler.Update ctx handler.Init ran |> Async.RunSynchronously |> ignore
+
+        let logged = List.ofSeq lines
+        let revoked = logged |> List.tryFind (fun l -> l.Contains "receipt revoked")
+        test <@ revoked |> Option.exists (fun l -> l.Contains "MOVED") @>
+
+        let moved = logged |> List.tryFind (fun l -> l.Contains "moved paths")
+
+        test
+            <@
+                moved
+                |> Option.exists (fun l -> l.Contains "changed (1): src/wwwroot/css/app.css")
+            @>
+
+        test
+            <@
+                moved
+                |> Option.exists (fun l -> l.Contains "added (1): src/Views/.scan-probe.txt")
+            @>
+
+        test <@ moved |> Option.exists (fun l -> not (l.Contains "src/Value.fs")) @>)
+
+[<Fact>]
+let ``a launch tree whose entries are no longer held says so instead of naming nothing`` () =
+    let text =
+        ReceiptInputTree.movedPaths (Some "sha256:never-read") (Some "sha256:also-never")
+
+    test <@ text |> Option.exists (fun t -> t.Contains "no longer held") @>
+    test <@ ReceiptInputTree.movedPaths (Some "same") (Some "same") = None @>
+    test <@ ReceiptInputTree.movedPaths None (Some "x") = None @>
+
 // ---------------------------------------------------------------------------
 // The run `test-scope` grades and the run the model evidence names are ONE run.
 // ---------------------------------------------------------------------------
