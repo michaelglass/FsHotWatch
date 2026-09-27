@@ -159,11 +159,21 @@ let private withRepository (body: string -> string -> unit) =
         File.WriteAllText(Path.Combine(root, ".fshw.json"), config)
         body root (Path.Combine(Path.GetDirectoryName root, "state")))
 
-/// The built CLI, run in `root` as an opted-in shell would run it. Its exit code.
-let private runCli (stateHome: string) (root: string) (args: string list) : int =
+/// The built CLI, run in `root` as an opted-in shell would run it, under the `dotnet`
+/// host of the runtime this test runs on. Its apphost would need a runtime it can
+/// find on its own, which a test host started by `dotnet exec` does not guarantee.
+/// Fails with everything the CLI printed unless it exits 0.
+let private runCliOk (stateHome: string) (root: string) (args: string list) : unit =
     let cli = typeof<HostLink>.Assembly.Location
-    let apphost = Path.Combine(Path.GetDirectoryName cli, "FsHotWatch.Cli")
-    let psi = ProcessStartInfo(apphost)
+
+    let host =
+        DetachedLaunch.helperHost
+            Environment.ProcessPath
+            (Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory())
+            File.Exists
+
+    let psi = ProcessStartInfo(host)
+    psi.ArgumentList.Add cli
 
     for a in args do
         psi.ArgumentList.Add a
@@ -174,15 +184,29 @@ let private runCli (stateHome: string) (root: string) (args: string list) : int 
     psi.UseShellExecute <- false
     psi.RedirectStandardError <- true
     psi.RedirectStandardOutput <- true
-    use p = Process.Start psi
+    let output = Collections.Concurrent.ConcurrentQueue<string>()
+    use p = new Process(StartInfo = psi)
+
+    p.OutputDataReceived.Add(fun e ->
+        if not (isNull e.Data) then
+            output.Enqueue e.Data)
+
+    p.ErrorDataReceived.Add(fun e ->
+        if not (isNull e.Data) then
+            output.Enqueue e.Data)
+
+    p.Start() |> ignore
     p.BeginErrorReadLine()
     p.BeginOutputReadLine()
 
     if not (p.WaitForExit 180000) then
         p.Kill true
-        failwith $"fshw %A{args} did not finish"
+        failwith $"fshw %A{args} did not finish:\n%s{String.concat Environment.NewLine output}"
 
-    p.ExitCode
+    // The parameterless wait returns once both redirected streams have drained.
+    p.WaitForExit()
+
+    Assert.True((p.ExitCode = 0), $"fshw %A{args} exited %d{p.ExitCode}:\n%s{String.concat Environment.NewLine output}")
 
 [<Fact(Timeout = 600000)>]
 let ``a host killed outright leaves the worktree to the next command, which starts a new host`` () =
@@ -201,7 +225,7 @@ let ``a host killed outright leaves the worktree to the next command, which star
             let seen = Collections.Generic.HashSet<int>()
 
             try
-                test <@ runCli stateHome root [ "scan" ] = 0 @>
+                runCliOk stateHome root [ "scan" ]
                 let first = hostPid ()
                 seen.Add first |> ignore
 
@@ -222,7 +246,7 @@ let ``a host killed outright leaves the worktree to the next command, which star
                         |> Option.isNone
                     @>
 
-                test <@ runCli stateHome root [ "scan" ] = 0 @>
+                runCliOk stateHome root [ "scan" ]
                 let second = hostPid ()
                 seen.Add second |> ignore
                 test <@ second <> first @>
@@ -237,7 +261,7 @@ let ``a host killed outright leaves the worktree to the next command, which star
                     @>
 
                 // A clean stop hands the worktree back.
-                test <@ runCli stateHome root [ "stop"; "--repository" ] = 0 @>
+                runCliOk stateHome root [ "stop"; "--repository" ]
                 test <@ waitUntilTrue (fun () -> not (RepositoryHost.processAlive second)) 30000 @>
                 use relock = (RepositoryHost.tryLockWorktree root).Value
                 ()
