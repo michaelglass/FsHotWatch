@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.74 - 2026-09-27
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.73 - 2026-09-27
 
 - fix: bundles TestPrune.Trace 0.3.0. With `tests.traces` on, a traced run's coverage

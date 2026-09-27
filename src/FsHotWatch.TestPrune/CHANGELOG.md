@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.55 - 2026-09-27
+
 - fix: a `tests.beforeRun` that generates files under a discovery root (a JS bundle, a
   stylesheet) no longer revokes the run it precedes with "the input tree MOVED". The
   receipt now binds to the tree as it is after `beforeRun`, the tree the tests actually
