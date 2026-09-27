@@ -2638,7 +2638,11 @@ let internal hostSessionLink (host: HostLink) : DaemonLink =
             eprintfn "Detached this worktree from the repository host."
             0 }
 
-let executeCommandWith
+/// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
+/// supplied — so a lifecycle test can fire the config edit itself instead of racing live
+/// FSEvents delivery, which has no latency bound on a loaded machine.
+let internal executeCommandWatchingConfig
+    (watchConfig: string -> (string -> unit) -> IDisposable)
     (link: DaemonLink)
     (loadedConfigIdentity: string)
     (createDaemon: string -> Daemon)
@@ -2908,7 +2912,7 @@ let executeCommandWith
                                 // user then runs the daemon again to pick up the new config (or
                                 // sees the error if the edit was invalid). No hot-reload.
                                 use _configWatcher =
-                                    watchRepoConfigFile repoRoot (fun reason ->
+                                    watchConfig repoRoot (fun reason ->
                                         FsHotWatch.Logging.info "config" reason
                                         cts.Cancel())
 
@@ -3312,6 +3316,57 @@ let executeCommandWith
                 eprintfn "Could not install fish completions: %s" reason
                 1
 
+let executeCommandWith
+    (link: DaemonLink)
+    (loadedConfigIdentity: string)
+    (createDaemon: string -> Daemon)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (command: Command)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : int =
+    executeCommandWatchingConfig
+        watchRepoConfigFile
+        link
+        loadedConfigIdentity
+        createDaemon
+        ipc
+        repoRoot
+        pipeName
+        command
+        opts
+        config
+        startupTimeoutSeconds
+
+/// `executeCommand` with the `.fshw.json` watcher supplied (see `executeCommandWatchingConfig`).
+let internal executeOwnCommandWatchingConfig
+    (watchConfig: string -> (string -> unit) -> IDisposable)
+    (loadedConfigIdentity: string)
+    (createDaemon: string -> Daemon)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (command: Command)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : int =
+    executeCommandWatchingConfig
+        watchConfig
+        (ownDaemonLink ipc repoRoot pipeName opts config startupTimeoutSeconds)
+        loadedConfigIdentity
+        createDaemon
+        ipc
+        repoRoot
+        pipeName
+        command
+        opts
+        config
+        startupTimeoutSeconds
+
 /// `executeCommandWith` for a worktree served by its own daemon.
 let executeCommand
     (loadedConfigIdentity: string)
@@ -3324,8 +3379,8 @@ let executeCommand
     (config: DaemonConfiguration)
     (startupTimeoutSeconds: float)
     : int =
-    executeCommandWith
-        (ownDaemonLink ipc repoRoot pipeName opts config startupTimeoutSeconds)
+    executeOwnCommandWatchingConfig
+        watchRepoConfigFile
         loadedConfigIdentity
         createDaemon
         ipc
