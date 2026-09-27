@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.55 - 2026-09-27
+
 - fix: a project change is no longer re-evaluated after a re-discovery has already
   applied it. There were two ways it happened. A scan compared the project files against
   the stamps of its OWN last discovery, so the next scan after a change batch had

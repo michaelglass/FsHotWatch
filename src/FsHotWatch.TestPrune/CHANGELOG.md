@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.54 - 2026-09-27
+
 - fix: after a green full suite, a later run that selected nothing because nothing
   changed no longer shows "NOTHING VERIFIED: 0 test project(s) ran". While the full
   suite's receipt stands, the status names that run. A skip that ran nothing also no
@@ -10,6 +12,7 @@
 - fix: a run that completes while the project model is being re-discovered waits
   (bounded, 5 minutes) for the re-discovery to settle before it is folded. It is then
   carried or revoked per project instead of revoked whole.
+- build(deps): bump TestPrune.Trace from 0.2.1 to 0.3.0
 
 ## 0.13.0-alpha.53 - 2026-09-27
 
