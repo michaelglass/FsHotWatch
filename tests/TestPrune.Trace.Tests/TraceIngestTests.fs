@@ -302,7 +302,7 @@ let ``a traced child's hits, static init and children merge into the parent test
         "T:1",
         fun st ->
             st.Hit 1
-            st.EnterStatic()
+            st.EnterStatic "N.M"
             st.Hit 0
             st.ExitStatic()
             st.NoteScope().Children.Enqueue(struct (101, "grandchild", true))
@@ -486,6 +486,11 @@ let ``repoRelative maps under-root paths and the traced bin to the debug bin`` (
 let ``fixture and pool scopes are inherited through parents and links, and run scopes are kept`` () =
     let w = World()
 
+    w.Manifest <-
+        { w.Manifest with
+            Rows = Array.append w.Manifest.Rows [| row 5 StaticCtor "N.Untouched" ".cctor" None 0 |]
+            IdCount = 6 }
+
     w.Process(
         10,
         null,
@@ -498,9 +503,9 @@ let ``fixture and pool scopes are inherited through parents and links, and run s
             st.CurrentScope().Links.TryAdd("A:ambient", 0uy) |> ignore
             asTest st "T:1" "N.Tests" "t" "N.Tests.t"
             st.ExitScope()
-            // Ambient and static-init hits are stored as run scopes, never linked.
+            // Ambient hits and static init no test touched are stored as run scopes, never linked.
             st.Hit 0
-            st.EnterStatic()
+            st.EnterStatic "N.Untouched"
             st.Hit 0
             st.ExitStatic()
             // A T scope with no test identity (a host's own `Scopes.Enter`) is not a test.
@@ -513,7 +518,53 @@ let ``fixture and pool scopes are inherited through parents and links, and run s
     let t = read store s "N.Tests" "t"
     test <@ t.Complete && t.Symbols = set [ "N.M.g", "hg" ] @>
     test <@ store.TestKeysOf("P", s.EnvFingerprint.Value) = set [ testKey "P" "N.Tests" "t" ] @>
-    test <@ store.RunScopeKeys("run1", "P") = [ "A:ambient"; "C:N.Tests"; "P:pool"; "S:static-init"; "T:1" ] @>
+    test <@ store.RunScopeKeys("run1", "P") = [ "A:ambient"; "C:N.Tests"; "P:pool"; "S:N.Untouched"; "T:1" ] @>
+
+[<Fact>]
+let ``a test inherits the code and inputs of the type initializers of the code it ran`` () =
+    let w = World()
+
+    // N.M's values initialize in a startup class whose initializer is in src/M.fs too.
+    w.Manifest <-
+        { w.Manifest with
+            Rows = Array.append w.Manifest.Rows [| row 5 StaticCtor "<StartupCode$A>.$N.M" ".cctor" (Some w.Src) 1 |]
+            IdCount = 6 }
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            // The first test to touch N.M triggers its initializer, which runs f and reads Plain.fs.
+            asTest st "T:1" "N.Tests" "first" "N.Tests.first"
+            st.EnterStatic "<StartupCode$A>.$N.M"
+            st.Hit 0
+            Io.NoteWith(st, "read", w.Plain)
+            st.ExitStatic()
+            st.Hit 1
+            asTest st "T:2" "N.Tests" "second" "N.Tests.second"
+            st.Hit 1
+            asTest st "T:3" "N.Tests" "elsewhere" "N.Tests.elsewhere"
+            st.Hit 4
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+
+    let s =
+        ingest store (w.Request [ passed "N.Tests.first"; passed "N.Tests.second"; passed "N.Tests.elsewhere" ])
+
+    let plainRead = "read", "src/Plain.fs", Fingerprint.hashFile w.Root "src/Plain.fs"
+
+    for name in [ "first"; "second" ] do
+        let t = read store s "N.Tests" name
+
+        test
+            <@
+                t.Complete
+                && t.Symbols = set [ "N.M.f", "hf"; "N.M.g", "hg" ]
+                && t.Inputs.Contains plainRead
+            @>
+
+    test <@ not ((read store s "N.Tests" "elsewhere").Inputs.Contains plainRead) @>
 
 [<Fact>]
 let ``no usable dump records a failed run and no tests; executed tests are listed as untraced`` () =

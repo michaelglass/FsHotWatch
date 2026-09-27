@@ -72,7 +72,10 @@ let private fake audit overhead census =
     m, calls
 
 let private passing () =
-    fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok(FileCensus.summarize Set.empty Set.empty Set.empty))
+    fake
+        (Ok(auditReport []))
+        (Ok(overheadReport 100.0))
+        (Ok(FileCensus.summarize Set.empty Set.empty Set.empty Set.empty))
 
 let private cwd = Path.Combine(Path.GetTempPath(), "tp-cli-cwd")
 
@@ -182,7 +185,7 @@ let ``file-census prints its table and exits 0 when it passes`` () =
     test
         <@
             o.Exit = 0
-            && o.Stdout = FileCensus.render (FileCensus.summarize Set.empty Set.empty Set.empty)
+            && o.Stdout = FileCensus.render (FileCensus.summarize Set.empty Set.empty Set.empty Set.empty)
         @>
 
 [<Fact>]

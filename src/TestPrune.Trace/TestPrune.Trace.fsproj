@@ -32,6 +32,7 @@
     <ItemGroup>
         <Compile Include="Model.fs" />
         <Compile Include="DumpReader.fs" />
+        <Compile Include="RunScopes.fs" />
         <Compile Include="TraceStore.fs" />
         <Compile Include="Fingerprint.fs" />
         <Compile Include="Manifest.fs" />

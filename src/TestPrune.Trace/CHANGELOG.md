@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: a test inherits the static init of the code it ran. A type initializer runs once per
+  process, in whichever test touches the type first, so what it read (a module value that
+  locates the repository root, then reads a file there) was recorded under a static-init
+  scope no test inherited: a change to that file invalidated no trace. Each initializer now
+  records into its own `S:<type>` scope, and ingestion links it to every test that ran code
+  of that type or code in the source file its initializer is in (F# initializes a module's
+  values in a `<StartupCode$…>` class no user code names), transitively through the
+  initializers an inherited one touched or ran inside it. An initializer the recorder cannot
+  tie to a woven type is inherited by every test. New module `RunScopes` (`merged`,
+  `isStaticInit`, `staticInheritance`); `Audit.merged` moved there. Garbage collection keeps
+  every `S:` scope of a project's latest run.
+- fix: `file-census` runs the woven copy outside the repository traced against the same
+  repository root. A test that reads a repository file at an absolute path
+  (`__SOURCE_DIRECTORY__`) passes there, and used to count as over-recorded; the read it
+  records from outside now counts as a dependency on the repository
+  (`FileCensusReport.ReachOutside`). `FileCensus.readers` takes the manifest, and
+  `summarize` the tests that reached the repository from outside.
+
+
 ## 0.3.0 - 2026-09-27
 
 - fix: coverage of a woven assembly keeps the branch points of union matches, field

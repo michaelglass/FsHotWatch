@@ -78,3 +78,8 @@ type ClassC() =
         use p = Process.Start psi
         p.WaitForExit()
         Assert.Equal(0, p.ExitCode)
+
+type ClassD() =
+    [<Fact>]
+    member _.``d reads a module value``() =
+        Assert.True(Settings.toolConfigLines () > 0)

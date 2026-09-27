@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: each type initializer records into its own `S:<type>` scope, named from the static
+  constructor on the stack (one stack walk per initialized type), instead of one
+  `S:static-init` scope for the process. An initializer that runs inside another is linked
+  from it. `RecorderState.EnterStatic` takes the type name; `S:static-init` remains for an
+  initializer with no static constructor on the stack.
+
+
 ## 0.3.0 - 2026-09-27
 
 - Merge main@origin into the branch-point weaver fix

@@ -49,6 +49,52 @@ let ``probes record through the installed recorder`` () =
     test <@ idsOf state "S:static-init" = set [ 6 ] @>
     test <@ (state.Scopes |> Seq.find (fun s -> s.Key = "T:x")).Links.Keys |> List.ofSeq = [ "P:pool" ] @>
 
+/// A type whose initializer calls the probes the weaver wraps an initializer in.
+type private Initialized() =
+    static let value =
+        Probes.EnterStatic()
+        Probes.Hit 3
+        Probes.ExitStatic()
+        1
+
+    static member Value = value
+
+[<Fact>]
+let ``a type initializer's probes record into the scope named after the initializing type`` () =
+    let state = RecorderState(8, None, null)
+    withRecorder state (fun () -> test <@ Initialized.Value = 1 @>)
+
+    let key =
+        state.Scopes
+        |> Seq.map (fun s -> s.Key)
+        |> Seq.find (fun k -> k.StartsWith "S:")
+
+    // F# runs a class's `static let` in its file's startup class initializer, the innermost
+    // static constructor on the stack.
+    test <@ key = "S:<StartupCode$TestPrune-Trace-Tests>.$TestPrune.Trace.Tests.RuntimeTests" @>
+    test <@ idsOf state key = set [ 3 ] @>
+
+/// A generic type initializes per instantiation, in its own static constructor.
+type private InitializedGeneric<'T>() =
+    static let value =
+        Probes.EnterStatic()
+        Probes.Hit 4
+        Probes.ExitStatic()
+        1
+
+    static member Value = value
+
+[<Fact>]
+let ``a generic type's initializer is named after its generic definition`` () =
+    let state = RecorderState(8, None, null)
+    withRecorder state (fun () -> test <@ InitializedGeneric<int>.Value = 1 @>)
+    let key = "S:" + typedefof<InitializedGeneric<_>>.FullName
+    test <@ idsOf state key = set [ 4 ] @>
+
+[<Fact>]
+let ``no static constructor on the stack names no type`` () =
+    test <@ isNull (Probes.InitializingType(System.Diagnostics.StackTrace(false).GetFrames())) @>
+
 [<Fact>]
 let ``probes and scopes are inert with no recorder`` () =
     withRecorder null (fun () ->

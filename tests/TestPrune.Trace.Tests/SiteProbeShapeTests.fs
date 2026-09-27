@@ -217,7 +217,7 @@ let ``a type initializer whose handler runs to the method's end is wrapped and s
             Probes.Hit(idOf UserMethod "FxLib.Logic" "area")
             Scopes.Exit())
 
-    test <@ (idsIn state "S:static-init").Contains(idOf UserMethod "FxLib.Values" "get_threshold") @>
+    test <@ (idsIn state "S:FxLib.Synthetic").Contains(idOf UserMethod "FxLib.Values" "get_threshold") @>
     test <@ (idsIn state "T:trigger").Contains(idOf UserMethod "FxLib.Logic" "area") @>
     test <@ not ((idsIn state "T:trigger").Contains(idOf UserMethod "FxLib.Values" "get_threshold")) @>
 
@@ -399,4 +399,4 @@ let ``a type initializer whose handler ends inside the method is wrapped and sti
                 |> Array.find (fun r ->
                     r.Kind = UserMethod && r.TypeName = "FxLib.Values" && r.Member = "get_threshold")
 
-            test <@ (idsIn state "S:static-init").Contains threshold.Id @>)
+            test <@ (idsIn state "S:FxLib.SyntheticCaught").Contains threshold.Id @>)

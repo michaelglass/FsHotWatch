@@ -77,16 +77,38 @@ module RecorderStateTests =
         let src = FakeSource()
         let state = RecorderState(64, Some(src :> IContextSource), null)
         src.Set(box "t")
-        state.EnterStatic()
+        state.EnterStatic "N.T"
         state.Hit 1
         state.ExitStatic()
         state.EnterScope "P:pool"
         state.Hit 2
         state.ExitScope()
         state.Hit 3
-        test <@ idsOf state "S:static-init" = set [ 1 ] @>
+        test <@ idsOf state "S:N.T" = set [ 1 ] @>
         test <@ idsOf state "P:pool" = set [ 2 ] @>
         test <@ idsOf state "T:t" = set [ 3 ] @>
+
+    [<Fact>]
+    let ``each type initializer records into its own scope, linked from the one it ran inside`` () =
+        let state = RecorderState(64, None, null)
+        state.EnterStatic "N.Outer"
+        state.Hit 1
+        state.EnterStatic "N.Inner"
+        state.Hit 2
+        state.ExitStatic()
+        state.Hit 3
+        state.ExitStatic()
+        state.EnterStatic null
+        state.Hit 4
+        state.ExitStatic()
+        // An unbalanced exit leaves no initializer running.
+        state.ExitStatic()
+        state.Hit 5
+        test <@ idsOf state "S:N.Outer" = set [ 1; 3 ] && idsOf state "S:N.Inner" = set [ 2 ] @>
+        test <@ idsOf state "S:static-init" = set [ 4 ] && idsOf state "A:ambient" = set [ 5 ] @>
+
+        let outer = state.Scopes |> Seq.find (fun s -> s.Key = "S:N.Outer")
+        test <@ List.ofSeq outer.Links.Keys = [ "S:N.Inner" ] @>
 
     [<Fact>]
     let ``no context means ambient, or the parent scope in a child process`` () =
@@ -124,7 +146,7 @@ module RecorderStateTests =
         state.Hit 1 // ambient
         src.Set(box "t")
         state.Hit 1 // test
-        state.EnterStatic()
+        state.EnterStatic "N.T"
         state.Hit 1 // static
         state.ExitStatic()
         state.EnterScope "P:pool"
@@ -254,14 +276,18 @@ module RecorderStateTests =
         let state = RecorderState(64, Some(src :> IContextSource), null)
         src.Set(box "t")
         state.Hit 1 // first hit on this thread and context: registers and resolves
+        state.EnterStatic "N.T" // a type initializer runs once: entering it may allocate
+        state.Hit 2
         let before = System.GC.GetAllocatedBytesForCurrentThread()
+
+        for _ in 0..9999 do
+            state.Hit 2 // static init
+
+        state.ExitStatic()
 
         for i in 0..9999 do
             state.Hit(i % 64) // test scope
             state.Hit 64 // overflow
-            state.EnterStatic()
-            state.Hit 2 // static init
-            state.ExitStatic()
 
         let allocated = System.GC.GetAllocatedBytesForCurrentThread() - before
         test <@ allocated = 0L @>

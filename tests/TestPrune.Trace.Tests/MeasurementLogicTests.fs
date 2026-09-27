@@ -333,10 +333,14 @@ let ``a test reads the repository through its own scope or any scope it inherits
             Links = [ "P:web" ]
             Parents = [ "C:missing" ] }
 
-    // The ambient and static-init scopes belong to the run, never to a test.
+    // The ambient scope belongs to the run, and a static-init scope only to the tests that
+    // touch its type: never to a test that merely lists them.
     let none =
         { testScope "T:4" "N.M+F" "none" "N.M+F.none" [] with
-            Parents = [ "A:ambient"; "S:static-init" ] }
+            Parents = [ "A:ambient"; "S:N.Init" ] }
+
+    // Executes a member of N.Init, whose type initializer read a file.
+    let viaInit = testScope "T:7" "N.M+I" "init" "N.M+I.init" [ 1 ]
 
     let viaChild = testScope "T:5" "N.M+G" "child" "N.M+G.child" []
 
@@ -355,6 +359,7 @@ let ``a test reads the repository through its own scope or any scope it inherits
                 none
                 viaChild
                 cycle
+                viaInit
                 { scope "C:loop" [] with
                     Parents = [ "L:loop" ] }
                 { scope "L:loop" [] with
@@ -370,7 +375,7 @@ let ``a test reads the repository through its own scope or any scope it inherits
                     Inputs = [ { Kind = ExistenceProbe; Path = "/r/e" } ] }
                 { scope "A:ambient" [] with
                     Inputs = [ read "/r/a" ] }
-                { scope "S:static-init" [] with
+                { scope "S:N.Init" [ 0 ] with
                     Inputs = [ read "/r/s" ] } ]
           dump
               2
@@ -378,7 +383,16 @@ let ``a test reads the repository through its own scope or any scope it inherits
               [ { scope "T:5" [] with
                     Inputs = [ read "/r/c" ] } ] ]
 
-    test <@ FileCensus.readers dumps = set [ "N.M.C.own"; "N.M.D.inherits"; "N.M.E.linked"; "N.M.G.child" ] @>
+    let manifest =
+        { Rows = [| row 0 StaticCtor "N.Init" ".cctor"; row 1 UserMethod "N.Init" "get_x" |]
+          Documents = Map.empty
+          IdCount = 2 }
+
+    test
+        <@
+            FileCensus.readers manifest dumps = set
+                [ "N.M.C.own"; "N.M.D.inherits"; "N.M.E.linked"; "N.M.G.child"; "N.M.I.init" ]
+        @>
 
 [<Fact>]
 let ``failures are failed or other outcomes, never passed or skipped`` () =
@@ -396,26 +410,42 @@ let ``failures are failed or other outcomes, never passed or skipped`` () =
 [<Fact>]
 let ``the ratio is the symmetric difference over the union, outside failures net of in-repo ones`` () =
     let r =
-        FileCensus.summarize (set [ "flaky" ]) (set [ "flaky"; "a"; "b" ]) (set [ "b"; "c" ])
+        FileCensus.summarize (set [ "flaky" ]) (set [ "flaky"; "a"; "b" ]) Set.empty (set [ "b"; "c" ])
 
     test <@ r.FailInRepo = set [ "flaky" ] && r.FailOutside = set [ "a"; "b" ] @>
     test <@ r.SymmetricDifference = set [ "a"; "c" ] && abs (r.Ratio - 2.0 / 3.0) < 1e-9 @>
     test <@ not (FileCensus.passes r) @>
 
-    let empty = FileCensus.summarize Set.empty Set.empty Set.empty
+    let empty = FileCensus.summarize Set.empty Set.empty Set.empty Set.empty
     test <@ empty.Ratio = 0.0 && FileCensus.passes empty @>
+
+[<Fact>]
+let ``a test that reaches the repository from outside it depends on the repository`` () =
+    // `s` passed outside but read the repository from there (an absolute path): it agrees
+    // with its trace. `r` did the same and read nothing in the repository run: a miss.
+    let r = FileCensus.summarize Set.empty Set.empty (set [ "r"; "s" ]) (set [ "s" ])
+
+    test <@ r.ReachOutside = set [ "r"; "s" ] && r.SymmetricDifference = set [ "r" ] @>
+
+    // A test that failed in the repository, or already failed outside, is not counted twice.
+    let both =
+        FileCensus.summarize (set [ "flaky" ]) (set [ "a" ]) (set [ "a"; "flaky"; "s" ]) (set [ "a"; "s" ])
+
+    test <@ both.FailOutside = set [ "a" ] && both.ReachOutside = set [ "s" ] @>
+    test <@ both.SymmetricDifference.IsEmpty && FileCensus.passes both @>
 
 [<Fact>]
 let ``the file census table lists both sides of the difference`` () =
     let text =
-        FileCensus.render (FileCensus.summarize (set [ "f" ]) (set [ "a"; "f" ]) (set [ "b" ]))
+        FileCensus.render (FileCensus.summarize (set [ "f" ]) (set [ "a"; "f" ]) (set [ "r"; "s" ]) (set [ "b"; "s" ]))
 
     test
         <@
             text = String.concat
                 "\n"
-                [ "file-census  FAIL  ratio 1.000 (bar <= 0.05)  fail-outside 1  reads-repo 1  fail-in-repo 1"
+                [ "file-census  FAIL  ratio 0.750 (bar <= 0.05)  fail-outside 1  reach-outside 2  reads-repo 2  fail-in-repo 1"
                   "  fails outside, reads nothing  a"
+                  "  reaches the repo from outside, reads nothing  r"
                   "  reads the repo, passes outside  b"
                   "" ]
         @>

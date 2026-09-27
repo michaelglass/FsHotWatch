@@ -117,7 +117,7 @@ let ``inputs go to static init, then the current scope, then ambient`` () =
     let state = recorderWithRoot Fixtures.repoRoot
     let file = Path.Combine(Fixtures.repoRoot, "global.json")
     Io.NoteWith(state, "read", file)
-    state.EnterStatic()
+    state.EnterStatic "N.T"
     Io.NoteWith(state, "exists", file)
     state.ExitStatic()
 
@@ -125,7 +125,7 @@ let ``inputs go to static init, then the current scope, then ambient`` () =
         state.Scopes |> Seq.find (fun s -> s.Key = key)
 
     test <@ inputsOf (byKey "A:ambient") = set [ "read", file ] @>
-    test <@ inputsOf (byKey "S:static-init") = set [ "exists", file ] @>
+    test <@ inputsOf (byKey "S:N.T") = set [ "exists", file ] @>
 
 [<Fact>]
 let ``every file shim notes its input and does what the original does`` () =

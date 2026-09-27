@@ -11,6 +11,7 @@
         <Compile Include="Values.fs" />
         <Compile Include="Logic.fs" />
         <Compile Include="Pipelines.fs" />
+        <Compile Include="Settings.fs" />
     </ItemGroup>
 
 </Project>

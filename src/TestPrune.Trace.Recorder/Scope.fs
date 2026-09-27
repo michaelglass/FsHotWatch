@@ -11,7 +11,7 @@ open System.Threading
 type Scope(key: string, idCount: int) =
     let bits: uint64[] = Array.zeroCreate ((idCount + 63) >>> 6)
 
-    /// The scope key: `T:<test uid>`, `C:<class>`, `L:<collection>`, `A:…`, `S:static-init`, `P:…`.
+    /// The scope key: `T:<test uid>`, `C:<class>`, `L:<collection>`, `A:…`, `S:<type>` (static init), `P:…`.
     member _.Key = key
 
     /// The test class, set when the scope is a test (or a class fixture).

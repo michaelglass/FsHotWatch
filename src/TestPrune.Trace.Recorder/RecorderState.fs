@@ -2,6 +2,7 @@ namespace TestPrune.Trace.Recorder
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Runtime.CompilerServices
 open System.Threading
 
@@ -9,7 +10,10 @@ open System.Threading
 /// can sum its counters.
 [<Sealed; AllowNullLiteral>]
 type internal ThreadState() =
-    member val StaticDepth = 0 with get, set
+    /// The static-init scope of the type initializer running on this thread, or null.
+    member val StaticScope: Scope = null with get, set
+    /// The static-init scopes of the initializers the running one interrupted, innermost first.
+    member val Interrupted = Stack<Scope>()
     member val LastCtx: obj = null with get, set
     member val LastScope: Scope = null with get, set
     member val LastOwner: obj = null with get, set
@@ -38,7 +42,7 @@ type internal Threads =
             t
 
 /// A traced process's recorder: resolves each hit to a scope and marks it there.
-/// Precedence: static init, then an explicit scope, then the context source's
+/// Precedence: static init (the running type initializer's own scope), then an explicit scope, then the context source's
 /// test/class/collection/assembly, then ambient (or the parent scope in a child process).
 [<Sealed; AllowNullLiteral>]
 type RecorderState(idCount: int, source: IContextSource option, parentScope: string) =
@@ -52,7 +56,6 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
     let ambient = newScope (if hasParent then parentScope else "A:ambient")
     /// A parent scope is an explicit scope set by the host, so it counts as override.
     let ambientBucket = if hasParent then 4 else 6
-    let staticInit = newScope "S:static-init"
     let overrideScope = AsyncLocal<Scope>()
     let mutable anyOverride = false
 
@@ -93,12 +96,12 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
     /// Where a file read or a child process is noted: static init, then the current
     /// scope, then ambient. Never null.
     member this.NoteScope() : Scope =
-        if Threads.Get().StaticDepth > 0 then
-            staticInit
-        else
+        match Threads.Get().StaticScope with
+        | null ->
             match this.CurrentScope() with
             | null -> ambient
             | s -> s
+        | s -> s
 
     /// Every scope created so far.
     member _.Scopes: seq<Scope> = byKey.Values :> seq<Scope>
@@ -125,15 +128,35 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
     /// Ends the override set by `EnterScope`.
     member _.ExitScope() = overrideScope.Value <- null
 
-    /// Entered at the start of a static constructor on this thread.
-    member _.EnterStatic() =
+    /// Entered at the start of the static constructor of `typeName` on this thread; its
+    /// scope is `S:<typeName>`, or `S:static-init` when the type is unknown. An initializer
+    /// that runs inside another is linked from it: the outer one's work depends on it.
+    member _.EnterStatic(typeName: string) =
         let t = Threads.Get()
-        t.StaticDepth <- t.StaticDepth + 1
+
+        let s =
+            newScope (
+                if String.IsNullOrEmpty typeName then
+                    "S:static-init"
+                else
+                    "S:" + typeName
+            )
+
+        match t.StaticScope with
+        | null -> ()
+        | outer -> outer.Links.TryAdd(s.Key, 0uy) |> ignore
+
+        t.Interrupted.Push t.StaticScope
+        t.StaticScope <- s
 
     /// Leaves a static constructor on this thread.
     member _.ExitStatic() =
         let t = Threads.Get()
-        t.StaticDepth <- t.StaticDepth - 1
+
+        t.StaticScope <-
+            match t.Interrupted.TryPop() with
+            | true, outer -> outer
+            | _ -> null
 
     /// Records probe `id`. Allocation-free once the thread's state and the context's scope exist.
     [<MethodImpl(MethodImplOptions.AggressiveInlining)>]
@@ -142,8 +165,8 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
 
         if uint32 id >= uint32 idCount then
             t.Counts.[7] <- t.Counts.[7] + 1L
-        elif t.StaticDepth > 0 then
-            staticInit.Set id
+        elif not (isNull t.StaticScope) then
+            t.StaticScope.Set id
             t.Counts.[5] <- t.Counts.[5] + 1L
         else
             let o = if anyOverride then overrideScope.Value else null

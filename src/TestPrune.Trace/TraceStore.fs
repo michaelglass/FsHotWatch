@@ -476,13 +476,13 @@ type Store private (conn: SqliteConnection) =
                       "@live", box (JsonSerializer.Serialize(Set.toArray live)) ]
             | None -> ()
 
-            // Run-level scopes (static init, ambient) are linked to no test; the latest
-            // recorded run of each project keeps them for the census.
+            // Run-level scopes (static init no test inherited, ambient) are linked to no test;
+            // the latest recorded run of each project keeps them for the census.
             exec
                 conn
                 tx
                 """DELETE FROM trace_scopes WHERE id NOT IN (SELECT scope_id FROM trace_test_scopes)
-                     AND NOT (scope_key IN ('S:static-init', 'A:ambient') AND trace_run_id IN
+                     AND NOT ((scope_key LIKE 'S:%' OR scope_key = 'A:ambient') AND trace_run_id IN
                          (SELECT MAX(id) FROM trace_runs WHERE status IN ('recorded', 'tree-moved') GROUP BY test_project))"""
                 []
 
