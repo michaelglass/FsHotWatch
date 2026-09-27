@@ -3841,20 +3841,25 @@ module private Mismatch =
     let all =
         [ ReceiptInputTree.UnboundAtLaunch
           ReceiptInputTree.UnreadableAtCompletion
-          ReceiptInputTree.MovedDuringRun ]
+          ReceiptInputTree.MovedDuringRun
+          ReceiptInputTree.TestRunWrote [ "src/out.css" ] ]
 
 [<Fact>]
-let ``the three input-tree mismatch causes are told apart`` () =
+let ``the input-tree mismatch causes are told apart`` () =
     let open' = Some "aaa"
     let other = Some "bbb"
+    let written = Some [ "src/out.css" ]
 
-    test <@ ReceiptInputTree.classifyMismatch None open' = ReceiptInputTree.UnboundAtLaunch @>
-    test <@ ReceiptInputTree.classifyMismatch open' None = ReceiptInputTree.UnreadableAtCompletion @>
-    test <@ ReceiptInputTree.classifyMismatch open' other = ReceiptInputTree.MovedDuringRun @>
+    test <@ ReceiptInputTree.classifyMismatch None open' None = ReceiptInputTree.UnboundAtLaunch @>
+    test <@ ReceiptInputTree.classifyMismatch open' None None = ReceiptInputTree.UnreadableAtCompletion @>
+    test <@ ReceiptInputTree.classifyMismatch open' other None = ReceiptInputTree.MovedDuringRun @>
+
+    test <@ ReceiptInputTree.classifyMismatch open' other written = ReceiptInputTree.TestRunWrote [ "src/out.css" ] @>
 
     // An unbound launch is unbound whether or not the tree can be read now, so the
     // arms are ordered rather than overlapping.
-    test <@ ReceiptInputTree.classifyMismatch None None = ReceiptInputTree.UnboundAtLaunch @>
+    test <@ ReceiptInputTree.classifyMismatch None None None = ReceiptInputTree.UnboundAtLaunch @>
+    test <@ ReceiptInputTree.classifyMismatch None open' written = ReceiptInputTree.UnboundAtLaunch @>
 
 [<Fact>]
 let ``no two revocation causes render the same text`` () =
@@ -3879,6 +3884,46 @@ let ``no two revocation causes render the same text`` () =
     test <@ unbound.Contains "UNBOUND" && unbound.Contains "defect" @>
     test <@ unreadable.Contains "READ" && unreadable.Contains "defect" @>
     test <@ moved.Contains "MOVED" && not (moved.Contains "defect") @>
+
+    let wrote =
+        ReceiptInputTree.describeMismatch (ReceiptInputTree.TestRunWrote [ "src/out.css" ])
+
+    test <@ wrote.StartsWith "the test run wrote into the repository: src/out.css" @>
+    test <@ not (wrote.Contains "MOVED") @>
+
+/// Only a move made entirely of paths the test run wrote is named as one. Each of the
+/// other shapes stays an ordinary mid-run edit.
+[<Fact>]
+let ``a move is attributed to the test run only when every path fits`` () =
+    withReceiptSource (fun repoRoot source ->
+        let launch = ReceiptInputTree.read repoRoot
+        let hostStarted = DateTime.UtcNow
+        let out = Path.Combine(repoRoot, "src", "out.css")
+        File.WriteAllText(out, ".probe{}")
+        let wrote = ReceiptInputTree.read repoRoot
+
+        let attribute reported started after =
+            ReceiptInputTree.writtenByTestRun repoRoot reported started launch after
+
+        test <@ attribute (Some Set.empty) (Some hostStarted) wrote = Some [ "src/out.css" ] @>
+
+        // The watcher reported it: an edit, whoever made it.
+        test <@ attribute (Some(Set.singleton "src/out.css")) (Some hostStarted) wrote = None @>
+
+        // Written before the test host started.
+        test <@ attribute (Some Set.empty) (Some(DateTime.UtcNow.AddMinutes 5.0)) wrote = None @>
+
+        // No record of what the watcher saw, or of when the host started.
+        test <@ attribute None (Some hostStarted) wrote = None @>
+        test <@ attribute (Some Set.empty) None wrote = None @>
+
+        // A removal carries no write time.
+        File.Delete source
+        let removed = ReceiptInputTree.read repoRoot
+        test <@ attribute (Some Set.empty) (Some hostStarted) removed = None @>
+
+        // No move at all.
+        test <@ attribute (Some Set.empty) (Some hostStarted) launch = None @>)
 
 // --- a MOVED revocation names the paths that moved ---
 
@@ -4055,7 +4100,12 @@ let ``a tree that did not move, or cannot be read after beforeRun, keeps the lau
 /// bundle under `src/` after the launch bound the tree.
 /// One real `run-tests` over `repoRoot` whose `tests.beforeRun` generates a bundle under
 /// `src/`, with `configs` as the test projects; returns every line the run logged.
-let private runWithGeneratingBeforeRun repoRoot configs =
+/// `whileRunning` runs beside the run, handed the host and the lines logged so far.
+let private runWithGeneratingBeforeRunAnd
+    repoRoot
+    configs
+    (whileRunning: FsHotWatch.PluginHost.PluginHost -> (unit -> string list) -> unit)
+    =
     let beforeRun =
         Some(fun (_: Guid) (_: FsHotWatch.HookStep.Tracker) ->
             let bundle = Path.Combine(repoRoot, "src", "wwwroot", "js", "app.js")
@@ -4072,11 +4122,18 @@ let private runWithGeneratingBeforeRun repoRoot configs =
     let host = createModelHost (Unchecked.defaultof<_>) repoRoot
     host.RegisterHandler(create ":memory:" repoRoot (Some configs) None beforeRun None None [])
 
+    let beside =
+        Threading.Tasks.Task.Run(fun () -> whileRunning host (fun () -> List.ofSeq lines))
+
     host.RunCommand("run-tests", [| "{}" |])
     |> Async.Ignore
     |> fun run -> Async.RunSynchronously(run, 20000)
 
+    beside.Wait(TimeSpan.FromSeconds 20.0) |> ignore
     List.ofSeq lines
+
+let private runWithGeneratingBeforeRun repoRoot configs =
+    runWithGeneratingBeforeRunAnd repoRoot configs (fun _ _ -> ())
 
 [<Fact(Timeout = 30000)>]
 let ``a run whose beforeRun generates output is not revoked as moved`` () =
@@ -4102,11 +4159,11 @@ let ``a run whose beforeRun generates output is not revoked as moved`` () =
             @>)
 
 /// The control: the same generating `beforeRun`, but the TESTS write under `src/` while
-/// they run — the intelligence race itself. Binding after `beforeRun` must not launder
-/// that: the run is still revoked, and the line names the stylesheet the run wrote, not
+/// they run. Binding after `beforeRun` must not launder that: the run is still revoked,
+/// and the revocation names the test run as the writer and the stylesheet it wrote, not
 /// the bundle `beforeRun` did.
 [<Fact(Timeout = 30000)>]
-let ``a write while the tests run is still revoked as moved, naming only that write`` () =
+let ``a write by the test run is revoked as the test run writing into the repository`` () =
     withReceiptSource (fun repoRoot _ ->
         let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
         Directory.CreateDirectory(Path.GetDirectoryName css) |> ignore
@@ -4118,11 +4175,16 @@ let ``a write while the tests run is still revoked as moved, naming only that wr
                       FilterTemplate = None
                       Args = $"-c \"echo '.mt-probe{{}}' > '%s{css}'; exit 0\"" } ]
 
+        let revoked = logged |> List.tryFind (fun l -> l.Contains "receipt revoked")
+
         test
             <@
-                logged
-                |> List.exists (fun l -> l.Contains "MOVED between launch and completion")
+                revoked
+                |> Option.exists (fun l ->
+                    l.Contains "the test run wrote into the repository: src/wwwroot/css/app.css")
             @>
+
+        test <@ revoked |> Option.exists (fun l -> not (l.Contains "MOVED")) @>
 
         let moved = logged |> List.tryFind (fun l -> l.Contains "moved paths")
 
@@ -4133,6 +4195,57 @@ let ``a write while the tests run is still revoked as moved, naming only that wr
             @>
 
         test <@ moved |> Option.exists (fun l -> not (l.Contains "app.js")) @>)
+
+/// The other side: a source file edited while the tests run, which the watcher reports
+/// (as a `FileChecked`) before the run completes. That is an edit made mid-run, not the
+/// test run writing, so it stays a plain MOVED.
+[<Fact(Timeout = 30000)>]
+let ``an edit the watcher saw during the run stays a plain MOVED`` () =
+    withReceiptSource (fun repoRoot source ->
+        let handshake =
+            Path.Combine(Path.GetTempPath(), "fshw-edit-" + Guid.NewGuid().ToString("N"))
+
+        let started = handshake + ".started"
+        let release = handshake + ".release"
+
+        try
+            let logged =
+                runWithGeneratingBeforeRunAnd
+                    repoRoot
+                    [ { projConfig "ProjA" with
+                          FilterTemplate = None
+                          Args =
+                              $"-c \"touch '%s{started}'; while [ ! -f '%s{release}' ]; do sleep 0.05; done; exit 0\"" } ]
+                    (fun host loggedSoFar ->
+                        let deadline = DateTime.UtcNow.AddSeconds 15.0
+
+                        let waitFor condition =
+                            while not (condition ()) && DateTime.UtcNow < deadline do
+                                Thread.Sleep 20
+
+                        waitFor (fun () -> File.Exists started)
+                        File.WriteAllText(source, "module Value\nlet answer = 2\n")
+                        host.EmitFileChecked(fakeFileCheckResult source)
+
+                        waitFor (fun () ->
+                            loggedSoFar ()
+                            |> List.exists (fun l -> l.Contains "watcher reported src/Value.fs"))
+
+                        File.WriteAllText(release, ""))
+
+            let revoked = logged |> List.tryFind (fun l -> l.Contains "receipt revoked")
+
+            test
+                <@
+                    revoked
+                    |> Option.exists (fun l -> l.Contains "MOVED between launch and completion")
+                @>
+
+            test <@ revoked |> Option.exists (fun l -> not (l.Contains "the test run wrote")) @>
+        finally
+            for marker in [ started; release ] do
+                if File.Exists marker then
+                    File.Delete marker)
 
 [<Fact>]
 let ``a launch tree whose entries are no longer held says so instead of naming nothing`` () =
