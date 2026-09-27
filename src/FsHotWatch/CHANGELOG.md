@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.57 - 2026-09-28
+
 - fix: a repository's `.gitignore` / `.fantomasignore` no longer ignore files outside
   the repository. `PathFilter.loadIgnoreFile` matched such a file by its `../`-relative
   path, so a pattern like `tmp/` matched every file under Linux's `/tmp`, and the format

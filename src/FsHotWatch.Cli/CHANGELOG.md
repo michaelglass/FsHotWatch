@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.76 - 2026-09-28
+
 - fix: a daemon no longer stops, killing the checks and test runs in flight, when
   `.fshw.json` is reported changed but holds the configuration it loaded. macOS can
   deliver a file notification for a write made just before the daemon read the file,
