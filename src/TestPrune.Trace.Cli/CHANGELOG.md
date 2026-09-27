@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-09-27
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.2.0 - 2026-09-26
 
 - fix: `census` reports each project's newest run whatever its status: a refused run prints
