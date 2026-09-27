@@ -26,9 +26,9 @@
     ],
     "SiteProbes.fs": [
       {
-        "line": 99.0,
-        "branch": 99.0,
-        "reason": "Linux floor from CI run 36343728500 on 79fe8894 (2026-09-27): line 99.3%, branch 99.2% (119/120). The hidden point that closes a copied sequence-point range adds a branch the Linux SDK's IL (10.0.401, which drops the hidden point between `match` and its type test) never takes; macOS measures 100/100. A test for that IL shape is queued with the Linux coverage work.",
+        "line": 100.0,
+        "branch": 100.0,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401 with CI's build and coverage commands (non-root, full TestPrune.Trace.Tests, 312 passed), 2026-09-27: line 100 percent (273/273), branch 100 percent (120/120), up from CI run 36343728500's 99.3 percent and 119/120. The range-closing hidden point's arm needs a prefix whose last branch has no point after it, which neither SDK emits for the fixture; SiteProbeShapeTests removes that point after adding the 10.0.3xx hidden point, so the weave closes the range on every SDK.",
         "platform": "linux"
       }
     ],
