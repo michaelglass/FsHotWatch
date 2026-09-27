@@ -25,9 +25,10 @@ open FsHotWatch.Tests.TestHelpers
 
 /// Probing budget. Generous on purpose: the loop exits as soon as the event
 /// arrives, so this only bounds the pathological case (cold FSEvents on a
-/// saturated machine).
+/// saturated machine). With fseventsd saturated, single deliveries were measured
+/// at up to 20-27s: late, not lost. 60s matches the other real-watch probes.
 [<Literal>]
-let DefaultProbeTimeoutMs = 15000
+let DefaultProbeTimeoutMs = 60000
 
 /// The temp directory BEFORE anything watches it. Seed fixture files and build
 /// the paths the production watcher needs here; this type stops being reachable
