@@ -53,8 +53,10 @@ jobs:
       # records it under `scope.excluded`. Since an unlisted test project became a config error, the
       # omission cannot be silent: a solution test project that is neither gated nor excluded-with-a-reason
       # is a `config error` and this step exits 2 before any suite runs, exactly like the
-      # analyzer-path guard below. The integration suite is covered by the solution-wide
-      # `dotnet test` in the reusable workflow, and by `mise run test-integration`.
+      # analyzer-path guard below. The integration suite is NOT covered by the reusable
+      # workflow: its test step runs `tests/**/*.Tests.fsproj` only, a pattern
+      # FsHotWatch.IntegrationTests.fsproj does not match. The `integration` job below
+      # runs it.
       #
       # This is ALSO how the repo's own convention rules run in CI
       # (analyzers/FsHotWatch.Rules → FSHW-CLAIM-001, FSHW-CLOCK-001): the
@@ -77,6 +79,31 @@ jobs:
       # PUBLISH path: the tagger requires a green run of this workflow before it will
       # cut the tag that `release.yml` publishes from.
       lint-cmd: 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'
+
+  # The end-to-end suite `.fshw.json` keeps out of the daemon's test slot (see its
+  # `tests.excluded` reason). Its own job rather than a step of `build`: it runs in
+  # parallel instead of adding to that job's wall-clock, and it keeps the box to itself,
+  # since these tests assert on wall-clock behaviour. The test step MUST stay identical
+  # to the integration half of `mise run ci` (`CiParityTests` pins it).
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/*.csproj', '.config/dotnet-tools.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - run: dotnet tool restore
+      - run: dotnet restore
+      - run: dotnet build --no-restore
+      - name: Integration tests
+        run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
 
   lint-project:
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-lint-project.yml@main

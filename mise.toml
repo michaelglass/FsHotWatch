@@ -279,20 +279,28 @@ run = "dotnet build"
 depends = ["restore"]
 
 [tasks.ci]
-description = "Run the full-suite confirm (single pass, no daemon) — the same command GitHub Actions runs"
+description = "Run the full-suite confirm (single pass, no daemon), then the integration suite — the same commands GitHub Actions runs"
 # `confirm`, not `check`: the full suite runs UNFILTERED and a green verdict is refused
 # (exit 3) from anything less. `check` keeps impact filtering, which is a latency
 # optimization for the inner loop and not the basis for a merge decision.
 #
-# This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml. A local `ci` that
-# runs a different command from the real CI is a local `ci` that can go green on work
-# CI will reject — the drift is the bug.
+# The command is two halves, and each MUST stay identical to what CI runs for it: the
+# confirm half to `lint-cmd` in .github/workflows/ci.yml, the integration half to the
+# `integration` job's test step there. A local `ci` that runs a different command from
+# the real CI is a local `ci` that can go green on work CI will reject — the drift is the
+# bug. `CiParityTests` pins both.
+#
+# The integration half runs HERE and not in `check`. `.fshw.json` declares the
+# IntegrationTests project out of the daemon's test slot (its `tests.excluded` reason
+# says why), so `confirm` does not run it; this task and CI do. After `confirm`, never
+# beside it: those tests assert on wall-clock behaviour, and sharing the box with a full
+# confirm makes their outcome a function of load. `check`, the inner loop, stays fast.
 #
 # The `check-msbuild-deps` prefix is here, in the COMMAND, rather than in `depends`
 # below: `depends` is a mise concept and remote CI does not run mise — it runs this
 # string. Hung off `depends` alone the guard fired only when a human ran `mise run ci`,
 # which is not the path a package reaches NuGet by.
-run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
+run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once && dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build"
 # `sync-docs-check`: the examples are compiled (they are members of FsHotWatch.slnx),
 # and the README/docs code blocks are SOURCED from them via syncdocs `src=` regions.
 # Compiling the example proves the code is real; only this check proves the block a
