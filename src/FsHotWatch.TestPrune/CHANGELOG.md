@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: a `check` right after an edit runs the tests the edit affects, instead of every
+  project in full. A scan waits for the build before it type-checks, so `BuildSucceeded`
+  arrived before the edited files' check results. With nothing owed, zero classes were
+  affected, the tree had moved since the last evidence, and the run widened to the whole
+  suite. A build whose run only the symbol diff would select, over a tree that no
+  check-result fold has described yet, now holds its launch for the next `BatchChecked`
+  and selects from the folded diff. When that diff selects nothing, the run widens to
+  every project exactly as before, so no test is skipped that would have run. The hold
+  never blocks the mailbox and is bounded (5 min, then it launches without the diff);
+  both ends are logged. A launch that runs something regardless (no session baseline
+  yet, owed symbols, dependency fanout, projects with no evidence under a new model,
+  outstanding failures, analysis gaps, a full-suite scope, no project model) launches at
+  once.
+
 ## 0.13.0-alpha.56 - 2026-09-28
 
 - fix: a traced run no longer joins its traces against a symbol index that is still

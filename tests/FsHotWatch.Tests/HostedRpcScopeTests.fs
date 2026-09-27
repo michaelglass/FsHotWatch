@@ -36,9 +36,34 @@ let private inertWatcher: Daemon.WatcherFactory =
 [<Literal>]
 let private CommandRan = "spawn command ran"
 
+/// Start the long-lived child a `spawn` call runs, on a thread of its own: the wait for
+/// the child lasts until the daemon reaps it, and a pool thread held that long is one the
+/// daemon's own work cannot have. `outcome` receives what `runProcess` returned or threw:
+/// an exception left on a thread of its own ends the whole test host.
+let private startChild (root: string) (pidFile: string) (outcome: TaskCompletionSource<ProcessOutcome>) =
+    Thread(
+        (fun () ->
+            try
+                runProcess
+                    "sh"
+                    $"-c \"echo $$ > '%s{pidFile}'; exec sleep 30\""
+                    root
+                    []
+                    (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+                |> outcome.SetResult
+            with failure ->
+                outcome.SetException failure),
+        IsBackground = true
+    )
+        .Start()
+
 /// A plugin whose `spawn` command starts a long-lived child from the call that runs it,
 /// recording the child's pid, and logs that it ran.
-let private spawner (root: string) (pidFile: string) : PluginFramework.PluginHandler<unit, unit> =
+let private spawner
+    (root: string)
+    (pidFile: string)
+    (outcome: TaskCompletionSource<ProcessOutcome>)
+    : PluginFramework.PluginHandler<unit, unit> =
     { Name = PluginFramework.PluginName.create "spawner"
       Init = ()
       Update = fun _ state _ -> async { return state }
@@ -47,23 +72,8 @@ let private spawner (root: string) (pidFile: string) : PluginFramework.PluginHan
           PluginFramework.PluginCommand.Request(fun ctx _ ->
               async {
                   ctx.Log CommandRan
-
-                  // Started from the call, so it runs in the call's context. A thread of its
-                  // own: the wait for the child lasts until the daemon reaps it, and a pool
-                  // thread held that long is one the daemon's own work cannot have.
-                  Thread(
-                      (fun () ->
-                          runProcess
-                              "sh"
-                              $"-c \"echo $$ > '%s{pidFile}'; exec sleep 30\""
-                              root
-                              []
-                              (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
-                          |> ignore),
-                      IsBackground = true
-                  )
-                      .Start()
-
+                  // Started from the call, so it runs in the call's context.
+                  startChild root pidFile outcome
                   return "started"
               }) ]
       Subscriptions = Set.empty
@@ -88,8 +98,12 @@ let private readPid (path: string) =
 
 /// Call `spawn` through `call`, then `stop` the daemon: the child it started must be
 /// reaped, and the command's log line must be in `lines`, the daemon's own log.
+///
+/// The spawn itself either ends when the stop reaps its child, or is refused at launch
+/// when the stop landed while the child was starting. Anything else it threw fails here.
 let private spawnThenStop
     (pidFile: string)
+    (outcome: Task<ProcessOutcome>)
     (lines: ConcurrentQueue<string>)
     (call: unit -> string)
     (stop: unit -> unit)
@@ -107,11 +121,40 @@ let private spawnThenStop
         test <@ lines |> Seq.exists (fun l -> l.Contains CommandRan) @>
         stop ()
         test <@ waitUntilTrue (fun () -> not (alive pid)) 10000 @>
+
+        try
+            outcome.WaitAsync(TimeSpan.FromSeconds 30.0).GetAwaiter().GetResult() |> ignore
+        with :? OperationCanceledException as refused when refused.Message.Contains "terminated at launch" ->
+            ()
     finally
         try
             (Process.GetProcessById pid).Kill(true)
         with _ ->
             ()
+
+[<Fact(Timeout = 30000)>]
+let ``a spawn its scope refuses at launch reports the refusal to the test instead of raising it on its thread`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "rpc-scope-refused" (fun dir ->
+            let registry = ProcessRegistry.Registry()
+            use _ = ProcessRegistry.install registry
+            // The scope shuts down before the child launches, as a daemon stopping under a
+            // `spawn` call does. The thread inherits the scope, so the launch is refused.
+            registry.KillAll()
+
+            let outcome =
+                TaskCompletionSource<ProcessOutcome>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+            let pidFile = Path.Combine(dir, "child.pid")
+            startChild dir pidFile outcome
+
+            let refused =
+                Assert.Throws<OperationCanceledException>(fun () ->
+                    outcome.Task.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+                    |> ignore)
+
+            test <@ refused.Message.Contains "its process scope has shut down" @>
+            test <@ not (File.Exists pidFile) @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a command called on a daemon's own pipe spawns and logs in the daemon's scope`` () =
@@ -119,6 +162,10 @@ let ``a command called on a daemon's own pipe spawns and logs in the daemon's sc
         withTempDir "rpc-scope-pipe" (fun dir ->
             Directory.CreateDirectory(Path.Combine(dir, "src")) |> ignore
             let pidFile = Path.Combine(dir, "child.pid")
+
+            let outcome =
+                TaskCompletionSource<ProcessOutcome>(TaskCreationOptions.RunContinuationsAsynchronously)
+
             let lines = ConcurrentQueue<string>()
             let pipeName = FsHotWatch.Cli.Program.computePipeName dir
             use cts = new CancellationTokenSource()
@@ -132,12 +179,13 @@ let ``a command called on a daemon's own pipe spawns and logs in the daemon's sc
 
                     let daemon = Daemon.createWith nullChecker dir Daemon.DaemonOptions.defaults
 
-                    daemon.RegisterHandler(spawner dir pidFile)
+                    daemon.RegisterHandler(spawner dir pidFile outcome)
                     Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts)))
 
             try
                 spawnThenStop
                     pidFile
+                    outcome.Task
                     lines
                     (fun () -> IpcClient.runCommand pipeName "spawn" "" |> Async.RunSynchronously)
                     (fun () ->
@@ -168,6 +216,10 @@ let ``a command called through a repository host spawns and logs in its session'
                 | Error e -> failwith (IdentityError.describe e)
 
             let pidFile = Path.Combine(canonical, "child.pid")
+
+            let outcome =
+                TaskCompletionSource<ProcessOutcome>(TaskCreationOptions.RunContinuationsAsynchronously)
+
             let lines = ConcurrentQueue<string>()
 
             let settings: HostSettings =
@@ -200,7 +252,7 @@ let ``a command called through a repository host spawns and logs in its session'
                                 Hosting = DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
                             inertWatcher
 
-                    daemon.RegisterHandler(spawner root pidFile)
+                    daemon.RegisterHandler(spawner root pidFile outcome)
                     daemon
 
             use cts = new CancellationTokenSource()
@@ -253,6 +305,7 @@ let ``a command called through a repository host spawns and logs in its session'
 
                 spawnThenStop
                     pidFile
+                    outcome.Task
                     lines
                     (fun () ->
                         RepositoryIpc.invoke
