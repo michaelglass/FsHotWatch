@@ -363,6 +363,19 @@ let internal observeProjectContent
     // first echo of each is answered "changed" on its content-free default.
     projects |> List.choose projectAssetsFileFor |> List.iter tracker.Observe
 
+/// The projects whose `obj/project.assets.json` no longer holds the package graph the
+/// discovery that loaded their model read (`observeProjectContent`). Their options
+/// name the references that restore resolved THEN; checking under them reports every
+/// type from a package the restore has since added as "not defined".
+///
+/// A cold tree has no assets file when discovery reads it, and the build a scan waits
+/// on before checking is its first restore. The project-file fingerprint cannot see
+/// that: no `.fsproj` changed. Compared by `ContentDedup.comparableHash`, so a restore
+/// that rewrote only how it was invoked re-evaluates nothing.
+let internal restoredSinceDiscovery (tracker: ContentDedup.Tracker) (projects: string list) : string list =
+    projects
+    |> List.filter (fun project -> projectAssetsFileFor project |> Option.exists tracker.ChangedSinceObserved)
+
 [<Literal>]
 let internal projInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"
 
@@ -3341,8 +3354,16 @@ let private performScan
             // See `scanAnswers`; set once this attempt starts reading the tree.
             let mutable readFrom: int64 option = None
 
-            if currentFingerprint <> lastFingerprint then
-                Logging.info "daemon" (fingerprintChangeLine ctx.RepoRoot lastFingerprint currentFingerprint)
+            let restored =
+                restoredSinceDiscovery ctx.ContentTracker (pipeline.GetRegisteredProjects())
+
+            if currentFingerprint <> lastFingerprint || not restored.IsEmpty then
+                if currentFingerprint <> lastFingerprint then
+                    Logging.info "daemon" (fingerprintChangeLine ctx.RepoRoot lastFingerprint currentFingerprint)
+                else
+                    Logging.info
+                        "daemon"
+                        $"Scan re-discovery: a restore changed the package graph of %d{restored.Length} project(s) since their model was loaded%s{describeChangedProjects ctx.RepoRoot restored}"
 
                 let! completed, _ =
                     rediscoverAndClearRemoved
@@ -3523,6 +3544,16 @@ let private performScan
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
+                            // The build this scan waited on, or the deps gate just now,
+                            // may have restored the project after its options were
+                            // captured. Re-capturing re-discovers it first.
+                            if not (restoredSinceDiscovery ctx.ContentTracker [ projPath ]).IsEmpty then
+                                Logging.info
+                                    "scan"
+                                    $"A restore changed the package graph after the model was loaded%s{describeChangedProjects ctx.RepoRoot [ projPath ]}; its options are stale"
+
+                                raise (ModelSupersededException(fst capturedModel))
+
                             // Claimed only where the file is actually dispatched, so a
                             // file whose project the deps gate refuses stays available
                             // to a later tier whose project passes it.
