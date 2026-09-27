@@ -105,6 +105,8 @@ let ``before any run the scope says no run has completed`` () =
 
 let private receipt tree =
     { InputTreeHash = tree
+      ModelGeneration = None
+      ProjectInputs = None
       RunId = Guid.NewGuid()
       Coverage = RunCoverage.none
       Seeds = []

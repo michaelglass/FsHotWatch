@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- feat: every published project model carries each project's compile-input identity
+  (`ProjectModel.ProjectInputs`: its options hash folded with its reference closure),
+  read through `HostSnapshot.ProjectModelInputs` and the new
+  `ProjectGraphAccessor.ObserveProjectInputs`. Test evidence earned under an earlier
+  model is read as evidence about the current one when every project it vouches for is
+  unchanged. Breaking: `ProjectGraphAccessor` has a new field, and the store has a new
+  `PublishProjectModelWithInputs`.
+- feat: logging. A scan re-discovery names each project file whose stamp moved. A scoped
+  re-evaluation says which re-evaluated projects' compile inputs actually changed and
+  which it left unchanged, which tells a real input change from a restore that rewrote
+  a file with the same meaning. A written solution file is named too.
+- feat: internal `EarnedEvidence.retainedForRun`, the evidence a named run earned while
+  it belongs to the current model.
+
 ## 0.10.0-alpha.53 - 2026-09-26
 
 - feat: `ProcessHelper.spawnCounts` (children forked directly and started through a

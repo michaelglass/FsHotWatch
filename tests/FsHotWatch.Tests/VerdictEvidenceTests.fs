@@ -24,6 +24,8 @@ let private earn launchGeneration currentGeneration pending baseline (completion
         completion.RunId
         launchGeneration
         currentGeneration
+        None
+        Map.empty
         (Set.singleton "Tests.fsproj")
         pending
         baseline
@@ -43,7 +45,16 @@ let ``only actual current completion with discharged obligations earns evidence`
 
     // A completion cannot be claimed by a different launch.
     Assert.True(
-        (EarnedEvidence.fromCompletion (Guid.NewGuid()) (Some 3L) (Some 3L) (Set.singleton "Tests.fsproj") 0 None result)
+        (EarnedEvidence.fromCompletion
+            (Guid.NewGuid())
+            (Some 3L)
+            (Some 3L)
+            None
+            Map.empty
+            (Set.singleton "Tests.fsproj")
+            0
+            None
+            result)
             .IsNone
     )
 
@@ -134,7 +145,16 @@ let ``actual completion preserves every independent refusal reason`` (kind: stri
             Set.singleton "Tests.fsproj"
 
     let proof =
-        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expectedProjects 0 None completion
+        EarnedEvidence.fromCompletion
+            completion.RunId
+            (Some 1L)
+            (Some 1L)
+            None
+            Map.empty
+            expectedProjects
+            0
+            None
+            completion
         |> Option.get
 
     Assert.Contains(proof.FailureReasons, fun reason -> reason.Contains expected)
@@ -151,7 +171,7 @@ let ``same-model baseline accounts untouched and no-match siblings without hidin
                   "Sibling.fsproj", TestsPassed("passed", false, TimeSpan.Zero) ])
 
     let mint baseline (completion: TestRunCompleted) =
-        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expected 0 baseline completion
+        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) None Map.empty expected 0 baseline completion
         |> Option.get
 
     let baseline = mint None baselineCompletion
@@ -564,3 +584,148 @@ let ``a cancelled forced run leaves the evidence exactly as it found it`` () =
                 host.WorkSnapshot.Evidence |> List.map (fun e -> e.RunId, e.FailureReasons)
 
             Assert.Equal<(Guid * string list) list>(earned, remaining)))
+
+// ---------------------------------------------------------------------------
+// Evidence across a re-evaluation: per-project compile-input identities.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a project's input identity moves with its own options and its reference closure only`` () =
+    let references =
+        Map.ofList [ "Tests.fsproj", [ "Lib.fsproj" ]; "Lib.fsproj", []; "Tool.fsproj", [] ]
+
+    let identities (own: Map<string, string>) =
+        FsHotWatch.ProjectModel.ProjectInputs.compute
+            [ "Tests.fsproj"; "Lib.fsproj"; "Tool.fsproj" ]
+            (fun project -> Map.tryFind project own)
+            (fun project -> Map.tryFind project references |> Option.defaultValue [])
+
+    let before =
+        identities (Map.ofList [ "Tests.fsproj", "t"; "Lib.fsproj", "l"; "Tool.fsproj", "x" ])
+
+    let toolMoved =
+        identities (Map.ofList [ "Tests.fsproj", "t"; "Lib.fsproj", "l"; "Tool.fsproj", "y" ])
+
+    let libMoved =
+        identities (Map.ofList [ "Tests.fsproj", "t"; "Lib.fsproj", "l2"; "Tool.fsproj", "x" ])
+
+    // An unreferenced project moving leaves the test project where it was.
+    test <@ before["Tests.fsproj"] = toolMoved["Tests.fsproj"] @>
+    test <@ before["Tool.fsproj"] <> toolMoved["Tool.fsproj"] @>
+    // A referenced project moving moves everything that compiles against it.
+    test <@ before["Tests.fsproj"] <> libMoved["Tests.fsproj"] @>
+
+    // Unknown options: no identity for the project or anything referencing it.
+    let unknownLib = identities (Map.ofList [ "Tests.fsproj", "t"; "Tool.fsproj", "x" ])
+
+    test
+        <@
+            not (unknownLib.ContainsKey "Lib.fsproj")
+            && not (unknownLib.ContainsKey "Tests.fsproj")
+        @>
+
+    test <@ unknownLib.ContainsKey "Tool.fsproj" @>
+
+    // A reference cycle has no identity.
+    let cyclic =
+        FsHotWatch.ProjectModel.ProjectInputs.compute [ "A.fsproj"; "B.fsproj" ] (fun _ -> Some "same") (fun project ->
+            if project = "A.fsproj" then
+                [ "B.fsproj" ]
+            else
+                [ "A.fsproj" ])
+
+    test <@ Map.isEmpty cyclic @>
+
+/// Evidence for `Tests` (and `Other`) earned under generation 1, with their identities.
+let private earnedUnder (expected: string list) (inputs: Map<string, string> option) =
+    let results =
+        expected
+        |> List.map (fun project -> project, TestsPassed("passed", false, TimeSpan.Zero))
+        |> Map.ofList
+
+    let completion = completed (Guid.NewGuid()) results
+
+    EarnedEvidence.fromCompletion
+        completion.RunId
+        (Some 1L)
+        (Some 1L)
+        inputs
+        (expected |> List.map (fun project -> project, project + ".fsproj") |> Map.ofList)
+        (Set.ofList expected)
+        0
+        None
+        completion
+    |> Option.get
+
+[<Fact>]
+let ``evidence is carried to a later model only for the projects whose inputs did not move`` () =
+    let before = Map.ofList [ "Tests.fsproj", "t"; "Other.fsproj", "o" ]
+    let evidence = earnedUnder [ "Tests"; "Other" ] (Some before)
+
+    // Unchanged: carried whole, re-stamped, and the same run.
+    let carried =
+        EarnedEvidence.forModel 2L (Some(before |> Map.add "Tool.fsproj" "x")) evidence
+
+    test <@ carried |> Option.map (fun e -> e.Generation, e.RunId) = Some(2L, evidence.RunId) @>
+    test <@ EarnedEvidence.forModel 1L None evidence = Some evidence @>
+
+    // One project moved: not carried as a whole, and it drops out of the coverage.
+    let otherMoved = before |> Map.add "Other.fsproj" "o2"
+    test <@ EarnedEvidence.forModel 2L (Some otherMoved) evidence = None @>
+    test <@ EarnedEvidence.carriedCoverage (Some 2L) (Some otherMoved) (Some evidence) = Set.ofList [ "Tests" ] @>
+
+    test
+        <@
+            EarnedEvidence.wholeProjectGap (Some 2L) (Some otherMoved) (Set.ofList [ "Tests"; "Other" ]) (Some evidence) = Set.ofList
+                [ "Other" ]
+        @>
+
+    // Nothing to compare: carried nowhere.
+    test <@ EarnedEvidence.forModel 2L None evidence = None @>
+    test <@ EarnedEvidence.carriedCoverage (Some 2L) None (Some evidence) = Set.empty @>
+    test <@ EarnedEvidence.carriedCoverage None (Some before) (Some evidence) = Set.empty @>
+
+    // Evidence earned without identities vouches for its own model only.
+    let blind = earnedUnder [ "Tests" ] None
+    test <@ EarnedEvidence.forModel 2L (Some before) blind = None @>
+
+    // An expected project whose `.fsproj` has no identity leaves the evidence blind too.
+    let partial =
+        earnedUnder [ "Tests"; "Other" ] (Some(Map.ofList [ "Tests.fsproj", "t" ]))
+
+    test <@ EarnedEvidence.forModel 2L (Some before) partial = None @>
+
+    // The retention rules read the carried evidence.
+    test
+        <@
+            EarnedEvidence.retainedForZeroSelection (Some 2L) (Some before) (Some evidence)
+            |> Option.isSome
+        @>
+
+    test
+        <@
+            EarnedEvidence.retainedForRun (Some 2L) (Some before) evidence.RunId (Some evidence)
+            |> Option.isSome
+        @>
+
+    test <@ EarnedEvidence.retainedForRun (Some 2L) (Some before) (Guid.NewGuid()) (Some evidence) = None @>
+    test <@ EarnedEvidence.retainedForZeroSelection None (Some before) (Some evidence) = None @>
+
+[<Fact>]
+let ``the host reads evidence from an earlier model as evidence about an unchanged current one`` () =
+    withTempDir "verdict-evidence-carried" (fun repoRoot ->
+        let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
+        let before = Map.ofList [ "Tests.fsproj", "t" ]
+        host.WorkStore.PublishProjectModelWithInputs(fixtureModelOf 1L, Set.empty, Some before)
+        test <@ host.WorkSnapshot.ProjectModelInputs = Some(1L, before) @>
+
+        // An unavailable model carries no identities.
+        host.WorkStore.PublishProjectModelWithInputs(
+            FsHotWatch.ProjectModel.Observation.Rediscovering 2L,
+            Set.empty,
+            Some before
+        )
+
+        test <@ host.WorkSnapshot.ProjectModelInputs = None @>
+        host.WorkStore.PublishProjectModelWithFiles(fixtureModelOf 2L, Set.empty)
+        test <@ host.WorkSnapshot.ProjectModelInputs = None @>)

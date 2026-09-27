@@ -93,3 +93,50 @@ type UnavailableException(observation: Observation) =
         )
 
     member _.Observation = observation
+
+/// What each project of one model compiles from, as an identity per project: its own
+/// compiler options (source list, defines, references) folded with the identities of
+/// every project it references. A project's identity moves exactly when its own compile
+/// inputs, or those of anything it references, move — so a re-discovery that changed only
+/// an unrelated project leaves it where it was.
+module ProjectInputs =
+    let private sha256Hex (text: string) =
+        System.Convert
+            .ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes text))
+            .ToLowerInvariant()
+
+    /// Identities keyed by project path. `ownHash` is `None` for a project whose options
+    /// are not known: it has no identity, and nor does anything that references it,
+    /// because an input nobody can name cannot be shown unchanged. A reference cycle
+    /// (which MSBuild refuses) has no identity either.
+    let compute (projects: string list) (ownHash: string -> string option) (references: string -> string list) =
+        let memo = System.Collections.Generic.Dictionary<string, string option>()
+
+        let rec identity (visiting: Set<string>) (project: string) : string option =
+            match memo.TryGetValue project with
+            | true, known -> known
+            | false, _ when Set.contains project visiting -> None
+            | false, _ ->
+                let result =
+                    ownHash project
+                    |> Option.bind (fun own ->
+                        let referenced =
+                            references project
+                            |> List.distinct
+                            |> List.sort
+                            |> List.map (fun reference -> reference, identity (Set.add project visiting) reference)
+
+                        if referenced |> List.exists (snd >> Option.isNone) then
+                            None
+                        else
+                            referenced
+                            |> List.map (fun (reference, id) -> reference + "=" + Option.get id)
+                            |> String.concat "\n"
+                            |> fun closure -> Some(sha256Hex (own + "\n" + closure)))
+
+                memo[project] <- result
+                result
+
+        projects
+        |> List.choose (fun project -> identity Set.empty project |> Option.map (fun id -> project, id))
+        |> Map.ofList

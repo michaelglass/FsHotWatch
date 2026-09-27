@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- fix: a project model re-evaluation no longer throws away a test run whose projects it
+  did not touch. A long-lived daemon whose model was re-evaluated more often than a
+  whole-project run takes (for example a build tool rebuilt in the same workspace) revoked
+  every run and could never earn a receipt, so `confirm` never went green. Now a run that
+  completes under a replaced model keeps the result of every test project whose compile
+  inputs (options, source list and reference closure) are unchanged. Only the changed
+  projects' results are revoked. Evidence, receipts and the whole-project evidence gap
+  carry across such a re-evaluation per project in the same way. Breaking:
+  `TestRunLaunch` and `TestEvidenceReceipt` have a new field `ProjectInputs`.
+- fix: "seed '…' alone selects N of M tests" no longer reports a share above 100%. When a
+  seed alone selects more tests than its whole queue, the line says the composition-root
+  fail-safe is not monotone in its seeds, instead of calling the seed a hub.
+- feat: logging. A run whose model moved while it ran logs whether it was carried, which
+  projects were revoked, or that nothing could be shown unchanged.
+- fix: a `confirm` could end red with "no evidence receipt for the graded run … — nothing
+  vouches for this green" right after its full suite passed. A later impact-selected run
+  over the same tree and model (`selected: yes`) kept the full suite's receipt, which
+  `test-scope` graded, but replaced the model evidence with its own, so no evidence named
+  the graded run. The narrower run now keeps both. Breaking: `ReceiptTransition` has a
+  new case `Narrower`, and `TestEvidenceReceipt` a new field `ModelGeneration`.
+- fix: a receipt earned under a replaced project model no longer grades. `test-scope`
+  serves it only while the model it was earned under is still current, and a narrower run
+  under a new model no longer keeps it. A `confirm` on a daemon whose model moved after
+  its last run therefore reads a scope that is not a full suite and runs one under the
+  current model, instead of grading the old run and ending red.
+- feat: logging. Every launch logs the project model generation it was selected under and
+  its mode (check or confirm). Every completion logs the generation it launched and completed under, what
+  happened to the receipt and which run it now grades, and which run and generation the
+  model evidence names. The end of a `confirm`'s full-suite scope is logged, and so is a
+  receipt `test-scope` withholds because the model moved.
+
 ## 0.13.0-alpha.52 - 2026-09-27
 
 - fix: CTRF auto-detection (`reportVerificationFormat: auto`, the default) now finds a

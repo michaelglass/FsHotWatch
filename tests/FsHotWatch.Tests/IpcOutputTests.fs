@@ -2561,6 +2561,52 @@ let ``green publication requires the graded run's current model receipt`` (kind:
 
         test <@ publishWithReceipts repoRoot receipts gradedRun = expectedExit @>)
 
+[<Fact(Timeout = 20000)>]
+let ``a missing receipt names every receipt the daemon did hold`` () =
+    withTempDir "ipcoutput-receipt-held" (fun repoRoot ->
+        // The refusal is the one line an operator sees. Naming what the daemon held tells
+        // the two causes apart from it alone: evidence that names a different run at this
+        // generation, or the graded run's evidence under a model that has since moved.
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        let otherRun = System.Guid.Parse("c0000000-2200-4000-8000-000000000220")
+
+        let reasonFor receipts =
+            test <@ publishWithReceipts repoRoot receipts gradedRun = 2 @>
+
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found verdict ->
+                match verdict.Outcome with
+                | Verdict.Incomplete reason -> reason
+                | other -> failwithf "expected a refusal, got %A" other
+            | other -> failwithf "expected a published verdict, got %A" other
+
+        let moved =
+            reasonFor
+                [ { RunId = Some BaselineFixtures.runId
+                    Generation = currentGeneration - 1L
+                    Refusals = [] }
+                  { RunId = None
+                    Generation = currentGeneration
+                    Refusals = [] } ]
+
+        let graded = BaselineFixtures.runId.ToString("N")
+        test <@ moved.Contains "nothing vouches" @>
+        test <@ moved.Contains $"the daemon holds: run %s{graded} at generation %d{currentGeneration - 1L}" @>
+        test <@ moved.Contains $"analysis at generation %d{currentGeneration}" @>
+
+        let otherNamed =
+            reasonFor
+                [ { RunId = Some otherRun
+                    Generation = currentGeneration
+                    Refusals = [] } ]
+
+        let other = otherRun.ToString("N")
+        test <@ otherNamed.Contains $"run %s{other} at generation %d{currentGeneration}" @>
+        test <@ (reasonFor []).Contains "the daemon holds no receipt" @>)
+
 [<Theory(Timeout = 20000)>]
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]

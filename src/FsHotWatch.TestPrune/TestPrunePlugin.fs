@@ -1463,11 +1463,20 @@ module internal ReceiptInputTree =
             "the input tree MOVED between launch and completion — it was edited while the run was in flight"
 
 type TestEvidenceReceipt =
-    { InputTreeHash: string option
-      RunId: Guid
-      Coverage: RunCoverage
-      Seeds: string list
-      ZeroSelection: ZeroSelection }
+    {
+        InputTreeHash: string option
+        /// The project model the run was launched AND completed under. A receipt speaks for
+        /// one tree under one model; under a later model it speaks only for the projects
+        /// whose compile inputs are unchanged (`receiptSpeaksFor`).
+        ModelGeneration: int64 option
+        /// Each runnable project's `.fsproj` and compile-input identity under that model,
+        /// by name (`ProjectModel.ProjectInputs`); `None` when the host published none.
+        ProjectInputs: Map<string, string * string> option
+        RunId: Guid
+        Coverage: RunCoverage
+        Seeds: string list
+        ZeroSelection: ZeroSelection
+    }
 
 /// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
 /// behind the reading selected tests and so names no `ZeroSelection`. Every one of these
@@ -1813,8 +1822,14 @@ type TestRunLaunch =
         /// Immutable input identity captured before this run executes.
         InputTreeHash: string option
         /// The available project-model generation this run was selected under. A
-        /// completion observed under a different model discharges nothing.
+        /// completion observed under a different model keeps the results of the projects
+        /// whose compile inputs it did not change (`ProjectInputs`) and discharges nothing
+        /// through the others.
         ModelGeneration: int64 option
+        /// Each configured test project's `.fsproj` and compile-input identity under the
+        /// model it launched under (`ProjectModel.ProjectInputs`). `None` when the host
+        /// published no identities; a project missing from it counts as changed.
+        ProjectInputs: Map<string, string * string> option
         Symbols: Set<string>
         /// The revision of each launched symbol at dispatch. A completion retires a
         /// symbol only while it is still at this revision: an edit made during the run
@@ -2631,17 +2646,156 @@ type ReceiptTransition =
     /// A quiet completion that adds nothing and takes nothing away: the selector chose
     /// zero tests because the change was already verified, the run covered nothing and
     /// produced no results, and the tree the previous receipt was earned on is the tree
-    /// read now. ALSO the full-to-narrower case: a narrower executed run on a tree the
-    /// previous receipt already covers in FULL says nothing the receipt does not.
+    /// read now.
     ///
     /// Deliberately blind to the outstanding-failure ledger: failures are the LEDGER's
     /// claim (they keep the plugin red on their own), and a retained receipt cannot
     /// mask them — `IpcOutputTests` proves retained coverage under a red plugin exits 1.
     | Noop
+    /// A narrower executed run on the tree AND model the previous receipt already covers
+    /// in FULL: it says nothing the receipt does not, so the receipt stands — and so does
+    /// the model evidence that receipt's run earned. `test-scope` grades the receipt's
+    /// run, and the verdict refuses a green unless that same run holds evidence for the
+    /// current model, so the evidence must name the run the receipt names.
+    | Narrower
     /// The stored receipt no longer describes the tree, or this run could not stand
     /// behind one: aborted, launched unbound, the tree or the project model changed
     /// between launch and completion, or zero tests ran for a reason that is not "already verified".
     | Revoked of reason: string
+
+module internal ObservedModel =
+    /// The generation of the model the host currently publishes, when it is available.
+    let generation (graph: ProjectGraphAccessor) =
+        match graph.ObserveModel() with
+        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+        | FsHotWatch.ProjectModel.Observation.Unobserved
+        | FsHotWatch.ProjectModel.Observation.Rediscovering _
+        | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
+
+    /// Each project's compile-input identity under the model the host publishes now, by
+    /// `.fsproj`. `None` when no model is available or it was published without them.
+    let inputs (graph: ProjectGraphAccessor) : Map<string, string> option =
+        match graph.ObserveProjectInputs(), generation graph with
+        | Some(published, identities), Some current when published = current -> Some identities
+        | _ -> None
+
+    /// Every registered project's `.fsproj`, by project name.
+    let projectFiles (graph: ProjectGraphAccessor) : Map<string, string> =
+        graph.GetAllProjects()
+        |> List.map (fun fsproj -> Path.GetFileNameWithoutExtension fsproj, fsproj)
+        |> Map.ofList
+
+    /// The `.fsproj` and current compile-input identity of each named test project whose
+    /// identity is known. `None` when the host publishes no identities.
+    let testInputs (graph: ProjectGraphAccessor) (projects: string seq) : Map<string, string * string> option =
+        inputs graph
+        |> Option.map (fun now ->
+            let files = projectFiles graph
+
+            projects
+            |> Seq.choose (fun project ->
+                Map.tryFind project files
+                |> Option.bind (fun fsproj ->
+                    Map.tryFind fsproj now
+                    |> Option.map (fun identity -> project, (fsproj, identity))))
+            |> Map.ofSeq)
+
+    /// Is `project`'s entry in `before` still its identity under `now`? A project missing
+    /// from either side cannot be shown unchanged.
+    let unchanged (before: Map<string, string * string>) (now: Map<string, string>) (project: string) =
+        match Map.tryFind project before with
+        | Some(fsproj, identity) -> Map.tryFind fsproj now = Some identity
+        | None -> false
+
+    /// A generation for a log line; `None` is a model that was not available.
+    let describe (generation: int64 option) =
+        match generation with
+        | Some generation -> string generation
+        | None -> "none (no available model)"
+
+/// Whether a receipt earned under one project model still speaks for the model the host
+/// publishes now: always under the model it was earned under; under a later one only when
+/// every project it covered compiles from the same inputs under both. A re-discovery that
+/// changed only an unrelated project does not take a receipt away.
+let internal receiptSpeaksFor
+    (currentGeneration: int64 option)
+    (currentInputs: Map<string, string> option)
+    (receipt: TestEvidenceReceipt)
+    : bool =
+    receipt.ModelGeneration = currentGeneration
+    || match receipt.ModelGeneration, currentGeneration, receipt.ProjectInputs, currentInputs with
+       | Some _, Some _, Some before, Some now ->
+           let covered = RunCoverage.coveredProjects receipt.Coverage
+
+           not covered.IsEmpty
+           && covered |> Set.forall (ObservedModel.unchanged before now)
+       | _ -> false
+
+/// What a completion launched under one project model still vouches for once the host
+/// publishes another. A re-discovery that changed only a project no test project
+/// compiles from must not throw a finished run away: on a daemon whose model is
+/// re-evaluated more often than a whole-project run takes, nothing would ever complete.
+[<RequireQualifiedAccess>]
+type ModelCarry =
+    /// Launched and completed under one model: nothing to decide.
+    | SameModel
+    /// Every project with a result compiles from the same inputs under both models: the
+    /// run stands, as if launched under the current one.
+    | Carried
+    /// These projects' compile inputs changed, or cannot be shown unchanged: their results
+    /// are revoked and the rest stand.
+    | Revoked of changed: Set<string>
+    /// No model is available now, or the host published no identities: nothing can be
+    /// shown unchanged, and the run is left as launched, to be revoked whole.
+    | Unprovable
+
+/// Decide `ModelCarry` for a completion and return the completion and launch the fold
+/// proceeds with: re-stamped to the current model when anything is carried, with every
+/// revoked project's result and selection removed.
+let internal acrossModelChange
+    (currentGeneration: int64 option)
+    (currentInputs: Map<string, string> option)
+    (completed: TestRunCompleted)
+    (launch: TestRunLaunch)
+    : ModelCarry * TestRunCompleted * TestRunLaunch =
+    match launch.ModelGeneration, currentGeneration, launch.ProjectInputs, currentInputs with
+    | launched, current, _, _ when launched = current -> ModelCarry.SameModel, completed, launch
+    | Some _, Some _, Some before, Some now ->
+        let changed =
+            completed.Results
+            |> Map.keys
+            |> Seq.filter (fun project -> not (ObservedModel.unchanged before now project))
+            |> Set.ofSeq
+
+        let keep (project: string) _ = not (Set.contains project changed)
+
+        let carried =
+            { launch with
+                ModelGeneration = currentGeneration
+                ProjectInputs = Some(Map.filter keep before)
+                Selection = Map.filter keep launch.Selection }
+
+        let results = Map.filter keep completed.Results
+
+        if Set.isEmpty changed then
+            ModelCarry.Carried, completed, carried
+        elif Map.isEmpty results then
+            // Nothing stands: left as launched, the run earns nothing, and the host keeps
+            // waiting for evidence about this model instead of settling on a refusal.
+            ModelCarry.Revoked changed, completed, launch
+        else
+
+            let verification =
+                match RunVerification.ofResults results with
+                | Ran _ -> Ran RunScope.Partial
+                | other -> other
+
+            ModelCarry.Revoked changed,
+            { completed with
+                Results = results
+                Verification = verification },
+            carried
+    | _ -> ModelCarry.Unprovable, completed, launch
 
 module ReceiptTransition =
     let private allResultsCompleted (completed: TestRunCompleted) =
@@ -2661,13 +2815,18 @@ module ReceiptTransition =
         (previous: TestEvidenceReceipt option)
         (currentInputTree: string option)
         (currentModelGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
         (launch: TestRunLaunch)
         (completed: TestRunCompleted)
         (coverage: RunCoverage)
         : ReceiptTransition =
-        let previousBoundToCurrentTree =
+        // Bound to the tree AND the model: a receipt earned under a replaced model says
+        // nothing about the current one, however still the tree held.
+        let previousBoundToCurrent =
             match previous with
-            | Some prior -> ReceiptInputTree.matches prior.InputTreeHash currentInputTree
+            | Some prior ->
+                ReceiptInputTree.matches prior.InputTreeHash currentInputTree
+                && receiptSpeaksFor currentModelGeneration currentInputs prior
             | None -> false
 
         let executed =
@@ -2684,10 +2843,11 @@ module ReceiptTransition =
         | Normal when launch.ModelGeneration <> currentModelGeneration ->
             ReceiptTransition.Revoked "the project model was replaced between launch and completion"
         | Normal when quietAlreadyVerified ->
-            if previousBoundToCurrentTree then
+            if previousBoundToCurrent then
                 ReceiptTransition.Noop
             else
-                ReceiptTransition.Revoked "already verified, but no receipt is bound to the current tree"
+                ReceiptTransition.Revoked
+                    "already verified, but no receipt is bound to the current tree and project model"
         | Normal when not executed -> ReceiptTransition.Revoked "the run executed no project to a verdict"
         | Normal when not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) ->
             ReceiptInputTree.classifyMismatch launch.InputTreeHash currentInputTree
@@ -2695,17 +2855,19 @@ module ReceiptTransition =
             |> ReceiptTransition.Revoked
         | Normal ->
             let narrowerThanPrevious =
-                previousBoundToCurrentTree
+                previousBoundToCurrent
                 && allResultsCompleted completed
                 && (previous
                     |> Option.exists (fun prior -> RunCoverage.coversWholeSuite runnableProjects prior.Coverage))
                 && not (RunCoverage.coversWholeSuite runnableProjects coverage)
 
             if narrowerThanPrevious then
-                ReceiptTransition.Noop
+                ReceiptTransition.Narrower
             else
                 ReceiptTransition.Earned
                     { InputTreeHash = currentInputTree
+                      ModelGeneration = currentModelGeneration
+                      ProjectInputs = launch.ProjectInputs
                       RunId = completed.RunId
                       Coverage = coverage
                       Seeds = launch.Seeds
@@ -2716,8 +2878,45 @@ module ReceiptTransition =
     let apply (previous: TestEvidenceReceipt option) (transition: ReceiptTransition) : TestEvidenceReceipt option =
         match transition with
         | ReceiptTransition.Earned receipt -> Some receipt
-        | ReceiptTransition.Noop -> previous
+        | ReceiptTransition.Noop
+        | ReceiptTransition.Narrower -> previous
         | ReceiptTransition.Revoked _ -> None
+
+/// One line per completion that answers, from the log alone, what a receipt refusal asks:
+/// which model the run was launched and completed under, which run the receipt now names
+/// (the run `test-scope` grades), and which run and generation the model evidence names.
+let internal describeCompletionEvidence
+    (runId: Guid)
+    (launchGeneration: int64 option)
+    (currentGeneration: int64 option)
+    (transition: ReceiptTransition)
+    (receipt: TestEvidenceReceipt option)
+    (earned: EarnedEvidence option)
+    : string =
+    let idOf (id: Guid) = id.ToString("N")
+
+    let receiptText =
+        let graded =
+            match receipt with
+            | Some receipt -> $"now grades run %s{idOf receipt.RunId}"
+            | None -> "now grades no run"
+
+        match transition with
+        | ReceiptTransition.Earned _ -> $"earned; %s{graded}"
+        | ReceiptTransition.Noop -> $"kept; %s{graded}"
+        | ReceiptTransition.Narrower -> $"kept over a narrower run; %s{graded}"
+        | ReceiptTransition.Revoked reason -> $"revoked (%s{reason}); %s{graded}"
+
+    let evidenceText =
+        match earned with
+        | Some evidence when List.isEmpty evidence.FailureReasons ->
+            $"run %s{idOf evidence.RunId} at generation %d{evidence.Generation}, no refusals"
+        | Some evidence ->
+            let refusals = String.concat "; " evidence.FailureReasons
+            $"run %s{idOf evidence.RunId} at generation %d{evidence.Generation}, refusing: %s{refusals}"
+        | None -> "none"
+
+    $"Run %s{idOf runId} completed: launched under project model generation %s{ObservedModel.describe launchGeneration}, completed under %s{ObservedModel.describe currentGeneration}; receipt %s{receiptText}; model evidence: %s{evidenceText}"
 
 /// The launch selection `executeTests` will actually honour, from the per-project class
 /// map. ONE derivation, so the run's real selection and the one projects
@@ -6297,7 +6496,18 @@ let internal createWithQueries
                         for seed in sortedSeeds do
                             let alone = aloneCount seed
 
-                            if alone > dominantShare then
+                            if alone > affected.Length then
+                                // Not a hub: the selection is not monotone in its seeds. The
+                                // composition-root fail-safe restores a test project's
+                                // unbarriered tests only when the whole seed set leaves it
+                                // empty, so a sibling seed that reaches the project directly
+                                // can suppress the restore this seed gets on its own.
+                                Logging.warn
+                                    "test-prune"
+                                    $"seed '%s{seed}' alone selects %d{alone} tests, MORE than the %d{affected.Length} \
+                                      the whole queue selects — the composition-root fail-safe is not monotone in \
+                                      its seeds, so this seed's own tests are narrower when it is queued with others"
+                            elif alone > dominantShare then
                                 let pct = alone * 100 / affected.Length
 
                                 Logging.warn
@@ -6548,11 +6758,24 @@ let internal createWithQueries
 
     /// The generation of the model the host currently publishes, when it is available.
     let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
-        match ctx.ProjectGraph.ObserveModel() with
-        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
-        | FsHotWatch.ProjectModel.Observation.Unobserved
-        | FsHotWatch.ProjectModel.Observation.Rediscovering _
-        | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
+        ObservedModel.generation ctx.ProjectGraph
+
+    /// Each configured test project's `.fsproj` and compile-input identity now.
+    let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
+        ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
+
+    /// A launch, named by the model it was selected under and what it selected, so the
+    /// completion line (`describeCompletionEvidence`) can be read against it.
+    let logLaunch (kind: string) (mode: TestMode) (launch: TestRunLaunch) =
+        let scope =
+            if TestMode.requestsFullSuite mode then
+                "confirm mode"
+            else
+                "check mode"
+
+        Logging.info
+            "test-prune"
+            $"Launching %s{kind} run under project model generation %s{ObservedModel.describe launch.ModelGeneration} (%s{scope}, %d{Map.count launch.Selection} project(s) selected)"
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
@@ -6635,7 +6858,11 @@ let internal createWithQueries
             // refusal. After a model change or a restart, this is every project the
             // current model has not yet seen run whole.
             let evidenceGap =
-                EarnedEvidence.wholeProjectGap (observeModelGeneration ctx) (fullSuiteProjects configs) inputs.Earned
+                EarnedEvidence.wholeProjectGap
+                    (observeModelGeneration ctx)
+                    (ObservedModel.inputs ctx.ProjectGraph)
+                    (fullSuiteProjects configs)
+                    inputs.Earned
 
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
@@ -6821,6 +7048,7 @@ let internal createWithQueries
                 let launch =
                     { InputTreeHash = ReceiptInputTree.read repoRoot
                       ModelGeneration = observeModelGeneration ctx
+                      ProjectInputs = observeTestInputs ctx
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
@@ -6830,6 +7058,8 @@ let internal createWithQueries
                       WouldHaveRun = wouldHaveRun
                       Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero }
+
+                logLaunch "impact" inputs.Mode launch
 
                 // The skip gate counts symbol-affected classes only. A pure
                 // dependency-fanout (force-run projects, zero symbol classes) must
@@ -7053,6 +7283,7 @@ let internal createWithQueries
                 let launch =
                     { InputTreeHash = None
                       ModelGeneration = observeModelGeneration ctx
+                      ProjectInputs = observeTestInputs ctx
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
@@ -7100,6 +7331,7 @@ let internal createWithQueries
         let commandLaunch: TestRunLaunch =
             { InputTreeHash = None
               ModelGeneration = observeModelGeneration ctx
+              ProjectInputs = observeTestInputs ctx
               Symbols = Set.empty
               SymbolRevisions = Map.empty
               // A force-run is not launched from the changed files, so it consumes none.
@@ -7119,6 +7351,8 @@ let internal createWithQueries
             let commandLaunch =
                 { commandLaunch with
                     InputTreeHash = ReceiptInputTree.read repoRoot }
+
+            logLaunch "forced" mode commandLaunch
 
             let mutable emittedStart: TestRunStarted option = None
             let mutable returned = false
@@ -7338,15 +7572,33 @@ let internal createWithQueries
                         // from mtimes.
                         // Check again at the read boundary: inputs may have changed
                         // after completion, even before the next watcher event arrives.
+                        //
+                        // And against the model: a receipt earned under a replaced model
+                        // grades nothing, so a `confirm` reading it escalates to a run under
+                        // the model it is graded against instead of grading a run that no
+                        // evidence for that model names.
                         let currentTree = lazy (ReceiptInputTree.read repoRoot)
 
                         let receipt =
                             match ctx.IsRunning "tests", state.EvidenceReceipt with
                             | false, Some evidence ->
-                                if ReceiptInputTree.matches evidence.InputTreeHash currentTree.Value then
-                                    Some evidence
-                                else
+                                let currentModel = ObservedModel.generation ctx.ProjectGraph
+
+                                if not (ReceiptInputTree.matches evidence.InputTreeHash currentTree.Value) then
                                     None
+                                elif
+                                    not (
+                                        receiptSpeaksFor currentModel (ObservedModel.inputs ctx.ProjectGraph) evidence
+                                    )
+                                then
+                                    let withheld = evidence.RunId.ToString("N")
+
+                                    ctx.Log
+                                        $"test-scope: run %s{withheld} earned its receipt under project model generation %s{ObservedModel.describe evidence.ModelGeneration}; the model is now %s{ObservedModel.describe currentModel}, so it grades nothing until a run under this model earns one"
+
+                                    None
+                                else
+                                    Some evidence
                             | _ -> None
 
                         let runId =
@@ -7789,12 +8041,21 @@ let internal createWithQueries
 
     /// The run in flight has concluded: forget it, and end the pass-through it ran for.
     let endRun (state: TestPruneState) =
+        let mode =
+            match state.InFlight with
+            | Some run -> TestMode.afterRun run.Mode state.Mode
+            | None -> state.Mode
+
+        // Said out loud: a later launch in the same session is impact-selected again, and
+        // its status line (`selected: yes`) reads as if the confirm had lost its scope.
+        if TestMode.requestsFullSuite state.Mode && not (TestMode.requestsFullSuite mode) then
+            Logging.info
+                "test-prune"
+                "Scope back to IMPACT-FILTERED: the full-suite run the scope was set for has concluded; later launches in this session are impact-selected"
+
         { state with
             InFlight = None
-            Mode =
-                match state.InFlight with
-                | Some run -> TestMode.afterRun run.Mode state.Mode
-                | None -> state.Mode }
+            Mode = mode }
 
     /// A launch that found its artifacts or test host unavailable ran nothing: it revokes
     /// the receipt, hands back the fanout it consumed, and fails.
@@ -8698,8 +8959,36 @@ let internal createWithQueries
                                     return stateWithAffected
                     | BuildFailed _ -> return state
 
-                | Custom(TestsFinished(started, completed, launch) as message)
-                | Custom(CommandTestsFinished(started, completed, launch, _, _) as message) ->
+                | Custom(TestsFinished(started, launchedCompletion, launchedAs) as message)
+                | Custom(CommandTestsFinished(started, launchedCompletion, launchedAs, _, _) as message) ->
+                    // A model replaced while the run was in flight takes back only the
+                    // results of the projects whose compile inputs it changed.
+                    let modelCarry, completed, launch =
+                        acrossModelChange
+                            (observeModelGeneration ctx)
+                            (ObservedModel.inputs ctx.ProjectGraph)
+                            launchedCompletion
+                            launchedAs
+
+                    let runText = launchedCompletion.RunId.ToString("N")
+                    let launchedText = ObservedModel.describe launchedAs.ModelGeneration
+                    let nowText = ObservedModel.describe (observeModelGeneration ctx)
+
+                    match modelCarry with
+                    | ModelCarry.SameModel -> ()
+                    | ModelCarry.Carried ->
+                        Logging.info
+                            "test-prune"
+                            $"Run %s{runText}: the project model moved from generation %s{launchedText} to %s{nowText} while it ran, but no test project's compile inputs changed — its results stand"
+                    | ModelCarry.Revoked changed ->
+                        Logging.info
+                            "test-prune"
+                            $"Run %s{runText}: the project model moved from generation %s{launchedText} to %s{nowText} while it ran and changed the compile inputs of %s{describeAll (Set.toList changed)} — their results are revoked; the others stand"
+                    | ModelCarry.Unprovable ->
+                        Logging.info
+                            "test-prune"
+                            $"Run %s{runText}: the project model moved from generation %s{launchedText} to %s{nowText} while it ran, and no per-project compile-input identities can show what changed — the whole run is revoked"
+
                     // The declarations this completion retires debt under, resolved ONCE and
                     // BEFORE any side effect. A resolution that throws (an ambiguous or
                     // unobserved excluded project) fails this handler before it has emitted,
@@ -8857,16 +9146,18 @@ let internal createWithQueries
 
                     let currentInputTree = ReceiptInputTree.read repoRoot
                     let currentModelGeneration = observeModelGeneration ctx
+                    let currentInputs = ObservedModel.inputs ctx.ProjectGraph
 
                     // A typed transition, not a candidate-then-guard: see
-                    // `ReceiptTransition`. `Noop` keeps whatever was earned, `Revoked`
-                    // clears it, and only `Earned` can write.
+                    // `ReceiptTransition`. `Noop` and `Narrower` keep whatever was earned,
+                    // `Revoked` clears it, and only `Earned` can write.
                     let receiptTransition =
                         ReceiptTransition.classify
                             (Set.toList runnableProjects)
                             state.EvidenceReceipt
                             currentInputTree
                             currentModelGeneration
+                            currentInputs
                             launch
                             completed
                             coverage
@@ -8874,7 +9165,8 @@ let internal createWithQueries
                     match receiptTransition with
                     | ReceiptTransition.Revoked reason -> ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
                     | ReceiptTransition.Earned _
-                    | ReceiptTransition.Noop -> ()
+                    | ReceiptTransition.Noop
+                    | ReceiptTransition.Narrower -> ()
 
                     let evidenceReceipt =
                         ReceiptTransition.apply state.EvidenceReceipt receiptTransition
@@ -8891,7 +9183,8 @@ let internal createWithQueries
                             ReceiptRevoked =
                                 match receiptTransition with
                                 | ReceiptTransition.Revoked reason -> Some reason
-                                | ReceiptTransition.Earned _ -> None
+                                | ReceiptTransition.Earned _
+                                | ReceiptTransition.Narrower -> None
                                 | ReceiptTransition.Noop -> state.ReceiptRevoked
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
@@ -9138,9 +9431,23 @@ let internal createWithQueries
                         + outstandingFailures.Length
                         + (if debt.RecoveryOutstanding then 1 else 0)
 
+                    // A narrower run leaves the full suite's receipt standing, so the
+                    // evidence stays the evidence THAT run earned: the verdict grades the
+                    // receipt's run and looks its evidence up by run id.
+                    let keptWithReceipt =
+                        match receiptTransition, evidenceReceipt with
+                        | ReceiptTransition.Narrower, Some receipt ->
+                            EarnedEvidence.retainedForRun
+                                currentModelGeneration
+                                currentInputs
+                                receipt.RunId
+                                state.Earned
+                        | _ -> None
+
                     let earned =
-                        match completed.Verification with
-                        | NoProjectsSelected when
+                        match keptWithReceipt, completed.Verification with
+                        | Some kept, _ -> Some kept
+                        | None, NoProjectsSelected when
                             pendingObligations = 0
                             && not aborted
                             && launch.ZeroSelection <> ZeroSelection.NotAZero
@@ -9149,19 +9456,31 @@ let internal createWithQueries
                             // Nothing needed running, so this completion proves nothing new.
                             // The evidence it was already verified by stands, while it belongs
                             // to the current model.
-                            EarnedEvidence.retainedForZeroSelection currentModelGeneration state.Earned
-                        | NoProjectsSelected
-                        | AllZeroMatch _
-                        | NothingExecuted
-                        | Ran _ ->
+                            EarnedEvidence.retainedForZeroSelection currentModelGeneration currentInputs state.Earned
+                        | None, NoProjectsSelected
+                        | None, AllZeroMatch _
+                        | None, NothingExecuted
+                        | None, Ran _ ->
                             EarnedEvidence.fromCompletion
                                 started.RunId
                                 launch.ModelGeneration
                                 currentModelGeneration
+                                currentInputs
+                                (ObservedModel.projectFiles ctx.ProjectGraph)
                                 runnableProjects
                                 pendingObligations
                                 state.Earned
                                 completed
+
+                    Logging.info
+                        "test-prune"
+                        (describeCompletionEvidence
+                            completed.RunId
+                            launch.ModelGeneration
+                            currentModelGeneration
+                            receiptTransition
+                            evidenceReceipt
+                            earned)
 
                     let state =
                         { state with

@@ -137,7 +137,8 @@ type HostSnapshot =
           SettledFailures: Map<WorkId, string * exn>
           Observers: Set<WorkId>
           Model: ProjectModel.Observation
-          ModelFiles: (int64 * Set<Events.AbsFilePath>) option }
+          ModelFiles: (int64 * Set<Events.AbsFilePath>) option
+          ModelInputs: (int64 * Map<string, string>) option }
 
     /// Increases by one with every publication.
     member this.Version = this.Published
@@ -148,8 +149,34 @@ type HostSnapshot =
 
     /// The test evidence the rows hold, read from this publication. A row's evidence and its
     /// work are published together, so a reader can never see one without the other.
+    ///
+    /// Evidence earned under an earlier model is read as evidence about this one when
+    /// every project it vouches for compiles from the same inputs under both
+    /// (`EarnedEvidence.forModel`); a re-discovery that changed only an unrelated project
+    /// does not take it away.
     member this.Evidence: Events.EarnedEvidence list =
-        this.Rows |> Map.toList |> List.choose (fun (_, row) -> row.Status.Evidence)
+        let current =
+            match this.Model with
+            | ProjectModel.Observation.Available model ->
+                let inputs =
+                    this.ModelInputs
+                    |> Option.filter (fun (generation, _) -> generation = model.Generation)
+                    |> Option.map snd
+
+                Some(model.Generation, inputs)
+            | ProjectModel.Observation.Unobserved
+            | ProjectModel.Observation.Rediscovering _
+            | ProjectModel.Observation.Unavailable _ -> None
+
+        this.Rows
+        |> Map.toList
+        |> List.choose (fun (_, row) -> row.Status.Evidence)
+        |> List.map (fun evidence ->
+            match current with
+            | Some(generation, inputs) ->
+                Events.EarnedEvidence.forModel generation inputs evidence
+                |> Option.defaultValue evidence
+            | None -> evidence)
 
     /// The analysis-only evidence the rows hold, read from this publication.
     member this.AnalysisEvidence: Events.AnalysisEvidence list =
@@ -196,6 +223,11 @@ type HostSnapshot =
     /// The checkable files of the available model, paired with its generation. `None`
     /// whenever the model is not available: membership never outlives its model.
     member this.ProjectModelFiles = this.ModelFiles
+
+    /// Each project's compile-input identity under the available model
+    /// (`ProjectModel.ProjectInputs`), paired with its generation. `None` whenever the model
+    /// is not available, or was published without them.
+    member this.ProjectModelInputs = this.ModelInputs
 
     member this.IsBusy =
         not this.Operations.IsEmpty
@@ -279,7 +311,8 @@ type Store() =
           SettledFailures = Map.empty
           Observers = Set.empty
           Model = ProjectModel.Observation.Unobserved
-          ModelFiles = None }
+          ModelFiles = None
+          ModelInputs = None }
 
     let agent =
         MailboxProcessor<Mutation>.Start(fun inbox ->
@@ -331,15 +364,24 @@ type Store() =
         change (fun _ snapshot ->
             { snapshot with
                 Model = observation
-                ModelFiles = None },
+                ModelFiles = None
+                ModelInputs = None },
             ())
 
     /// Publish a model observation and, when it is available, its checkable files. Both
     /// change in one publication, so no reader sees the new model with the old membership.
-    member _.PublishProjectModelWithFiles(observation: ProjectModel.Observation, files: Set<Events.AbsFilePath>) =
-        let modelFiles =
+    member this.PublishProjectModelWithFiles(observation: ProjectModel.Observation, files: Set<Events.AbsFilePath>) =
+        this.PublishProjectModelWithInputs(observation, files, None)
+
+    /// Publish a model observation with its checkable files and, when known, each
+    /// project's compile-input identity (`ProjectModel.ProjectInputs`). All three change
+    /// in one publication.
+    member _.PublishProjectModelWithInputs
+        (observation: ProjectModel.Observation, files: Set<Events.AbsFilePath>, inputs: Map<string, string> option)
+        =
+        let generation =
             match observation with
-            | ProjectModel.Observation.Available model -> Some(model.Generation, files)
+            | ProjectModel.Observation.Available model -> Some model.Generation
             | ProjectModel.Observation.Unobserved
             | ProjectModel.Observation.Rediscovering _
             | ProjectModel.Observation.Unavailable _ -> None
@@ -347,7 +389,11 @@ type Store() =
         change (fun _ snapshot ->
             { snapshot with
                 Model = observation
-                ModelFiles = modelFiles },
+                ModelFiles = generation |> Option.map (fun generation -> generation, files)
+                ModelInputs =
+                    match generation, inputs with
+                    | Some generation, Some inputs -> Some(generation, inputs)
+                    | _ -> None },
             ())
 
     /// Changes posted but not yet published. A diagnostic, and a witness for tests that

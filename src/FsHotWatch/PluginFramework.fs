@@ -306,6 +306,11 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
         /// This is what an analysis-only completion must account for, so a file with no
         /// completed analysis is a refusal rather than an absence.
         ObserveCheckableFiles: unit -> (int64 * Set<FsHotWatch.Events.AbsFilePath>) option
+        /// The available model's per-project compile-input identities
+        /// (`ProjectModel.ProjectInputs`, by `.fsproj`), with the generation they belong
+        /// to. `None` whenever no model is available or none were published: a result
+        /// earned under one model is carried to another only on these.
+        ObserveProjectInputs: unit -> (int64 * Map<string, string>) option
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -403,6 +408,7 @@ module ProjectGraphAccessor =
     let none: ProjectGraphAccessor =
         { ObserveModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
           ObserveCheckableFiles = fun () -> None
+          ObserveProjectInputs = fun () -> None
           GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []

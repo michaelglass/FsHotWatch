@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: `confirm` on a long-lived daemon no longer livelocks when the project model is
+  re-evaluated during its run for a project no test project compiles from
+  (FsHotWatch.TestPrune).
+- fix: `confirm` no longer ends red with "nothing vouches for this green" after its full
+  suite passed and a later impact-selected run followed on the same tree, and it re-runs
+  the suite when the project model changed since the last run instead of grading that run
+  (FsHotWatch.TestPrune).
+- feat: the "no evidence receipt" refusal names every receipt the daemon did hold (`the
+  daemon holds: run … at generation …`), so it tells evidence for a different run from
+  evidence under a model that has since moved.
+
 ## 0.14.0-alpha.71 - 2026-09-27
 
 - **BREAKING (pin):** TestPrune.Core 13.2.2 (index schema 18: existing test-impact
