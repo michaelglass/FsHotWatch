@@ -1049,7 +1049,7 @@ type RealFileWatcherTests() =
                 (fun () -> List.isEmpty (missing ()))
                 90000
 
-            test <@ missing () = [] @>)
+            test <@ List.isEmpty (missing ()) @>)
 
 /// The system watchers `createPortable` asked for, standing in for the OS. A
 /// write is delivered to every live watcher whose directory covers the path
