@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: bundles TestPrune.Core 13.2.3, whose impact selection no longer drops tests when a
+  batch mixes a changed symbol behind a composition root with one that has a direct test
+  in the same test project; a batch now selects everything each of its symbols selects
+  alone.
 - fix: `confirm` on a long-lived daemon no longer livelocks when the project model is
   re-evaluated during its run for a project no test project compiles from
   (FsHotWatch.TestPrune).
