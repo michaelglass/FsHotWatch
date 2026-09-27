@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.56 - 2026-09-28
+
 - fix: a cold `check` no longer reports "The namespace or module 'Xunit' is not defined"
   (or the same error for any package type) for code that compiles. A scan loads its
   project model, then waits for the build before type-checking. On a tree that was
