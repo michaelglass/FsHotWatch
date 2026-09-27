@@ -130,15 +130,20 @@ type RowHandle<'T> =
 [<NoComparison; NoEquality>]
 type HostSnapshot =
     private
-        { Identity: Guid
-          Published: int64
-          Rows: Map<WorkId, Row>
-          Operations: Map<WorkId, Operation>
-          SettledFailures: Map<WorkId, string * exn>
-          Observers: Set<WorkId>
-          Model: ProjectModel.Observation
-          ModelFiles: (int64 * Set<Events.AbsFilePath>) option
-          ModelInputs: (int64 * Map<string, string>) option }
+        {
+            Identity: Guid
+            Published: int64
+            Rows: Map<WorkId, Row>
+            Operations: Map<WorkId, Operation>
+            SettledFailures: Map<WorkId, string * exn>
+            Observers: Set<WorkId>
+            Model: ProjectModel.Observation
+            ModelFiles: (int64 * Set<Events.AbsFilePath>) option
+            /// The available model's per-project compile-input identities, when known. No
+            /// generation of its own: it is only ever published together with `Model`, so it
+            /// is always about the model beside it.
+            ModelInputs: Map<string, string> option
+        }
 
     /// Increases by one with every publication.
     member this.Version = this.Published
@@ -157,13 +162,7 @@ type HostSnapshot =
     member this.Evidence: Events.EarnedEvidence list =
         let current =
             match this.Model with
-            | ProjectModel.Observation.Available model ->
-                let inputs =
-                    this.ModelInputs
-                    |> Option.filter (fun (generation, _) -> generation = model.Generation)
-                    |> Option.map snd
-
-                Some(model.Generation, inputs)
+            | ProjectModel.Observation.Available model -> Some(model.Generation, this.ModelInputs)
             | ProjectModel.Observation.Unobserved
             | ProjectModel.Observation.Rediscovering _
             | ProjectModel.Observation.Unavailable _ -> None
@@ -227,7 +226,13 @@ type HostSnapshot =
     /// Each project's compile-input identity under the available model
     /// (`ProjectModel.ProjectInputs`), paired with its generation. `None` whenever the model
     /// is not available, or was published without them.
-    member this.ProjectModelInputs = this.ModelInputs
+    member this.ProjectModelInputs =
+        match this.Model with
+        | ProjectModel.Observation.Available model ->
+            this.ModelInputs |> Option.map (fun inputs -> model.Generation, inputs)
+        | ProjectModel.Observation.Unobserved
+        | ProjectModel.Observation.Rediscovering _
+        | ProjectModel.Observation.Unavailable _ -> None
 
     member this.IsBusy =
         not this.Operations.IsEmpty
@@ -390,10 +395,7 @@ type Store() =
             { snapshot with
                 Model = observation
                 ModelFiles = generation |> Option.map (fun generation -> generation, files)
-                ModelInputs =
-                    match generation, inputs with
-                    | Some generation, Some inputs -> Some(generation, inputs)
-                    | _ -> None },
+                ModelInputs = generation |> Option.bind (fun _ -> inputs) },
             ())
 
     /// Changes posted but not yet published. A diagnostic, and a witness for tests that
