@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- fix: bundles TestPrune.Trace 0.3.1. With `tests.traces` on, a woven run's coverage now
+- fix: bundles TestPrune.Trace 0.4.0. With `tests.traces` on, a woven run's coverage now
   matches an untraced run's exactly, with no branch points lost. Its weave cache is keyed
-  by the weaver, recorder and pass assemblies, so the upgraded weaver re-weaves once.
+  by the weaver, recorder and pass assemblies, so the upgraded weaver re-weaves once. A
+  test now inherits the file reads and probe hits of the type initializers it depends on
+  (module values that read repository files), so those inputs are no longer missing from
+  its trace; the file census also counts a copy that reaches the repository by absolute
+  path as reading it.
 
 - feat: `fshw confirm --fresh` launches a new full-suite run on an unchanged tree. It
   skips the `.fshw/verdict.json` fast path, forces the suite even when the warm
