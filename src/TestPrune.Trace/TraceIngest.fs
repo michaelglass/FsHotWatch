@@ -86,10 +86,6 @@ type RunStats =
       counters: HitCounters
       rejected: string[] }
 
-/// The scope static constructors record into. Stored with the run, never linked to a test.
-[<Literal>]
-let StaticInitScope = "S:static-init"
-
 /// The scope unattributed hits record into. Stored with the run, never linked to a test.
 [<Literal>]
 let AmbientScope = "A:ambient"
@@ -186,16 +182,6 @@ type private Effect =
     | FileLevel of repoRelativePath: string * hash: string
     | Reason of IncompleteReason
 
-/// One scope key merged across every process of the run.
-type private Merged =
-    { Key: string
-      Test: TestIdentity option
-      Ids: int[]
-      Inputs: RecordedInput list
-      Parents: string list
-      Links: string list
-      Children: ChildNote list }
-
 /// A dump whose ids belong to another weave would join against the wrong manifest.
 let private validate (idCount: int) (d: ProcessDump) : Result<ProcessDump, string> =
     if d.IdCount <> idCount then
@@ -207,29 +193,6 @@ let private validate (idCount: int) (d: ProcessDump) : Result<ProcessDump, strin
         with
         | Some id -> Error $"probe id %d{id} outside the manifest's %d{idCount}"
         | None -> Ok d
-
-/// A child process records into the scope that started it; so does its static init.
-let private keyOf (d: ProcessDump) (s: RecordedScope) =
-    match d.ParentScope with
-    | Some parent when s.Key = StaticInitScope -> parent
-    | _ -> s.Key
-
-let private merge (dumps: ProcessDump list) : Map<string, Merged> =
-    dumps
-    |> List.collect (fun d -> d.Scopes |> List.map (fun s -> keyOf d s, s))
-    |> List.groupBy fst
-    |> List.map (fun (key, group) ->
-        let scopes = List.map snd group
-
-        key,
-        { Key = key
-          Test = scopes |> List.tryPick (fun s -> s.Test)
-          Ids = scopes |> Seq.collect (fun s -> s.Ids) |> Seq.distinct |> Array.ofSeq
-          Inputs = scopes |> List.collect (fun s -> s.Inputs) |> List.distinct
-          Parents = scopes |> List.collect (fun s -> s.Parents) |> List.distinct
-          Links = scopes |> List.collect (fun s -> s.Links) |> List.distinct
-          Children = scopes |> List.collect (fun s -> s.Children) })
-    |> Map.ofList
 
 /// The effects of every probe id: its joined symbol or file-level entry, plus the reason
 /// its source document makes it incomplete.
@@ -394,14 +357,14 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
             )
 
         let effects, unmappedId = effectsOf req
-        let merged = merge dumps
+        let merged = RunScopes.merged dumps
 
         let tracedChildren =
             dumps
             |> List.choose (fun d -> d.ParentScope |> Option.map (fun p -> p, d.Pid))
             |> Set.ofList
 
-        let contentOf (m: Merged) : ScopeContent * IncompleteReason list =
+        let contentOf (m: RecordedScope) : ScopeContent * IncompleteReason list =
             let hits = m.Ids |> List.ofArray |> List.collect (fun id -> effects.[id])
 
             let children =
@@ -429,15 +392,20 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
             |> List.distinct
 
         let contents = merged |> Map.map (fun _ m -> contentOf m)
-        let runOnly = set [ StaticInitScope; AmbientScope ]
+
+        let runOnly (key: string) =
+            key = AmbientScope || RunScopes.isStaticInit key
 
         // Fixture, collection and pool scopes a test inherits: the recorded scopes reachable
-        // through parents and links. Run-only scopes are never inherited.
+        // through parents and links. Ambient and static-init scopes are never reached this way.
         let rec closure (seen: Set<string>) (keys: string list) =
             match keys with
             | [] -> seen
-            | k :: rest when seen.Contains k || runOnly.Contains k || not (merged.ContainsKey k) -> closure seen rest
+            | k :: rest when seen.Contains k || runOnly k || not (merged.ContainsKey k) -> closure seen rest
             | k :: rest -> closure (seen.Add k) (merged.[k].Parents @ merged.[k].Links @ rest)
+
+        // Static-init scopes of the types the test (and what it inherits) touched.
+        let statics = RunScopes.staticInheritance manifest merged
 
         let exact = req.Outcomes |> List.groupBy (fun o -> o.Name) |> Map.ofList
         let byStem = req.Outcomes |> List.groupBy (fun o -> stemOf o.Name) |> Map.ofList
@@ -473,7 +441,8 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
                     |> List.tryHead
 
                 let linked =
-                    closure Set.empty (scopes |> List.map (fun (_, m) -> m.Key)) |> Set.toList
+                    let held = closure Set.empty (scopes |> List.map (fun (_, m) -> m.Key))
+                    Set.union held (statics held) |> Set.toList
 
                 let reasons =
                     [ match status with
@@ -498,7 +467,7 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
         let scopes =
             contents
             |> Map.toList
-            |> List.filter (fun (k, _) -> linkedScopes.Contains k || runOnly.Contains k)
+            |> List.filter (fun (k, _) -> linkedScopes.Contains k || runOnly k)
             |> List.map (snd >> fst)
 
         let unmappedIds =

@@ -1,7 +1,10 @@
 namespace TestPrune.Trace.Recorder
 
 open System
+open System.Diagnostics
 open System.IO
+open System.Reflection
+open System.Runtime.CompilerServices
 
 /// The process-wide recorder and its bootstrap from the environment.
 module internal Runtime =
@@ -59,12 +62,26 @@ type Probes =
     /// Records probe `baseId + tag`.
     static member HitTag(tag: int, baseId: int) : unit = Probes.Hit(baseId + tag)
 
-    /// Marks entry into a static constructor.
+    /// The CLR name (`Outer+Nested`, generic arity kept) of the type whose static
+    /// constructor is on the calling stack, innermost first; null when none is.
+    static member internal InitializingType(frames: StackFrame[]) : string =
+        frames
+        |> Array.tryPick (fun f ->
+            match f.GetMethod() with
+            | :? ConstructorInfo as c when c.IsStatic ->
+                let t = c.DeclaringType
+                Some (if t.IsGenericType then t.GetGenericTypeDefinition() else t).FullName
+            | _ -> None)
+        |> Option.toObj
+
+    /// Marks entry into a static constructor. It runs once per type, so naming the type
+    /// from the stack costs one stack walk per initialized type.
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     static member EnterStatic() : unit =
         let s = Runtime.state
 
         if not (isNull s) then
-            s.EnterStatic()
+            s.EnterStatic(Probes.InitializingType(StackTrace(1, false).GetFrames()))
 
     /// Marks exit from a static constructor.
     static member ExitStatic() : unit =

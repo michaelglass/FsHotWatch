@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 11 @>
+        test <@ report.Sampled = 12 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -163,15 +163,26 @@ let ``overhead reports medians and a ratio over interleaved runs`` () =
         test <@ r.BaseMedianCpu > TimeSpan.Zero && r.Ratio > 0.0 @>)
 
 [<Fact>]
-let ``the file census names the reading test and the tests that break outside the repository`` () =
-    // FxTests' one repository read is guarded by TESTPRUNE_TRACE_REPO_ROOT: traced (in the
-    // repository) it reads global.json; untraced outside the repository it skips the read
-    // and passes. So the census must report the reader and no outside failures. This pins
-    // both halves of the measurement, not a ratio the fixture cannot make meaningful.
+let ``the file census names the reading tests, those that break outside the repository and those that reach it from there``
+    ()
+    =
+    // "d reads a module value" reads mise.toml in a type initializer it found by walking up
+    // from the binary: outside the repository that walk fails, and so does the test. "c reads
+    // a repo file" reads global.json at an absolute path (the recorder's repository root):
+    // from outside it still reaches the repository and passes. Both traces hold the read.
     withScratch (fun req ->
         let r = FileCensus.run req [] timeout |> ok
-        test <@ r.ReadsRepo = set [ "FxTests.AttributionTests.ClassC.c reads a repo file" ] @>
-        test <@ r.FailOutside = Set.empty && r.FailInRepo = Set.empty @>)
+
+        test
+            <@
+                r.ReadsRepo = set
+                    [ "FxTests.AttributionTests.ClassC.c reads a repo file"
+                      "FxTests.AttributionTests.ClassD.d reads a module value" ]
+            @>
+
+        test <@ r.FailOutside = set [ "FxTests.AttributionTests.ClassD.d reads a module value" ] @>
+        test <@ r.ReachOutside = set [ "FxTests.AttributionTests.ClassC.c reads a repo file" ] @>
+        test <@ r.FailInRepo = Set.empty && r.SymmetricDifference = Set.empty @>)
 
 [<Fact>]
 let ``the file census refuses a run that wrote no CTRF report`` () =

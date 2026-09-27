@@ -32,6 +32,12 @@ For a Debug build of a test project, TestPrune.Trace:
    in a separate SQLite file: the symbols the test executed, the repository files it read,
    and the fixture scopes it inherited.
 
+A type initializer (a module's `let` values, a `static let`) runs once per process, in
+whichever test touches the type first. What it runs and reads is recorded under that
+type's own static-init scope. Every test that runs code of the type, or code in the source
+file its initializer is in, inherits that scope, and so do the initializers it touches in
+turn. An initializer the recorder cannot tie to a type is inherited by every test.
+
 A trace is either complete or stored with the reasons it is not. Examples: the test did
 not pass, a source file changed since the build, or the test started a child process that
 recorded nothing. Nothing is silently partial.
@@ -169,7 +175,7 @@ run that wrote no CTRF report).
 | `census [--db <path>] [--run <runId>] [--json]` | Each project's newest run in the trace store: traced / executed tests, unattributed (ambient) hits, tests per incomplete reason, pool scopes | traced ≥ 0.99; ambient < 0.1 % of hits, or every ambient symbol listed for review |
 | `audit … [--sample 0.01] [--seed 1]` | Runs the project once in parallel, then a seeded sample of its tests one at a time, and compares each test's own probe ids | no id attributed in parallel that the test never hits alone |
 | `overhead … [--reps 3]` | Interleaved untraced and traced launches, median CPU (user + system) of each | traced median ≤ 1.15 × untraced median, and every launch exits the same way |
-| `file-census …` | Tests whose trace holds a repository file input vs tests that fail when the build output runs outside the repository | the two sets differ by ≤ 5 % of their union |
+| `file-census …` | Tests whose trace holds a repository file input vs tests that depend on the repository: they fail when the woven build output runs outside it, or still read a file inside it from there | the two sets differ by ≤ 5 % of their union |
 
 `census` reads `.fshw/test-traces.db` when it exists, else `.test-prune-traces.db`. A
 missing database is refused (exit 2), never created. With no run to measure it exits 1.
@@ -214,10 +220,13 @@ What to know before trusting a number:
   nothing else from the same shell meanwhile. Grandchildren a test starts count on both
   sides. The reported peak RSS is a running maximum over every launch so far, an upper
   bound on each launch's own peak.
-- **`file-census` copies the untraced build output outside the repository and runs it
-  there.** It needs a suite that completes in that copy and writes its CTRF report. A test
-  that ends the process (`Environment.Exit`) or crashes the runner outside the repository
-  makes the verb exit 2 with the tail of the run's output.
+- **`file-census` copies the woven build output outside the repository and runs it
+  there, traced against the same repository root.** A test that reads a repository file at
+  an absolute path (`__SOURCE_DIRECTORY__`, an environment variable) still passes there;
+  the census counts the read it records from outside as a dependency on the repository. It
+  needs a suite that completes in that copy and writes its CTRF report. A test that ends
+  the process (`Environment.Exit`) or crashes the runner outside the repository makes the
+  verb exit 2 with the tail of the run's output.
 
 ### Measured on TestPrune's own suite
 

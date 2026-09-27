@@ -125,8 +125,9 @@ let ``each scenario records what it executed and nothing it did not`` (name: str
 let ``static init lands in its own scope, not in the test that triggered it`` () =
     // Values' initializer computes `threshold` and builds `defaultShape = Square 3.0` and
     // `prebuiltBlue = Blue 3`. Building a case is its constructor's entry probe (the joiner
-    // maps `NewX` to case X); no site probe reads a case the initializer only builds.
-    let s = woven.Value.Recorded.["S:static-init"]
+    // maps `NewX` to case X); no site probe reads a case the initializer only builds. F#
+    // initializes a module's values in its file's startup class.
+    let s = woven.Value.Recorded.["S:<StartupCode$FxLib>.$FxLib.Values"]
     test <@ s.Contains(values "computeThreshold") @>
     test <@ s.Contains(Meth("FxLib.Shape", "NewSquare")) @>
     test <@ s.Contains(Meth("FxLib.Color5", "NewBlue")) @>

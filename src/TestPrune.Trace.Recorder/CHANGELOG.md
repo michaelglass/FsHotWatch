@@ -2,11 +2,16 @@
 
 ## Unreleased
 
+- fix: each type initializer records into its own `S:<type>` scope, named from the static
+  constructor on the stack (one stack walk per initialized type), instead of one
+  `S:static-init` scope for the process. An initializer that runs inside another is linked
+  from it. `RecorderState.EnterStatic` takes the type name; `S:static-init` remains for an
+  initializer with no static constructor on the stack.
+
 ## 0.3.1 - 2026-09-27
 
 - Trace: key the weave cache on the weaver's build, not its version
 - Trace: keep branch points under a match's later hidden sequence points
-
 
 ## 0.3.0 - 2026-09-27
 

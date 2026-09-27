@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- fix: a test inherits the static init of the code it ran. A type initializer runs once per
+  process, in whichever test touches the type first, so what it read (a module value that
+  locates the repository root, then reads a file there) was recorded under a static-init
+  scope no test inherited: a change to that file invalidated no trace. Each initializer now
+  records into its own `S:<type>` scope, and ingestion links it to every test that ran code
+  of that type or code in the source file its initializer is in (F# initializes a module's
+  values in a `<StartupCode$…>` class no user code names), transitively through the
+  initializers an inherited one touched or ran inside it. An initializer the recorder cannot
+  tie to a woven type is inherited by every test. New module `RunScopes` (`merged`,
+  `isStaticInit`, `staticInheritance`); `Audit.merged` moved there. Garbage collection keeps
+  every `S:` scope of a project's latest run.
+- fix: type initializers are wrapped in `SitesOnly` assemblies too (the test project, by
+  default). A test-project module value that read a file recorded the read into whichever
+  test triggered it first (or into no test, when an executable initializes its files at
+  startup), so the other tests that use it did not depend on the file. Nothing places such an
+  initializer (no method probes name its types), so every test inherits it: sound, and
+  wider than needed for a suite with many such values.
+- fix: `file-census` runs the woven copy outside the repository traced against the same
+  repository root. A test that reads a repository file at an absolute path
+  (`__SOURCE_DIRECTORY__`) passes there, and used to count as over-recorded; the read it
+  records from outside now counts as a dependency on the repository
+  (`FileCensusReport.ReachOutside`). `FileCensus.readers` takes the manifest, and
+  `summarize` the tests that reached the repository from outside.
+
 ## 0.3.1 - 2026-09-27
 
 - fix: a traced prepare re-weaves when the weaver, the recorder or a pass is another build of

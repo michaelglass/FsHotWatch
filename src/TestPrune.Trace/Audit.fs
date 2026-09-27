@@ -53,35 +53,9 @@ type AuditReport =
         ParallelOutput: string
     }
 
-/// The run-wide static-init scope; a child process's belongs to the scope that started it.
-[<Literal>]
-let private StaticInit = "S:static-init"
-
-/// Every scope of the run by key, merged across processes. A child process records into
-/// the scope that started it, and so does its static init (as ingestion links them).
-let merged (dumps: ProcessDump list) : Map<string, RecordedScope> =
-    dumps
-    |> List.collect (fun d ->
-        d.Scopes
-        |> List.map (fun s ->
-            match d.ParentScope with
-            | Some parent when s.Key = StaticInit -> { s with Key = parent }
-            | _ -> s))
-    |> List.groupBy (fun s -> s.Key)
-    |> List.map (fun (key, group) ->
-        key,
-        { Key = key
-          Test = group |> List.tryPick (fun s -> s.Test)
-          Parents = group |> List.collect (fun s -> s.Parents) |> List.distinct
-          Links = group |> List.collect (fun s -> s.Links) |> List.distinct
-          Ids = group |> Seq.collect (fun s -> s.Ids) |> Seq.distinct |> Array.ofSeq
-          Inputs = group |> List.collect (fun s -> s.Inputs) |> List.distinct
-          Children = group |> List.collect (fun s -> s.Children) })
-    |> Map.ofList
-
 /// Each test scope's own ids, by display name.
 let ownIds (dumps: ProcessDump list) : Map<string, Set<int>> =
-    merged dumps
+    RunScopes.merged dumps
     |> Map.toList
     |> List.choose (fun (_, s) -> s.Test |> Option.map (fun t -> t.Display, Set.ofArray s.Ids))
     |> List.groupBy fst
@@ -166,7 +140,7 @@ let incomplete (dumps: ProcessDump list) (rejected: (string * string) list) : Ma
               rejected
               |> List.map (fun (f, why) -> DumpRejected $"%s{Path.GetFileName f}: %s{why}") ]
 
-    merged dumps
+    RunScopes.merged dumps
     |> Map.toList
     |> List.choose (fun (key, s) ->
         s.Test

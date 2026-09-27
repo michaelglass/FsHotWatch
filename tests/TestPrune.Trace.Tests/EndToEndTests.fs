@@ -100,7 +100,8 @@ let private traceOf (meth: string) =
     let cls =
         if meth.StartsWith "a " then "ClassA"
         elif meth.StartsWith "b " then "ClassB"
-        else "ClassC"
+        elif meth.StartsWith "c " then "ClassC"
+        else "ClassD"
 
     e.Store.TryRead(
         TraceIngest.testKey "FxTests" $"FxTests.AttributionTests+%s{cls}" meth,
@@ -130,14 +131,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 11 && s.Traced = 11 @>
+    test <@ s.Executed = 12 && s.Traced = 12 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Eleven CTRF rows are nine tests (each theory's two rows share one trace). Only the test
+    // Twelve CTRF rows are ten tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 9 @>
-    test <@ s.Complete = 8 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 10 @>
+    test <@ s.Complete = 9 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -201,6 +202,16 @@ let ``a repository file read is an input; an untraced child makes the trace inco
 
     let child = traceOf "c starts a child process"
     test <@ child.Reasons = [ "child-process-untraced:echo" ] @>
+
+[<Fact>]
+let ``a file a module value reads while its type initializes is an input of the tests that use the module`` () =
+    let readsToolConfig (t: TraceStore.StoredTrace) =
+        t.Inputs |> Set.exists (fun (k, key, _) -> k = "read" && key = "mise.toml")
+
+    let user = traceOf "d reads a module value"
+    test <@ user.Complete && readsToolConfig user @>
+    test <@ names user |> Set.contains "FxLib.Settings.toolConfig" @>
+    test <@ not (readsToolConfig (traceOf "a sync area")) @>
 
 // ---------------------------------------------------------------- refusals
 
