@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- obs: a receipt revoked because the test run itself wrote into the repository now says
+  so: "the test run wrote into the repository: <paths>", instead of "the input tree
+  MOVED … edited while the run was in flight". A move is named this way only when every
+  moved path was changed or added, the watcher reported none of them while the run was
+  in flight, and each was written after the test host started (after `beforeRun`). The
+  tests are not hermetic, and re-running writes again; the fix is in the tests. An edit
+  the watcher reports during the run, or a move that includes a removal, stays a plain
+  MOVED.
+
 ## 0.13.0-alpha.55 - 2026-09-27
 
 - fix: a `tests.beforeRun` that generates files under a discovery root (a JS bundle, a
