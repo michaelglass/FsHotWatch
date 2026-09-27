@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-27
+
 - fix: a test inherits the static init of the code it ran. A type initializer runs once per
   process, in whichever test touches the type first, so what it read (a module value that
   locates the repository root, then reads a file there) was recorded under a static-init

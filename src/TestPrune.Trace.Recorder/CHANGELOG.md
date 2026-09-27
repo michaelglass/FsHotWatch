@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-27
+
 - fix: each type initializer records into its own `S:<type>` scope, named from the static
   constructor on the stack (one stack walk per initialized type), instead of one
   `S:static-init` scope for the process. An initializer that runs inside another is linked

@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>test-prune-traces</ToolCommandName>
         <PackageId>TestPrune.Trace.Cli</PackageId>
-        <Version>0.3.1</Version>
+        <Version>0.4.0</Version>
         <Authors>Michael Glass</Authors>
         <Description>Measurements over recorded per-test traces: census, isolation audit, CPU overhead and file census.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>

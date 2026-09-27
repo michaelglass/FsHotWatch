@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-27
+
 - fix: `file-census` counts a test that reads the repository from outside it (an absolute
   path such as `__SOURCE_DIRECTORY__`) as depending on the repository, and a test whose type
   initializer read a repository file as reading it. Its table adds `reach-outside`.
