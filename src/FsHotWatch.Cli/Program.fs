@@ -2638,6 +2638,14 @@ let internal hostSessionLink (host: HostLink) : DaemonLink =
             eprintfn "Detached this worktree from the repository host."
             0 }
 
+/// Whether a `.fshw.json` notification stops the daemon: only when the file no longer
+/// holds the configuration it loaded (`configContentHash`). A notification is not a
+/// change. macOS can deliver one for a write made just before the daemon loaded the
+/// file, and an editor can rewrite the same bytes; stopping then kills every check in
+/// flight, test runs included, for a configuration that did not change.
+let internal configEventStops (currentIdentity: string) (loadedIdentity: string) : bool =
+    currentIdentity <> loadedIdentity
+
 /// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
 /// supplied — so a lifecycle test can fire the config edit itself instead of racing live
 /// FSEvents delivery, which has no latency bound on a loaded machine.
@@ -2913,8 +2921,13 @@ let internal executeCommandWatchingConfig
                                 // sees the error if the edit was invalid). No hot-reload.
                                 use _configWatcher =
                                     watchConfig repoRoot (fun reason ->
-                                        FsHotWatch.Logging.info "config" reason
-                                        cts.Cancel())
+                                        if configEventStops (computeConfigHash repoRoot) loadedConfigIdentity then
+                                            FsHotWatch.Logging.info "config" reason
+                                            cts.Cancel()
+                                        else
+                                            FsHotWatch.Logging.info
+                                                "config"
+                                                ".fshw.json was reported changed but holds the configuration this daemon loaded; still running")
 
                                 try
                                     Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
