@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a traced run no longer joins its traces against a symbol index that is still
+  folding. On a cold daemon, a run could finish while analysis events admitted during it
+  were still queued in the plugin's mailbox. Ids those events would have indexed were then
+  reported `case-not-indexed` / `type-not-indexed` / `not-indexed`, and the traces were
+  marked incomplete only because of timing. Ingestion now waits until the plugin has folded
+  every event admitted before ingestion began. The wait is bounded at 5 minutes and
+  cancelled with the run. Every traced ingest logs how long the fold took (`traces: the
+  symbol index folded the events admitted before ingestion in <n>ms`). A traced project whose
+  index is still folding at the bound is stored as not recorded, with the reason
+  `index-unsettled`, rather than joined against a partial index. A run whose projects were
+  all refused does not wait.
+
 - obs: a receipt revoked because the test run itself wrote into the repository now says
   so: "the test run wrote into the repository: <paths>", instead of "the input tree
   MOVED … edited while the run was in flight". A move is named this way only when every

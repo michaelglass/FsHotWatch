@@ -115,6 +115,14 @@ let private symbolsOf (root: string) =
 let private storePath (root: string) =
     Path.Combine(root, ".fshw", "test-traces.db")
 
+/// The line every join logs with how long the symbol index took to fold.
+let private foldLinePrefix =
+    "traces: the symbol index folded the events admitted before ingestion in "
+
+/// The per-project lines, without the fold line.
+let private projectLines (lines: ResizeArray<string>) =
+    lines |> List.ofSeq |> List.filter (fun l -> not (l.StartsWith foldLinePrefix))
+
 let private runsOf (root: string) name =
     use store = TraceStore.Store.Open(storePath root)
     store.Runs name
@@ -329,7 +337,17 @@ let ``a relative db path is under the repository root; an absolute one is kept``
 
 let private ingest root runs (lines: ResizeArray<string>) =
     let rt = runtime root RecordFullRuns Set.empty PassThrough
-    TraceRun.ingestAll rt (symbolsOf root) "run1" (Some "tree") (fun () -> Some "tree") runs lines.Add
+
+    TraceRun.ingestAll
+        rt
+        (symbolsOf root)
+        TraceRun.foldedIndex
+        "run1"
+        (Some "tree")
+        (fun () -> Some "tree")
+        runs
+        lines.Add
+    |> Async.RunSynchronously
 
 [<Fact>]
 let ``a refusal is stored as a refused run and logged with its reason`` () =
@@ -344,7 +362,7 @@ let ``a refusal is stored as a refused run and logged with its reason`` () =
             CtrfPath = None } ]
         lines
 
-    test <@ List.ofSeq lines = [ "traces: T not recorded — no build output under x" ] @>
+    test <@ projectLines lines = [ "traces: T not recorded — no build output under x" ] @>
     let run = runsOf root "T" |> List.exactlyOne
 
     test
@@ -394,7 +412,7 @@ let ``a traced run is ingested with its CTRF outcomes and logged with its counts
             CtrfPath = Some ctrf } ]
         lines
 
-    test <@ List.ofSeq lines = [ "traces: T 1/1 traced, 1 complete" ] @>
+    test <@ projectLines lines = [ "traces: T 1/1 traced, 1 complete" ] @>
     let run = runsOf root "T" |> List.exactlyOne
     test <@ (run.Status, run.Kind, run.RunId) = (TraceStore.Recorded, TraceStore.FullRun, "run1") @>
 
@@ -443,7 +461,7 @@ let ``an unreadable CTRF report leaves every trace without an outcome, and says 
             CtrfPath = Some(Path.Combine(root, "run", "missing.ctrf.json")) } ]
         lines
 
-    test <@ List.ofSeq lines = [ "traces: T 0/0 traced, 0 complete (no CTRF outcomes)" ] @>
+    test <@ projectLines lines = [ "traces: T 0/0 traced, 0 complete (no CTRF outcomes)" ] @>
 
 [<Fact>]
 let ``an empty weave stored by ingestion is logged with the weaver's reason`` () =
@@ -467,8 +485,8 @@ let ``an empty weave stored by ingestion is logged with the weaver's reason`` ()
 
     test
         <@
-            lines
-            |> Seq.exactlyOne
+            projectLines lines
+            |> List.exactlyOne
             |> (fun l -> l.StartsWith "traces: T not recorded — no-woven-assembly")
         @>
 
@@ -494,7 +512,7 @@ let ``a traced run whose processes wrote no dump is stored failed and logged`` (
             CtrfPath = None } ]
         lines
 
-    test <@ List.ofSeq lines = [ "traces: T not recorded — recorder-no-output" ] @>
+    test <@ projectLines lines = [ "traces: T not recorded — recorder-no-output" ] @>
     test <@ (runsOf root "T" |> List.exactlyOne).Status = TraceStore.FailedToRecord @>
 
 [<Fact>]
@@ -510,6 +528,7 @@ let ``a tree that was unbound at launch claims no complete trace`` () =
     TraceRun.ingestAll
         rt
         (symbolsOf root)
+        TraceRun.foldedIndex
         "run1"
         None
         (fun () -> None)
@@ -524,8 +543,9 @@ let ``a tree that was unbound at launch claims no complete trace`` () =
             Filtered = false
             CtrfPath = Some ctrf } ]
         lines.Add
+    |> Async.RunSynchronously
 
-    test <@ List.ofSeq lines = [ "traces: T 1/1 traced, 0 complete (the input tree moved during the run)" ] @>
+    test <@ projectLines lines = [ "traces: T 1/1 traced, 0 complete (the input tree moved during the run)" ] @>
     test <@ (runsOf root "T" |> List.exactlyOne).Status = TraceStore.TreeMovedDuringRun @>
 
 [<Fact>]
@@ -540,6 +560,7 @@ let ``a tree unreadable at completion claims no complete trace either`` () =
     TraceRun.ingestAll
         rt
         (symbolsOf root)
+        TraceRun.foldedIndex
         "run1"
         (Some "tree")
         (fun () -> None)
@@ -554,6 +575,7 @@ let ``a tree unreadable at completion claims no complete trace either`` () =
             Filtered = false
             CtrfPath = Some ctrf } ]
         ignore
+    |> Async.RunSynchronously
 
     test <@ (runsOf root "T" |> List.exactlyOne).Status = TraceStore.TreeMovedDuringRun @>
 
@@ -569,6 +591,7 @@ let ``an ingestion error is stored as a failed run and logged`` () =
         failing
         rt
         (symbolsOf root)
+        TraceRun.foldedIndex
         "run1"
         (Some "tree")
         (fun () -> Some "tree")
@@ -583,8 +606,9 @@ let ``an ingestion error is stored as a failed run and logged`` () =
             Filtered = true
             CtrfPath = None } ]
         lines.Add
+    |> Async.RunSynchronously
 
-    test <@ List.ofSeq lines = [ "traces: T not recorded — trace ingestion failed: boom" ] @>
+    test <@ projectLines lines = [ "traces: T not recorded — trace ingestion failed: boom" ] @>
     let run = runsOf root "T" |> List.exactlyOne
 
     test
@@ -611,8 +635,8 @@ let ``a store that cannot be opened is logged, never thrown`` () =
 
     test
         <@
-            lines
-            |> Seq.exactlyOne
+            projectLines lines
+            |> List.exactlyOne
             |> (fun l -> l.StartsWith "traces: not recorded — could not use the trace store")
         @>
 
@@ -628,6 +652,7 @@ let ``one project's storage failure does not stop the next project's`` () =
         throwing
         rt
         (symbolsOf root)
+        TraceRun.foldedIndex
         "run1"
         (Some "tree")
         (fun () -> Some "tree")
@@ -646,14 +671,190 @@ let ``one project's storage failure does not stop the next project's`` () =
             Filtered = false
             CtrfPath = None } ]
         lines.Add
+    |> Async.RunSynchronously
 
     test
         <@
-            List.ofSeq lines = [ "traces: U not recorded — trace storage failed: disk full"
-                                 "traces: T not recorded — refused" ]
+            projectLines lines = [ "traces: U not recorded — trace storage failed: disk full"
+                                   "traces: T not recorded — refused" ]
         @>
 
     test <@ (runsOf root "T" |> List.exactlyOne).Status = TraceStore.Refused @>
+
+// --- ingestAll: the traces join against an index that has folded what the run admitted ---
+
+/// One probe id: the type `L.M`, which a test that runs executes.
+let private typeUseManifest: Manifest =
+    { Rows =
+        [| { Id = 0
+             Kind = TypeUse
+             Assembly = "L"
+             TypeName = "L.M"
+             Member = ""
+             Document = None
+             FirstLine = 0
+             LastLine = 0 } |]
+      Documents = Map.empty
+      IdCount = 1 }
+
+/// One finished process dump: a single passing test `Ns.C.t` that executed probe id 0.
+let private writeDumpHittingId0 (dumpDir: string) =
+    let lines =
+        [ """{"format":"testprune-trace/1","pid":1,"parentScope":null,"runtime":".NET 10.0.0","os":"OSX","arch":"Arm64","ids":1,"cpuMs":5,"counters":{"test":0,"class":0,"collection":0,"assembly":0,"override":0,"staticInit":0,"ambient":0,"overflow":0}}"""
+          """{"key":"T:1","test":{"class":"Ns.C","method":"t","display":"Ns.C.t"},"parents":[],"links":[],"ids":[0],"inputs":[],"children":[]}"""
+          """{"end":true}""" ]
+
+    File.WriteAllLines(Path.Combine(dumpDir, "trace-1.ndjson"), lines)
+
+/// What the plugin's fold writes into the index for `L.M`'s file.
+let private indexTypeM (root: string) =
+    let symbol: TestPrune.AstAnalyzer.SymbolInfo =
+        { FullName = "L.M"
+          Kind = TestPrune.AstAnalyzer.SymbolKind.Type
+          SourceFile = "src/L.fs"
+          LineStart = 1
+          LineEnd = 3
+          ContentHash = "m-v1"
+          IsExtern = false }
+
+    (TestPrune.Database.Database.create (Path.Combine(root, "i.db"))).RebuildProjects
+        [ TestPrune.AstAnalyzer.AnalysisResult.Create([ symbol ], [], []) ]
+
+/// Ingest one traced project `T` hitting `L.M`, against `index`, keeping the summary.
+let private ingestTypeUse (root: string) (index: IndexFold) (lines: ResizeArray<string>) =
+    let session = sessionOf root "T" typeUseManifest
+    writeDumpHittingId0 session.DumpDir
+    let ctrf = Path.Combine(root, "run", "T.ctrf.json")
+    writeCtrf ctrf
+    let rt = runtime root RecordFullRuns Set.empty PassThrough
+    let summaries = ResizeArray<TraceIngest.IngestSummary>()
+
+    let keeping store repoRoot launch completion =
+        let result = TraceSession.ingestProject store repoRoot launch completion
+        result |> Result.iter summaries.Add
+        result
+
+    TraceRun.ingestAllWith
+        keeping
+        rt
+        (symbolsOf root)
+        index
+        "run1"
+        (Some "tree")
+        (fun () -> Some "tree")
+        [ { Project = "T"
+            Decision =
+              Traced(
+                  { Command = ""
+                    Args = []
+                    Environment = [] },
+                  session
+              )
+            Filtered = false
+            CtrfPath = Some ctrf } ]
+        lines.Add
+    |> Async.RunSynchronously
+
+    List.ofSeq summaries
+
+/// A fold that is still writing the index when ingestion starts: it indexes `write` only
+/// after `delay`, then reports folded. `asked` counts the waits.
+let private slowFold (delay: TimeSpan) (write: unit -> unit) (asked: int ref) : IndexFold =
+    { Folded =
+        fun () ->
+            asked.Value <- asked.Value + 1
+
+            task {
+                do! Tasks.Task.Delay delay
+                write ()
+            }
+      Bound = TimeSpan.FromSeconds 30.0 }
+
+[<Fact(Timeout = 30000)>]
+let ``a trace is joined only once the index has folded what the run admitted`` () =
+    let root = tempRoot ()
+    let lines = ResizeArray()
+    let asked = ref 0
+
+    let summary =
+        ingestTypeUse root (slowFold (TimeSpan.FromMilliseconds 300.0) (fun () -> indexTypeM root) asked) lines
+        |> List.exactlyOne
+
+    // Joined before the fold wrote `L.M`, the id would be unmapped (type-not-indexed) and
+    // the trace incomplete for a reason that is only timing.
+    test <@ asked.Value = 1 @>
+    test <@ (summary.UnmappedIds, summary.Complete, summary.ReasonCounts) = (0, 1, Map.empty) @>
+    test <@ projectLines lines = [ "traces: T 1/1 traced, 1 complete" ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``an id the folded index does not hold is still reported unmapped`` () =
+    let root = tempRoot ()
+    let lines = ResizeArray()
+    let asked = ref 0
+
+    let summary =
+        ingestTypeUse root (slowFold (TimeSpan.FromMilliseconds 50.0) ignore asked) lines
+        |> List.exactlyOne
+
+    test <@ (summary.UnmappedIds, summary.Complete) = (1, 0) @>
+    test <@ projectLines lines = [ "traces: T 1/1 traced, 0 complete" ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``an index still folding at the bound stores the project as not recorded, joining nothing`` () =
+    let root = tempRoot ()
+    let lines = ResizeArray()
+    let never = Tasks.TaskCompletionSource()
+
+    let index: IndexFold =
+        { Folded = fun () -> never.Task
+          Bound = TimeSpan.FromMilliseconds 100.0 }
+
+    let summaries = ingestTypeUse root index lines
+
+    test <@ List.isEmpty summaries @>
+    let run = runsOf root "T" |> List.exactlyOne
+    test <@ (run.Status, run.Reason) = (TraceStore.FailedToRecord, TraceRun.indexUnsettledReason index.Bound) @>
+    test <@ List.ofSeq lines = [ $"traces: T not recorded — %s{TraceRun.indexUnsettledReason index.Bound}" ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a run of refusals stores without waiting on the index`` () =
+    let root = tempRoot ()
+    let lines = ResizeArray()
+    let rt = runtime root RecordFullRuns Set.empty PassThrough
+    let never = Tasks.TaskCompletionSource()
+
+    let index: IndexFold =
+        { Folded = fun () -> never.Task
+          Bound = TimeSpan.FromMinutes 5.0 }
+
+    TraceRun.ingestAll
+        rt
+        (symbolsOf root)
+        index
+        "run1"
+        (Some "tree")
+        (fun () -> Some "tree")
+        [ { Project = "T"
+            Decision = Untraced(Some "refused")
+            Filtered = false
+            CtrfPath = None } ]
+        lines.Add
+    |> Async.RunSynchronously
+
+    test <@ List.ofSeq lines = [ "traces: T not recorded — refused" ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``every join logs how long the index took to fold, before the project's line`` () =
+    let root = tempRoot ()
+    let lines = ResizeArray()
+
+    ingestTypeUse root (slowFold (TimeSpan.FromMilliseconds 300.0) (fun () -> indexTypeM root) (ref 0)) lines
+    |> ignore
+
+    test <@ lines.Count = 2 @>
+    let waitedMs = lines[0].Substring(foldLinePrefix.Length).TrimEnd('m', 's') |> int
+    test <@ lines[0].StartsWith foldLinePrefix && waitedMs >= 300 @>
+    test <@ lines[1] = "traces: T 1/1 traced, 1 complete" @>
 
 // --- untracedRetry: a traced launch that verified nothing is repeated untraced ---
 
