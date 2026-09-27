@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a daemon no longer stops, killing the checks and test runs in flight, when
+  `.fshw.json` is reported changed but holds the configuration it loaded. macOS can
+  deliver a file notification for a write made just before the daemon read the file,
+  and an editor can save identical bytes. The daemon now compares the file's content
+  with what it loaded and logs "holds the configuration this daemon loaded; still
+  running" instead of stopping.
+
 ## 0.14.0-alpha.74 - 2026-09-27
 
 - chore: rebuild to bundle updated dependencies
