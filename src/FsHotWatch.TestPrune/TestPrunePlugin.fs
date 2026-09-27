@@ -2707,6 +2707,36 @@ module internal ObservedModel =
         | Some(fsproj, identity) -> Map.tryFind fsproj now = Some identity
         | None -> false
 
+    /// How long a completion waits for a re-discovery to settle before it is folded
+    /// against whatever the host publishes then.
+    let settleBound = TimeSpan.FromMinutes 5.0
+
+    /// Wait, bounded by `settleBound`, while the host re-discovers its project model, for
+    /// a completion launched under an available model. Returns how long it waited.
+    let awaitSettled (graph: ProjectGraphAccessor) (launchedUnder: int64 option) : Async<TimeSpan> =
+        let started = Diagnostics.Stopwatch.StartNew()
+
+        let rec wait () =
+            async {
+                match graph.ObserveModel() with
+                | FsHotWatch.ProjectModel.Observation.Rediscovering _ when
+                    launchedUnder.IsSome && started.Elapsed < settleBound
+                    ->
+                    do! Async.Sleep 100
+                    return! wait ()
+                | _ -> return started.Elapsed
+            }
+
+        async {
+            let! elapsed = wait ()
+
+            return
+                if elapsed < TimeSpan.FromMilliseconds 100.0 then
+                    TimeSpan.Zero
+                else
+                    elapsed
+        }
+
     /// A generation for a log line; `None` is a model that was not available.
     let describe (generation: int64 option) =
         match generation with
@@ -8961,6 +8991,18 @@ let internal createWithQueries
 
                 | Custom(TestsFinished(started, launchedCompletion, launchedAs) as message)
                 | Custom(CommandTestsFinished(started, launchedCompletion, launchedAs, _, _) as message) ->
+                    // A completion that lands while the model is being re-discovered has
+                    // nothing to be compared against yet: wait for the re-discovery to
+                    // settle, so it is carried or revoked per project instead of whole.
+                    let! waited = ObservedModel.awaitSettled ctx.ProjectGraph launchedAs.ModelGeneration
+
+                    if waited > TimeSpan.Zero then
+                        let waitedRun = launchedCompletion.RunId.ToString("N")
+
+                        Logging.info
+                            "test-prune"
+                            $"Run %s{waitedRun} completed while the project model was being re-discovered; waited %.1f{waited.TotalSeconds}s for it to settle before folding"
+
                     // A model replaced while the run was in flight takes back only the
                     // results of the projects whose compile inputs it changed.
                     let modelCarry, completed, launch =
@@ -9034,11 +9076,20 @@ let internal createWithQueries
                     // returns carries it. A run that completed is a run whose directory a
                     // reader may need, whatever the handler goes on to decide about its
                     // results.
+                    //
+                    // Except a skip: a launch that selected nothing and ran nothing wrote
+                    // no directory, and counting it tells a reader the tests ran twice.
+                    let skipped =
+                        launch.ZeroSelection <> ZeroSelection.NotAZero && Map.isEmpty completed.Results
+
                     let completedRuns =
-                        completed.RunId
-                        :: (state.CompletedRuns
-                            |> List.filter (fun id -> id <> completed.RunId)
-                            |> List.truncate (SessionRunLedger - 1))
+                        if skipped then
+                            state.CompletedRuns
+                        else
+                            completed.RunId
+                            :: (state.CompletedRuns
+                                |> List.filter (fun id -> id <> completed.RunId)
+                                |> List.truncate (SessionRunLedger - 1))
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
@@ -9743,12 +9794,24 @@ let internal createWithQueries
                                     // about one selection bug: any future path that lands an
                                     // executed-nothing run here is covered without a new arm.
                                     let verdict =
-                                        if RunVerification.verifiedNothing (verificationOf results.Results) then
+                                        match receiptTransition, evidenceReceipt with
+                                        | ReceiptTransition.Noop, Some retained when
+                                            RunVerification.verifiedNothing (verificationOf results.Results)
+                                            ->
+                                            // Nothing needed running because an earlier run
+                                            // already verified this tree and model, and its
+                                            // receipt stands: that run is the evidence, so
+                                            // the line names it rather than the empty skip.
+                                            let retainedRun = retained.RunId.ToString("N")
+
+                                            RunVerdict.create
+                                                $"no test needed: nothing changed since run %s{retainedRun}, which verified this tree"
+                                                results.Elapsed
+                                        | _ when RunVerification.verifiedNothing (verificationOf results.Results) ->
                                             RunVerdict.verifiedNothing
                                                 $"%d{total} test project(s) ran, no test executed"
                                                 results.Elapsed
-                                        else
-                                            RunVerdict.create runSummary results.Elapsed
+                                        | _ -> RunVerdict.create runSummary results.Elapsed
 
                                     ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
                                 elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then

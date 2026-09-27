@@ -72,6 +72,19 @@ let private evaluate (store: ConcurrentDictionary<string, byte[]>) (path: string
 type Tracker() =
     let fileHashes = ConcurrentDictionary<string, byte[]>()
 
+    // The bytes each `Observe` caller (a discovery about to load its model) saw last.
+    let observed = ConcurrentDictionary<string, byte[]>()
+
+    let currentHash (path: string) : byte[] option =
+        try
+            if File.Exists path then
+                Some(comparableHash path (File.ReadAllBytes path))
+            else
+                None
+        with
+        | :? IOException -> None
+        | :? UnauthorizedAccessException -> None
+
     /// Returns true if the file content actually changed since this tracker last
     /// checked it. Updates the stored hash on change. Returns true for
     /// new/deleted files.
@@ -85,7 +98,20 @@ type Tracker() =
     /// its model from — a prior does exist, and the caller can supply it. Observing it
     /// here is how the next watcher echo of those same bytes is answered "unchanged"
     /// instead of provoking work the caller has already done.
-    member _.Observe(path: string) = evaluate fileHashes path |> ignore
+    member _.Observe(path: string) =
+        evaluate fileHashes path |> ignore
+
+        match currentHash path with
+        | Some hash -> observed[path] <- hash
+        | None -> observed.TryRemove(path) |> ignore
+
+    /// Whether the last `Observe` of `path` saw the bytes it holds now: a discovery has
+    /// loaded its model from this content. False when it was never observed, is gone, or
+    /// changed since.
+    member _.ObservedAsCurrent(path: string) : bool =
+        match observed.TryGetValue path, currentHash path with
+        | (true, seen), Some now -> ReadOnlySpan(seen).SequenceEqual(ReadOnlySpan(now))
+        | _ -> false
 
 /// Process-global fallback tracker backing the module-level `hasContentChanged`.
 let private defaultTracker = Tracker()
