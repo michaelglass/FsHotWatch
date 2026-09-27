@@ -4211,3 +4211,105 @@ let ``a receipt speaks for a later model only while every project it covered is 
                         Coverage = RunCoverage.none }
             )
         @>
+
+[<Fact(Timeout = 20000)>]
+let ``an already-verified skip after a full suite shows the full suite, not NOTHING VERIFIED`` () =
+    // A green confirm: the full suite passed, then the build that followed it launched a
+    // run that selected nothing because nothing had changed. The verdict was green, but
+    // the plugin line read "NOTHING VERIFIED: 0 test project(s) ran" and the check said
+    // "the tests ran 2 times", counting a batch that executed nothing and wrote no run
+    // directory.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
+
+        let skip =
+            { emptyLaunch with
+                ZeroSelection = ZeroSelection.AlreadyVerified }
+            |> bindReceiptTree repoRoot
+            |> testsFinishedEvent []
+
+        let _, statuses, _, final = driveRuns handler [ fullRun; skip ]
+        let fullRunId = runIdOfFinished fullRun
+
+        match lastStatus statuses with
+        | PluginStatus.Completed(_, verdict) ->
+            let fullRunText = fullRunId.ToString("N")
+            test <@ verdict.NothingVerified = None @>
+            test <@ verdict.Summary.Contains fullRunText @>
+        | other -> Assert.Fail($"expected a completed status, got %A{other}")
+
+        let report = receiptScope repoRoot handler final
+        test <@ report.RunId = Some fullRunId @>
+        test <@ report.SessionRuns = [ fullRunId ] @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a run that selected nothing with no earlier receipt still says NOTHING VERIFIED`` () =
+    // The control: with no full suite behind it, an empty run is an absence of evidence.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA" ]) None None None None []
+
+        let skip =
+            { emptyLaunch with
+                ZeroSelection = ZeroSelection.AlreadyVerified }
+            |> bindReceiptTree repoRoot
+            |> testsFinishedEvent []
+
+        let _, statuses, _, _ = driveRuns handler [ skip ]
+
+        match lastStatus statuses with
+        | PluginStatus.Completed(_, verdict) -> test <@ verdict.NothingVerified.IsSome @>
+        | other -> Assert.Fail($"expected a completed status, got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``a run that completes while the model is being re-discovered waits for it, then is carried`` () =
+    // The completion lands mid re-discovery: no generation to compare against, so it used
+    // to be revoked whole. It waits for the re-discovery to settle (the host reports
+    // `Rediscovering` for its first three reads), then is compared per project.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA" ]) None None None None []
+
+        let reads = ref 0
+        let fsproj = "/repo/ProjA.fsproj"
+        let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+        let ctx =
+            { recordingCtx with
+                ProjectGraph =
+                    { recordingCtx.ProjectGraph with
+                        ObserveModel =
+                            fun () ->
+                                reads.Value <- reads.Value + 1
+
+                                if reads.Value <= 3 then
+                                    FsHotWatch.ProjectModel.Observation.Rediscovering 2L
+                                else
+                                    fixtureModelOf 2L
+                        ObserveProjectInputs = fun () -> Some(2L, Map.ofList [ fsproj, "a" ])
+                        GetAllProjects = fun () -> [ fsproj ] } }
+
+        let finished =
+            testsFinishedEvent
+                [ "ProjA", passed false ]
+                ({ fullSuiteLaunch [ "ProjA" ] with
+                    ModelGeneration = Some 1L
+                    ProjectInputs = Some(Map.ofList [ "ProjA", (fsproj, "a") ]) }
+                 |> bindReceiptTree repoRoot)
+
+        let state = handler.Update ctx handler.Init finished |> Async.RunSynchronously
+
+        test <@ reads.Value > 3 @>
+        test <@ state.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished finished) @>
+
+        test
+            <@
+                (state :> IEarnedEvidenceState).EarnedEvidence
+                |> Option.map (fun evidence -> evidence.Generation, evidence.FailureReasons) = Some(2L, [])
+            @>)

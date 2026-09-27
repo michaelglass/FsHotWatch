@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: after a green full suite, a later run that selected nothing because nothing
+  changed no longer shows "NOTHING VERIFIED: 0 test project(s) ran". While the full
+  suite's receipt stands, the status names that run. A skip that ran nothing also no
+  longer joins the session's run ledger, so a check no longer reports "the tests ran 2
+  times" for a batch with no run directory.
+- fix: a run that completes while the project model is being re-discovered waits
+  (bounded, 5 minutes) for the re-discovery to settle before it is folded. It is then
+  carried or revoked per project instead of revoked whole.
 - fix: a project model re-evaluation no longer throws away a test run whose projects it
   did not touch. A long-lived daemon whose model was re-evaluated more often than a
   whole-project run takes (for example a build tool rebuilt in the same workspace) revoked

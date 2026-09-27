@@ -1894,6 +1894,26 @@ type private ChangeWorkerState =
     { Suppressed: Set<string>
       Owed: OwedChanges option }
 
+/// Which of the paths a failed cohort admitted are still owed when its changes replay.
+/// A source file is: the tracker already holds its bytes, so asking again would drop it.
+/// A project input (`.fsproj`, `.props`, `.sln`, `project.assets.json`) is owed only while
+/// no re-discovery has loaded its current bytes: every re-discovery reads every project
+/// file, so one that ran since the cohort failed has already applied the change, and
+/// replaying it would re-evaluate the model — and replace it under a running test suite —
+/// for a change the model already holds.
+let internal owedAdmissions (tracker: ContentDedup.Tracker) (alreadyAdmitted: Set<string>) : Map<string, bool> =
+    alreadyAdmitted
+    |> Set.toList
+    |> List.map (fun path ->
+        let isProjectInput =
+            match Watcher.classifyChange path with
+            | ProjectChanged _
+            | SolutionChanged -> true
+            | SourceChanged _ -> false
+
+        path, not (isProjectInput && tracker.ObservedAsCurrent path))
+    |> Map.ofList
+
 /// Run a change cohort against the current model. A superseded attempt may have published
 /// some results, but never its seal; the next attempt runs the same changes against the
 /// model that replaced it, inside the same owned request. After
@@ -1910,8 +1930,13 @@ let internal processBatch
     let admitted =
         System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.Ordinal)
 
-    for path in alreadyAdmitted do
-        admitted[path] <- true
+    for KeyValue(path, stillOwed) in owedAdmissions ctx.ContentTracker alreadyAdmitted do
+        if not stillOwed then
+            Logging.info
+                "changes"
+                $"owed project input %s{Path.GetRelativePath(ctx.RepoRoot, path)} was already loaded by a later re-discovery; not re-evaluated again"
+
+        admitted[path] <- stillOwed
 
     let hasContentChanged path =
         admitted.GetOrAdd(path, ctx.ContentTracker.HasContentChanged)

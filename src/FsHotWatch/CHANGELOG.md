@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a change batch that failed because the project model kept changing no longer
+  re-reports its project files as changed once a later re-discovery has loaded them.
+  Its owed changes are replayed with the next change request, and every admitted path
+  used to count as changed. A checkout's four `.fsproj` files were re-reported with no
+  write in between, re-evaluating the model and replacing it under a running suite. An
+  owed project input (`.fsproj`, `.props`, `.sln`, `project.assets.json`) now counts
+  only while no re-discovery has read its current bytes (`ContentDedup.Tracker.ObservedAsCurrent`).
 - feat: every published project model carries each project's compile-input identity
   (`ProjectModel.ProjectInputs`: its options hash folded with its reference closure),
   read through `HostSnapshot.ProjectModelInputs` and the new

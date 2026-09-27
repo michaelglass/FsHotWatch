@@ -1684,6 +1684,52 @@ let ``observing project content answers the next echo of the same bytes as uncha
         // seeded orphan behind.
         test <@ excluded.HasContentChanged assets @>)
 
+[<Fact(Timeout = 10000)>]
+let ``a replayed cohort does not re-report a project change a later re-discovery already loaded`` () =
+    // The production sequence: a checkout rewrote four .fsproj files; the cohort that
+    // admitted them was superseded on every attempt and failed, owing them. A re-discovery
+    // (the next confirm's scan) then loaded those same bytes. The next unrelated change
+    // replayed the owed cohort, which reported the four files as changed again, with no
+    // write in between, re-evaluated the model, and replaced it under a running suite.
+    withTempDir "daemon-owed-replay" (fun root ->
+        let directory = Path.Combine(root, "src", "App")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "App.fsproj")
+        let source = Path.Combine(directory, "App.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(source, "module App\nlet value = 1\n")
+
+        let tracker = FsHotWatch.ContentDedup.Tracker()
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+
+        // The checkout: the cohort admits the rewrite, then fails and owes it.
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        File.WriteAllText(source, "module App\nlet value = 2\n")
+        test <@ tracker.HasContentChanged project @>
+        test <@ tracker.HasContentChanged source @>
+        let owed = Set.ofList [ project; source ]
+
+        // No re-discovery since: the project change is still owed, as is the source edit.
+        test <@ FsHotWatch.Daemon.owedAdmissions tracker owed = Map.ofList [ project, true; source, true ] @>
+
+        // A re-discovery loads the new bytes. The project change is applied; the source
+        // edit (which no discovery checks) is still owed.
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        test <@ FsHotWatch.Daemon.owedAdmissions tracker owed = Map.ofList [ project, false; source, true ] @>
+
+        // A write after that re-discovery is owed again.
+        File.WriteAllText(
+            project,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><X>1</X></PropertyGroup></Project>"
+        )
+
+        test <@ FsHotWatch.Daemon.owedAdmissions tracker owed = Map.ofList [ project, true; source, true ] @>
+
+        // A project file that is gone was not loaded from anything.
+        File.Delete project
+        test <@ not (tracker.ObservedAsCurrent project) @>
+        test <@ not (tracker.ObservedAsCurrent(Path.Combine(root, "never-observed.fsproj"))) @>)
+
 [<Fact(Timeout = 60000)>]
 let ``a cold daemon does not re-discover on a watcher echo of an unchanged project file`` () =
     withTempDir "daemon-cold-project-echo" (fun tmpDir ->
