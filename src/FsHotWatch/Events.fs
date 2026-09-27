@@ -692,17 +692,67 @@ type TestRunCompleted =
 /// support a green. Only an owner's result fold constructs one.
 type EarnedEvidence =
     private
-        { Completion: TestRunCompleted
-          ModelGeneration: int64
-          ExpectedProjects: Set<string>
-          WholeProjectCoverage: Set<string>
-          Refusals: string list }
+        {
+            Completion: TestRunCompleted
+            ModelGeneration: int64
+            ExpectedProjects: Set<string>
+            WholeProjectCoverage: Set<string>
+            Refusals: string list
+            /// Each expected project's `.fsproj` and compile-input identity under the model
+            /// this was earned under (`ProjectModel.ProjectInputs`), keyed by project name.
+            /// `None` when any expected project's identity was not known: then this vouches
+            /// for its own model only.
+            Inputs: Map<string, string * string> option
+        }
 
     member this.RunId = this.Completion.RunId
     member this.Generation = this.ModelGeneration
     member this.FailureReasons = this.Refusals
 
 module internal EarnedEvidence =
+    /// Is `project`'s entry in `inputs` (its `.fsproj` and identity) the identity
+    /// `current` holds for that `.fsproj`?
+    let private unchangedIn (current: Map<string, string>) (inputs: Map<string, string * string>) (project: string) =
+        match Map.tryFind project inputs with
+        | Some(fsproj, identity) -> Map.tryFind fsproj current = Some identity
+        | None -> false
+
+    /// The projects `evidence` covered in full that it still vouches for under the model at
+    /// `currentGeneration`: all of them under the model it was earned under; under a later
+    /// one, those whose compile inputs are unchanged between the two (`currentInputs`, by
+    /// `.fsproj`). A project whose inputs moved, or whose identity is not known on either
+    /// side, is not covered.
+    let carriedCoverage
+        (currentGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
+        (evidence: EarnedEvidence option)
+        : Set<string> =
+        match evidence, currentGeneration with
+        | Some earned, Some current when earned.ModelGeneration = current -> earned.WholeProjectCoverage
+        | Some earned, Some _ ->
+            match earned.Inputs, currentInputs with
+            | Some inputs, Some now -> earned.WholeProjectCoverage |> Set.filter (unchangedIn now inputs)
+            | _ -> Set.empty
+        | _ -> Set.empty
+
+    /// `evidence` as evidence about the model at `generation`: itself under the model it
+    /// was earned under, and — re-stamped, every refusal kept — under a later model in
+    /// which every project it expected compiles from the same inputs. `None` when any of
+    /// them changed, or the identities that would show they did not are unknown.
+    let forModel (generation: int64) (currentInputs: Map<string, string> option) (evidence: EarnedEvidence) =
+        if evidence.ModelGeneration = generation then
+            Some evidence
+        else
+            match evidence.Inputs, currentInputs with
+            | Some inputs, Some now when
+                not evidence.ExpectedProjects.IsEmpty
+                && evidence.ExpectedProjects |> Set.forall (unchangedIn now inputs)
+                ->
+                Some
+                    { evidence with
+                        ModelGeneration = generation }
+            | _ -> None
+
     /// A launch with no model, one selected under a replaced model, or a completion that
     /// belongs to a different launch earns nothing. Everything else is evidence of what
     /// ran, carrying every reason it cannot support a green.
@@ -710,6 +760,9 @@ module internal EarnedEvidence =
         (launchRunId: System.Guid)
         (launchModelGeneration: int64 option)
         (currentModelGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
+        // Each expected project's `.fsproj`, by name: what its identity is looked up by.
+        (projectFiles: Map<string, string>)
         (expectedProjects: Set<string>)
         (pendingObligationCount: int)
         (baseline: EarnedEvidence option)
@@ -721,11 +774,7 @@ module internal EarnedEvidence =
             && launchRunId <> System.Guid.Empty
             && launchRunId = completed.RunId
             ->
-            let baselineProjects =
-                baseline
-                |> Option.filter (fun evidence -> evidence.Generation = current)
-                |> Option.map (fun evidence -> evidence.WholeProjectCoverage)
-                |> Option.defaultValue Set.empty
+            let baselineProjects = carriedCoverage currentModelGeneration currentInputs baseline
 
             let wholeProjectCoverage =
                 completed.Results
@@ -775,12 +824,30 @@ module internal EarnedEvidence =
                   if not (TestResult.executedAnything completed.Results) then
                       yield "the completion executed no tests" ]
 
+            let inputs =
+                currentInputs
+                |> Option.bind (fun now ->
+                    let known =
+                        expectedProjects
+                        |> Set.toList
+                        |> List.choose (fun project ->
+                            Map.tryFind project projectFiles
+                            |> Option.bind (fun fsproj ->
+                                Map.tryFind fsproj now
+                                |> Option.map (fun identity -> project, (fsproj, identity))))
+
+                    if known.Length = Set.count expectedProjects then
+                        Some(Map.ofList known)
+                    else
+                        None)
+
             Some
                 { Completion = completed
                   ModelGeneration = current
                   ExpectedProjects = expectedProjects
                   WholeProjectCoverage = wholeProjectCoverage
-                  Refusals = List.distinct refusals }
+                  Refusals = List.distinct refusals
+                  Inputs = inputs }
         | _ -> None
 
     /// The runnable projects `evidence` does not cover with a whole-project run under the
@@ -792,32 +859,37 @@ module internal EarnedEvidence =
     /// Empty when there is no current model, since no completion earns evidence then.
     let wholeProjectGap
         (currentModelGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
         (runnable: Set<string>)
         (evidence: EarnedEvidence option)
         : Set<string> =
         match currentModelGeneration with
         | None -> Set.empty
-        | Some current ->
-            let covered =
-                evidence
-                |> Option.filter (fun earned -> earned.Generation = current)
-                |> Option.map (fun earned -> earned.WholeProjectCoverage)
-                |> Option.defaultValue Set.empty
-
-            Set.difference runnable covered
+        | Some _ -> Set.difference runnable (carriedCoverage currentModelGeneration currentInputs evidence)
 
     /// The evidence `runId` earned, while it belongs to the current model: what a run that
     /// leaves an earlier run's receipt standing keeps, so the receipt and the evidence
     /// the verdict looks it up by name the same run.
-    let retainedForRun (currentModelGeneration: int64 option) (runId: System.Guid) (previous: EarnedEvidence option) =
-        previous
-        |> Option.filter (fun evidence -> evidence.RunId = runId && Some evidence.Generation = currentModelGeneration)
+    let retainedForRun
+        (currentModelGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
+        (runId: System.Guid)
+        (previous: EarnedEvidence option)
+        =
+        match previous, currentModelGeneration with
+        | Some evidence, Some current when evidence.RunId = runId -> forModel current currentInputs evidence
+        | _ -> None
 
     /// A completion that selected nothing because everything was already verified keeps the
     /// evidence it was verified by, provided that evidence belongs to the current model.
-    let retainedForZeroSelection (currentModelGeneration: int64 option) (previous: EarnedEvidence option) =
-        previous
-        |> Option.filter (fun evidence -> Some evidence.Generation = currentModelGeneration)
+    let retainedForZeroSelection
+        (currentModelGeneration: int64 option)
+        (currentInputs: Map<string, string> option)
+        (previous: EarnedEvidence option)
+        =
+        match previous, currentModelGeneration with
+        | Some evidence, Some current -> forModel current currentInputs evidence
+        | _ -> None
 
 /// Checkable files of a model that a cohort did not re-check, because nothing that
 /// decides their results changed since the model named here: their project's compiler

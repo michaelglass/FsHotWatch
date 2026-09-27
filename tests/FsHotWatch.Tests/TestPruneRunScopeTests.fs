@@ -4063,6 +4063,7 @@ let ``the completion line names both generations, the graded run and the evidenc
     let receipt: TestEvidenceReceipt =
         { InputTreeHash = Some "tree"
           ModelGeneration = Some 7L
+          ProjectInputs = None
           RunId = receiptRun
           Coverage = RunCoverage.none
           Seeds = []
@@ -4080,6 +4081,8 @@ let ``the completion line names both generations, the graded run and the evidenc
             receiptRun
             (Some 7L)
             (Some 7L)
+            None
+            Map.empty
             (Set.ofList (if refusing then [ "ProjA"; "ProjB" ] else [ "ProjA" ]))
             0
             None
@@ -4104,3 +4107,107 @@ let ``the completion line names both generations, the graded run and the evidenc
     let revoked = line (ReceiptTransition.Revoked "the tree moved") None (evidence true)
     test <@ revoked.Contains "receipt revoked (the tree moved); now grades no run" @>
     test <@ revoked.Contains "refusing: ProjB" @>
+
+// ---------------------------------------------------------------------------
+// A model replaced mid-run revokes only the projects whose compile inputs it changed.
+// ---------------------------------------------------------------------------
+
+let private withInputs (generation: int64) (inputs: (string * string) list) (launch: TestRunLaunch) =
+    { launch with
+        ModelGeneration = Some generation
+        ProjectInputs =
+            Some(
+                inputs
+                |> List.map (fun (project, identity) -> project, ($"/repo/%s{project}.fsproj", identity))
+                |> Map.ofList
+            ) }
+
+let private identitiesOf (inputs: (string * string) list) =
+    inputs
+    |> List.map (fun (project, identity) -> $"/repo/%s{project}.fsproj", identity)
+    |> Map.ofList
+
+[<Fact>]
+let ``a model change mid-run keeps the projects it did not touch and revokes the ones it did`` () =
+    let finished =
+        testsFinishedEvent
+            [ "ProjA", passed false; "ProjB", passed false ]
+            (fullSuiteLaunch [ "ProjA"; "ProjB" ]
+             |> withInputs 1L [ "ProjA", "a"; "ProjB", "b" ])
+
+    let completion, launch =
+        match finished with
+        | Custom(TestsFinished(_, completed, launch)) -> completed, launch
+        | _ -> failwith "expected TestsFinished"
+
+    // Same model: nothing to decide.
+    let same, _, _ =
+        acrossModelChange (Some 1L) (Some(identitiesOf [ "ProjA", "a" ])) completion launch
+
+    test <@ same = ModelCarry.SameModel @>
+
+    // Nothing a test project compiles from moved: the run stands under the new model.
+    let carried, keptCompletion, carriedLaunch =
+        acrossModelChange (Some 2L) (Some(identitiesOf [ "ProjA", "a"; "ProjB", "b"; "Tool", "x" ])) completion launch
+
+    test <@ carried = ModelCarry.Carried @>
+    test <@ keptCompletion = completion @>
+    test <@ carriedLaunch.ModelGeneration = Some 2L @>
+
+    // ProjB's inputs moved: its result is revoked, ProjA's stands, and the run is no
+    // longer a full suite.
+    let revoked, partialCompletion, partialLaunch =
+        acrossModelChange (Some 2L) (Some(identitiesOf [ "ProjA", "a"; "ProjB", "b2" ])) completion launch
+
+    test <@ revoked = ModelCarry.Revoked(Set.ofList [ "ProjB" ]) @>
+    test <@ partialCompletion.Results |> Map.keys |> List.ofSeq = [ "ProjA" ] @>
+    test <@ partialCompletion.Verification = Ran RunScope.Partial @>
+    test <@ partialLaunch.Selection |> Map.keys |> List.ofSeq = [ "ProjA" ] @>
+    test <@ partialLaunch.ModelGeneration = Some 2L @>
+
+    // Everything moved: nothing stands, and the launch is left under its own model so the
+    // run earns nothing.
+    let allMoved, _, unchangedLaunch =
+        acrossModelChange (Some 2L) (Some(identitiesOf [ "ProjA", "a2"; "ProjB", "b2" ])) completion launch
+
+    test <@ allMoved = ModelCarry.Revoked(Set.ofList [ "ProjA"; "ProjB" ]) @>
+    test <@ unchangedLaunch = launch @>
+
+    // No identities, or no model now: nothing can be shown unchanged.
+    let blind, _, _ = acrossModelChange (Some 2L) None completion launch
+    test <@ blind = ModelCarry.Unprovable @>
+
+    let rediscovering, _, _ =
+        acrossModelChange None (Some(identitiesOf [ "ProjA", "a" ])) completion launch
+
+    test <@ rediscovering = ModelCarry.Unprovable @>
+
+[<Fact>]
+let ``a receipt speaks for a later model only while every project it covered is unchanged`` () =
+    let receipt: TestEvidenceReceipt =
+        { InputTreeHash = Some "tree"
+          ModelGeneration = Some 1L
+          ProjectInputs =
+            Some(Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a"); "ProjB", ("/repo/ProjB.fsproj", "b") ])
+          RunId = Guid.NewGuid()
+          Coverage = Map.ofList [ "ProjA", CoveredWholeProject ]
+          Seeds = []
+          ZeroSelection = ZeroSelection.NotAZero }
+
+    test <@ receiptSpeaksFor (Some 1L) None receipt @>
+    // ProjB is not covered, so its move does not matter; ProjA's does.
+    test <@ receiptSpeaksFor (Some 2L) (Some(identitiesOf [ "ProjA", "a"; "ProjB", "b2" ])) receipt @>
+    test <@ not (receiptSpeaksFor (Some 2L) (Some(identitiesOf [ "ProjA", "a2"; "ProjB", "b" ])) receipt) @>
+    test <@ not (receiptSpeaksFor (Some 2L) None receipt) @>
+    test <@ not (receiptSpeaksFor None (Some(identitiesOf [ "ProjA", "a" ])) receipt) @>
+
+    test
+        <@
+            not (
+                receiptSpeaksFor
+                    (Some 2L)
+                    (Some(identitiesOf [ "ProjA", "a" ]))
+                    { receipt with
+                        Coverage = RunCoverage.none }
+            )
+        @>

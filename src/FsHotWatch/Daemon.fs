@@ -248,6 +248,60 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
+/// Why a scan re-discovers: the project files whose last-write time differs from the
+/// fingerprint the last completed discovery memoized, each named with what happened to
+/// it. A re-discovery replaces the project model, and every run launched under the old
+/// model has to account for that, so the log must say which write did it.
+let internal fingerprintChangeLine
+    (repoRoot: string)
+    (previous: Set<string * int64>)
+    (current: Set<string * int64>)
+    : string =
+    if Set.isEmpty previous then
+        "Scan re-discovery: no project model has been discovered by a scan in this daemon yet"
+    else
+        let stamps (fingerprint: Set<string * int64>) = fingerprint |> Seq.map fst |> Set.ofSeq
+        let before = stamps previous
+        let after = stamps current
+
+        let describe (path: string) =
+            let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+
+            if not (Set.contains path before) then $"%s{rel} (added)"
+            elif not (Set.contains path after) then $"%s{rel} (removed)"
+            else $"%s{rel} (rewritten)"
+
+        let changed =
+            Set.union (Set.difference current previous |> Set.map fst) (Set.difference previous current |> Set.map fst)
+            |> Set.toList
+            |> List.map describe
+
+        let named = String.concat ", " changed
+        $"Scan re-discovery: %d{changed.Length} project file(s) changed since the last discovery [%s{named}]"
+
+/// After a scoped re-discovery, which of the projects it re-evaluated came back with
+/// different compiler options. A re-evaluation that changed nothing still replaces the
+/// model generation; saying so tells a spurious trigger (a restore that rewrote a file
+/// with the same meaning) from a real compile-input change.
+let internal reEvaluationOutcomeLine
+    (repoRoot: string)
+    (reEvaluated: string list)
+    (before: Map<string, string>)
+    (after: Map<string, string>)
+    : string =
+    let rel (path: string) =
+        Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+
+    let changed, unchanged =
+        reEvaluated
+        |> List.distinct
+        |> List.partition (fun project -> Map.tryFind project before <> Map.tryFind project after)
+
+    let names projects =
+        projects |> List.map rel |> String.concat ", "
+
+    $"Re-evaluation changed the compile inputs of %d{changed.Length} project(s) [%s{names changed}] and left %d{unchanged.Length} unchanged [%s{names unchanged}]"
+
 /// `<projDir>/obj/project.assets.json` for a project file — restore's materialized
 /// package graph, and the path `resolveAffectedProjects` maps back to this same
 /// `.fsproj`. Both directions derive the shape here so neither can start naming a
@@ -925,6 +979,18 @@ let internal resolveAffectedProjects (knownProjects: string list) (changedPaths:
 ///     caller is responsible for explicitly invalidating the affected project
 ///     and its transitive dependents (see `InvalidateProjectFiles`).
 /// Returns the set of removed files.
+/// Every registered project's compile-input identity under the model the pipeline holds
+/// now: its options hash folded with the identities of the projects it references.
+let internal registeredProjectInputs (pipeline: CheckPipeline) (graph: ProjectGraph) : Map<string, string> =
+    ProjectModel.ProjectInputs.compute
+        (pipeline.GetRegisteredProjects())
+        (fun project ->
+            pipeline.GetProjectOptions project
+            |> Option.map CheckCache.getProjectOptionsHash)
+        (fun project ->
+            graph.GetReferences(AbsProjectPath.create project)
+            |> List.map AbsProjectPath.value)
+
 let private rediscoverAndClearRemoved
     (repoRoot: string)
     (loader: IWorkspaceLoader)
@@ -1468,6 +1534,7 @@ let private processBatchAttempt
         |> Option.iter (Logging.info "daemon")
 
         if hasSolution then
+            Logging.info "daemon" "project input changed: a solution file was written"
             publishCurrent (fun () -> ctx.Host.EmitFileChanged(SolutionChanged))
 
         if not projFilesChanged.IsEmpty || hasSolution then
@@ -1550,6 +1617,21 @@ let private processBatchAttempt
 
                 let! refreshedModel = captureModel ()
                 batchModel <- refreshedModel
+
+                let hashesOf (options: Map<AbsProjectPath, _>) =
+                    options
+                    |> Map.toList
+                    |> List.map (fun (project, opts) ->
+                        AbsProjectPath.value project, CheckCache.getProjectOptionsHash opts)
+                    |> Map.ofList
+
+                Logging.info
+                    "daemon"
+                    (reEvaluationOutcomeLine
+                        ctx.RepoRoot
+                        (affectedFsprojs @ (recheckProjects |> List.map AbsProjectPath.value))
+                        (hashesOf optionsBefore)
+                        (hashesOf (registeredOptions ())))
 
                 // A project outside the re-check set whose options the re-discovery changed
                 // (or which it newly registered) cannot keep its results: it joins the
@@ -2423,6 +2505,7 @@ type Daemon
         host.SetProjectGraph
             { ObserveModel = fun () -> host.WorkSnapshot.ProjectModel
               ObserveCheckableFiles = fun () -> host.WorkSnapshot.ProjectModelFiles
+              ObserveProjectInputs = fun () -> host.WorkSnapshot.ProjectModelInputs
               GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
@@ -3217,6 +3300,8 @@ let private performScan
             let mutable readFrom: int64 option = None
 
             if currentFingerprint <> lastFingerprint then
+                Logging.info "daemon" (fingerprintChangeLine ctx.RepoRoot lastFingerprint currentFingerprint)
+
                 let! completed, _ =
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
@@ -3848,9 +3933,19 @@ module Daemon =
                 DiscoveryCoordinator(
                     publish =
                         fun observation ->
-                            host.WorkStore.PublishProjectModelWithFiles(
+                            // Identities describe a settled model; one still being
+                            // re-discovered has none to publish.
+                            let inputs =
+                                match observation with
+                                | ProjectModel.Observation.Available _ -> Some(registeredProjectInputs pipeline graph)
+                                | ProjectModel.Observation.Unobserved
+                                | ProjectModel.Observation.Rediscovering _
+                                | ProjectModel.Observation.Unavailable _ -> None
+
+                            host.WorkStore.PublishProjectModelWithInputs(
                                 observation,
-                                pipeline.GetAllRegisteredFiles() |> Set.ofList
+                                pipeline.GetAllRegisteredFiles() |> Set.ofList,
+                                inputs
                             )
                 )
 

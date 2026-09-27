@@ -4527,6 +4527,39 @@ let ``projectChangeLine names the write, and says when it was a restore`` () =
 let ``projectChangeLine says nothing when no project input changed`` () =
     test <@ Daemon.projectChangeLine "/repo" [] = None @>
 
+[<Fact(Timeout = 5000)>]
+let ``a scan re-discovery names each project file whose stamp moved`` () =
+    let before = Set.ofList [ "/repo/src/A/A.fsproj", 1L; "/repo/src/B/B.fsproj", 1L ]
+
+    let after = Set.ofList [ "/repo/src/A/A.fsproj", 2L; "/repo/src/C/C.fsproj", 1L ]
+
+    let line = Daemon.fingerprintChangeLine "/repo" before after
+    test <@ line.Contains "3 project file(s) changed" @>
+    test <@ line.Contains "src/A/A.fsproj (rewritten)" @>
+    test <@ line.Contains "src/B/B.fsproj (removed)" @>
+    test <@ line.Contains "src/C/C.fsproj (added)" @>
+    test <@ (Daemon.fingerprintChangeLine "/repo" Set.empty after).Contains "no project model has been discovered" @>
+
+[<Fact(Timeout = 5000)>]
+let ``a re-evaluation says which projects' compile inputs it actually changed`` () =
+    let before =
+        Map.ofList [ "/repo/src/Tool/Tool.fsproj", "t1"; "/repo/tests/T/T.fsproj", "x" ]
+
+    let after =
+        Map.ofList [ "/repo/src/Tool/Tool.fsproj", "t1"; "/repo/tests/T/T.fsproj", "y" ]
+
+    let line =
+        Daemon.reEvaluationOutcomeLine
+            "/repo"
+            [ "/repo/src/Tool/Tool.fsproj"
+              "/repo/tests/T/T.fsproj"
+              "/repo/src/Tool/Tool.fsproj" ]
+            before
+            after
+
+    test <@ line.Contains "changed the compile inputs of 1 project(s) [tests/T/T.fsproj]" @>
+    test <@ line.Contains "left 1 unchanged [src/Tool/Tool.fsproj]" @>
+
 /// A scan request admitted while another scan has not yet read the tree is answered by
 /// that scan: every file it checks is read after the request arrived. `fshw check`
 /// against a daemon still in its cold scan sends exactly that request, and running it

@@ -130,3 +130,63 @@ let ``a flush classifies its whole queue with one grouped query`` () =
 
         test <@ recorded.SingleSeedWalks = 0 @>
         test <@ recorded.GroupedQueries |> List.map Set.ofList = [ queue ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a seed that alone selects more than its whole queue is named as a non-monotone selection`` () =
+    withTempDir "tp-non-monotone" (fun tmpDir ->
+        // The shape of "seed alone selects 1116 of 1080 tests (103%)": the composition-root
+        // fail-safe restores a project's tests for one seed alone but not for the queue it
+        // sits in. Stubbed: the queue selects 501 tests, `Lib.f1` alone selects 600.
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        seedIndex dbPath
+        PendingVerification.save tmpDir (Set.ofList [ symbolName 1; symbolName 2 ])
+
+        let testsNamed count =
+            [ for i in 1..count ->
+                  { SymbolFullName = $"Tests.t%d{i}"
+                    TestProject = "tests/P.Tests"
+                    TestClass = "Tests"
+                    TestMethod = $"t%d{i}" } ]
+
+        let queries (db: Database) : ImpactQueries =
+            { ImpactQueries.ofDatabase db with
+                AffectedTests =
+                    fun seeds ->
+                        match seeds with
+                        | [ single ] when single = symbolName 1 -> testsNamed 600
+                        | [ _ ] -> testsNamed 1
+                        | _ -> testsNamed 501 }
+
+        let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _sink =
+            FsHotWatch.Logging.installSink
+                { Write = lines.Enqueue
+                  Level = FsHotWatch.Logging.LogLevel.Warning }
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        host.RegisterHandler(
+            createWithQueries
+                queries
+                (TimeSpan.FromMinutes 5.0)
+                (fun () -> Map.empty)
+                dbPath
+                tmpDir
+                None
+                None
+                None
+                None
+                None
+                []
+                None
+        )
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForQuiescent host 30000
+
+        let logged = String.concat "\n" lines
+        test <@ logged.Contains $"seed '%s{symbolName 1}' alone selects 600 tests, MORE than the 501" @>
+        test <@ not (logged.Contains "(119%)") @>
+        // A seed well inside its queue says nothing.
+        test <@ not (logged.Contains $"seed '%s{symbolName 2}'") @>)

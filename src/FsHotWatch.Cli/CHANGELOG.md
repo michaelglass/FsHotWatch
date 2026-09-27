@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: `confirm` on a long-lived daemon no longer livelocks when the project model is
+  re-evaluated during its run for a project no test project compiles from
+  (FsHotWatch.TestPrune).
 - fix: `confirm` no longer ends red with "nothing vouches for this green" after its full
   suite passed and a later impact-selected run followed on the same tree, and it re-runs
   the suite when the project model changed since the last run instead of grading that run

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: a project model re-evaluation no longer throws away a test run whose projects it
+  did not touch. A long-lived daemon whose model was re-evaluated more often than a
+  whole-project run takes (for example a build tool rebuilt in the same workspace) revoked
+  every run and could never earn a receipt, so `confirm` never went green. Now a run that
+  completes under a replaced model keeps the result of every test project whose compile
+  inputs (options, source list and reference closure) are unchanged. Only the changed
+  projects' results are revoked. Evidence, receipts and the whole-project evidence gap
+  carry across such a re-evaluation per project in the same way. Breaking:
+  `TestRunLaunch` and `TestEvidenceReceipt` have a new field `ProjectInputs`.
+- fix: "seed '…' alone selects N of M tests" no longer reports a share above 100%. When a
+  seed alone selects more tests than its whole queue, the line says the composition-root
+  fail-safe is not monotone in its seeds, instead of calling the seed a hub.
+- feat: logging. A run whose model moved while it ran logs whether it was carried, which
+  projects were revoked, or that nothing could be shown unchanged.
 - fix: a `confirm` could end red with "no evidence receipt for the graded run … — nothing
   vouches for this green" right after its full suite passed. A later impact-selected run
   over the same tree and model (`selected: yes`) kept the full suite's receipt, which

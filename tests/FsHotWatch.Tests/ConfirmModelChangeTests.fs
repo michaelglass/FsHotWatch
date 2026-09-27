@@ -13,6 +13,12 @@ open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 open FsHotWatch.Tests.TestHelpers
 
+let private gatedTestsFsproj (repoRoot: string) =
+    Path.Combine(repoRoot, "tests", "GatedTests", "GatedTests.fsproj")
+
+let private toolFsproj (repoRoot: string) =
+    Path.Combine(repoRoot, "src", "Tool", "Tool.fsproj")
+
 /// A daemon over `<root>/repo` whose one test project waits for `<root>/release`. The
 /// release file, the start marker and the impact database all sit OUTSIDE the repository,
 /// so ending a run never reads as the tree moving under it.
@@ -31,6 +37,12 @@ let private gatedDaemon (root: string) =
 
     let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
     host.WorkStore.PublishProjectModelWithFiles(fixtureModelOf 1L, Set.empty)
+
+    // The graph a daemon would wire: the test project and a build-tool project nothing
+    // references, so a re-evaluation can move one without the other.
+    host.SetProjectGraph
+        { FsHotWatch.PluginFramework.ProjectGraphAccessor.none with
+            GetAllProjects = fun () -> [ gatedTestsFsproj repoRoot; toolFsproj repoRoot ] }
 
     host.RegisterHandler(
         FsHotWatch.TestPrune.TestPrunePlugin.create
@@ -192,3 +204,92 @@ let ``a long-lived daemon re-evaluated after its last confirm re-earns its evide
         runSuite daemon
         test <@ settles daemon 5.0 @>
         assertGreen (gradeConfirm daemon (Path.Combine(root, "verdict-2"))))
+
+/// A re-evaluation: the model at `generation`, whose test project compiles from `testInputs`
+/// and whose unreferenced build-tool project from `toolInputs`.
+let private reEvaluate (daemon: GatedDaemon) (generation: int64) (testInputs: string) (toolInputs: string) =
+    daemon.Host.WorkStore.PublishProjectModelWithInputs(
+        fixtureModelOf generation,
+        Set.empty,
+        Some(
+            Map.ofList
+                [ gatedTestsFsproj daemon.RepoRoot, testInputs
+                  toolFsproj daemon.RepoRoot, toolInputs ]
+        )
+    )
+
+/// Hold a confirm's full-suite run in flight, apply `whileRunning` to the daemon, then
+/// let the run finish and the host commit it.
+let private confirmRunWith (daemon: GatedDaemon) (whileRunning: unit -> unit) =
+    File.Delete daemon.Release
+    File.Delete daemon.Started
+
+    daemon.Host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
+    |> Async.RunSynchronously
+    |> ignore
+
+    let inFlight = Async.StartAsTask(daemon.Host.RunCommand("run-tests", [| "{}" |]))
+    waitUntil (fun () -> File.Exists daemon.Started) 20000
+    whileRunning ()
+    File.WriteAllText(daemon.Release, "")
+    inFlight.GetAwaiter().GetResult() |> ignore
+    waitForQuiescent daemon.Host 20000
+
+[<Fact(Timeout = 60000)>]
+let ``a re-evaluation that changes only an unreferenced project keeps confirm's in-flight run`` () =
+    withTempDir "confirm-unrelated-reevaluation" (fun root ->
+        let daemon = gatedDaemon root
+        reEvaluate daemon 1L "tests-a" "tool-1"
+
+        // A build tool rebuilt in the same workspace re-evaluates its project while the
+        // confirm's suite runs. No test project compiles from it.
+        confirmRunWith daemon (fun () -> reEvaluate daemon 2L "tests-a" "tool-2")
+
+        test <@ settles daemon 5.0 @>
+        assertGreen (gradeConfirm daemon (Path.Combine(root, "verdict"))))
+
+[<Fact(Timeout = 60000)>]
+let ``a re-evaluation that changes the test project's own inputs revokes its run`` () =
+    withTempDir "confirm-own-reevaluation" (fun root ->
+        let daemon = gatedDaemon root
+        reEvaluate daemon 1L "tests-a" "tool-1"
+
+        confirmRunWith daemon (fun () -> reEvaluate daemon 2L "tests-b" "tool-1")
+
+        // The run verified inputs the model no longer has: nothing vouches for them, so
+        // confirm runs the suite again rather than grading it.
+        test <@ not (settles daemon 1.0) @>
+        test <@ gradeConfirm daemon (Path.Combine(root, "verdict-1")) = Escalates @>
+
+        runSuite daemon
+        assertGreen (gradeConfirm daemon (Path.Combine(root, "verdict-2"))))
+
+[<Fact(Timeout = 60000)>]
+let ``repeated unrelated re-evaluations during one confirm run converge to green`` () =
+    withTempDir "confirm-reevaluation-livelock" (fun root ->
+        // The livelock: a daemon re-evaluated more often than a whole-project run takes
+        // revoked every run, so confirm never earned a receipt. Four re-evaluations of an
+        // unreferenced project land during one run; that one run is the answer.
+        let daemon = gatedDaemon root
+        reEvaluate daemon 1L "tests-a" "tool-1"
+
+        confirmRunWith daemon (fun () ->
+            for generation in 2L .. 5L do
+                reEvaluate daemon generation "tests-a" $"tool-%d{generation}")
+
+        test <@ settles daemon 5.0 @>
+        assertGreen (gradeConfirm daemon (Path.Combine(root, "verdict"))))
+
+[<Fact(Timeout = 60000)>]
+let ``a long-lived daemon keeps its evidence across a re-evaluation of an unreferenced project`` () =
+    withTempDir "confirm-long-lived-unrelated" (fun root ->
+        let daemon = gatedDaemon root
+        reEvaluate daemon 1L "tests-a" "tool-1"
+        runSuite daemon
+
+        // No run since; only the tool project moved.
+        reEvaluate daemon 2L "tests-a" "tool-2"
+        reEvaluate daemon 3L "tests-a" "tool-3"
+
+        test <@ settles daemon 5.0 @>
+        assertGreen (gradeConfirm daemon (Path.Combine(root, "verdict"))))

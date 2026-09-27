@@ -263,6 +263,7 @@ type PluginHost
                 // Plugins observe the model this host publishes, whoever supplied the graph.
                 { ObserveModel = fun () -> workStore.Snapshot.ProjectModel
                   ObserveCheckableFiles = fun () -> workStore.Snapshot.ProjectModelFiles
+                  ObserveProjectInputs = fun () -> workStore.Snapshot.ProjectModelInputs
                   GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
