@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a traced prepare re-weaves when the weaver, the recorder or a pass is another build of
+  the same version. The weave cache under `obj/traced/` was keyed on their versions, so a
+  rebuilt or upgraded weaver of one version reused a weave (and its JIT verification) that
+  another build made. The key now names each of those assemblies' module version id, which a
+  deterministic build derives from the assembly's content: rebuilding an unchanged weaver
+  still reuses the weave. Existing cache entries are woven again once.
+
 - fix: coverage of a woven assembly keeps the branch points under a match's later hidden
   sequence points, such as the list test of `| Subset [] ->` after the union case test. The
   copy of a line's sequence point that 0.3.0 adds after a probe used to cover the probes that
