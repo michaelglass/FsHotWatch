@@ -249,7 +249,7 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
     |> Set.ofList
 
 /// Why a scan re-discovers: the project files whose last-write time differs from the
-/// fingerprint the last completed discovery memoized, each named with what happened to
+/// stamps the last successful re-discovery (on any path) read, each named with what happened to
 /// it. A re-discovery replaces the project model, and every run launched under the old
 /// model has to account for that, so the log must say which write did it.
 let internal fingerprintChangeLine
@@ -258,7 +258,7 @@ let internal fingerprintChangeLine
     (current: Set<string * int64>)
     : string =
     if Set.isEmpty previous then
-        "Scan re-discovery: no project model has been discovered by a scan in this daemon yet"
+        "Scan re-discovery: no project model has been discovered in this daemon yet"
     else
         let stamps (fingerprint: Set<string * int64>) = fingerprint |> Seq.map fst |> Set.ofSeq
         let before = stamps previous
@@ -1002,13 +1002,17 @@ let private rediscoverAndClearRemoved
     (logTag: string)
     (excludePatterns: string list)
     (contentTracker: ContentDedup.Tracker)
+    (discoveredFingerprint: Set<string * int64> option ref)
     (clearCheckCache: bool)
     =
     discovery.Run(fun () ->
         async {
             let oldFiles = graph.GetAllFiles() |> Set.ofList
 
-            // Before the loader reads them — see `observeProjectContent`.
+            // Before the loader reads them — see `observeProjectContent`. Stamps taken
+            // earlier than the read can only be older, which costs a redundant
+            // re-discovery on the next scan, never a missed one.
+            let fingerprint = fingerprintFsprojFiles repoRoot excludePatterns
             observeProjectContent repoRoot excludePatterns contentTracker
 
             let! completed =
@@ -1021,6 +1025,11 @@ let private rediscoverAndClearRemoved
                     host.Phases
                     excludePatterns
                     clearCheckCache
+
+            // A total loader failure is retryable with unchanged bytes, so it records no
+            // stamps a scan would then skip on.
+            if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
+                discoveredFingerprint.Value <- Some fingerprint
 
             let newFiles = graph.GetAllFiles() |> Set.ofList
             let removedFiles = Set.difference oldFiles newFiles
@@ -1343,6 +1352,10 @@ type internal BatchContext =
         /// paths, so a stale global entry would collide exactly). See
         /// `ContentDedup.Tracker`.
         ContentTracker: ContentDedup.Tracker
+        /// The project-file stamps (`fingerprintFsprojFiles`) the last successful
+        /// re-discovery read, whichever path ran it. A scan compares against this, so a
+        /// change a change batch already re-discovered is not re-discovered again.
+        DiscoveredFingerprint: Set<string * int64> option ref
         /// Monotonic counter bumped per `InSessionBatch` `BatchChecked` emitted
         /// from `processBatch`. Per-trigger generation lets subscribers dedup
         /// "latest in-session cohort" without colliding with scan generations
@@ -1613,6 +1626,7 @@ let private processBatchAttempt
                         "daemon"
                         ctx.ExcludePatterns
                         ctx.ContentTracker
+                        ctx.DiscoveredFingerprint
                         false // keep unrelated projects' check cache
 
                 let! refreshedModel = captureModel ()
@@ -1698,6 +1712,7 @@ let private processBatchAttempt
                         "daemon"
                         ctx.ExcludePatterns
                         ctx.ContentTracker
+                        ctx.DiscoveredFingerprint
                         true
 
                 let! refreshedModel = captureModel ()
@@ -1894,6 +1909,20 @@ type private ChangeWorkerState =
     { Suppressed: Set<string>
       Owed: OwedChanges option }
 
+/// Whether a re-discovery has already loaded `path`'s current bytes, so the model holds
+/// them and a change batch has nothing left to re-evaluate. Only a project input
+/// (`.fsproj`, `.props`, `.sln`, `project.assets.json`) can be absorbed this way: every
+/// re-discovery reads every project file, and records what it read in the tracker. A
+/// cohort admits its paths once and keeps that answer across its retries and, owed,
+/// across a later request; a re-discovery that ran in between (the one that superseded
+/// it, or the next confirm's scan) has already applied the change, and re-evaluating it
+/// would replace the model again — under a running test suite — for bytes it holds.
+let internal absorbedByDiscovery (tracker: ContentDedup.Tracker) (path: string) : bool =
+    match Watcher.classifyChange path with
+    | ProjectChanged _
+    | SolutionChanged -> tracker.ObservedAsCurrent path
+    | SourceChanged _ -> false
+
 /// Run a change cohort against the current model. A superseded attempt may have published
 /// some results, but never its seal; the next attempt runs the same changes against the
 /// model that replaced it, inside the same owned request. After
@@ -1914,7 +1943,16 @@ let internal processBatch
         admitted[path] <- true
 
     let hasContentChanged path =
-        admitted.GetOrAdd(path, ctx.ContentTracker.HasContentChanged)
+        if not (admitted.GetOrAdd(path, ctx.ContentTracker.HasContentChanged)) then
+            false
+        elif absorbedByDiscovery ctx.ContentTracker path then
+            Logging.info
+                "changes"
+                $"project input %s{Path.GetRelativePath(ctx.RepoRoot, path)} was already loaded by a re-discovery since it was admitted; not re-evaluated again"
+
+            false
+        else
+            true
 
     let rec completeCurrent attempt =
         async {
@@ -3295,7 +3333,11 @@ let private performScan
             // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
             // when no project files have changed.
             let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
-            let mutable lastFingerprint = fingerprintMemo.Value
+
+            // The newest stamps any re-discovery read, not only this scan's: a change batch
+            // that re-discovered a checkout has already applied it.
+            let mutable lastFingerprint =
+                ctx.DiscoveredFingerprint.Value |> Option.defaultValue fingerprintMemo.Value
             // See `scanAnswers`; set once this attempt starts reading the tree.
             let mutable readFrom: int64 option = None
 
@@ -3314,6 +3356,7 @@ let private performScan
                         "scan"
                         ctx.ExcludePatterns
                         ctx.ContentTracker
+                        ctx.DiscoveredFingerprint
                         true
 
                 // A total loader failure is retryable even when no .fsproj bytes
@@ -3986,6 +4029,7 @@ module Daemon =
                   FcsSuppressedCodes = fcsSuppressedCodes
                   ExcludePatterns = excludePatterns
                   ContentTracker = ContentDedup.Tracker()
+                  DiscoveredFingerprint = ref None
                   InSessionBatchGen = ref 0L
                   Seams = seams
                   DepsGate =
@@ -4102,7 +4146,11 @@ module Daemon =
                     )
                     |> ignore
                 with failure ->
-                    Logging.warn "watcher" $"change not admitted (%O{change}): %s{failure.Message}"
+                    // A bound on THIS thread's wait, not on the change: the admission stays
+                    // queued on the store and is applied when the store's writer frees.
+                    Logging.warn
+                        "watcher"
+                        $"change admission still pending (%O{change}): %s{failure.Message}; it stays queued and is applied when the daemon's store frees"
 
             // The ONLY place a watcher can come from. A `OneShot` host never reaches
             // the factory, so its verdict cannot depend on native watcher startup.

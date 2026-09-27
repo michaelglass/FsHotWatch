@@ -1733,7 +1733,7 @@ type RealWatchTests() =
     // shape these used to have (sleep 100ms, write once, `signal.Wait(5000)`) is not
     // expressible against that fixture: it was a coin flip against an unbounded window of FSEvents
     // cold-start latency on a fresh temp dir.
-    [<Fact(Timeout = 20000)>]
+    [<Fact(Timeout = 90000)>]
     member _.``watchConfigFile invokes callback when .fshw.json is written``() =
         use signal = new System.Threading.ManualResetEventSlim(false)
         let observed = ref ""
@@ -1751,7 +1751,7 @@ type RealWatchTests() =
                 Assert.True(fired, $"expected watcher callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s")
                 test <@ observed.Value.Contains("config") @>)
 
-    [<Fact(Timeout = 20000)>]
+    [<Fact(Timeout = 90000)>]
     member _.``watchRepoConfigFile watches existing config file``() =
         use signal = new System.Threading.ManualResetEventSlim(false)
 
@@ -1766,7 +1766,7 @@ type RealWatchTests() =
 
                 Assert.True(fired, $"expected callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s"))
 
-    [<Fact(Timeout = 20000)>]
+    [<Fact(Timeout = 90000)>]
     member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
         use signal = new System.Threading.ManualResetEventSlim(false)
         let observed = ref ""
