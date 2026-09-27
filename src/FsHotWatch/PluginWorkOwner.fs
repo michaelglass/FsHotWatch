@@ -995,12 +995,13 @@ let private settledWith (receipt: TaskCompletionSource<unit> option) settlement 
 /// event was admitted, of a kind the event's success speaks to.
 let private recovered (id: WorkId) isWorkerResult preparedCommit failed =
     match failed with
-    | Some recorded when id > recorded.At ->
-        match recorded.Failure with
-        | UpdateFailure _ -> None
-        | CommitFailure _ when preparedCommit -> None
-        | RunFailure _ when isWorkerResult -> None
-        | _ -> failed
+    | Some recorded when
+        id > recorded.At
+        && (recorded.Failure.IsUpdateFailure
+            || recorded.Failure.IsCommitFailure && preparedCommit
+            || recorded.Failure.IsRunFailure && isWorkerResult)
+        ->
+        None
     | _ -> failed
 
 let private record failure fresh = Some { Failure = failure; At = fresh }

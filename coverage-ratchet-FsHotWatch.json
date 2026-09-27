@@ -674,8 +674,8 @@
     "PluginWorkOwner.fs": [
       {
         "line": 100,
-        "branch": 96,
-        "reason": "Linux floor from CI run 36309004650 on a58a09c3 (2026-09-27): line 100 percent, branch 96.7 percent (208/215 branches), rounded down. The ModelInputs type change removed an unreachable branch on macOS (now 166/166) but Linux counts one more branch for the same source. The 7-branch Linux-only gap is queued with the other Linux coverage work.",
+        "branch": 100,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4712 passed, 0 failed), 2026-09-27: line 100 percent, branch 100 percent (211/211). CI's 208/215 was SDK 10.0.401 lowering or-patterns to one switch target per union case: HostSnapshot.Evidence and ProjectModelInputs now have tests under every not-available model, PendingEventsOf under rows of other names, and `recovered` no longer enumerates OperationFailure/ExecutorFailure, whose target no commit can reach.",
         "platform": "linux"
       }
     ],
@@ -957,9 +957,9 @@
         "platform": "macos"
       },
       {
-        "line": 83,
-        "branch": 60,
-        "reason": "higher line coverage on Linux CI (no FSEvents)",
+        "line": 97,
+        "branch": 84,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4712 passed, 0 failed), 2026-09-27: line 97.7 percent (339/347), branch 85.7 percent (108/126), floored ~1.7pp under a single run (the polling paths are timing-dependent; sub-1pp floors here have gone red on the next run). The macOS seams (extra-pattern watchers, coalesced rescans, a native start fault, the forced macOS layout without FSEvents) now have portable tests.",
         "platform": "linux"
       }
     ],
@@ -1998,9 +1998,9 @@
         "platform": "macos"
       },
       {
-        "coveredLines": 248,
-        "coveredBranches": 72,
-        "reason": "Minus 2 on 2026-09-27 for the same deleted covered branch as the macos entry (specAccepts extraction; the IL is platform-independent) — confirm against the next Linux CI run. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredLines": 335,
+        "coveredBranches": 106,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4712 passed, 0 failed), 2026-09-27: 339 covered lines and 108 covered branches from coverageratchet's own count; floored at 335/106 for single-run headroom, replacing the inferred 248/72. Re-baseline from the next Linux CI run.",
         "platform": "linux"
       }
     ]
