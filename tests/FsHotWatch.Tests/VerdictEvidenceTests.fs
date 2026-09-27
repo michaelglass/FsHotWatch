@@ -712,6 +712,38 @@ let ``evidence is carried to a later model only for the projects whose inputs di
     test <@ EarnedEvidence.retainedForZeroSelection None (Some before) (Some evidence) = None @>
 
 [<Fact>]
+let ``a sibling run in full but not expected is covered under its own model only`` () =
+    // The run executed `Sibling` in full beside the one project it was launched for. That
+    // covers `Sibling` under this model, but only expected projects have their identity
+    // recorded, so nothing can show `Sibling` compiles from the same inputs later.
+    let before = Map.ofList [ "Tests.fsproj", "t"; "Sibling.fsproj", "s" ]
+
+    let completion =
+        completed
+            (Guid.NewGuid())
+            (Map.ofList
+                [ "Tests", TestsPassed("passed", false, TimeSpan.Zero)
+                  "Sibling", TestsPassed("passed", false, TimeSpan.Zero) ])
+
+    let evidence =
+        EarnedEvidence.fromCompletion
+            completion.RunId
+            (Some 1L)
+            (Some 1L)
+            (Some before)
+            (Map.ofList [ "Tests", "Tests.fsproj"; "Sibling", "Sibling.fsproj" ])
+            (Set.ofList [ "Tests" ])
+            0
+            None
+            completion
+        |> Option.get
+
+    test
+        <@ EarnedEvidence.carriedCoverage (Some 1L) (Some before) (Some evidence) = Set.ofList [ "Tests"; "Sibling" ] @>
+
+    test <@ EarnedEvidence.carriedCoverage (Some 2L) (Some before) (Some evidence) = Set.ofList [ "Tests" ] @>
+
+[<Fact>]
 let ``the host reads evidence from an earlier model as evidence about an unchanged current one`` () =
     withTempDir "verdict-evidence-carried" (fun repoRoot ->
         let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value repoRoot
