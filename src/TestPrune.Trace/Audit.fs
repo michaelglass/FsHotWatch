@@ -46,6 +46,11 @@ type AuditReport =
         /// untraced child process, recorder overflow, a rejected dump), by full reason
         /// code. Reasons that need the index or the outcomes are the census's.
         Incomplete: Map<string, int>
+        /// The exit code of the parallel run the sampled tests are compared against.
+        ParallelExitCode: int
+        /// That run's output (the tail `Launch.run` keeps) when it exited nonzero; empty
+        /// otherwise.
+        ParallelOutput: string
     }
 
 /// The run-wide static-init scope; a child process's belongs to the scope that started it.
@@ -181,7 +186,15 @@ let summarize (tests: TestAudit list) (incomplete: Map<string, int>) : AuditRepo
     { Sampled = tests.Length
       ExtraTotal = tests |> List.sumBy (fun t -> t.Extra.Length)
       Tests = tests
-      Incomplete = incomplete }
+      Incomplete = incomplete
+      ParallelExitCode = 0
+      ParallelOutput = "" }
+
+/// The report with the parallel run's exit code, and its output when it exited nonzero.
+let withParallelRun (exitCode: int) (output: string) (r: AuditReport) : AuditReport =
+    { r with
+        ParallelExitCode = exitCode
+        ParallelOutput = if exitCode = 0 then "" else output }
 
 /// The bar: something was sampled, no id is extra in parallel, and every sampled test was
 /// run and recorded alone. Missing ids are reported for review, never failed.
@@ -205,6 +218,12 @@ let render (r: AuditReport) : string =
         else "FAIL"
 
     line $"audit  %s{verdict}  sampled %d{r.Sampled}  extra-in-parallel %d{r.ExtraTotal}"
+
+    if r.ParallelExitCode <> 0 then
+        line $"  parallel run exit %d{r.ParallelExitCode}; its output ends:"
+
+        for l in Launch.outputLines r.ParallelOutput do
+            line $"      %s{l}"
 
     for t in r.Tests do
         let missing =
@@ -237,12 +256,13 @@ let private dumpingTo (launch: TraceSession.TraceLaunch) dumpDir =
     launch.Env
     |> List.map (fun (k, v) -> if k = Contract.OutEnv then k, dumpDir else k, v)
 
-/// Launch the woven app, dumps to a fresh `dumpDir`, and read them.
+/// Launch the woven app, dumps to a fresh `dumpDir`, and read them, with the launch's exit
+/// code and output.
 let private tracedRun (launch: TraceSession.TraceLaunch) workDir dumpDir args timeout =
-    Launch.run launch.Apphost args (dumpingTo launch dumpDir) workDir timeout
-    |> ignore
+    let code, output =
+        Launch.run launch.Apphost args (dumpingTo launch dumpDir) workDir timeout
 
-    DumpReader.readDirectory dumpDir
+    DumpReader.readDirectory dumpDir, code, output
 
 /// Run one sampled test alone (`--filter-display-name`, escaped) with a CTRF report, and
 /// compare it; a run that selected no test is `notIsolated`, never a comparison with nothing.
@@ -292,7 +312,9 @@ let run
             // Seq.map rather than Array.map, which FSharp.Core inlines with a null check.
             launch.Shadow.Manifest.Rows |> Seq.map (fun r -> r.Id, r) |> Map.ofSeq
 
-        let dumps, rejected = tracedRun launch req.RepoRoot launch.DumpDir appArgs timeout
+        let (dumps, rejected), code, output =
+            tracedRun launch req.RepoRoot launch.DumpDir appArgs timeout
+
         let inParallel = ownIds dumps
 
         let tests =
@@ -301,4 +323,4 @@ let run
                 let dir = Path.Combine(req.RunDir, "audit", string i)
                 auditAlone launch req.RepoRoot rows inParallel appArgs timeout dir display)
 
-        summarize tests (incomplete dumps rejected))
+        summarize tests (incomplete dumps rejected) |> withParallelRun code output)

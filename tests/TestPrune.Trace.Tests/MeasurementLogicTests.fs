@@ -226,6 +226,28 @@ let ``a test the isolated run did not select is an audit error, compared with no
                   "" ]
         @>
 
+[<Fact>]
+let ``the audit prints the output of a parallel run that exited nonzero`` () =
+    let summary = Audit.summarize [ audited "N.C.a" [] true ] Map.empty
+    let r = summary |> Audit.withParallelRun 2 "failed N.C.x\r\nboom\n"
+
+    // A passing run's output says nothing the report needs.
+    let passed = summary |> Audit.withParallelRun 0 "all passed\n"
+    test <@ passed.ParallelExitCode = 0 && passed.ParallelOutput = "" @>
+    test <@ (summary.ParallelExitCode, summary.ParallelOutput) = (0, "") @>
+
+    test
+        <@
+            Audit.render r = String.concat
+                "\n"
+                [ "audit  PASS  sampled 1  extra-in-parallel 0"
+                  "  parallel run exit 2; its output ends:"
+                  "      failed N.C.x"
+                  "      boom"
+                  "  N.C.a  extra 0  missing -"
+                  "" ]
+        @>
+
 // ---------------------------------------------------------------- overhead
 
 let private ms (n: float) = TimeSpan.FromMilliseconds n
@@ -234,7 +256,8 @@ let private sample traced cpu rss : Overhead.Sample =
     { Traced = traced
       Cpu = ms cpu
       MaxRssBytes = rss
-      ExitCode = 0 }
+      ExitCode = 0
+      Output = "" }
 
 [<Fact>]
 let ``the median of an odd count is the middle, of an even count the mean of the middle two`` () =

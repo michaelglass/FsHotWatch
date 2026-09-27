@@ -25,6 +25,22 @@ let ``run returns the exit code and both output streams, and passes the environm
     test <@ output.Contains "out-yes" && output.Contains "err" @>
 
 [<Fact>]
+let ``run keeps the end of each stream of a long failing run, and says it dropped the rest`` () =
+    // About 250 KB on stdout, well past the kept tail, then the lines that say why it failed.
+    let script =
+        "i=0; while [ $i -lt 5000 ]; do echo out-line-$i-padding-padding-padding-padding; i=$((i+1)); done; "
+        + "echo out-last; echo err-last >&2; exit 2"
+
+    let code, output =
+        Launch.run "/bin/sh" [ "-c"; script ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+
+    test <@ code = 2 @>
+    test <@ output.Contains "out-last" && output.Contains "err-last" @>
+    test <@ not (output.Contains "out-line-0-") && output.Contains "out-line-4999-" @>
+    test <@ output.StartsWith Launch.DroppedOutputMarker @>
+    test <@ output.Length <= 2 * Launch.OutputTailChars + Launch.DroppedOutputMarker.Length @>
+
+[<Fact>]
 let ``run starts the child outside the caller's trace, passing only the trace variables it is given`` () =
     // A traced test process holds TESTPRUNE_TRACE_*: a child that inherited them would dump
     // into the parent's directory. This name is unique and read by nothing, so setting it on

@@ -34,11 +34,13 @@ let private overheadReport (traced: float) : Overhead.OverheadReport =
         [ { Traced = false
             Cpu = TimeSpan.FromMilliseconds 100.0
             MaxRssBytes = 1L
-            ExitCode = 0 }
+            ExitCode = 0
+            Output = "" }
           { Traced = true
             Cpu = TimeSpan.FromMilliseconds traced
             MaxRssBytes = 1L
-            ExitCode = 0 } ]
+            ExitCode = 0
+            Output = "" } ]
 
 /// Measurements that record their calls and return the given results.
 let private fake audit overhead census =

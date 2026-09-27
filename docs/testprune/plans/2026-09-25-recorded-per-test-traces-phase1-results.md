@@ -106,7 +106,7 @@ TestPrune.Tests only.
 | audit | `ExtraTotal = 0`; `MissingUser` explained | sampled 11, extra 15 (display-filter defect) | sampled 11, extra 0; missing only `cctor`/`gen` | pass |
 | overhead | CPU ratio ≤ 1.15 | 1.101 (83.0 s → 91.4 s); max RSS 1,910.8 MiB | 1.068 (67.4 s → 72.0 s); max RSS 1,781.3 MiB; see below | pass |
 | file-census | ratio ≤ 0.05 | 0.048 (reads-repo 21, fail-outside 20, fail-in-repo 0) | 0.048 (reads-repo 21, fail-outside 20, fail-in-repo 0) | pass |
-| coverage parity | identical cobertura with traces removed | not measured | not measured: `confirm` here still collects no coverage | open |
+| coverage parity | identical cobertura with traces removed | not measured | lines identical, branches not; see "Coverage parity" below | fail |
 | PDB / JIT | `prepare` refused nothing on a traced project | no refused run | 0 invalid of 5,774 verified methods; the one refusal is the intended own-recorder refusal | pass |
 
 The theory row that produced the first run's 15 false extras
@@ -142,6 +142,49 @@ Host load average was 25–39 at the time.
 
 | Item | State |
 |---|---|
-| coverage parity | unmeasured: `confirm` collects no coverage on this repository, so the step needs a coverage-collecting full run with and without `tests.traces` |
+| coverage parity | measured below: line coverage is identical, branch coverage is not |
 | 3 consecutive traced full runs (D6 census bar) | this run recorded one `confirm` |
 | intermittent traced exit 2 under load | 2 of 12 traced launches, not reproduced; open until a failing launch's output is kept |
+
+### Follow-up (2026-09-27): overhead reruns and coverage parity
+
+`overhead` and `audit` now print a nonzero-exit launch's output (TestPrune.Trace Unreleased), which fixes
+the defect above.
+
+#### Overhead reruns with output capture
+
+| Run | Load average | Ratio | Untraced median | Traced median | Peak RSS | Exits |
+|---|---|---|---|---|---|---|
+| 1 | 24–28 | 1.022 | 66.2 s | 67.7 s | 1,831.7 MiB | all 0 |
+| 2 | 24–31 | 1.027 | 69.1 s | 71.0 s | 1,802.5 MiB | all 0 |
+| 3 | 22–27 | 1.043 | 65.6 s | 68.4 s | 1,840.9 MiB | all 0 |
+| 4 | 19–25 | 1.030 | 67.0 s | 69.0 s | 1,777.0 MiB | all 0 |
+
+None of the 12 traced launches exited nonzero, so the earlier exit 2 did not recur. Over the day, 2 of 23
+traced measurement launches exited nonzero, both in the same `overhead` run. It stays open: the next failure will print its tests.
+
+#### Coverage parity
+
+The second run's "`confirm` collects no coverage" was wrong. fshw collects coverage by default
+(`tests.projects[].coverage` defaults to `true`). Each `confirm` writes
+`coverage/<project>/coverage.baseline.cobertura.xml` per project and a merged, line-only
+`coverage/coverage.cobertura.xml`. Two `confirm` runs on the same tree, traced (run `ef14ad88…`, TestPrune.Tests
+recorded, TestPrune.Trace.Tests refused) and with `tests.traces` removed, were compared per file on lines
+covered/valid and branches covered/valid:
+
+| Report | Files | Line counts | Branch counts | Recorder module |
+|---|---|---|---|---|
+| TestPrune.Tests (traced) | 31 = 31 | identical in every file (5,504 / 5,903) | **differ in 8 files**: traced 1,196 / 1,548, untraced 1,283 / 1,646 | none |
+| TestPrune.Trace.Tests (refused, so untraced both times) | 32 = 32 | identical | identical (696 / 712) | none |
+| merged `coverage/coverage.cobertura.xml` | 63 = 63 | identical (8,594 / 8,994) | none reported | none |
+
+The traced report adds no branch and changes no line hit. It drops every branch point on 31 lines, 98 branch
+points in all: `AstAnalyzer.fs` (38), `Orchestration.fs` (28), `SymbolDiff.fs` (16), `Database.fs` (8),
+`AuditSink.fs`, `EdgeEmission.fs`, `ImpactAnalysis.fs`, `Program.fs` (2 each). Every such line is a union
+`match` (`match change with`, `match r.Outcome with`) or a union-case test (`if sym.IsExtern then`). Those
+are the sites where the site-probe pass instruments the union's tag read before the switch. The loss is
+deterministic: two traced runs wrote byte-identical reports.
+
+| Owner | Defect |
+|---|---|
+| TestPrune.Trace (weaver, site probes) | coverage of a woven assembly loses the branch points of union matches and union-case tests: 98 of 1,646 in TestPrune.Tests. Line coverage is unaffected. A consumer whose coverage ratchet reads per-project branch rates from a traced run would see them drop. Cause not yet confirmed; the tag-read probe before the `switch` is the likely one |
