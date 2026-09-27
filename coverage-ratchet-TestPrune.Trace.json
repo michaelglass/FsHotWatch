@@ -26,9 +26,9 @@
     ],
     "SiteProbes.fs": [
       {
-        "line": 94.0,
-        "branch": 94.0,
-        "reason": "Linux floor from CI run 36301519967 on fc6f03d6 (2026-09-27): line 94.3%, branch 94.9% (112/118). The branch-point sequence-point pass is fully covered on macOS (100/100) but part of it does not run on Linux, likely because CI's .NET SDK 10.0.401 emits different IL for the parity fixture. Queued with the Linux coverage work; floors sit just under the Linux measurement.",
+        "line": 100.0,
+        "branch": 100.0,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401 with CI's build and coverage commands (non-root, full TestPrune.Trace.Tests, 310 passed), 2026-09-27: line 100 percent (263/263), branch 100 percent (118/118), up from CI run 36301519967's 94.3 percent and 112/118. SDK 10.0.401 emits no hidden sequence point between a match's line and its type test, so no fixture method needed a copied point; SiteProbeShapeTests now adds that hidden point itself, and also covers a nullary case's own `_X` class and a type initializer whose handler ends inside the method, the two IL shapes behind the other Linux-only branches.",
         "platform": "linux"
       }
     ],
