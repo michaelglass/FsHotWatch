@@ -113,6 +113,16 @@ type Tracker() =
         | (true, seen), Some now -> ReadOnlySpan(seen).SequenceEqual(ReadOnlySpan(now))
         | _ -> false
 
+    /// Whether `path` holds different bytes from the ones the last `Observe` saw, where
+    /// a file that was absent then and is absent now has not changed. A file that
+    /// appeared after the observation has changed: a model loaded while it was missing
+    /// was loaded without it.
+    member _.ChangedSinceObserved(path: string) : bool =
+        match observed.TryGetValue path, currentHash path with
+        | (true, seen), Some now -> not (ReadOnlySpan(seen).SequenceEqual(ReadOnlySpan(now)))
+        | (false, _), None -> false
+        | _ -> true
+
 /// Process-global fallback tracker backing the module-level `hasContentChanged`.
 let private defaultTracker = Tracker()
 

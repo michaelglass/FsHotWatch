@@ -1684,6 +1684,140 @@ let ``observing project content answers the next echo of the same bytes as uncha
         // seeded orphan behind.
         test <@ excluded.HasContentChanged assets @>)
 
+/// The package graph a restore writes, as `project.assets.json` text. `restoredBy`
+/// only varies the `project.restore` block, which records how the restore was invoked
+/// and not what it resolved.
+let private assetsJson (package: string) (restoredBy: string) =
+    $"""{{"version":3,"targets":{{"net10.0":{{"%s{package}/1.0.0":{{}}}}}},"project":{{"restore":{{"projectPath":"%s{restoredBy}"}}}}}}"""
+
+// A scan evaluates its project model, then waits for the build before type-checking.
+// On a cold tree that build is the first restore: it writes `obj/project.assets.json`
+// after the model was evaluated without it, so every package reference is missing
+// from the captured options. Checking under that model reports "The namespace or
+// module 'Xunit' is not defined" for code that compiles. No watcher runs here, so
+// the scan alone must notice the restore; the preprocessor stands in for it because
+// it runs after the capture and before the checks, exactly where the build does.
+[<Theory(Timeout = 60000)>]
+[<InlineData("absent-then-restored")>]
+[<InlineData("graph-changed")>]
+[<InlineData("untouched")>]
+[<InlineData("restore-metadata-only")>]
+let ``a scan re-evaluates a project whose restore changed its package graph after the model was loaded``
+    (transition: string)
+    =
+    withTempDir "daemon-scan-restore-under-model" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Restored.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Restored.fs")
+        File.WriteAllText(sourcePath, "module Restored\nlet value = 1\n")
+        let assets = Path.Combine(srcDir, "obj", "project.assets.json")
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+
+        let before, after, reEvaluates =
+            match transition with
+            | "absent-then-restored" -> None, Some(assetsJson "Xunit" "first"), true
+            | "graph-changed" -> Some(assetsJson "Xunit" "first"), Some(assetsJson "Expecto" "first"), true
+            | "untouched" -> Some(assetsJson "Xunit" "first"), None, false
+            | "restore-metadata-only" -> Some(assetsJson "Xunit" "first"), Some(assetsJson "Xunit" "second"), false
+            | other -> failwith $"unknown transition %s{other}"
+
+        before |> Option.iter (fun text -> File.WriteAllText(assets, text))
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] } ]
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "the scan must notice the restore without a watcher")
+
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "seal-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let restored = ref false
+
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "restore"
+
+                member _.Process files _ =
+                    // Once: a re-captured attempt runs the preprocessors again, and a
+                    // restore of an unchanged project writes nothing new.
+                    if not restored.Value then
+                        restored.Value <- true
+                        after |> Option.iter (fun text -> File.WriteAllText(assets, text))
+
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "restore stand-in" }
+
+                member _.Dispose() = () }
+        )
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        test <@ restored.Value @>
+
+        test
+            <@
+                daemon.Host.WorkSnapshot.OperationFaults
+                |> List.forall (fun (name, _) -> name <> "scan")
+            @>
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 10.0),
+            "the scan must seal its cohort"
+        )
+
+        // The sealed cohort was checked under the model evaluated AFTER the restore
+        // when the restore changed the package graph, and under the only model there
+        // was when it did not.
+        let expectedLoads = if reEvaluates then 2 else 1
+        test <@ loader.Loads = expectedLoads @>
+        test <@ (seals.ToArray() |> Array.last).ModelGeneration = Some(int64 expectedLoads) @>)
+
 [<Fact(Timeout = 10000)>]
 let ``a project input a re-discovery already loaded is not re-evaluated again`` () =
     // A cohort admits a project change once and keeps that answer across its retries and,
@@ -1722,6 +1856,38 @@ let ``a project input a re-discovery already loaded is not re-evaluated again`` 
         File.Delete project
         test <@ not (tracker.ObservedAsCurrent project) @>
         test <@ not (tracker.ObservedAsCurrent(Path.Combine(root, "never-observed.fsproj"))) @>)
+
+[<Fact(Timeout = 10000)>]
+let ``restore output is stale under a model when it appeared, changed or vanished since discovery read it`` () =
+    withTempDir "daemon-restored-since-discovery" (fun root ->
+        let directory = Path.Combine(root, "src", "App")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "App.fsproj")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let assets = Path.Combine(directory, "obj", "project.assets.json")
+        let tracker = FsHotWatch.ContentDedup.Tracker()
+
+        let stale () =
+            FsHotWatch.Daemon.restoredSinceDiscovery tracker [ project ]
+
+        // Never restored, and still not: the model was loaded from what is there.
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        test <@ List.isEmpty (stale ()) @>
+
+        // The first restore, after the model was loaded without it.
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{\"targets\":{}}")
+        test <@ stale () = [ project ] @>
+
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        test <@ List.isEmpty (stale ()) @>
+
+        File.WriteAllText(assets, "{\"targets\":{\"net10.0\":{}}}")
+        test <@ stale () = [ project ] @>
+
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        File.Delete assets
+        test <@ stale () = [ project ] @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a scan does not re-discover a project change a change batch already re-discovered`` () =
