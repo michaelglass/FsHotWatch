@@ -66,7 +66,7 @@ that throws keeps its previous edges and is reported as an error until it answer
 | Command | Description |
 |---------|-------------|
 | `check [--run-once]` | **The inner loop.** Run every plugin (build + lint + analyze + test + format-check), wait for genuine completion, and report every error. Tests are impact-filtered — a latency optimization, and the output says so. Exits 0 (clean), 1 (failures), or 2 (completeness unconfirmed). `--run-once` uses an ephemeral daemon (for CI). |
-| `confirm [--run-once]` | **Run the full suite and confirm `check` told the truth.** Same checks as `check`, but the tests run UNFILTERED — and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). See [Disagreement is a bug](#disagreement-is-a-bug). |
+| `confirm [--run-once] [--fresh]` | **Run the full suite and confirm `check` told the truth.** Same checks as `check`, but the tests run UNFILTERED — and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). On an unchanged tree it answers from the evidence already earned; `--fresh` runs the suite again — see [Running the suite again](#running-the-suite-again). See [Disagreement is a bug](#disagreement-is-a-bug). |
 | `verdict` | **Read the last verdict** from `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run — reading cannot perturb. Exits 0/1/2/3 as the verdict itself, plus **4** (STALE: the verdict describes a different tree) and **5** (no usable verdict). |
 | `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
@@ -114,6 +114,27 @@ a ticket.
 > ```bash
 > fshw invalidate        # preserves the warm daemon; then re-run `fshw confirm`
 > ```
+
+### Running the suite again
+
+A `confirm` on a tree that has not moved asks the same question about the same bytes,
+so it is answered from evidence already earned: a full-suite green in
+`.fshw/verdict.json` for this tree and this binary, or the warm daemon's full-suite
+receipt for this tree. Neither `fshw invalidate` nor `--no-cache` changes that.
+
+When you need the **run** and not only its answer — timing it, tracing it, hunting a
+flake — use `--fresh`:
+
+```bash
+fshw confirm --fresh   # skips the stored verdict, forces a new full-suite run, grades that run
+```
+
+It keeps the warm daemon (no `fshw stop`, no cold compiler), launches a new full-suite
+run under the current project model, and publishes the same verdict, CTRF reports and
+run id as any other `confirm`. A green is refused (exit **3**) unless the run it graded
+is one this `confirm --fresh` launched: if the forced run is refused or never reports
+back, an earlier run's evidence cannot stand in for it. With `--run-once` every run is
+new by construction, and `--fresh` only skips the stored verdict.
 
 ### A run that executed nothing is not a pass
 

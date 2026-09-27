@@ -761,3 +761,32 @@ let ``the host reads evidence from an earlier model as evidence about an unchang
         test <@ host.WorkSnapshot.ProjectModelInputs = None @>
         host.WorkStore.PublishProjectModelWithFiles(fixtureModelOf 2L, Set.empty)
         test <@ host.WorkSnapshot.ProjectModelInputs = None @>)
+
+[<Fact>]
+let ``evidence is carried to a new generation only while that generation's model is available`` () =
+    let later: FsHotWatch.ProjectModel.Snapshot =
+        { Generation = 2L
+          Counts =
+            { Discovered = 1
+              Loaded = 0
+              OptionsMapped = 0
+              Registered = 0 } }
+
+    for observation in
+        [ FsHotWatch.ProjectModel.Observation.Unobserved
+          FsHotWatch.ProjectModel.Observation.Rediscovering 2L
+          FsHotWatch.ProjectModel.Observation.Unavailable(
+              later,
+              FsHotWatch.ProjectModel.UnavailableReason.LoadingFailed
+          ) ] do
+        let store = FsHotWatch.PluginWorkOwner.Store()
+        let owner = FsHotWatch.PluginWorkOwner.Owner({ Proof = None }, store, "tests")
+        let identity = owner.AdmitEvent()
+        let proof = fullRun (Guid.NewGuid()) |> earn (Some 1L) (Some 1L) 0 None
+        owner.CommitEvent(identity, { Proof = proof })
+        store.PublishProjectModelWithInputs(observation, Set.empty, Some(Map.ofList [ "Tests.fsproj", "t" ]))
+        let snapshot = store.Snapshot
+
+        // No current model: nothing to carry the evidence to, so it keeps the generation it was earned under.
+        test <@ snapshot.ProjectModelInputs = None @>
+        test <@ snapshot.Evidence |> List.map (fun evidence -> evidence.Generation) = [ 1L ] @>

@@ -1432,6 +1432,9 @@ let pollAndRenderForInvocation
     (invocation: Verdict.Invocation)
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
+    // `confirm --fresh` grades only a run this invocation launched; everything else
+    // passes `MayReuse`. See `CheckVerdict.Freshness`.
+    (freshness: CheckVerdict.Freshness)
     (repoRoot: string)
     (excludePatterns: string list)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
@@ -1533,6 +1536,13 @@ let pollAndRenderForInvocation
             // the whole point of the verdict file is that it exists on the bad paths too.
             None
 
+    // Did THIS check launch the run a reading names? Provable only against a baseline:
+    // with none, an earlier run cannot be told from a new one, so the answer is no.
+    let launchedHere (run: TestRunReport) : bool =
+        match baselineRuns, run.RunId with
+        | Some known, Some id -> not (known.Contains id)
+        | _ -> false
+
     // Where a cause that carries no message of its own sends the reader. Resolved once,
     // from THIS repo's configuration, so the sentence names the directory its daemon
     // actually logs to.
@@ -1616,15 +1626,25 @@ let pollAndRenderForInvocation
         // it — and the verdict's check-comparison record keeps what it said either way.
         let preEscalation = checkInputs noWarnFail firstRun firstResp
 
-        let initialRead =
-            if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope then
-                // Captured BEFORE the forced run, from state that already
-                // exists: same tree, same daemon, same scan generation, same instant as the
-                // verdict below. Two separate `check`/`confirm` invocations cannot produce
-                // that pair — the tree moves in between.
-                impactScoped.Value <- Some(Verdict.impactScopedRun repoRoot firstRun preEscalation)
+        let needsFullScope = CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope
 
-                eprintfn "%s" (Verdict.CheckProse.forcingFullSuite firstRun.Scope)
+        let initialRead =
+            if
+                needsFullScope
+                || CheckVerdict.confirmNeedsNewRun checkMode freshness (launchedHere firstRun)
+            then
+                if needsFullScope then
+                    // Captured BEFORE the forced run, from state that already
+                    // exists: same tree, same daemon, same scan generation, same instant as the
+                    // verdict below. Two separate `check`/`confirm` invocations cannot produce
+                    // that pair — the tree moves in between.
+                    impactScoped.Value <- Some(Verdict.impactScopedRun repoRoot firstRun preEscalation)
+
+                    eprintfn "%s" (Verdict.CheckProse.forcingFullSuite firstRun.Scope)
+                else
+                    // Already a full-suite reading, so it is no impact-scoped sample for
+                    // the check-vs-confirm comparison: nothing is recorded for it.
+                    eprintfn "%s" (Verdict.CheckProse.forcingNewRun firstRun.RunId)
 
                 withProgress "Running the full suite (confirm)" "Running the full suite (confirm)..." (fun () ->
                     forceFullRun ())
@@ -1639,7 +1659,12 @@ let pollAndRenderForInvocation
         // ONE read decides. See `CheckVerdict.verdict`'s note where the convergence
         // loop used to be: this read was taken after settling, so there is no better
         // answer about this tree to go looking for.
-        let outcome = CheckVerdict.verdict checkMode initialRead
+        let outcome =
+            CheckVerdict.verdict checkMode initialRead
+            |> CheckVerdict.requireNewRun
+                freshness
+                (launchedHere finalRun.Value)
+                (Verdict.CheckProse.describeRun finalRun.Value.RunId)
 
         // The sample this run can offer. An escalation produced an
         // EXECUTED reading; the non-escalating `confirm` — the common case in CI, and the
@@ -1859,6 +1884,7 @@ let pollAndRender
         (Verdict.Invocation.start ())
         mode
         checkMode
+        CheckVerdict.Freshness.MayReuse
         repoRoot
         excludePatterns
         renderStatuses

@@ -74,6 +74,19 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: `confirm --fresh` runs the full suite again on an unchanged tree
+
+- **feat: `fshw confirm --fresh`.** A `confirm` on a tree that has not moved answers
+  from evidence already earned — `.fshw/verdict.json`'s full-suite green, or the warm
+  daemon's full-suite receipt — and `fshw invalidate` or `--no-cache` did not change
+  that. The only way to get a genuinely new run was to stop the daemon and move the
+  verdict file aside, which also threw away the warm compiler. `--fresh` skips the
+  stored verdict, forces a new full-suite run under the current project model, and
+  grades that run, with the usual verdict, CTRF reports and a new run id.
+- **A `--fresh` green is refused unless its run is new.** If the forced run is refused
+  or never reports back, the earlier run's evidence cannot stand in for it: the
+  verdict is `incomplete` and the exit code is **3**. Plain `confirm` is unchanged.
+
 ### core: a spawn helper can start hook steps so the daemon does not fork
 
 - **Opt-in: `FSHW_SPAWN_HELPER=1` in the daemon's environment. Without it nothing

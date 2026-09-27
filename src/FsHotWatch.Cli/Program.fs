@@ -16,6 +16,13 @@ open FsHotWatch.Ipc
 
 type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
 
+/// Flags for `fshw confirm`: `check`'s `--run-once`, plus `--fresh`, which only a
+/// full-suite confirmation can honour.
+[<RequireQualifiedAccess>]
+type ConfirmFlag =
+    | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
+    | [<CmdFlag(Description = "Launch a new full-suite run even when the tree is unchanged: never answer from .fshw/verdict.json or the daemon's retained full-suite receipt, and refuse a green (exit 3) unless the run graded is one this confirm launched")>] Fresh
+
 /// Flags for `fshw test-rerun`. Forward-progress `fshw test` deliberately
 /// has no filter knobs — the test-prune plugin runs everything downstream of
 /// a change by design. `test-rerun` is the explicit investigation verb that
@@ -246,7 +253,11 @@ type Command =
     ///
     /// `--run-once` runs it WITHOUT a daemon, which is how CI must invoke it: a merge
     /// verdict reachable only over a socket is one CI cannot ask for.
-    | [<CmdExample("", "--run-once");
+    ///
+    /// `--fresh` launches a new full-suite run on a tree that has not moved, where a
+    /// plain `confirm` answers from the evidence an earlier run earned. See
+    /// `CheckVerdict.Freshness`.
+    | [<CmdExample("", "--run-once", "--fresh");
         Cmd("Run the FULL suite and confirm `check` told the truth.\n"
             + HelpIndent
             + "Any disagreement is a BUG:\n"
@@ -257,7 +268,10 @@ type Command =
             + HelpIndent
             + "                                        test that only passes with company\n"
             + HelpIndent
-            + "Refuses a green verdict from anything less than the full suite (exit 3).")>] Confirm of RunFlag list
+            + "Refuses a green verdict from anything less than the full suite (exit 3).\n"
+            + HelpIndent
+            + "An unchanged tree is answered from the evidence already earned; --fresh runs it again.")>] Confirm of
+        ConfirmFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
     /// disk. Touches NO socket, starts no daemon, triggers no run, so reading cannot
     /// perturb what it measures (see the `Verdict` module).
@@ -309,14 +323,22 @@ let cliName = "fshw"
 
 let private isRunOnce = List.contains RunOnce
 
+let private confirmsRunOnce = List.contains ConfirmFlag.RunOnce
+
+let private freshnessOf (flags: ConfirmFlag list) : CheckVerdict.Freshness =
+    if List.contains ConfirmFlag.Fresh flags then
+        CheckVerdict.Freshness.RequireNewRun
+    else
+        CheckVerdict.Freshness.MayReuse
+
 /// The run mode a command's in-process host is constructed with. `--run-once`
 /// scans, settles and exits, so its host is `OneShot` and constructs no file
 /// watcher; every persistent command keeps `Watching`.
 let internal runModeFor (command: Command) : Daemon.RunMode =
     match command with
     | Check flags
-    | Confirm flags
     | Format flags when isRunOnce flags -> Daemon.RunMode.OneShot
+    | Confirm flags when confirmsRunOnce flags -> Daemon.RunMode.OneShot
     | _ -> Daemon.RunMode.Watching
 
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
@@ -955,6 +977,7 @@ let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
+    (freshness: CheckVerdict.Freshness)
     (invocation: Verdict.Invocation)
     (repoRoot: string)
     (excludePatterns: string list)
@@ -1007,6 +1030,7 @@ let private ensureAndQueryErrors
                     invocation
                     mode
                     checkMode
+                    freshness
                     repoRoot
                     excludePatterns
                     (renderLines mode (not noWarnFail))
@@ -2682,8 +2706,8 @@ let internal executeCommandWatchingConfig
         // (`RunOnceCheck`), where the refusal is published as an invocation-owned
         // `incomplete` and the run-level hooks still fire around it; pre-checking here
         // would exit before either could happen.
-        | Check flags
-        | Confirm flags when isRunOnce flags -> false
+        | Check flags when isRunOnce flags -> false
+        | Confirm flags when confirmsRunOnce flags -> false
         | Start
         | Check _
         | Confirm _
@@ -2737,12 +2761,14 @@ let internal executeCommandWatchingConfig
         let queryPluginIn
             (invocation: Verdict.Invocation)
             (checkMode: CheckVerdict.CheckMode)
+            (freshness: CheckVerdict.Freshness)
             (mode: ProgressRenderer.RenderMode)
             (filter: string)
             : int =
             ensureAndQueryErrors
                 mode
                 checkMode
+                freshness
                 invocation
                 repoRoot
                 config.Exclude
@@ -2755,7 +2781,12 @@ let internal executeCommandWatchingConfig
                 filter
 
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-            queryPluginIn (Verdict.Invocation.start ()) CheckVerdict.InnerLoop mode filter
+            queryPluginIn
+                (Verdict.Invocation.start ())
+                CheckVerdict.InnerLoop
+                CheckVerdict.Freshness.MayReuse
+                mode
+                filter
 
         /// `check`/`confirm` with NO daemon (`--run-once`). Same verdict, same verdict
         /// file, same exit codes — only the transport differs (`PluginHost.RunCommand`
@@ -3131,7 +3162,7 @@ let internal executeCommandWatchingConfig
                 runOnceIn invocation CheckVerdict.InnerLoop)
         | Check flags ->
             withRunHooksForInvocation RunHookCommand.Check repoRoot config (fun invocation ->
-                queryPluginIn invocation CheckVerdict.InnerLoop mode "")
+                queryPluginIn invocation CheckVerdict.InnerLoop CheckVerdict.Freshness.MayReuse mode "")
         | Confirm flags ->
             // The evidence may ALREADY have been earned. `confirm` is run repeatedly
             // before a merge, and on a tree that has not moved, asking again is the SAME
@@ -3141,7 +3172,17 @@ let internal executeCommandWatchingConfig
             // different fshw, a filtered green, a red — is not an answer, and `confirm`
             // goes and earns one. See `Verdict.priorConfirmation` for why this is the only
             // green in fshw allowed to cross a process boundary.
-            match Verdict.priorConfirmation repoRoot config.Exclude with
+            //
+            // `--fresh` skips the look: it asks for a new run, not for the answer, so the
+            // file cannot discharge it.
+            let freshness = freshnessOf flags
+
+            let prior =
+                match freshness with
+                | CheckVerdict.Freshness.RequireNewRun -> Verdict.PriorConfirmation.MustEarn
+                | CheckVerdict.Freshness.MayReuse -> Verdict.priorConfirmation repoRoot config.Exclude
+
+            match prior with
             | Verdict.PriorConfirmation.StillApplies _ ->
                 // HOOKS YES, CLAIM NO — the two halves of the run-level bracket are
                 // separated here, because this fast path needs exactly one of them.
@@ -3213,11 +3254,14 @@ let internal executeCommandWatchingConfig
                 // `--run-once` needs no daemon, which is the only reason CI can invoke
                 // `confirm` at all. This arm does the heavy work, so it is the one the
                 // gate-lock must guard.
+                //
+                // `--run-once` needs no `freshness`: its host is created for this
+                // invocation, so every run it can grade is one this invocation launched.
                 withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
-                    if isRunOnce flags then
+                    if confirmsRunOnce flags then
                         runOnceIn invocation CheckVerdict.Confirmation
                     else
-                        queryPluginIn invocation CheckVerdict.Confirmation mode "")
+                        queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
         | Verdict ->
             // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
             let report = Verdict.report repoRoot config.Exclude
@@ -3563,8 +3607,8 @@ let private launchHost (repoRoot: string) (control: FsHotWatch.RepositoryIdentit
 let internal needsDaemon (command: Command) : bool =
     match command with
     | Check flags
-    | Confirm flags
     | Format flags when isRunOnce flags -> false
+    | Confirm flags when confirmsRunOnce flags -> false
     | Status _
     | Stop _
     | Verdict
