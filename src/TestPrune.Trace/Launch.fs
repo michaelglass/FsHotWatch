@@ -5,7 +5,9 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
+open System.Text
 open System.Threading
+open System.Threading.Tasks
 
 /// `dotnetRoot` given the DOTNET_ROOT value (null or empty when unset).
 let internal dotnetRootFrom (environmentValue: string) : string =
@@ -43,7 +45,50 @@ type LaunchRequest =
 /// daemon that reaps them on shutdown) supplies its own so every child joins its scope.
 type Launcher = LaunchRequest -> CancellationToken -> int * string
 
-/// The default launcher: starts the child directly. Both pipes are drained concurrently. The
+/// The most characters a launch keeps of each output stream: its end, where a failing run
+/// says why. A test app's full output can run to megabytes.
+[<Literal>]
+let OutputTailChars = 65536
+
+/// Starts a stream's kept tail when its earlier output was dropped.
+[<Literal>]
+let DroppedOutputMarker = "[earlier output dropped]\n"
+
+/// Reads `reader` to its end, keeping the last `limit` characters, prefixed with
+/// `DroppedOutputMarker` when anything before them was dropped.
+let internal drainTail (reader: TextReader) (limit: int) : Task<string> =
+    task {
+        let buffer = Array.zeroCreate<char> 8192
+        let kept = StringBuilder()
+        let mutable dropped = false
+        let mutable reading = true
+
+        while reading do
+            let! read = reader.ReadAsync(buffer, 0, buffer.Length)
+            reading <- read > 0
+            kept.Append(buffer, 0, read) |> ignore
+
+            // Trim once the buffer holds twice the limit, so a trim costs amortized O(1).
+            if kept.Length > 2 * limit then
+                kept.Remove(0, kept.Length - limit) |> ignore
+                dropped <- true
+
+        if kept.Length > limit then
+            kept.Remove(0, kept.Length - limit) |> ignore
+            dropped <- true
+
+        return (if dropped then DroppedOutputMarker else "") + kept.ToString()
+    }
+
+/// A launch's output as report lines: one per non-blank line, line endings removed.
+let outputLines (output: string) : string list =
+    output.Split '\n'
+    |> Seq.map (fun l -> l.TrimEnd '\r')
+    |> Seq.filter (String.IsNullOrWhiteSpace >> not)
+    |> Seq.toList
+
+/// The default launcher: starts the child directly. Both pipes are drained concurrently, each
+/// kept to its last `OutputTailChars` characters. The
 /// child inherits this process's environment except its `TESTPRUNE_TRACE_*` variables.
 let direct: Launcher =
     fun req ct ->
@@ -78,8 +123,8 @@ let direct: Launcher =
         // `using` rather than `use`: `use` compiles a null check on the process that can never
         // be taken (Process.Start returns null only for UseShellExecute=true).
         using (Process.Start psi) (fun p ->
-            let out = p.StandardOutput.ReadToEndAsync()
-            let err = p.StandardError.ReadToEndAsync()
+            let out = drainTail p.StandardOutput OutputTailChars
+            let err = drainTail p.StandardError OutputTailChars
 
             // Killing a child that already exited is a no-op, so a cancellation racing
             // the child's own exit is harmless. Disposing the registration waits for a
@@ -95,7 +140,7 @@ let direct: Launcher =
             p.ExitCode, out.Result + err.Result)
 
 /// Run `exe` to completion (or kill its process tree at `timeout`), returning the exit
-/// code and the combined output: `direct`, uncancellable. The child inherits this process's
+/// code and the combined output (the tail of each stream, stdout first): `direct`, uncancellable. The child inherits this process's
 /// environment except its `TESTPRUNE_TRACE_*` variables.
 let run
     (exe: string)

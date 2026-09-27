@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a measurement launch that exits nonzero now says why. `overhead` used to drop every
+  launch's output and `audit` the parallel run's exit code and output, so a traced sample that
+  exited 2 left no trace of which tests failed. `Overhead.Sample.Output` and the new
+  `AuditReport.ParallelExitCode`/`ParallelOutput` hold the output of a nonzero-exit launch, and
+  both reports print it under the failing launch. Breaking for code that builds these records:
+  set `Output = ""` on a `Sample`; `Audit.summarize` fills the new fields with 0 and "", and
+  `Audit.withParallelRun` sets them from a run.
+- fix: `Launch.direct` (and so `Launch.run`) keeps the last `Launch.OutputTailChars` (65,536)
+  characters of each output stream, starting with `Launch.DroppedOutputMarker` when it dropped
+  earlier output, instead of buffering a test app's whole output. `Launch.outputLines` splits
+  that output into report lines.
+
 ## 0.2.0 - 2026-09-26
 
 - fix: a closure F# emits into a file's `<StartupCode$…>` class with no sequence points of its

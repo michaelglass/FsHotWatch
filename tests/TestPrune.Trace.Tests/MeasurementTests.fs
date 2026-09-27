@@ -75,6 +75,36 @@ let ``a getrusage that fails before a launch launches nothing, and after one is 
         File.Delete marker
 
 [<Fact>]
+let ``a sample that exits nonzero keeps its output, and the overhead table prints it`` () =
+    let noCpu () = struct (TimeSpan.Zero, 0L)
+
+    let launch traced script =
+        Overhead.measure noCpu traced "/bin/sh" [ "-c"; script ] [] "/" timeout |> ok
+
+    let failing = launch true "echo 'failed N.C.t'; echo boom >&2; exit 2"
+    let passing = launch false "echo fine"
+
+    test <@ failing.ExitCode = 2 && failing.Output = "failed N.C.t\nboom\n" @>
+    // A passing launch's output says nothing the report needs.
+    test <@ passing.ExitCode = 0 && passing.Output = "" @>
+
+    let text = Overhead.render (Overhead.summarize [ passing; failing ])
+
+    test
+        <@
+            text.EndsWith(
+                String.concat
+                    "\n"
+                    [ "  sample untraced  0 ms  exit 0"
+                      "  sample traced    0 ms  exit 2"
+                      "    output ends:"
+                      "      failed N.C.t"
+                      "      boom"
+                      "" ]
+            )
+        @>
+
+[<Fact>]
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok

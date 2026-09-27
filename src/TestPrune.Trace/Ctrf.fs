@@ -81,9 +81,7 @@ let run
     else
         // The last lines usually say why: a test that ended the process, a crash at startup.
         let tail =
-            output.Split '\n'
-            |> Seq.filter (String.IsNullOrWhiteSpace >> not)
-            |> Seq.toList
+            Launch.outputLines output
             |> List.rev
             |> List.truncate 5
             |> List.rev

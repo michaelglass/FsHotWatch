@@ -18,6 +18,9 @@ type Sample =
         /// per-launch value): an upper bound on this launch's peak.
         MaxRssBytes: int64
         ExitCode: int
+        /// The launch's output (the tail `Launch.run` keeps) when it exited nonzero, so the
+        /// report can say why; empty for a launch that exited 0.
+        Output: string
     }
 
 /// The medians, their spread and their ratio.
@@ -91,6 +94,12 @@ let render (r: OverheadReport) : string =
         let kind = if s.Traced then "traced  " else "untraced"
         line $"  sample %s{kind}  %s{msOf s.Cpu} ms  exit %d{s.ExitCode}"
 
+        if s.ExitCode <> 0 then
+            line "    output ends:"
+
+            for l in Launch.outputLines s.Output do
+                line $"      %s{l}"
+
     sb.ToString()
 
 /// Environment that keeps an untraced launch untraced even when this process runs traced.
@@ -115,14 +124,15 @@ let internal readCpu (read: unit -> struct (TimeSpan * int64)) : Result<struct (
 let internal measure read traced exe args env workDir timeout : Result<Sample, string> =
     readCpu read
     |> Result.bind (fun (struct (before, _)) ->
-        let code, _ = Launch.run exe args env workDir timeout
+        let code, output = Launch.run exe args env workDir timeout
 
         readCpu read
         |> Result.map (fun (struct (after, rss)) ->
             { Traced = traced
               Cpu = after - before
               MaxRssBytes = rss
-              ExitCode = code }))
+              ExitCode = code
+              Output = if code = 0 then "" else output }))
 
 /// `run` on a given platform and CPU reader: `Error` on Windows, where there is no
 /// `getrusage`, before anything is prepared or launched.
