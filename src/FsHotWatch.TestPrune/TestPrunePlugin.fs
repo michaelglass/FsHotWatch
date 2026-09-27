@@ -1468,16 +1468,15 @@ module internal ReceiptInputTree =
     /// At most this many paths per kind are named; the count is always the full one.
     let private PathsNamedPerKind = 10
 
+    let private namePaths (paths: string list) : string =
+        let named = paths |> List.truncate PathsNamedPerKind |> String.concat ", "
+        let left = List.length paths - PathsNamedPerKind
+        if left > 0 then $"%s{named} (+%d{left} more)" else named
+
     let describeDelta (delta: TreeDelta) : string =
         [ "changed", delta.Changed; "added", delta.Added; "removed", delta.Removed ]
         |> List.filter (snd >> List.isEmpty >> not)
-        |> List.map (fun (kind, paths) ->
-            let named = paths |> List.truncate PathsNamedPerKind |> String.concat ", "
-            let left = List.length paths - PathsNamedPerKind
-
-            let more = if left > 0 then $" (+%d{left} more)" else ""
-
-            $"%s{kind} (%d{List.length paths}): %s{named}%s{more}")
+        |> List.map (fun (kind, paths) -> $"%s{kind} (%d{List.length paths}): %s{namePaths paths}")
         |> String.concat "; "
 
     /// The paths that moved between two identities this process read, for a revocation
@@ -1492,6 +1491,52 @@ module internal ReceiptInputTree =
                     "the per-file entries of the launch or completion tree are no longer held "
                     + "(read by another process, or evicted), so the paths that moved cannot be named"
                 )
+        | _ -> None
+
+    /// How far a file's write time may trail the clock read that preceded the write.
+    /// Filesystems stamp from a coarse clock, and some store whole or even-numbered
+    /// seconds.
+    let private WriteTimeSlack = TimeSpan.FromSeconds 2.0
+
+    /// The moved paths when the test run itself wrote them: every one changed or added
+    /// (a removal leaves no write time to attribute), none reported by the watcher while
+    /// the run was in flight, and each last written after the test host started. `None`
+    /// when any path fails one of those, when there is no move, or when it cannot be named
+    /// — every such case stays an ordinary edit made mid-run.
+    let writtenByTestRun
+        (repoRoot: string)
+        (watcherReported: Set<string> option)
+        (testHostStartedAt: DateTime option)
+        (launch: string option)
+        (current: string option)
+        : string list option =
+        match launch, current, watcherReported, testHostStartedAt with
+        | Some before, Some after, Some reported, Some hostStarted when
+            not (String.Equals(before, after, StringComparison.Ordinal))
+            ->
+            match manifests.TryGetValue before, manifests.TryGetValue after with
+            | (true, was), (true, now) ->
+                let moved = delta was now
+                let written = List.sort (moved.Changed @ moved.Added)
+
+                let writtenWhileHostRan (rel: string) =
+                    not (reported.Contains rel)
+                    && try
+                        File.GetLastWriteTimeUtc(Path.Combine(repoRoot, rel))
+                        >= hostStarted - WriteTimeSlack
+                       with
+                       | :? IOException
+                       | :? UnauthorizedAccessException -> false
+
+                if
+                    List.isEmpty moved.Removed
+                    && not (List.isEmpty written)
+                    && List.forall writtenWhileHostRan written
+                then
+                    Some written
+                else
+                    None
+            | _ -> None
         | _ -> None
 
     /// Whether a repo-relative receipt entry is something a BUILD consumed — and so was
@@ -1582,12 +1627,17 @@ module internal ReceiptInputTree =
         /// edited while the run was in flight and the receipt must not outlive it.
         /// Remedy: none, or re-run on a settled tree.
         | MovedDuringRun
+        /// Both trees were read and they differ, and every moved path is one the test
+        /// run wrote (`writtenByTestRun`). A DEFECT in the tests: they are not hermetic,
+        /// and a re-run writes again. Remedy: write outside the repository.
+        | TestRunWrote of paths: string list
 
-    let classifyMismatch expected current =
-        match expected, current with
-        | None, _ -> UnboundAtLaunch
-        | _, None -> UnreadableAtCompletion
-        | Some _, Some _ -> MovedDuringRun
+    let classifyMismatch expected current (writtenByTestRun: string list option) =
+        match expected, current, writtenByTestRun with
+        | None, _, _ -> UnboundAtLaunch
+        | _, None, _ -> UnreadableAtCompletion
+        | Some _, Some _, Some paths -> TestRunWrote paths
+        | Some _, Some _, None -> MovedDuringRun
 
     /// The revocation reason for a mismatch, naming the arm and its remedy.
     let describeMismatch mismatch =
@@ -1600,6 +1650,10 @@ module internal ReceiptInputTree =
             + "binding against. This is a defect in the walk, not a change to the tree"
         | MovedDuringRun ->
             "the input tree MOVED between launch and completion — it was edited while the run was in flight"
+        | TestRunWrote paths ->
+            $"the test run wrote into the repository: %s{namePaths paths} — the watcher reported none of "
+            + "these while the run was in flight, and each was written after the test host started. "
+            + "The tests are not hermetic, and a re-run writes again: make them write outside the repository"
 
 type TestEvidenceReceipt =
     {
@@ -1696,6 +1750,9 @@ type InFlightRun =
         Scope: LaunchScope
         /// The mode it was launched under. Its fold ends a pass-through it ran for.
         Mode: TestMode
+        /// Repo-relative paths the watcher reported (as a `FileChecked`) while this run
+        /// was in flight. A moved path in here was edited mid-run, not written by the run.
+        WatcherReported: Set<string>
     }
 
 type TestPruneState =
@@ -1997,6 +2054,9 @@ type TestRunLaunch =
         /// The changed files this run launched against. Its completion clears only
         /// these; a file that changed during the run still selects the next one.
         ChangedFiles: string list
+        /// When the test host started: after `beforeRun`, so a write stamped at or after
+        /// it was made while the tests ran. `None` until the run reaches the host.
+        TestHostStartedAt: DateTime option
     }
 
 module CheckReach =
@@ -2985,6 +3045,7 @@ module ReceiptTransition =
         (currentInputTree: string option)
         (currentModelGeneration: int64 option)
         (currentInputs: Map<string, string> option)
+        (writtenByTestRun: string list option)
         (launch: TestRunLaunch)
         (completed: TestRunCompleted)
         (coverage: RunCoverage)
@@ -3019,7 +3080,7 @@ module ReceiptTransition =
                     "already verified, but no receipt is bound to the current tree and project model"
         | Normal when not executed -> ReceiptTransition.Revoked "the run executed no project to a verdict"
         | Normal when not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) ->
-            ReceiptInputTree.classifyMismatch launch.InputTreeHash currentInputTree
+            ReceiptInputTree.classifyMismatch launch.InputTreeHash currentInputTree writtenByTestRun
             |> ReceiptInputTree.describeMismatch
             |> ReceiptTransition.Revoked
         | Normal ->
@@ -4775,6 +4836,8 @@ let private executeTests
                 binding
             | None -> launchTreeHash
 
+        let testHostStartedAt = DateTime.UtcNow
+
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
         let coveragePathsByProject =
@@ -5558,7 +5621,7 @@ let private executeTests
             "test-prune"
             $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
-        return testResults, started, completed, boundTree
+        return testResults, started, completed, boundTree, testHostStartedAt
     }
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
@@ -7238,6 +7301,7 @@ let internal createWithQueries
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
+                      TestHostStartedAt = None
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
@@ -7423,7 +7487,7 @@ let internal createWithQueries
                           %d{unfilteredProjects} of them UNFILTERED (whole-project), \
                           %d{totalClasses} class(es) named in total"
 
-                    let! results, started, completed, boundTree =
+                    let! results, started, completed, boundTree, testHostStartedAt =
                         executeTests
                             db
                             (Some ctx)
@@ -7453,7 +7517,8 @@ let internal createWithQueries
                             started,
                             completed,
                             { launch with
-                                InputTreeHash = boundTree }
+                                InputTreeHash = boundTree
+                                TestHostStartedAt = Some testHostStartedAt }
                         )
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
@@ -7481,6 +7546,7 @@ let internal createWithQueries
                       Symbols = launchedSymbols
                       SymbolRevisions = launchedRevisions
                       ChangedFiles = inputs.ChangedFiles
+                      TestHostStartedAt = None
                       CoveringProjectsBySymbol = Map.empty
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
@@ -7530,6 +7596,7 @@ let internal createWithQueries
               SymbolRevisions = Map.empty
               // A force-run is not launched from the changed files, so it consumes none.
               ChangedFiles = []
+              TestHostStartedAt = None
               CoveringProjectsBySymbol = Map.empty
               RuntimeProjectsByFile = Map.empty
               Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
@@ -7557,7 +7624,7 @@ let internal createWithQueries
 
             try
                 try
-                    let! results, started, completed, boundTree =
+                    let! results, started, completed, boundTree, testHostStartedAt =
                         executeTests
                             db
                             None
@@ -7600,7 +7667,8 @@ let internal createWithQueries
                             started,
                             completed,
                             { commandLaunch with
-                                InputTreeHash = boundTree },
+                                InputTreeHash = boundTree
+                                TestHostStartedAt = Some testHostStartedAt },
                             reply,
                             formatTestResultsJson filter runReports results
                         )
@@ -8211,7 +8279,8 @@ let internal createWithQueries
                     InFlight =
                         Some
                             { Scope = launchScopeOf inputs
-                              Mode = inputs.Mode } }
+                              Mode = inputs.Mode
+                              WatcherReported = Set.empty } }
         | SlotBusy -> None
 
     /// Whether debt found while the key is held joins the run holding it instead of
@@ -8293,7 +8362,8 @@ let internal createWithQueries
                 InFlight =
                     Some
                         { Scope = LaunchedSelection
-                          Mode = state.Mode } }
+                          Mode = state.Mode
+                          WatcherReported = Set.empty } }
         | SlotBusy ->
             // A busy key QUEUES the run, never refuses it: a refusal that reads as
             // success is a vacuous green. The intent waits behind the holder, owned, and
@@ -8460,6 +8530,23 @@ let internal createWithQueries
                 // with no model was captured against none, so it cannot describe this one.
                 let notCurrent (published: int64 option) =
                     published.IsNone || published <> modelGeneration
+
+                // Recorded before any arm can return early: whether a moved path is an
+                // edit or the run's own write depends only on the watcher having seen it.
+                let state =
+                    match event, state.InFlight with
+                    | PluginEvent.FileChecked result, Some run ->
+                        let relPath =
+                            Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
+
+                        Logging.debug "test-prune" $"watcher reported %s{relPath} during the in-flight run"
+
+                        { state with
+                            InFlight =
+                                Some
+                                    { run with
+                                        WatcherReported = Set.add relPath run.WatcherReported } }
+                    | _ -> state
 
                 match event with
                 | PluginEvent.FileChecked result when notCurrent result.ModelGeneration ->
@@ -9368,6 +9455,14 @@ let internal createWithQueries
                     // A typed transition, not a candidate-then-guard: see
                     // `ReceiptTransition`. `Noop` and `Narrower` keep whatever was earned,
                     // `Revoked` clears it, and only `Earned` can write.
+                    let writtenByTestRun =
+                        ReceiptInputTree.writtenByTestRun
+                            repoRoot
+                            (state.InFlight |> Option.map (fun run -> run.WatcherReported))
+                            launch.TestHostStartedAt
+                            launch.InputTreeHash
+                            currentInputTree
+
                     let receiptTransition =
                         ReceiptTransition.classify
                             (Set.toList runnableProjects)
@@ -9375,6 +9470,7 @@ let internal createWithQueries
                             currentInputTree
                             currentModelGeneration
                             currentInputs
+                            writtenByTestRun
                             launch
                             completed
                             coverage
