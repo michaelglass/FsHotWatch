@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.73 - 2026-09-27
+
 - fix: bundles TestPrune.Trace 0.3.0. With `tests.traces` on, a traced run's coverage
   keeps the branch points of union matches, field comparisons and type tests (it lost
   them to the site probes), and a trace measurement launch that exits nonzero prints its
