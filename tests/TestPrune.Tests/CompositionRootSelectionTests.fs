@@ -366,3 +366,72 @@ module ``opt-in only`` =
             |> Set.ofList
 
         test <@ affected = Set.ofList [ TranslateTest ] @>
+
+// ---------------------------------------------------------------------------
+// Direction 4 — adding a seed never removes a test
+// ---------------------------------------------------------------------------
+
+/// Every subset of `seeds`, the empty one included.
+let private subsetsOf (seeds: string list) : string list list =
+    List.foldBack (fun seed subsets -> subsets @ (subsets |> List.map (fun s -> seed :: s))) seeds [ [] ]
+
+module ``selection is monotone in its seeds`` =
+
+    [<Fact>]
+    let ``a seed with its own route edge does not hide a seed behind the root`` () =
+        // Y = `OtherHandler` reaches the integration tests only through the composition
+        // root; A = `TranslateHandler` reaches `TranslateTest` directly by its route edge.
+        // Alone, Y's barriered walk empties the integration project, so the fail-safe
+        // restores all of it. Batched with A, the integration project is non-empty only
+        // because of A — which says nothing about whether Y's markers can be trusted.
+        // Y's restored tests must survive the batch.
+        let y = selected true [ OtherHandler ]
+        let a = selected true [ TranslateHandler ]
+        let both = selected true [ OtherHandler; TranslateHandler ]
+
+        test <@ Set.isSubset y both @>
+        test <@ Set.isSubset a both @>
+        test <@ both = Set.union y a @>
+
+        // Not vacuous: Y alone does restore the integration suite, and A alone is still
+        // narrowed to its route's test.
+        test <@ Set.isSubset (Set.ofList allTestNames) y @>
+        test <@ a = Set.ofList [ TranslateTest ] @>
+
+    [<Fact>]
+    let ``every subset of a batch selects no more than the batch`` () =
+        let seeds =
+            [ TranslateHandler
+              OtherHandler
+              Dispatch
+              AntiforgeryConfig
+              FixtureBoot
+              TranslateTest
+              UnitTest ]
+
+        let store = fromAnalysisResults [ graph true ]
+
+        let inMemory (s: string list) =
+            store.QueryAffectedTests s |> List.map _.SymbolFullName |> Set.ofList
+
+        withDb (fun db ->
+            db.RebuildProjects [ graph true ]
+
+            let database (s: string list) =
+                db.QueryAffectedTests s |> List.map _.SymbolFullName |> Set.ofList
+
+            let subsets = subsetsOf seeds
+
+            for batch in subsets do
+                let whole = database batch
+                test <@ (batch, inMemory batch) = (batch, whole) @>
+
+                for part in subsetsOf batch do
+                    let partial = database part
+
+                    if not (Set.isSubset partial whole) then
+                        failwith
+                            $"%A{part} selects %A{Set.difference partial whole} that its superset %A{batch} does not"
+
+            // Not vacuous: some batch selected something.
+            test <@ subsets |> List.exists (fun s -> not (Set.isEmpty (database s))) @>)

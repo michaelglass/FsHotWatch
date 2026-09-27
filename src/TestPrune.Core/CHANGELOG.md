@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: with composition-root markers present, adding a changed symbol no longer removes
+  tests from `QueryAffectedTests`. The fail-safe, which restores a test project's tests
+  when a composition root empties it, used to be judged over the whole batch. So a
+  project kept non-empty by one symbol's direct test hid another symbol whose tests in
+  that project were reached only through the root. One symbol alone could then select
+  more tests than a batch containing it. The fail-safe is now judged per changed symbol,
+  and a batch selects the union of what each symbol selects alone. Selections for
+  batches that mix such symbols grow. `Database` answers them from the one graph walk
+  `QueryCoveringProjectsBySeed` already makes, one recursive walk per call instead of
+  two.
+
 ## 13.2.2 - 2026-09-26
 
 - fix: an F# `exception` declaration is indexed as a `Type` symbol, and raising or matching

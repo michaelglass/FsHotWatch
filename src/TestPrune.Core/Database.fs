@@ -195,10 +195,7 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 ///
 /// One parameter per SET rather than per name removes the ceiling by construction: no list
 /// length changes the parameter count, so there is no longer a length at which these
-/// queries begin to fail. Chunking would have raised the ceiling without removing it — and
-/// here it would also be WRONG: `QueryAffectedTestsCore` defines its `barriers` CTE by
-/// exclusion from the seed set, so a per-chunk walk treats seeds outside its own chunk as
-/// barriers, stops expanding through them, and silently selects fewer tests.
+/// queries begin to fail. Chunking would have raised the ceiling without removing it.
 ///
 /// This is not a performance trade either way; see
 /// `docs/adr/0003-name-sets-travel-as-one-json-parameter.md` for the measurement and for
@@ -1058,24 +1055,17 @@ type Database(dbPath: string) =
             txn.Rollback()
             raise ex
 
-    /// Find test methods transitively depending on the given changed symbol names.
-    ///
-    /// `applyBarriers` decides whether `[<TestPrune.CompositionRoot>]` markers are
-    /// honoured. When any marker exists `QueryAffectedTests` runs this BOTH ways and
-    /// merges the two results per test project — see the fail-safe there. (It does not
-    /// "retry on empty": a global emptiness check is the version that was wrong, because
-    /// surviving unit tests mask an emptied integration project.)
-    member private _.QueryAffectedTestsCore
-        (changedSymbolNames: string list, applyBarriers: bool)
-        : TestMethodInfo list =
-        if changedSymbolNames.IsEmpty then
-            []
-        else
-            System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
-            use conn = openConnection dbPath
+    /// Find test methods transitively depending on the given changed symbol names,
+    /// ignoring `[<TestPrune.CompositionRoot>]` markers. `QueryAffectedTests` uses it for
+    /// an index without markers, and answers an empty list itself; with markers,
+    /// `SeedCoverage.affectedTests` answers.
+    member private _.QueryAffectedTestsUnbarriered(changedSymbolNames: string list) : TestMethodInfo list =
+        System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
+        // Disposed in `finally`, not by `use`, for the reason `WithRegion` gives.
+        let conn = openConnection dbPath
+        let cmd = conn.CreateCommand()
 
-            use cmd = conn.CreateCommand()
-
+        try
             // Aggregate-type invalidation: before the transitive walk, expand the set of
             // "changed" symbol ids in both directions along the containment relation, but
             // ONLY when the containing entity is a Type (never a Module). The two phases
@@ -1093,30 +1083,6 @@ type Database(dbPath: string) =
             // AstAnalyzer.fs parentLinks logic), so the expansion can't fan out across
             // unrelated module siblings.
             let typeKindStr = symbolKindToString Type
-
-            // Composition-root barriers. A symbol marked `[<TestPrune.CompositionRoot>]`
-            // (a routing table, a DI registration block) references the whole application
-            // in order to WIRE IT UP, so an integration fixture that boots the app depends
-            // on it and every handler transitively reaches every fixture-using test. The
-            // edges are real; the relevance they imply is not, and nothing in the graph
-            // tells composition apart from use — hence the marker.
-            //
-            // `barriers` excludes anything in `expanded`, and that exclusion is the whole
-            // asymmetry: a barrier REACHED from something it aggregates stops the walk,
-            // while a barrier that CHANGED is an ordinary seed whose dependents are walked
-            // in full. The wiring changing IS what host-booting tests verify.
-            //
-            // The barrier is still reported affected (it enters `transitive_deps` by the
-            // ordinary branches); only its own outward expansion is withheld. Any other,
-            // non-barrier path to the same dependents is unaffected — this is a set union,
-            // so blocking one route never removes what another route supplies.
-            //
-            // `applyBarriers = false` matches the marker against `NULL`, which SQLite never
-            // satisfies, so the `barriers` CTE selects no rows and the `NOT IN (barriers)`
-            // guard in the recursive branch holds for EVERY row — the walk is then exactly
-            // the historical one. (Note the CTE is still evaluated in that case; see the
-            // deliberately-not-taken optimisation noted on `HasCompositionRoots`.)
-            let markerNameSet = if applyBarriers then nameSetNamed "cr" else "NULL"
 
             cmd.CommandText <-
                 $"""
@@ -1138,12 +1104,6 @@ type Database(dbPath: string) =
                     WHERE parent.id IN (SELECT id FROM after_lift)
                       AND parent.kind = @typeKind
                 ),
-                barriers AS (
-                    SELECT sa.symbol_id AS id
-                    FROM symbol_attributes sa
-                    WHERE sa.attribute_name IN (%s{markerNameSet})
-                      AND sa.symbol_id NOT IN (SELECT id FROM expanded)
-                ),
                 transitive_deps AS (
                     -- Seed inclusion: the changed/expanded symbols are themselves
                     -- in the affected set, not only their dependents. A changed
@@ -1153,14 +1113,8 @@ type Database(dbPath: string) =
                     -- (FsHotWatch ISSUE B: a fixed test stayed pinned red.)
                     SELECT id AS from_symbol_id FROM expanded
                     UNION
-                    -- Direct dependents of the seeds, barrier or not: a barrier is
-                    -- reported affected, it just doesn't expand below.
-                    SELECT from_symbol_id FROM dependencies
-                    WHERE to_symbol_id IN (SELECT id FROM expanded)
-                    UNION
                     SELECT d.from_symbol_id FROM dependencies d
                     JOIN transitive_deps td ON d.to_symbol_id = td.from_symbol_id
-                    WHERE td.from_symbol_id NOT IN (SELECT id FROM barriers)
                 )
                 SELECT DISTINCT s.full_name, tm.test_project, tm.test_class, tm.test_method
                 FROM transitive_deps td
@@ -1171,67 +1125,70 @@ type Database(dbPath: string) =
             bindNameSet cmd changedSymbolNames
             cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
-            if applyBarriers then
-                bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names
+            let reader = cmd.ExecuteReader()
 
-            use reader = cmd.ExecuteReader()
-
-            readAll reader (fun r ->
-                { SymbolFullName = r.GetString(0)
-                  TestProject = r.GetString(1)
-                  TestClass = r.GetString(2)
-                  TestMethod = r.GetString(3) })
+            try
+                readAll reader (fun r ->
+                    { SymbolFullName = r.GetString(0)
+                      TestProject = r.GetString(1)
+                      TestClass = r.GetString(2)
+                      TestMethod = r.GetString(3) })
+            finally
+                reader.Dispose()
+        finally
+            cmd.Dispose()
+            conn.Dispose()
 
     /// Is any symbol carrying the composition-root marker? Kept separate so an
-    /// un-annotated repo runs ONE walk and takes exactly the historical code path
-    /// rather than the two-walk fail-safe below.
+    /// un-annotated repo takes exactly the historical code path rather than loading
+    /// the region the per-seed fail-safe needs.
     ///
     /// COST, measured rather than assumed: `symbol_attributes` is indexed on
     /// `symbol_id` only (see `schema`), so this is a full table SCAN — ~0.45 ms over
     /// 12k attribute rows, and proving ABSENCE is its worst case, which is the
     /// un-annotated repo this is supposed to be cheap for. It is still far cheaper
-    /// than the second recursive walk it avoids. An index on `attribute_name` would
-    /// cut it ~14x and needs no `SchemaVersion` bump (the ctor re-runs `schema` on
-    /// every open); better still, a single fused query could derive the answer from
-    /// the `barriers` CTE it already scans and drop this probe altogether. Neither is
-    /// done here — both are performance work, tracked separately, not a correctness
-    /// concern.
+    /// than the region load it avoids. An index on `attribute_name` would cut it ~14x
+    /// and needs no `SchemaVersion` bump (the ctor re-runs `schema` on every open).
+    /// That is performance work, tracked separately, not a correctness concern.
     member private _.HasCompositionRoots() : bool =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
+        // Disposed in `finally`, not by `use`, for the reason `WithRegion` gives.
+        let conn = openConnection dbPath
 
-        let markerNameSet = nameSetNamed "cr"
+        try
+            let cmd = conn.CreateCommand()
 
-        cmd.CommandText <- $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerNameSet}))"
+            try
+                let markerNameSet = nameSetNamed "cr"
 
-        bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names
+                cmd.CommandText <-
+                    $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerNameSet}))"
 
-        match cmd.ExecuteScalar() with
-        | :? int64 as n -> n <> 0L
-        | _ -> false
+                bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names
+
+                cmd.ExecuteScalar() :?> int64 <> 0L
+            finally
+                cmd.Dispose()
+        finally
+            conn.Dispose()
 
     /// Find test methods transitively depending on the given changed symbol names.
     ///
     /// Three cases, one reason each. Nothing changed: no query. No composition-root
-    /// marker anywhere: one walk, the historical behaviour. Otherwise: walk it both
-    /// ways and let the shared fail-safe reconcile them per test project — the
-    /// unbarriered walk is what the fail-safe compares against, so it cannot be
-    /// skipped. `Domain.CompositionRoot.restoreEmptiedProjects` owns that rule, and
-    /// `InMemoryStore` calls the same function, so the two engines cannot drift on the
-    /// one part of this feature that can silently drop a real test.
+    /// marker anywhere: one walk, the historical behaviour. Otherwise the batch selects
+    /// the union of what each changed symbol selects on its own, with the fail-safe
+    /// `Domain.CompositionRoot.emptiedProjects` judged per symbol — so adding a symbol
+    /// never removes a test. `SeedCoverage.affectedTests` answers every symbol from one
+    /// loaded region; `InMemoryStore` states the same rule one symbol at a time.
     member this.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
-        let walk applyBarriers =
-            this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers)
-
         if changedSymbolNames.IsEmpty then
             []
         elif not (this.HasCompositionRoots()) then
-            walk false
+            this.QueryAffectedTestsUnbarriered changedSymbolNames
         else
-            Domain.CompositionRoot.restoreEmptiedProjects _.TestProject (walk true) (walk false)
+            this.WithRegion(changedSymbolNames, fun region -> SeedCoverage.affectedTests region changedSymbolNames)
 
-    /// Recursive graph walks this instance has run (`QueryAffectedTests` runs one or two
-    /// per call; `QueryCoveringProjectsBySeed` runs one per call).
+    /// Recursive graph walks this instance has run (`QueryAffectedTests` and
+    /// `QueryCoveringProjectsBySeed` run one per call).
     member internal _.RecursiveWalks = System.Threading.Interlocked.Read(&recursiveWalks)
 
     /// For each seed, the test projects `QueryAffectedTests [seed]` would select tests
@@ -1248,40 +1205,46 @@ type Database(dbPath: string) =
         if seeds.IsEmpty then
             Map.empty
         else
-            // Every connection, command and reader here is disposed in `finally`, not by
-            // `use`: a `use` binding adds a null check on a value that is never null, a
-            // branch no test can take.
-            let conn = openConnection dbPath
+            this.WithRegion(seeds, fun region -> SeedCoverage.coveringProjects region seeds)
 
-            let rows (sql: string) (bind: SqliteCommand -> unit) (read: SqliteDataReader -> 'T) : 'T list =
-                let cmd = conn.CreateCommand()
+    /// Load the region of the graph `seeds` reach — each seed's start set, the reverse
+    /// closure of every start with ONE recursive walk, and the test methods and
+    /// composition-root markers on it — and answer from it.
+    member private _.WithRegion<'Answer>(seeds: string list, answer: SeedCoverage.Region -> 'Answer) : 'Answer =
+        // Every connection, command and reader here is disposed in `finally`, not by
+        // `use`: a `use` binding adds a null check on a value that is never null, a
+        // branch no test can take.
+        let conn = openConnection dbPath
 
-                try
-                    cmd.CommandText <- sql
-                    bind cmd
-                    let reader = cmd.ExecuteReader()
-
-                    try
-                        readAll reader read
-                    finally
-                        reader.Dispose()
-                finally
-                    cmd.Dispose()
-
-            let idSet (prefix: string) =
-                $"SELECT value FROM json_each(@%s{prefix})"
-
-            let bindIds (prefix: string) (ids: int64 list) (cmd: SqliteCommand) =
-                cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
-                |> ignore
+        let rows (sql: string) (bind: SqliteCommand -> unit) (read: SqliteDataReader -> 'T) : 'T list =
+            let cmd = conn.CreateCommand()
 
             try
-                // Each seed's start set, labelled by seed: the seed itself, lifted to a
-                // containing type, and that type's members — `QueryAffectedTestsCore`'s
-                // `after_lift`/`expanded`, per seed. Not recursive.
-                let starts =
-                    rows
-                        $"""
+                cmd.CommandText <- sql
+                bind cmd
+                let reader = cmd.ExecuteReader()
+
+                try
+                    readAll reader read
+                finally
+                    reader.Dispose()
+            finally
+                cmd.Dispose()
+
+        let idSet (prefix: string) =
+            $"SELECT value FROM json_each(@%s{prefix})"
+
+        let bindIds (prefix: string) (ids: int64 list) (cmd: SqliteCommand) =
+            cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
+            |> ignore
+
+        try
+            // Each seed's start set, labelled by seed: the seed itself, lifted to a
+            // containing type, and that type's members — `QueryAffectedTestsUnbarriered`'s
+            // `after_lift`/`expanded`, per seed. Not recursive.
+            let starts =
+                rows
+                    $"""
                         WITH seeds(name) AS ({nameSet}),
                         lifted(seed, id) AS (
                             SELECT s.full_name, s.id
@@ -1302,18 +1265,18 @@ type Database(dbPath: string) =
                         JOIN symbols child ON child.parent_symbol_id = parent.id
                         WHERE parent.kind = @typeKind
                         """
-                        (fun cmd ->
-                            bindNameSet cmd seeds
-                            cmd.Parameters.AddWithValue("@typeKind", symbolKindToString Type) |> ignore)
-                        (fun r -> r.GetString(0), r.GetInt64(1))
+                    (fun cmd ->
+                        bindNameSet cmd seeds
+                        cmd.Parameters.AddWithValue("@typeKind", symbolKindToString Type) |> ignore)
+                    (fun r -> r.GetString(0), r.GetInt64(1))
 
-                let startIds = starts |> List.map snd |> List.distinct
+            let startIds = starts |> List.map snd |> List.distinct
 
-                // THE walk: the reverse closure of every start at once.
-                System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
+            // THE walk: the reverse closure of every start at once.
+            System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
 
-                let closure =
-                    rows $"""
+            let closure =
+                rows $"""
                         WITH RECURSIVE closure(id) AS (
                             {idSet "s"}
                             UNION
@@ -1324,48 +1287,54 @@ type Database(dbPath: string) =
                         SELECT id FROM closure
                         """ (bindIds "s" startIds) (fun r -> r.GetInt64(0))
 
-                let edges =
-                    rows $"""
+            let edges =
+                rows $"""
                         SELECT DISTINCT to_symbol_id, from_symbol_id
                         FROM dependencies
                         WHERE to_symbol_id IN ({idSet "c"})
                         """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetInt64(1))
 
-                let testProjects =
-                    rows $"""
-                        SELECT DISTINCT symbol_id, test_project
-                        FROM test_methods
-                        WHERE symbol_id IN ({idSet "c"})
-                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetString(1))
+            let testMethods =
+                rows $"""
+                        SELECT DISTINCT tm.symbol_id, s.full_name, tm.test_project, tm.test_class, tm.test_method
+                        FROM test_methods tm
+                        JOIN symbols s ON s.id = tm.symbol_id
+                        WHERE tm.symbol_id IN ({idSet "c"})
+                        """ (bindIds "c" closure) (fun r ->
+                    r.GetInt64(0),
+                    { SymbolFullName = r.GetString(1)
+                      TestProject = r.GetString(2)
+                      TestClass = r.GetString(3)
+                      TestMethod = r.GetString(4) })
 
-                let markers =
-                    rows
-                        $"""
+            let markers =
+                rows
+                    $"""
                         SELECT DISTINCT symbol_id
                         FROM symbol_attributes
                         WHERE attribute_name IN ({nameSetNamed "cr"})
                           AND symbol_id IN ({idSet "c"})
                         """
-                        (fun cmd ->
-                            bindIds "c" closure cmd
-                            bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
-                        (fun r -> r.GetInt64(0))
+                    (fun cmd ->
+                        bindIds "c" closure cmd
+                        bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
+                    (fun r -> r.GetInt64(0))
 
-                let byFirst (pairs: ('K * 'V) list) (values: 'V list -> 'W) =
-                    pairs
-                    |> List.groupBy fst
-                    |> List.map (fun (key, group) -> KeyValuePair(key, group |> List.map snd |> values))
-                    |> Dictionary
+            let byFirst (pairs: ('K * 'V) list) (values: 'V list -> 'W) =
+                pairs
+                |> List.groupBy fst
+                |> List.map (fun (key, group) -> KeyValuePair(key, group |> List.map snd |> values))
+                |> Dictionary
 
-                let region: SeedCoverage.Region =
-                    { Starts = byFirst starts id
-                      Dependents = byFirst edges id
-                      Projects = byFirst testProjects Set.ofList
-                      Barriers = HashSet<int64>(markers) }
+            let region: SeedCoverage.Region =
+                { Starts = byFirst starts id
+                  Dependents = byFirst edges id
+                  Tests = byFirst testMethods id
+                  Barriers = HashSet<int64>(markers) }
 
-                SeedCoverage.coveringProjects region seeds
-            finally
-                conn.Dispose()
+            answer region
+        finally
+            conn.Dispose()
 
     /// Return every symbol occurrence declared in a given source file path, with that
     /// file's location and content hash.
