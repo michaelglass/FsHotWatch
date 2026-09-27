@@ -64,9 +64,9 @@
         "platform": "macos"
       },
       {
-        "line": 97,
-        "branch": 85,
-        "reason": "Linux floor from CI run 35043079581 on 21b32f70 (2026-09-16): line 97.9 percent, branch 85.4 percent (76/89 branches), rounded down. Linux counts 89 branches where macOS counts 74, so the platforms carry separate entries.",
+        "line": 98,
+        "branch": 89,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4716 passed, 0 failed), 2026-09-27: line 98.5 percent (192/195), branch 89.4 percent (76/85), rounded down; deterministic tests. CI's 75-76/89 depended on checkout depth: a path shallower than the root takes `startsWith`'s length arm, which /home/runner/work/... paths hit and a one-segment /src root never did. A test now nests the root below the DLL in any checkout; a metadata-free PE covers NotAnAssembly; `reference.Version.ToString()` replaces `string`, whose inlined null and non-IFormattable arms a Version never takes (89 -> 85 branches). Uncovered: `use` disposal null checks (238, 478), the non-BadImageFormat exception filter arm (242-243), loop arms over the always-non-empty document and reference lists (131, 361, 363), the null-parent arm of the producer walk (267), and a recorded document outside the recorded root (321), which this SDK's Linux build does not produce.",
         "platform": "linux"
       }
     ],
@@ -957,9 +957,9 @@
         "platform": "macos"
       },
       {
-        "line": 97,
-        "branch": 84,
-        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4712 passed, 0 failed), 2026-09-27: line 97.7 percent (339/347), branch 85.7 percent (108/126), floored ~1.7pp under a single run (the polling paths are timing-dependent; sub-1pp floors here have gone red on the next run). The macOS seams (extra-pattern watchers, coalesced rescans, a native start fault, the forced macOS layout without FSEvents) now have portable tests.",
+        "line": 98,
+        "branch": 86,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4716 passed, 0 failed), 2026-09-27: line 98.8 percent (343/347), branch 88.1 percent (111/126), floored ~2pp under a single run (the polling paths are timing-dependent; sub-1pp floors here have gone red on the next run). The macOS seams (extra-pattern watchers, coalesced rescans, a native start fault, the forced macOS layout without FSEvents, a partial watcher that throws on rollback) and an unlistable repository root now have portable tests. Uncovered: a system watcher that fails after construction (defaultSystemWatcherFactory's handler; no seam reaches it).",
         "platform": "linux"
       }
     ],
@@ -1998,9 +1998,9 @@
         "platform": "macos"
       },
       {
-        "coveredLines": 335,
-        "coveredBranches": 106,
-        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4712 passed, 0 failed), 2026-09-27: 339 covered lines and 108 covered branches from coverageratchet's own count; floored at 335/106 for single-run headroom, replacing the inferred 248/72. Re-baseline from the next Linux CI run.",
+        "coveredLines": 339,
+        "coveredBranches": 109,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401, CI's build and coverage commands, non-root, full FsHotWatch.Tests (4716 passed, 0 failed), 2026-09-27: 343 covered lines and 111 covered branches from coverageratchet's own count; floored at 339/109 for single-run headroom, replacing the inferred 248/72. Re-baseline from the next Linux CI run.",
         "platform": "linux"
       }
     ]

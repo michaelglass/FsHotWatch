@@ -1482,3 +1482,61 @@ let ``forcing the macOS layout where FSEvents cannot load degrades to content po
                     | WatcherMode.ContentPolling _ -> true
                     | _ -> false
                 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a partial watcher that throws on rollback is logged and the rest still roll back`` () =
+    withTempDir "watcher-rollback-throws" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let disposed = ResizeArray<string>()
+
+        let native _dirs _onFile _onCoalesced _latency =
+            { new IDisposable with
+                member _.Dispose() = disposed.Add "native" }
+
+        let system _handle (spec: FileWatcher.SystemWatcherSpec) : IDisposable =
+            if spec.IncludeSubdirectories then
+                failwith "extra-pattern watcher failed"
+
+            { new IDisposable with
+                member _.Dispose() =
+                    disposed.Add "solutions"
+                    raise (IOException "already closed") }
+
+        use watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                ignore
+                [ FilePattern.parse "*.ratchet.json" ]
+                0.05
+                FileWatcher.NativeStartRetry.none
+                native
+                system
+                (fun _repo _onChange _extras -> inert "polling")
+
+        // Newest first: the throwing solution watcher, then the native stream all the same.
+        test <@ disposed |> Seq.toList = [ "solutions"; "native" ] @>
+        test <@ watcher.Mode = WatcherMode.ContentPolling "extra-pattern watcher failed" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a repository root the poller cannot list asks for a full refresh`` () =
+    if OperatingSystem.IsWindows() then
+        Assert.Skip("Unix file modes")
+    else
+        withTempDir "watcher-root-unlistable" (fun tmpDir ->
+            Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+            let changes = ResizeArray<FileChangeKind>()
+
+            use poller = new PollingFileWatcher(tmpDir, changes.Add, [], false, None, None)
+
+            // Traversable but not listable: the source walk still works, the solution scan cannot.
+            File.SetUnixFileMode(tmpDir, UnixFileMode.UserExecute)
+
+            try
+                poller.Poll()
+            finally
+                File.SetUnixFileMode(
+                    tmpDir,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                )
+
+            test <@ changes |> Seq.contains SolutionChanged @>)
