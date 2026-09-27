@@ -387,7 +387,18 @@ let ``a traced run joins against the analysis admitted while it ran, however far
             // is still unfolded when the mailbox is let go.
             File.WriteAllText(go, "")
             test <@ waitUntilTrue (fun () -> File.Exists finished) 30000 @>
-            Thread.Sleep 500
+
+            // Ingestion logs its wait once the probe is posted: only then is the mailbox
+            // let go, so `L` cannot fold before the probe exists.
+            test
+                <@
+                    waitUntilTrue
+                        (fun () ->
+                            host.GetActivitySnapshot("test-prune").ActivityTail
+                            |> List.exists (fun l -> l.Contains TraceRun.indexWaitLine))
+                        30000
+                @>
+
             release.Set()
             test <@ run.Wait(TimeSpan.FromSeconds 60.0) @>
 

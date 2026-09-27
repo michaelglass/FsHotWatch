@@ -284,15 +284,23 @@ module TraceRun =
         | Refusal of reason: string
         | Ingest of session: TraceSession.TraceLaunch
 
+    /// Logged once ingestion has asked the index to fold and the fold is still behind:
+    /// an ingest blocked on the index is visible while it waits.
+    let indexWaitLine =
+        "traces: waiting for the symbol index to fold the events admitted before ingestion"
+
     /// Wait for `index` to fold what was admitted before now: `Some waited` once it has,
     /// `None` when `index.Bound` ran out first. Cancelled with the run.
-    let private awaitFolded (index: IndexFold) =
+    let private awaitFolded (index: IndexFold) (log: string -> unit) =
         async {
             let! ct = Async.CancellationToken
             let started = Diagnostics.Stopwatch.StartNew()
             // Cancelled once the fold wins, so the bound's timer does not outlive the wait.
             use bound = CancellationTokenSource.CreateLinkedTokenSource ct
             let folded = index.Folded()
+
+            if not folded.IsCompleted then
+                log indexWaitLine
 
             let! first =
                 Tasks.Task.WhenAny(folded, Tasks.Task.Delay(index.Bound, bound.Token))
@@ -413,7 +421,7 @@ module TraceRun =
             let! indexState =
                 if joins then
                     async {
-                        match! awaitFolded index with
+                        match! awaitFolded index log with
                         | Some waited ->
                             log
                                 $"traces: the symbol index folded the events admitted before ingestion in %d{int waited.TotalMilliseconds}ms"
