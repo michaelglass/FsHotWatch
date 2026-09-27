@@ -502,6 +502,15 @@ module FileWatcher =
 
         attempt 1 0 retry.BackoffMs
 
+    /// Whether a system watcher built from `spec` passes `path` on. The native
+    /// subscription is one broad `*`; this is the exact pattern set, applied in-process.
+    let internal specAccepts (spec: SystemWatcherSpec) (path: string) =
+        let fileName = Path.GetFileName(path)
+
+        spec.Filters
+        |> List.exists (fun filter ->
+            System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(filter, fileName, true))
+
     let private defaultSystemWatcherFactory handle spec =
         let watcher = new FileSystemWatcher(spec.Directory)
 
@@ -514,13 +523,7 @@ module FileWatcher =
             watcher.Filter <- "*"
 
             let handleEvent (event: FileSystemEventArgs) =
-                let fileName = Path.GetFileName(event.FullPath)
-
-                if
-                    spec.Filters
-                    |> List.exists (fun filter ->
-                        System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(filter, fileName, true))
-                then
+                if specAccepts spec event.FullPath then
                     handle event.FullPath
 
             watcher.Changed.Add(handleEvent)
@@ -677,6 +680,56 @@ module FileWatcher =
             systemWatcherFactory
             pollingWatcherFactory
 
+    /// The non-macOS layout: one recursive system watcher per existing discovery
+    /// root, one for top-level solutions, one per extra pattern. The factory is a
+    /// parameter so the layout and routing are testable without live file events.
+    let internal createPortable
+        (repoRoot: string)
+        (onChange: FileChangeKind -> unit)
+        (extraPatterns: FilePattern list)
+        (systemWatcherFactory: SystemWatcherFactory)
+        : FileWatcher =
+        let handle (path: string) =
+            if isRelevantFileOrExtra extraPatterns path then
+                onChange (classifyChange path)
+
+        let slnWatcher =
+            systemWatcherFactory
+                handle
+                { Directory = repoRoot
+                  IncludeSubdirectories = false
+                  Filters = [ "*.sln"; "*.slnx" ] }
+
+        // Each FileCommandPlugin pattern gets its own recursive watcher at the
+        // repo root. .NET handles wildcard and literal filter forms.
+        let extraWatchers =
+            extraPatterns
+            |> List.map (fun pattern ->
+                systemWatcherFactory
+                    handle
+                    { Directory = repoRoot
+                      IncludeSubdirectories = true
+                      Filters = [ FilePattern.toString pattern ] })
+
+        let createFsw (dir: string) =
+            if Directory.Exists(dir) then
+                Some(
+                    systemWatcherFactory
+                        handle
+                        { Directory = dir
+                          IncludeSubdirectories = true
+                          Filters = [ "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" ] }
+                )
+            else
+                None
+
+        let watchers =
+            (Discovery.discoveryRoots repoRoot |> List.map createFsw) @ [ Some slnWatcher ]
+            |> List.choose id
+
+        { Mode = WatcherMode.NativeEvents
+          Disposables = watchers @ extraWatchers }
+
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes,
     /// plus any files matching `extraPatterns` (from FileCommandPlugin patterns) across
     /// the full repo root. Patterns support both wildcard-suffix form (`*.ratchet.json`)
@@ -691,10 +744,6 @@ module FileWatcher =
         (extraPatterns: FilePattern list)
         (latencySeconds: float)
         : FileWatcher =
-        let handle (path: string) =
-            if isRelevantFileOrExtra extraPatterns path then
-                onChange (classifyChange path)
-
         let isMacOS =
             defaultArg
                 isMacOSOverride
@@ -714,39 +763,4 @@ module FileWatcher =
                 defaultSystemWatcherFactory
                 defaultPollingWatcherFactory
         else
-            let slnWatcher =
-                defaultSystemWatcherFactory
-                    handle
-                    { Directory = repoRoot
-                      IncludeSubdirectories = false
-                      Filters = [ "*.sln"; "*.slnx" ] }
-
-            // Each FileCommandPlugin pattern gets its own recursive watcher at the
-            // repo root. .NET handles wildcard and literal filter forms.
-            let extraWatchers =
-                extraPatterns
-                |> List.map (fun pattern ->
-                    defaultSystemWatcherFactory
-                        handle
-                        { Directory = repoRoot
-                          IncludeSubdirectories = true
-                          Filters = [ FilePattern.toString pattern ] })
-
-            let createFsw (dir: string) =
-                if Directory.Exists(dir) then
-                    Some(
-                        defaultSystemWatcherFactory
-                            handle
-                            { Directory = dir
-                              IncludeSubdirectories = true
-                              Filters = [ "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" ] }
-                    )
-                else
-                    None
-
-            let watchers =
-                (Discovery.discoveryRoots repoRoot |> List.map createFsw) @ [ Some slnWatcher ]
-                |> List.choose id
-
-            { Mode = WatcherMode.NativeEvents
-              Disposables = watchers @ extraWatchers }
+            createPortable repoRoot onChange extraPatterns defaultSystemWatcherFactory
