@@ -37,6 +37,21 @@ type CheckMode =
     /// produce a clean verdict.
     | Confirmation
 
+/// Whether a `confirm` may be answered by a full-suite run it did not itself launch.
+///
+/// A `confirm` on a tree that has not moved asks the SAME question about the SAME
+/// bytes, so by default the evidence an earlier run earned answers it: the verdict
+/// file's fast path (`Verdict.priorConfirmation`) or the daemon's retained full-suite
+/// receipt. `confirm --fresh` asks a different question — "run the suite again, now" —
+/// for callers that need the run itself (timing, tracing, a flake hunt), not only its
+/// answer.
+[<RequireQualifiedAccess>]
+type Freshness =
+    /// The default: any full-suite run over this tree is evidence, whoever launched it.
+    | MayReuse
+    /// `confirm --fresh`: only a run this invocation launched is evidence.
+    | RequireNewRun
+
 /// WHY a test project's tests did not run — the question "waiting on build" answered
 /// with one word for two causes that need OPPOSITE remedies.
 ///
@@ -271,6 +286,16 @@ type CheckOutcome =
     /// Carries the reading, which is never `Available` here — `verdict` is the only
     /// constructor and gates on `ProjectModelReading.available`.
     | ModelUnavailable of IpcParsing.ProjectModelReading
+    /// `confirm --fresh` was asked to launch a new full-suite run, and the run it graded
+    /// is not one this invocation launched: the forced run was refused, faulted, or
+    /// never reported back, and only an earlier run's evidence remained.
+    ///
+    /// That evidence may well be a sound green for this tree, and a plain `confirm`
+    /// would accept it. `--fresh` promised a new run, and a green that silently came
+    /// from an old one would corrupt exactly the measurements `--fresh` exists for. So
+    /// NO VERDICT, exit 3, the class of `UnearnedScope`: nothing failed, and the
+    /// evidence asked for was not produced. `reason` names the run that was graded.
+    | NoNewRun of reason: string
 
 /// Total exit-code mapping. Exhaustive over every CheckOutcome case — adding a
 /// new case is a compile error here, so a new state can never silently fall
@@ -303,6 +328,9 @@ let exitCode (outcome: CheckOutcome) : int =
     // was verified, nothing failed, and the ordinary cause (a re-discovery in flight)
     // settles on its own.
     | CheckOutcome.ModelUnavailable _ -> 2
+    // No verdict: what was asked for (a new run) was not produced — exit 3, beside
+    // `UnearnedScope`.
+    | CheckOutcome.NoNewRun _ -> 3
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
 ///
@@ -540,3 +568,30 @@ let confirmNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
     match mode with
     | InnerLoop -> false
     | Confirmation -> not (TestScope.isFullSuite scope)
+
+/// Must `confirm` launch a run even though the settled reading may already be a
+/// full-suite one? Only under `--fresh`, and only when the run that reading names was
+/// not launched by this invocation (`launchedHere`) — a cold daemon whose scan already
+/// ran the suite for this `confirm` has nothing left to launch.
+///
+/// `confirmNeedsFullRun` decides whether the SCOPE is earned; this decides whether the
+/// RUN is new. The two are independent and a `confirm` escalates when either says so.
+let confirmNeedsNewRun (mode: CheckMode) (freshness: Freshness) (launchedHere: bool) : bool =
+    match mode, freshness with
+    | InnerLoop, _
+    | Confirmation, Freshness.MayReuse -> false
+    | Confirmation, Freshness.RequireNewRun -> not launchedHere
+
+/// Hold a `--fresh` green to its promise: a `Clean` graded from a run this invocation
+/// did not launch becomes `NoNewRun`. Every other outcome passes through untouched —
+/// a red or a refusal is already no green, and must keep its own reason.
+let requireNewRun
+    (freshness: Freshness)
+    (launchedHere: bool)
+    (gradedRun: string)
+    (outcome: CheckOutcome)
+    : CheckOutcome =
+    match freshness, outcome with
+    | Freshness.RequireNewRun, CheckOutcome.Clean _ when not launchedHere ->
+        CheckOutcome.NoNewRun $"the run graded was %s{gradedRun}, which this `confirm --fresh` did not launch"
+    | _ -> outcome

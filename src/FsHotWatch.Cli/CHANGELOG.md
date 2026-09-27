@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: `fshw confirm --fresh` launches a new full-suite run on an unchanged tree. It
+  skips the `.fshw/verdict.json` fast path, forces the suite even when the warm
+  daemon's settled reading is already a full-suite receipt, and refuses a green (exit 3,
+  `incomplete`) unless the run it graded is one it launched. Plain `confirm` is
+  unchanged. `confirm` now takes `ConfirmFlag list` (`RunOnce`, `Fresh`) instead of
+  `RunFlag list`; `CheckVerdict` gains `Freshness`, `confirmNeedsNewRun`,
+  `requireNewRun` and the `CheckOutcome.NoNewRun` case, and
+  `IpcOutput.pollAndRenderForInvocation` takes a `Freshness` after the check mode.
+  **BREAKING** for F# callers of those two.
+
 ## 0.14.0-alpha.74 - 2026-09-27
 
 - chore: rebuild to bundle updated dependencies

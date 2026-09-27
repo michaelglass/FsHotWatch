@@ -666,7 +666,7 @@ let ``check and confirm --run-once complete without constructing a file watcher`
     withProjectOnlyRepo "runonce-no-watcher" (fun repoRoot ->
         let command, mode =
             if confirm then
-                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.ConfirmFlag.RunOnce ],
                 FsHotWatch.Cli.CheckVerdict.Confirmation
             else
                 FsHotWatch.Cli.Program.Command.Check [ FsHotWatch.Cli.Program.RunOnce ],
@@ -697,7 +697,7 @@ let ``check and confirm --run-once with no plugins registered return a verdict``
     withProjectOnlyRepo "runonce-no-plugins" (fun repoRoot ->
         let command, mode =
             if confirm then
-                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.ConfirmFlag.RunOnce ],
                 FsHotWatch.Cli.CheckVerdict.Confirmation
             else
                 FsHotWatch.Cli.Program.Command.Check [ FsHotWatch.Cli.Program.RunOnce ],
