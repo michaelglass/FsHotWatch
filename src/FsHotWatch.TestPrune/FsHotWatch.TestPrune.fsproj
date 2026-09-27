@@ -59,6 +59,6 @@
     <PackageReference Include="TestPrune.Core" Version="13.2.3" />
     <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
          trace store. Needs the TestPrune.Core it was built against (13.2.x). -->
-    <PackageReference Include="TestPrune.Trace" Version="0.2.1" />
+    <PackageReference Include="TestPrune.Trace" Version="0.3.0" />
   </ItemGroup>
 </Project>
