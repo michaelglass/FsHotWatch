@@ -72,3 +72,76 @@ union-case getters. They run once per process, so in the parallel run an earlier
 | TestPrune.Core / joiner | F# `exception` declarations are not indexed, so their probes are unmapped |
 | TestPrune.Trace | audit: a sampled test the isolated run does not select is counted as extras |
 | TestPrune.Trace | census reports a project's last recorded run after the project opted out |
+
+## Second run (2026-09-27)
+
+Measured with FsHotWatch CLI `0.14.0-alpha.71`, which bundles TestPrune.Core 13.2.2 (index schema 18: F#
+exception types are indexed) and TestPrune.Trace 0.2.0. The `"traces": false` opt-out on
+TestPrune.Trace.Tests is removed. Same `tests.traces`, macOS arm64. The host was loaded again (load average
+17–39), so CPU numbers are noisy.
+
+### Runs
+
+| Run | Result | Recorded |
+|---|---|---|
+| `confirm` (fresh workspace, test-impact DB recreated at schema 18) | exit 0, green full-suite run: TestPrune.Tests 1033 passed + 1 skipped, TestPrune.Trace.Tests 303 passed | `8af7b8f8…` |
+
+`trace_runs` for `8af7b8f8…`:
+
+| Project | Status | Reason |
+|---|---|---|
+| TestPrune.Tests | `recorded` | none |
+| TestPrune.Trace.Tests | `refused` | the app ships its own TestPrune.Trace.Recorder build; tracing would replace it (its deps.json lists the recorder as a project) |
+
+The shadow bin now refuses TestPrune.Trace.Tests by itself. The suite runs untraced and stays green, with
+no config opt-out. The measurement verbs refuse it with the same reason, so the bars below cover
+TestPrune.Tests only.
+
+### Bars (TestPrune.Tests)
+
+| Bar | Pass when | First run (alpha.69, `2bdf1176…`) | Second run (alpha.71, `8af7b8f8…`) | Verdict |
+|---|---|---|---|---|
+| census: traced | ≥ 0.99 | 1024/1024 (1.0000) | 1030/1030 (1.0000) | pass |
+| census: ambient | < 0.001, or listed | 0/14,771,003 | 0/14,851,732 | pass |
+| audit | `ExtraTotal = 0`; `MissingUser` explained | sampled 11, extra 15 (display-filter defect) | sampled 11, extra 0; missing only `cctor`/`gen` | pass |
+| overhead | CPU ratio ≤ 1.15 | 1.101 (83.0 s → 91.4 s); max RSS 1,910.8 MiB | 1.068 (67.4 s → 72.0 s); max RSS 1,781.3 MiB; see below | pass |
+| file-census | ratio ≤ 0.05 | 0.048 (reads-repo 21, fail-outside 20, fail-in-repo 0) | 0.048 (reads-repo 21, fail-outside 20, fail-in-repo 0) | pass |
+| coverage parity | identical cobertura with traces removed | not measured | not measured: `confirm` here still collects no coverage | open |
+| PDB / JIT | `prepare` refused nothing on a traced project | no refused run | 0 invalid of 5,774 verified methods; the one refusal is the intended own-recorder refusal | pass |
+
+The theory row that produced the first run's 15 false extras
+(`rich types and patterns without anon records produce no diagnostics(body: "let f (p: int * string) = p")`)
+was sampled again and is now selected alone: extra 0, missing none. No `missing user` entries remain.
+
+### Incomplete traces
+
+| Reason | First run (tests) | Second run (tests) |
+|---|---|---|
+| `unmapped-code` `<StartupCode$…>` closures (`no-document`) | 72 | 0 |
+| `unmapped-code` F# `exception` types (`type-not-indexed`) | 13 | 0 |
+| `child-process-untraced` (`dotnet`, `sleep`, `sh`, `chmod`) | 14 | 14 (dotnet 6, sleep 5, sh 2, chmod 1) |
+| **total incomplete / stored traces** | 99 / 947 (848 complete) | 14 / 953 (939 complete) |
+
+`unmappedIds` is 0. The only incomplete traces left are tests that start non-woven processes, which is
+expected by design.
+
+### Overhead: an unexplained traced failure
+
+The first `overhead --reps 3` exited 1. The ratio was 1.049, but traced samples 2 and 3 exited 2 (untraced
+runs all exited 0). The verb discards the launched app's output, so the failing tests are unknown. The
+failure did not come back in 8 more traced launches: 2 back-to-back runs sharing one dump directory, 3 runs
+interleaved with untraced ones as the verb does, and a second `overhead` run (all 6 samples exit 0; its
+numbers are in the table). The fshw daemon was idle during the failing run, so no rebuild overlapped it.
+Host load average was 25–39 at the time.
+
+| Owner | Defect |
+|---|---|
+| TestPrune.Trace | `overhead` (via `Launch.run`) discards a launch's output, so a sample with a nonzero exit cannot be diagnosed. It should keep the output of a failing launch |
+
+### What still blocks the phase-1 bar
+
+| Item | State |
+|---|---|
+| coverage parity | unmeasured: `confirm` collects no coverage on this repository, so the step needs a coverage-collecting full run with and without `tests.traces` |
+| 3 consecutive traced full runs (D6 census bar) | this run recorded one `confirm` |
+| intermittent traced exit 2 under load | 2 of 12 traced launches, not reproduced; open until a failing launch's output is kept |
