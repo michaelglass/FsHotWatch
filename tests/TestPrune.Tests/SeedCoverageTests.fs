@@ -176,6 +176,54 @@ let ``each seed's covering projects equal its single-seed query, with compositio
     for seed in 1001..1100 do
         checkCase seed true
 
+let private testsOf (rows: TestMethodInfo list) = rows |> Set.ofList
+
+/// Selection must never shrink when seeds are added: for every subset of a batch, what
+/// the subset selects is selected by the batch. Checked against both stores, and against
+/// the per-seed covering projects the grouped query reports.
+let private checkMonotone (seed: int) =
+    let rng = Random(seed)
+    let index = generateIndex rng true
+    let store = TestPrune.InMemoryStore.fromAnalysisResults index
+    let names = index |> List.collect _.Symbols |> List.map _.FullName |> List.distinct
+
+    let batch =
+        names |> List.filter (fun _ -> rng.NextDouble() < 0.4) |> List.truncate 5
+
+    let rec subsets (xs: string list) =
+        match xs with
+        | [] -> [ [] ]
+        | x :: rest ->
+            let tail = subsets rest
+            tail @ (tail |> List.map (fun s -> x :: s))
+
+    withDb (fun db ->
+        db.RebuildProjects index
+        let whole = testsOf (db.QueryAffectedTests batch)
+
+        if testsOf (store.QueryAffectedTests batch) <> whole then
+            failwith $"graph seed %d{seed}, batch %A{batch}: stores disagree"
+
+        let coveringProjects = db.QueryCoveringProjectsBySeed batch
+
+        if
+            (whole |> Set.map _.TestProject)
+            <> (coveringProjects |> Map.toList |> List.map snd |> Set.unionMany)
+        then
+            failwith $"graph seed %d{seed}, batch %A{batch}: projects differ from the per-seed covering projects"
+
+        for part in subsets batch do
+            let partial = testsOf (db.QueryAffectedTests part)
+
+            if not (Set.isSubset partial whole) then
+                failwith
+                    $"graph seed %d{seed}: %A{part} selects %A{Set.difference partial whole} that %A{batch} does not")
+
+[<Fact>]
+let ``adding seeds never removes a selected test, with composition-root barriers`` () =
+    for seed in 2001..2150 do
+        checkMonotone seed
+
 [<Fact>]
 let ``the fail-safe restores a project a barrier emptied, per seed`` () =
     // Handler ← Dispatch(marked) ← Boot ← IntegrationTest; Handler ← UnitTest.

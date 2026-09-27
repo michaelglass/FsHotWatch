@@ -8,16 +8,21 @@
 /// strongly connected component, the test projects reachable from it, then reads each
 /// seed's answer from its start symbols.
 ///
+/// The same region answers `QueryAffectedTests` for a batch that touches a composition
+/// root (`affectedTests`): the batch selects the union of what each seed selects on its
+/// own, and the per-seed fail-safe needs exactly the per-seed barriered and unbarriered
+/// projects computed here.
+///
 /// The answer must equal `QueryAffectedTests [seed]` projected to test projects, including
 /// under composition-root barriers. The barriered reachability here stops at EVERY marked
 /// symbol, while the single-seed walk stops only at marked symbols outside that seed's own
 /// start set. The two agree because a start symbol is expanded from its own start term:
 /// a marked start reached again from another start is already covered. The per-project
-/// fail-safe is `Domain.CompositionRoot.restoreEmptiedProjects`, called here exactly as
-/// `QueryAffectedTests` calls it.
+/// fail-safe is `Domain.CompositionRoot.emptiedProjects`, judged per seed.
 module internal TestPrune.SeedCoverage
 
 open System.Collections.Generic
+open TestPrune.AstAnalyzer
 
 /// The region of the graph a grouped walk loaded.
 type Region =
@@ -28,8 +33,8 @@ type Region =
         Starts: IReadOnlyDictionary<string, int64 list>
         /// Who depends on each symbol, over the reverse closure of every start.
         Dependents: IReadOnlyDictionary<int64, int64 list>
-        /// The test projects of the test methods sitting on each symbol.
-        Projects: IReadOnlyDictionary<int64, Set<string>>
+        /// The test methods sitting on each symbol.
+        Tests: IReadOnlyDictionary<int64, TestMethodInfo list>
         /// Composition-root markers in the region.
         Barriers: IReadOnlySet<int64>
     }
@@ -118,15 +123,31 @@ let private reachability
     // Only roots are ever looked up, and every root was visited above.
     fun id -> sets[componentOf[id]]
 
-/// For each seed, the test projects `QueryAffectedTests [seed]` selects tests from.
-/// Every seed is present in the result; one the index does not know maps to the empty set.
-let coveringProjects (region: Region) (seeds: string list) : Map<string, Set<string>> =
+/// One seed's start symbols and the test projects they reach, with composition-root
+/// barriers (`Narrowed`) and without (`Full`).
+type private SeedReach =
+    { Seed: string
+      Starts: int64 list
+      Narrowed: Set<string>
+      Full: Set<string> }
+
+let private testsOn (region: Region) (id: int64) =
+    match region.Tests.TryGetValue id with
+    | true, tests -> tests
+    | _ -> []
+
+let private reachBySeed (region: Region) (seeds: string list) : SeedReach list =
     let dependents = listAt region.Dependents
 
+    let projects = Dictionary<int64, Set<string>>()
+
     let own (id: int64) =
-        match region.Projects.TryGetValue id with
-        | true, projects -> projects
-        | _ -> Set.empty
+        match projects.TryGetValue id with
+        | true, known -> known
+        | _ ->
+            let computed = testsOn region id |> List.map _.TestProject |> Set.ofList
+            projects[id] <- computed
+            computed
 
     let startsOf (seed: string) =
         match region.Starts.TryGetValue seed with
@@ -138,7 +159,7 @@ let coveringProjects (region: Region) (seeds: string list) : Map<string, Set<str
     let unbarriered = reachability allStarts dependents own
 
     // Only a region holding a marker can narrow anything; without one the barriered walk
-    // is the unbarriered one, and `QueryAffectedTests` skips it the same way.
+    // is the unbarriered one.
     let barriered =
         if region.Barriers.Count = 0 then
             None
@@ -155,20 +176,83 @@ let coveringProjects (region: Region) (seeds: string list) : Map<string, Set<str
         let starts = startsOf seed
         let full = starts |> List.map unbarriered |> Set.unionMany
 
-        let projects =
+        let narrowed =
             match barriered with
             | None -> full
             | Some reach ->
                 // A start is always expanded, marker or not: the single-seed walk exempts
                 // its own start set from the barriers.
-                let narrowed =
-                    starts
-                    |> List.map (fun start ->
-                        Set.union (own start) (dependents start |> List.map reach |> Set.unionMany))
-                    |> Set.unionMany
+                starts
+                |> List.map (fun start -> Set.union (own start) (dependents start |> List.map reach |> Set.unionMany))
+                |> Set.unionMany
 
-                Domain.CompositionRoot.restoreEmptiedProjects id (Set.toList narrowed) (Set.toList full)
-                |> Set.ofList
+        { Seed = seed
+          Starts = starts
+          Narrowed = narrowed
+          Full = full })
 
-        seed, projects)
+/// For each seed, the test projects `QueryAffectedTests [seed]` selects tests from.
+/// Every seed is present in the result; one the index does not know maps to the empty set.
+let coveringProjects (region: Region) (seeds: string list) : Map<string, Set<string>> =
+    reachBySeed region seeds
+    |> List.map (fun r -> r.Seed, Set.union r.Narrowed (Domain.CompositionRoot.emptiedProjects r.Narrowed r.Full))
     |> Map.ofList
+
+/// Every node reached from `starts` through `successors`, the starts included.
+let private reached (starts: int64 list) (successors: int64 -> int64 list) : HashSet<int64> =
+    let seen = HashSet<int64>()
+    let pending = Stack<int64>(starts)
+
+    while pending.Count > 0 do
+        let node = pending.Pop()
+
+        if seen.Add node then
+            for next in successors node do
+                pending.Push next
+
+    seen
+
+/// `QueryAffectedTests seeds` under composition-root barriers: the union, over seeds, of
+/// each seed's barriered rows plus its unbarriered rows in every project its own barrier
+/// emptied.
+///
+/// Two walks serve every seed. The barriered rows of the batch are one walk from every
+/// start, expanding markers that are themselves starts: a marker another seed reaches
+/// but one seed starts from is expanded by that seed's own walk, so the batch walk
+/// reaches exactly the union of the per-seed ones. The restored rows are one walk per
+/// distinct set of seeds that emptied a project, kept to those projects.
+let affectedTests (region: Region) (seeds: string list) : TestMethodInfo list =
+    let dependents = listAt region.Dependents
+    let perSeed = reachBySeed region seeds
+    let allStarts = perSeed |> List.collect _.Starts |> List.distinct
+    let isStart = HashSet<int64>(allStarts)
+
+    let rowsOn (nodes: seq<int64>) = nodes |> Seq.collect (testsOn region)
+
+    let barriered =
+        reached allStarts (fun id ->
+            if region.Barriers.Contains id && not (isStart.Contains id) then
+                []
+            else
+                dependents id)
+        |> rowsOn
+        |> List.ofSeq
+
+    let restored =
+        perSeed
+        |> List.collect (fun r ->
+            Domain.CompositionRoot.emptiedProjects r.Narrowed r.Full
+            |> Set.toList
+            |> List.map (fun project -> project, r.Starts))
+        |> List.groupBy fst
+        |> List.map (fun (project, owners) -> project, owners |> List.collect snd |> List.distinct |> List.sort)
+        |> List.groupBy snd
+        |> List.collect (fun (starts, emptied) ->
+            let emptied = emptied |> List.map fst |> Set.ofList
+
+            reached starts dependents
+            |> rowsOn
+            |> Seq.filter (fun t -> emptied.Contains t.TestProject)
+            |> List.ofSeq)
+
+    barriered @ restored |> List.distinct

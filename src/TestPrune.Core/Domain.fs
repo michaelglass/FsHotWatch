@@ -34,12 +34,14 @@ module AnalysisError =
 ///
 /// This module is where the rule lives, so that the SQLite walk in
 /// `Database.QueryAffectedTests` and the in-memory walk in `InMemoryStore` cannot
-/// disagree about it. The two engines share the marker `Names` and the
-/// `restoreEmptiedProjects` fail-safe outright; only the graph traversal itself is
-/// written twice, once in SQL and once in F#. Those two traversals are held together
-/// by `CompositionRootSelectionTests`, which asserts both stores return the same rows
-/// case by case — the randomised soundness harness exercises the in-memory walk only,
-/// so it is that per-case assertion, not the harness, that keeps them honest.
+/// disagree about it. The two engines share the marker `Names` and the per-seed
+/// fail-safe (`emptiedProjects`) outright; only the traversal is written twice.
+/// `InMemoryStore` states the rule literally, walking each seed on its own;
+/// `Database` answers every seed from one loaded region (`SeedCoverage`). The two are
+/// held together by `CompositionRootSelectionTests` and `SeedCoverageTests`, which
+/// assert both stores return the same rows — the randomised soundness harness
+/// exercises the in-memory walk only, so it is those assertions, not the harness,
+/// that keep them honest.
 module CompositionRoot =
 
     /// Both spellings FCS may store for the marker, with and without the
@@ -66,11 +68,17 @@ module CompositionRoot =
     /// markers cannot be trusted for this change, and its unbarriered rows come back
     /// wholesale.
     ///
-    /// Two facts make the result obviously right, both worth stating because the
-    /// reader needs them: `barriered` is a subset of `unbarriered` (identical seeds,
-    /// strictly more restrictive expansion), so appending cannot duplicate a row; and
-    /// the projects present in `barriered` are exactly the projects the barrier did
-    /// not empty, so restoring the complement restores precisely the emptied ones.
+    /// The guard is judged PER SEED. A batch selects the union of what each of its
+    /// seeds selects on its own, fail-safe applied to each seed separately. Judged over
+    /// the batch at once, a project kept non-empty by one seed's direct edge would hide
+    /// another seed that reached it only through a composition root, and adding a seed
+    /// could then drop tests the smaller batch selected. Per seed, selection is
+    /// monotone: a batch selects at least what any part of it selects.
+    ///
+    /// For one seed, `barriered` is a subset of `unbarriered` (identical start set,
+    /// strictly more restrictive expansion), so the projects present in `barriered` are
+    /// exactly the ones the barrier did not empty, and this set is precisely the ones
+    /// it did.
     ///
     /// NOT a completeness guarantee, and its granularity is the CONSUMER'S: a repo
     /// whose unit and integration tests share one test project gets "never select
@@ -78,18 +86,24 @@ module CompositionRoot =
     /// with one test that names its URL and another that only clicks through the UI
     /// keeps the project non-empty and still drops the second. This bounds the blast
     /// radius; closing it needs the route attribution to cover click-driven navigation.
+    let internal emptiedProjects (barriered: Set<string>) (unbarriered: Set<string>) : Set<string> =
+        Set.difference unbarriered barriered
+
+    /// One seed's selection: its barriered rows, plus its unbarriered rows in every
+    /// project its barrier emptied (see `emptiedProjects`). Appending cannot duplicate
+    /// a row, because a restored row's project has no barriered row.
     let internal restoreEmptiedProjects
         (testProjectOf: 'test -> string)
         (barriered: 'test list)
         (unbarriered: 'test list)
         : 'test list =
-        let projectsTheBarrierKept = barriered |> List.map testProjectOf |> Set.ofList
+        let projectsOf (rows: 'test list) =
+            rows |> List.map testProjectOf |> Set.ofList
 
-        let restoredForEmptiedProjects =
-            unbarriered
-            |> List.filter (fun t -> not (Set.contains (testProjectOf t) projectsTheBarrierKept))
+        let emptied = emptiedProjects (projectsOf barriered) (projectsOf unbarriered)
 
-        barriered @ restoredForEmptiedProjects
+        barriered
+        @ (unbarriered |> List.filter (fun t -> Set.contains (testProjectOf t) emptied))
 
 type ChangeKind =
     | Modified
