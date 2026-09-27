@@ -1776,6 +1776,67 @@ type LaunchScope =
     | LaunchedFullSuite
     | LaunchedSelection
 
+/// A launch `BuildSucceeded` held back because the symbol diff of the tree it built was
+/// not folded yet (`DiffWait`).
+type AwaitedDiff = { Id: Guid; Since: DateTime }
+
+/// Holding a build's launch until the check results of the tree it built are folded.
+///
+/// A scan waits for the build before it type-checks, so `BuildSucceeded` reaches this
+/// plugin before the `FileChecked` results for the files the build compiled. Launching
+/// then selects from a diff that does not have them yet: with nothing owed, zero classes
+/// are affected, the tree has moved since the last evidence, and the run widens to every
+/// project in full, for an edit the diff would have narrowed to one.
+module internal DiffWait =
+    /// How long a held launch waits for the next `BatchChecked` before it launches
+    /// without it. Longer than a warm scan of a large repository.
+    let bound = TimeSpan.FromMinutes 5.0
+
+    /// What a build's launch would run regardless of the symbol diff, and the trees
+    /// that decide whether the diff is in hand.
+    type Launch =
+        {
+            /// A run has completed this session, so the launch is not the baseline run.
+            HasSessionBaseline: bool
+            /// The host publishes a project model. Without one every seal is ignored, so
+            /// none could release the wait.
+            HasModel: bool
+            /// No symbol, runtime obligation or unknown ledger is owed.
+            OwesNothing: bool
+            /// Projects the launch runs in full whatever the diff says: dependency
+            /// fanout, and those with no whole-project run under the current model.
+            RunsInFullAnyway: Set<string>
+            /// Outstanding failures, or files and extensions the index could not analyse.
+            RunsSomethingAnyway: bool
+            /// The flush this build ran found changed symbols: the diff is in hand.
+            FoldedChanges: bool
+            Scope: LaunchScope
+            /// The tree the last run's evidence is bound to.
+            EvidenceTree: string option
+            CurrentTree: string option
+            /// The tree when the last `BatchChecked` folded its check results.
+            SealedTree: string option
+        }
+
+    /// Whether a build's launch waits for its tree's check results. Only a launch the
+    /// diff alone would select can gain from it; one that runs something regardless
+    /// launches now, and so does one over the tree the last run's evidence is bound to,
+    /// which the zero-affected skip already answers. A tree that cannot be read is never
+    /// waited on.
+    let awaits (launch: Launch) : bool =
+        launch.HasSessionBaseline
+        && launch.HasModel
+        && launch.OwesNothing
+        && Set.isEmpty launch.RunsInFullAnyway
+        && not launch.RunsSomethingAnyway
+        && not launch.FoldedChanges
+        && launch.Scope = LaunchedSelection
+        && (match launch.CurrentTree with
+            | Some current ->
+                launch.SealedTree <> Some current
+                && not (ReceiptInputTree.matches launch.EvidenceTree launch.CurrentTree)
+            | None -> false)
+
 /// The run holding the "tests" key, as its launch here claimed it.
 type InFlightRun =
     {
@@ -1798,6 +1859,13 @@ type TestPruneState =
         /// The run holding the "tests" key whose result is not folded yet, if a launch
         /// here claimed it. Cleared by that run's completion fold.
         InFlight: InFlightRun option
+        /// The receipt identity of the input tree when the last `BatchChecked` folded its
+        /// check results. Read only once a session baseline exists, the only time
+        /// `DiffWait` asks for it.
+        SealedTree: string option
+        /// A build's launch held back for its tree's check results (`DiffWait`). Cleared
+        /// by the next `BatchChecked`, by any launch, or by its expiry.
+        AwaitingDiff: AwaitedDiff option
         /// Every run this session completed, newest first, bounded at
         /// `SessionRunLedger`. `test-scope` declares them so a check can name each batch
         /// it ran.
@@ -2237,6 +2305,8 @@ type TestPruneMsg =
     /// A run owed after the one holding the "tests" key: queued as an intent behind it,
     /// coalesced, and decided against the state it is delivered into.
     | ImpactRunRequested
+    /// The held launch `id` (`DiffWait`) waited out its bound.
+    | DiffWaitExpired of id: Guid
     /// `set-scope`: the mode every later launch runs under.
     | ScopeRequested of TestMode
     /// A run could not ingest its runtime coverage receipt. Its durable recovery marker is
@@ -7033,6 +7103,8 @@ let internal createWithQueries
         { Debt = loadedDebt
           Mode = TestMode.initial
           InFlight = None
+          SealedTree = None
+          AwaitingDiff = None
           CompletedRuns = []
           CheckReach = None
           Replies = []
@@ -8334,6 +8406,7 @@ let internal createWithQueries
         | Claimed ->
             Some
                 { launchState with
+                    AwaitingDiff = None
                     InFlight =
                         Some
                             { Scope = launchScopeOf inputs
@@ -8473,6 +8546,58 @@ let internal createWithQueries
                 | None ->
                     enqueueImpactRun ctx
                     rerunState
+        | _ -> state
+
+    /// Hold a build's launch for its tree's check results (`DiffWait`), and post its
+    /// expiry. The mailbox is not blocked: the `BatchChecked` it waits for is delivered
+    /// through it.
+    let holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+        let held =
+            { Id = Guid.NewGuid()
+              Since = DateTime.UtcNow }
+
+        Logging.info
+            "test-prune"
+            $"BuildSucceeded: the check results for the tree this build compiled are not folded yet, so its symbol diff is unknown — holding the launch for the next BatchChecked (at most %.0f{DiffWait.bound.TotalSeconds}s)"
+
+        Tasks.Task
+            .Delay(DiffWait.bound)
+            .ContinueWith(fun (_: Tasks.Task) ->
+                try
+                    ctx.Post(DiffWaitExpired held.Id)
+                with ex ->
+                    Logging.debug "test-prune" $"held launch expiry not delivered: %s{ex.Message}")
+        |> ignore
+
+        { state with AwaitingDiff = Some held }
+
+    /// Launch the run a build held back (`holdForDiff`), selected from the state it is
+    /// delivered into, where the diff has now folded, or the wait expired without it.
+    let launchHeld (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (why: string) =
+        let waited =
+            state.AwaitingDiff
+            |> Option.map (fun held -> (DateTime.UtcNow - held.Since).TotalSeconds)
+            |> Option.defaultValue 0.0
+
+        let state = { state with AwaitingDiff = None }
+
+        match testConfigs with
+        | Some configs when not configs.IsEmpty ->
+            Logging.info "test-prune" $"Launching the build's held run after %.1f{waited}s: %s{why}"
+            let fanout = state.PendingForceRunProjects
+
+            let launchState =
+                { state with
+                    PendingForceRunProjects = Set.empty }
+
+            match launchImpactRun ctx configs launchState state.LastResults.IsSome fanout with
+            | Some launched -> launched
+            | None when joinsFullRun state false -> attachToFullRun state
+            | None ->
+                // A run that claimed the key after the build describes the built tree.
+                Logging.info "test-prune" "  ↳ tests slot already held — queueing re-run"
+                enqueueImpactRun ctx
+                state
         | _ -> state
 
     /// Make a candidate's durable debt the record a restart reads, then publish it.
@@ -9054,8 +9179,24 @@ let internal createWithQueries
                         // ledger leaves the in-memory queue empty because we cannot name
                         // what it held, and reading that as "nothing to drain" lets a
                         // corrupt sidecar run ZERO tests and still go green.
+                        // The tree these check results describe, for `DiffWait`: read after
+                        // the fold, so bytes written since read as a moved tree.
+                        let flushedState =
+                            if flushedState.LastResults.IsSome then
+                                { flushedState with
+                                    SealedTree = ReceiptInputTree.read repoRoot }
+                            else
+                                flushedState
+
                         if nothingOwed flushedState.Debt then
-                            return flushedState
+                            if flushedState.AwaitingDiff.IsSome then
+                                return
+                                    launchHeld
+                                        ctx
+                                        flushedState
+                                        "the check results it waited for are folded and owe nothing"
+                            else
+                                return flushedState
                         else
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
@@ -9082,7 +9223,8 @@ let internal createWithQueries
 
                                 let drainedState =
                                     { flushedState with
-                                        PendingForceRunProjects = Set.empty }
+                                        PendingForceRunProjects = Set.empty
+                                        AwaitingDiff = None }
 
                                 match launchImpactRun ctx configs drainedState hasCachedResults forceRunProjects with
                                 | Some launched ->
@@ -9102,7 +9244,10 @@ let internal createWithQueries
                                         "test-prune"
                                         $"BatchChecked: %s{owedDescription flushedState.Debt} discovered during a full-suite run — attaching debt to that run"
 
-                                    return attachToFullRun flushedState
+                                    return
+                                        attachToFullRun
+                                            { flushedState with
+                                                AwaitingDiff = None }
                                 | None ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -9113,7 +9258,10 @@ let internal createWithQueries
                                         $"BatchChecked: %s{owedDescription flushedState.Debt} still outstanding while a run is in flight — queueing re-run"
 
                                     enqueueImpactRun ctx
-                                    return flushedState
+
+                                    return
+                                        { flushedState with
+                                            AwaitingDiff = None }
                             | _ ->
                                 // Analysis-only (no test configs): nothing can verify
                                 // these symbols, so there is nothing to drain.
@@ -9270,31 +9418,64 @@ let internal createWithQueries
                                         { stateWithAffected with
                                             PendingForceRunProjects = Set.empty }
 
-                                    match launchImpactRun ctx configs launchState hasCachedResults forceRunProjects with
-                                    | Some launched -> return launched
-                                    | None when joinsFullRun stateWithAffected false ->
-                                        // The key is held by a pass-through full run whose
-                                        // result is not folded yet: it takes the debt.
-                                        Logging.info
-                                            "test-prune"
-                                            "BuildSucceeded: tests slot held by a full-suite run — attaching debt to that run"
+                                    let launchInputs = TestRunInputs.ofState launchState
 
-                                        return
-                                            { attachToFullRun stateWithAffected with
-                                                PendingForceRunProjects = forceRunProjects }
-                                    | None ->
-                                        // The key is held without a live run: a result fold
-                                        // or an intent. Same treatment: queue the rerun behind
-                                        // it, retain the un-consumed fanout.
-                                        Logging.info
-                                            "test-prune"
-                                            "BuildSucceeded: tests slot already held — queueing re-run"
+                                    let awaitsDiff =
+                                        DiffWait.awaits
+                                            { HasSessionBaseline = hasCachedResults
+                                              HasModel = (observeModelGeneration ctx).IsSome
+                                              OwesNothing = nothingOwed launchInputs.Debt
+                                              RunsInFullAnyway =
+                                                Set.unionMany
+                                                    [ forceRunProjects
+                                                      EarnedEvidence.wholeProjectGap
+                                                          (observeModelGeneration ctx)
+                                                          (ObservedModel.inputs ctx.ProjectGraph)
+                                                          (fullSuiteProjects configs)
+                                                          launchInputs.Earned ]
+                                              RunsSomethingAnyway =
+                                                not (
+                                                    List.isEmpty launchInputs.OutstandingFailures
+                                                    && Map.isEmpty launchInputs.UnanalyzableFiles
+                                                    && Map.isEmpty launchInputs.FailedExtensions
+                                                )
+                                              FoldedChanges =
+                                                UncoveredChanges.isAll launchInputs.ChangedSymbolsAllUncovered
+                                              Scope = launchScopeOf launchInputs
+                                              EvidenceTree = launchInputs.EvidenceTree
+                                              CurrentTree = ReceiptInputTree.read repoRoot
+                                              SealedTree = launchState.SealedTree }
 
-                                        enqueueImpactRun ctx
+                                    if awaitsDiff then
+                                        return holdForDiff ctx launchState
+                                    else
+                                        match
+                                            launchImpactRun ctx configs launchState hasCachedResults forceRunProjects
+                                        with
+                                        | Some launched -> return launched
+                                        | None when joinsFullRun stateWithAffected false ->
+                                            // The key is held by a pass-through full run whose
+                                            // result is not folded yet: it takes the debt.
+                                            Logging.info
+                                                "test-prune"
+                                                "BuildSucceeded: tests slot held by a full-suite run — attaching debt to that run"
 
-                                        return
-                                            { stateWithAffected with
-                                                PendingForceRunProjects = forceRunProjects }
+                                            return
+                                                { attachToFullRun stateWithAffected with
+                                                    PendingForceRunProjects = forceRunProjects }
+                                        | None ->
+                                            // The key is held without a live run: a result fold
+                                            // or an intent. Same treatment: queue the rerun behind
+                                            // it, retain the un-consumed fanout.
+                                            Logging.info
+                                                "test-prune"
+                                                "BuildSucceeded: tests slot already held — queueing re-run"
+
+                                            enqueueImpactRun ctx
+
+                                            return
+                                                { stateWithAffected with
+                                                    PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected
@@ -10333,6 +10514,15 @@ let internal createWithQueries
                                     RecoveryOutstanding = true } }
 
                 | Custom ImpactRunRequested -> return impactRun ctx state
+                | Custom(DiffWaitExpired id) ->
+                    match state.AwaitingDiff with
+                    | Some held when held.Id = id ->
+                        Logging.warn
+                            "test-prune"
+                            $"No check results were folded within %.0f{DiffWait.bound.TotalSeconds}s of the build that held its launch for them"
+
+                        return launchHeld ctx state "its wait expired, so it selects without the diff"
+                    | _ -> return state
 
                 | Custom(RunTestsRequested(configs, filter, reply)) ->
                     return requestTestRun ctx state configs filter reply
