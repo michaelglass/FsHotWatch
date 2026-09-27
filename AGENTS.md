@@ -48,7 +48,9 @@ The old per-plugin verbs (`build`, `test`, `lint`, `analyze`, `format-check`,
   test sets up state it depends on). There, `check` is the honest one.
 
 "Full suite" means every test project `.fshw.json` knows about — not necessarily
-every test project in the solution.
+every test project in the solution. A project in `tests.excluded` is not run by either
+verb; its `reason` says what runs it instead (a slow end-to-end suite typically runs
+after `confirm`, in the full verification, and never in `check`).
 
 ## Workflows
 

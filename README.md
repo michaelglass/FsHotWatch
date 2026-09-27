@@ -491,6 +491,14 @@ logged on the green path and recorded in `.fshw/verdict.json` under `scope.exclu
 so a consumer reading `"kind": "full"` can see the gap rather than infer completeness
 from a count.
 
+An exclusion is not a mode switch: fshw has no project that runs under `confirm` but not
+`check`, and anything in `tests.projects` runs in both. A suite that should gate a merge
+but stay out of the inner loop — slow, wall-clock-sensitive end-to-end tests — is
+excluded with a reason that says where it does run, and your full verification runs it
+after `confirm`. This repository does that with its own integration suite: `mise run ci`
+is `confirm --run-once` followed by that suite, and CI runs the same command in its own
+job.
+
 A repo with **no** solution file has no declared universe to be complete against, and
 nothing is reconciled: the full-suite claim is complete *relative to the solution*, and
 with no solution there is no such claim. A repo that configures no test projects is left

@@ -195,3 +195,25 @@ let ``same-tree check retains filtered receipts and a changed failing tree canno
             )
 
             assertSuite "ColdA" 0 1 failed))
+
+[<Fact(Timeout = 900000)>]
+let ``an edit no symbol diff sees still runs every project in full once its check results are folded`` () =
+    let clock = budget ()
+
+    withTempDir "fshw-unseen-edit-check-command" (fun root ->
+        preparePair clock root
+
+        withDaemon clock root (fun cli ->
+            let baseline = check clock root cli
+            assertGreen baseline
+            let _, _, full = baseline
+            assertScope "full" 2 2 full
+
+            let priorRunIds = snapshotRunIds root
+            // New bytes, no changed symbol: the folded diff selects nothing, and no
+            // evidence is bound to this tree, so nothing may be skipped.
+            File.AppendAllText(Path.Combine(root, "tests", "ColdA", "Value.fs"), "// moves the bytes only\n")
+            let unseen = check clock root cli
+            assertGreen unseen
+            let _, _, verdict = unseen
+            assertFreshFullPair root priorRunIds verdict))

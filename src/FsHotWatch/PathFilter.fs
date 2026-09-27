@@ -56,7 +56,10 @@ let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -
 
 /// Load an ignore file (gitignore syntax) and return a predicate that checks
 /// absolute paths against it. Returns a function that always returns false
-/// if the file does not exist or cannot be read.
+/// if the file does not exist or cannot be read. Paths outside `repoRoot` are
+/// never ignored, as in `isExcludedPath`: relative to the root they are `../...`,
+/// and a pattern like `tmp/` would otherwise match any absolute path with that
+/// segment (every file under Linux's `/tmp`).
 let loadIgnoreFile (repoRoot: string) (ignoreFilePath: string) : (string -> bool) =
     try
         let lines = File.ReadAllLines(ignoreFilePath)
@@ -66,8 +69,8 @@ let loadIgnoreFile (repoRoot: string) (ignoreFilePath: string) : (string -> bool
             ||> Array.fold (fun (ig: Ignore) (line: string) -> ig.Add(line))
 
         fun (absolutePath: string) ->
-            let relativePath = Path.GetRelativePath(repoRoot, absolutePath).Replace('\\', '/')
-            ig.IsIgnored(relativePath)
+            not (isOutsideRepo repoRoot absolutePath)
+            && ig.IsIgnored(Path.GetRelativePath(repoRoot, absolutePath).Replace('\\', '/'))
     with
     | :? FileNotFoundException
     | :? DirectoryNotFoundException -> fun _ -> false

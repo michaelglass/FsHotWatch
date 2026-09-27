@@ -137,6 +137,20 @@ let ``loadIgnoreFile handles comments and blank lines`` () =
         test <@ not (isIgnored (Path.Combine(tmpDir, "Foo.fs"))) @>)
 
 [<Fact(Timeout = 15000)>]
+let ``loadIgnoreFile does not match files outside repo root`` () =
+    // Linux's temp root is /tmp, so a file there is `../../tmp/...` relative to a repo;
+    // a repo's `tmp/` pattern must not reach it, any more than git's would.
+    withTempDir "ignorefile-outside" (fun tmpDir ->
+        let repoRoot = Path.Combine(tmpDir, "repo")
+        Directory.CreateDirectory(repoRoot) |> ignore
+        let ignoreFile = Path.Combine(repoRoot, ".testignore")
+        File.WriteAllText(ignoreFile, "tmp/\n")
+
+        let isIgnored = loadIgnoreFile repoRoot ignoreFile
+        test <@ isIgnored (Path.Combine(repoRoot, "tmp", "Scratch.fs")) @>
+        test <@ not (isIgnored (Path.Combine(tmpDir, "tmp", "fshw-test", "Temp.fs"))) @>)
+
+[<Fact(Timeout = 15000)>]
 let ``loadIgnoreFile returns false-for-all when file does not exist`` () =
     withTempDir "ignorefile-missing" (fun tmpDir ->
         let isIgnored = loadIgnoreFile tmpDir (Path.Combine(tmpDir, ".nonexistent"))
