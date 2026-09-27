@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-09-27
+
 - fix: a traced prepare re-weaves when the weaver, the recorder or a pass is another build of
   the same version. The weave cache under `obj/traced/` was keyed on their versions, so a
   rebuilt or upgraded weaver of one version reused a weave (and its JIT verification) that

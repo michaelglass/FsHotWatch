@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-09-27
+
+- Trace: key the weave cache on the weaver's build, not its version
+- Trace: keep branch points under a match's later hidden sequence points
+
+
 ## 0.3.0 - 2026-09-27
 
 - Merge main@origin into the branch-point weaver fix
