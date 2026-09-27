@@ -1993,14 +1993,14 @@
     "Watcher.fs": [
       {
         "coveredLines": 332,
-        "coveredBranches": 65,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "coveredBranches": 63,
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each), minus 2 branches on 2026-09-27: extracting the system watcher's filter into specAccepts removed the compiler's 2/2 branch on the inline `List.exists (fun filter ->` (covered, deleted — same 21 uncovered branches before and after: main 65/86, change 63/84). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
         "coveredLines": 248,
-        "coveredBranches": 74,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "coveredBranches": 72,
+        "reason": "Minus 2 on 2026-09-27 for the same deleted covered branch as the macos entry (specAccepts extraction; the IL is platform-independent) — confirm against the next Linux CI run. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ]

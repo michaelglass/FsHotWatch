@@ -1015,74 +1015,119 @@ type RealFileWatcherTests() =
         test <@ changes.Count >= 1 @>
         Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 120000)>]
-let ``FileWatcher fallback delivers every built-in recursive filter through one root watcher`` () =
-    withTempDir "watcher-fsw-filters" (fun tmpDir ->
+    [<Fact(Timeout = 150000)>]
+    member _.``FileWatcher fallback delivers every built-in kind from a real root watcher``() =
+        withTempDir "watcher-fsw-filters" (fun tmpDir ->
+            let srcDir = Path.Combine(tmpDir, "src")
+            let objDir = Path.Combine(srcDir, "obj")
+            Directory.CreateDirectory(objDir) |> ignore
+            let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+
+            use _watcher =
+                FileWatcher.create tmpDir received.Add (Some false) [] 0.05 :> IDisposable
+
+            let cases =
+                [ Path.Combine(srcDir, "BuiltIn.fs"), SourceChanged
+                  Path.Combine(srcDir, "BuiltIn.fsx"), SourceChanged
+                  Path.Combine(srcDir, "BuiltIn.fsproj"), ProjectChanged
+                  Path.Combine(srcDir, "BuiltIn.props"), ProjectChanged
+                  Path.Combine(objDir, "project.assets.json"), ProjectChanged ]
+
+            let missing () =
+                cases
+                |> List.filter (fun (path, kind) -> not (received |> Seq.contains (kind [ path ])))
+                |> List.map fst
+
+            // Routing is covered by the injected tests below; this one asks only whether
+            // the kernel-backed watcher delivers each kind. Every round rewrites EVERY
+            // case, so delivery latency is paid once, not once per case, and one
+            // deadline sized for late-not-lost delivery bounds the whole test.
+            probeLoop
+                (fun n ->
+                    for path, _ in cases do
+                        File.WriteAllText(path, string n))
+                (fun () -> List.isEmpty (missing ()))
+                90000
+
+            test <@ missing () = [] @>)
+
+/// The system watchers `createPortable` asked for, standing in for the OS. A
+/// write is delivered to every live watcher whose directory covers the path
+/// (directly, or below it when recursive) and whose spec accepts it: the scoping
+/// FileSystemWatcher applies natively, then the production in-process filter.
+/// Routing is our code; whether the kernel delivers a write, and how late, is
+/// not, and RealFileWatcherTests covers that against live events.
+type private FakeSystemWatchers() =
+    let created =
+        ResizeArray<FileWatcher.SystemWatcherSpec * (string -> unit) * bool ref>()
+
+    member _.Factory: FileWatcher.SystemWatcherFactory =
+        fun handle spec ->
+            let disposed = ref false
+            created.Add((spec, handle, disposed))
+
+            { new IDisposable with
+                member _.Dispose() = disposed.Value <- true }
+
+    member _.Specs = created |> Seq.map (fun (spec, _, _) -> spec) |> Seq.toList
+
+    member _.AllDisposed = created |> Seq.forall (fun (_, _, disposed) -> disposed.Value)
+
+    member _.Write(path: string) =
+        let covers (spec: FileWatcher.SystemWatcherSpec) =
+            let parent = Path.GetDirectoryName(path: string)
+
+            parent = spec.Directory
+            || spec.IncludeSubdirectories
+               && parent.StartsWith(spec.Directory + string Path.DirectorySeparatorChar)
+
+        for spec, handle, disposed in Seq.toList created do
+            if not disposed.Value && covers spec && FileWatcher.specAccepts spec path then
+                handle path
+
+[<Fact(Timeout = 15000)>]
+let ``portable watcher routes every built-in recursive filter through one root watcher`` () =
+    withTempDir "watcher-portable-filters" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         let objDir = Path.Combine(srcDir, "obj")
         Directory.CreateDirectory(objDir) |> ignore
-        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-        let observed = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+        let received = ResizeArray<FileChangeKind>()
+        let system = FakeSystemWatchers()
 
-        use watcher = FileWatcher.create tmpDir received.Add (Some false) [] 0.05
+        let watcher = FileWatcher.createPortable tmpDir received.Add [] system.Factory
 
-        // A second, independent watcher over the same tree. It outlives the one
-        // under test, so after that one is disposed it serves as a delivery
-        // barrier: once it has seen a later write, the earlier write has been
-        // through the kernel event service too.
-        use observer = FileWatcher.create tmpDir observed.Add (Some false) [] 0.05
-
-        let seen (bag: System.Collections.Concurrent.ConcurrentBag<FileChangeKind>) path expectedKind =
-            bag
-            |> Seq.exists (fun change ->
-                match change, expectedKind with
-                | SourceChanged paths, SourceChanged _
-                | ProjectChanged paths, ProjectChanged _ -> paths |> List.contains path
-                | _ -> false)
-
-        // Pay watcher startup once. Event-stream setup is asynchronous and stalls
-        // when the event service is busy, so it gets its own budget rather than
-        // eating into the first case's.
-        let readyPath = Path.Combine(srcDir, "_ready.fs")
-
-        let bothReady () =
-            seen received readyPath (SourceChanged [])
-            && seen observed readyPath (SourceChanged [])
-
-        probeLoop (fun n -> File.WriteAllText(readyPath, string n)) bothReady 30000
-        test <@ bothReady () @>
+        // One recursive subscription covers the whole root, nested obj/ included.
+        test
+            <@
+                system.Specs
+                |> List.filter (fun spec -> spec.Directory = srcDir)
+                |> List.map (fun spec -> spec.IncludeSubdirectories) = [ true ]
+            @>
 
         let cases =
-            [ Path.Combine(srcDir, "BuiltIn.fs"), SourceChanged []
-              Path.Combine(srcDir, "BuiltIn.fsx"), SourceChanged []
-              Path.Combine(srcDir, "BuiltIn.fsproj"), ProjectChanged []
-              Path.Combine(srcDir, "BuiltIn.props"), ProjectChanged []
-              Path.Combine(objDir, "project.assets.json"), ProjectChanged [] ]
+            [ Path.Combine(srcDir, "BuiltIn.fs"), SourceChanged
+              Path.Combine(srcDir, "BuiltIn.fsx"), SourceChanged
+              Path.Combine(srcDir, "BuiltIn.fsproj"), ProjectChanged
+              Path.Combine(srcDir, "BuiltIn.props"), ProjectChanged
+              Path.Combine(objDir, "project.assets.json"), ProjectChanged ]
 
-        // One deadline for every case: delivery latency under load is shared,
-        // so a slow case can borrow the time a fast one did not use.
-        let casesDeadline = DateTime.UtcNow.AddSeconds(45.0)
+        for path, kind in cases do
+            received.Clear()
+            system.Write path
+            test <@ received |> Seq.toList = [ kind [ path ] ] @>
 
-        for path, expectedKind in cases do
-            let hasPathWithKind () = seen received path expectedKind
-            let remainingMs = max 1 (int (casesDeadline - DateTime.UtcNow).TotalMilliseconds)
-            probeLoop (fun n -> File.WriteAllText(path, string n)) hasPathWithKind remainingMs
-            test <@ hasPathWithKind () @>
+        // Not every file under the root: other obj/ output stays out.
+        received.Clear()
+        system.Write(Path.Combine(objDir, "BuiltIn.fs"))
+        system.Write(Path.Combine(srcDir, "Notes.txt"))
+        test <@ received.Count = 0 @>
 
-        // The broad subscription is still one owned native resource: disposing
-        // the wrapper must stop every built-in kind, not leave a per-filter tail.
+        // The broad subscription is still one owned resource per watcher: disposing
+        // the wrapper releases every one, so no built-in kind has a tail.
         (watcher :> IDisposable).Dispose()
-        let countAfterDispose = received.Count
-        File.WriteAllText(Path.Combine(srcDir, "AfterDispose.fsproj"), "<Project />")
-
-        let barrierPath = Path.Combine(srcDir, "Barrier.fsproj")
-
-        let barrierSeen () =
-            seen observed barrierPath (ProjectChanged [])
-
-        probeLoop (fun n -> File.WriteAllText(barrierPath, $"<Project>{n}</Project>")) barrierSeen 30000
-        test <@ barrierSeen () @>
-        test <@ received.Count = countAfterDispose @>)
+        test <@ system.AllDisposed @>
+        system.Write(Path.Combine(srcDir, "AfterDispose.fsproj"))
+        test <@ received.Count = 0 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
@@ -1166,56 +1211,39 @@ let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
 
 // === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
-[<Collection(FileWatchCollectionName)>]
-type ExtraPatternFileWatcherTests() =
+[<Fact(Timeout = 15000)>]
+let ``portable watcher with wildcard pattern fires SourceChanged for matching file anywhere under the root`` () =
+    withTempDir "watcher-extra-wild" (fun tmpDir ->
+        let received = ResizeArray<FileChangeKind>()
+        let system = FakeSystemWatchers()
 
-    [<Fact(Timeout = 60000)>]
-    member _.``FileWatcher with wildcard pattern fires SourceChanged for matching file``() =
-        withTempDir "watcher-extra-wild" (fun tmpDir ->
-            let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-            let onChange change = received.Add(change)
+        use _watcher =
+            FileWatcher.createPortable tmpDir received.Add [ FilePattern.parse "*.ratchet.json" ] system.Factory
+            :> IDisposable
 
-            use _watcher =
-                FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] 0.05
-                :> IDisposable
+        let topLevel = Path.Combine(tmpDir, "coverage.ratchet.json")
+        let nested = Path.Combine(tmpDir, "nested", "my.ratchet.json")
+        system.Write topLevel
+        system.Write nested
+        system.Write(Path.Combine(tmpDir, "foo.json"))
 
-            // Rewrite until an event lands: the macOS backend has cold-start latency.
-            let configPath = Path.Combine(tmpDir, "coverage.ratchet.json")
+        test <@ received |> Seq.toList = [ SourceChanged [ topLevel ]; SourceChanged [ nested ] ] @>)
 
-            let hasMatch () =
-                received
-                |> Seq.exists (fun c ->
-                    match c with
-                    | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(".ratchet.json"))
-                    | _ -> false)
+[<Fact(Timeout = 15000)>]
+let ``portable watcher with literal filename pattern fires only for matching file`` () =
+    withTempDir "watcher-extra-literal" (fun tmpDir ->
+        let received = ResizeArray<FileChangeKind>()
+        let system = FakeSystemWatchers()
 
-            probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+        use _watcher =
+            FileWatcher.createPortable tmpDir received.Add [ FilePattern.parse "coverage-ratchet.json" ] system.Factory
+            :> IDisposable
 
-            test <@ hasMatch () @>)
+        let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
+        system.Write(Path.Combine(tmpDir, "my-coverage-ratchet.json"))
+        system.Write configPath
 
-    [<Fact(Timeout = 60000)>]
-    member _.``FileWatcher with literal filename pattern fires only for matching file``() =
-        withTempDir "watcher-extra-literal" (fun tmpDir ->
-            let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-            let onChange change = received.Add(change)
-
-            use _watcher =
-                FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ] 0.05
-                :> IDisposable
-
-            let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
-
-            let hasMatch () =
-                received
-                |> Seq.exists (fun c ->
-                    match c with
-                    | SourceChanged files ->
-                        files |> List.exists (fun f -> Path.GetFileName(f) = "coverage-ratchet.json")
-                    | _ -> false)
-
-            probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
-
-            test <@ hasMatch () @>)
+        test <@ received |> Seq.toList = [ SourceChanged [ configPath ] ] @>)
 
 // === Cross-instance dedup isolation (ContentDedup.Tracker) ===
 // The hash store must be scoped per daemon instance, not process-globally. Two
