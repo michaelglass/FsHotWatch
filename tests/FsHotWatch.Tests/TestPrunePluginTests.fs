@@ -4088,6 +4088,54 @@ let ``nothing owed over a tree no evidence is bound to is a named reason to wide
     test <@ causes = [ ZeroAffectedWidening.UnverifiedTree ] @>
     test <@ (ZeroAffectedWidening.describeMany causes).Contains "a comment" @>
 
+[<Fact>]
+let ``a build waits for its tree's check results only when the diff alone would select its run`` () =
+    // The case it exists for: a warm session owing nothing, evidence bound to "t0", and
+    // the tree moved to "t2" past the last fold ("t1"). Launching now would select from a
+    // diff that has not arrived.
+    let held: DiffWait.Launch =
+        { HasSessionBaseline = true
+          HasModel = true
+          OwesNothing = true
+          RunsInFullAnyway = Set.empty
+          RunsSomethingAnyway = false
+          FoldedChanges = false
+          Scope = LaunchedSelection
+          EvidenceTree = Some "t0"
+          CurrentTree = Some "t2"
+          SealedTree = Some "t1" }
+
+    test <@ DiffWait.awaits held @>
+    test <@ DiffWait.awaits { held with SealedTree = None } @>
+
+    // The last fold described this tree: its diff is in hand.
+    test <@ not (DiffWait.awaits { held with SealedTree = Some "t2" }) @>
+    // The last run's evidence is bound to this tree: the zero-affected skip answers it.
+    test <@ not (DiffWait.awaits { held with CurrentTree = Some "t0" }) @>
+    // A tree that cannot be read is never waited on.
+    test <@ not (DiffWait.awaits { held with CurrentTree = None }) @>
+
+    // Anything that runs regardless of the diff launches now: the baseline run, owed
+    // debt, a project run in full (fanout, or no evidence under a new model), failures
+    // or analysis gaps, a full-suite scope.
+    test <@ not (DiffWait.awaits { held with HasSessionBaseline = false }) @>
+    // With no model published, every seal is ignored: none could release the wait.
+    test <@ not (DiffWait.awaits { held with HasModel = false }) @>
+    test <@ not (DiffWait.awaits { held with OwesNothing = false }) @>
+
+    test
+        <@
+            not (
+                DiffWait.awaits
+                    { held with
+                        RunsInFullAnyway = Set.singleton "App.Tests" }
+            )
+        @>
+
+    test <@ not (DiffWait.awaits { held with RunsSomethingAnyway = true }) @>
+    test <@ not (DiffWait.awaits { held with FoldedChanges = true }) @>
+    test <@ not (DiffWait.awaits { held with Scope = LaunchedFullSuite }) @>
+
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared
 // cobertura file.
