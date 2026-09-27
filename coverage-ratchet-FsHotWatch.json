@@ -674,8 +674,8 @@
     "PluginWorkOwner.fs": [
       {
         "line": 100,
-        "branch": 98,
-        "reason": "Linux floor from CI run 35204303183 on 4d77ae3f (2026-09-17): line 100 percent, branch 98.1 percent (151/154 branches), rounded down. macOS measures 122/122 branches (100/100, no override there); Linux counts 154 branches for the same source.",
+        "branch": 97,
+        "reason": "Linux floor from CI run 36301141952 on 9808422c (2026-09-27): line 100 percent, branch 97.2 percent (208/214 branches), rounded down, after the per-project evidence carry added the project-inputs publication. Linux counts more branches than macOS for the same source; the 6-branch Linux-only gap is queued with the other Linux coverage work.",
         "platform": "linux"
       }
     ],
