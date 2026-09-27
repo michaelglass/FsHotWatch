@@ -117,6 +117,19 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
                 [<CLIEvent>]
                 member _.Notifications = notifications.Publish }
 
+        // The `.fshw.json` watcher Start subscribes, captured so the test delivers the edit
+        // itself: live FSEvents has no delivery bound on a loaded machine (seconds, sometimes
+        // never, with fseventsd saturated), and the real watcher's own path is pinned by
+        // `RealWatchTests`. This test owns what Start does WITH the notification.
+        let subscribed = TaskCompletionSource<string * (string -> unit)>()
+        let mutable unsubscribed = false
+
+        let watchConfig (watchedRoot: string) (onChange: string -> unit) =
+            subscribed.TrySetResult((watchedRoot, onChange)) |> ignore
+
+            { new IDisposable with
+                member _.Dispose() = unsubscribed <- true }
+
         use daemon =
             Daemon.createWithWorkspaceLoader
                 Unchecked.defaultof<_>
@@ -128,7 +141,17 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
 
         let run =
             Task.Run(fun () ->
-                executeCommand identity (fun _ -> daemon) (noIpc ()) root pipe Start defaultGlobalOptions config 5.0)
+                executeOwnCommandWatchingConfig
+                    watchConfig
+                    identity
+                    (fun _ -> daemon)
+                    (noIpc ())
+                    root
+                    pipe
+                    Start
+                    defaultGlobalOptions
+                    config
+                    5.0)
 
         try
             Assert.True(
@@ -147,13 +170,20 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
             Assert.Equal(identity, File.ReadAllText receipt)
             Assert.Equal(string Environment.ProcessId, File.ReadAllText pidFile)
 
-            // IPC is up only after the watcher subscribed, so this edit must reach it.
+            // IPC is up only after the watcher subscribed.
+            Assert.True(subscribed.Task.IsCompleted, "Start must watch the config before serving IPC")
+            let watchedRoot, onChange = subscribed.Task.Result
+            Assert.Equal(root, watchedRoot)
+            Assert.False(unsubscribed)
+
             File.WriteAllText(configPath, """{"build":false,"format":false,"lint":false,"timeoutSec":42}""")
+            onChange (configChangeReason configPath config)
             Assert.True(run.Wait(TimeSpan.FromSeconds 10.0), "a config edit must stop the daemon it owns")
             Assert.Equal(0, run.Result)
             Assert.False(IpcClient.isRunning pipe)
             Assert.False(File.Exists pidFile)
             Assert.True(daemonLockIsFree root)
+            Assert.True(unsubscribed, "a stopped daemon must release its config watcher")
             // The receipt still names what the stopped daemon loaded, not the new file.
             Assert.Equal(identity, File.ReadAllText receipt)
             Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity)
