@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: bundles TestPrune.Trace 0.3.1. With `tests.traces` on, a woven run's coverage now
+  matches an untraced run's exactly, with no branch points lost. Its weave cache is keyed
+  by the weaver, recorder and pass assemblies, so the upgraded weaver re-weaves once.
+
 - feat: `fshw confirm --fresh` launches a new full-suite run on an unchanged tree. It
   skips the `.fshw/verdict.json` fast path, forces the suite even when the warm
   daemon's settled reading is already a full-suite receipt, and refuses a green (exit 3,

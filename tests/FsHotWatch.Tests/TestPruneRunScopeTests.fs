@@ -3842,19 +3842,27 @@ module private Mismatch =
         [ ReceiptInputTree.UnboundAtLaunch
           ReceiptInputTree.UnreadableAtCompletion
           ReceiptInputTree.MovedDuringRun
-          ReceiptInputTree.TestRunWrote [ "src/out.css" ] ]
+          ReceiptInputTree.TestRunWrote [ "src/Out.fs" ]
+          ReceiptInputTree.WrittenWhileTestsRan [ "src/out.css" ] ]
 
 [<Fact>]
 let ``the input-tree mismatch causes are told apart`` () =
     let open' = Some "aaa"
     let other = Some "bbb"
-    let written = Some [ "src/out.css" ]
+    let written = Some(ReceiptInputTree.Observed [ "src/Out.fs" ])
+    let unobserved = Some(ReceiptInputTree.Unobserved [ "src/out.css" ])
 
     test <@ ReceiptInputTree.classifyMismatch None open' None = ReceiptInputTree.UnboundAtLaunch @>
     test <@ ReceiptInputTree.classifyMismatch open' None None = ReceiptInputTree.UnreadableAtCompletion @>
     test <@ ReceiptInputTree.classifyMismatch open' other None = ReceiptInputTree.MovedDuringRun @>
 
-    test <@ ReceiptInputTree.classifyMismatch open' other written = ReceiptInputTree.TestRunWrote [ "src/out.css" ] @>
+    test <@ ReceiptInputTree.classifyMismatch open' other written = ReceiptInputTree.TestRunWrote [ "src/Out.fs" ] @>
+
+    test
+        <@
+            ReceiptInputTree.classifyMismatch open' other unobserved = ReceiptInputTree.WrittenWhileTestsRan
+                [ "src/out.css" ]
+        @>
 
     // An unbound launch is unbound whether or not the tree can be read now, so the
     // arms are ordered rather than overlapping.
@@ -3886,10 +3894,18 @@ let ``no two revocation causes render the same text`` () =
     test <@ moved.Contains "MOVED" && not (moved.Contains "defect") @>
 
     let wrote =
-        ReceiptInputTree.describeMismatch (ReceiptInputTree.TestRunWrote [ "src/out.css" ])
+        ReceiptInputTree.describeMismatch (ReceiptInputTree.TestRunWrote [ "src/Out.fs" ])
 
-    test <@ wrote.StartsWith "the test run wrote into the repository: src/out.css" @>
+    test <@ wrote.StartsWith "the test run wrote into the repository: src/Out.fs" @>
     test <@ not (wrote.Contains "MOVED") @>
+
+    // A path the watcher does not observe: its silence is no evidence, so the text hedges.
+    let hedged =
+        ReceiptInputTree.describeMismatch (ReceiptInputTree.WrittenWhileTestsRan [ "src/out.css" ])
+
+    test <@ hedged.StartsWith "written while the tests ran, and no watched edit explains it" @>
+    test <@ hedged.Contains "the watcher does not observe these paths): src/out.css" @>
+    test <@ not (hedged.Contains "the test run wrote") && not (hedged.Contains "MOVED") @>
 
 /// Only a move made entirely of paths the test run wrote is named as one. Each of the
 /// other shapes stays an ordinary mid-run edit.
@@ -3903,9 +3919,21 @@ let ``a move is attributed to the test run only when every path fits`` () =
         let wrote = ReceiptInputTree.read repoRoot
 
         let attribute reported started after =
-            ReceiptInputTree.writtenByTestRun repoRoot reported started launch after
+            ReceiptInputTree.writtenByTestRun
+                repoRoot
+                (ReceiptInputTree.watcherObserves repoRoot None)
+                reported
+                started
+                launch
+                after
 
-        test <@ attribute (Some Set.empty) (Some hostStarted) wrote = Some [ "src/out.css" ] @>
+        // A stylesheet is no path the watcher observes, so its silence proves less.
+        test
+            <@
+                attribute (Some Set.empty) (Some hostStarted) wrote = Some(
+                    ReceiptInputTree.Unobserved [ "src/out.css" ]
+                )
+            @>
 
         // The watcher reported it: an edit, whoever made it.
         test <@ attribute (Some(Set.singleton "src/out.css")) (Some hostStarted) wrote = None @>
@@ -3924,6 +3952,37 @@ let ``a move is attributed to the test run only when every path fits`` () =
 
         // No move at all.
         test <@ attribute (Some Set.empty) (Some hostStarted) launch = None @>)
+
+/// The watcher's silence is evidence only about the paths it observes: an F# source it
+/// would have reported, not a stylesheet. One unobserved path makes the whole move one
+/// the watcher cannot vouch for.
+[<Fact>]
+let ``a test-run write is observed only when the watcher observes every path`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let launch = ReceiptInputTree.read repoRoot
+        let hostStarted = DateTime.UtcNow
+        File.WriteAllText(Path.Combine(repoRoot, "src", "Gen.fs"), "module Gen\n")
+        let source = ReceiptInputTree.read repoRoot
+        File.WriteAllText(Path.Combine(repoRoot, "src", "out.css"), ".probe{}")
+        let mixed = ReceiptInputTree.read repoRoot
+
+        let attribute observes after =
+            ReceiptInputTree.writtenByTestRun repoRoot observes (Some Set.empty) (Some hostStarted) launch after
+
+        let noModel = ReceiptInputTree.watcherObserves repoRoot None
+        test <@ attribute noModel source = Some(ReceiptInputTree.Observed [ "src/Gen.fs" ]) @>
+
+        test <@ attribute noModel mixed = Some(ReceiptInputTree.Unobserved [ "src/Gen.fs"; "src/out.css" ]) @>
+
+        // Under a model, the watcher reports only the files it compiles.
+        let gen =
+            FsHotWatch.Events.AbsFilePath.create (Path.Combine(repoRoot, "src", "Gen.fs"))
+
+        let underModel files =
+            ReceiptInputTree.watcherObserves repoRoot (Some files)
+
+        test <@ attribute (underModel (Set.singleton gen)) source = Some(ReceiptInputTree.Observed [ "src/Gen.fs" ]) @>
+        test <@ attribute (underModel Set.empty) source = Some(ReceiptInputTree.Unobserved [ "src/Gen.fs" ]) @>)
 
 // --- a MOVED revocation names the paths that moved ---
 
@@ -4160,10 +4219,11 @@ let ``a run whose beforeRun generates output is not revoked as moved`` () =
 
 /// The control: the same generating `beforeRun`, but the TESTS write under `src/` while
 /// they run. Binding after `beforeRun` must not launder that: the run is still revoked,
-/// and the revocation names the test run as the writer and the stylesheet it wrote, not
-/// the bundle `beforeRun` did.
+/// and the revocation names the stylesheet the tests wrote, not the bundle `beforeRun`
+/// did. The watcher does not observe stylesheets, so its silence cannot rule out an edit
+/// made while the tests ran, and the revocation says so rather than naming the test run.
 [<Fact(Timeout = 30000)>]
-let ``a write by the test run is revoked as the test run writing into the repository`` () =
+let ``a write the watcher cannot observe is revoked as written while the tests ran`` () =
     withReceiptSource (fun repoRoot _ ->
         let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
         Directory.CreateDirectory(Path.GetDirectoryName css) |> ignore
@@ -4181,10 +4241,12 @@ let ``a write by the test run is revoked as the test run writing into the reposi
             <@
                 revoked
                 |> Option.exists (fun l ->
-                    l.Contains "the test run wrote into the repository: src/wwwroot/css/app.css")
+                    l.Contains "written while the tests ran, and no watched edit explains it"
+                    && l.Contains "the watcher does not observe these paths): src/wwwroot/css/app.css")
             @>
 
         test <@ revoked |> Option.exists (fun l -> not (l.Contains "MOVED")) @>
+        test <@ revoked |> Option.exists (fun l -> not (l.Contains "the test run wrote")) @>
 
         let moved = logged |> List.tryFind (fun l -> l.Contains "moved paths")
 
@@ -4195,6 +4257,30 @@ let ``a write by the test run is revoked as the test run writing into the reposi
             @>
 
         test <@ moved |> Option.exists (fun l -> not (l.Contains "app.js")) @>)
+
+/// An F# source the tests write is one the watcher would have reported had anybody else
+/// edited it, so its silence is evidence: the revocation names the test run as the writer.
+[<Fact(Timeout = 30000)>]
+let ``a write the watcher would have seen is revoked as the test run writing into the repository`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let generated = Path.Combine(repoRoot, "src", "Generated.fs")
+
+        let logged =
+            runWithGeneratingBeforeRun
+                repoRoot
+                [ { projConfig "ProjA" with
+                      FilterTemplate = None
+                      Args = $"-c \"echo 'module Generated' > '%s{generated}'; exit 0\"" } ]
+
+        let revoked = logged |> List.tryFind (fun l -> l.Contains "receipt revoked")
+
+        test
+            <@
+                revoked
+                |> Option.exists (fun l -> l.Contains "the test run wrote into the repository: src/Generated.fs")
+            @>
+
+        test <@ revoked |> Option.exists (fun l -> not (l.Contains "MOVED")) @>)
 
 /// The other side: a source file edited while the tests run, which the watcher reports
 /// (as a `FileChecked`) before the run completes. That is an edit made mid-run, not the
