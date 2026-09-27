@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: a cold `check` no longer reports "The namespace or module 'Xunit' is not defined"
+  (or the same error for any package type) for code that compiles. A scan loads its
+  project model, then waits for the build before type-checking. On a tree that was
+  never restored, that build is the first restore. The model was loaded without
+  `obj/project.assets.json`, so its options held no package references, and the
+  project-file fingerprint could not see the restore because no `.fsproj` changed.
+  Before a scan checks a project, it now compares the project's assets file with the
+  bytes the model was loaded from, after the build and the deps gate (either can
+  restore). When they differ, the scan re-discovers and re-captures the model before
+  checking. The comparison ignores the `project.restore` block, so a restore that
+  changed only how it was invoked re-evaluates nothing. New:
+  `ContentDedup.Tracker.ChangedSinceObserved`.
+
 ## 0.10.0-alpha.55 - 2026-09-27
 
 - fix: a project change is no longer re-evaluated after a re-discovery has already
