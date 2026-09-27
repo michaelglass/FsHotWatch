@@ -1498,6 +1498,23 @@ module internal ReceiptInputTree =
     /// seconds.
     let private WriteTimeSlack = TimeSpan.FromSeconds 2.0
 
+    /// Whether the watcher reports an edit to a repo-relative path while a run is in
+    /// flight: it reports the files it checks, which are the current model's checkable
+    /// files, or (no model) the files it treats as source.
+    let watcherObserves (repoRoot: string) (checkable: Set<AbsFilePath> option) (rel: string) : bool =
+        match checkable with
+        | Some files -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel)))
+        | None -> FsHotWatch.Watcher.isRelevantFile rel
+
+    /// Moved paths credited to the test run, split by what the watcher's silence about
+    /// them establishes.
+    type RunWrites =
+        /// The watcher observes every one, so its silence rules out an edit.
+        | Observed of paths: string list
+        /// The watcher does not observe at least one, so its silence rules out nothing
+        /// for that path: an edit to it made while the tests ran looks the same.
+        | Unobserved of paths: string list
+
     /// The moved paths when the test run itself wrote them: every one changed or added
     /// (a removal leaves no write time to attribute), none reported by the watcher while
     /// the run was in flight, and each last written after the test host started. `None`
@@ -1505,11 +1522,12 @@ module internal ReceiptInputTree =
     /// — every such case stays an ordinary edit made mid-run.
     let writtenByTestRun
         (repoRoot: string)
+        (watcherObserves: string -> bool)
         (watcherReported: Set<string> option)
         (testHostStartedAt: DateTime option)
         (launch: string option)
         (current: string option)
-        : string list option =
+        : RunWrites option =
         match launch, current, watcherReported, testHostStartedAt with
         | Some before, Some after, Some reported, Some hostStarted when
             not (String.Equals(before, after, StringComparison.Ordinal))
@@ -1533,7 +1551,10 @@ module internal ReceiptInputTree =
                     && not (List.isEmpty written)
                     && List.forall writtenWhileHostRan written
                 then
-                    Some written
+                    if List.forall watcherObserves written then
+                        Some(Observed written)
+                    else
+                        Some(Unobserved written)
                 else
                     None
             | _ -> None
@@ -1628,15 +1649,21 @@ module internal ReceiptInputTree =
         /// Remedy: none, or re-run on a settled tree.
         | MovedDuringRun
         /// Both trees were read and they differ, and every moved path is one the test
-        /// run wrote (`writtenByTestRun`). A DEFECT in the tests: they are not hermetic,
-        /// and a re-run writes again. Remedy: write outside the repository.
+        /// run wrote (`writtenByTestRun`), each one the watcher observes. A DEFECT in the
+        /// tests: they are not hermetic, and a re-run writes again. Remedy: write outside
+        /// the repository.
         | TestRunWrote of paths: string list
+        /// As `TestRunWrote`, except the watcher does not observe some of the paths, so
+        /// its silence cannot tell the test run's write from an edit made while the
+        /// tests ran. Most likely the test run; worth a re-run on a settled tree.
+        | WrittenWhileTestsRan of paths: string list
 
-    let classifyMismatch expected current (writtenByTestRun: string list option) =
+    let classifyMismatch expected current (writtenByTestRun: RunWrites option) =
         match expected, current, writtenByTestRun with
         | None, _, _ -> UnboundAtLaunch
         | _, None, _ -> UnreadableAtCompletion
-        | Some _, Some _, Some paths -> TestRunWrote paths
+        | Some _, Some _, Some(Observed paths) -> TestRunWrote paths
+        | Some _, Some _, Some(Unobserved paths) -> WrittenWhileTestsRan paths
         | Some _, Some _, None -> MovedDuringRun
 
     /// The revocation reason for a mismatch, naming the arm and its remedy.
@@ -1654,6 +1681,11 @@ module internal ReceiptInputTree =
             $"the test run wrote into the repository: %s{namePaths paths} — the watcher reported none of "
             + "these while the run was in flight, and each was written after the test host started. "
             + "The tests are not hermetic, and a re-run writes again: make them write outside the repository"
+        | WrittenWhileTestsRan paths ->
+            $"written while the tests ran, and no watched edit explains it (likely the test run; the watcher "
+            + $"does not observe these paths): %s{namePaths paths} — each was written after the test host "
+            + "started. If a re-run on a settled tree writes them again, the tests are not hermetic: "
+            + "make them write outside the repository"
 
 type TestEvidenceReceipt =
     {
@@ -3046,13 +3078,13 @@ module ReceiptTransition =
     /// Classify a completion. `previous` is consulted ONLY to decide whether a quiet
     /// completion is a `Noop` (it must have something to keep, on the same tree) —
     /// never to construct a receipt.
-    let classify
+    let internal classify
         (runnableProjects: string list)
         (previous: TestEvidenceReceipt option)
         (currentInputTree: string option)
         (currentModelGeneration: int64 option)
         (currentInputs: Map<string, string> option)
-        (writtenByTestRun: string list option)
+        (writtenByTestRun: ReceiptInputTree.RunWrites option)
         (launch: TestRunLaunch)
         (completed: TestRunCompleted)
         (coverage: RunCoverage)
@@ -9484,6 +9516,9 @@ let internal createWithQueries
                     let writtenByTestRun =
                         ReceiptInputTree.writtenByTestRun
                             repoRoot
+                            (ReceiptInputTree.watcherObserves
+                                repoRoot
+                                (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd))
                             (state.InFlight |> Option.map (fun run -> run.WatcherReported))
                             launch.TestHostStartedAt
                             launch.InputTreeHash

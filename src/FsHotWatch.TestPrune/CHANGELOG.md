@@ -15,13 +15,18 @@
   all refused does not wait.
 
 - obs: a receipt revoked because the test run itself wrote into the repository now says
-  so: "the test run wrote into the repository: <paths>", instead of "the input tree
-  MOVED … edited while the run was in flight". A move is named this way only when every
-  moved path was changed or added, the watcher reported none of them while the run was
-  in flight, and each was written after the test host started (after `beforeRun`). The
-  tests are not hermetic, and re-running writes again; the fix is in the tests. An edit
-  the watcher reports during the run, or a move that includes a removal, stays a plain
-  MOVED.
+  so, instead of "the input tree MOVED … edited while the run was in flight". A move is
+  credited to the test run only when every moved path was changed or added, the watcher
+  reported none of them while the run was in flight, and each was written after the test
+  host started (after `beforeRun`). When the watcher observes every one of those paths
+  (the model's checkable files, or F# sources and project files without a model), its
+  silence rules out an edit, and the revocation reads "the test run wrote into the
+  repository: <paths>": the tests are not hermetic, and re-running writes again. When
+  any is a path the watcher does not observe (a stylesheet, a bundle), an edit made while
+  the tests ran looks the same, and it reads "written while the tests ran, and no watched
+  edit explains it (likely the test run; the watcher does not observe these paths):
+  <paths>". An edit the watcher reports during the run, or a move that includes a
+  removal, stays a plain MOVED.
 
 ## 0.13.0-alpha.55 - 2026-09-27
 
