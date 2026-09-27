@@ -1390,6 +1390,27 @@ type AffectedTestsState =
     | Analyzed of TestMethodInfo list
 
 module internal ReceiptInputTree =
+    /// How many recent identities keep the per-file entries they were computed from. A
+    /// run's launch identity has to survive every read taken while it is in flight; a
+    /// handful covers that, and an evicted one is reported as such, never as "no path".
+    let private ManifestsKept = 16
+
+    let private manifests =
+        Collections.Concurrent.ConcurrentDictionary<string, (string * string) list>(StringComparer.Ordinal)
+
+    let private manifestOrder = Collections.Concurrent.ConcurrentQueue<string>()
+
+    /// Hold `entries` under the identity hashed from them. The identity is a content
+    /// address, so these entries ARE that tree: nothing can be held under a stale key.
+    let private remember (identity: string) (entries: (string * string) list) =
+        if manifests.TryAdd(identity, entries) then
+            manifestOrder.Enqueue identity
+
+            while manifestOrder.Count > ManifestsKept do
+                match manifestOrder.TryDequeue() with
+                | true, evicted -> manifests.TryRemove evicted |> ignore
+                | _ -> ()
+
     /// A receipt identity, not a new verdict hash scheme. Use the core input walk,
     /// conservatively including config-excluded source files too. Refuse holes and
     /// unreadable bytes rather than letting an unhashable sentinel authorize reuse.
@@ -1411,11 +1432,67 @@ module internal ReceiptInputTree =
                     walked.AbsentDeclarations
                     |> List.map (fun rel -> VerdictInputs.SentinelPrefix + rel, VerdictInputs.AbsentDeclaration)
 
-                Some(TreeHash.hashEntries (List.sortBy fst (entries @ absent)))
+                let manifest = List.sortBy fst (entries @ absent)
+                let identity = TreeHash.hashEntries manifest
+                remember identity manifest
+                Some identity
         with
         | :? IOException
         | :? UnauthorizedAccessException
         | :? JsonException -> None
+
+    /// Which paths differ between two receipt manifests. Sorted, so a log line is stable.
+    type TreeDelta =
+        { Changed: string list
+          Added: string list
+          Removed: string list }
+
+        static member empty =
+            { Changed = []
+              Added = []
+              Removed = [] }
+
+    let delta (before: (string * string) list) (after: (string * string) list) : TreeDelta =
+        let was = Map.ofList before
+        let now = Map.ofList after
+
+        let pathsWhere predicate source =
+            source |> Map.filter predicate |> Map.keys |> List.ofSeq |> List.sort
+
+        { Changed =
+            now
+            |> pathsWhere (fun path hash -> Map.tryFind path was |> Option.exists ((<>) hash))
+          Added = now |> pathsWhere (fun path _ -> not (was.ContainsKey path))
+          Removed = was |> pathsWhere (fun path _ -> not (now.ContainsKey path)) }
+
+    /// At most this many paths per kind are named; the count is always the full one.
+    let private PathsNamedPerKind = 10
+
+    let describeDelta (delta: TreeDelta) : string =
+        [ "changed", delta.Changed; "added", delta.Added; "removed", delta.Removed ]
+        |> List.filter (snd >> List.isEmpty >> not)
+        |> List.map (fun (kind, paths) ->
+            let named = paths |> List.truncate PathsNamedPerKind |> String.concat ", "
+            let left = List.length paths - PathsNamedPerKind
+
+            let more = if left > 0 then $" (+%d{left} more)" else ""
+
+            $"%s{kind} (%d{List.length paths}): %s{named}%s{more}")
+        |> String.concat "; "
+
+    /// The paths that moved between two identities this process read, for a revocation
+    /// log line. `None` when there is no move to explain (either side unbound, or equal).
+    let movedPaths (launch: string option) (current: string option) : string option =
+        match launch, current with
+        | Some before, Some after when not (String.Equals(before, after, StringComparison.Ordinal)) ->
+            match manifests.TryGetValue before, manifests.TryGetValue after with
+            | (true, was), (true, now) -> Some(describeDelta (delta was now))
+            | _ ->
+                Some(
+                    "the per-file entries of the launch or completion tree are no longer held "
+                    + "(read by another process, or evicted), so the paths that moved cannot be named"
+                )
+        | _ -> None
 
     let matches expected current =
         match expected, current with
@@ -9214,7 +9291,15 @@ let internal createWithQueries
                             coverage
 
                     match receiptTransition with
-                    | ReceiptTransition.Revoked reason -> ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
+                    | ReceiptTransition.Revoked reason ->
+                        ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
+
+                        // WHICH paths, so a revocation with no watcher event behind it
+                        // (a gitignored build output under a discovery root, say) is
+                        // answered by this line rather than by an afternoon of ctimes.
+                        match ReceiptInputTree.movedPaths launch.InputTreeHash currentInputTree with
+                        | Some paths -> ctx.Log $"    moved paths: %s{paths}"
+                        | None -> ()
                     | ReceiptTransition.Earned _
                     | ReceiptTransition.Noop
                     | ReceiptTransition.Narrower -> ()
