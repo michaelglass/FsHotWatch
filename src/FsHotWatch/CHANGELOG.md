@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a project change is no longer re-evaluated after a re-discovery has already
+  applied it. There were two ways it happened. A scan compared the project files against
+  the stamps of its OWN last discovery, so the next scan after a change batch had
+  re-discovered a checkout (for example the next `confirm`'s) re-discovered the same
+  bytes and replaced the model mid-run. And a change batch keeps its "changed" answer
+  across its retries and, when it fails, across the next request. So a batch superseded
+  by that re-discovery re-evaluated the same `.fsproj` files again. Scans now compare
+  against the stamps the last successful re-discovery on any path read. A batch counts
+  a project input (`.fsproj`, `.props`, `.sln`, `project.assets.json`) as changed only
+  while no re-discovery has loaded its current bytes
+  (`ContentDedup.Tracker.ObservedAsCurrent`).
+- fix: a watcher change whose admission outlives the 5 s wait now logs "change admission
+  still pending … it stays queued and is applied when the daemon's store frees" instead
+  of "change not admitted". The change was never dropped; only the wait gave up.
+
 ## 0.10.0-alpha.54 - 2026-09-27
 
 - feat: every published project model carries each project's compile-input identity

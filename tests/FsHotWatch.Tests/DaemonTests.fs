@@ -1684,6 +1684,186 @@ let ``observing project content answers the next echo of the same bytes as uncha
         // seeded orphan behind.
         test <@ excluded.HasContentChanged assets @>)
 
+[<Fact(Timeout = 10000)>]
+let ``a project input a re-discovery already loaded is not re-evaluated again`` () =
+    // A cohort admits a project change once and keeps that answer across its retries and,
+    // owed, across a later request. A re-discovery that ran in between has applied it.
+    withTempDir "daemon-absorbed-input" (fun root ->
+        let directory = Path.Combine(root, "src", "App")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "App.fsproj")
+        let source = Path.Combine(directory, "App.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(source, "module App\nlet value = 1\n")
+
+        let tracker = FsHotWatch.ContentDedup.Tracker()
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+
+        // A checkout: nothing has loaded the new bytes yet.
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        File.WriteAllText(source, "module App\nlet value = 2\n")
+        test <@ not (FsHotWatch.Daemon.absorbedByDiscovery tracker project) @>
+
+        // A re-discovery loads them: the project change is applied. A source edit is never
+        // absorbed by a discovery, which does not check files.
+        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        test <@ FsHotWatch.Daemon.absorbedByDiscovery tracker project @>
+        test <@ not (FsHotWatch.Daemon.absorbedByDiscovery tracker source) @>
+
+        // A write after that re-discovery is pending again.
+        File.WriteAllText(
+            project,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><X>1</X></PropertyGroup></Project>"
+        )
+
+        test <@ not (FsHotWatch.Daemon.absorbedByDiscovery tracker project) @>
+
+        // A project file that is gone, or was never observed, was not loaded from anything.
+        File.Delete project
+        test <@ not (tracker.ObservedAsCurrent project) @>
+        test <@ not (tracker.ObservedAsCurrent(Path.Combine(root, "never-observed.fsproj"))) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a scan does not re-discover a project change a change batch already re-discovered`` () =
+    // Production #5: a checkout's project changes were re-discovered by their change batch;
+    // sixteen minutes later the next confirm's scan compared the project files against the
+    // stamps IT had last seen, before the checkout, and re-discovered the same bytes again,
+    // replacing the model mid-run.
+    withTempDir "daemon-scan-stale-fingerprint" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Stamp.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> [])
+                watcher
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 1 @>
+
+        // The checkout: a real project change, re-discovered by its change batch.
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        File.SetLastWriteTimeUtc(projectPath, DateTime.UtcNow.AddMinutes 1.0)
+        (callback.Value |> Option.get) (ProjectChanged [ projectPath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> loader.Loads = 2), TimeSpan.FromSeconds 20.0),
+            "the change batch must re-discover the project change"
+        )
+
+        // The next confirm's scan: nothing has changed since that re-discovery.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 2 @>
+
+        // Positive control: a project write after it still re-discovers.
+        File.WriteAllText(
+            projectPath,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><X>1</X></PropertyGroup></Project>"
+        )
+
+        File.SetLastWriteTimeUtc(projectPath, DateTime.UtcNow.AddMinutes 2.0)
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 3 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a project change whose admission outlives the watcher's bound is still applied`` () =
+    // Production: under heavy GC pressure the daemon's store writer took longer than the
+    // watcher's 5 s admission bound, and five restore writes logged "change not admitted
+    // ... gave up after 00:00:05". A refused project change that is lost leaves the model
+    // stale until some later re-discovery notices, which can be the next confirm's, mid-run.
+    withTempDir "daemon-late-admission" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Late.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> [])
+                watcher
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 1 @>
+        let deliver = callback.Value |> Option.get
+
+        // A real project change.
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+
+        // Hold the store's writer past the admission bound.
+        let blocker =
+            daemon.Host.WorkStore.Register(
+                "held writer",
+                (),
+                fun () -> FsHotWatch.PluginWorkOwner.RowStatus.ofWork false 0L None
+            )
+
+        use entered = new ManualResetEventSlim(false)
+        use release = new ManualResetEventSlim(false)
+
+        let held =
+            daemon.Host.WorkStore.ChangeAsync(
+                blocker,
+                fun _ () ->
+                    entered.Set()
+                    release.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+                    (), ()
+            )
+
+        let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        try
+            test <@ entered.Wait(TimeSpan.FromSeconds 5.0) @>
+
+            do
+                use _sink =
+                    FsHotWatch.Logging.installSink
+                        { Write = lines.Enqueue
+                          Level = FsHotWatch.Logging.LogLevel.Warning }
+
+                deliver (ProjectChanged [ projectPath ])
+
+            // Positive control: the watcher did give up waiting.
+            test <@ lines |> Seq.exists (fun line -> line.Contains "change admission still pending") @>
+        finally
+            release.Set()
+            held.GetAwaiter().GetResult()
+
+        // The refused change is applied once the writer frees: the model is re-discovered.
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> loader.Loads >= 2), TimeSpan.FromSeconds 20.0),
+            "a project change refused at admission was never applied"
+        ))
+
 [<Fact(Timeout = 60000)>]
 let ``a cold daemon does not re-discover on a watcher echo of an unchanged project file`` () =
     withTempDir "daemon-cold-project-echo" (fun tmpDir ->
@@ -4538,7 +4718,12 @@ let ``a scan re-discovery names each project file whose stamp moved`` () =
     test <@ line.Contains "src/A/A.fsproj (rewritten)" @>
     test <@ line.Contains "src/B/B.fsproj (removed)" @>
     test <@ line.Contains "src/C/C.fsproj (added)" @>
-    test <@ (Daemon.fingerprintChangeLine "/repo" Set.empty after).Contains "no project model has been discovered" @>
+
+    test
+        <@
+            (Daemon.fingerprintChangeLine "/repo" Set.empty after).Contains
+                "no project model has been discovered in this daemon yet"
+        @>
 
 [<Fact(Timeout = 5000)>]
 let ``a re-evaluation says which projects' compile inputs it actually changed`` () =
