@@ -230,11 +230,16 @@ untraced. Both runs: 1,037 tests, 0 failed.
 | untraced | 5,552 / 5,949 | 1,283 / 1,644 | — |
 | traced, released weaver (`confirm`, alpha.71) | identical | 1,196 / 1,548 (98 points lost) | 8 |
 | traced, fixed weaver | identical, hits identical | 1,279 / 1,640 (4 points lost) | 1 |
+| traced, weaver closing the copy's range (below) | identical, hits identical | 1,283 / 1,644 (0 points lost) | 0 |
 
-The 4 remaining points are `Orchestration.fs` lines 679 and 741 (`match selection with`): a branch under a
-later hidden point, after calls, that counts unwoven because the chain's first hidden range holds no call.
-The copy that restores the line's first branch makes the later range the first one. Every attempt to close
-that range with a hidden point broke other lines, so the gap is recorded rather than patched. The traced
+The 4 remaining points were `Orchestration.fs` lines 679 and 741 (`match selection with`): the list test of
+`| RunSubset [] ->` sits under a later hidden point, after calls, and counts unwoven. Rewriting only the PDB of
+a woven fixture of that shape (`FxLib.Logic.selected`) showed MS CodeCoverage drops such a branch when the
+range of the visible point heading its chain holds a call. The copy covered the probes that follow the case
+test, not just the case test. A hidden point right after the copy's last branch keeps its range call-free and
+restores the list test's points; hidden points later in the chain do not. The site-probe pass now adds that
+point, and `CoverageParityTests` covers the shape. Measured as above, with the weave cache cleared: the cache
+key hashes the woven inputs, not the weaver, so two local weaver builds of one version share a weave. The traced
 report has no `TestPrune.Trace.Recorder` package when the recorder's PDB is absent (the released recorder).
 A recorder built in this tree has its PDB at its build path, and MS CodeCoverage then reports it.
 

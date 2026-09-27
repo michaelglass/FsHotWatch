@@ -739,6 +739,50 @@ let ``only assemblies built from the repository are woven`` () =
     finally
         deleteProject projectDir
 
+/// A pass that rewrites nothing, public so a copy of this assembly can supply it as
+/// another build of the same pass.
+type NoopPass() =
+    interface Weaver.IWeavePass with
+        member _.Prepare _ = ()
+        member _.Rewrite(_, _, _, _) = false
+
+[<Fact>]
+let ``another build of a pass of the same version re-weaves, and the same build reuses the weave`` () =
+    let projectDir = scratchProject ()
+    let copyDir = tempDir ()
+
+    try
+        // The same assembly with a new module version id: what a rebuild of a changed pass
+        // (or weaver) without a version bump produces.
+        let own = typeof<NoopPass>.Assembly.Location
+        let copy = Path.Combine(copyDir, Path.GetFileName own)
+
+        do
+            use asm = AssemblyDefinition.ReadAssembly(own, ReaderParameters(InMemory = true))
+            asm.MainModule.Mvid <- Guid.NewGuid()
+            asm.Write copy
+
+        let rebuilt =
+            AssemblyLoadContext("another-build", isCollectible = true)
+                .LoadFromAssemblyPath(copy)
+                .GetType(typeof<NoopPass>.FullName)
+
+        let withPass (pass: Weaver.IWeavePass) =
+            prepared
+                { request projectDir with
+                    Passes = [ SiteProbes.pass (); Redirects.pass (); pass ] }
+
+        let first = withPass (NoopPass())
+        let same = withPass (NoopPass())
+        let other = withPass (Activator.CreateInstance rebuilt :?> Weaver.IWeavePass)
+
+        test <@ rebuilt.Assembly.GetName().Version = typeof<NoopPass>.Assembly.GetName().Version @>
+        test <@ same.Reused && same.WeaveKey = first.WeaveKey @>
+        test <@ not other.Reused && other.WeaveKey <> first.WeaveKey @>
+    finally
+        deleteProject projectDir
+        Directory.Delete(copyDir, true)
+
 [<Fact>]
 let ``the passes are part of the weave key, and an unreadable cache entry is re-woven`` () =
     let projectDir = scratchProject ()

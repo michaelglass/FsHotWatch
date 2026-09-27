@@ -71,3 +71,9 @@ let emptyCircle (s: Shape) (xs: int list) =
     match s with
     | Circle _ when List.isEmpty xs -> 1
     | _ -> 0
+
+let selected (sel: Selection) =
+    match sel with
+    | Subset [] -> 0
+    | Subset xs -> xs.Length
+    | Everything _ -> -1

@@ -242,16 +242,23 @@ let private evict (tracedDir: string) (key: string) =
 let private copyOver (shadowDir: string) (file: string) =
     HardLink.replaceWith (Path.Combine(shadowDir, Path.GetFileName file)) (fun tmp -> File.Copy(file, tmp))
 
-let private weaveKey (req: ShadowRequest) (inputs: Weaver.WeaveInput list) =
-    let version (t: Type) = t.Assembly.GetName().Version.ToString 3
+/// One build of the assembly defining `t`: its name and module version id, which a
+/// deterministic build derives from the assembly's content. A version names a release, not a
+/// build, so a rebuilt or upgraded weaver of one version would reuse another build's weave.
+let private build (t: Type) =
+    $"%s{t.Assembly.GetName().Name} %O{t.Module.ModuleVersionId}"
 
+/// The weave cache key: the builds a weave depends on besides its inputs (the weaver, whose
+/// output includes the manifest; the recorder, which the woven IL calls and the cached
+/// verification ran against; each pass) and the inputs' bytes.
+let private weaveKey (req: ShadowRequest) (inputs: Weaver.WeaveInput list) =
     sha256Text (
         String.concat
             "\n"
-            [ yield "weaver " + version typeof<Weaver.WeaveResult>
-              yield "recorder " + version typeof<Probes>
+            [ yield "weaver " + build typeof<Weaver.WeaveResult>
+              yield "recorder " + build typeof<Probes>
               for p in req.Passes do
-                  yield "pass " + p.GetType().FullName
+                  yield $"pass %s{p.GetType().FullName} %s{build (p.GetType())}"
               for i in inputs do
                   let pdb = Path.ChangeExtension(i.Path, ".pdb")
                   yield $"%s{Path.GetFileName i.Path}|%A{i.Mode}|%s{sha256File i.Path}|%s{sha256File pdb}" ]
