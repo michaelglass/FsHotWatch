@@ -241,3 +241,67 @@ A recorder built in this tree has its PDB at its build path, and MS CodeCoverage
 | Bar | Pass when | Measured | Verdict |
 |---|---|---|---|
 | coverage parity | identical per-file lines and branches; no recorder module | lines identical; branches 1,640 / 1,644 (2 lines differ); no recorder module with the released recorder | fail (4 points), until a `confirm` on a release bundling the fix |
+
+## Third run (alpha.74, 2026-09-27)
+
+FsHotWatch CLI `0.14.0-alpha.74`, which bundles TestPrune.Trace 0.3.0: the site-probe branch-point fix and the
+output capture of a failing measurement launch. Same `tests.traces`, macOS arm64, fresh workspace off `main`.
+Several other agents shared the host, so each launch is listed with its load average.
+
+### Runs
+
+| Run | Load (start → end) | Result | TestPrune.Tests | TestPrune.Trace.Tests |
+|---|---|---|---|---|
+| `confirm` 1 (`1d0448d5…`) | 31.2 → 40.6 | exit 0 | 1036 passed + 1 skipped; recorded | 307 passed; refused (own recorder) |
+| `confirm` 2 (`be4a9b83…`) | 23.6 → 23.2 | exit 0 | 1036 passed + 1 skipped; recorded | 307 passed; refused (own recorder) |
+| `confirm` 3 (`165841b2…`) | 21.6 → 37.3 | exit 0 | 1036 passed + 1 skipped; recorded | 307 passed; refused (own recorder) |
+| `confirm`, `tests.traces` removed (`21e976a7…`) | 43.7 → 29.7 | exit 0 | 1036 passed + 1 skipped | 307 passed |
+
+`.fshw.json` was restored byte-identical after the untraced run.
+
+| Recorded stats, TestPrune.Tests | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| executed / traced / complete | 1033 / 1033 / 942 | 1033 / 1033 / 942 | 1033 / 1033 / 942 |
+| test-scope hits | 19,389,838 | 19,389,838 | 19,389,838 |
+| static-init / ambient / overflow hits | 410 / 0 / 0 | 410 / 0 / 0 | 410 / 0 / 0 |
+| unmapped ids, rejected dumps | 0, none | 0, none | 0, none |
+| recorder CPU | 67.7 s | 61.9 s | 58.1 s |
+
+### Bars (TestPrune.Tests; TestPrune.Trace.Tests is refused by every verb with the own-recorder reason, exit 2)
+
+| Bar | Pass when | Measured | Load | Verdict |
+|---|---|---|---|---|
+| census: traced | ≥ 0.99 on 3 consecutive full runs | 1033/1033 (1.0000) on runs 1, 2 and 3 | see Runs | pass |
+| census: ambient | < 0.001, or listed | 0 / 19,390,250 on each run | see Runs | pass |
+| audit | `ExtraTotal = 0`; `MissingUser` explained | sampled 11, extra 0; missing only `cctor` (and 1 `gen`); no `missing user` | 29.1 → 29.0 | pass |
+| overhead | CPU ratio ≤ 1.15 | 1.066 (untraced median 75.8 s, traced 80.8 s); peak RSS 1,872.9 MiB; all 6 samples exit 0 | 19.7 → 21.2 | pass |
+| file-census | ratio ≤ 0.05 | 0.048 (reads-repo 21, fail-outside 20, fail-in-repo 0) | 29.0 → 19.7 | pass |
+| coverage parity | identical per-file lines and branches; no recorder module | lines and every line's hit count identical in all 63 files; branches differ in 1 file (4 points, below); no recorder module in the traced report | 43.7 → 29.7 | fail (4 points, known) |
+| PDB / JIT | `prepare` refused nothing on a traced project | `trace_runs.status` `recorded`, no rejected dump, on all 3 runs; the only refusal is the intended own-recorder one | — | pass |
+
+### Coverage parity (run 3 against the untraced run)
+
+| Report | Files | Lines covered / valid | Branches covered / valid | Differing files |
+|---|---|---|---|---|
+| TestPrune.Tests traced | 31 = 31 | 5,552 / 5,949 = | 1,279 / 1,640 against 1,283 / 1,644 | 1 |
+| TestPrune.Trace.Tests (refused, untraced both times) | 32 = 32 | 3,160 / 3,161 = | 718 / 734 = | 0 |
+| merged `coverage/coverage.cobertura.xml` | 63 = 63 | 8,712 / 9,110 = | none reported | 0 |
+
+| File | Line | Traced | Untraced | Explanation |
+|---|---|---|---|---|
+| `src/TestPrune/Orchestration.fs` | 679 | hits 1, branches 2/2 | hits 1, branches 4/4 | the recorded gap after the weaver fix (`match selection with`, a branch under a later hidden point); being worked separately |
+| `src/TestPrune/Orchestration.fs` | 741 | hits 1, branches 2/2 | hits 1, branches 4/4 | same |
+
+The alpha.71 traced report lost 98 branch points in 8 files. alpha.74 loses the 4 above and nothing else. The three
+traced runs wrote identical per-file reports. TestPrune.Trace.Tests reports a `TestPrune.Trace.Recorder` package
+traced and untraced alike: that suite tests the recorder, and it is refused, so the package is its own code under
+test, not a woven-in module.
+
+### Other observations
+
+| Observation | Detail |
+|---|---|
+| no traced launch exited nonzero | 3 traced `confirm`s, 3 traced `overhead` samples, the audit's parallel and 11 isolated launches: all exit 0. The intermittent exit 2 did not recur at load 20–40 |
+| `confirm` on an unchanged tree cannot be forced to re-run | `confirm`, `invalidate` + `confirm` and `--no-cache confirm --run-once` all replay the previous verdict (`.fshw/verdict.json` and the daemon's receipt). Runs 2 and 3 were forced by stopping the daemon and moving `verdict.json` aside |
+| census of an older run loses its incomplete reasons | `census --run 1d0448d5…` after run 2 prints no `incomplete` line; the same tests' traces were re-recorded by run 2, which replaced run 1's reasons. The newest run prints `child-process-untraced 14` |
+| audit's parallel run has 17 `child-process-untraced` tests, the census 14 | audit: dotnet 9, sleep 5, sh 2, chmod 1; `confirm` run: 14 (second run's breakdown: dotnet 6, sleep 5, sh 2, chmod 1). The 3 extra `dotnet` children are in the audit's own launch only; not investigated |
