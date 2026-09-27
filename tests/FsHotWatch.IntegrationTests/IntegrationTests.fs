@@ -2709,8 +2709,14 @@ let rec private realPath (path: string) : string =
             | t -> t.FullName
         | t -> t.FullName
 
-let private fileCheckCounter (name: string) (targetCanonical: string) =
-    let count = ref 0
+/// One handler's view of a daemon: `FileChecked` counts per file, and every in-session
+/// `BatchChecked`. ONE handler because a handler receives events in emission order and a
+/// batch is emitted after its last `FileChecked`: once this handler holds a batch, it
+/// already holds every check that batch sealed.
+let private scopedObserver (name: string) =
+    let gate = obj ()
+    let checks = ref Map.empty<string, int>
+    let batches = ref List.empty<BatchChecked>
 
     let handler: PluginHandler<unit, obj> =
         { Name = PluginName.create name
@@ -2720,192 +2726,224 @@ let private fileCheckCounter (name: string) (targetCanonical: string) =
                 async {
                     match event with
                     | FileChecked result ->
-                        if AbsFilePath.value result.File = targetCanonical then
-                            System.Threading.Interlocked.Increment(count) |> ignore
+                        let file = AbsFilePath.value result.File
+
+                        lock gate (fun () ->
+                            checks.Value <- checks.Value |> Map.change file (fun n -> Some(defaultArg n 0 + 1)))
+                    | BatchChecked batch ->
+                        match batch.Trigger with
+                        | InSessionBatch _ -> lock gate (fun () -> batches.Value <- batches.Value @ [ batch ])
+                        | BootScan -> ()
                     | _ -> ()
 
                     return state
                 }
           Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
           PrepareCommit = None
           CacheKey = None
           Teardown = None }
 
-    ((fun () -> count.Value), handler)
+    let checksOf (file: string) =
+        lock gate (fun () -> checks.Value |> Map.tryFind file |> Option.defaultValue 0)
+
+    /// The in-session batch that answered a change to `projectFile`, once it is sealed.
+    let batchFor (projectFile: string) =
+        lock gate (fun () ->
+            batches.Value
+            |> List.tryFind (fun batch ->
+                match batch.Trigger with
+                | InSessionBatch originating ->
+                    originating
+                    |> List.exists (function
+                        | ProjectChanged files -> List.contains projectFile files
+                        | _ -> false)
+                | BootScan -> false))
+
+    checksOf, batchFor, handler
+
+/// Run a daemon whose watcher is the test's: the factory subscribes to nothing and hands
+/// the daemon's change callback to `body`, which delivers each edit itself.
+///
+/// For tests that assert what the daemon DOES with a change. Live FSEvents delivery is
+/// late on a loaded machine (seconds, with a tail past 20s while fseventsd is saturated),
+/// so a fixed budget over it measures the machine, not the code. Delivery itself is
+/// pinned by the watcher tests.
+let private withInjectedWatcherDaemon
+    (checker: FSharpChecker)
+    (repoRoot: string)
+    (configure: Daemon -> unit)
+    (body: Daemon -> (FileChangeKind -> unit) -> unit)
+    =
+    use cts = new CancellationTokenSource()
+
+    let subscribed =
+        System.Threading.Tasks.TaskCompletionSource<FileChangeKind -> unit>()
+
+    let watcher: Daemon.WatcherFactory =
+        fun _root onChange _isMacOS _extraPatterns _latency ->
+            subscribed.TrySetResult onChange |> ignore
+
+            { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+              Disposables = [] }
+
+    let daemon =
+        Daemon.createWithWatcherFactory checker repoRoot Daemon.DaemonOptions.defaults watcher
+
+    configure daemon
+    let task = Async.StartAsTask(daemon.Run(cts.Token))
+
+    try
+        if not (daemon.Ready.Wait(TimeSpan.FromSeconds(60.0))) then
+            Assert.Fail("Daemon did not become ready within 60s")
+
+        if not subscribed.Task.IsCompleted then
+            Assert.Fail("A watching daemon must construct its watcher before it is ready")
+
+        body daemon subscribed.Task.Result
+    finally
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        (daemon :> IDisposable).Dispose()
+
+/// The `.fsproj` of a one-file project `<name>`: `comment` lets a test change its bytes
+/// without changing what it builds.
+let private scopedProjectXml (name: string) (comment: string) (references: string list) =
+    let refs =
+        references
+        |> List.map (sprintf "<ProjectReference Include=\"%s\"/>")
+        |> String.concat ""
+
+    sprintf
+        "<Project Sdk=\"Microsoft.NET.Sdk\">%s<PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"%s.fs\"/></ItemGroup>%s</Project>\n"
+        comment
+        name
+        (if refs = "" then
+             ""
+         else
+             "<ItemGroup>" + refs + "</ItemGroup>")
+
+/// Write `src/<name>/` with that project and `<name>.fs` holding `body`.
+let private scopedProject (root: string) (name: string) (body: string) (references: string list) =
+    let dir = Path.Combine(root, "src", name)
+    Directory.CreateDirectory(dir) |> ignore
+    let fsproj = Path.Combine(dir, name + ".fsproj")
+    File.WriteAllText(fsproj, scopedProjectXml name "" references)
+    let fs = Path.Combine(dir, name + ".fs")
+    File.WriteAllText(fs, body)
+    (dir, fsproj, Path.GetFullPath fs)
+
+/// Boot-scan the daemon and wait until every file in `files` has been checked once.
+let private bootChecked (daemon: Daemon) (checksOf: string -> int) (files: string list) =
+    scanToGeneration daemon
+    waitUntil (fun () -> files |> List.forall (fun f -> checksOf f >= 1)) 60000
+
+    for f in files do
+        if checksOf f < 1 then
+            Assert.Fail(sprintf "Baseline: %s should be checked on boot (checked %d times)" f (checksOf f))
+
+/// Wait out the daemon's answer to a change of `projectFile`: the in-session batch it
+/// sealed. The daemon's own work (re-discovery, re-check), so it is bounded.
+let private awaitBatchFor (batchFor: string -> BatchChecked option) (projectFile: string) =
+    waitUntil (fun () -> (batchFor projectFile).IsSome) 90000
+
+    match batchFor projectFile with
+    | Some batch -> batch
+    | None -> failwithf "The daemon sealed no batch for the change to %s within 90s" projectFile
+
+let private dispatched (batch: BatchChecked) (file: string) =
+    batch.Files |> List.exists (fun f -> AbsFilePath.value f = file)
 
 [<Fact(Timeout = 180000)>]
 let ``scoped: changing one project leaves an independent project warm (not re-checked)`` () =
     withTempDir "fshw-scoped-warm" (fun tmpDir ->
         let tmpDir = realPath tmpDir
+        let aDir, aFsproj, aFs = scopedProject tmpDir "A" "module A\nlet a = 1\n" []
+        let bDir, _, bFs = scopedProject tmpDir "B" "module B\nlet b = 2\n" []
 
-        let mkProj (name: string) (body: string) =
-            let dir = Path.Combine(tmpDir, "src", name)
-            Directory.CreateDirectory(dir) |> ignore
-            let fsproj = Path.Combine(dir, name + ".fsproj")
+        runDotnetIn aDir "restore --nologo"
+        runDotnetIn bDir "restore --nologo"
 
-            File.WriteAllText(
-                fsproj,
-                sprintf
-                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"%s.fs\"/></ItemGroup></Project>\n"
-                    name
-            )
-
-            let fs = Path.Combine(dir, name + ".fs")
-            File.WriteAllText(fs, body)
-            (dir, fsproj, Path.GetFullPath fs)
-
-        let _, aFsproj, aFs = mkProj "A" "module A\nlet a = 1\n"
-        let _, _, bFs = mkProj "B" "module B\nlet b = 2\n"
-
-        runDotnetIn (Path.GetDirectoryName aFsproj) "restore --nologo"
-        runDotnetIn (Path.Combine(tmpDir, "src", "B")) "restore --nologo"
-
-        let getA, counterA = fileCheckCounter "count-a" aFs
-        let getB, counterB = fileCheckCounter "count-b" bFs
-
+        let checksOf, batchFor, observer = scopedObserver "scoped-warm"
         let checker = FSharpChecker.Create(projectCacheSize = 50)
 
-        withRunningDaemon
+        withInjectedWatcherDaemon
             checker
             tmpDir
-            (fun daemon ->
-                daemon.RegisterHandler(counterA)
-                daemon.RegisterHandler(counterB))
-            (fun daemon ->
-                scanToGeneration daemon
-                waitUntil (fun () -> getA () >= 1 && getB () >= 1) 60000
-
-                if getA () < 1 || getB () < 1 then
-                    Assert.Fail(
-                        sprintf "Baseline: both projects should be checked on boot (A=%d B=%d)" (getA ()) (getB ())
-                    )
-
-                // Restore completed before the daemon started, but watcher backends
-                // may deliver its queued project.assets.json event after the explicit
-                // boot scan. Send a post-start project-tier edit and wait for its check;
-                // this exercises the SAME watcher/filter path as the assertion below,
-                // and drains older project-tier work before taking the warmth baseline.
-                let watcherProbeA = getA ()
-
-                File.WriteAllText(
-                    aFsproj,
-                    "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- watcher-ready --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
-                )
-
-                waitUntil (fun () -> getA () > watcherProbeA) 60000
-
-                if getA () <= watcherProbeA then
-                    Assert.Fail("Watcher did not deliver the post-start project probe within 60s")
-
-                let baselineB = getB ()
+            (fun daemon -> daemon.RegisterHandler(observer))
+            (fun daemon deliver ->
+                bootChecked daemon checksOf [ aFs; bFs ]
+                let aBefore = checksOf aFs
+                let bBefore = checksOf bFs
 
                 // Touch A's .fsproj only.
-                File.WriteAllText(
-                    aFsproj,
-                    "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
-                )
+                File.WriteAllText(aFsproj, scopedProjectXml "A" "<!-- bump -->" [])
+                deliver (ProjectChanged [ aFsproj ])
 
-                let aBefore = getA ()
-                waitUntil (fun () -> getA () > aBefore) 60000
+                let batch = awaitBatchFor batchFor aFsproj
 
-                if getA () <= aBefore then
-                    Assert.Fail(sprintf "A should be re-checked after its .fsproj change (stayed at %d)" (getA ()))
+                if not (dispatched batch aFs) || checksOf aFs <= aBefore then
+                    Assert.Fail(
+                        sprintf
+                            "A should be re-checked after its .fsproj change (checked %d → %d)"
+                            aBefore
+                            (checksOf aFs)
+                    )
 
-                // An erroneous B re-check needs time to land before "B stayed flat" means
-                // anything.
-                System.Threading.Thread.Sleep(3000)
-
-                if getB () <> baselineB then
+                // The batch is sealed and this handler has seen every check it made, so B
+                // staying flat HERE is the daemon's decision, not a race with a late check.
+                if dispatched batch bFs || checksOf bFs <> bBefore then
                     Assert.Fail(
                         sprintf
                             "Independent project B was re-checked (%d → %d) when only A changed — scoped invalidation should leave it warm."
-                            baselineB
-                            (getB ())
+                            bBefore
+                            (checksOf bFs)
                     )))
 
 [<Fact(Timeout = 180000)>]
 let ``scoped: changing a project re-checks its dependent (correctness over warmth)`` () =
     withTempDir "fshw-scoped-dep" (fun tmpDir ->
         let tmpDir = realPath tmpDir
-        let srcDir = Path.Combine(tmpDir, "src")
-        let aDir = Path.Combine(srcDir, "A")
-        let bDir = Path.Combine(srcDir, "B")
-        Directory.CreateDirectory(aDir) |> ignore
-        Directory.CreateDirectory(bDir) |> ignore
 
         // A: library. B: references A.
-        let aFsproj = Path.Combine(aDir, "A.fsproj")
+        let aDir, aFsproj, _ = scopedProject tmpDir "A" "module A\nlet a = 1\n" []
 
-        File.WriteAllText(
-            aFsproj,
-            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
-        )
-
-        let aFs = Path.Combine(aDir, "A.fs")
-        File.WriteAllText(aFs, "module A\nlet a = 1\n")
-
-        let bFsproj = Path.Combine(bDir, "B.fsproj")
-
-        File.WriteAllText(
-            bFsproj,
-            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"B.fs\"/></ItemGroup><ItemGroup><ProjectReference Include=\"../A/A.fsproj\"/></ItemGroup></Project>\n"
-        )
-
-        let bFs = Path.Combine(bDir, "B.fs")
-        File.WriteAllText(bFs, "module B\nlet b = A.a + 1\n")
-
-        let bFsCanonical = Path.GetFullPath bFs
+        let bDir, _, bFs =
+            scopedProject tmpDir "B" "module B\nlet b = A.a + 1\n" [ "../A/A.fsproj" ]
 
         // Restore B (pulls in A as a project reference).
         runDotnetIn bDir "restore --nologo"
         runDotnetIn aDir "restore --nologo"
 
-        let getB, counterB = fileCheckCounter "count-b-dep" bFsCanonical
-
+        let checksOf, batchFor, observer = scopedObserver "scoped-dep"
         let checker = FSharpChecker.Create(projectCacheSize = 50)
-        let cts = new CancellationTokenSource()
 
-        let daemon =
-            Daemon.createWithWatcherPlatform checker tmpDir Daemon.DaemonOptions.defaults (Some false)
+        withInjectedWatcherDaemon
+            checker
+            tmpDir
+            (fun daemon -> daemon.RegisterHandler(observer))
+            (fun daemon deliver ->
+                bootChecked daemon checksOf [ bFs ]
+                let bBefore = checksOf bFs
 
-        try
-            daemon.RegisterHandler(counterB)
-            let task = Async.StartAsTask(daemon.Run(cts.Token))
-            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+                // Only A's .fsproj is touched; B must be re-checked anyway, since B's own
+                // files and options are unchanged.
+                File.WriteAllText(aFsproj, scopedProjectXml "A" "<!-- bump -->" [])
+                deliver (ProjectChanged [ aFsproj ])
 
-            daemon.ScanAll() |> Async.RunSynchronously
-            waitUntil (fun () -> getB () >= 1) 60000
+                let batch = awaitBatchFor batchFor aFsproj
 
-            if getB () < 1 then
-                Assert.Fail("Baseline: dependent B should be checked on boot")
-
-            let baselineB = getB ()
-
-            // Only A's .fsproj is touched; B must be re-checked anyway, since B's own
-            // files and options are unchanged.
-            File.WriteAllText(
-                aFsproj,
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
-            )
-
-            waitUntil (fun () -> getB () > baselineB) 90000
-
-            if getB () <= baselineB then
-                Assert.Fail(
-                    sprintf
-                        "Dependent B was NOT re-checked (stayed at %d) when its dependency A changed — scoped invalidation must include transitive dependents."
-                        baselineB
-                )
-
-            cts.Cancel()
-
-            try
-                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-            with :? AggregateException ->
-                ()
-        finally
-            (daemon :> IDisposable).Dispose())
+                if not (dispatched batch bFs) || checksOf bFs <= bBefore then
+                    Assert.Fail(
+                        sprintf
+                            "Dependent B was NOT re-checked (stayed at %d) when its dependency A changed — scoped invalidation must include transitive dependents."
+                            bBefore
+                    )))
 
 // ===========================================================================
 // The jj-merge wedge repro. A foreground `scan`/`check` issued
