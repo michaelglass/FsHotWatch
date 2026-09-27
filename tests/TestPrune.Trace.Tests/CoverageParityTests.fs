@@ -92,15 +92,17 @@ let ``a woven app's coverage keeps the branch points of union matches, field com
 
         // Logic.fs's branching lines, each with a probe between its sequence point and
         // its branch: `match shape` on a two-case union (isinst), a record-field comparison
-        // (ldfld), and a type test. `if s.IsCase` calls the case getter, and MS CodeCoverage
-        // reports no branch after a call even untraced, so there is nothing to keep there.
+        // (ldfld), a type test, and `match sel` testing a case (isinst) and then, under a
+        // later hidden point after calls, its list. `if s.IsCase` calls the case getter, and
+        // MS CodeCoverage reports no branch after a call even untraced, so there is nothing
+        // to keep there.
         let branching =
             untraced
             |> Map.filter (fun _ (_, conditions) -> conditions <> "")
             |> Map.keys
             |> Set.ofSeq
 
-        test <@ Set.isSubset (set [ for l in [ 6; 11; 42; 52 ] -> "Logic.fs", l ]) branching @>
+        test <@ Set.isSubset (set [ for l in [ 6; 11; 42; 52; 76 ] -> "Logic.fs", l ]) branching @>
         test <@ woven = untraced @>
     finally
         ShadowBinTests.deleteProject projectDir

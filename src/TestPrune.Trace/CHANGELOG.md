@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: coverage of a woven assembly keeps the branch points under a match's later hidden
+  sequence points, such as the list test of `| Subset [] ->` after the union case test. The
+  copy of a line's sequence point that 0.3.0 adds after a probe used to cover the probes that
+  follow the restored branch, and MS CodeCoverage drops a hidden-range branch whose line's
+  range holds a call: 4 of 1,644 branch points in TestPrune's own suite. The site-probe pass
+  now also gives the instruction after the copy's last branch a hidden sequence point, so the
+  copy's range holds no call. TestPrune's suite now loses no branch point. Probes and their ids
+  are unchanged.
+
 ## 0.3.0 - 2026-09-27
 
 - fix: coverage of a woven assembly keeps the branch points of union matches, field

@@ -129,6 +129,10 @@ let private jumps = set [ FlowControl.Branch; FlowControl.Cond_Branch ]
 let private transfers =
     set [ FlowControl.Branch; FlowControl.Return; FlowControl.Throw ]
 
+/// The line number a PDB gives a hidden sequence point.
+[<Literal>]
+let private hiddenLine = 0xFEEFEE
+
 type private Pass() =
     let cat = Catalogue()
     let refs = Dictionary<ModuleDefinition, ProbeRefs>(HashIdentity.Reference)
@@ -265,23 +269,23 @@ type private Pass() =
     ///
     /// MS CodeCoverage reports a conditional branch on a line when the sequence point
     /// governing it (the last one at or before it) is that line's visible point, or is
-    /// hidden and, in the chain of hidden points after the visible one, no call precedes the
-    /// branch. F# puts a match's or comparison's test under such hidden points, so a probe's
-    /// call there removes the line's branch points while the line stays hit.
+    /// hidden in the chain of hidden points after it, with no call in the visible point's
+    /// range and none before the branch in the chain's first hidden range. F# puts a match's
+    /// or comparison's test under such hidden points, so a probe's call there removes the
+    /// line's branch points while the line stays hit.
     ///
     /// So where a hidden chain follows a visible point by falling through from it, and a
     /// probe in the chain's prefix (up to its first call, transfer or jump target) precedes
     /// a conditional branch of that prefix, the instruction the probe resumes at gets a copy
     /// of the visible point: the branch is governed by the line again, and the copy runs only
-    /// when the line's code did. Nothing else gets a point: a copy in a chain reached by a
-    /// jump would mark the line hit when only the chain ran, and past a transfer or a target
-    /// (a handler, a filter's `endfilter`, a match's join) coverage does not carry the line.
+    /// when the line's code did. The instruction after the prefix's last branch gets a hidden
+    /// point, unless a point is already there: the copy's range then holds no call, so the
+    /// branches under the chain's later hidden points count as they did unwoven. Nothing else
+    /// gets a point: a copy in a chain reached by a jump would mark the line hit when only the
+    /// chain ran, and past a transfer or a target (a handler, a filter's `endfilter`, a
+    /// match's join) coverage does not carry the line.
     ///
-    /// The rule follows MS CodeCoverage's observed behavior, which is not documented. Known
-    /// gaps: a branch under a later hidden point, after calls, that counted because the
-    /// chain's first hidden range held none, stops counting once a copy precedes it; and a
-    /// call after the copied branch but before another branch in the copy's own range would
-    /// let that branch count (F# gives such a guard its own visible point).
+    /// The rule follows MS CodeCoverage's observed behavior, which is not documented.
     let branchPoints (meth: MethodDefinition) (sites: Instruction list) : (int * SequencePoint) list =
         let body = meth.Body
         let points = meth.DebugInformation.SequencePoints |> Seq.toArray
@@ -297,6 +301,7 @@ type private Pass() =
                 [ Int32.MaxValue ]
             |> Seq.toArray
 
+        let pointed = HashSet<int>(points |> Seq.map (fun p -> p.Offset))
         let targets = HashSet<Instruction>(HashIdentity.Reference)
 
         for i in body.Instructions do
@@ -326,6 +331,9 @@ type private Pass() =
                 EndColumn = line.EndColumn
             )
 
+        let hiddenAt (i: Instruction) (document: Document) =
+            i.Offset, SequencePoint(i, document, StartLine = hiddenLine, EndLine = hiddenLine)
+
         points
         |> Array.pairwise
         |> Array.toList
@@ -349,9 +357,15 @@ type private Pass() =
                 prefix
                 |> List.tryFindIndex probed.Contains
                 |> Option.map (fun site -> List.skip (site + 1) prefix)
-                |> Option.filter (List.exists (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch))
-                |> Option.map (fun rest -> copyAt rest.Head visible)
+                |> Option.bind (fun rest ->
+                    rest
+                    |> List.tryFindBack (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch)
+                    |> Option.map (fun lastBranch ->
+                        [ copyAt rest.Head visible
+                          if not (pointed.Contains lastBranch.Next.Offset) then
+                              hiddenAt lastBranch.Next visible.Document ]))
             | _ -> None)
+        |> List.concat
 
     /// Merge `added` (from `branchPoints`) into the method's points, ordered by their
     /// original offsets as the portable PDB requires; `keys` holds those of the original points.

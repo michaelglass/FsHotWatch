@@ -56,3 +56,9 @@ type IGreeter =
 type Greeter() =
     interface IGreeter with
         member _.Greet n = "hi " + n
+
+/// Two cases with fields, one holding a list: `match` tests the case under one hidden
+/// sequence point and the list under a later one, after calls to the case's getter.
+type Selection =
+    | Everything of reason: string
+    | Subset of string list
