@@ -122,6 +122,13 @@ let private intrinsics =
           t + "TypeTestGeneric", true
           t + "TypeTestFast", true ]
 
+/// Flow of an instruction whose operand is one jump target (a `switch` holds several).
+let private jumps = set [ FlowControl.Branch; FlowControl.Cond_Branch ]
+
+/// Flow after which the next instruction is reached only by a jump.
+let private transfers =
+    set [ FlowControl.Branch; FlowControl.Return; FlowControl.Throw ]
+
 type private Pass() =
     let cat = Catalogue()
     let refs = Dictionary<ModuleDefinition, ProbeRefs>(HashIdentity.Reference)
@@ -252,6 +259,110 @@ type private Pass() =
                 | _ -> None
             | _ -> None
 
+    /// The sequence points that keep a woven body's branch coverage the unwoven body's, as
+    /// `(key, point)`: the original instruction offset the point belongs at. Planned on the
+    /// unwoven body, since the probes' own calls change what is observed.
+    ///
+    /// MS CodeCoverage reports a conditional branch on a line when the sequence point
+    /// governing it (the last one at or before it) is that line's visible point, or is
+    /// hidden and, in the chain of hidden points after the visible one, no call precedes the
+    /// branch. F# puts a match's or comparison's test under such hidden points, so a probe's
+    /// call there removes the line's branch points while the line stays hit.
+    ///
+    /// So where a hidden chain follows a visible point by falling through from it, and a
+    /// probe in the chain's prefix (up to its first call, transfer or jump target) precedes
+    /// a conditional branch of that prefix, the instruction the probe resumes at gets a copy
+    /// of the visible point: the branch is governed by the line again, and the copy runs only
+    /// when the line's code did. Nothing else gets a point: a copy in a chain reached by a
+    /// jump would mark the line hit when only the chain ran, and past a transfer or a target
+    /// (a handler, a filter's `endfilter`, a match's join) coverage does not carry the line.
+    ///
+    /// The rule follows MS CodeCoverage's observed behavior, which is not documented. Known
+    /// gaps: a branch under a later hidden point, after calls, that counted because the
+    /// chain's first hidden range held none, stops counting once a copy precedes it; and a
+    /// call after the copied branch but before another branch in the copy's own range would
+    /// let that branch count (F# gives such a guard its own visible point).
+    let branchPoints (meth: MethodDefinition) (sites: Instruction list) : (int * SequencePoint) list =
+        let body = meth.Body
+        let points = meth.DebugInformation.SequencePoints |> Seq.toArray
+        let probed = HashSet<Instruction>(sites, HashIdentity.Reference)
+        let at = body.Instructions |> Seq.map (fun i -> i.Offset, i) |> dict
+        let isCall (i: Instruction) = i.OpCode.FlowControl = FlowControl.Call
+
+        // The visible points' offsets, ending in a sentinel past every instruction.
+        // Seq rather than Array: FSharp.Core inlines Array.map, loop branches included.
+        let visibleOffsets =
+            Seq.append
+                (points |> Seq.filter (fun p -> not p.IsHidden) |> Seq.map (fun p -> p.Offset))
+                [ Int32.MaxValue ]
+            |> Seq.toArray
+
+        let targets = HashSet<Instruction>(HashIdentity.Reference)
+
+        for i in body.Instructions do
+            if i.OpCode.OperandType = OperandType.InlineSwitch then
+                targets.UnionWith(i.Operand :?> Instruction array)
+            elif jumps.Contains i.OpCode.FlowControl then
+                targets.Add(i.Operand :?> Instruction) |> ignore
+
+        let reachedOnlyByFallingIn (first: Instruction) =
+            not (targets.Contains first || transfers.Contains first.Previous.OpCode.FlowControl)
+
+        let startsNothingNew (i: Instruction) =
+            not (
+                isCall i.Previous
+                || transfers.Contains i.Previous.OpCode.FlowControl
+                || targets.Contains i
+            )
+
+        let copyAt (i: Instruction) (line: SequencePoint) =
+            i.Offset,
+            SequencePoint(
+                i,
+                line.Document,
+                StartLine = line.StartLine,
+                StartColumn = line.StartColumn,
+                EndLine = line.EndLine,
+                EndColumn = line.EndColumn
+            )
+
+        points
+        |> Array.pairwise
+        |> Array.toList
+        |> List.choose (fun (visible, hidden) ->
+            // The end-of-method point is at no instruction and starts no chain.
+            match at.TryGetValue hidden.Offset with
+            | true, first when hidden.IsHidden && not visible.IsHidden && reachedOnlyByFallingIn first ->
+                let chainEnd = visibleOffsets |> Array.find (fun o -> o > hidden.Offset)
+
+                let prefix =
+                    first
+                    :: (first.Next
+                        |> List.unfold (fun (i: Instruction) ->
+                            if isNull i || i.Offset >= chainEnd then
+                                None
+                            else
+                                Some(i, i.Next))
+                        |> List.takeWhile startsNothingNew)
+                    |> List.takeWhile (isCall >> not)
+
+                prefix
+                |> List.tryFindIndex probed.Contains
+                |> Option.map (fun site -> List.skip (site + 1) prefix)
+                |> Option.filter (List.exists (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch))
+                |> Option.map (fun rest -> copyAt rest.Head visible)
+            | _ -> None)
+
+    /// Merge `added` (from `branchPoints`) into the method's points, ordered by their
+    /// original offsets as the portable PDB requires; `keys` holds those of the original points.
+    let addPoints (meth: MethodDefinition) (keys: (int * SequencePoint) list) (added: (int * SequencePoint) list) =
+        let merged = keys @ added |> List.sortBy fst
+        let points = meth.DebugInformation.SequencePoints
+        points.Clear()
+
+        for _, p in merged do
+            points.Add p
+
     /// Every return of a union's tag getter records `baseId + tag`: the case of the value
     /// every `get_Tag`+switch match inspects, including callers that are not woven.
     let probeTagReturns (r: ProbeRefs) (il: ILProcessor) (body: MethodBody) (baseId: int) =
@@ -328,8 +439,19 @@ type private Pass() =
                 |> Seq.choose (fun ins -> probesFor r il meth own ins |> Option.map (fun xs -> ins, xs))
                 |> Seq.toList
 
+            // Planned on the unwoven body, keyed by original offsets, before any insertion.
+            let keys =
+                meth.DebugInformation.SequencePoints
+                |> Seq.map (fun p -> p.Offset, p)
+                |> Seq.toList
+
+            let added = branchPoints meth (sites |> List.map fst)
+
             for ins, xs in sites do
                 emitAfter il ins xs
+
+            if not added.IsEmpty then
+                addPoints meth keys added
 
             let tagBase =
                 match cat.TagGetters.TryGetValue meth with

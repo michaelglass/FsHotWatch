@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: coverage of a woven assembly keeps the branch points of union matches, field
+  comparisons and type tests. MS CodeCoverage counts a conditional branch under a hidden
+  sequence point only while no call lies between it and its line's visible point. F# puts
+  a match's test there, so a site probe's call dropped the line's branch points while the
+  line stayed hit: 98 of 1,646 in TestPrune's own suite. Where a probe precedes such a
+  branch in code that falls through from the line, the site-probe pass now gives the
+  instruction the probe resumes at a copy of the line's sequence point. On TestPrune's
+  suite 4 of 1,644 branch points are still lost (two `match` lines whose later hidden
+  range holds calls). Line coverage and hits are unchanged, as are probes and their ids.
+  The rule follows MS CodeCoverage's observed behavior, not a documented one.
+
 ## 0.2.1 - 2026-09-27
 
 - chore: rebuild to bundle updated dependencies

@@ -63,3 +63,11 @@ let isCircleProp (s: Shape) = s.IsCircle
 let samePoint (a: Point) (b: Point) = a = b
 let greet (g: IGreeter) = g.Greet "x"
 let readRepoFile (path: string) = System.IO.File.ReadAllText path
+
+let absFive (p: Point) =
+    if System.Math.Abs p.X = 5 then 1 else 0
+
+let emptyCircle (s: Shape) (xs: int list) =
+    match s with
+    | Circle _ when List.isEmpty xs -> 1
+    | _ -> 0
