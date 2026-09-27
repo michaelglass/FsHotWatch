@@ -812,6 +812,22 @@ let ``an operation in flight is published with its name, start and declared dead
     Assert.Empty store.Snapshot.OperationsInFlight
 
 [<Fact>]
+let ``a plugin's pending events are counted from its own rows only`` () =
+    let store = Store()
+    let build = Owner(0, store, "build")
+    let lint = Owner(0, store, "lint")
+    let first = build.AdmitEvent()
+    build.AdmitEvent() |> ignore
+    lint.AdmitEvent() |> ignore
+
+    Assert.Equal(2, store.Snapshot.PendingEventsOf "build")
+    Assert.Equal(1, store.Snapshot.PendingEventsOf "lint")
+    Assert.Equal(0, store.Snapshot.PendingEventsOf "format")
+
+    build.CommitEvent(first, 1)
+    Assert.Equal(1, store.Snapshot.PendingEventsOf "build")
+
+[<Fact>]
 let ``only live bounded work counts as supervised work in flight`` () =
     let store = Store()
 

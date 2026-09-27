@@ -877,6 +877,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                     (Verdict.Invocation.startAs invocationId)
                     ProgressRenderer.Agent
                     CheckVerdict.InnerLoop
+                    CheckVerdict.Freshness.MayReuse
                     repoRoot
                     []
                     (fun _ -> [])
@@ -954,6 +955,7 @@ let private driveWithModel
                 (Verdict.Invocation.startAs " ")
                 ProgressRenderer.Agent
                 mode
+                CheckVerdict.Freshness.MayReuse
                 repoRoot
                 []
                 (fun _ -> [])
@@ -1139,6 +1141,7 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
                 (Verdict.Invocation.startAs "two-batch-check")
                 ProgressRenderer.Agent
                 CheckVerdict.InnerLoop
+                CheckVerdict.Freshness.MayReuse
                 repoRoot
                 []
                 (fun _ -> [])
@@ -1414,6 +1417,159 @@ let ``the inner loop NEVER forces a full suite`` () =
 
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
+
+// --- `confirm --fresh` on the daemon path ---
+
+let private earlierRun = System.Guid.Parse("22222222-2222-2222-2222-222222222222")
+let private freshRun = System.Guid.Parse("33333333-3333-3333-3333-333333333333")
+
+/// A full-suite report naming `run`, with `session` as the daemon's completed runs.
+let private fullSuiteRun (run: System.Guid) (session: System.Guid list) : TestRunReport =
+    { BaselineFixtures.reportOf (FullSuite 1) with
+        RunId = Some run
+        SessionRuns = session }
+
+/// Drive a `Confirmation` over a warm daemon whose settled reading is ALREADY a
+/// full-suite receipt. `beforeScan` is what the daemon had completed before this confirm
+/// began; `afterScan` what it reports once the scan settles; `afterForce` what it
+/// reports once `forceFullRun` was invoked (`None`: the forced run never happened).
+/// Returns the exit code, how often the suite was forced, and the verdict written.
+let private driveFresh
+    (freshness: CheckVerdict.Freshness)
+    (beforeScan: TestRunReport)
+    (afterScan: TestRunReport)
+    (afterForce: TestRunReport option)
+    : int * int * Verdict.Verdict =
+    let mutable reads = 0
+    let mutable forceCalls = 0
+
+    let getTestRun () : TestRunReport =
+        reads <- reads + 1
+
+        match reads, forceCalls, afterForce with
+        | 1, _, _ -> beforeScan
+        | _, 0, _
+        | _, _, None -> afterScan
+        | _, _, Some forced -> forced
+
+    TestHelpers.withTempDir "ipcoutput-confirm-fresh" (fun repoRoot ->
+        let code =
+            pollAndRenderForInvocation
+                (Verdict.Invocation.startAs "confirm-fresh")
+                ProgressRenderer.Agent
+                CheckVerdict.Confirmation
+                freshness
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
+                getTestRun
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun () -> forceCalls <- forceCalls + 1)
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v -> code, forceCalls, v
+        | other -> failwithf "the drive must leave a readable verdict, got %A" other)
+
+/// A warm daemon: the full-suite run was completed before this confirm began, and the
+/// scan launched nothing.
+let private retainedReceipt = fullSuiteRun earlierRun [ earlierRun ]
+
+[<Fact(Timeout = 15000)>]
+let ``POSITIVE CONTROL: a plain confirm grades the daemon's retained full-suite receipt without a run`` () =
+    let exitCode, forceCalls, v =
+        driveFresh CheckVerdict.Freshness.MayReuse retainedReceipt retainedReceipt None
+
+    test <@ forceCalls = 0 @>
+    test <@ exitCode = 0 @>
+    test <@ v.RunId = Some earlierRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``confirm --fresh forces a new run over a retained receipt and grades the new run`` () =
+    let exitCode, forceCalls, v =
+        driveFresh
+            CheckVerdict.Freshness.RequireNewRun
+            retainedReceipt
+            retainedReceipt
+            (Some(fullSuiteRun freshRun [ freshRun; earlierRun ]))
+
+    test <@ forceCalls = 1 @>
+    test <@ exitCode = 0 @>
+    test <@ BaselineFixtures.isGreen v.Outcome @>
+    test <@ v.RunId = Some freshRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``confirm --fresh refuses a green when the forced run never replaced the retained receipt`` () =
+    // The forced `run-tests` was refused or faulted, so the only full-suite evidence left
+    // is the earlier run's. A plain confirm would accept it; `--fresh` promised a new run.
+    let exitCode, forceCalls, v =
+        driveFresh CheckVerdict.Freshness.RequireNewRun retainedReceipt retainedReceipt None
+
+    test <@ forceCalls = 1 @>
+    test <@ exitCode = 3 @>
+
+    match v.Outcome with
+    | Verdict.Incomplete reason ->
+        test <@ reason.Contains "confirm --fresh" @>
+        test <@ reason.Contains(earlierRun.ToString("N")) @>
+    | other -> failwith $"expected a refusal naming the graded run, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``confirm --fresh does not run the suite twice when its own scan already launched it`` () =
+    // A cold daemon: nothing had run before this confirm, and the scan it provoked ran the
+    // full suite. That run IS new, so there is nothing left to force.
+    let exitCode, forceCalls, v =
+        driveFresh
+            CheckVerdict.Freshness.RequireNewRun
+            (TestRunReport.ofScopeOnly ScopeUnknown)
+            (fullSuiteRun freshRun [ freshRun ])
+            None
+
+    test <@ forceCalls = 0 @>
+    test <@ exitCode = 0 @>
+    test <@ v.RunId = Some freshRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``confirm --fresh cannot prove a run new without a baseline, so it forces one`` () =
+    // The pre-scan read faulted: an earlier run cannot be told from a new one.
+    let mutable reads = 0
+    let mutable forceCalls = 0
+
+    let getTestRun () : TestRunReport =
+        reads <- reads + 1
+
+        if reads = 1 then failwith "the transport faulted"
+        elif forceCalls = 0 then retainedReceipt
+        else fullSuiteRun freshRun [ freshRun; earlierRun ]
+
+    let exitCode =
+        TestHelpers.withTempDir "ipcoutput-confirm-fresh-nobaseline" (fun repoRoot ->
+            pollAndRenderForInvocation
+                (Verdict.Invocation.startAs "confirm-fresh")
+                ProgressRenderer.Agent
+                CheckVerdict.Confirmation
+                CheckVerdict.Freshness.RequireNewRun
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                (fun () ->
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
+                getTestRun
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun () -> forceCalls <- forceCalls + 1))
+
+    test <@ forceCalls = 1 @>
+    // No baseline also means the forced run cannot be PROVEN new: refused, never green.
+    test <@ exitCode = 3 @>
 
 /// The same drive, but the VERDICT FILE is read before the temp dir goes away.
 ///

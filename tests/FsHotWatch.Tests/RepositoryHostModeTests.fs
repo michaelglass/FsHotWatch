@@ -68,7 +68,7 @@ let ``only commands that bring this worktree's daemon up attach; status and stop
 
     for command in
         [ Check [ RunOnce ]
-          Confirm [ RunOnce ]
+          Confirm [ ConfirmFlag.RunOnce ]
           Format [ RunOnce ]
           Status(None, [])
           Status(None, [ Repository ])

@@ -60,7 +60,7 @@ let ``parse check --run-once returns Check RunOnce`` () =
 [<Fact(Timeout = 15000)>]
 let ``only --run-once commands get a OneShot host`` () =
     test <@ runModeFor (Check [ RunOnce ]) = Daemon.RunMode.OneShot @>
-    test <@ runModeFor (Confirm [ RunOnce ]) = Daemon.RunMode.OneShot @>
+    test <@ runModeFor (Confirm [ ConfirmFlag.RunOnce ]) = Daemon.RunMode.OneShot @>
     test <@ runModeFor (Format [ RunOnce ]) = Daemon.RunMode.OneShot @>
     // Every persistent command keeps watching — including the daemon itself.
     test <@ runModeFor Start = Daemon.RunMode.Watching @>

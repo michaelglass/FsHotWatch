@@ -1289,3 +1289,29 @@ let ``a model-unavailable outcome is explained in its own words and recorded as 
             test <@ reason = explanation @>
             test <@ FsHotWatch.Cli.Verdict.Outcome.tag recorded = "model-unavailable" @>
         | other -> failwith $"expected a model-unavailable verdict outcome, got %A{other}"
+
+// --- `confirm --fresh` ---
+
+[<Fact>]
+let ``only a --fresh confirmation launches a run over evidence it did not launch`` () =
+    test <@ not (confirmNeedsNewRun Confirmation Freshness.MayReuse false) @>
+    test <@ confirmNeedsNewRun Confirmation Freshness.RequireNewRun false @>
+    test <@ not (confirmNeedsNewRun Confirmation Freshness.RequireNewRun true) @>
+    test <@ not (confirmNeedsNewRun InnerLoop Freshness.RequireNewRun false) @>
+
+[<Fact>]
+let ``a --fresh green graded from a run this confirm did not launch is NoNewRun, exit 3`` () =
+    let clean = CheckOutcome.Clean BaselineFixtures.baseline
+
+    match requireNewRun Freshness.RequireNewRun false "run 22" clean with
+    | CheckOutcome.NoNewRun reason as refused ->
+        test <@ reason.Contains "run 22" @>
+        test <@ exitCode refused = 3 @>
+    | other -> failwith $"expected NoNewRun, got %A{other}"
+
+    // The run was new, or reuse was allowed: the green stands.
+    test <@ requireNewRun Freshness.RequireNewRun true "run 33" clean = clean @>
+    test <@ requireNewRun Freshness.MayReuse false "run 22" clean = clean @>
+    // A red keeps its own reason: it is already no green.
+    test
+        <@ requireNewRun Freshness.RequireNewRun false "run 22" CheckOutcome.FailuresFound = CheckOutcome.FailuresFound @>

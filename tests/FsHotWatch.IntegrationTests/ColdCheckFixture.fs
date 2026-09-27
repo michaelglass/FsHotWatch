@@ -9,9 +9,10 @@ open FsHotWatch.Cli
 open FsHotWatch.Ipc
 open FsHotWatch.Tests.TestHelpers
 
-// real cold and filtered command scenarios share only process
-// ownership and fixture construction. No confirm or seeded fshw state supplies
-// evidence. This does not decide the separate explicit-baseline CLI policy.
+// real cold, filtered and confirm command scenarios share only process
+// ownership and fixture construction. No seeded fshw state supplies evidence:
+// every verdict a scenario reads was earned by a real command over real tests.
+// This does not decide the separate explicit-baseline CLI policy.
 
 type private Child =
     { Process: Process
@@ -195,13 +196,14 @@ let withDaemon clock root body =
         finally
             disposeChild daemon
 
-let check clock root cli =
-    let code, text = run clock root "dotnet" [ cli; "check"; "--agent" ]
+/// Run one verb against the owned daemon and read the verdict it left behind.
+let private verb clock root cli (name: string) (flags: string list) =
+    let code, text = run clock root "dotnet" ([ cli; name; "--agent" ] @ flags)
     let path = Path.Combine(root, ".fshw", "verdict.json")
-    Assert.True(File.Exists path, $"check did not produce a verdict:\n{text}")
+    Assert.True(File.Exists path, $"{name} did not produce a verdict:\n{text}")
     use document = JsonDocument.Parse(File.ReadAllText path)
     let verdict = document.RootElement.Clone()
-    Assert.Equal("check", verdict.GetProperty("command").GetString())
+    Assert.Equal(name, verdict.GetProperty("command").GetString())
     // A compile failure cannot satisfy a negative test-evidence control.
     Assert.Contains(
         verdict.GetProperty("plugins").EnumerateArray(),
@@ -211,6 +213,10 @@ let check clock root cli =
     )
 
     code, text, verdict
+
+let check clock root cli = verb clock root cli "check" []
+
+let confirm clock root cli flags = verb clock root cli "confirm" flags
 
 let assertScope kind ran total (verdict: JsonElement) =
     let scope = verdict.GetProperty("scope")

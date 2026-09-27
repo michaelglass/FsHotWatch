@@ -775,6 +775,18 @@ module CheckProse =
     let forcingFullSuite (scope: IpcParsing.TestScope) : string =
         $"  Confirm: the tests that ran were %s{TestScope.describe scope} — running the FULL suite to earn a verdict..."
 
+    /// A test run as the terminal names it: its id, or the fact that there was none.
+    let describeRun (runId: System.Guid option) : string =
+        match runId with
+        | Some id -> "run " + id.ToString("N")
+        | None -> "no recorded run"
+
+    /// `confirm --fresh` over a reading that is already full-suite, from a run this
+    /// invocation did not launch.
+    let forcingNewRun (runId: System.Guid option) : string =
+        $"  Confirm --fresh: the full-suite evidence on hand is %s{describeRun runId}, which this confirm did not \
+           launch — running the FULL suite again..."
+
     /// What happened. Never a red: nothing failed, and nothing was verified either.
     let waitingOnBuildCause =
         "waiting on build — a test project's build artifact was not produced, so its \
@@ -875,6 +887,13 @@ module CheckProse =
            nothing is reported sound — but unlike every other no-verdict here, the work is DONE. The run's own \
            output is already on disk under `.fshw/test-runs/`; read that before spending another full cycle. If \
            this recurs, it is the size of what the daemon is being asked to hand back, not the size of the box."
+
+    /// `confirm --fresh` graded a run it did not launch. The words name the flag, because
+    /// the remedy is its opposite: a plain `confirm` would have accepted this evidence.
+    let noNewRun (reason: string) =
+        $"NO VERDICT — `confirm --fresh` must grade a full-suite run it launched, and %s{reason}.\nThe forced \
+           run was refused, faulted or never reported back. Nothing is reported broken and nothing is reported \
+           sound; see logs/daemon.log for why the run did not start, then re-run `fshw confirm --fresh`."
 
     /// A reading taken without an available project model, in its own
     /// words — the cause and the remedy both come from the reading, because a model
@@ -979,6 +998,7 @@ module CheckProse =
         // Never borrows the "NO TESTS RAN" words: those describe a model
         // that selected nothing, and this model was never there to select from.
         | CheckVerdict.CheckOutcome.ModelUnavailable reading -> Some(modelUnavailable reading)
+        | CheckVerdict.CheckOutcome.NoNewRun reason -> Some(noNewRun reason)
         | CheckVerdict.CheckOutcome.Clean _
         | CheckVerdict.CheckOutcome.FailuresFound -> None
 
@@ -1044,6 +1064,9 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     // Its own `outcome.kind`, so a consumer of `verdict.json` can branch
     // on "wait for the model" without parsing prose — and exit 2 beside it.
     | CheckVerdict.CheckOutcome.ModelUnavailable reading -> ModelUnavailable(CheckProse.modelUnavailable reading)
+    // `incomplete`, the class of an unearned scope: the evidence asked for was not
+    // produced, and nothing failed.
+    | CheckVerdict.CheckOutcome.NoNewRun reason -> Incomplete(CheckProse.noNewRun reason)
 
 // ---------------------------------------------------------------------------
 // The check-vs-confirm sample every `confirm` already had

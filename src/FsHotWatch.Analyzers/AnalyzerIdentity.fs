@@ -165,7 +165,7 @@ let private readAssemblyRefs (assembly: MetadataReader) : (string * string) list
     assembly.AssemblyReferences
     |> Seq.map (fun handle ->
         let reference = assembly.GetAssemblyReference handle
-        assembly.GetString reference.Name, string reference.Version)
+        assembly.GetString reference.Name, reference.Version.ToString())
     |> Seq.sort
     |> Seq.toList
 

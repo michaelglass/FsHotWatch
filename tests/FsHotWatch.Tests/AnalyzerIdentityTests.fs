@@ -6,7 +6,10 @@
 module FsHotWatch.Tests.AnalyzerIdentityTests
 
 open System
+open System.Collections.Immutable
 open System.IO
+open System.Reflection.Metadata
+open System.Reflection.PortableExecutable
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Analyzers.AnalyzerIdentity
@@ -221,6 +224,80 @@ let ``with no repository root every DLL is PackageBytes`` () =
             <@
                 identityOf None rulesDll = Ok(
                     AnalyzerAssemblyIdentity.PackageBytes(sha256Lower (File.ReadAllBytes rulesDll))
+                )
+            @>)
+
+/// A PE image with one code section and no CLI header: a native DLL, not an assembly.
+type private MetadataFreeImage() =
+    inherit PEBuilder(PEHeaderBuilder(), null)
+
+    override _.CreateSections() =
+        ImmutableArray.Create(
+            PEBuilder.Section(
+                ".text",
+                SectionCharacteristics.ContainsCode
+                ||| SectionCharacteristics.MemRead
+                ||| SectionCharacteristics.MemExecute
+            )
+        )
+
+    override _.GetDirectories() = PEDirectoriesBuilder()
+
+    override _.SerializeSection(_name, _location) =
+        let section = BlobBuilder()
+        section.WriteBytes(0uy, 16)
+        section
+
+[<Fact(Timeout = 15000)>]
+let ``a PE image with no metadata is PackageBytes, like any bytes with no receipt`` () =
+    withTempDir "az-id-native" (fun dir ->
+        let image = BlobBuilder()
+        MetadataFreeImage().Serialize image |> ignore
+        let bytes = image.ToArray()
+        let dll = throwawayDll dir "Native" bytes
+
+        use pe = new PEReader(ImmutableArray.Create<byte>(bytes: byte array))
+        test <@ not pe.HasMetadata @>
+        test <@ identityOf (Some dir) dll = Ok(AnalyzerAssemblyIdentity.PackageBytes(sha256Lower bytes)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an assembly with no debug directory names no PDB, so its bytes identify it`` () =
+    withTempDir "az-id-nodebug" (fun dir ->
+        let dll = Path.Combine(dir, "NoDebug.dll")
+
+        let builder =
+            System.Reflection.Emit.PersistedAssemblyBuilder(
+                System.Reflection.AssemblyName "NoDebug",
+                typeof<obj>.Assembly
+            )
+
+        builder.DefineDynamicModule "NoDebug" |> ignore
+        builder.Save dll
+
+        test
+            <@
+                identityOf (Some dir) dll = Ok(
+                    AnalyzerAssemblyIdentity.PackageBytes(sha256Lower (File.ReadAllBytes dll))
+                )
+            @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a DLL in a directory shallower than the repository root is outside it, so its receipt is a package's`` () =
+    withTempDir "az-id-shallow" (fun dir ->
+        // The root is nested far deeper than the DLL's directory and than any path the
+        // receipt records: every prefix test here fails on length, in any checkout.
+        let root =
+            Path.Combine(Array.append [| dir |] (Array.init 16 (fun i -> $"level%d{i}")))
+
+        Directory.CreateDirectory root |> ignore
+        let dll = Path.Combine(dir, Path.GetFileName rulesDll)
+        File.Copy(rulesDll, dll)
+        File.Copy(rulesPdb, Path.ChangeExtension(dll, ".pdb"))
+
+        test
+            <@
+                identityOf (Some root) dll = Ok(
+                    AnalyzerAssemblyIdentity.PackageBytes(sha256Lower (File.ReadAllBytes dll))
                 )
             @>)
 

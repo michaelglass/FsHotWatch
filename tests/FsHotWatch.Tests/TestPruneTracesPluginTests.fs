@@ -13,6 +13,8 @@ open Swensen.Unquote
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.Tests.TestPrunePluginTestSupport
+open TestPrune.AstAnalyzer
 open TestPrune.Trace
 open TestPrune.Trace.Model
 
@@ -40,19 +42,22 @@ let private oneRowManifest: Manifest =
 let private ctrfReport =
     """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"skipped":0,"pending":0,"other":0},"tests":[{"name":"Ns.C.t","status":"passed","duration":1}]}}"""
 
-let private dumpLines =
+/// A recorder dump: `Ns.C.t` passed, having executed `ids`.
+let private dumpExecuting (ids: string) =
     [ """{"format":"testprune-trace/1","pid":1,"parentScope":null,"runtime":".NET 10.0.0","os":"OSX","arch":"Arm64","ids":1,"cpuMs":5,"counters":{"test":0,"class":0,"collection":0,"assembly":0,"override":0,"staticInit":0,"ambient":0,"overflow":0}}"""
-      """{"key":"T:1","test":{"class":"Ns.C","method":"t","display":"Ns.C.t"},"parents":[],"links":[],"ids":[],"inputs":[],"children":[]}"""
+      $"""{{"key":"T:1","test":{{"class":"Ns.C","method":"t","display":"Ns.C.t"}},"parents":[],"links":[],"ids":[%s{ids}],"inputs":[],"children":[]}}"""
       """{"end":true}""" ]
 
-/// A shell script that writes the CTRF report the run asked for (unless `fail`), and a
-/// recorder dump into `$TESTPRUNE_TRACE_OUT` when that is set, then touches `marker`.
-let private writeRunner (path: string) (marker: string) (fail: bool) =
+/// A shell script that touches `marker`, runs `prelude`, then writes the CTRF report the
+/// run asked for (unless `fail`) and `dumpLines` into `$TESTPRUNE_TRACE_OUT` when that is
+/// set.
+let private writeRunnerWith (path: string) (marker: string) (fail: bool) (prelude: string) (dumpLines: string list) =
     let dump = dumpLines |> String.concat "\n"
 
     let body =
         "#!/bin/sh\n"
         + $"touch '%s{marker}'\n"
+        + prelude
         + "name=''; dir=''\n"
         + "while [ $# -gt 0 ]; do\n"
         + "  case \"$1\" in\n"
@@ -69,6 +74,10 @@ let private writeRunner (path: string) (marker: string) (fail: bool) =
 
     File.WriteAllText(path, body)
     File.SetUnixFileMode(path, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+
+/// `writeRunnerWith` with no prelude and a dump that executed nothing.
+let private writeRunner (path: string) (marker: string) (fail: bool) =
+    writeRunnerWith path marker fail "" (dumpExecuting "")
 
 /// A preparation that "weaves" by handing back `apphost` as the woven app.
 let private preparedAs
@@ -285,3 +294,110 @@ let ``a traced launch that verified nothing re-runs untraced, and the refusal sa
         test <@ activity |> List.contains $"traces: T not recorded — %s{reason}" @>
         let run = runsOf root "T" |> List.exactlyOne
         test <@ (run.Status, run.Reason) = (TraceStore.Refused, reason) @>)
+
+/// A real FCS check of `source`, saved as `fileName` under `root`.
+let private checkForReal (root: string) (fileName: string) (source: string) =
+    async {
+        let checker = sharedChecker.Value
+        let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
+        let filePath = Path.Combine(root, fileName)
+        File.WriteAllText(filePath, source)
+        let! projOptions = getScriptOptions checker filePath source
+        pipeline.RegisterProject(filePath, projOptions)
+        return! pipeline.CheckFile(FsHotWatch.Events.AbsFilePath.create filePath)
+    }
+    |> Async.RunSynchronously
+    |> Option.defaultWith (fun () -> failwith $"no check result for %s{fileName}")
+    |> stampFixture
+
+[<Fact(Timeout = 120000)>]
+let ``a traced run joins against the analysis admitted while it ran, however far the mailbox is behind`` () =
+    withTempDir "tp-fold-order" (fun root ->
+        let blocker = checkForReal root "K.fsx" "module K\nlet k = 1\n"
+
+        let indexing =
+            checkForReal root "L.fsx" "module L\ntype M() =\n    member _.f() = 1\n"
+
+        let woven = Path.Combine(root, "woven.sh")
+        let started = Path.Combine(root, "started")
+        let go = Path.Combine(root, "go")
+        let finished = Path.Combine(root, "finished")
+
+        // The traced test executes `L.M::f` (probe id 0), and only finishes once `go` exists.
+        writeRunnerWith
+            woven
+            started
+            false
+            $"while [ ! -f '%s{go}' ]; do sleep 0.05; done\ntrap \"touch '%s{finished}'\" EXIT\n"
+            (dumpExecuting "0")
+
+        // Holds this plugin's mailbox: the first refresh after `armed` blocks its fold until
+        // `release`, so the events admitted behind it stay unfolded.
+        use armed = new ManualResetEventSlim(false)
+        use entered = new ManualResetEventSlim(false)
+        use release = new ManualResetEventSlim(false)
+
+        let holdingExtension =
+            { new TestPrune.Extensions.ITestPruneExtension with
+                member _.Name = "holds-the-mailbox"
+
+                member _.AnalyzeEdges _ _ =
+                    if armed.IsSet && not entered.IsSet then
+                        entered.Set()
+                        release.Wait(TimeSpan.FromSeconds 60.0) |> ignore
+
+                    [] }
+
+        let wiring =
+            { Policy = settings RecordEveryRun
+              OptedOut = Set.empty
+              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
+
+        let host = createModelHost (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(
+            createWithLaunchDeadline
+                (TimeSpan.FromMinutes 2.0)
+                (fun () -> Map.empty)
+                (Path.Combine(root, "tp.db"))
+                root
+                (Some [ config "T" "dotnet" "run --project tests/T --no-build" ])
+                (Some(fun _ -> [ holdingExtension ]))
+                None
+                None
+                None
+                []
+                (Some wiring)
+        )
+
+        try
+            let run = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+            test <@ waitUntilTrue (fun () -> File.Exists started) 30000 @>
+
+            // While the run is in flight: one analysis whose fold holds the mailbox, then the
+            // analysis that indexes `L.M`, admitted behind it.
+            armed.Set()
+            host.EmitFileChecked blocker
+            host.EmitBatchChecked(fakeBatchChecked [ Path.Combine(root, "K.fsx") ])
+            test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+            host.EmitFileChecked indexing
+            host.EmitBatchChecked(fakeBatchChecked [ Path.Combine(root, "L.fsx") ])
+
+            // The test finishes and ingestion posts its probe behind `L`'s analysis, which
+            // is still unfolded when the mailbox is let go.
+            File.WriteAllText(go, "")
+            test <@ waitUntilTrue (fun () -> File.Exists finished) 30000 @>
+            Thread.Sleep 500
+            release.Set()
+            test <@ run.Wait(TimeSpan.FromSeconds 60.0) @>
+
+            let first = runsOf root "T" |> List.minBy (fun r -> r.RecordedAt)
+            use stats = JsonDocument.Parse first.StatsJson
+
+            let stat (name: string) =
+                stats.RootElement.GetProperty(name).GetInt32()
+
+            test <@ first.Status = TraceStore.Recorded @>
+            test <@ (stat "unmappedIds", stat "complete") = (0, 1) @>
+        finally
+            release.Set())

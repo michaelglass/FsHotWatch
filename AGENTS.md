@@ -24,7 +24,9 @@ The verbs that matter:
   is green.
 - **`confirm`** — run the FULL suite and confirm `check` told the truth. Same
   checks, but the tests run unfiltered, and a green is refused (exit 3) unless they
-  actually did. This is what CI runs.
+  actually did. This is what CI runs. On an unchanged tree it answers from the
+  evidence already earned; `confirm --fresh` launches a new full-suite run instead
+  (for timing or tracing a run — not needed for a verdict).
 
 **Which verb gates a merge is YOUR project's policy, not fshw's.** The two verbs
 report different strengths of evidence and say honestly which one they produced;
