@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-27
+
+- Merge main@origin into the branch-point weaver fix
+- Keep branch points in coverage of woven assemblies
+- Merge main@origin into the trace output fix and phase-1 parity results
+- Keep a failing launch's output in the trace measurement verbs
+
+
 ## 0.2.1 - 2026-09-27
 
 - chore: rebuild to bundle updated dependencies

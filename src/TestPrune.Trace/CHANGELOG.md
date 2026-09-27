@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-27
+
 - fix: coverage of a woven assembly keeps the branch points of union matches, field
   comparisons and type tests. MS CodeCoverage counts a conditional branch under a hidden
   sequence point only while no call lies between it and its line's visible point. F# puts
