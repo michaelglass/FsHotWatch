@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-28
+
+- changelog: the TestPrune.Inline attribute index is a feature, not a breaking change
+- coverage: pin the SDK band and remove the branches SDK 10.0.4xx left uncovered
+- Index inline members as the TestPrune.Inline attribute
+
+
 ## 0.4.0 - 2026-09-27
 
 - fix: `file-census` counts a test that reads the repository from outside it (an absolute
