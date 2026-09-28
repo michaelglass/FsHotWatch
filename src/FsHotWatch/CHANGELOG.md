@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a `FileChecked` result stamped with no model generation, or with one other
+  than the available model's, is no longer served from or written to the task cache.
+  The cache key names the file and its inputs, not the model, so a queued result from
+  a replaced model hit the cache and replayed its findings for a file the new model
+  had dropped, after the rediscovery had cleared them. Lint and Analyzers refused
+  such a result only in their `Update`, which a replay skips. The result now always
+  reaches `Update`.
+
 - fix: `RepositoryIdentity.canonicalize` no longer lists each directory on the way to
   learn how a path component is spelled on disk. On macOS it asks the entry itself
   (`getattrlist` for its stored name). On Linux the name as given is already the stored
