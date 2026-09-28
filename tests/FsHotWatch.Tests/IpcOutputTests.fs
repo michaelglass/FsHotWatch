@@ -1,11 +1,3 @@
-// This module REDIRECTS `Console.Error` (see `captureStderr`). That writer is
-// process-wide, so a redirect here and a redirect in another class interleave: whichever
-// restores last hands back a writer the other class captured, and from then on this
-// class's output goes into that class's buffer while that class's output arrives in this
-// one. Observed as a capture full of another suite's temp directories, on a test that
-// asserts about its own sentence. Hence the serialized collection every other
-// `Console.Error` class in this project already joins.
-[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.IpcOutputTests
 
 open Xunit
@@ -2004,53 +1996,38 @@ let ``a tree that moves mid-check exits 2 AND records incomplete — the file an
     | Verdict.Incomplete reason -> test <@ reason.Contains "working tree changed" @>
     | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other
 
-/// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
+/// Run `f`, capturing what the verdict publisher says at the terminal while it runs, and
+/// return (sentences, result).
 ///
-/// `Console.SetError` is PROCESS-WIDE. No lock in this file can exclude a writer or a
-/// redirector in another one, so the exclusion that matters is the module's
-/// `LogGlobalCollectionName` collection: it serializes this class against every other
-/// class that redirects `Console.Error`, which is what stops a foreign restore from
-/// handing our writer away mid-capture.
-///
-/// The rest is belt: a bare `StringWriter` is not thread-safe, so its own `ToString()`
-/// threw `ArgumentOutOfRangeException (chunkLength)` mid-append under a loaded box. The
-/// synchronized wrapper keeps that safe against a class that merely WRITES to stderr
-/// while running in parallel, and such a line is harmless to the assertions here, since
-/// every caller asserts on `Contains`, never on the whole buffer.
-///
-/// Captures are serialized against each other so two of them cannot interleave their
-/// redirections and restore the wrong original.
-let private stderrCaptureGate = obj ()
+/// The capture is a writer installed for `f`'s own execution context
+/// (`VerdictTerminal.install`), not a redirect of the process-wide `Console.Error`: a
+/// class running in parallel writes to stderr as it always did, and none of it reaches
+/// this buffer. Nothing is shared, so there is nothing to serialize against.
+let private captureVerdictTerminal (f: unit -> 'a) : string * 'a =
+    use buffer = new System.IO.StringWriter()
+    // Synchronized: the publisher's own work may continue on pool threads the context
+    // flowed to, and a bare `StringWriter` is not safe to append to from two of them.
+    let writer = System.IO.TextWriter.Synchronized buffer
 
-let private captureStderr (f: unit -> 'a) : string * 'a =
-    lock stderrCaptureGate (fun () ->
-        let original = System.Console.Error
-        use buffer = new System.IO.StringWriter()
-        let writer = System.IO.TextWriter.Synchronized buffer
-        System.Console.SetError(writer)
+    let result =
+        use _ = VerdictTerminal.install writer
+        f ()
 
-        try
-            let result = f ()
-            writer.Flush()
-            // Read under the same lock the synchronized writer uses, so a concurrent
-            // write cannot be mid-append while the buffer is materialized.
-            lock writer (fun () -> buffer.ToString()), result
-        finally
-            System.Console.SetError(original))
+    lock writer (fun () -> buffer.ToString()), result
 
 [<Fact(Timeout = 15000)>]
 let ``a tree that moves mid-check says so at the terminal, not only in the verdict file`` () =
     // The file was already right and silent at the terminal: an operator saw exit 2 with
     // no sentence at all, because the caller explains the outcome it handed in (clean).
     let stderr, (exitCode, _) =
-        captureStderr (fun () -> driveWithTreeMovedMidCheck true)
+        captureVerdictTerminal (fun () -> driveWithTreeMovedMidCheck true)
 
     test <@ exitCode = 2 @>
     test <@ stderr.Contains "working tree changed" @>
 
     // The control: a tree that held still says nothing of the kind.
     let quiet, (greenExit, _) =
-        captureStderr (fun () -> driveWithTreeMovedMidCheck false)
+        captureVerdictTerminal (fun () -> driveWithTreeMovedMidCheck false)
 
     test <@ greenExit = 0 @>
     test <@ not (quiet.Contains "working tree changed") @>
@@ -2836,14 +2813,14 @@ let ``a refused receipt says why at the terminal, not only in the verdict file``
                 RunId = Some BaselineFixtures.runId }
 
         let stderr, exitCode =
-            captureStderr (fun () -> publishWithReceipts repoRoot [] gradedRun)
+            captureVerdictTerminal (fun () -> publishWithReceipts repoRoot [] gradedRun)
 
         test <@ exitCode = 2 @>
         test <@ stderr.Contains "no evidence receipt" @>
 
         // The control: a receipt that earns the green says nothing.
         let quiet, greenExit =
-            captureStderr (fun () ->
+            captureVerdictTerminal (fun () ->
                 publishWithReceipts
                     repoRoot
                     [ { RunId = Some BaselineFixtures.runId
@@ -2853,6 +2830,54 @@ let ``a refused receipt says why at the terminal, not only in the verdict file``
 
         test <@ greenExit = 0 @>
         test <@ not (quiet.Contains "no evidence receipt") @>)
+
+/// What another test class writes to stderr, from its own thread and its own execution
+/// context: nothing a test here installs flows to it. The three routes are the ones a
+/// class in this suite actually takes — a bare `eprintfn`, `Logging` with no sink
+/// installed, and CommandTree's `UI.fail`.
+let private writeStderrAsAnotherClass (started: System.Threading.ManualResetEventSlim) =
+    let finished = new System.Threading.ManualResetEventSlim()
+
+    let thread =
+        use _ = System.Threading.ExecutionContext.SuppressFlow()
+
+        let t =
+            System.Threading.Thread(fun () ->
+                started.Wait()
+                eprintfn "a line another class wrote"
+                FsHotWatch.Logging.error "another-class" "a log line another class wrote"
+                CommandTree.UI.fail "a refusal another class said"
+                finished.Set())
+
+        t.Start()
+        t
+
+    thread, finished
+
+[<Fact(Timeout = 20000)>]
+let ``a capture holds only its own sentences while another class writes to stderr mid-capture`` () =
+    withTempDir "ipcoutput-capture-isolation" (fun repoRoot ->
+        let gradedRun =
+            { BaselineFixtures.reportOf (FullSuite 1) with
+                RunId = Some BaselineFixtures.runId }
+
+        use started = new System.Threading.ManualResetEventSlim()
+        let other, finished = writeStderrAsAnotherClass started
+
+        let captured, exitCode =
+            captureVerdictTerminal (fun () ->
+                // The other class writes while this capture is open, and finishes before
+                // the capture closes: its lines are in flight for the whole window.
+                started.Set()
+                finished.Wait()
+                publishWithReceipts repoRoot [] gradedRun)
+
+        other.Join()
+        finished.Dispose()
+
+        test <@ exitCode = 2 @>
+        test <@ captured.Contains "no evidence receipt" @>
+        test <@ not (captured.Contains "another class") @>)
 
 [<Theory(Timeout = 20000)>]
 [<InlineData("no-receipt")>]
