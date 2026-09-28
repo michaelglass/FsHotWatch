@@ -1843,6 +1843,25 @@ module ``Schema version migration`` =
             cleanupDb path
 
     [<Fact>]
+    let ``an index built before inline members were indexed is rebuilt on open`` () =
+        // Schema 18 indexes carry no TestPrune.Inline attributes, and a file that is not
+        // re-indexed would never gain them. Reusing one would hide inline members from
+        // everything that reads the attribute index.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            setUserVersion path 18
+
+            let reopened = Database.create path
+            test <@ reopened.WasRecreated @>
+            test <@ reopened.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+            test <@ getUserVersion path = SchemaVersion @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
     let ``WasRecreated reports fresh create and schema-bump recreate, not a compatible reopen`` () =
         // Consumers with a sibling cache (e.g. FsHotWatch's FCS check cache) invalidate it
         // when WasRecreated is true — a recreated DB has lost the symbols the cache assumes

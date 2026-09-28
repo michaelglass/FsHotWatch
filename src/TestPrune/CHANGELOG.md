@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat!: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 18 -> 19).**
+  Inline members are indexed with the synthetic attribute `TestPrune.Inline`. Recorded
+  traces are re-recorded by the next full run; until then every test is selected.
+
 ## 13.2.3 - 2026-09-27
 
 - fix(core): apply composition-root fail-safe per seed so selection is monotone

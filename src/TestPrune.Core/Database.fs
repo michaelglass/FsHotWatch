@@ -347,6 +347,9 @@ let private openConnection (dbPath: string) =
 ///          every `raise`/match of it is an edge to it. Before, it was not indexed at all,
 ///          so a file not re-indexed would keep no edge to an exception it raises, and a
 ///          change to the exception's fields would silently not select its tests.
+/// v19    — no schema text change; a REBUILD. Inline members carry the TestPrune.Inline
+///          attribute. A file not re-indexed would keep none, so its inline members would
+///          look like ordinary ones to every reader of the attribute index.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -362,7 +365,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 18
+let SchemaVersion = 19
 
 /// The `dependencies.source_file` value that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

@@ -3311,3 +3311,52 @@ module B =
 
         // Both M.A.f and M.B.f must be present as tracked symbols.
         test <@ fSymbols.Length = 2 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Traceability attributes`` =
+
+    let private attributesOf (result: AnalysisResult) (name: string) =
+        result.Attributes
+        |> List.filter (fun a -> a.SymbolFullName = name)
+        |> List.map (fun a -> a.AttributeName)
+
+    [<Fact>]
+    let ``an inline function carries the TestPrune.Inline attribute`` () =
+        let result =
+            analyze
+                """
+module M
+let inline twice x = x + x
+let plain x = x + 1
+"""
+
+        test <@ attributesOf result "M.twice" = [ InlineAttributeName ] @>
+        test <@ attributesOf result "M.plain" |> List.isEmpty @>
+
+    [<Fact>]
+    let ``an inline member carries the TestPrune.Inline attribute`` () =
+        let result =
+            analyze
+                """
+module M
+type T() =
+    member inline _.Twice(x: int) = x + x
+"""
+
+        test
+            <@
+                result.Attributes
+                |> List.exists (fun a -> a.SymbolFullName.EndsWith "Twice" && a.AttributeName = InlineAttributeName)
+            @>
+
+    [<Fact>]
+    let ``a literal is already indexed as LiteralAttribute`` () =
+        let result =
+            analyze
+                """
+module M
+[<Literal>]
+let Answer = 42
+"""
+
+        test <@ attributesOf result "M.Answer" = [ "LiteralAttribute" ] @>

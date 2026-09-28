@@ -48,6 +48,13 @@ type SymbolParentLink = { Child: string; Parent: string }
 [<Literal>]
 let ExternSourceFile = "_extern"
 
+/// The synthetic attribute the analyser records on every `inline` member. `inline` is a
+/// keyword, not an attribute, so FCS reports no attribute for it; recording it here lets
+/// consumers of the attribute index (trace selection) see which members are inlined at
+/// their call sites and so leave no trace of their own.
+[<Literal>]
+let InlineAttributeName = "TestPrune.Inline"
+
 /// Prefix for synthetic symbols that bridge xUnit `[<Collection("name")>]` test classes
 /// to `[<CollectionDefinition("name")>]` declarations in potentially different files.
 /// The full name is `<prefix><name>`; used as both the `FromSymbol` of the test→synth
@@ -2530,6 +2537,13 @@ let private extractResults
                                         :: attributes
                                 with _ ->
                                     ()
+
+                            if mfv.InlineAnnotation = FSharpInlineAnnotation.AlwaysInline then
+                                attributes <-
+                                    { SymbolFullName = memberName mfv
+                                      AttributeName = InlineAttributeName
+                                      ArgsJson = "[]" }
+                                    :: attributes
                         with _ ->
                             ()
                     | _ -> ()
