@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <Compile Include="../FsHotWatch.Tests/TestHelpers.fs" Link="TestHelpers.fs" />
+    <Compile Include="ProcessScopeGuard.fs" />
+    <Compile Include="ProcessScopeGuardTests.fs" />
     <Compile Include="ProcessHelperTimeoutTests.fs" />
     <Compile Include="PluginActivityConcurrencyTests.fs" />
     <Compile Include="PluginTimeoutTests.fs" />
