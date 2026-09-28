@@ -1441,18 +1441,17 @@ let internal registerHandlerForOwner
                         | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
                         | _ -> None
 
-                    /// Whether the cache may serve or store this event's result. A
-                    /// `FileChecked` stamped with no generation, or with one other than
-                    /// the available model's, describes a model this host no longer
-                    /// publishes: its cache key names the file and its inputs, not the
-                    /// model, so a hit would replay findings for a file the new model may
-                    /// have dropped, after the rediscovery cleared them, without ever
-                    /// reaching the `Update` that refuses such a result.
+                    /// Whether the cache may serve or store this event's result: only a
+                    /// `FileChecked` stamped with the generation the host publishes now
+                    /// (none, on a host that publishes no model). One stamped otherwise
+                    /// describes a model this host no longer publishes: its cache key
+                    /// names the file and its inputs, not the model, so a hit would replay
+                    /// findings for a file the new model may have dropped, after the
+                    /// rediscovery cleared them, without ever reaching the `Update` that
+                    /// refuses such a result.
                     let cacheable (event: PluginEvent<'Msg>) =
                         match event with
-                        | FileChecked result ->
-                            result.ModelGeneration.IsSome
-                            && result.ModelGeneration = currentModelGeneration ()
+                        | FileChecked result -> result.ModelGeneration = currentModelGeneration ()
                         | _ -> true
 
                     /// The state a replayed event leaves. A replay skips `Update`, but a
