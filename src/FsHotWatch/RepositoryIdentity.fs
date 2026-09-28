@@ -37,6 +37,7 @@ module FsHotWatch.RepositoryIdentity
 open System
 open System.IO
 open System.Text
+open System.Runtime.InteropServices
 
 /// Why an identity could not be derived. Every case names the path it is about, so the
 /// message a user reads says which file to look at.
@@ -135,17 +136,102 @@ let internal storedNameIn (listNames: string -> seq<string>) (dir: string) (name
         |> Option.orElseWith (fun () -> scan theOneEquivalent)
         |> Option.orElse (Some name)
 
-let private storedName =
-    storedNameIn (fun dir -> Directory.EnumerateFileSystemEntries dir |> Seq.map Path.GetFileName)
+let private listDirectoryNames (dir: string) =
+    Directory.EnumerateFileSystemEntries dir |> Seq.map Path.GetFileName
+
+/// macOS `getattrlist(2)`, asked for one attribute: the entry's name as stored.
+module private StoredEntryName =
+    [<Struct; StructLayout(LayoutKind.Sequential)>]
+    type AttrList =
+        val mutable BitmapCount: uint16
+        val mutable Reserved: uint16
+        val mutable CommonAttr: uint32
+        val mutable VolAttr: uint32
+        val mutable DirAttr: uint32
+        val mutable FileAttr: uint32
+        val mutable ForkAttr: uint32
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int getattrlist(
+        [<MarshalAs(UnmanagedType.LPUTF8Str)>] string path,
+        AttrList& attrList,
+        byte[] attrBuf,
+        unativeint attrBufSize,
+        uint32 options
+    )
+
+    [<Literal>]
+    let private AttrBitMapCount = 5us
+
+    [<Literal>]
+    let private AttrCmnName = 0x00000001u
+
+    /// The entry itself, not what a symlink there points at.
+    [<Literal>]
+    let private FsoptNofollow = 0x00000001u
+
+    [<Literal>]
+    let private ENOENT = 2
+
+    [<Literal>]
+    let private ENOTDIR = 20
+
+    /// What the volume answered about `path`.
+    [<RequireQualifiedAccess>]
+    type Answer =
+        | Stored of string
+        | Absent
+        /// Any other failure: the caller learns the name another way.
+        | Unanswered
+
+    /// The name `path`'s last component is stored under. One call, whatever the size
+    /// of the directory holding it. The reply is a u32 length, then an
+    /// `attrreference_t` (i32 offset from itself, u32 length including the NUL).
+    let ask (path: string) : Answer =
+        let mutable request = AttrList()
+        request.BitmapCount <- AttrBitMapCount
+        request.CommonAttr <- AttrCmnName
+        // NAME_MAX UTF-8 bytes, the header and the NUL.
+        let reply = Array.zeroCreate<byte> 1100
+
+        if getattrlist (path, &request, reply, unativeint reply.Length, FsoptNofollow) = 0 then
+            let offset = BitConverter.ToInt32(reply, 4)
+            let length = int (BitConverter.ToUInt32(reply, 8))
+            Answer.Stored(Text.Encoding.UTF8.GetString(reply, 4 + offset, length - 1))
+        else
+            match Marshal.GetLastPInvokeError() with
+            | ENOENT
+            | ENOTDIR -> Answer.Absent
+            | _ -> Answer.Unanswered
+
+/// The name `name` is stored under inside `dir`, asked of the entry itself where the
+/// platform can answer that: macOS reports it (`getattrlist`), and on Linux the name
+/// as given IS the stored name. Elsewhere, or when macOS cannot answer, `listNames`
+/// lists `dir` — O(entries in `dir`), which under a crowded temp directory made one
+/// symlink-loop resolution take seconds.
+let internal storedNameVia (listNames: string -> seq<string>) (dir: string) (name: string) : string option =
+    if OperatingSystem.IsMacOS() then
+        match StoredEntryName.ask (Path.Combine(dir, name)) with
+        | StoredEntryName.Answer.Stored stored -> Some stored
+        | StoredEntryName.Answer.Absent -> None
+        | StoredEntryName.Answer.Unanswered -> storedNameIn listNames dir name
+    elif OperatingSystem.IsLinux() then
+        if entryExists (Path.Combine(dir, name)) then
+            Some name
+        else
+            None
+    else
+        storedNameIn listNames dir name
 
 let private parentOf (path: string) =
     match Path.GetDirectoryName path with
     | null -> path
     | parent -> parent
 
-/// Canonicalize `path` (relative paths are taken against the current directory). The
-/// entry must exist: a canonical spelling of something that is not there is a guess.
-let canonicalize (path: string) : Result<CanonicalPath, IdentityError> =
+/// `canonicalize`, listing directories through `listNames`.
+let internal canonicalizeWith (listNames: string -> seq<string>) (path: string) : Result<CanonicalPath, IdentityError> =
+    let storedName = storedNameVia listNames
+
     // Past the empty and NUL checks nothing here throws on .NET: `IsPathRooted` and
     // `Combine` validate nothing else.
     let absolute =
@@ -194,6 +280,11 @@ let canonicalize (path: string) : Result<CanonicalPath, IdentityError> =
         match walk root components 0 with
         | Error(IdentityError.PathNotFound _) -> Error(IdentityError.PathNotFound path)
         | other -> other)
+
+/// Canonicalize `path` (relative paths are taken against the current directory). The
+/// entry must exist: a canonical spelling of something that is not there is a guess.
+let canonicalize (path: string) : Result<CanonicalPath, IdentityError> =
+    canonicalizeWith listDirectoryNames path
 
 /// Which version control system owns a common store.
 [<RequireQualifiedAccess>]
