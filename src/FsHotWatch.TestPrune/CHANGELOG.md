@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
+  `inline` members, so a test that reaches code only through an inline function is
+  selected when that code changes. The index schema moves from 18 to 19: the first
+  open after upgrading recreates the index, and the first check runs the full suite.
+
 - fix: a test file's analysis now always reaches the impact index, so a change to what
   it tests can no longer read as "covered by nothing" and skip that test. A `FileChecked`
   task-cache entry was written while the file's analysis was only pending, before the

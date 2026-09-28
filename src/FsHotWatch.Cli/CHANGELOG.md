@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
+  `inline` members, so a test that reaches code only through an inline function is
+  selected when that code changes. The index schema moves from 18 to 19: the first
+  open after upgrading recreates the index, and the first check runs the full suite.
+
 - perf: the daemon runs Server GC with DATAS (`System.GC.Server`,
   `System.GC.DynamicAdaptationMode=1`), keeping `ConserveMemory=9`. On a ~2,200-file
   solution a cold scan spent ~25% of its time in GC instead of ~65%, finished in half
