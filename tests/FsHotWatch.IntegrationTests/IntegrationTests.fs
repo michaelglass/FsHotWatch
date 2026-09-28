@@ -272,7 +272,18 @@ type AllPluginsTests(warm: AllPluginsWarmup) =
         let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
 
         let lint = LintPlugin.create None None None None
-        let fantomas = createFormatCheck repoRoot None
+
+        // format-check's own process path is covered by FormatCheckPluginTests; here it
+        // only has to take part in the dispatch, so a stub stands in for the fantomas
+        // child and the timed window holds no process start.
+        let fantomasCalls = ref 0
+
+        let fantomasStub: FsHotWatch.Fantomas.FantomasTool.Runner =
+            fun _pin _args _workDir _timeout ->
+                Interlocked.Increment(&fantomasCalls.contents) |> ignore
+                Succeeded(ProcessOutput.Drained "")
+
+        let fantomas = createFormatCheckWith fantomasStub repoRoot None
         let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
 
         host.RegisterHandler(testPrune)
@@ -311,6 +322,7 @@ type AllPluginsTests(warm: AllPluginsWarmup) =
         let fmtResult = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ fmtResult.IsSome @>
         test <@ fmtResult.Value.Contains("count") @>
+        test <@ fantomasCalls.Value = 1 @>
 
         let testsResult = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ testsResult.IsSome @>
