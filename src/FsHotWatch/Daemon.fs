@@ -1028,6 +1028,17 @@ let private rediscoverAndClearRemoved
             let fingerprint = fingerprintFsprojFiles repoRoot excludePatterns
             observeProjectContent repoRoot excludePatterns contentTracker
 
+            // And every project the model being replaced held. The loader follows
+            // project references out of the discovery roots, and a project it reached
+            // that way is registered, so `restoredSinceDiscovery` asks about its assets
+            // file, but `observeProjectContent` never reads it. Unobserved, that file
+            // answers "changed" for good: each scan re-discovered, the re-discovery again
+            // recorded nothing, and the scan ran out of attempts with the bytes
+            // untouched. Recorded here, the same bytes re-discover at most once.
+            pipeline.GetRegisteredProjects()
+            |> List.choose projectAssetsFileFor
+            |> List.iter contentTracker.Observe
+
             let! completed =
                 discoverAndRegisterProjects
                     repoRoot

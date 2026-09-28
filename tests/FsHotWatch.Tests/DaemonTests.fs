@@ -1857,6 +1857,81 @@ let ``a project input a re-discovery already loaded is not re-evaluated again`` 
         test <@ not (tracker.ObservedAsCurrent project) @>
         test <@ not (tracker.ObservedAsCurrent(Path.Combine(root, "never-observed.fsproj"))) @>)
 
+// A project the loader registers from OUTSIDE the discovery roots — a project
+// reference under `packages/`, say — has an assets file no pre-load observation
+// read. Answering "changed" for it on every scan re-discovered the workspace
+// before each attempt, the rediscovery again recorded nothing for it, and the scan
+// gave up after its attempt limit with SCAN MODEL KEPT CHANGING: no check could
+// ever complete. Its bytes never changed. The same bytes must never re-discover
+// twice, and a model reloaded from them is the one the scan checks.
+[<Fact(Timeout = 60000)>]
+let ``a scan converges on a project outside the discovery roots whose restore never changes`` () =
+    withTempDir "daemon-scan-outside-roots" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Inside.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Inside.fs")
+        File.WriteAllText(sourcePath, "module Inside\nlet value = 1\n")
+
+        let outsideDir = Path.Combine(tmpDir, "packages", "analyzers", "Outside")
+        Directory.CreateDirectory(Path.Combine(outsideDir, "obj")) |> ignore
+        let outsidePath = Path.Combine(outsideDir, "Outside.fsproj")
+        File.WriteAllText(outsidePath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let outsideSource = Path.Combine(outsideDir, "Outside.fs")
+        File.WriteAllText(outsideSource, "module Outside\nlet value = 1\n")
+        File.WriteAllText(Path.Combine(outsideDir, "obj", "project.assets.json"), assetsJson "Xunit" "first")
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] }
+                  { minimalLoadedProject outsidePath with
+                      SourceFiles = [ outsideSource ] } ]
+            )
+
+        let checker = sharedChecker.Value
+
+        let optionsFor (project: string) (source: string) =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    source,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(source))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = project
+                SourceFiles = [| source |] }
+
+        let inside = optionsFor projectPath sourcePath
+        let outside = optionsFor outsidePath outsideSource
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects ->
+                    projects
+                    |> List.map (fun p -> if p.ProjectFileName = outsidePath then outside else inside))
+                (fun _ _ _ _ _ -> failwith "no watcher runs here")
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        test
+            <@
+                daemon.Host.WorkSnapshot.OperationFaults
+                |> List.forall (fun (name, _) -> name <> "scan")
+            @>
+
+        // The initial discovery, and at most one more to learn the outside project's
+        // bytes; never one per attempt, and never again for bytes already learned.
+        test <@ loader.Loads <= 2 @>)
+
 [<Fact(Timeout = 10000)>]
 let ``restore output is stale under a model when it appeared, changed or vanished since discovery read it`` () =
     withTempDir "daemon-restored-since-discovery" (fun root ->
