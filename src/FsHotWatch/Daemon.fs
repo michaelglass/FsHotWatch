@@ -2927,6 +2927,11 @@ type Daemon
                     Some "daemon start to serving"
                 )
 
+                // Marked before the daemon serves: a client that sees it serving may
+                // delete the root at once, and a root deleted before it is marked
+                // cannot be told from one this daemon never owned.
+                let rootPresent = VanishedRoot.mark repoRoot (Logging.warn "daemon")
+
                 // Started on this thread: a server creates its listening instances
                 // before its first wait, so the daemon accepts connections before this
                 // method goes on. Queued to the thread pool instead, a loaded box could
@@ -2987,7 +2992,7 @@ type Daemon
                 use _vanishedRoot =
                     VanishedRoot.watch
                         vanishedRootCheckEvery
-                        (VanishedRoot.mark repoRoot (Logging.warn "daemon"))
+                        rootPresent
                         (fun () -> cts.Cancel())
                         (Logging.warn "daemon")
 
