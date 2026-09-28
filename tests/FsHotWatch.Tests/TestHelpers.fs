@@ -523,6 +523,21 @@ let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
             | :? IOException -> false)
         timeoutMs
 
+/// Run `body`, standing the process in `dir` first when one is given, and put the process
+/// working directory back afterwards, whatever `body` did to it. The ONE place a test
+/// moves the process working directory (`WatcherTests` fails on any other): every child
+/// process started meanwhile, by any test, inherits it, and a directory deleted while the
+/// process stands in it breaks every relative path until the process moves. Callers
+/// belong to the LogGlobal collection, which runs alone.
+let withProcessWorkingDirectory (dir: string option) (body: unit -> 'a) : 'a =
+    let original = Directory.GetCurrentDirectory()
+
+    try
+        dir |> Option.iter Directory.SetCurrentDirectory
+        body ()
+    finally
+        Directory.SetCurrentDirectory original
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).

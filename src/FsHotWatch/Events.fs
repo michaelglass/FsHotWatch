@@ -2,7 +2,6 @@
 module FsHotWatch.Events
 
 open System.IO
-open System.Threading
 open FSharp.Compiler.CodeAnalysis
 
 /// The process working directory was deleted while the process still stood in it, so a
@@ -21,25 +20,35 @@ type WorkingDirectoryMissingException(lastKnownDirectory: string option, inner: 
     /// The working directory as last read successfully by this process, if it ever was.
     member _.LastKnownDirectory = lastKnownDirectory
 
-/// Resolves paths to absolute form without letting a vanished working directory hide.
-module private AbsolutePath =
-    let mutable private lastKnownWorkingDirectory: string option = None
+/// Resolves paths to absolute form against the working directory `getCwd` reads, without
+/// letting a vanished working directory hide: it remembers the last directory read, so
+/// the failure can name the directory that went away.
+type internal WorkingDirectoryReader(getCwd: unit -> string) =
+    [<VolatileField>]
+    let mutable lastKnown: string option = None
 
-    let private workingDirectory () =
+    member _.Read() =
         try
-            let dir = Directory.GetCurrentDirectory()
-            Volatile.Write(&lastKnownWorkingDirectory, Some dir)
+            let dir = getCwd ()
+            lastKnown <- Some dir
             dir
         with :? FileNotFoundException as ex ->
-            raise (WorkingDirectoryMissingException(Volatile.Read(&lastKnownWorkingDirectory), ex))
+            raise (WorkingDirectoryMissingException(lastKnown, ex))
 
     /// A fully qualified path is only normalized and never consults the working directory;
     /// a relative one resolves against it.
-    let resolve (path: string) =
+    member this.Resolve(path: string) =
         if Path.IsPathFullyQualified path then
             Path.GetFullPath path
         else
-            Path.GetFullPath(path, workingDirectory ())
+            Path.GetFullPath(path, this.Read())
+
+/// The process's own working directory.
+module private AbsolutePath =
+    let private processWorkingDirectory =
+        WorkingDirectoryReader(Directory.GetCurrentDirectory)
+
+    let resolve (path: string) = processWorkingDirectory.Resolve path
 
 /// Absolute file path — normalized at construction time via Path.GetFullPath.
 /// Raises WorkingDirectoryMissingException for a relative path once the working directory is gone.
