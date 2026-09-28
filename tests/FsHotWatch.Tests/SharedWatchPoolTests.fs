@@ -86,7 +86,14 @@ let ``two sessions under one anchor share exactly one native stream over the anc
         test <@ native.Streams.Length = 1 @>
         let stream = native.Streams.Head
         test <@ stream.Dirs = [ anchor ] @>
-        test <@ stream.Exclusions = [ Path.Combine(anchor, ".jj"); Path.Combine(anchor, ".git") ] @>
+        // The anchor's tooling dirs are dropped in the kernel. `.workspaces` is not:
+        // the sessions this stream routes to live there.
+        test
+            <@
+                stream.Exclusions = ([ ".jj"; ".git"; ".fshw"; "node_modules"; ".devenv"; ".direnv"; ".idea" ]
+                                     |> List.map (fun d -> Path.Combine(anchor, d)))
+            @>
+
         test <@ pool.Stats.NativeStreams = 1 @>
         test <@ pool.Stats.Subscribers = 2 @>)
 

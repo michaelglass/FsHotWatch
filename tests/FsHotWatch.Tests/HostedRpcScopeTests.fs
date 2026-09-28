@@ -177,7 +177,7 @@ let ``a command called on a daemon's own pipe spawns and logs in the daemon's sc
                           Level = Logging.LogLevel.Info }
                     |> ignore
 
-                    let daemon = Daemon.createWith nullChecker dir Daemon.DaemonOptions.defaults
+                    let daemon = Daemon.createWith nullChecker dir oneShotDaemonOptions
 
                     daemon.RegisterHandler(spawner dir pidFile outcome)
                     Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts)))
@@ -248,7 +248,7 @@ let ``a command called through a repository host spawns and logs in its session'
                         Daemon.createWithWatcherFactory
                             nullChecker
                             spec.Worktree.Root.Value
-                            { Daemon.DaemonOptions.defaults with
+                            { watchingDaemonOptions with
                                 Hosting = DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
                             inertWatcher
 
