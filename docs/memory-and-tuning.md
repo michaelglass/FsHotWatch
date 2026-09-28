@@ -29,6 +29,31 @@ To override it for a single daemon process, set `DOTNET_GCConserveMemory`
 (`0` = no conservation, `9` = most aggressive); the environment variable takes
 precedence over the baked-in default.
 
+The CLI also runs **Server GC with DATAS** (`System.GC.Server=true`,
+`System.GC.DynamicAdaptationMode=1`). DATAS sizes the number of GC heaps and the
+allocation budget to the live data, starting from one heap, so an idle daemon stays
+small and a cold scan does not spend most of its time paused. On a ~2,200-file
+solution it cut the scan's GC pause from ~65% to ~25% and the scan time by half or
+more ([ADR-038](adr-038-checks-are-bounded-snapshots-shared-gc-adapts.md)). Override it
+per process with `DOTNET_gcServer=0` or `DOTNET_GCDynamicAdaptationMode=0`.
+
+## Bounded checks
+
+The daemon type-checks at most as many files at once as the machine has processors,
+and the project snapshots a check needs are built once per project and shared by every
+check of it. A scan logs both, e.g.
+`Check concurrency peak 12 of 12; project snapshots built so far: 24`. A snapshot count
+near the number of files, rather than the number of projects, means sharing broke.
+
+## Heap valve
+
+The watchdog heartbeat in `logs/daemon.log` reports the GC pause, heap, collections and
+thread count every 30 s. If the heap grows past a quarter of the memory the GC may use
+and no gen2 collection has run for two minutes, the watchdog forces one compacting
+collection and logs `HEAP VALVE FIRED`, and `fshw status` warns `HEAP VALVE: fired N
+time(s)`. It fires at most once per two minutes. It is a backstop: if you see it, the
+daemon's allocation has regressed; please report it with the heartbeat lines around it.
+
 ## Idle exit
 
 A daemon can shut itself down after a configurable idle period to reclaim its
