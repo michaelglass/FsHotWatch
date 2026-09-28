@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- fix: a macOS daemon opens one FSEvents stream instead of 2 + one per FileCommand
+  pattern, and the kernel drops events from its tooling directories before they are
+  queued. fseventsd buffers every per-file event for every stream until the process
+  reads it. Each `FileSystemWatcher` the daemon opened for top-level solutions and for
+  each FileCommand pattern was another stream over the whole worktree, with no
+  exclusions and no coalescing: `node_modules/`, `.fshw/`, `.jj/`, and, for a daemon at a
+  repository's primary checkout, every build in `.workspaces/`. While a busy daemon read
+  slowly, fseventsd held all of them. The watcher is now one stream over the worktree
+  root with `.jj`, `.git`, `.fshw`, `node_modules`, `.devenv`, `.direnv`, `.idea` and
+  `.workspaces` excluded in the kernel (`Watcher.kernelExclusions`). It routes F# inputs
+  under `src/`/`tests/`, top-level solutions and FileCommand patterns as before. The
+  excluded names are directories the polling watcher already never walked. Measured
+  with a nested checkout's build plus `.fshw`, `node_modules` and `.jj` writes: the
+  checkout's daemon had events queued for 2,566 file events across 4 streams, and now
+  for 79 on 1. The primary checkout's daemon went from 2,487 to 0. The same two
+  relevant edits reached both. A repository host's shared stream also excludes those
+  directories, except `.workspaces`, where its sessions live.
+- A FileCommand pattern no longer matches files under the directories above (for
+  example a `CHANGELOG.md` inside a nested `.workspaces/` checkout), matching what the
+  polling watcher already did.
+- `MacFsEvents.createWithCoalesced` is removed. Use `MacFsEvents.createExcluding`.
+
 ## 0.10.0-alpha.58 - 2026-09-28
 
 - fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL

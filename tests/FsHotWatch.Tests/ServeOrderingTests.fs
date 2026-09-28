@@ -27,8 +27,7 @@ let ``a daemon accepts connections once RunWith has started serving, however bus
         let pipeName = FsHotWatch.Cli.Program.computePipeName dir
         use cts = new CancellationTokenSource()
 
-        use daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) dir Daemon.DaemonOptions.defaults
+        use daemon = Daemon.createWith (Unchecked.defaultof<_>) dir oneShotDaemonOptions
 
         let listening, run =
             withEveryPoolThreadBusy (fun () ->
