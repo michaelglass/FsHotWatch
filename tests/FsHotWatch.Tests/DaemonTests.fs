@@ -5138,6 +5138,54 @@ let ``a scan requested before the running scan read the tree is answered by it``
         daemon.ScanAll() |> Async.RunSynchronously
         test <@ daemon.GetScanGeneration() = 2L @>)
 
+/// A project with no `obj/project.assets.json` is restored before it is checked. The
+/// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
+/// `dotnet restore`.
+[<Fact(Timeout = 30000)>]
+let ``a daemon restores a project without assets through the injected restore`` () =
+    withTempDir "injected-restore" (fun tmpDir ->
+        let sourceDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(sourceDir) |> ignore
+        let projectPath = Path.Combine(sourceDir, "Unrestored.fsproj")
+        let sourcePath = Path.Combine(sourceDir, "Lib.fs")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(sourcePath, "module Lib\nlet x = 1\n")
+        let loader = SequencedWorkspaceLoader([ [ minimalLoadedProject projectPath ] ])
+        loader.Resume(0)
+        let restored = Collections.Concurrent.ConcurrentQueue<string * string>()
+
+        let fakeRestore (repoRoot: string) : DepsFreshness.RestoreRunner =
+            fun project ->
+                restored.Enqueue((repoRoot, project))
+                ProcessHelper.Failed(1, ProcessHelper.ProcessOutput.Drained "fake restore refused")
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                sharedChecker.Value
+                tmpDir
+                { oneShotDaemonOptions with
+                    Restore = fakeRestore }
+                loader
+                (fun projects ->
+                    projects
+                    |> List.map (fun project -> makeProjectOptions project.ProjectFileName [ sourcePath ] []))
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        test <@ List.ofSeq restored = [ (tmpDir, projectPath) ] @>
+        test <@ not (File.Exists(Path.Combine(sourceDir, "obj", "project.assets.json"))) @>
+
+        let gateErrors =
+            daemon.Host.GetErrorsByPlugin(DepsFreshness.pluginName)
+            |> Map.toList
+            |> List.collect snd
+
+        test
+            <@
+                gateErrors
+                |> List.exists (fun e -> (sprintf "%A" e).Contains "fake restore refused")
+            @>)
+
 [<Fact(Timeout = 5000)>]
 let ``the batch line names the changed files that caused it and counts the dependents`` () =
     let triggers = [ for i in 1..12 -> $"/repo/src/F%d{i}.fs" ]
