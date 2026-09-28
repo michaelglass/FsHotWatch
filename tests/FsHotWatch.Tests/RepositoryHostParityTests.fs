@@ -152,7 +152,7 @@ let private build
         Daemon.Daemon.createWithWatcherFactory
             checker
             root
-            { Daemon.Daemon.DaemonOptions.defaults with
+            { watchingDaemonOptions with
                 ExcludePatterns = config.Exclude
                 Hosting = hosting }
             inertWatcher

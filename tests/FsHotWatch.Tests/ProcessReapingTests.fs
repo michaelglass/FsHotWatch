@@ -72,7 +72,7 @@ let private withSpawningDaemon (preprocessor: ChildSpawningPreprocessor) (body: 
     withTempDir "reaping" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let checker = sharedChecker.Value
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith checker tmpDir oneShotDaemonOptions
 
         let sourceFile = Path.Combine(tmpDir, "src", "Lib.fs")
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")

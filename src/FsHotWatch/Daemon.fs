@@ -3835,7 +3835,7 @@ module Daemon =
             /// should monitor beyond the default F# source/project set.
             ExtraWatchPatterns: FilePattern list
             /// macOS FSEvents coalescing window in seconds, passed through to
-            /// `MacFsEvents.createWithCoalesced`. Resolved by the caller from the
+            /// `MacFsEvents.createExcluding`. Resolved by the caller from the
             /// `fsEventsLatencyMs` config key (`float ms / 1000.0`). Default 0.25
             /// (250 ms). Ignored on non-macOS. See `DaemonConfiguration`.
             FsEventsLatencySeconds: float

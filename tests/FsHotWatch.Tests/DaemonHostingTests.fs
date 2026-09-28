@@ -63,7 +63,7 @@ let ``a hosted session watches through the host's factory, never its own`` () =
             Daemon.createWithWatcherFactory
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { watchingDaemonOptions with
                     Hosting = DaemonHosting.hostedBy shared unaskedCheckers }
                 throwingFactory
 
@@ -122,21 +122,18 @@ let ``a hosted daemon is built on its partition's checker, a standalone one on i
             (Daemon.createUsing
                 own
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     Hosting = DaemonHosting.hostedBy hostWatcher shared })
             ignore
 
         test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
 
-        using (Daemon.createUsing own tmpDir Daemon.DaemonOptions.defaults) ignore
+        using (Daemon.createUsing own tmpDir oneShotDaemonOptions) ignore
         test <@ ownCalls.Value = 1 && sharedCalls.Value = 1 @>)
 
 [<Fact(Timeout = 5000)>]
 let ``hosting defaults to standalone`` () =
-    test
-        <@
-            (DaemonHosting.seams Daemon.DaemonOptions.defaults.Hosting).ResourceScope = DaemonHosting.ResourceScope.Process
-        @>
+    test <@ (DaemonHosting.seams oneShotDaemonOptions.Hosting).ResourceScope = DaemonHosting.ResourceScope.Process @>
 
 [<Fact(Timeout = 5000)>]
 let ``a resource scope round-trips its wire spelling, and anything else is the process`` () =
@@ -151,7 +148,7 @@ let ``RunWith hands serve the daemon's RPC configuration and stops when cancelle
     withTempDir "run-with" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         use cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let served = TaskCompletionSource<DaemonRpcConfig>()
 
         let serve (config: DaemonRpcConfig) (serveCts: CancellationTokenSource) =
@@ -198,7 +195,7 @@ let ``a daemon whose root is deleted stops on its own`` () =
             Daemon.createWithWatcherFactory
                 nullChecker
                 root
-                { Daemon.DaemonOptions.defaults with
+                { watchingDaemonOptions with
                     VanishedRootCheckEvery = TimeSpan.FromMilliseconds 100.0 }
                 hostWatcher
 
@@ -233,7 +230,7 @@ let ``RunWith waits for serve no longer than its bound`` () =
     withTempDir "run-with-bound" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         use cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         // A serve that ignores cancellation entirely.
         let serve (_: DaemonRpcConfig) (_: CancellationTokenSource) =

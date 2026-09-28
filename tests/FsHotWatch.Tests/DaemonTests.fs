@@ -273,7 +273,7 @@ let ``daemon starts and stops without error`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -308,11 +308,7 @@ let ``a Watching daemon constructs its watcher exactly once`` () =
         let calls = ref 0
 
         use _daemon =
-            Daemon.createWithWatcherFactory
-                nullChecker
-                tmpDir
-                Daemon.DaemonOptions.defaults
-                (countingWatcherFactory calls)
+            Daemon.createWithWatcherFactory nullChecker tmpDir watchingDaemonOptions (countingWatcherFactory calls)
 
         test <@ calls.Value = 1 @>)
 
@@ -330,7 +326,7 @@ let ``a OneShot daemon never touches the watcher factory`` () =
             Daemon.createWithWatcherFactory
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { watchingDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 throwingFactory
 
@@ -342,7 +338,7 @@ let ``daemon Dispose kills tracked child processes`` () =
     // Regression: `dotnet fshw stop` used to leak in-flight test runners.
     withTrackedSleep 60 (fun proc ->
         withTempDir "daemon-stop" (fun tmpDir ->
-            let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+            let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
             // Track manually against this daemon's registry — bypasses the AsyncLocal
             // path and directly verifies Dispose drains the registry it owns.
             daemon.ProcessRegistry.Track proc
@@ -357,7 +353,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         let preprocessor =
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
@@ -415,7 +411,7 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
         let genFile = Path.Combine(srcDir, "Gen.fs")
         let mutable receivedBatches: string list list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
 
         daemon.RegisterPreprocessor(
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
@@ -484,7 +480,7 @@ let ``daemon dispatches file change events to plugins`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
 
         let handler =
             { Name = PluginName.create "test-recorder"
@@ -534,7 +530,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
 
         let handler =
             { Name = PluginName.create "debounce-recorder"
@@ -606,7 +602,7 @@ let ``daemon handles ProjectChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
 
         let handler =
             { Name = PluginName.create "project-recorder"
@@ -666,7 +662,7 @@ let ``daemon handles SolutionChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
 
         let handler =
             { Name = PluginName.create "solution-recorder"
@@ -725,7 +721,7 @@ let ``daemon Run completes when cancellation is immediate`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         cts.Cancel()
         let task = Async.StartAsTask(daemon.Run(cts.Token))
 
@@ -741,7 +737,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.create tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.create tmpDir oneShotDaemonOptions
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -767,7 +763,7 @@ let ``Daemon.create hands the configured cache size factor to the checker`` () =
             Daemon.createUsing
                 make
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     CheckerCacheSizeFactor = 10 }
 
         test <@ daemon.RepoRoot = tmpDir @>
@@ -791,7 +787,7 @@ let ``Daemon.create logs the effective cache size factor as one key=value config
                 Daemon.createUsing
                     (fun _ -> nullChecker)
                     tmpDir
-                    { Daemon.DaemonOptions.defaults with
+                    { oneShotDaemonOptions with
                         CheckerCacheSizeFactor = 20 }
 
             ()
@@ -808,7 +804,7 @@ let ``Daemon.create logs the effective cache size factor as one key=value config
 
 [<Fact(Timeout = 15000)>]
 let ``DaemonOptions default cache size factor is the FCS default`` () =
-    test <@ Daemon.DaemonOptions.defaults.CheckerCacheSizeFactor = Daemon.DefaultCheckerCacheSizeFactor @>
+    test <@ oneShotDaemonOptions.CheckerCacheSizeFactor = Daemon.DefaultCheckerCacheSizeFactor @>
 
     // FCS's own default (`CacheSizes.Default`, used when no sizes are passed) is
     // hidden by its signature file, so read it reflectively: leaving the key out must
@@ -830,7 +826,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
         let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -857,7 +853,7 @@ let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanl
             Daemon.createWith
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     IdleExitMin = Some 30
                     PressureIdleFloorMin = Some 2 }
 
@@ -886,7 +882,7 @@ let ``daemon RunWithIpc idle-exit with pressure floor disabled arms the timer an
             Daemon.createWith
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     IdleExitMin = Some 30
                     PressureIdleFloorMin = None }
 
@@ -914,7 +910,7 @@ let ``daemon RunWithIpc without idle-exit threshold creates no timer and stops c
             Daemon.createWith
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     IdleExitMin = None }
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
@@ -934,7 +930,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
         let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         let handler =
             { Name = PluginName.create "ipc-test"
@@ -980,7 +976,7 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
         // (tempdir + "CoreFxPipe_" + name) must stay under the 104-char sun_path
         // limit, and the temp dir alone is already ~50 chars.
         let pipeName = $"fshw-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
 
@@ -1032,7 +1028,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith checker tmpDir oneShotDaemonOptions
 
         let sourceFile = Path.Combine(tmpDir, "src", "Lib.fs")
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
@@ -1071,7 +1067,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 let ``FormatScanStatus returns idle for ScanIdle`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         daemon.SetScanState(ScanIdle)
         test <@ daemon.FormatScanStatus() = "idle" @>)
 
@@ -1079,7 +1075,7 @@ let ``FormatScanStatus returns idle for ScanIdle`` () =
 let ``FormatScanStatus returns progress for Scanning`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         daemon.SetScanState(Scanning(10, 5, DateTime.UtcNow))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("5/10") @>
@@ -1249,7 +1245,7 @@ let ``blocked scan discovery remains owned and observable`` (readStatus: bool) =
             Daemon.createWithWorkspaceLoader
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun _ -> [])
@@ -1308,7 +1304,7 @@ let ``watcher change remains owned through debounce and blocked rediscovery`` (w
             Daemon.createWithWorkspaceLoaderAndWatcher
                 nullChecker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [])
                 watcher
@@ -1351,7 +1347,7 @@ let ``disposed daemon rejects scan admission instead of abandoning its receipt``
             Daemon.createWith
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
 
         (daemon :> IDisposable).Dispose()
@@ -1387,7 +1383,7 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
         loader.Resume(0)
 
         let options =
-            { Daemon.DaemonOptions.defaults with
+            { oneShotDaemonOptions with
                 RunMode = Daemon.RunMode.OneShot }
 
         use daemon =
@@ -1495,7 +1491,7 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
                 makeProjectOptions projectPath [] []
 
         let options =
-            { Daemon.DaemonOptions.defaults with
+            { oneShotDaemonOptions with
                 RunMode = Daemon.RunMode.OneShot }
 
         use daemon =
@@ -1749,7 +1745,7 @@ let ``a scan re-evaluates a project whose restore changed its package graph afte
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun projects -> projects |> List.map (fun _ -> fcsOptions))
@@ -1917,7 +1913,7 @@ let ``a scan converges on a project outside the discovery roots whose restore ne
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun projects ->
@@ -1998,7 +1994,7 @@ let ``a scan does not re-discover a project change a change batch already re-dis
             Daemon.createWithWorkspaceLoaderAndWatcher
                 nullChecker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [])
                 watcher
@@ -2056,7 +2052,7 @@ let ``a project change whose admission outlives the watcher's bound is still app
             Daemon.createWithWorkspaceLoaderAndWatcher
                 nullChecker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [])
                 watcher
@@ -2159,7 +2155,7 @@ let ``a cold daemon does not re-discover on a watcher echo of an unchanged proje
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun projects -> projects |> List.map (fun _ -> fcsOptions))
                 watcher
@@ -2275,7 +2271,7 @@ let ``a project change that replaces the model seals the new model even with no 
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun projects -> projects |> List.map (fun _ -> fcsOptions))
                 watcher
@@ -2411,7 +2407,7 @@ let private withAnalysisOnlyFixture (name: string) (body: AnalysisOnlyFixture ->
                 Daemon.createWithWorkspaceLoaderAndWatcher
                     checker
                     tmpDir
-                    Daemon.DaemonOptions.defaults
+                    watchingDaemonOptions
                     loader
                     mapOptions
                     watcher
@@ -2669,7 +2665,7 @@ let ``a scan whose model changes on every attempt fails by name instead of loopi
                 SourceFiles = [| sourcePath |] }
 
         let options =
-            { Daemon.DaemonOptions.defaults with
+            { oneShotDaemonOptions with
                 RunMode = Daemon.RunMode.OneShot }
 
         use daemon =
@@ -2814,7 +2810,7 @@ let ``superseded owned change retries its admitted source against the current mo
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 root
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [ options ])
                 watcher
@@ -2909,7 +2905,7 @@ let ``superseded owned change retries its admitted source against the current mo
 let ``GetScanState returns ScanComplete and generation advances after ScanAll`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let gen0 = daemon.GetScanGeneration()
         daemon.ScanAll() |> Async.RunSynchronously
         let gen1 = daemon.GetScanGeneration()
@@ -2929,7 +2925,7 @@ let ``GetScanState returns ScanComplete and generation advances after ScanAll`` 
 let ``RunOnce completes and returns plugin statuses`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         let handler =
             { Name = PluginName.create "runonce-test"
@@ -2952,7 +2948,7 @@ let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
         // Empty src/ directory — no .fsproj files anywhere.
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         let originalLevel = FsHotWatch.Logging.logLevel
         let sb = System.Text.StringBuilder()
@@ -3108,7 +3104,7 @@ let ``verdict admission waits while the real loader seam is between clear and co
             Daemon.createWithWorkspaceLoaderAndWatcher
                 nullChecker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [])
                 (fun _ _ _ _ _ ->
@@ -3199,7 +3195,7 @@ let ``a rediscovery in flight after a completed attempt reads as rediscovering, 
             Daemon.createWithWorkspaceLoaderAndWatcher
                 nullChecker
                 tmpDir
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [])
                 watcher
@@ -3260,7 +3256,7 @@ let ``verdict admission restarts when discovery begins after the host wait start
         // watcher from racing a third project-change discovery into that sequence;
         // watcher behaviour has its own integration coverage.
         let daemonOptions =
-            { Daemon.DaemonOptions.defaults with
+            { oneShotDaemonOptions with
                 FsEventsLatencySeconds = 60.0 }
 
         use daemon =
@@ -3340,7 +3336,7 @@ let ``a loaded project that maps or registers as zero is not a loader failure`` 
         loader.Resume()
 
         let daemon =
-            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> []) // Force the later mapping stage to produce nothing.
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir oneShotDaemonOptions loader (fun _ -> []) // Force the later mapping stage to produce nothing.
 
         daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
         let completed = daemon.DiscoverySnapshot() |> Option.get
@@ -3920,7 +3916,7 @@ let ``five scan generations emit five parseable, fittable measurement records`` 
     // `<repoRoot>/.fshw/scan-metrics.jsonl`, through the same parser.
     withTempDir "scan-metrics-daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        use daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        use daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
 
         for _ in 1..5 do
             daemon.ScanAll() |> Async.RunSynchronously
@@ -3959,7 +3955,7 @@ let ``a forced scan records daemon.scan and daemon.startup phases on the ledger`
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
         let pipeName = $"fshw-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
 
@@ -4228,7 +4224,7 @@ let ``a change batch whose model changes on every attempt fails by name and keep
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 root
-                Daemon.DaemonOptions.defaults
+                watchingDaemonOptions
                 loader
                 (fun _ -> [ options ])
                 watcher
@@ -4382,7 +4378,7 @@ let ``a scan seals its cohort exactly once, with files or without`` (hasSource: 
             Daemon.createWithWorkspaceLoaderAndWatcher
                 checker
                 root
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun _ -> [ options ])
@@ -4446,7 +4442,7 @@ let ``a scan blocked in discovery beyond the stall threshold is not a wedge`` ()
             Daemon.createWithWorkspaceLoader
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun _ -> [])
@@ -5093,7 +5089,7 @@ let ``a scan requested before the running scan read the tree is answered by it``
             Daemon.createWithWorkspaceLoader
                 nullChecker
                 tmpDir
-                { Daemon.DaemonOptions.defaults with
+                { oneShotDaemonOptions with
                     RunMode = Daemon.RunMode.OneShot }
                 loader
                 (fun projects ->

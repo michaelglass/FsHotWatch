@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the daemon watches `.fshw.json` by looking at its write time and size every
+  half second, instead of with a `FileSystemWatcher`. On macOS a `FileSystemWatcher`
+  is an FSEvents stream over its whole directory, recursive in the kernel whatever its
+  filter. For `.fshw.json` that directory is the repository root, so fseventsd queued
+  every file event in the repository for a watcher that wanted one file. A write,
+  creation or rename into place still stops the daemon with "config changed" or
+  "config invalid". A deletion still does not.
+
 - fix: `fshw host`, and a per-worktree daemon started by `fshw start`, no longer
   outlive a deleted worktree: each shuts down once the directory it was started in is
   removed. A repository host also no longer stays up indefinitely after an attach
