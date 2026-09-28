@@ -221,6 +221,15 @@ let ``census rejects a flag with no value or an unknown flag with the usage and 
     test <@ o.Stderr.Contains flag @>
     test <@ o.Stderr.Contains "test-prune-traces census [--db <path>] [--run <runId>] [--json]" @>
 
+[<Theory>]
+[<InlineData("--db")>]
+[<InlineData("--run")>]
+let ``census rejects a flag whose value is another flag with the usage and exit 2`` (flag: string) =
+    let o = census (dir ()) [ flag; "--json" ]
+    test <@ o.Exit = 2 @>
+    test <@ o.Stderr.StartsWith $"%s{flag} needs a value" @>
+    test <@ o.Stderr.Contains "test-prune-traces census [--db <path>] [--run <runId>] [--json]" @>
+
 [<Fact>]
 let ``an unknown verb prints the usage and exits 2`` () =
     let o = Program.run (dir ()) [ "nope" ]

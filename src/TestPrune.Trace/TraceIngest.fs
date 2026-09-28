@@ -128,11 +128,14 @@ let versionHashes (store: TestPrune.Ports.SymbolStore) : Map<string, string> =
     store.GetAllSymbols()
     |> List.groupBy (fun s -> s.FullName)
     |> List.map (fun (name, occ) ->
-        match occ with
-        | [ one ] -> name, one.ContentHash
-        | many ->
+        // tryExactlyOne rather than a `[ one ]` list pattern: groupBy never yields an
+        // empty group, and SDK 10.0.4xx compiles the list pattern to an emptiness check
+        // whose empty arm cannot be reached.
+        match List.tryExactlyOne occ with
+        | Some one -> name, one.ContentHash
+        | None ->
             name,
-            many
+            occ
             |> List.map (fun o -> o.SourceFile + "|" + o.ContentHash)
             |> List.sort
             |> String.concat "\n"
