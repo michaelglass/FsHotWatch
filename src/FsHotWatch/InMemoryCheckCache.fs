@@ -46,7 +46,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
     let lruNodes = Dictionary<string, LinkedListNode<string>>()
     /// (file, project) → the hashed key currently holding that slot's result.
     let slots = Dictionary<struct (string * string), string>()
-    let lockObj = obj ()
+    let lockObj = System.Threading.Lock()
 
     let mutable bound =
         match capacity with
@@ -99,7 +99,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
 
     let currentThrashWarning () =
         match capacity with
-        | CacheCapacity.Entries n -> thrashWarning n (lock lockObj (fun () -> admittedWorkingSet))
+        | CacheCapacity.Entries n -> thrashWarning n (Locking.locked lockObj (fun () -> admittedWorkingSet))
         | CacheCapacity.WorkingSet -> None
 
     /// A fixed-size cache admitting every project.
@@ -109,10 +109,10 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
     new(capacity: CacheCapacity) = InMemoryCheckCache(capacity, (fun _ -> true))
 
     /// Entries currently held.
-    member _.Count = lock lockObj (fun () -> store.Count)
+    member _.Count = Locking.locked lockObj (fun () -> store.Count)
 
     /// Current bound on entries.
-    member _.Capacity = lock lockObj (fun () -> bound)
+    member _.Capacity = Locking.locked lockObj (fun () -> bound)
 
     /// How the bound is set.
     member _.CapacityMode = capacity
@@ -129,7 +129,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                 |> List.filter (fun (project, _) -> admits project)
                 |> List.sumBy snd
 
-            lock lockObj (fun () ->
+            Locking.locked lockObj (fun () ->
                 admittedWorkingSet <- admitted
 
                 match capacity with
@@ -142,7 +142,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
         member _.TryGet(key: CacheKey) : CachedCheck option =
             let hashedKey = hashCacheKey key
 
-            lock lockObj (fun () ->
+            Locking.locked lockObj (fun () ->
                 match store.TryGetValue(hashedKey) with
                 | true, result ->
                     moveToEnd hashedKey
@@ -153,7 +153,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
             let hashedKey = hashCacheKey key
             let slot = slotOf entry
 
-            lock lockObj (fun () ->
+            Locking.locked lockObj (fun () ->
                 match slots.TryGetValue slot with
                 | true, previous when previous <> hashedKey -> remove previous
                 | _ -> ()
@@ -173,10 +173,10 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
 
         member _.Invalidate(key: CacheKey) : unit =
             let hashedKey = hashCacheKey key
-            lock lockObj (fun () -> remove hashedKey)
+            Locking.locked lockObj (fun () -> remove hashedKey)
 
         member _.Clear() : unit =
-            lock lockObj (fun () ->
+            Locking.locked lockObj (fun () ->
                 store.Clear()
                 lruList.Clear()
                 lruNodes.Clear()

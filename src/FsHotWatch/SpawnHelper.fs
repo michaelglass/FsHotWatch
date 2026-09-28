@@ -245,13 +245,13 @@ let private background (work: unit -> unit) : Task =
 let internal serve (input: Stream) (output: Stream) : unit =
     let reader = new BinaryReader(input)
     let writer = new BinaryWriter(output)
-    let gate = obj ()
+    let gate = Lock()
     let children = ConcurrentDictionary<int64, Process>()
 
     // A daemon that has gone away cannot be told anything; the end of `input` then
     // ends this loop.
     let send (event: Event) =
-        lock gate (fun () -> attempt (fun () -> writeEvent writer event) |> ignore)
+        Locking.locked gate (fun () -> attempt (fun () -> writeEvent writer event) |> ignore)
 
     let pump (id: int64) (stream: StreamReader) () =
         let buffer = Array.zeroCreate<char> 4096
@@ -350,7 +350,7 @@ type private Delivery =
 /// chunk before it has been delivered. Output that arrives before a reader attaches
 /// waits in the queue.
 type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, release: int64 -> unit) =
-    let gate = obj ()
+    let gate = Lock()
 
     let started =
         TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -373,7 +373,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
 
     let stopped (reachedEof: bool) =
         let both =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 streamsStopped <- streamsStopped + 1
                 bothReachedEof <- bothReachedEof && reachedEof
                 streamsStopped = 2)
@@ -384,7 +384,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     // A reader that throws loses that chunk only; the run goes on to the next one.
     let rec deliverAll (read: string -> unit) =
         let next =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 if pending.Count = 0 then
                     delivering <- false
                     None
@@ -417,7 +417,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
                 ignore))
 
     let enqueue (item: Delivery) =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             pending.Enqueue item
             claimRun ())
         |> startRun
@@ -432,7 +432,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     /// Record the pid. False when the caller had already given up waiting: nobody owns
     /// the child, and the connection kills and releases it.
     member internal _.OnStarted(pid: int) : bool =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             if not abandoned then
                 started.TrySetResult pid |> ignore
 
@@ -442,7 +442,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     /// in which case the caller keeps it. Decided under the same lock as `OnStarted`, so
     /// a child is either handed to the caller or abandoned, never neither.
     member internal _.Abandon() : bool =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             abandoned <- true
             started.Task.IsCompletedSuccessfully)
 
@@ -454,12 +454,12 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     member internal _.OnEof(reachedEof: bool) = enqueue (Delivery.Stopped reachedEof)
 
     member internal _.OnExited(code: int) =
-        lock gate (fun () -> exitCode <- Some code)
+        Locking.locked gate (fun () -> exitCode <- Some code)
         settled.Set()
 
     /// The helper is gone: the child can no longer be observed, killed or read.
     member internal _.OnLost(reason: string) =
-        lock gate (fun () -> lost <- Some reason)
+        Locking.locked gate (fun () -> lost <- Some reason)
         started.TrySetException(SpawnHelperException reason) |> ignore
         drained.TrySetResult false |> ignore
         settled.Set()
@@ -468,7 +468,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     /// completes once both streams have stopped and everything before the stops has
     /// been delivered: `true` only if both reached their end.
     member _.Attach(read: string -> unit) : Task<bool> =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             reader <- Some read
             claimRun ())
         |> startRun
@@ -478,18 +478,18 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
     /// Whether the child has exited. Raises `SpawnHelperException` once the helper is
     /// lost: whether the child is still running is then unknown.
     member _.HasExited: bool =
-        match lock gate (fun () -> exitCode, lost) with
+        match Locking.locked gate (fun () -> exitCode, lost) with
         | Some _, _ -> true
         | None, Some reason -> raise (SpawnHelperException reason)
         | None, None -> false
 
-    member _.ExitCode: int = lock gate (fun () -> exitCode.Value)
+    member _.ExitCode: int = Locking.locked gate (fun () -> exitCode.Value)
 
     /// Wait up to `milliseconds` for the child to exit; true once it has. Returns early
     /// when the helper is lost.
     member _.WaitForExit(milliseconds: int) : bool =
         settled.Wait milliseconds |> ignore
-        lock gate (fun () -> exitCode.IsSome)
+        Locking.locked gate (fun () -> exitCode.IsSome)
 
     /// Kill the child's tree through the helper, raising what `Process.Kill` would.
     member _.KillTree() =
@@ -501,7 +501,7 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
         member this.Pid = this.Pid
 
         member _.Observe() =
-            match lock gate (fun () -> exitCode, lost) with
+            match Locking.locked gate (fun () -> exitCode, lost) with
             | Some _, _ -> ProcessRegistry.ExitObservation.Exited
             | None, Some reason -> ProcessRegistry.ExitObservation.Unobservable(SpawnHelperException reason)
             | None, None -> ProcessRegistry.ExitObservation.Running
@@ -518,7 +518,7 @@ let internal StartBudget = TimeSpan.FromSeconds 30.0
 /// living as long as the helper answers, dispatches every event.
 type internal Connection(toHelper: Stream, fromHelper: Stream) =
     let writer = new BinaryWriter(toHelper)
-    let gate = obj ()
+    let gate = Lock()
     let children = ConcurrentDictionary<int64, HelperChild>()
 
     let kills =
@@ -531,7 +531,7 @@ type internal Connection(toHelper: Stream, fromHelper: Stream) =
     // this point is refused by `send`, which checks under the same lock.
     let markLost (reason: string) =
         let first =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 let first = lost.IsNone
 
                 if first then
@@ -551,7 +551,7 @@ type internal Connection(toHelper: Stream, fromHelper: Stream) =
         |> Seq.iter (fun reply -> reply.TrySetException(SpawnHelperException reason) |> ignore)
 
     let send (request: Request) =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             match lost with
             | Some reason -> raise (SpawnHelperException reason)
             | None ->
@@ -614,7 +614,7 @@ type internal Connection(toHelper: Stream, fromHelper: Stream) =
     do Thread(readLoop, IsBackground = true, Name = "fshw-spawn-helper-reader").Start()
 
     /// Whether the helper has stopped answering.
-    member _.IsLost: bool = lock gate (fun () -> lost.IsSome)
+    member _.IsLost: bool = Locking.locked gate (fun () -> lost.IsSome)
 
     /// Ask the helper to start a child and wait, up to `budget`, for its pid. Raises
     /// the start failure as the exception `Process.Start` would have raised.

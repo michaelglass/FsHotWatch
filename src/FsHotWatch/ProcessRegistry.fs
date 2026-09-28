@@ -175,7 +175,7 @@ let private terminateAll (children: IOwnedChild array) : Termination array =
 type Registry internal (parent: Registry option) =
     // One lock for admission, untrack and the shutdown snapshot, so "closed" and "the
     // set of children" are never observed out of step. OS calls stay outside it.
-    let gate = obj ()
+    let gate = Lock()
     // Keyed by the identity of the caller's handle: the `Process` for a child this
     // process started, the helper's child object for one a spawn helper started.
     let live = Dictionary<obj, IOwnedChild>(HashIdentity.Reference)
@@ -193,7 +193,7 @@ type Registry internal (parent: Registry option) =
 
     /// True once this registry, or any registry it forwards to, has shut down.
     member internal _.IsClosed: bool =
-        lock gate (fun () -> closed)
+        Locking.locked gate (fun () -> closed)
         || (parent |> Option.exists (fun owner -> owner.IsClosed))
 
     /// Admit `child` under `key`, or refuse it: a registry that has begun shutting down
@@ -209,7 +209,7 @@ type Registry internal (parent: Registry option) =
             false
         else
             let admitted =
-                lock gate (fun () ->
+                Locking.locked gate (fun () ->
                     if not closed then
                         live[key] <- child
 
@@ -229,7 +229,7 @@ type Registry internal (parent: Registry option) =
     member this.Track(p: Process) = this.Admit p |> ignore
 
     member internal _.UntrackChild(key: obj) =
-        lock gate (fun () -> live.Remove key) |> ignore
+        Locking.locked gate (fun () -> live.Remove key) |> ignore
         parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
     member this.Untrack(p: Process) = this.UntrackChild p
@@ -239,7 +239,7 @@ type Registry internal (parent: Registry option) =
     /// question, not this view's. Children a spawn helper started have no `Process`
     /// here: `LivePids` lists every owned child.
     member _.Snapshot() : Process list =
-        lock gate (fun () -> List.ofSeq live.Keys)
+        Locking.locked gate (fun () -> List.ofSeq live.Keys)
         |> List.choose (fun key ->
             match key with
             | :? Process as p ->
@@ -250,7 +250,7 @@ type Registry internal (parent: Registry option) =
 
     /// The pids of every observably live owned child, however it was started.
     member internal _.LivePids() : int list =
-        lock gate (fun () -> List.ofSeq live.Values)
+        Locking.locked gate (fun () -> List.ofSeq live.Values)
         |> List.choose (fun child ->
             match child.Observe() with
             | ExitObservation.Running -> Some child.Pid
@@ -276,14 +276,14 @@ type Registry internal (parent: Registry option) =
     /// owner's job, and `ProcessHelper` reports its own failed kills.
     member this.KillAll() : unit =
         let children =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 closed <- true
                 live |> Seq.map (fun kv -> kv.Key, kv.Value) |> Array.ofSeq)
 
         let outcomes = terminateAll (Array.map snd children)
 
         for (key, child), outcome in Array.zip children outcomes do
-            let stillOwned = lock gate (fun () -> live.Remove key)
+            let stillOwned = Locking.locked gate (fun () -> live.Remove key)
             parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
             match outcome with

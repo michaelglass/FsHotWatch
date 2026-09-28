@@ -194,7 +194,7 @@ type Watchdog
     ) =
     let gcPauseTotal = defaultArg gcPauseTotal GC.GetTotalPauseDuration
     let resources = defaultArg resources readResources
-    let gate = obj ()
+    let gate = Lock()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
     // once.
@@ -207,7 +207,7 @@ type Watchdog
     let snapshotOps () = inFlight.Values |> List.ofSeq
 
     let snapshot () =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             { InFlight = snapshotOps ()
               Threshold = threshold })
 
@@ -215,7 +215,7 @@ type Watchdog
         let n = now ()
         // Read + decide under the lock so Begin/End can't mutate mid-read.
         let toLog =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 let logs = List<string>()
 
                 for KeyValue(id, op) in inFlight do
@@ -253,7 +253,7 @@ type Watchdog
     /// Record `name` as in flight (capturing its start time) and return the token
     /// that retires it.
     member _.Begin(name: string) : OpToken =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             nextId <- nextId + 1L
             let id = nextId
             inFlight[id] <- { Name = name; StartedAt = now () }
@@ -263,7 +263,7 @@ type Watchdog
     /// an already-retired token is a no-op, so a double-`End` cannot erase a
     /// sibling op's record.
     member _.End(OpToken id) =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             inFlight.Remove id |> ignore
             overrunLogged.Remove id |> ignore)
 

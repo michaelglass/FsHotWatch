@@ -112,15 +112,7 @@ let private serveInto (serving: TaskCompletionSource<DaemonRpcConfig>) =
 type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
     let gate = Lock()
 
-    // Lock.Enter/Exit rather than F#'s `lock`, whose never-taken "lock not acquired"
-    // check is a branch no input reaches.
-    let locked (work: unit -> 'T) : 'T =
-        gate.Enter()
-
-        try
-            work ()
-        finally
-            gate.Exit()
+    let locked work = Locking.locked gate work
 
     let mutable sessions: Map<WorktreeId, WorktreeSession> = Map.empty
     let mutable starting: Set<WorktreeId> = Set.empty
