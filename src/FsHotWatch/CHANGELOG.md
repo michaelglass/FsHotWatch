@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: `RepositoryIdentity.canonicalize` no longer lists each directory on the way to
+  learn how a path component is spelled on disk. On macOS it asks the entry itself
+  (`getattrlist` for its stored name). On Linux the name as given is already the stored
+  name. The listing cost time in proportion to the number of entries in each parent
+  directory, and a symlink resolution repeated it for every hop. Under a temporary
+  directory of 100,000 entries, one symlink-loop resolution took 2 s, and every daemon
+  canonicalizes its root when its watcher starts. Other platforms still list the
+  directory.
+
 - fix: a macOS daemon opens one FSEvents stream instead of 2 + one per FileCommand
   pattern, and the kernel drops events from its tooling directories before they are
   queued. fseventsd buffers every per-file event for every stream until the process
