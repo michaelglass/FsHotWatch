@@ -3,6 +3,7 @@ module FsHotWatch.Cli.IpcParsing
 open System
 open System.Globalization
 open System.Text.Json
+open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
@@ -314,10 +315,10 @@ module TestScope =
         | NoTestsRun _
         | ScopeUnknown -> false
 
-    /// Decode a COUNTED scope label — `full`, `filtered` or `none` — as every scope
-    /// encoding spells it: the plugin's `test-scope` and `check-reach` replies (`scope`)
-    /// and the verdict file (`kind`). `None` for any other label, which each reader
-    /// decodes by its own vocabulary.
+    /// Decode a COUNTED scope label — `full`, `filtered` or `none` — read from the `kind`
+    /// field every scope encoding carries it under: the plugin's `test-scope` and
+    /// `check-reach` replies and the verdict file's `scope` object. `None` for any other
+    /// label, which each reader decodes by its own vocabulary.
     ///
     /// "No tests ran" has ONE meaning: no configured project executed. `none` is its only
     /// spelling, and its run count, when one is sent, is zero — the plugin sends `0 of N`,
@@ -410,11 +411,6 @@ let private tryParseUtcOr (fallback: DateTime) (s: string) : DateTime =
     | Some dt -> dt
     | None -> fallback
 
-let private tryGetStringProp (el: JsonElement) (name: string) : string option =
-    match el.TryGetProperty(name) with
-    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
-    | _ -> None
-
 /// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into the CLI-side
 /// `StatusView`. TOTAL — every way of not understanding the element is a
 /// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from the
@@ -432,19 +428,19 @@ let parseTaggedStatus (el: JsonElement) : StatusView =
     if el.ValueKind <> JsonValueKind.Object then
         unreadable $"expected a tagged object, got %A{el.ValueKind}"
     else
-        match tryGetStringProp el "tag" with
+        match Json.tryString el "tag" with
         | Some "idle" -> StatusView.Idle
         | Some "running" ->
-            match tryGetStringProp el "since" |> Option.bind tryParseUtcOpt with
+            match Json.tryString el "since" |> Option.bind tryParseUtcOpt with
             | Some since -> StatusView.Running since
             | None -> unreadable "a `running` status with no readable `since` — the wedge bound cannot be applied to it"
         | Some "completed" ->
-            match tryGetStringProp el "at" |> Option.bind tryParseUtcOpt with
+            match Json.tryString el "at" |> Option.bind tryParseUtcOpt with
             | Some at -> StatusView.Completed at
             | None -> unreadable "a `completed` status with no readable `at`"
         | Some "failed" ->
-            let err = tryGetStringProp el "error" |> Option.defaultValue ""
-            let at = tryGetStringProp el "at" |> Option.bind tryParseUtcOpt
+            let err = Json.tryString el "error" |> Option.defaultValue ""
+            let at = Json.tryString el "at" |> Option.bind tryParseUtcOpt
 
             match at with
             | Some dt -> StatusView.Failed(err, dt)
@@ -460,19 +456,19 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
     if el.ValueKind <> JsonValueKind.Object then
         None
     else
-        match tryGetStringProp el "tag" with
+        match Json.tryString el "tag" with
         | Some "completed" -> Some CompletedRun
         | Some "failed" ->
-            let err = tryGetStringProp el "error" |> Option.defaultValue ""
+            let err = Json.tryString el "error" |> Option.defaultValue ""
             Some(FailedRun err)
         | Some "timedOut" ->
-            let reason = tryGetStringProp el "reason" |> Option.defaultValue ""
+            let reason = Json.tryString el "reason" |> Option.defaultValue ""
             Some(TimedOut reason)
         // A `verifiedNothing` with no readable `detail` is still a verified-nothing run:
         // the CASE is the fact, the detail is its words. Defaulting the words, never
         // the case, keeps a mangled payload from reading as a pass.
         | Some "verifiedNothing" ->
-            let detail = tryGetStringProp el "detail" |> Option.defaultValue ""
+            let detail = Json.tryString el "detail" |> Option.defaultValue ""
             Some(VerifiedNothing detail)
         | _ -> None
 
@@ -519,7 +515,7 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
             let outcome = parseOutcomeField (r.GetProperty("outcome"))
 
-            let summary = tryGetStringProp r "summary"
+            let summary = Json.tryString r "summary"
 
             let tail =
                 match r.TryGetProperty("activityTail") with
@@ -539,9 +535,7 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
         match el.TryGetProperty("diagnostics") with
         | true, d when d.ValueKind = JsonValueKind.Object ->
             let readInt (name: string) =
-                match d.TryGetProperty(name) with
-                | true, v when v.ValueKind = JsonValueKind.Number -> v.GetInt32()
-                | _ -> 0
+                Json.tryInt d name |> Option.defaultValue 0
 
             { Errors = readInt "errors"
               Warnings = readInt "warnings" }
@@ -582,7 +576,7 @@ let parsePluginStatuses (json: string) : Result<Map<string, ParsedPluginStatus>,
 let heapValveOf (json: string) : string option =
     try
         use doc = JsonDocument.Parse(json)
-        tryGetStringProp doc.RootElement "heapValve"
+        Json.tryString doc.RootElement "heapValve"
     with :? JsonException ->
         None
 
@@ -614,7 +608,7 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
                                 |> Option.defaultValue DiagnosticSeverity.Error
                               Line = entry.GetProperty("line").GetInt32()
                               Column = entry.GetProperty("column").GetInt32()
-                              Detail = tryGetStringProp entry "detail" } ]
+                              Detail = Json.tryString entry "detail" } ]
 
                   prop.Name, entries ]
             |> Map.ofList
@@ -739,13 +733,7 @@ let parseTestRunReport (json: string) : TestRunReport =
         use doc = JsonDocument.Parse(json)
         let root = doc.RootElement
 
-        let readInt (name: string) =
-            match root.TryGetProperty(name) with
-            | true, v when v.ValueKind = JsonValueKind.Number ->
-                match v.TryGetInt32() with
-                | true, n -> Some n
-                | _ -> None
-            | _ -> None
+        let readInt = Json.tryInt root
 
         let noTestsReason () =
             let symbols =
@@ -776,8 +764,8 @@ let parseTestRunReport (json: string) : TestRunReport =
                     | _ -> [] }
 
             NoTestsReason.ofToken
-                (tryGetStringProp root "noTestsReason")
-                (tryGetStringProp root "noTestsDetail")
+                (Json.tryString root "noTestsReason")
+                (Json.tryString root "noTestsDetail")
                 symbols
                 (readInt "uncoveredSymbolCount" |> Option.defaultValue (List.length symbols))
                 unrunnable
@@ -786,7 +774,7 @@ let parseTestRunReport (json: string) : TestRunReport =
             ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"
 
         let scope =
-            match tryGetStringProp root "scope" with
+            match Json.tryString root "kind" with
             | Some "running" -> ScopeUnknown
             | Some label ->
                 TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") noTestsReason
@@ -794,7 +782,7 @@ let parseTestRunReport (json: string) : TestRunReport =
             | None -> unrecognized
 
         let runId =
-            tryGetStringProp root "runId"
+            Json.tryString root "runId"
             |> Option.bind (fun s ->
                 match Guid.TryParse s with
                 | true, g -> Some g
@@ -845,14 +833,14 @@ let parseTestRunReport (json: string) : TestRunReport =
             match root.TryGetProperty("baseline"), root.TryGetProperty("baselineAbsent") with
             | (true, b), _ when b.ValueKind = JsonValueKind.Object ->
                 let runId =
-                    tryGetStringProp b "runId"
+                    Json.tryString b "runId"
                     |> Option.bind (fun s ->
                         match Guid.TryParse s with
                         | true, g -> Some g
                         | _ -> None)
 
                 let earnedAt =
-                    tryGetStringProp b "earnedAt"
+                    Json.tryString b "earnedAt"
                     |> Option.bind (fun s ->
                         match DateTime.TryParse(s, null, Globalization.DateTimeStyles.RoundtripKind) with
                         | true, d -> Some d
@@ -963,13 +951,7 @@ let parseCheckReach (json: string) : CheckReachReading =
         use doc = JsonDocument.Parse(json)
         let root = doc.RootElement
 
-        let readInt (name: string) =
-            match root.TryGetProperty(name) with
-            | true, v when v.ValueKind = JsonValueKind.Number ->
-                match v.TryGetInt32() with
-                | true, n -> Some n
-                | _ -> None
-            | _ -> None
+        let readInt = Json.tryInt root
 
         let recorded =
             match root.TryGetProperty("recorded") with
@@ -978,12 +960,12 @@ let parseCheckReach (json: string) : CheckReachReading =
 
         if not recorded then
             ReachUnavailable(
-                tryGetStringProp root "reason"
+                Json.tryString root "reason"
                 |> Option.defaultValue $"the daemon's `%s{CheckReachCommand}` reply records no projection"
             )
         else
             let reason =
-                tryGetStringProp root "reason"
+                Json.tryString root "reason"
                 |> Option.defaultValue "the daemon did not say why the reach could not be decided"
 
             let failingSuites =
@@ -1003,10 +985,10 @@ let parseCheckReach (json: string) : CheckReachReading =
                 | true, value when value.ValueKind = JsonValueKind.Array ->
                     value.EnumerateArray()
                     |> Seq.choose (fun item ->
-                        match tryGetStringProp item "project", tryGetStringProp item "class" with
+                        match Json.tryString item "project", Json.tryString item "class" with
                         | Some project, Some className ->
                             let cause =
-                                match tryGetStringProp item "cause" with
+                                match Json.tryString item "cause" with
                                 | Some "project-not-selected" -> ProjectNotSelected
                                 | Some "class-not-in-filter" -> ClassNotInFilter
                                 | Some token -> UnknownMissCause token
@@ -1021,7 +1003,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                 | _ -> []
 
             let reach =
-                match tryGetStringProp root "reach" with
+                match Json.tryString root "reach" with
                 | Some "reached-a-failure" when not (List.isEmpty failingSuites) -> ReachedAFailure failingSuites
                 // A reach that claims a failure and names no suite is not a reading this
                 // build can record: the classification and the evidence for it travel
@@ -1036,7 +1018,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                 | None -> ReachUnknown "the daemon's reply does not say what the selection reached"
 
             let scope =
-                tryGetStringProp root "scope"
+                Json.tryString root "kind"
                 |> Option.bind (fun label ->
                     TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") (fun () ->
                         NoTestsReason.Unstated))
@@ -1045,7 +1027,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                 )
 
             let runId =
-                tryGetStringProp root "runId"
+                Json.tryString root "runId"
                 |> Option.bind (fun s ->
                     match Guid.TryParse s with
                     | true, g -> Some g
@@ -1059,13 +1041,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                         | true, flag when flag.ValueKind = JsonValueKind.True -> true
                         | _ -> false
 
-                    let nestedInt (name: string) =
-                        match value.TryGetProperty(name) with
-                        | true, number when number.ValueKind = JsonValueKind.Number ->
-                            match number.TryGetInt32() with
-                            | true, parsed -> Some parsed
-                            | _ -> None
-                        | _ -> None
+                    let nestedInt = Json.tryInt value
 
                     if measured then
                         match
@@ -1093,7 +1069,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                         | _ -> FailureRecallNotMeasurable "the daemon's measured recall fields are invalid"
                     else
                         FailureRecallNotMeasurable(
-                            tryGetStringProp value "reason"
+                            Json.tryString value "reason"
                             |> Option.defaultValue "the daemon did not produce a measurable recall denominator"
                         )
                 | _ -> FailureRecallNotMeasurable "the daemon predates measured failure recall"
@@ -1225,10 +1201,10 @@ module DaemonEvidence =
             | JsonValueKind.Object, (true, phases) when phases.ValueKind = JsonValueKind.Array ->
                 [ for phase in phases.EnumerateArray() do
                       if phase.ValueKind = JsonValueKind.Object then
-                          let scope = tryGetStringProp phase "scope"
+                          let scope = Json.tryString phase "scope"
 
                           let startedAt =
-                              match tryGetStringProp phase "startedAt" with
+                              match Json.tryString phase "startedAt" with
                               | Some s ->
                                   match
                                       DateTime.TryParse(
@@ -1256,7 +1232,7 @@ module DaemonEvidence =
                                   ({ Scope = scope
                                      StartedAt = startedAt
                                      Elapsed = TimeSpan.FromMilliseconds(float elapsedMs)
-                                     Detail = tryGetStringProp phase "detail" }
+                                     Detail = Json.tryString phase "detail" }
                                   : FsHotWatch.DaemonPhases.PhaseRecord)
                           | _ -> () ]
                 |> fun phases -> DaemonEvidence.Served(phases, parseReceipts root)

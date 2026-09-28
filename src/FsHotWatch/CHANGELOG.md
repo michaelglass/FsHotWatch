@@ -83,6 +83,15 @@
   grace. The daemon writes a token to `.fshw/root-witness` when it starts and checks
   for it every 30 seconds (`DaemonOptions.VanishedRootCheckEvery`); checking that the
   directory exists is not enough, because the daemon's own next write creates it again.
+- feat: `FsHotWatch.Json` holds the field accessors over a parsed `JsonElement`
+  (`tryProp`, `tryString`, `tryInt`, `tryInt64`), which answer "absent" for a
+  non-object element or a field of the wrong kind instead of throwing; the CLI's
+  readers share them. `ProcessHelper.tryPositiveSeconds` is the one reading of an
+  `FSHW_*_SEC` deadline override (the verdict, launch and wedge deadlines).
+  `PluginCtxHelpers.beginRun` reports `Running` and returns the run's clock, and
+  `PluginCtxHelpers.timedOutWith` reports a timed-out run in the order the recorded
+  `TimedOut` outcome requires; Lint, Analyzers, FormatCheck and FileCommand use them.
+
 
 ## 0.10.0-alpha.58 - 2026-09-28
 

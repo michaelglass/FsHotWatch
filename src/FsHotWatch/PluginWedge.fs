@@ -60,12 +60,7 @@ let resolveBound (wedgeOverrideSec: string option) (verdictOverrideSec: string o
     let fallback () =
         Ipc.resolveVerdictDeadline verdictOverrideSec + WedgeGrace
 
-    match wedgeOverrideSec with
-    | Some s ->
-        match Int32.TryParse(s: string) with
-        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
-        | _ -> fallback ()
-    | None -> fallback ()
+    ProcessHelper.tryPositiveSeconds wedgeOverrideSec |> Option.defaultWith fallback
 
 /// The ambient wedge bound from process env. Read by both the daemon monitor
 /// and the CLI status renderer, so the two surfaces agree on when "running"

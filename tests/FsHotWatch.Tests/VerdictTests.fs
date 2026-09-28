@@ -1839,12 +1839,12 @@ let ``every scope reader gives "no tests ran" one meaning, and never reads it as
         // encoding: the plugin's `test-scope` and `check-reach` replies, and the verdict
         // file.
         let testScope (label: string) (counts: string) =
-            (parseTestRunReport $$"""{"scope":"{{label}}"{{counts}}}""").Scope
+            (parseTestRunReport $$"""{"kind":"{{label}}"{{counts}}}""").Scope
 
         let checkReach (label: string) (counts: string) =
             match
                 parseCheckReach
-                    $$"""{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"no-failures-to-reach","scope":"{{label}}"{{counts}}}"""
+                    $$"""{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"no-failures-to-reach","kind":"{{label}}"{{counts}}}"""
             with
             | ReachRecorded r -> r.Scope
             | other -> failwith $"expected a recorded projection, got %A{other}"

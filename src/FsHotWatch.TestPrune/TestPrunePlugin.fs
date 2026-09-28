@@ -8122,7 +8122,7 @@ let internal createWithQueries
                         if ctx.IsRunning "tests" then
                             return
                                 JsonSerializer.Serialize(
-                                    {| scope = "running"
+                                    {| kind = "running"
                                        runId = runId
                                        runIds = runIds
                                        baseline = baseline
@@ -8138,7 +8138,7 @@ let internal createWithQueries
                             | ScopeFull n ->
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "full"
+                                        {| kind = "full"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8151,7 +8151,7 @@ let internal createWithQueries
                             | ScopeFiltered(ran, total) ->
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "filtered"
+                                        {| kind = "filtered"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8182,7 +8182,7 @@ let internal createWithQueries
 
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "none"
+                                        {| kind = "none"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8229,7 +8229,7 @@ let internal createWithQueries
                         | Some(runId, wouldHaveRun, reach, recall) ->
                             let projects = allConfigs |> List.map (fun c -> c.Project)
 
-                            let scope, ranProjects, totalProjects =
+                            let kind, ranProjects, totalProjects =
                                 match wouldHaveRun |> Option.map (scopeOfSelection projects) with
                                 | Some(ScopeFull n) -> box "full", n, n
                                 | Some(ScopeFiltered(ran, total)) -> box "filtered", ran, total
@@ -8283,7 +8283,7 @@ let internal createWithQueries
                                 JsonSerializer.Serialize(
                                     {| recorded = true
                                        runId = runId.ToString("N")
-                                       scope = scope
+                                       kind = kind
                                        ranProjects = ranProjects
                                        totalProjects = totalProjects
                                        reach = CheckReach.token reach

@@ -648,8 +648,6 @@ let internal createWithSeams
                         return state
                     else
 
-                        let mutable runStarted = DateTime.UtcNow
-
                         refreshAnalyzerSet ()
 
                         let checkResultsObj =
@@ -668,17 +666,16 @@ let internal createWithSeams
                         //
                         // Returns Some entries on success, None on timeout (terminal status
                         // already reported), or raises on crash (caught below as failure).
-                        let! analysisOutcome =
+                        let! elapsed, analysisOutcome =
                             async {
                                 do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
                                 do! executionFence.WaitAsync(cts.Token) |> Async.AwaitTask
-                                runStarted <- DateTime.UtcNow
-                                ctx.ReportStatus(Running(since = runStarted))
+                                let elapsed = PluginCtxHelpers.beginRun ctx
                                 ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
                                 let mutable releaseExecutionFenceOnExit = true
 
                                 try
-                                    return!
+                                    let! outcome =
                                         PluginCtxHelpers.withSubtask
                                             ctx
                                             fileStr
@@ -774,16 +771,7 @@ let internal createWithSeams
                                                             $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
 
                                                         ctx.EndSubtask PrimarySubtaskKey
-                                                        // Flip the recorded outcome to TimedOut; the
-                                                        // verdict carries the summary (one channel).
-                                                        ctx.CompleteWithTimeout reason
-
-                                                        ctx.ReportStatus(
-                                                            PluginStatus.failedNow
-                                                                $"analyzers timed out: {reason}"
-                                                                $"analyzers timed out: {reason}"
-                                                                after
-                                                        )
+                                                        PluginCtxHelpers.timedOutWith ctx "analyzers" reason after
 
                                                         return Choice1Of3()
                                                     | WorkCompleted results ->
@@ -823,6 +811,8 @@ let internal createWithSeams
 
                                                     return Choice3Of3(ex.ToString())
                                             })
+
+                                    return elapsed, outcome
                                 finally
                                     if releaseExecutionFenceOnExit then
                                         executionFence.Release() |> ignore
@@ -847,10 +837,7 @@ let internal createWithSeams
 
                             ctx.EndSubtask PrimarySubtaskKey
 
-                            PluginCtxHelpers.completeWith
-                                ctx
-                                (summarizeRun analyzed updated crashesByFile)
-                                (DateTime.UtcNow - runStarted)
+                            PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated crashesByFile) (elapsed ())
 
                             return
                                 { state with
@@ -864,7 +851,7 @@ let internal createWithSeams
                             PluginCtxHelpers.completeWith
                                 ctx
                                 $"analyzer crashed on {Path.GetFileName fileStr}"
-                                (DateTime.UtcNow - runStarted)
+                                (elapsed ())
 
                             return state
                 | Custom(AnalysisComplete(file, entries)) ->

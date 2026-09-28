@@ -373,12 +373,12 @@ let ``a Confirmation cannot scan its way out of an unearned scope`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a full-suite reply parses as FullSuite`` () =
-    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = FullSuite 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a filtered reply parses as ImpactFiltered`` () =
-    let json = """{"scope":"filtered","ranProjects":1,"totalProjects":3}"""
+    let json = """{"kind":"filtered","ranProjects":1,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = ImpactFiltered(1, 3) @>
 
 [<Theory(Timeout = 15000)>]
@@ -387,7 +387,7 @@ let ``parseTestRunReport: a filtered reply parses as ImpactFiltered`` () =
 [<InlineData(4, 3)>]
 let ``parseTestRunReport: a filtered reply with impossible project counts is unreadable`` ran total =
     let json =
-        $"""{{"scope":"filtered","ranProjects":%d{ran},"totalProjects":%d{total}}}"""
+        $"""{{"kind":"filtered","ranProjects":%d{ran},"totalProjects":%d{total}}}"""
 
     match (parseTestRunReport json).Scope with
     | ScopeUnreadable _ -> ()
@@ -395,13 +395,13 @@ let ``parseTestRunReport: a filtered reply with impossible project counts is unr
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a none reply parses as (NoTestsRun NoTestsReason.Unstated)`` () =
-    let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
+    let json = """{"kind":"none","ranProjects":0,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = (NoTestsRun NoTestsReason.Unstated) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: seeds and their true count come through`` () =
     let json =
-        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"],"seedCount":7}"""
+        """{"kind":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"],"seedCount":7}"""
 
     let r = parseTestRunReport json
     test <@ r.Seeds = [ "Lib.A.one"; "Lib.B.two" ] @>
@@ -415,7 +415,7 @@ let ``parseTestRunReport: the session's run ledger comes through, newest first``
     // cannot enumerate them from disk without inferring membership from mtimes — which
     // is the one thing the run-directory layout exists to make unnecessary.
     let json =
-        """{"scope":"full","ranProjects":3,"totalProjects":3,"runId":"7843b74bf301422bbaf3b482d1d97834","runIds":["7843b74bf301422bbaf3b482d1d97834","7713a463808e4b059c2a51eaf76d6a94"]}"""
+        """{"kind":"full","ranProjects":3,"totalProjects":3,"runId":"7843b74bf301422bbaf3b482d1d97834","runIds":["7843b74bf301422bbaf3b482d1d97834","7713a463808e4b059c2a51eaf76d6a94"]}"""
 
     let r = parseTestRunReport json
 
@@ -436,7 +436,7 @@ let ``parseTestRunReport: a reply with no run ledger still parses its scope`` ()
     // The run-ledger half of the same compatibility guarantee the seeds fields carry:
     // a daemon older than `runIds` sends none, and the check must degrade to naming the
     // one run it was told about — today's behaviour — never to a refusal.
-    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
     let r = parseTestRunReport json
 
     test <@ r.Scope = FullSuite 3 @>
@@ -449,7 +449,7 @@ let ``parseTestRunReport: a reply with no run ledger still parses its scope`` ()
 /// a refusal.
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a reply with no seeds still parses its scope`` () =
-    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
     let r = parseTestRunReport json
 
     test <@ r.Scope = FullSuite 3 @>
@@ -461,14 +461,14 @@ let ``parseTestRunReport: seedCount falls back to the seeds actually sent`` () =
     // An older/odd daemon may send seeds without the count. Reporting 0 while
     // holding two seeds would make the renderer compute a negative "and N more".
     let json =
-        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"]}"""
+        """{"kind":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"]}"""
 
     test <@ (parseTestRunReport json).SeedCount = 2 @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: non-string seed entries are dropped, not fatal`` () =
     let json =
-        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one",42,null,"Lib.B.two"]}"""
+        """{"kind":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one",42,null,"Lib.B.two"]}"""
 
     let r = parseTestRunReport json
     test <@ r.Seeds = [ "Lib.A.one"; "Lib.B.two" ] @>
@@ -483,8 +483,8 @@ let ``parseTestRunReport: every unusable reply fails CLOSED, never to FullSuite`
     // The safe direction, by construction: an error reply, a still-running run, an old
     // daemon that echoes nothing useful, and outright garbage all fail closed.
     test <@ not (TestScope.isFullSuite (parseTestRunReport """{"error":"unknown command 'test-scope'"}""").Scope) @>
-    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"scope":"running"}""").Scope) @>
-    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"scope":"full"}""").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"kind":"running"}""").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"kind":"full"}""").Scope) @>
     test <@ not (TestScope.isFullSuite (parseTestRunReport "not json at all").Scope) @>
     test <@ not (TestScope.isFullSuite (parseTestRunReport "").Scope) @>
 
@@ -496,22 +496,22 @@ let ``parseTestRunReport: "no scope reported" and "could not read the reply" are
 
     // "running" is an ANSWER — a run is in flight, so no scope is earned yet. It stays
     // the tolerated value; this is the positive control that it is still producible.
-    test <@ (parseTestRunReport """{"scope":"running","runId":null}""").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"kind":"running","runId":null}""").Scope = ScopeUnknown @>
 
     // Everything else is a FAILURE TO READ: garbage, an empty reply, a plugin error
     // object, a shape from another version.
     test <@ isUnreadable (parseTestRunReport "not json at all").Scope @>
     test <@ isUnreadable (parseTestRunReport "").Scope @>
     test <@ isUnreadable (parseTestRunReport """{"error":"the test-scope command threw"}""").Scope @>
-    test <@ isUnreadable (parseTestRunReport """{"scope":"full"}""").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"kind":"full"}""").Scope @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a full reply that did not actually cover every project is not FullSuite`` () =
     // A daemon claiming "full" while reporting 2 of 4 projects is not trusted: the
     // counts are the evidence, the label is not — and a daemon contradicting itself is
     // a reply we cannot read, not a reply that says "nothing to report".
-    test <@ isUnreadable (parseTestRunReport """{"scope":"full","ranProjects":2,"totalProjects":4}""").Scope @>
-    test <@ isUnreadable (parseTestRunReport """{"scope":"full","ranProjects":0,"totalProjects":0}""").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"kind":"full","ranProjects":2,"totalProjects":4}""").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"kind":"full","ranProjects":0,"totalProjects":0}""").Scope @>
 
 // ----------------------------------------------------------------------------
 // A MISSING READING IS NOT A GOOD READING, at the verdict.

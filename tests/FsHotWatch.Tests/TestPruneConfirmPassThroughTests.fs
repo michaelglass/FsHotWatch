@@ -656,7 +656,7 @@ let ``a confirm's run is observably the run check makes to earn its baseline`` (
     let keys = cold.Observed |> Map.keys |> List.ofSeq
 
     let missing =
-        [ for required in [ "events"; "statuses"; "file:.fshw/test-history.json"; "test-scope:scope" ] do
+        [ for required in [ "events"; "statuses"; "file:.fshw/test-history.json"; "test-scope:kind" ] do
               if not (List.contains required keys) then
                   required
           // The per-file analysis entries the cohort wrote while the run owned the status.
