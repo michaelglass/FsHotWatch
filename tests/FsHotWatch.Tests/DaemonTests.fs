@@ -1873,6 +1873,12 @@ let ``a scan converges on a project outside the discovery roots whose restore ne
         File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
         let sourcePath = Path.Combine(srcDir, "Inside.fs")
         File.WriteAllText(sourcePath, "module Inside\nlet value = 1\n")
+        // Restored too. A project with no assets file fails the deps-freshness gate,
+        // which then runs a real `dotnet restore`: an external process whose time is
+        // the machine's, not this test's, and which has nothing to do with convergence.
+        let insideAssets = Path.Combine(srcDir, "obj", "project.assets.json")
+        Directory.CreateDirectory(Path.GetDirectoryName insideAssets) |> ignore
+        File.WriteAllText(insideAssets, assetsJson "Xunit" "inside")
 
         let outsideDir = Path.Combine(tmpDir, "packages", "analyzers", "Outside")
         Directory.CreateDirectory(Path.Combine(outsideDir, "obj")) |> ignore
@@ -1930,7 +1936,9 @@ let ``a scan converges on a project outside the discovery roots whose restore ne
 
         // The initial discovery, and at most one more to learn the outside project's
         // bytes; never one per attempt, and never again for bytes already learned.
-        test <@ loader.Loads <= 2 @>)
+        test <@ loader.Loads <= 2 @>
+        // No restore ran: one would have rewritten these bytes.
+        test <@ File.ReadAllText insideAssets = assetsJson "Xunit" "inside" @>)
 
 [<Fact(Timeout = 10000)>]
 let ``restore output is stale under a model when it appeared, changed or vanished since discovery read it`` () =
@@ -3093,8 +3101,19 @@ let ``verdict admission waits while the real loader seam is between clear and co
 
         let loader = BlockingWorkspaceLoader([])
 
+        // No native watcher: its late event for the `.fsproj` just written would start
+        // a second discovery, and the completed outcome this test reads is hidden
+        // while one is in flight (see the next test).
         use daemon =
-            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> [])
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> [])
+                (fun _ _ _ _ _ ->
+                    { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                      Disposables = [] })
 
         let mutable discovery: System.Threading.Tasks.Task<unit> option = None
         let mutable verdictWait: System.Threading.Tasks.Task option = None
@@ -3128,11 +3147,20 @@ let ``verdict admission waits while the real loader seam is between clear and co
 
             test <@ not ordinaryWaitCalled @>
 
-            let completed = daemon.DiscoverySnapshot() |> Option.get
-            test <@ completed.Discovered = 1 @>
-            test <@ completed.Loaded = 0 @>
-            test <@ completed.OptionsMapped = 0 @>
-            test <@ completed.Registered = 0 @>
+            let expected: ProjectModel.Counts =
+                { Discovered = 1
+                  Loaded = 0
+                  OptionsMapped = 0
+                  Registered = 0 }
+
+            test
+                <@
+                    daemon.ProjectModel() = ProjectModel.Observation.Unavailable(
+                        { Generation = 1L; Counts = expected },
+                        ProjectModel.UnavailableReason.LoadingFailed
+                    )
+                @>
+
             test <@ daemon.TotalDiscoveryFailure().IsSome @>
         finally
             loader.Resume()
@@ -3145,6 +3173,67 @@ let ``verdict admission waits while the real loader seam is between clear and co
                     running.GetAwaiter().GetResult()
                 with _ ->
                     ())
+
+// A watcher change arriving after an attempt completed starts another one, and while
+// it is in flight there is no completed outcome to read: `DiscoverySnapshot` is
+// `None` by design. The model says so as a value, so a reader waits instead of
+// mistaking the absence for a missing or empty model.
+[<Fact(Timeout = 30000)>]
+let ``a rediscovery in flight after a completed attempt reads as rediscovering, not as no model`` () =
+    withTempDir "daemon-discovery-in-flight" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Blocked.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = SequencedWorkspaceLoader([ []; [] ])
+        let callback: (FileChangeKind -> unit) option ref = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> [])
+                watcher
+
+        let failedLoad (generation: int64) =
+            ProjectModel.Observation.Unavailable(
+                { Generation = generation
+                  Counts =
+                    { Discovered = 1
+                      Loaded = 0
+                      OptionsMapped = 0
+                      Registered = 0 } },
+                ProjectModel.UnavailableReason.LoadingFailed
+            )
+
+        try
+            loader.Resume(0)
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            test <@ daemon.ProjectModel() = failedLoad 1L @>
+
+            match callback.Value with
+            | Some deliver -> deliver (ProjectChanged [ projectPath ])
+            | None -> failwith "the daemon constructed no watcher"
+
+            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds 10.0) @>
+            test <@ daemon.DiscoverySnapshot() = None @>
+            test <@ daemon.ProjectModel() = ProjectModel.Observation.Rediscovering 2L @>
+
+            loader.Resume(1)
+            let failure = daemon.WaitForDiscoveryFailure().GetAwaiter().GetResult()
+            test <@ failure.IsSome @>
+            test <@ daemon.ProjectModel() = failedLoad 2L @>
+        finally
+            loader.Resume(1))
 
 [<Theory(Timeout = 30000)>]
 [<InlineData(false)>]
