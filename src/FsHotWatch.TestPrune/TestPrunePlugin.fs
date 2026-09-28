@@ -1944,6 +1944,15 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// The identity (`IndexedAnalysis.identity`) of each analysis in
+        /// `PendingAnalysis`, by repo-relative path. The flush that writes them records
+        /// them as what the index holds; a retirement drops them with the analyses.
+        PendingIdentities: Map<string, string>
+        /// Files whose analysis a project-model change retired before any flush wrote
+        /// it. The index lacks them, so it cannot vouch for what covers anything while
+        /// one remains: the run falls back as for `UnanalyzableFiles`, and no change
+        /// may read as covered by nothing. A file leaves when its analysis is flushed.
+        Unindexed: Set<string>
         /// Extensions whose last refresh THREW, by name, with the reason. Their stored
         /// edges describe an older tree, so while this is non-empty the run takes the same
         /// coarse fallback as `UnanalyzableFiles`, and the ledger carries an error for each.
@@ -2028,6 +2037,9 @@ type TestRunInputs =
         /// Files whose symbol analysis failed: while non-empty, the run widens to
         /// every test project.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Files whose analysis the index lacks (`TestPruneState.Unindexed`): while
+        /// non-empty, the run widens to every test project.
+        Unindexed: Set<string>
         /// Extensions whose last refresh failed: while non-empty, the run widens to every
         /// test project.
         FailedExtensions: Map<string, string>
@@ -2060,6 +2072,7 @@ module TestRunInputs =
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles
+          Unindexed = state.Unindexed
           FailedExtensions = state.FailedExtensions
           OutstandingFailures = state.OutstandingFailures
           Debt = state.Debt
@@ -5791,7 +5804,9 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         | None -> ()
 
     if allResults.Count > 0 then
-        db.RebuildProjects(Seq.toList allResults)
+        // Each file's analysis identity goes in the same transaction as its symbols, so
+        // the index never claims an analysis it rolled back (`IndexedAnalysis`).
+        db.RebuildProjects(Seq.toList allResults, fileKeys = Map.toList state.PendingIdentities)
 
     // Update in-memory snapshot so subsequent FileChecked reads see the
     // new symbols instead of hitting the DB mid-rebuild.
@@ -5933,6 +5948,9 @@ let internal cacheKeyFor
     // handler that rule lives in. The warm inner loop is untouched — once this session's
     // first run lands there IS coverage, and later BuildCompleteds replay as before.
     (sessionHasTestEvidence: unit -> bool)
+    // Whether a `FileChecked` hit may stand in for the analysis (`IndexedAnalysis`).
+    // Where it may not, the event is uncacheable and the file is analysed.
+    (mayReplay: FileCheckResult -> bool)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
     let optionalEntry (name: string) (value: string option) =
@@ -6067,6 +6085,14 @@ let internal cacheKeyFor
         // pending-queue/dependsOn entries can never split across the two.
         Some(outcomeKey ("failed:" + String.concat "|" (List.sort errs)))
     | FileChecked r ->
+        // `fcs-signature` captures cross-file FCS state so upstream symbol changes
+        // invalidate this file's cached symbol-diff.
+        //
+        // Note what this arm does NOT read: not the changed symbols, not the pending
+        // queue, not the dependsOn globs. It is a pure function of THIS file — which is
+        // why all three are thunks.
+        let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+
         // A per-file cache hit derives a terminal summary from the plugin's whole live
         // ledger and labels it `(cached)`. While a fresh test failure is outstanding,
         // that would falsely relabel the test run as replayed merely because a helper
@@ -6074,15 +6100,10 @@ let internal cacheKeyFor
         // a covering test run clears the red; healthy trees keep the hot path.
         if hasOutstandingFailures () then
             None
+        // The cache is derived from the index; see `IndexedAnalysis` for the rule.
+        elif not (mayReplay r) then
+            None
         else
-            // `fcs-signature` captures cross-file FCS state so upstream symbol changes
-            // invalidate this file's cached symbol-diff.
-            //
-            // Note what this arm does NOT read: not the changed symbols, not the pending
-            // queue, not the dependsOn globs. It is a pure function of THIS file — which is
-            // why all three are thunks.
-            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
-
             Some(
                 FsHotWatch.TaskCache.merkleCacheKey
                     [ "plugin-version", "test-prune-merkle-v2"
@@ -6253,6 +6274,28 @@ let internal createWithQueries
 
     let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
 
+    /// Whether a `FileChecked` cache hit may stand in for analysing `result`
+    /// (`IndexedAnalysis`): the index holds exactly this analysis, and no other is pending
+    /// for the file. Analysis-only daemons keep the plain key.
+    /// The analysis identity the index holds for a file (`IndexedAnalysis`). An index that
+    /// cannot be read holds nothing it can vouch for.
+    let indexedKey (relPath: string) : string option =
+        try
+            db.GetFileKey relPath
+        with ex ->
+            Logging.debug "test-prune" $"index identity unreadable for %s{relPath}: %s{ex.Message}"
+            None
+
+    let mayReplay (pending: Map<string, string>) (result: FileCheckResult) : bool =
+        testConfigs |> Option.forall List.isEmpty
+        || (let relPath =
+                Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
+
+            IndexedAnalysis.mayReplay
+                (indexedKey relPath)
+                (Map.tryFind relPath pending)
+                (IndexedAnalysis.identity result.Source (FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults)))
+
     // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
     // symbols not yet proven test-equivalent to the last green run. Loaded once
     // at construction so a restart with a non-empty queue re-flags those
@@ -6369,6 +6412,7 @@ let internal createWithQueries
         match testConfigs with
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
         | None -> Set.empty
+
 
     /// Why the full-suite baseline cannot vouch for what a filtered run
     /// over the configured projects would skip — `None` when it can. Analysis-only
@@ -6638,6 +6682,14 @@ let internal createWithQueries
         let indexedSomething = not state.PendingAnalysis.IsEmpty
         let flushedState = flushPendingAnalysis db state
 
+        // The flush wrote these analyses and their identities in one transaction.
+        let flushedState =
+            let written = state.PendingIdentities |> Map.keys |> Set.ofSeq
+
+            { flushedState with
+                PendingIdentities = Map.empty
+                Unindexed = Set.difference flushedState.Unindexed written }
+
         let flushedState =
             match extensions with
             | Some exts when
@@ -6895,11 +6947,19 @@ let internal createWithQueries
         let owedTo = lazyDebtScope covering
         let owing = symbols |> List.map (fun s -> s, owedTo s) |> Map.ofList
 
+        // An index missing a file's analysis (`Unindexed`) cannot prove that nothing covers
+        // a change: the missing file may hold the very test. Nothing is dropped as
+        // uncovered then; it stays owed until a covering run passes.
+        let indexIncomplete = not (Set.isEmpty flushedState.Unindexed)
+
         let uncovered =
-            owing
-            |> Map.filter (fun _ projects -> Set.isEmpty projects)
-            |> Map.keys
-            |> Set.ofSeq
+            if indexIncomplete then
+                Set.empty
+            else
+                owing
+                |> Map.filter (fun _ projects -> Set.isEmpty projects)
+                |> Map.keys
+                |> Set.ofSeq
 
         let unrunnable: UnrunnableCoverage =
             if Set.isEmpty uncovered || Set.isEmpty runnableProjects then
@@ -6998,10 +7058,22 @@ let internal createWithQueries
                   proof they are untested. Refusing the zero-test green; this run verifies them for real. \
                   Unknown: %s{describeAll unknownToIndex}"
 
+        if noCoveringTest && indexIncomplete then
+            Logging.warn
+                "test-prune"
+                $"%d{symbols.Length} queued symbol(s) resolved to no covering test, but the index lacks the analysis \
+                  of %d{Set.count flushedState.Unindexed} file(s) a project-model change retired \
+                  (%s{describeAll (Set.toList flushedState.Unindexed)}) — refusing the zero-test green"
+
         // Symbols still owed elsewhere are not uncovered: the zero-test green must not
         // retire the red they hold.
         let allChangesUncovered =
-            if noCoveringTest && List.isEmpty unknownToIndex && Map.isEmpty owedToUnrunnable then
+            if
+                noCoveringTest
+                && List.isEmpty unknownToIndex
+                && Map.isEmpty owedToUnrunnable
+                && not indexIncomplete
+            then
                 UncoveredChanges.AllUncovered(List.sort symbols, unrunnable)
             else
                 UncoveredChanges.No
@@ -7110,6 +7182,8 @@ let internal createWithQueries
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
+          PendingIdentities = Map.empty
+          Unindexed = Set.empty
           FailedExtensions = Map.empty
           // The previous session's reds, quarantined into the first run.
           OutstandingFailures = loadedFailures
@@ -7209,6 +7283,7 @@ let internal createWithQueries
                 |> Seq.map extensionLedgerKey
                 |> Set.ofSeq
                 |> Set.union unanalyzablePaths
+                |> Set.union inputs.Unindexed
 
             let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
 
@@ -7267,6 +7342,11 @@ let internal createWithQueries
                 Logging.warn
                     "test-prune"
                     $"%d{inputs.FailedExtensions.Count} test-impact extension(s) failed their last refresh (%s{names}) — their edges describe an older tree, so this run falls back to EVERY test project in full rather than trusting a selection made over them"
+
+            if not (Set.isEmpty inputs.Unindexed) then
+                Logging.warn
+                    "test-prune"
+                    $"%d{Set.count inputs.Unindexed} file(s) whose analysis a project-model change retired are not in the impact index yet (%s{describeAll (Set.toList inputs.Unindexed)}) — this run falls back to EVERY test project in full until they are analysed again"
 
             if not (Set.isEmpty unanalyzablePaths) then
                 let names = unanalyzablePaths |> Set.toList |> String.concat ", "
@@ -8682,8 +8762,20 @@ let internal createWithQueries
                             "test-prune"
                             $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis"
 
+                        // The retired analyses never reached the index. Where it does not
+                        // already hold the same analysis, it cannot vouch for the file
+                        // until the file is analysed and flushed again, and nothing this
+                        // process cached for it may replay.
+                        let retired =
+                            state.PendingIdentities
+                            |> Map.filter (fun relPath identity -> indexedKey relPath <> Some identity)
+                            |> Map.keys
+                            |> Set.ofSeq
+
                         { state with
                             PendingAnalysis = Map.empty
+                            PendingIdentities = Map.empty
+                            Unindexed = Set.union state.Unindexed retired
                             AnalysisModelGeneration = modelGeneration
                             AnalysisFiles = Map.empty
                             AnalysisReceipt = None
@@ -8774,7 +8866,8 @@ let internal createWithQueries
 
                             { state with
                                 AnalysisFiles = Map.remove result.File state.AnalysisFiles
-                                UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
+                                UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles
+                                Unindexed = Set.remove relPath state.Unindexed }
                         | FileFreshness.Present ->
                             Logging.error
                                 "test-prune"
@@ -9023,6 +9116,13 @@ let internal createWithQueries
                                     Debt = newDebt
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
+                                    PendingIdentities =
+                                        Map.add
+                                            relPath
+                                            (IndexedAnalysis.identity
+                                                result.Source
+                                                (FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults))
+                                            state.PendingIdentities
                                     AnalysisModelGeneration = modelGeneration
                                     AnalysisFiles =
                                         Map.add
@@ -9421,6 +9521,7 @@ let internal createWithQueries
                                                 not (
                                                     List.isEmpty launchInputs.OutstandingFailures
                                                     && Map.isEmpty launchInputs.UnanalyzableFiles
+                                                    && Set.isEmpty launchInputs.Unindexed
                                                     && Map.isEmpty launchInputs.FailedExtensions
                                                 )
                                               FoldedChanges =
@@ -10654,6 +10755,7 @@ let internal createWithQueries
                     fullSuiteScopeHash
                     hasOutstandingFailures
                     sessionHasTestEvidence
+                    (mayReplay state.PendingIdentities)
                     event
 
         Some cacheKey

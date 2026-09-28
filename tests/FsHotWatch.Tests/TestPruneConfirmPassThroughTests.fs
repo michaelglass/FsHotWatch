@@ -445,12 +445,19 @@ let private runScenario (root: string) (setup: Setup) =
         else
             // `check` over the unchanged tree: its scan re-checks every file and seals a
             // cohort, and its build completes.
-            let lookupsBefore = cache.Lookups.Length
+            let check () =
+                seal BootScan [ libFile; testsFile ]
+                host.EmitBuildCompleted(BuildSucceeded)
+                waitForQuiescent host 20000
+
             let coveringBefore = recorded.CoveringQueries
             let runsBefore = runCount ()
-            seal BootScan [ libFile; testsFile ]
-            host.EmitBuildCompleted(BuildSucceeded)
-            waitForQuiescent host 20000
+            // A replay stands in only for an analysis the index held when its entry was
+            // written (`IndexedAnalysis`), so the first check over the confirmed tree
+            // analyses each file once more and writes the entries every later one replays.
+            check ()
+            let lookupsBefore = cache.Lookups.Length
+            check ()
 
             let misses =
                 cache.Lookups
@@ -689,8 +696,8 @@ let ``a check after a confirm in the same daemon is served warm`` () =
 
     Assert.Equal(1, outcome.RunCount)
     let warm = outcome.Warm.Value
-    // Every file the check re-checks replays test-prune's cached analysis, including the
-    // ones the confirm analysed while its run owned the status.
+    // Every file a later check re-checks replays test-prune's cached analysis, including
+    // the ones the confirm analysed while its run owned the status.
     test <@ List.isEmpty warm.FileLookupMisses @>
     test <@ warm.CoveringQueries = 0 @>
     test <@ warm.Runs = 0 @>

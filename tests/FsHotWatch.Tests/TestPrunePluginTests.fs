@@ -4794,6 +4794,7 @@ let private outcomeCacheKey event =
         (fun () -> None)
         (fun () -> false)
         (fun () -> true)
+        (fun _ -> true)
         event
 
 [<Fact(Timeout = 15000)>]
@@ -5140,6 +5141,7 @@ let ``cacheKeyFor: a FileChecked key reads only the cheap outstanding-red guard`
             (fun () ->
                 sessionEvidenceCalls <- sessionEvidenceCalls + 1
                 true)
+            (fun _ -> true)
             (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
     // It still produces a key — it is a pure function of THIS file.
@@ -5171,9 +5173,45 @@ let ``a prior test failure makes FileChecked uncacheable so it cannot relabel th
             (fun () -> None)
             (fun () -> true)
             (fun () -> true)
+            (fun _ -> true)
             (FileChecked(fakeFileCheckResult "/src/TestHelper.fs"))
 
     test <@ key.IsNone @>
+
+[<Fact(Timeout = 10000)>]
+let ``a FileChecked hit is offered only where the index may vouch for the analysis`` () =
+    let result = fakeFileCheckResult "/src/A.fs"
+
+    let keyWhen may =
+        cacheKeyFor
+            (fun () -> "symbols")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> "structure")
+            (fun () -> None)
+            (fun () -> false)
+            (fun () -> true)
+            (fun r ->
+                test <@ r.File = result.File @>
+                may)
+            (FileChecked result)
+
+    // Refused, the event is uncacheable: no replay and no write, so the file is analysed.
+    test <@ (keyWhen false).IsNone @>
+    test <@ (keyWhen true).IsSome @>
+
+[<Fact(Timeout = 10000)>]
+let ``the index is the authority a FileChecked replay answers to`` () =
+    let mayReplay = FsHotWatch.TestPrune.IndexedAnalysis.mayReplay
+    // The index holds this analysis and nothing else is pending: a replay stands in for it.
+    test <@ mayReplay (Some "i1") None "i1" @>
+    test <@ mayReplay (Some "i1") (Some "i1") "i1" @>
+    // Never indexed (a retired or unflushed analysis), or indexed as something else.
+    test <@ not (mayReplay None None "i1") @>
+    test <@ not (mayReplay (Some "i0") None "i1") @>
+    // Indexed, but another analysis of the file is pending: replaying would let the
+    // pending one reach the index over this file's current source.
+    test <@ not (mayReplay (Some "i1") (Some "i2") "i1") @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
@@ -5197,6 +5235,7 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
             (fun () -> None)
             (fun () -> false)
             (fun () -> true)
+            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     let salted = keyWith (Some "migration-hash-v1")
@@ -5282,6 +5321,7 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
                 (fun () -> None)
                 (fun () -> false)
                 (fun () -> true)
+                (fun _ -> true)
                 (BuildCompleted BuildSucceeded))
                 .Value
 

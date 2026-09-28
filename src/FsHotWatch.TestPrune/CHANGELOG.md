@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: a test file's analysis now always reaches the impact index, so a change to what
+  it tests can no longer read as "covered by nothing" and skip that test. A `FileChecked`
+  task-cache entry was written while the file's analysis was only pending, before the
+  flush that indexes it. When a project-model change retired that analysis (or a
+  restart dropped it), every identical later check replayed the entry, skipped the
+  analysis, and the file stayed out of the index until its bytes changed. A real edit
+  to a symbol only that file tests then selected no test and took the zero-test
+  "nothing covers this change" green, most visibly when a build held its launch for the
+  diff. The index is now the one record of what has been analysed: each flush writes a
+  file's analysis identity (source and compiler signature) in the same transaction as
+  its symbols. The `FileChecked` cache is derived from it and may replay only an analysis
+  the index holds, with nothing newer pending for the file; anything else is analysed
+  again. The first check after a file is indexed therefore analyses it once more, and
+  later checks replay as before. Until a retired file is analysed again, runs fall back
+  to every test project, no change is dropped as uncovered, and the zero-test green is
+  refused. Both are logged.
+
 ## 0.13.0-alpha.58 - 2026-09-28
 
 - fix: a run whose `beforeRun` generates output now reliably binds its receipt to the tree
