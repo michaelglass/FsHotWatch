@@ -1798,6 +1798,13 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
 
     openAndDrain gate reg
 
+/// A check result captured on a host that publishes no model. The task cache serves a
+/// `FileChecked` only when its generation is the host's current one, so a caching test
+/// on an unmodelled host dispatches results stamped with none.
+let private unmodelledResult file =
+    { fakeFileCheckResult file with
+        ModelGeneration = None }
+
 [<Fact(Timeout = 20000)>]
 let ``cache path: a per-file result finished while a run is in flight is withheld but still cached`` () =
     // The whole-run case above must not cache a verdict nobody observed. A per-file entry
@@ -1854,7 +1861,7 @@ let ``cache path: a per-file result finished while a run is in flight is withhel
                 | _ -> false))
         10000
 
-    reg.Dispatch(DispatchFileChecked(fakeFileCheckResult file))
+    reg.Dispatch(DispatchFileChecked(unmodelledResult file))
     test <@ waitUntilTrue (fun () -> reg.CompletedDispatches() >= 2L) 10000 @>
 
     // Withheld: the run owns the status …
@@ -2629,7 +2636,7 @@ let ``a cached failure replays as Failed, whole-run and per file, without re-run
 
     for event in
         [ DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ])
-          DispatchFileChecked(fakeFileCheckResult "/tmp/repo/A.fs") ] do
+          DispatchFileChecked(unmodelledResult "/tmp/repo/A.fs") ] do
         dispatchAndSettle reg event
         let ranBefore = updates.Value
         let failedBefore = failures ()
@@ -2840,7 +2847,7 @@ let ``a per-file cache hit replays each cached outcome into the state, with no m
         registerHandler (servicesWithCache cache (fun (_, cmd) -> observe <- Some cmd)) handler
 
     for file, _ in cached do
-        dispatchAndAwait reg (DispatchFileChecked(fakeFileCheckResult file))
+        dispatchAndAwait reg (DispatchFileChecked(unmodelledResult file))
 
     let replays = observe.Value [||] |> Async.RunSynchronously
 
