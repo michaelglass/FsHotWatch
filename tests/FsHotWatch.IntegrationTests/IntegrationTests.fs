@@ -81,95 +81,6 @@ let private conventionRulesPath =
 
         Path.Combine(dir, "bin/Debug/net10.0")
 
-[<Fact(Timeout = 5000)>]
-let ``all plugins receive events when checking a file`` () =
-    let repoRoot = findRepoRoot ()
-
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-
-    let pipeline = CheckPipeline(checker)
-    let host = createModelHost checker repoRoot
-
-    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
-    let source = File.ReadAllText(sourceFile)
-
-    let sourceText = SourceText.ofString source
-
-    let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
-        |> fst
-
-    pipeline.RegisterProject("FsHotWatch", projOptions)
-
-    let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
-
-    let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
-
-    let lint = LintPlugin.create None None None None
-    let fantomas = createFormatCheck repoRoot None
-    let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
-
-    host.RegisterHandler(testPrune)
-    host.RegisterHandler(lint)
-    host.RegisterHandler(fantomas)
-    host.RegisterHandler(analyzers)
-
-    let result =
-        pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
-
-    match result with
-    | Some checkResult -> host.EmitFileChecked(stampFixture checkResult)
-    | None -> failwith "Failed to check file"
-
-    test <@ host.GetStatus("lint").IsSome @>
-    test <@ host.GetStatus("analyzers").IsSome @>
-    test <@ host.GetStatus("test-prune").IsSome @>
-
-    // format-check listens to OnFileChanged, not OnFileChecked.
-    host.EmitFileChanged(SourceChanged [ sourceFile ])
-    test <@ host.GetStatus("format-check").IsSome @>
-
-    waitForQuiescent host 30000
-
-    let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
-    test <@ diagResult.IsSome @>
-    test <@ diagResult.Value.Contains("analyzers") @>
-    test <@ diagResult.Value.Contains("files") @>
-    test <@ diagResult.Value.Contains("diagnostics") @>
-
-    let warnResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
-    test <@ warnResult.IsSome @>
-    test <@ warnResult.Value.Contains("files") @>
-    test <@ warnResult.Value.Contains("warnings") @>
-
-    let fmtResult = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
-    test <@ fmtResult.IsSome @>
-    test <@ fmtResult.Value.Contains("count") @>
-
-    let testsResult = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
-    test <@ testsResult.IsSome @>
-    test <@ testsResult.Value.StartsWith("[") @>
-
-    let filesResult = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-    test <@ filesResult.IsSome @>
-    test <@ filesResult.Value.StartsWith("[") @>
-
-    try
-        File.Delete(dbPath)
-    with _ ->
-        ()
-
-    try
-        File.Delete(dbPath + "-wal")
-    with _ ->
-        ()
-
-    try
-        File.Delete(dbPath + "-shm")
-    with _ ->
-        ()
-
 [<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
@@ -315,6 +226,114 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
         pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously
 
     result
+
+/// One-time FCS cold start for the all-plugins test: creating the shared checker,
+/// resolving script project options (framework references), and a first check that
+/// builds FCS's framework imports. A class fixture runs before the test's timeout
+/// starts, so the timed window covers only the per-file check and plugin dispatch.
+type AllPluginsWarmup() =
+    let repoRoot = findRepoRoot ()
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
+
+    let projectOptions =
+        checker.GetProjectOptionsFromScript(
+            sourceFile,
+            SourceText.ofString (File.ReadAllText(sourceFile)),
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+        |> fst
+
+    do withTempFsFile "module Warmup\n\nlet value = 1\n" (fun _dir filePath -> checkTempFile checker filePath |> ignore)
+
+    member _.RepoRoot = repoRoot
+    member _.Checker = checker
+    member _.SourceFile = sourceFile
+    member _.ProjectOptions = projectOptions
+
+type AllPluginsTests(warm: AllPluginsWarmup) =
+    interface IClassFixture<AllPluginsWarmup>
+
+    [<Fact(Timeout = 5000)>]
+    member _.``all plugins receive events when checking a file``() =
+        let repoRoot = warm.RepoRoot
+
+        let checker = warm.Checker
+
+        let pipeline = CheckPipeline(checker)
+        let host = createModelHost checker repoRoot
+
+        let sourceFile = warm.SourceFile
+        pipeline.RegisterProject("FsHotWatch", warm.ProjectOptions)
+
+        let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
+
+        let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
+
+        let lint = LintPlugin.create None None None None
+        let fantomas = createFormatCheck repoRoot None
+        let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
+
+        host.RegisterHandler(testPrune)
+        host.RegisterHandler(lint)
+        host.RegisterHandler(fantomas)
+        host.RegisterHandler(analyzers)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
+
+        match result with
+        | Some checkResult -> host.EmitFileChecked(stampFixture checkResult)
+        | None -> failwith "Failed to check file"
+
+        test <@ host.GetStatus("lint").IsSome @>
+        test <@ host.GetStatus("analyzers").IsSome @>
+        test <@ host.GetStatus("test-prune").IsSome @>
+
+        // format-check listens to OnFileChanged, not OnFileChecked.
+        host.EmitFileChanged(SourceChanged [ sourceFile ])
+        test <@ host.GetStatus("format-check").IsSome @>
+
+        waitForQuiescent host 30000
+
+        let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+        test <@ diagResult.IsSome @>
+        test <@ diagResult.Value.Contains("analyzers") @>
+        test <@ diagResult.Value.Contains("files") @>
+        test <@ diagResult.Value.Contains("diagnostics") @>
+
+        let warnResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+        test <@ warnResult.IsSome @>
+        test <@ warnResult.Value.Contains("files") @>
+        test <@ warnResult.Value.Contains("warnings") @>
+
+        let fmtResult = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
+        test <@ fmtResult.IsSome @>
+        test <@ fmtResult.Value.Contains("count") @>
+
+        let testsResult = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+        test <@ testsResult.IsSome @>
+        test <@ testsResult.Value.StartsWith("[") @>
+
+        let filesResult = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+        test <@ filesResult.IsSome @>
+        test <@ filesResult.Value.StartsWith("[") @>
+
+        try
+            File.Delete(dbPath)
+        with _ ->
+            ()
+
+        try
+            File.Delete(dbPath + "-wal")
+        with _ ->
+            ()
+
+        try
+            File.Delete(dbPath + "-shm")
+        with _ ->
+            ()
 
 // Process-wide gate: AnalyzersPlugin tests share an FSharpChecker and contend on
 // analyzer-DLL loading. Running >1 in parallel (or against a CPU busy with the rest of
