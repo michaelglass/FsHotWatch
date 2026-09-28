@@ -4823,6 +4823,31 @@ let ``the budget is spent before the second ask, so a failing re-check cannot sp
     raises<exn> <@ attempt () @>
     test <@ retries.Value = 1 @>
 
+/// Drive `recheckIfSelfIncompatible` over a phantom first answer with `decide` fixed.
+let private recheckDecidedAs (outcome: RecheckOutcome) =
+    recheckIfSelfIncompatible
+        Seq.ofList
+        isSelfIncompatibleTypeMessage
+        (fun () -> outcome)
+        (fun () -> async { return [ realMismatch ] })
+        [ phantom ]
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 15000)>]
+let ``an answer from a dropped generation is asked again in the current one`` () =
+    let answer, outcome =
+        recheckDecidedAs (RecheckOutcome.RecheckedInCurrentGeneration(3L, 4L))
+
+    test <@ answer = [ realMismatch ] @>
+    test <@ outcome = RecheckOutcome.RecheckedInCurrentGeneration(3L, 4L) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a decision that no re-check is needed keeps the first answer`` () =
+    let answer, outcome = recheckDecidedAs RecheckOutcome.NotNeeded
+
+    test <@ answer = [ phantom ] @>
+    test <@ outcome = RecheckOutcome.NotNeeded @>
+
 [<Fact(Timeout = 15000)>]
 let ``a trailing explanation that does not end in a quote is still a real diagnostic`` () =
     // The `{2}` slot is free text. It may end mid-sentence, which leaves the

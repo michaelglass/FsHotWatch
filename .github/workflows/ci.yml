@@ -19,6 +19,12 @@ jobs:
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-build.yml@main
     with:
       solution: FsHotWatch.slnx
+      # Same SDK feature band as global.json. Branch coverage counts depend on
+      # the F# compiler, which changes per band (10.0.3xx and 10.0.4xx instrument
+      # different branch totals for identical code). Keeping Linux CI and local
+      # macOS on one band keeps both platforms' floors measuring the same thing.
+      # Move both together, and re-measure the floors when you do.
+      dotnet-version: '10.0.4xx'
       fantomas-paths: 'src/ tests/'
       # Apply our coverage exclusions on CI too — without this, the reusable
       # workflow's `dotnet test --coverage` ignores coverage.settings and the
@@ -92,7 +98,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '10.0.x'
+          # Same band as global.json and the build job above.
+          dotnet-version: '10.0.4xx'
       - name: Cache NuGet packages
         uses: actions/cache@v5
         with:
@@ -107,5 +114,9 @@ jobs:
 
   lint-project:
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-lint-project.yml@main
+    with:
+      # global.json accepts only 10.0.4xx patches; the default '10.0.x' could
+      # install an SDK it refuses.
+      dotnet-version: '10.0.4xx'
     permissions:
       contents: read

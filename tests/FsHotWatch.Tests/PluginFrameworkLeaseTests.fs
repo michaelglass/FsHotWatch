@@ -235,6 +235,49 @@ let ``a running cooperative-safe run only a client wanted is cancelled and publi
     let after = probe.Statuses.ToArray() |> Array.skip before.Length
     test <@ after = [| Idle |] @>
 
+/// Run a cooperative-safe `Wanted` whose client stays, let `settle` end the run's
+/// wait, and answer the statuses reported from then on.
+let private settleSafeRun (settle: Probe -> unit) =
+    let probe = newProbe ()
+    let harness = register probe true
+    use client = new CancellationTokenSource()
+    harness.Want client.Token |> observe |> ignore
+    test <@ probe.RunStarted.Task.Wait bound @>
+    let before = probe.Statuses.Count
+
+    settle probe
+
+    test <@ idle harness @>
+    test <@ not probe.RunCancelled.Task.IsCompleted @>
+    probe.Statuses.ToArray() |> Array.skip before
+
+[<Fact(Timeout = 30000)>]
+let ``a cooperative-safe run that fails while still wanted reports its failure`` () =
+    let after =
+        settleSafeRun (fun probe ->
+            probe.RunRelease.TrySetException(InvalidOperationException "run exploded")
+            |> ignore)
+
+    test
+        <@
+            after
+            |> Array.exists (function
+                | Failed(error, _, _) -> error.Contains "run exploded"
+                | _ -> false)
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``a cooperative-safe run cancelled by its own work while still wanted reports a failure`` () =
+    let after = settleSafeRun (fun probe -> probe.RunRelease.TrySetCanceled() |> ignore)
+
+    test
+        <@
+            after
+            |> Array.exists (function
+                | Failed(error, _, _) -> error.Contains "cancel"
+                | _ -> false)
+        @>
+
 [<Fact(Timeout = 30000)>]
 let ``a running run not declared cooperative-safe runs to completion after its client goes`` () =
     let probe = newProbe ()

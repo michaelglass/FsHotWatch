@@ -470,7 +470,7 @@ let internal recheckIfSelfIncompatible
 /// without a compiler in the loop.
 type internal RecheckBudget(cooldown: TimeSpan) =
     let lastSpent = ConcurrentDictionary<string, DateTime * string>()
-    let gates = ConcurrentDictionary<string, obj>()
+    let gates = ConcurrentDictionary<string, System.Threading.Lock>()
 
     /// How a self-incompatible answer to `file`, computed in generation `startedIn` of
     /// `project`'s checker state, is asked again. Tried in this order:
@@ -496,7 +496,7 @@ type internal RecheckBudget(cooldown: TimeSpan) =
             currentGeneration: unit -> int64,
             drop: unit -> unit
         ) : RecheckOutcome =
-        lock (gates.GetOrAdd(project, fun _ -> obj ())) (fun () ->
+        Locking.locked (gates.GetOrAdd(project, fun _ -> System.Threading.Lock())) (fun () ->
             let current = currentGeneration ()
 
             match lastSpent.TryGetValue project with

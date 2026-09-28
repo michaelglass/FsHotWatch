@@ -610,25 +610,31 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
                 UseShellExecute = false
             )
 
-        use ps = Process.Start psi
-        recordSpawn false "ps" ps.Id
-        let text = ps.StandardOutput.ReadToEndAsync()
+        // try/finally rather than `use`: `use` guards Dispose with a null check that a
+        // started `ps`, whose output is redirected, can never take.
+        let ps = Process.Start psi
 
-        if
-            ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
-            && text.Wait ProcessTableBudget
-        then
-            if ps.ExitCode = 0 then
-                Ok(parseProcessTable text.Result)
+        try
+            recordSpawn false "ps" ps.Id
+            let text = ps.StandardOutput.ReadToEndAsync()
+
+            if
+                ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
+                && text.Wait ProcessTableBudget
+            then
+                if ps.ExitCode = 0 then
+                    Ok(parseProcessTable text.Result)
+                else
+                    Error $"`ps` exited %d{ps.ExitCode}"
             else
-                Error $"`ps` exited %d{ps.ExitCode}"
-        else
-            (try
-                ps.Kill true
-             with _ ->
-                 ())
+                (try
+                    ps.Kill true
+                 with _ ->
+                     ())
 
-            Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+                Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+        finally
+            ps.Dispose()
     with ex ->
         Error $"`ps` could not run: %s{ex.GetType().Name}: %s{ex.Message}"
 
@@ -1356,7 +1362,7 @@ let internal runProcessCore
     // a latch on the FIRST byte — the liveness signal the launch deadline keys off
     // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
     let output = StringBuilder()
-    let outputLock = obj ()
+    let outputLock = Lock()
     let mutable sawOutput = 0
     let mutable sinkBroken = false
 
@@ -1384,12 +1390,12 @@ let internal runProcessCore
     let onChunk (chunk: string) =
         Volatile.Write(&sawOutput, 1)
 
-        lock outputLock (fun () ->
+        Locking.locked outputLock (fun () ->
             output.Append(chunk) |> ignore
             emit chunk)
 
     let drainedOutput () =
-        lock outputLock (fun () -> output.ToString().Trim())
+        Locking.locked outputLock (fun () -> output.ToString().Trim())
 
     // A killed tree still needs draining so partial output is reported. The
     // kill's OUTCOME is returned, never discarded: a tree we could not tear down

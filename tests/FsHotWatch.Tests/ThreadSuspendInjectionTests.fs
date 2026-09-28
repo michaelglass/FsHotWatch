@@ -85,3 +85,28 @@ let ``os description names macOS with its build on macOS`` () =
         test <@ description.Contains "(" @>
     else
         test <@ description = Runtime.InteropServices.RuntimeInformation.OSDescription @>
+
+[<Fact>]
+let ``os description on macOS carries the build when there is one`` () =
+    let version = Environment.OSVersion.Version.ToString()
+
+    test <@ describeOs true (fun () -> Some "26A428") = $"macOS %s{version} (26A428)" @>
+    test <@ describeOs true (fun () -> None) = $"macOS %s{version}" @>
+
+[<Fact>]
+let ``os description off macOS is the runtime's, and asks for no build`` () =
+    let description =
+        describeOs false (fun () -> failwith "a build is only asked for on macOS")
+
+    test <@ description = Runtime.InteropServices.RuntimeInformation.OSDescription @>
+
+[<Fact>]
+let ``a build is read only from a sysctl that succeeded and wrote something`` () =
+    let answer = Text.Encoding.ASCII.GetBytes "26A428\000\000"
+
+    // unativeint constants cannot appear in a quotation.
+    let written, empty = 7un, 0un
+
+    test <@ decodeBuild 0 answer written = Some "26A428" @>
+    test <@ decodeBuild 0 answer empty = None @>
+    test <@ decodeBuild -1 answer written = None @>

@@ -98,7 +98,7 @@ type PhaseHandle internal (record: string option -> unit) =
 /// The ledger. Thread-safe: phases begin and end on plugin agents, the scan
 /// agent, the status agent and the RPC thread.
 type Ledger() =
-    let gate = obj ()
+    let gate = System.Threading.Lock()
     let completed = Queue<PhaseRecord>()
     let inFlight = Dictionary<int64, string * DateTime>()
     let mutable nextId = 0L
@@ -107,7 +107,7 @@ type Ledger() =
     // record can coalesce with. Rebuilding the queue for a merge is O(n) over at
     // most `MaxRetained` entries and happens once per plugin transition.
     let append (record: PhaseRecord) =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             let items = completed.ToArray()
 
             let mergeInto =
@@ -160,14 +160,14 @@ type Ledger() =
         let scope = Phase.scope phase
 
         let id =
-            lock gate (fun () ->
+            Locking.locked gate (fun () ->
                 nextId <- nextId + 1L
                 inFlight[nextId] <- (scope, startedAt)
                 nextId)
 
         new PhaseHandle(fun detail ->
             let endedAt = DateTime.UtcNow
-            lock gate (fun () -> inFlight.Remove id |> ignore)
+            Locking.locked gate (fun () -> inFlight.Remove id |> ignore)
 
             append
                 { Scope = scope
@@ -179,7 +179,7 @@ type Ledger() =
     /// clipped at `now` and marked as such — a reader taking the snapshot mid-phase
     /// must not see that time vanish.
     member _.Snapshot(now: DateTime) : PhaseRecord list =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             let running =
                 [ for KeyValue(_, (scope, startedAt)) in inFlight ->
                       { Scope = scope

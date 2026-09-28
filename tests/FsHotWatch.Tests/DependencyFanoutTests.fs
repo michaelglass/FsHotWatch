@@ -50,6 +50,22 @@ module ``directPackageVersions`` =
             Directory.Delete(dir, true)
 
     [<Fact>]
+    let ``a reference with no Include (an Update of a transitive package) is skipped`` () =
+        let dir, fsproj =
+            writeTempProject
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="CommandTree" Version="0.7.0" />
+    <PackageReference Update="FSharp.Core" Version="10.0.100" />
+  </ItemGroup>
+</Project>"""
+
+        try
+            test <@ directPackageVersions fsproj = [ ("CommandTree", "0.7.0") ] @>
+        finally
+            Directory.Delete(dir, true)
+
+    [<Fact>]
     let ``an unreadable / missing project yields an empty list`` () =
         test <@ List.isEmpty (directPackageVersions "/no/such/path/Nope.fsproj") @>
 

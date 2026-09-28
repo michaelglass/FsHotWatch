@@ -77,30 +77,37 @@ let startupLine (osDescription: string) (getEnv: string -> string) : string =
 [<DllImport("libc", EntryPoint = "sysctlbyname", SetLastError = true)>]
 extern int private sysctlByName(string name, byte[] value, unativeint& length, nativeint newValue, unativeint newLength)
 
+/// The build `sysctlbyname("kern.osversion", ...)` answered with `status`, `buffer` and
+/// `length`: `None` unless the call succeeded and wrote something.
+let internal decodeBuild (status: int) (buffer: byte[]) (length: unativeint) : string option =
+    if status = 0 && length > 0un then
+        Some(Text.Encoding.ASCII.GetString(buffer, 0, int length).TrimEnd(char 0))
+    else
+        None
+
 /// The macOS build identifier (`kern.osversion`, e.g. `26A428`), or `None`.
 let private macOSBuild () : string option =
     try
         let buffer = Array.zeroCreate<byte> 64
         let mutable length = unativeint buffer.Length
-
-        if
-            sysctlByName ("kern.osversion", buffer, &length, IntPtr.Zero, 0un) = 0
-            && length > 0un
-        then
-            Some(Text.Encoding.ASCII.GetString(buffer, 0, int length).TrimEnd(char 0))
-        else
-            None
+        let status = sysctlByName ("kern.osversion", buffer, &length, IntPtr.Zero, 0un)
+        decodeBuild status buffer length
     with _ ->
         None
 
-/// This machine's OS for the startup line: `macOS <version> (<build>)` on macOS, the
-/// runtime's description elsewhere.
-let osDescription () : string =
-    if OperatingSystem.IsMacOS() then
+/// `osDescription` with the platform and the build probe passed in. The probe runs
+/// only on macOS.
+let internal describeOs (isMacOS: bool) (build: unit -> string option) : string =
+    if isMacOS then
         let version = Environment.OSVersion.Version.ToString()
 
-        match macOSBuild () with
+        match build () with
         | Some build -> $"macOS %s{version} (%s{build})"
         | None -> $"macOS %s{version}"
     else
         RuntimeInformation.OSDescription
+
+/// This machine's OS for the startup line: `macOS <version> (<build>)` on macOS, the
+/// runtime's description elsewhere.
+let osDescription () : string =
+    describeOs (OperatingSystem.IsMacOS()) macOSBuild
