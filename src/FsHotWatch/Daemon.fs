@@ -3865,6 +3865,10 @@ module Daemon =
             /// `DaemonHosting.standalone ()` (the default) for a per-worktree daemon;
             /// `DaemonHosting.hostedBy` for a session of a repository host.
             Hosting: DaemonHosting.Hosting
+            /// Given the repository root, what restores one project whose
+            /// `obj/project.assets.json` is missing or stale before it is checked.
+            /// `DepsFreshness.productionRestoreRunner` (the default) runs `dotnet restore`.
+            Restore: string -> DepsFreshness.RestoreRunner
         }
 
     module DaemonOptions =
@@ -3880,7 +3884,8 @@ module Daemon =
               PressureIdleFloorMin = None
               VanishedRootCheckEvery = VanishedRoot.DefaultCheckEvery
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
-              Hosting = DaemonHosting.standalone () }
+              Hosting = DaemonHosting.standalone ()
+              Restore = DepsFreshness.productionRestoreRunner }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -4097,7 +4102,7 @@ module Daemon =
                         None
                     else
                         let tracker = DepsFreshness.RecoveryTracker()
-                        let runner = DepsFreshness.productionRestoreRunner repoRoot
+                        let runner = opts.Restore repoRoot
 
                         Some(fun projPath ->
                             DepsFreshness.evaluateProject
