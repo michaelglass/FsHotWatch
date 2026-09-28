@@ -132,3 +132,24 @@ The benchmarked solution (a large private downstream repository) had grown to
 774 checkable files (gate re-discovered by the first baseline rather than assumed). One harness artifact (a multiline
 zero from `grep -c … || echo 0` corrupting two CSV rows) was fixed mid-campaign
 and the affected rows reconstructed from logs.
+
+## Amendment (2026-09-28): what keeps an elapsed window from firing
+
+The idle window measures time since the last host activity, but an elapsed window is
+not on its own a reason to quit. Each tick first collects the inhibitors
+(`IdleExit.idleInhibitors`), and any one of them defers the exit and is logged by name:
+
+- **Owned work.** The host's one publication of owned work (ADR-028) holds an event,
+  command, exclusive run or host operation that has not committed.
+- **A client observation lease.** Every in-flight verdict wait takes a lease on the same
+  publication and releases it on every exit: verdict, timeout and shutdown cancellation
+  alike. The count is read from the publication that answers whether the host owns work,
+  so "a client is waiting" and "nothing is owned" cannot disagree. A watcher is not work:
+  the lease inhibits idle exit and never makes the host busy, so it cannot hold its own
+  wait open. It replaces a counter the daemon kept beside the RPC (ADR-030, amendment).
+- **A scan in flight**, by kind.
+
+Without the lease, a client blocked on a verdict while every plugin was momentarily
+quiet could see the daemon exit under it and receive a connection error instead of an
+answer. The thresholds, the AUTO semantics and the default-checkout exemption above are
+unchanged.

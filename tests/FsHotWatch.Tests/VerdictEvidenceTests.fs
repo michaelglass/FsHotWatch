@@ -431,6 +431,124 @@ let ``a host with no plugins still waits for the work it owns, and names it`` ()
         FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 5.0) CancellationToken.None
         |> fun waiting -> waiting.GetAwaiter().GetResult())
 
+// ---------------------------------------------------------------------------
+// A failure is committed, not resting: it neither ends the wait early nor is lost.
+// ---------------------------------------------------------------------------
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a committed failure waits for other owned cleanup and retains its identity at the deadline``
+    (reachDeadline: bool)
+    =
+    withTempDir "verdict-wait-owned-failure" (fun repoRoot ->
+        let host = pluginFreeHost repoRoot
+
+        let entered =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        let release =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        let failure = InvalidOperationException("failed-owner original failure")
+
+        let handler name update : PluginHandler<unit, unit> =
+            { Name = PluginName.create name
+              Init = ()
+              Update = update
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.RegisterHandler(
+            handler "held-owner" (fun _ state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "hold.fs" ]) ->
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
+                    | _ -> ()
+
+                    return state
+                })
+        )
+
+        host.RegisterHandler(
+            handler "failed-owner" (fun _ state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "fail.fs" ]) -> return raise failure
+                    | _ -> return state
+                })
+        )
+
+        let failedOwner () =
+            host.FailedWork() |> List.filter (fun (name, _) -> name = "failed-owner")
+
+        try
+            host.EmitFileChanged(SourceChanged [ "hold.fs" ])
+            entered.Task.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+            host.EmitFileChanged(SourceChanged [ "fail.fs" ])
+            Assert.True(SpinWait.SpinUntil((fun () -> not (failedOwner ()).IsEmpty), TimeSpan.FromSeconds 10.0))
+
+            // Positive control: the failure is committed while the sibling still owns work.
+            Assert.True(host.AnyPluginBusy())
+            test <@ host.BusyPluginNames() |> List.contains "held-owner" @>
+            test <@ not (host.BusyPluginNames() |> List.contains "failed-owner") @>
+            test <@ host.FaultedPlugins() |> List.isEmpty @>
+
+            let timeout =
+                if reachDeadline then
+                    TimeSpan.FromMilliseconds 300.0
+                else
+                    TimeSpan.FromSeconds 10.0
+
+            let waiting =
+                FsHotWatch.Daemon.waitForAllTerminal host timeout CancellationToken.None
+
+            if reachDeadline then
+                let timedOut =
+                    Assert.Throws<TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
+
+                // The deadline names the work that held it, not the failure that did not.
+                Assert.Contains("held-owner", timedOut.Message)
+                Assert.True(host.AnyPluginBusy())
+            else
+                Assert.False(
+                    waiting.Wait(TimeSpan.FromMilliseconds 300.0),
+                    "a failed sibling cannot retire still-owned cleanup"
+                )
+
+            // At the deadline, or while still waiting, the failure keeps its owner and
+            // the exact exception its fold raised.
+            let name, recorded = Assert.Single(failedOwner ())
+            Assert.Equal("failed-owner", name)
+            Assert.Same(failure, recorded)
+
+            release.TrySetResult(()) |> ignore
+
+            let settled =
+                if reachDeadline then
+                    FsHotWatch.Daemon.waitForAllTerminal host (TimeSpan.FromSeconds 10.0) CancellationToken.None
+                else
+                    waiting
+
+            settled.GetAwaiter().GetResult()
+            Assert.False(host.AnyPluginBusy())
+
+            // Rest does not launder the failure: it is still there, with the same identity.
+            let name, recorded = Assert.Single(failedOwner ())
+            Assert.Equal("failed-owner", name)
+            Assert.Same(failure, recorded)
+        finally
+            release.TrySetResult(()) |> ignore)
+
 [<Fact(Timeout = 30000)>]
 let ``an in-flight verdict wait IS the client observation that inhibits idle exit`` () =
     withTempDir "verdict-wait-observed" (fun repoRoot ->
