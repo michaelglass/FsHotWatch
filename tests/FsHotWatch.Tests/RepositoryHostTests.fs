@@ -823,6 +823,30 @@ let ``an attach never answered ends the session it started, and a rejoin's sessi
         // A refusal started nothing, and undoing it does nothing.
         host.Handlers.Undelivered(host.Handlers.Attach "{\"schema\":\"fshw.attach\",\"protocol\":2}"))
 
+[<Fact(Timeout = 60000)>]
+let ``an unanswered configuration change ends the incarnation it started, and an unreadable answer ends nothing`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        let first = attachedId (attachVia host (requestFrom fx.Primary "a"))
+
+        // The reload's answer is lost: its new incarnation was started by this attach
+        // (the old one it replaced is already gone), so nobody knows it, and it ends.
+        let reloaded = host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "b"))
+
+        let incarnation =
+            match decodeResponse reloaded with
+            | Ok(AttachedReply(id, AttachDisposition.RejoinedConfigChanged, _)) -> id
+            | other -> failwith $"expected a configuration-change rejoin, got %A{other}"
+
+        test <@ incarnation <> first @>
+        test <@ (host.Registry.TryGet incarnation).IsSome @>
+
+        // An answer that does not decode names no session, so nothing is ended.
+        host.Handlers.Undelivered "not an attach response"
+        test <@ (host.Registry.TryGet incarnation).IsSome @>
+
+        host.Handlers.Undelivered reloaded
+        test <@ List.isEmpty host.Registry.Sessions @>)
+
 // The orphaned-host incident: a test's temporary repository was deleted under a host
 // that still held a session for it. Nothing ended that session, so the idle exit never
 // began counting, and the host watched a deleted directory for 11 hours.
