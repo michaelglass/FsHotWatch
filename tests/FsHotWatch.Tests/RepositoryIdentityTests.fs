@@ -525,6 +525,27 @@ let ``canonicalizing lists no directory where the platform names a stored entry 
             test <@ listings.Value = 0 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``on Linux an existing entry keeps the name as given and another case of it is absent`` () =
+    if not (OperatingSystem.IsLinux()) then
+        Assert.Skip "Linux: the name as given is the stored name"
+    else
+        withTempDir "rid-linux-names" (fun dir ->
+            let repo = Path.Combine(dir, "MyRepo")
+            Directory.CreateDirectory repo |> ignore
+            let canonicalDir = (canonicalize dir |> Result.map (fun c -> c.Value))
+
+            test
+                <@
+                    (canonicalize repo |> Result.map (fun c -> c.Value)) = (canonicalDir
+                                                                            |> Result.map (fun d ->
+                                                                                Path.Combine(d, "MyRepo")))
+                @>
+
+            // ext4 and the other Linux filesystems CI runs on are case-sensitive.
+            let otherCase = Path.Combine(dir, "myrepo")
+            test <@ canonicalize otherCase = Error(IdentityError.PathNotFound otherCase) @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a root that is missing, a file, or a symlink loop fails with its own reason`` () =
     withTempDir "rid-bad-root" (fun dir ->
         let missing = Path.Combine(dir, "missing")
