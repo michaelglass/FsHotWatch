@@ -1578,7 +1578,9 @@ let internal configStamp (configPath: string) : (DateTime * int64) option =
 /// Look at `configPath` every `interval` and invoke the callback with a
 /// human-readable reason when it was written, created or renamed into place since
 /// the last look. Re-parses the file to distinguish "config changed" from "config
-/// invalid, stopping". A deletion is not a change.
+/// invalid, stopping". A deletion is not a change, and neither is an empty file:
+/// an in-place save truncates before it writes, so the poller skips the empty file
+/// and compares the next look against the last non-empty one.
 ///
 /// A poll, not a `FileSystemWatcher`: on macOS each `FileSystemWatcher` is an
 /// FSEvents stream over the whole directory — for `.fshw.json`, the repository
@@ -1599,9 +1601,12 @@ let internal watchConfigFileEvery (interval: TimeSpan) (configPath: string) (onC
 
         let changed =
             lock stampGate (fun () ->
-                let changed = current <> lastStamp
-                lastStamp <- current
-                changed)
+                match current with
+                | Some(_, 0L) -> false
+                | _ ->
+                    let changed = current <> lastStamp
+                    lastStamp <- current
+                    changed)
 
         if changed && current.IsSome then
             onConfigFsEvent
