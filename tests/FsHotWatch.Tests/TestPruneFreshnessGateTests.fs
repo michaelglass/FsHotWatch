@@ -71,12 +71,22 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled } ]
 
+        // A checkout that has earned its baseline: sealing the helper's cohort owes no run,
+        // so the red below is the build's run and nothing earlier.
+        seedBaseline tmpDir [ "Failing.Tests" ]
         let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
         host.WorkStore.PublishProjectModel fixtureModel
         host.RegisterHandler(create (Path.Combine(tmpDir, "test.db")) tmpDir (Some configs) None None None None [])
 
         host.EmitFileChecked(stampFixture checkedFile)
         waitForPluginTerminal host "test-prune" 12.0
+
+        // A replay stands in only for an analysis the index holds (`IndexedAnalysis`):
+        // seal the cohort so it is written, then check once over it so the entry is.
+        host.EmitBatchChecked(fakeBatchChecked [ AbsFilePath.value checkedFile.File ])
+        waitForQuiescent host 10000
+        host.EmitFileChecked(stampFixture checkedFile)
+        waitForQuiescent host 10000
 
         // Positive control: the same helper analysis remains cacheable while healthy.
         host.EmitFileChecked(stampFixture checkedFile)
