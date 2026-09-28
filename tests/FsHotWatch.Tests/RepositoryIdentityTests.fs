@@ -486,6 +486,45 @@ let ``a commondir pointing nowhere is a dangling pointer`` () =
             @>)
 
 [<Fact(Timeout = 15000)>]
+let ``canonicalizing lists no directory where the platform names a stored entry itself`` () =
+    // A listing costs O(entries in the parent) per component; a symlink loop repeats
+    // the walk per hop. Under a temp directory of 100,000 entries one loop took 2 s.
+    if not (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) then
+        Assert.Skip "the listing is the only way to learn a stored name here"
+    else
+        withTempDir "rid-no-listing" (fun dir ->
+            let listings = ref 0
+
+            let countingList (d: string) =
+                System.Threading.Interlocked.Increment listings |> ignore
+                Directory.EnumerateFileSystemEntries d |> Seq.map Path.GetFileName
+
+            let canonical = canonicalizeWith countingList
+            let repo = Path.Combine(dir, "MyRepo")
+            Directory.CreateDirectory repo |> ignore
+            let loopA = Path.Combine(dir, "loopA")
+            Directory.CreateSymbolicLink(loopA, Path.Combine(dir, "loopB")) |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(dir, "loopB"), loopA) |> ignore
+
+            let expected = (canonicalize repo |> Result.map (fun c -> c.Value))
+            test <@ (canonical repo |> Result.map (fun c -> c.Value)) = expected @>
+
+            test
+                <@
+                    canonical (Path.Combine(dir, "missing")) = Error(
+                        IdentityError.PathNotFound(Path.Combine(dir, "missing"))
+                    )
+                @>
+
+            test <@ canonical loopA = Error(IdentityError.SymlinkLoop loopA) @>
+
+            if OperatingSystem.IsMacOS() then
+                // The stored spelling, asked for through another one.
+                test <@ (canonical (Path.Combine(dir, "myrepo")) |> Result.map (fun c -> c.Value)) = expected @>
+
+            test <@ listings.Value = 0 @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a root that is missing, a file, or a symlink loop fails with its own reason`` () =
     withTempDir "rid-bad-root" (fun dir ->
         let missing = Path.Combine(dir, "missing")
