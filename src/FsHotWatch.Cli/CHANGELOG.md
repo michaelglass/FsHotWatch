@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `fshw status` warns when the daemon's heap valve has fired: a backstop
+  compacting collection that means the daemon's allocation has regressed.
+
 ## 0.14.0-alpha.77 - 2026-09-28
 
 - chore: rebuild to bundle updated dependencies

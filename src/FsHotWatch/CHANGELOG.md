@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- fix: a cold scan of a large repository no longer drives the daemon into an
+  allocation storm (a heap of tens of GB of garbage, hundreds of threads and most of
+  its time in GC). Every file of a scan tier was checked at once, and each check
+  rebuilt the snapshot of its project and of every project upstream of it; the
+  builds block, so the thread pool grew by starvation and each new thread built more
+  snapshots. `CheckPipeline` now runs at most `maxConcurrentChecks` checks at once
+  (default: the processor count; waiting holds no thread), and shares project
+  snapshots between checks through `ProjectSnapshots.SnapshotMemo`: a project's
+  snapshot is built once per distinct inputs (source versions, reference stamps,
+  upstream snapshots, frame, generation), which every check still re-reads.
+  `ProjectSnapshots.buildFramedWith` takes the memo; `buildFramed` shares nothing,
+  as before. `Framed` carries its `SnapshotKey`.
+- feat: the watchdog's heartbeat reports the process's thread count, and a heap
+  valve backs the fix above up: when the GC heap exceeds a quarter of the memory the
+  GC may use and no gen2 collection has run for two minutes, the watchdog forces one
+  compacting gen2 collection, logs `HEAP VALVE FIRED`, and reports it in `status`
+  (`fshw-heap-valve` in `GetStatus`, `heapValve` in `GetDiagnostics`). It fires at
+  most once per two minutes. It firing means the daemon's allocation has regressed.
+- The scan logs its check concurrency peak and how many project snapshots it built.
+
 ## 0.10.0-alpha.58 - 2026-09-28
 
 - fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL

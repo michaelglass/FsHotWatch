@@ -559,6 +559,54 @@ let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
     test <@ json.Contains("fshw stop") @>
 
 [<Fact(Timeout = 15000)>]
+let ``status replies carry the heap valve's report once it has fired, and not before`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let t0 = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    let clock = ref t0
+
+    let reading =
+        ref
+            { FsHotWatch.OperationWatchdog.LoadAverage = None
+              FsHotWatch.OperationWatchdog.HeapBytes = 12L * 1073741824L
+              FsHotWatch.OperationWatchdog.Gen0 = 0
+              FsHotWatch.OperationWatchdog.Gen1 = 0
+              FsHotWatch.OperationWatchdog.Gen2 = 0
+              FsHotWatch.OperationWatchdog.Threads = 1 }
+
+    use watchdog =
+        new FsHotWatch.OperationWatchdog.Watchdog(
+            TimeSpan.FromSeconds(120.0),
+            heartbeatEvery = TimeSpan.FromSeconds(30.0),
+            now = (fun () -> clock.Value),
+            log = ignore,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            gcPauseTotal = (fun () -> TimeSpan.Zero),
+            resources = (fun () -> reading.Value),
+            heapValve =
+                { Threshold = 4L * 1073741824L
+                  Quiet = TimeSpan.FromMinutes 2.0 },
+            collect =
+                (fun () ->
+                    reading.Value <-
+                        { reading.Value with
+                            HeapBytes = 1073741824L
+                            Gen2 = 1 })
+        )
+
+    let target = DaemonRpcTarget(defaultRpcConfig host, watchdog)
+    test <@ not (target.GetStatus().Contains HeapValveStatusKey) @>
+    test <@ FsHotWatch.Cli.IpcParsing.heapValveOf (target.GetDiagnostics "") = None @>
+
+    clock.Value <- t0.AddMinutes 3.0
+    waitUntil (fun () -> watchdog.HeapValveReport() |> Option.isSome) 5000
+
+    test <@ target.GetStatus().Contains HeapValveStatusKey @>
+
+    match FsHotWatch.Cli.IpcParsing.heapValveOf (target.GetDiagnostics "") with
+    | Some report -> test <@ report.Contains "fired 1 time(s)" @>
+    | None -> Assert.Fail "expected the heap valve's report in the diagnostics reply"
+
+[<Fact(Timeout = 15000)>]
 let ``GetStatus omits the wedge entry when no op is stuck`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
