@@ -125,3 +125,14 @@ exactly that, parking a run in its 30-minute WAITING loop.
   always-on apply more widely. That is a different piece of work from this one, and
   it is the one worth doing.
 - Anything reading test state should read the verdict file, not start a daemon to ask.
+
+## Amendment (2026-09-28): observing a verdict holds the daemon up
+
+Decision 4 still holds: the thresholds and the default workspace's exemption are
+ADR-004's. What changed is how "a client is observing verification" reaches idle-exit.
+A verdict wait now holds a client observation lease, published with the host's owned
+work and released on every exit of the wait (ADR-004 and ADR-030, amendments). A daemon
+therefore never idle-exits under a gate that is waiting on it, and the lease is not work,
+so it never keeps the verdict it is waiting for from resolving. Reading test state from
+the verdict file, as the consequences above recommend, takes no lease and keeps no
+daemon alive.
