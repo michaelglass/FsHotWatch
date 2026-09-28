@@ -230,6 +230,44 @@ let ``plugin reports errors when file is below threshold`` () =
         test <@ fileErrors.IsSome @>
         test <@ not fileErrors.Value.IsEmpty @>)
 
+[<Fact(Timeout = 15000)>]
+let ``a file below only its branch floor is reported for branches alone`` () =
+    withTempDir "coverage-branch-only" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+
+        // Every line hit, one of its two branches taken: lines pass, branches fail.
+        File.WriteAllText(
+            xmlPath,
+            (coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+                .Replace(
+                    """<line number="2" hits="1" />""",
+                    """<line number="2" hits="1" branch="True" condition-coverage="50% (1/2)" />"""
+                )
+        )
+
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        let messages =
+            host.GetErrorsByPlugin("coverage")
+            |> Map.tryFind "MyModule.fs"
+            |> Option.defaultValue []
+            |> List.map (fun e -> e.Message)
+
+        test <@ messages = [ "coverage: branch=50.0% < min 100.0%" ] @>)
+
 [<Fact(Timeout = 30000)>]
 let ``a run that executed NOTHING reaches no coverage verdict — its full-suite claim is vacuous`` () =
     // The gate is `if ranFullSuite then Failed else NotGatedFiltered`, and
@@ -537,6 +575,22 @@ let ``coverage-ratchet with an explicit config path argument targets that file``
         test <@ reply.Value.Contains explicitConfig @>
         test <@ File.ReadAllText(explicitConfig) <> defaultThresholdsJson @>
         test <@ File.ReadAllText(defaultConfig) = defaultThresholdsJson @>)
+
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet with no arguments targets the configured file`` () =
+    withTempDir "coverage-ratchet-noargs" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let reply = host.RunCommand("coverage-ratchet", [||]) |> Async.RunSynchronously
+
+        test <@ reply.Value.Contains configPath @>
+        test <@ File.ReadAllText(configPath) <> defaultThresholdsJson @>)
 
 [<Fact(Timeout = 20000)>]
 let ``coverage-ratchet reports honestly when there is no coverage XML to ratchet from`` () =

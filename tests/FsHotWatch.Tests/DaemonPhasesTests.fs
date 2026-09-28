@@ -142,3 +142,33 @@ let ``contiguous same-scope records coalesce into one phase; a gap keeps them ap
                          "daemon.check", 800.0, 10.0, None
                          "plugin.analyzers", 2000.0, 30.0, Some "file 4" ]
         @>
+
+[<Fact(Timeout = 15000)>]
+let ``a record inside, or starting before, a same-scope phase widens it rather than shrinking it`` () =
+    let ledger = Ledger()
+    let origin = DateTime(2026, 9, 5, 21, 0, 0, DateTimeKind.Utc)
+    let ms (n: float) = TimeSpan.FromMilliseconds n
+    ledger.Record(Phase.PluginRun "lint", origin.AddMilliseconds 100.0, ms 1000.0, Some "long")
+    // Wholly inside the first: the merged end stays the first's.
+    ledger.Record(Phase.PluginRun "lint", origin.AddMilliseconds 300.0, ms 100.0, Some "nested")
+    // Starts earlier and ends inside it: the merged start moves back.
+    ledger.Record(Phase.PluginRun "lint", origin, ms 200.0, None)
+
+    let snapshot =
+        ledger.Snapshot(DateTime.UtcNow)
+        |> List.map (fun r -> r.Scope, (r.StartedAt - origin).TotalMilliseconds, r.Elapsed.TotalMilliseconds, r.Detail)
+
+    test <@ snapshot = [ "plugin.lint", 0.0, 1100.0, Some "nested" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a snapshot taken at a now before an in-flight phase began clips it to zero`` () =
+    let ledger = Ledger()
+    let phase = ledger.Begin Phase.Discover
+
+    match ledger.Snapshot DateTime.MinValue with
+    | [ record ] ->
+        test <@ record.Detail = Some "in flight" @>
+        test <@ record.Elapsed = TimeSpan.Zero @>
+    | other -> failwith $"expected the in-flight phase in the snapshot, got %A{other}"
+
+    phase.Complete None

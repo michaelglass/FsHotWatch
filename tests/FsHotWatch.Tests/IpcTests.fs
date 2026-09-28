@@ -2116,3 +2116,61 @@ let ``diagnostics never read a plugin as Completed without the findings it repor
         | _ -> false
 
     test <@ not completed || not readFindings.IsEmpty @>
+
+/// A task cache that records what it was asked to clear, and holds nothing.
+type private ClearRecordingCache() =
+    let cleared = Collections.Concurrent.ConcurrentQueue<string>()
+
+    member _.Cleared = List.ofSeq cleared
+
+    interface FsHotWatch.TaskCache.ITaskCache with
+        member _.TryGet _ _ = None
+
+        member _.Lookup _ _ =
+            FsHotWatch.TaskCache.CacheMiss FsHotWatch.TaskCache.CacheMissReason.NoEntryForKey
+
+        member _.Set _ _ _ = ()
+        member _.Clear() = cleared.Enqueue "all"
+        member _.ClearPlugin plugin = cleared.Enqueue $"plugin %s{plugin}"
+        member _.ClearFile file = cleared.Enqueue $"file %s{file}"
+
+        member _.ClearPluginFile plugin file =
+            cleared.Enqueue $"plugin-file %s{plugin} %s{file}"
+
+[<Fact(Timeout = 15000)>]
+let ``cache-clear reaches the host's task cache with each filter`` () =
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+    let cache = ClearRecordingCache()
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+    let cts = new CancellationTokenSource()
+
+    let serverTask =
+        Async.StartImmediateAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    test <@ IpcServer.acceptsConnection pipeName @>
+
+    try
+        let clear filter =
+            IpcClient.cacheClear pipeName filter |> Async.RunSynchronously
+
+        let replies =
+            [ clear ClearAll
+              clear (ClearPlugin "lint")
+              clear (ClearFile "/tmp/src/A.fs")
+              clear (ClearPluginFile("lint", "/tmp/src/A.fs")) ]
+
+        // A file is cleared under the repo-relative key the cache stores it by.
+        let key =
+            FsHotWatch.CachePathIdentity.ofPath "/tmp" "/tmp/src/A.fs"
+            |> FsHotWatch.CachePathIdentity.toKey
+
+        test <@ replies |> List.forall (fun reply -> reply.Contains "ok") @>
+
+        test <@ cache.Cleared = [ "all"; "plugin lint"; $"file %s{key}"; $"plugin-file lint %s{key}" ] @>
+    finally
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()

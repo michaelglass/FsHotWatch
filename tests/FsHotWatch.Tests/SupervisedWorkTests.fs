@@ -717,3 +717,26 @@ let ``throwing cancellation registration cannot abandon the still running owned 
             ()
 
         queue.Close()
+
+[<Fact>]
+let ``disposing a declaration twice ends it once`` () =
+    let store = Store()
+    let disarmed = ref 0
+
+    let schedule (_: TimeSpan) (_: unit -> unit) =
+        { new IDisposable with
+            member _.Dispose() = disarmed.Value <- disarmed.Value + 1 }
+
+    let declaration =
+        SupervisedWork.declare store schedule "idempotent" (TimeSpan.FromMinutes 1.0)
+
+    Assert.Equal<string list>(
+        [ "idempotent" ],
+        store.Snapshot.OperationsInFlight |> List.map (fun (name, _, _) -> name)
+    )
+
+    declaration.Dispose()
+    declaration.Dispose()
+
+    Assert.Equal(1, disarmed.Value)
+    Assert.Empty(store.Snapshot.OperationsInFlight)

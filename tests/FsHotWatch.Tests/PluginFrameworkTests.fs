@@ -2776,3 +2776,80 @@ let ``a cached plugin's error reports and emitted events are captured into its e
           "test-completed"
           "command" ] do
         test <@ hostCalls |> Seq.contains call @>
+
+// ---------------------------------------------------------------------------
+// a per-file cache hit is handed to a state that records replays
+// ---------------------------------------------------------------------------
+
+/// A state recording each replay the framework hands it, in order.
+type private ReplayLog =
+    { Replays: (string * int64 option * Result<unit, string>) list }
+
+    interface IFileReplayState<ReplayLog> with
+        member this.Replayed currentModel result analysis =
+            { Replays = this.Replays @ [ AbsFilePath.value result.File, currentModel, analysis ] }
+
+[<Fact(Timeout = 20000)>]
+let ``a per-file cache hit replays each cached outcome into the state, with no model published`` () =
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let cacheKey = ContentHash.create "replay"
+    let pluginNameStr = "file-replay"
+    let verdict = RunVerdict.create "summary" System.TimeSpan.Zero
+
+    let cached =
+        [ "/tmp/repo/FileDone.fs", TaskCache.CachedFileCompleted System.TimeSpan.Zero
+          "/tmp/repo/FileFailed.fs", TaskCache.CachedFileFailed("file failed", System.TimeSpan.Zero)
+          "/tmp/repo/RunDone.fs", TaskCache.CachedRunCompleted verdict
+          "/tmp/repo/RunFailed.fs", TaskCache.CachedRunFailed("run failed", verdict) ]
+
+    for file, status in cached do
+        cache.Set
+            { Plugin = pluginNameStr
+              File =
+                Some(
+                    CachePathIdentity.ofPath defaultServices.RepoRoot file
+                    |> CachePathIdentity.toKey
+                ) }
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = status
+              EmittedEvents = [] }
+
+    let mutable observe: CommandHandler option = None
+
+    let handler: PluginHandler<ReplayLog, unit> =
+        { Name = PluginName.create pluginNameStr
+          Init = { Replays = [] }
+          Update = fun _ _ _ -> failwith "every event here is a cache hit"
+          Commands =
+            [ "replays",
+              PluginCommand.Observe(fun _ state _ ->
+                  async {
+                      return
+                          state.Replays
+                          |> List.map (fun (file, model, analysis) -> $"%s{file} %A{model} %A{analysis}")
+                          |> String.concat "\n"
+                  }) ]
+          Subscriptions = Set.singleton SubscribeFileChecked
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some cacheKey)
+          Teardown = None }
+
+    let reg =
+        registerHandler (servicesWithCache cache (fun (_, cmd) -> observe <- Some cmd)) handler
+
+    for file, _ in cached do
+        dispatchAndAwait reg (DispatchFileChecked(fakeFileCheckResult file))
+
+    let replays = observe.Value [||] |> Async.RunSynchronously
+
+    test
+        <@
+            replays = String.concat
+                "\n"
+                [ "/tmp/repo/FileDone.fs None Ok ()"
+                  "/tmp/repo/FileFailed.fs None Error \"file failed\""
+                  "/tmp/repo/RunDone.fs None Ok ()"
+                  "/tmp/repo/RunFailed.fs None Error \"run failed\"" ]
+        @>
