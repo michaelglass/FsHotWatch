@@ -227,10 +227,11 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
 
     result
 
-/// One-time FCS cold start for the all-plugins test: creating the shared checker,
-/// resolving script project options (framework references), and a first check that
-/// builds FCS's framework imports. A class fixture runs before the test's timeout
-/// starts, so the timed window covers only the per-file check and plugin dispatch.
+/// One-time FCS work for the all-plugins test: creating the shared checker, resolving
+/// script project options (framework references), and a first check of the test's own
+/// file. A class fixture runs before the test's timeout starts, and the checker keeps
+/// that check's result, so the timed window covers plugin dispatch whether or not a
+/// test elsewhere in the run has already checked the file.
 type AllPluginsWarmup() =
     let repoRoot = findRepoRoot ()
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -245,13 +246,30 @@ type AllPluginsWarmup() =
         |> Async.RunSynchronously
         |> fst
 
-    do withTempFsFile "module Warmup\n\nlet value = 1\n" (fun _dir filePath -> checkTempFile checker filePath |> ignore)
+    do
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject("FsHotWatch", projectOptions)
+
+        pipeline.CheckFile(AbsFilePath.create sourceFile)
+        |> Async.RunSynchronously
+        |> ignore
 
     member _.RepoRoot = repoRoot
     member _.Checker = checker
     member _.SourceFile = sourceFile
     member _.ProjectOptions = projectOptions
 
+[<Literal>]
+let AllPluginsCollectionName = "AllPlugins"
+
+/// Runs the all-plugins test alone, after every parallel collection. Its timed window
+/// is a dispatch through four plugins, TestPrune's symbol analysis of the file among
+/// them; the other collections spawn builds and test hosts, and on a two-core runner
+/// the CPU they take stretches that window toward its budget.
+[<CollectionDefinition(AllPluginsCollectionName, DisableParallelization = true)>]
+type AllPluginsCollection() = class end
+
+[<Collection(AllPluginsCollectionName)>]
 type AllPluginsTests(warm: AllPluginsWarmup) =
     interface IClassFixture<AllPluginsWarmup>
 
@@ -1749,7 +1767,18 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
-    waitUntil (fun () -> buildCount >= 2) 5000
+    // BuildCompleted is dispatched before the build reports its terminal status, so a
+    // subscriber can count the second build while the status still reads Running.
+    // Wait for both.
+    waitUntil
+        (fun () ->
+            buildCount >= 2
+            && (match host.GetStatus("build") with
+                | Some(PluginStatus.Completed _)
+                | Some(PluginStatus.Failed _) -> true
+                | _ -> false))
+        5000
+
     elapsed.Stop()
 
     test <@ buildCount = 2 @>
