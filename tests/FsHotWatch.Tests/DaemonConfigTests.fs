@@ -1745,6 +1745,33 @@ let ``the config poller reports a rewrite of .fshw.json`` () =
         test <@ observed.Value.Contains("config changed") @>)
 
 [<Fact(Timeout = 15000)>]
+let ``the config poller reports a rewrite, not the empty file the writer truncated first`` () =
+    // An in-place save truncates the file, then writes the new content. The
+    // truncated file sits on disk for several looks here, as it can for a slow
+    // writer, and is not a config the user saved.
+    withTempDir "cfg-poll-truncate" (fun tmpDir ->
+        let path = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(path, "{}")
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        let reasons = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _poller =
+            watchConfigFileEvery pollEvery path (fun reason ->
+                reasons.Enqueue reason
+                signal.Set())
+
+        do
+            use stream = new FileStream(path, FileMode.Create, FileAccess.Write)
+            stream.Flush(true)
+            System.Threading.Thread.Sleep(int (pollEvery.TotalMilliseconds * 5.0))
+            let content = System.Text.Encoding.UTF8.GetBytes("""{"lint": false}""")
+            stream.Write(content, 0, content.Length)
+
+        test <@ signal.Wait(5000) @>
+        let first = Seq.head reasons
+        test <@ first.Contains("config changed") @>)
+
+[<Fact(Timeout = 15000)>]
 let ``the config poller reports a config saved by rename into place`` () =
     withTempDir "cfg-poll-rename" (fun tmpDir ->
         let path = Path.Combine(tmpDir, ".fshw.json")
