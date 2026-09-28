@@ -3647,6 +3647,13 @@ let private performScan
                     "scan"
                     $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
+                // What the scan cost the checker: a peak at the bound with builds near
+                // the project count is the healthy shape; builds near the file count
+                // mean snapshots stopped being shared.
+                Logging.info
+                    "scan"
+                    $"Check concurrency peak %d{pipeline.CheckConcurrencyPeak} of %d{pipeline.CheckConcurrencyBound}; project snapshots built so far: %d{pipeline.SnapshotBuilds}"
+
                 uncoveredTotal <- files |> List.filter (tierCovered.Contains >> not) |> List.length
 
                 if uncoveredTotal > 0 then
@@ -3870,6 +3877,10 @@ module Daemon =
             /// `DaemonHosting.standalone ()` (the default) for a per-worktree daemon;
             /// `DaemonHosting.hostedBy` for a session of a repository host.
             Hosting: DaemonHosting.Hosting
+            /// Given the repository root, what restores one project whose
+            /// `obj/project.assets.json` is missing or stale before it is checked.
+            /// `DepsFreshness.productionRestoreRunner` (the default) runs `dotnet restore`.
+            Restore: string -> DepsFreshness.RestoreRunner
         }
 
     module DaemonOptions =
@@ -3885,7 +3896,8 @@ module Daemon =
               PressureIdleFloorMin = None
               VanishedRootCheckEvery = VanishedRoot.DefaultCheckEvery
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
-              Hosting = DaemonHosting.standalone () }
+              Hosting = DaemonHosting.standalone ()
+              Restore = DepsFreshness.productionRestoreRunner }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -4102,7 +4114,7 @@ module Daemon =
                         None
                     else
                         let tracker = DepsFreshness.RecoveryTracker()
-                        let runner = DepsFreshness.productionRestoreRunner repoRoot
+                        let runner = opts.Restore repoRoot
 
                         Some(fun projPath ->
                             DepsFreshness.evaluateProject

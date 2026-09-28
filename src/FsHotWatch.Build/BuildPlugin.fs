@@ -160,19 +160,61 @@ let formatSilentFailureDiagnostic (exitCode: int) (output: string) : string =
 
     $"MSBuild aborted before producing diagnostics: exit=%d{exitCode} output=%d{output.Length} bytes%s{elapsed}"
 
-let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEntry list =
+/// An MSBuild error line with a code, positioned or not: `Foo.fs(3,1): error FS0039: …`,
+/// `Foo.fsproj : error NU1101: …`, `MSBUILD : error MSB1009: …`.
+let private codedErrorLine =
+    System.Text.RegularExpressions.Regex(
+        @"\berror\s+[A-Za-z]+\d+\s*:",
+        System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+/// How many coded error lines, or trailing output lines, a failure description keeps.
+[<Literal>]
+let FailureDescriptionLines = 20
+
+/// What went wrong in a build that exited with `exitCode`: its coded MSBuild error lines,
+/// or its last output lines when it printed none, then the exit code. The first line is
+/// the most specific one, because a one-line view shows only that.
+let describeBuildFailure (exitCode: int) (output: string) : string =
+    let lines =
+        output.Split('\n')
+        |> Array.map (fun line -> line.TrimEnd('\r').Trim())
+        |> Array.filter (fun line -> line.Length > 0)
+
+    let errorLines = lines |> Array.filter codedErrorLine.IsMatch |> Array.distinct
+
+    let shown =
+        if errorLines.Length > 0 then
+            errorLines |> Array.truncate FailureDescriptionLines
+        else
+            lines |> Array.skip (max 0 (lines.Length - FailureDescriptionLines))
+
+    Array.append shown [| $"exit code %d{exitCode}" |] |> String.concat "\n"
+
+/// A build's outcome and ledger entries. A failure with a known `exitCode` carries its
+/// `describeBuildFailure` ahead of the raw output, and when no positioned error parsed, that
+/// description is the ledger's error rather than the raw output, whose first line is
+/// usually restore progress.
+let decideBuildOutcome (success: bool) (exitCode: int option) (output: string) : BuildOutcome * ErrorEntry list =
     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
 
     if success then
         BuildPassed(output, None), parsed
     else
-        let entries =
-            if parsed.IsEmpty then
-                [ ErrorEntry.error output ]
-            else
-                parsed
+        let outputs, fallback =
+            match exitCode with
+            | Some code ->
+                let description = describeBuildFailure code output
+                [ description; output ], description
+            | None -> [ output ], output
 
-        BuildOutputFailed [ output ], entries
+        let entries =
+            if parsed |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) then
+                parsed
+            else
+                ErrorEntry.error fallback :: parsed
+
+        BuildOutputFailed outputs, entries
 
 /// How many of the outputs a build's `Project -> path.dll` lines name were written
 /// after `buildStarted`. MSBuild prints that line for every project it visits, and
@@ -1111,7 +1153,13 @@ let createWith
                                     | Some(_, _, text) -> text
                                     | None -> outputOf result
 
-                                let (rawOutcome, entries) = decideBuildOutcome (isSucceeded result) outputText
+                                let exitCode =
+                                    match result with
+                                    | Failed(code, _) -> Some code
+                                    | _ -> None
+
+                                let (rawOutcome, entries) =
+                                    decideBuildOutcome (isSucceeded result) exitCode outputText
 
                                 let copyVerifiedOutcome, verifiedEntries =
                                     verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
@@ -1281,7 +1329,7 @@ let createWith
                                     let (rawOutcome, entries) =
                                         if failures.IsEmpty then
                                             let combinedOutput = outputs |> List.rev |> String.concat "\n"
-                                            decideBuildOutcome true combinedOutput
+                                            decideBuildOutcome true None combinedOutput
                                         else
                                             let failedText = failedOutputs |> String.concat "\n"
                                             let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
@@ -1548,7 +1596,9 @@ let createWith
                     | BuildOutputFailed outputs ->
                         ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed outputs)
-                        let errorDetail = outputs |> String.concat "\n" |> truncateOutput 5
+                        // The head is the failure's description when one was made; the raw output follows.
+                        let errorDetail =
+                            outputs |> List.tryHead |> Option.defaultValue "" |> truncateOutput 5
 
                         ctx.ReportStatus(
                             PluginStatus.failedNow

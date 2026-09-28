@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- fix: `RepositoryIdentity.canonicalize` no longer lists each directory on the way to
+  learn how a path component is spelled on disk. On macOS it asks the entry itself
+  (`getattrlist` for its stored name). On Linux the name as given is already the stored
+  name. The listing cost time in proportion to the number of entries in each parent
+  directory, and a symlink resolution repeated it for every hop. Under a temporary
+  directory of 100,000 entries, one symlink-loop resolution took 2 s, and every daemon
+  canonicalizes its root when its watcher starts. Other platforms still list the
+  directory.
+
+- fix: a cold scan of a large repository no longer drives the daemon into an
+  allocation storm (a heap of tens of GB of garbage, hundreds of threads and most of
+  its time in GC). Every file of a scan tier was checked at once, and each check
+  rebuilt the snapshot of its project and of every project upstream of it; the
+  builds block, so the thread pool grew by starvation and each new thread built more
+  snapshots. `CheckPipeline` now runs at most `maxConcurrentChecks` checks at once
+  (default: the processor count; waiting holds no thread), and shares project
+  snapshots between checks through `ProjectSnapshots.SnapshotMemo`: a project's
+  snapshot is built once per distinct inputs (source versions, reference stamps,
+  upstream snapshots, frame, generation), which every check still re-reads.
+  `ProjectSnapshots.buildFramedWith` takes the memo; `buildFramed` shares nothing,
+  as before. `Framed` carries its `SnapshotKey`.
+- feat: the watchdog's heartbeat reports the process's thread count, and a heap
+  valve backs the fix above up: when the GC heap exceeds a quarter of the memory the
+  GC may use and no gen2 collection has run for two minutes, the watchdog forces one
+  compacting gen2 collection, logs `HEAP VALVE FIRED`, and reports it in `status`
+  (`fshw-heap-valve` in `GetStatus`, `heapValve` in `GetDiagnostics`). It fires at
+  most once per two minutes. It firing means the daemon's allocation has regressed.
+- The scan logs its check concurrency peak and how many project snapshots it built.
+
 - fix: a macOS daemon opens one FSEvents stream instead of 2 + one per FileCommand
   pattern, and the kernel drops events from its tooling directories before they are
   queued. fseventsd buffers every per-file event for every stream until the process
@@ -36,7 +65,10 @@
   example a `CHANGELOG.md` inside a nested `.workspaces/` checkout), matching what the
   polling watcher already did.
 - `MacFsEvents.createWithCoalesced` is removed. Use `MacFsEvents.createExcluding`.
-
+- `DaemonOptions.Restore`: what restores a project whose `obj/project.assets.json` is
+  missing or stale before it is checked, given the repository root. Defaults to
+  `DepsFreshness.productionRestoreRunner`; a test daemon can inject a fake so it never
+  runs `dotnet restore`.
 - fix: a repository host no longer runs forever holding a session no client knows of.
   The host answered an attach under the 10-second bound meant for reading the
   client's preamble, so on a loaded machine an attach that took longer registered its

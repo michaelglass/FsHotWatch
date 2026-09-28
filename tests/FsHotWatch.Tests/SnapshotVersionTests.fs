@@ -678,14 +678,13 @@ let ``two checkouts with identical content get identical snapshot versions`` () 
 
 // --- ProjectSnapshots, without a checker ---
 
-/// A `hashFile` that answers `first` once and `later` after that — a file that
-/// moves between two looks at it.
+/// A `hashFile` that answers `first` once per path and `later` after that — files
+/// that each move between two looks at them. Counted per path, so which files the
+/// snapshot build looks at first does not decide which one is seen to move.
 let private movingHash (first: string) (later: string) =
-    let calls = ref 0
+    let seen = Collections.Generic.HashSet<string>()
 
-    fun (_: string) ->
-        calls.Value <- calls.Value + 1
-        if calls.Value = 1 then first else later
+    fun (path: string) -> lock seen (fun () -> if seen.Add path then first else later)
 
 /// Every project in the generation a checker starts in.
 let private firstGeneration (_: string) =
