@@ -72,8 +72,16 @@ let ``a spawn after a daemon is created and disposed belongs to the caller's sco
                     let started =
                         withEveryPoolThreadBusy (fun () ->
                             spawner.Start()
-                            // Reaped only once it runs: the caller's scope has admitted it.
-                            let running = waitUntilTrue (fun () -> File.Exists pidFile) 20000
+                            // Reaped only once the caller's registry holds it. The child writes
+                            // its pid before the launch returns, so a running child is not yet
+                            // an admitted one.
+                            let admitted () =
+                                File.Exists pidFile
+                                && (match Int32.TryParse((File.ReadAllText pidFile).Trim()) with
+                                    | true, pid -> caller.LivePids() |> List.contains pid
+                                    | _ -> false)
+
+                            let running = waitUntilTrue admitted 20000
                             caller.KillAll()
                             running)
 
