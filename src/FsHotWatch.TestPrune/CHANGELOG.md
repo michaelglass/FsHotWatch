@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a run whose `beforeRun` generates output now reliably binds its receipt to the tree
+  the tests run against, and a revocation always names the paths that moved, however many
+  other trees the process reads during the run. The per-file entries of the last 16 trees
+  read were kept in one process-wide store. Any other reader could evict a run's launch
+  entries while the run was in flight: another repository in the same daemon, another
+  workspace, or tests running in parallel. The run then kept its launch binding ("its
+  per-file entries are no longer held") and was revoked as moved. The launch now carries
+  its own entries, so nothing it needs can be evicted. `TestRunLaunch.InputTreeHash` is
+  replaced by `InputTree: ReceiptTree option`, which holds the identity and its entries.
+  `InputTreeHash` remains as a read-only member.
+
 ## 0.13.0-alpha.57 - 2026-09-28
 
 - fix: a `check` right after an edit runs the tests the edit affects, instead of every

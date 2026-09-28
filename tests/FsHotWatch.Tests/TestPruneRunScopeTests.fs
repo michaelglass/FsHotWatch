@@ -1560,9 +1560,9 @@ let private withReceiptSource body =
         body repoRoot source)
 
 let private bindReceiptTree repoRoot (launch: TestRunLaunch) =
-    let identity = ReceiptInputTree.read repoRoot
-    Assert.True(identity.IsSome, "fixture source tree must be readable")
-    { launch with InputTreeHash = identity }
+    let tree = ReceiptInputTree.readTree repoRoot
+    Assert.True(tree.IsSome, "fixture source tree must be readable")
+    { launch with InputTree = tree }
 
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow drain cannot replace the full-suite receipt exposed to the verdict writer`` () =
@@ -3912,11 +3912,11 @@ let ``no two revocation causes render the same text`` () =
 [<Fact>]
 let ``a move is attributed to the test run only when every path fits`` () =
     withReceiptSource (fun repoRoot source ->
-        let launch = ReceiptInputTree.read repoRoot
+        let launch = ReceiptInputTree.readTree repoRoot
         let hostStarted = DateTime.UtcNow
         let out = Path.Combine(repoRoot, "src", "out.css")
         File.WriteAllText(out, ".probe{}")
-        let wrote = ReceiptInputTree.read repoRoot
+        let wrote = ReceiptInputTree.readTree repoRoot
 
         let attribute reported started after =
             ReceiptInputTree.writtenByTestRun
@@ -3947,7 +3947,7 @@ let ``a move is attributed to the test run only when every path fits`` () =
 
         // A removal carries no write time.
         File.Delete source
-        let removed = ReceiptInputTree.read repoRoot
+        let removed = ReceiptInputTree.readTree repoRoot
         test <@ attribute (Some Set.empty) (Some hostStarted) removed = None @>
 
         // No move at all.
@@ -3959,12 +3959,12 @@ let ``a move is attributed to the test run only when every path fits`` () =
 [<Fact>]
 let ``a test-run write is observed only when the watcher observes every path`` () =
     withReceiptSource (fun repoRoot _ ->
-        let launch = ReceiptInputTree.read repoRoot
+        let launch = ReceiptInputTree.readTree repoRoot
         let hostStarted = DateTime.UtcNow
         File.WriteAllText(Path.Combine(repoRoot, "src", "Gen.fs"), "module Gen\n")
-        let source = ReceiptInputTree.read repoRoot
+        let source = ReceiptInputTree.readTree repoRoot
         File.WriteAllText(Path.Combine(repoRoot, "src", "out.css"), ".probe{}")
-        let mixed = ReceiptInputTree.read repoRoot
+        let mixed = ReceiptInputTree.readTree repoRoot
 
         let attribute observes after =
             ReceiptInputTree.writtenByTestRun repoRoot observes (Some Set.empty) (Some hostStarted) launch after
@@ -4071,7 +4071,7 @@ let ``a receipt revoked because the tree moved names the file that moved`` () =
 /// A tree with one compiled source, the fixture the rebinding cases start from.
 let private withBeforeRunTree body =
     withReceiptSource (fun repoRoot source ->
-        let launch = ReceiptInputTree.read repoRoot
+        let launch = ReceiptInputTree.readTree repoRoot
         Assert.True(launch.IsSome, "fixture tree must be readable")
         body repoRoot source launch)
 
@@ -4086,7 +4086,7 @@ let ``output a beforeRun generates re-binds the receipt to the tree the tests ru
         Directory.CreateDirectory(Path.GetDirectoryName bundle) |> ignore
         File.WriteAllText(bundle, "console.log(1)")
 
-        let after = ReceiptInputTree.read repoRoot
+        let after = ReceiptInputTree.readTree repoRoot
 
         let binding, why = ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch after
 
@@ -4108,7 +4108,7 @@ let ``a compiled source that moves before the tests start keeps the launch bindi
         File.WriteAllText(source, "module Value\nlet answer = 2\n")
 
         let binding, why =
-            ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch (ReceiptInputTree.read repoRoot)
+            ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch (ReceiptInputTree.readTree repoRoot)
 
         test <@ binding = launch @>
 
@@ -4153,6 +4153,41 @@ let ``a tree that did not move, or cannot be read after beforeRun, keeps the lau
 
         // An unbound launch stays unbound: a later readable tree is not the one launched.
         test <@ ReceiptInputTree.afterBeforeRun (noModel repoRoot) None launch = (None, None) @>)
+
+/// What every other reader in the process does while a run is in flight: read trees of
+/// its own. A daemon hosting several repositories, or a test suite running in parallel,
+/// reads far more of them than a run's launch lives through.
+let private readManyOtherTrees () =
+    for i in 1..40 do
+        withTempDir "receipt-other" (fun other ->
+            Directory.CreateDirectory(Path.Combine(other, "src")) |> ignore
+            File.WriteAllText(Path.Combine(other, "src", "Other.fs"), $"module Other\nlet v = %d{i}\n")
+            Assert.True((ReceiptInputTree.read other).IsSome, "each other tree must be readable"))
+
+[<Fact>]
+let ``a launch tree survives every other tree read before beforeRun finishes`` () =
+    withBeforeRunTree (fun repoRoot _ launch ->
+        readManyOtherTrees ()
+
+        let bundle = Path.Combine(repoRoot, "src", "wwwroot", "js", "app.js")
+        Directory.CreateDirectory(Path.GetDirectoryName bundle) |> ignore
+        File.WriteAllText(bundle, "console.log(1)")
+        let after = ReceiptInputTree.readTree repoRoot
+
+        let binding, why = ReceiptInputTree.afterBeforeRun (noModel repoRoot) launch after
+
+        test <@ binding = after && binding <> launch @>
+        test <@ why |> Option.exists (fun w -> w.Contains "added (1): src/wwwroot/js/app.js") @>)
+
+[<Fact>]
+let ``a launch tree survives every other tree read before its completion names what moved`` () =
+    withBeforeRunTree (fun repoRoot source launch ->
+        readManyOtherTrees ()
+
+        File.WriteAllText(source, "module Value\nlet answer = 2\n")
+        let current = ReceiptInputTree.readTree repoRoot
+
+        test <@ ReceiptInputTree.movedPaths launch current = Some "changed (1): src/Value.fs" @>)
 
 /// End to end, the case that revoked intelligence's first gate run on every fresh
 /// workspace (fshw 0.14.0-alpha.72 and .73 alike): a `tests.beforeRun` that generates a
@@ -4334,13 +4369,15 @@ let ``an edit the watcher saw during the run stays a plain MOVED`` () =
                     File.Delete marker)
 
 [<Fact>]
-let ``a launch tree whose entries are no longer held says so instead of naming nothing`` () =
-    let text =
-        ReceiptInputTree.movedPaths (Some "sha256:never-read") (Some "sha256:also-never")
+let ``no move, or an unbound side, names no moved paths`` () =
+    let tree identity : ReceiptTree option =
+        Some
+            { Identity = identity
+              Entries = [ "src/Value.fs", identity ] }
 
-    test <@ text |> Option.exists (fun t -> t.Contains "no longer held") @>
-    test <@ ReceiptInputTree.movedPaths (Some "same") (Some "same") = None @>
-    test <@ ReceiptInputTree.movedPaths None (Some "x") = None @>
+    test <@ ReceiptInputTree.movedPaths (tree "same") (tree "same") = None @>
+    test <@ ReceiptInputTree.movedPaths None (tree "x") = None @>
+    test <@ ReceiptInputTree.movedPaths (tree "x") None = None @>
 
 // ---------------------------------------------------------------------------
 // The run `test-scope` grades and the run the model evidence names are ONE run.
