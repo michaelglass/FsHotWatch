@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- feat!: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 18 -> 19).**
+- feat: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 18 -> 19).**
   Inline members are indexed with the synthetic attribute `TestPrune.Inline`. Recorded
   traces are re-recorded by the next full run; until then every test is selected.
 

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- feat!: inline members are indexed with the synthetic attribute `TestPrune.Inline`
+- feat: inline members are indexed with the synthetic attribute `TestPrune.Inline`
   (`AstAnalyzer.InlineAttributeName`), so readers of the attribute index can tell which
   members are inlined at their call sites. Index schema 19 (`SchemaVersion` 18 -> 19): upgrading costs one index rebuild and one re-record of every trace. Every existing index is recreated on first open, so the first run re-indexes the whole repository. Recorded traces are not deleted, but their fingerprint includes the schema version, so none of them is read under the new one: every test is selected until the next full run re-records it, and the first `check` after upgrading runs the full suite.
 
