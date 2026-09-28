@@ -40,6 +40,10 @@ let private run executable (arguments: string list) (environment: (string * stri
     start.UseShellExecute <- false
     start.RedirectStandardOutput <- true
     start.RedirectStandardError <- true
+    // Every argument is an absolute path. An inherited working directory is whatever the
+    // test host stands in, and a child started in a deleted one fails in `getcwd` before
+    // it reads an argument.
+    start.WorkingDirectory <- AppContext.BaseDirectory
     arguments |> List.iter start.ArgumentList.Add
 
     for key, value in environment do

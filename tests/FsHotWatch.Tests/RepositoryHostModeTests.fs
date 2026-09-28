@@ -350,12 +350,12 @@ type HostVerbInProcess() =
     [<InlineData("0", "off")>]
     member _.``the host verb serves a session end to end, and stops on request``(virtualRoot: string, logged: string) =
         withRepository (fun root stateHome ->
-            let cwd = Directory.GetCurrentDirectory()
             let switch = if virtualRoot = "" then None else Some virtualRoot
 
             withEnv RepositoryHostMode.VirtualRootEnvVar switch (fun () ->
                 withEnv "FSHW_STATE_HOME" (Some stateHome) (fun () ->
-                    try
+                    // The host verb stands the process in its control directory.
+                    withProcessWorkingDirectory None (fun () ->
                         let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
 
                         let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
@@ -374,7 +374,9 @@ type HostVerbInProcess() =
 
                         let ipc = sessionIpcOps link
                         test <@ ipc.IsRunning "ignored" @>
-                        test <@ not (String.IsNullOrWhiteSpace(ipc.GetStatus "ignored" |> Async.RunSynchronously)) @>
+
+                        test
+                            <@ not (String.IsNullOrWhiteSpace(ipc.GetStatus "ignored" |> Async.RunSynchronously)) @>
 
                         test
                             <@ not (String.IsNullOrWhiteSpace(ipc.ScanStatus "ignored" |> Async.RunSynchronously)) @>
@@ -391,9 +393,7 @@ type HostVerbInProcess() =
                         test <@ stopRepositoryHost root = 0 @>
                         test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
                         test <@ repositoryStatus false root = 0 @>
-                        test <@ stopRepositoryHost root = 0 @>
-                    finally
-                        Directory.SetCurrentDirectory cwd)))
+                        test <@ stopRepositoryHost root = 0 @>))))
 
     [<Fact(Timeout = 60000)>]
     member _.``the host verb refuses a root it cannot resolve``() =
