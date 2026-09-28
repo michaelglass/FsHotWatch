@@ -11,7 +11,7 @@ module internal FsHotWatch.Locking
 open System.Threading
 
 /// Run `work` while holding `gate`, releasing it however `work` ends.
-let inline locked (gate: Lock) ([<InlineIfLambda>] work: unit -> 'T) : 'T =
+let locked (gate: Lock) (work: unit -> 'T) : 'T =
     gate.Enter()
 
     try
@@ -21,7 +21,7 @@ let inline locked (gate: Lock) ([<InlineIfLambda>] work: unit -> 'T) : 'T =
 
 /// `locked` for a monitor: for a gate that `Monitor.Wait` and `Monitor.Pulse` also
 /// use, which a `Lock` does not support.
-let inline monitored (gate: obj) ([<InlineIfLambda>] work: unit -> 'T) : 'T =
+let monitored (gate: obj) (work: unit -> 'T) : 'T =
     Monitor.Enter gate
 
     try
