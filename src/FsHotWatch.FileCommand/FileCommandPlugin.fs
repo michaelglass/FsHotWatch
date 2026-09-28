@@ -249,8 +249,7 @@ let create
         let triggerKey = subtaskKey nameStr reason
 
         async {
-            let runStarted = DateTime.UtcNow
-            ctx.ReportStatus(Running(since = runStarted))
+            let runElapsed = PluginCtxHelpers.beginRun ctx
 
             return!
                 PluginCtxHelpers.withSubtask
@@ -271,7 +270,7 @@ let create
                                 | _ -> CommandFailed output
 
                             let finishedAt = DateTime.UtcNow
-                            let elapsed = finishedAt - runStarted
+                            let elapsed = runElapsed ()
 
                             match processResult with
                             | ProcessOutcome.Succeeded _ ->
@@ -323,9 +322,7 @@ let create
                         with ex ->
                             ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
 
-                            ctx.ReportStatus(
-                                PluginStatus.failedNow ex.Message $"%s{nameStr}: crashed" (DateTime.UtcNow - runStarted)
-                            )
+                            ctx.ReportStatus(PluginStatus.failedNow ex.Message $"%s{nameStr}: crashed" (runElapsed ()))
 
                             ctx.EmitCommandCompleted(
                                 { Name = nameStr

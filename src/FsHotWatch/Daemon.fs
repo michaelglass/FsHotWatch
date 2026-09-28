@@ -2120,15 +2120,15 @@ module internal StallWatch =
 let internal daemonShuttingDownMessage = "daemon shutting down"
 
 /// Wait for all plugins to settle: one pinned publication of the host's owned work
-/// holds none, and the host has been quiet through a 200ms quiescence window measured
-/// from the most recent host activity (event dispatch or status change).
+/// holds none and satisfies the caller's `restRequires`. There is no time window.
 ///
 /// Rest is read from the owner publication, never from reported statuses: an event is
 /// owned from admission until its state is committed, an exclusive run from its claim
 /// until its result fold commits, and a dispatch fan-out until every recipient has
-/// admitted its event. A plugin that merely reports `Running` owns nothing. The
-/// quiescence window covers work the daemon has not yet handed to the host (a scan
-/// between two files). Times out with TimeoutException after the specified timeout.
+/// admitted its event. A plugin that merely reports `Running` owns nothing. Work the
+/// daemon has not yet handed to the host (a scan between two files) is owned by the
+/// scan and change-batch supervisors, which publish into the same store. Times out
+/// with TimeoutException after the specified timeout.
 ///
 /// `ct` is the daemon's shutdown token. When it fires mid-wait, the returned
 /// task faults with OperationCanceledException so the in-flight WaitForComplete

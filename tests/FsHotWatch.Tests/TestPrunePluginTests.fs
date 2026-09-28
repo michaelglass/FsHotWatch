@@ -5530,7 +5530,7 @@ let ``a cold-start BuildCompleted must NOT replay a test result from the task ca
         waitForQuiescent host2 30000
 
         let scope = host2.RunCommand("test-scope", [||]) |> Async.RunSynchronously
-        test <@ scope.IsSome && scope.Value.Contains "\"scope\":\"full\"" @>)
+        test <@ scope.IsSome && scope.Value.Contains "\"kind\":\"full\"" @>)
 
 [<Fact(Timeout = 5000)>]
 let ``an extension refresh line names the extension, its edges and how long the refresh took`` () =

@@ -941,7 +941,7 @@ module BaselineFixtures =
     let baseline = FsHotWatch.Cli.CheckVerdict.Baseline.FullSuiteRun ref
 
     /// The JSON fragment a mocked `test-scope` reply carries for this baseline —
-    /// appended inside the reply object, so `"scope":"full",...` stays as written.
+    /// appended inside the reply object, so `"kind":"full",...` stays as written.
     let replyFragment =
         $""","baseline":{{"runId":"{runId.ToString("N")}","earnedAt":"{earnedAt.ToString("o")}","projects":["P"]}}"""
 

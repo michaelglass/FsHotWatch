@@ -398,6 +398,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     let mutable updateCallCount = 0
 
     let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler: PluginHandler<unit, obj> =
         { Name = PluginName.create "test-plugin"
@@ -436,6 +437,7 @@ let ``plugin stores result on cache miss then hits on second event`` () =
     let mutable updateCallCount = 0
 
     let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler: PluginHandler<unit, obj> =
         { Name = PluginName.create "counter-plugin"
@@ -464,6 +466,53 @@ let ``plugin stores result on cache miss then hits on second event`` () =
     host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
     Thread.Sleep(200)
     test <@ updateCallCount = 1 @>
+
+// The key names the file and its inputs, not the model, so a hit for a result
+// stamped by a model the host no longer publishes would stand in for a fold the
+// handler may refuse. Such a result always reaches `Update` and is never stored.
+[<Fact(Timeout = 15000)>]
+let ``a FileChecked from a superseded model is neither replayed nor cached`` () =
+    let cache = InMemoryTaskCache()
+    let compKey = ck "stale-plugin" (compositeFileKey "/tmp/test" "/src/C.fs")
+
+    cache.Set(
+        compKey,
+        hash "commit-stale",
+        { CacheKey = hash "commit-stale"
+          Errors = [ ("/src/C.fs", [ ErrorEntry.warningWithDetail "cached warning" "d" ]) ]
+          Status = cachedFileDone
+          EmittedEvents = [] }
+    )
+
+    let mutable updateCallCount = 0
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+    host.WorkStore.PublishProjectModel(fixtureModelOf 2L)
+
+    let handler: PluginHandler<unit, obj> =
+        { Name = PluginName.create "stale-plugin"
+          Init = ()
+          Update =
+            fun ctx state _event ->
+                async {
+                    System.Threading.Interlocked.Increment(&updateCallCount) |> ignore
+                    ctx.ReportStatus(completedAt DateTime.UtcNow)
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some(hash "commit-stale"))
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    // Stamped with generation 1; the host publishes generation 2.
+    host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
+    waitForTerminalStatus host "stale-plugin" 5000
+
+    test <@ updateCallCount = 1 @>
+    test <@ host.GetErrorsByPlugin "stale-plugin" |> Map.isEmpty @>
+    // The run's own (empty) result did not overwrite the entry.
+    test <@ (cache.TryGet(compKey, hash "commit-stale") |> Option.map _.Errors.IsEmpty) = Some false @>
 
 [<Fact(Timeout = 15000)>]
 let ``plugin runs Update when cache key changes`` () =

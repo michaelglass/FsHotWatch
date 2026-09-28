@@ -30,6 +30,7 @@ open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
+open FsHotWatch.Json
 
 /// Identifies the on-disk contract. Consumers depend on this file now; a
 /// breaking change to its shape MUST bump this string.
@@ -2445,40 +2446,6 @@ let tryPublishTerminal
 // ---------------------------------------------------------------------------
 // Reading it back — the CLI reads the same file it writes. No second truth.
 // ---------------------------------------------------------------------------
-
-/// `JsonElement.TryGetProperty` THROWS on a non-object element rather than returning
-/// false, so a verdict whose `scope` is a bare string (a hand edit, a future schema)
-/// would raise `InvalidOperationException` out of `read`, past its `JsonException`
-/// handler, and crash the caller. Here, asking a non-object for a field simply answers
-/// "it hasn't got one".
-let private tryProp (el: JsonElement) (name: string) : JsonElement option =
-    if el.ValueKind <> JsonValueKind.Object then
-        None
-    else
-        match el.TryGetProperty(name) with
-        | true, v -> Some v
-        | _ -> None
-
-let private tryString (el: JsonElement) (name: string) : string option =
-    match tryProp el name with
-    | Some v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
-    | _ -> None
-
-let private tryInt (el: JsonElement) (name: string) : int option =
-    match tryProp el name with
-    | Some v when v.ValueKind = JsonValueKind.Number ->
-        match v.TryGetInt32() with
-        | true, n -> Some n
-        | _ -> None
-    | _ -> None
-
-let private tryInt64 (el: JsonElement) (name: string) : int64 option =
-    match tryProp el name with
-    | Some v when v.ValueKind = JsonValueKind.Number ->
-        match v.TryGetInt64() with
-        | true, n -> Some n
-        | _ -> None
-    | _ -> None
 
 /// Additive fields: absent in older verdicts, which read back as
 /// "no interval evidence" — `Attribution.none` — rather than as unreadable. Malformed

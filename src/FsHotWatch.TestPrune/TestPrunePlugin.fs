@@ -7938,6 +7938,14 @@ let internal createWithQueries
               async { return JsonSerializer.Serialize(state.ChangedFiles) })
 
           "test-results",
+          // Reports the LAST COMMITTED result set, never a run that has not folded.
+          // `IsRunning "tests"` is true only while the run's worker is live. Between the
+          // worker finishing and its `TestsFinished`/`CommandTestsFinished` fold committing,
+          // the key is held by that pending fold: `IsRunning` is false and `state` is still
+          // the pre-fold state, so this answers the PREVIOUS run's results (or `not run`),
+          // not `running`. The plugin status still reads `Running` through that window —
+          // the fold is what reports the terminal status — and a `run-tests` caller is
+          // answered by the fold itself, with the new run's results.
           PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   if ctx.IsRunning "tests" then
@@ -8035,6 +8043,16 @@ let internal createWithQueries
                         // grades nothing, so a `confirm` reading it escalates to a run under
                         // the model it is graded against instead of grading a run that no
                         // evidence for that model names.
+                        //
+                        // While a finished run's fold is still pending (the worker is gone,
+                        // so `IsRunning "tests"` is false, but the fold holding the key has
+                        // not committed), this reports the LAST COMMITTED receipt, scope and
+                        // completed runs — the previous run's — not `running`. That receipt
+                        // passes through the same input-tree and model checks as any other,
+                        // so it is served only if it still speaks for the tree on disk; it
+                        // never names the pending run. The plugin status still reads
+                        // `Running` until the fold reports the terminal one, so a reader that
+                        // waits for that terminal status reads the new run's receipt.
                         let currentTree = lazy (ReceiptInputTree.read repoRoot)
 
                         let receipt =
@@ -8122,7 +8140,7 @@ let internal createWithQueries
                         if ctx.IsRunning "tests" then
                             return
                                 JsonSerializer.Serialize(
-                                    {| scope = "running"
+                                    {| kind = "running"
                                        runId = runId
                                        runIds = runIds
                                        baseline = baseline
@@ -8138,7 +8156,7 @@ let internal createWithQueries
                             | ScopeFull n ->
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "full"
+                                        {| kind = "full"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8151,7 +8169,7 @@ let internal createWithQueries
                             | ScopeFiltered(ran, total) ->
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "filtered"
+                                        {| kind = "filtered"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8182,7 +8200,7 @@ let internal createWithQueries
 
                                 return
                                     JsonSerializer.Serialize(
-                                        {| scope = "none"
+                                        {| kind = "none"
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8229,7 +8247,7 @@ let internal createWithQueries
                         | Some(runId, wouldHaveRun, reach, recall) ->
                             let projects = allConfigs |> List.map (fun c -> c.Project)
 
-                            let scope, ranProjects, totalProjects =
+                            let kind, ranProjects, totalProjects =
                                 match wouldHaveRun |> Option.map (scopeOfSelection projects) with
                                 | Some(ScopeFull n) -> box "full", n, n
                                 | Some(ScopeFiltered(ran, total)) -> box "filtered", ran, total
@@ -8283,7 +8301,7 @@ let internal createWithQueries
                                 JsonSerializer.Serialize(
                                     {| recorded = true
                                        runId = runId.ToString("N")
-                                       scope = scope
+                                       kind = kind
                                        ranProjects = ranProjects
                                        totalProjects = totalProjects
                                        reach = CheckReach.token reach

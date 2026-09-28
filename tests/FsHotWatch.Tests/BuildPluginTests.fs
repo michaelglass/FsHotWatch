@@ -3774,3 +3774,29 @@ let ``a failed build mints evidence for the model it failed under; a passing one
         |> Async.RunSynchronously
 
     test <@ (unobserved :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``a passing build folded over a failed one retires the failure proof`` () =
+    let handler = warmedHandler "echo" "ok" []
+
+    let foldFrom state outcome =
+        handler.Update (modelObservingCtx 4L) state (Custom(BuildDone(outcome, [], TimeSpan.Zero)))
+        |> Async.RunSynchronously
+
+    let failedState =
+        foldFrom handler.Init (BuildOutputFailed [ "error FS0039: not defined" ])
+
+    // Positive control: the predecessor really holds a proof, so the retirement below
+    // is a transition, not the initial state read twice.
+    test <@ (failedState :> ICompletedBuildFailureState).CompletedBuildFailure.IsSome @>
+
+    // A real successor that passes is the newer answer about the same model. Keeping the
+    // old proof would let an evidence wait end on a failure the tree no longer has.
+    let recovered = foldFrom failedState (BuildPassed("ok", None))
+    test <@ (recovered :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
+
+    // And a later failure mints a fresh proof rather than being masked by the recovery.
+    let failedAgain =
+        foldFrom recovered (BuildOutputFailed [ "error FS0001: type mismatch" ])
+
+    test <@ (failedAgain :> ICompletedBuildFailureState).CompletedBuildFailure.IsSome @>

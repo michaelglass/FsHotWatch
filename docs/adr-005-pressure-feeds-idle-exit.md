@@ -89,3 +89,18 @@ busy-guard, and scan-in-progress flag — is also far less machinery.
   reversed before release once the trim-vs-quit analysis above made clear the
   trim was dominated. The mechanism origin (`exp/idle-trim`) and that the
   file-backed CheckCache survives a restart both remain documented in ADR-004.
+
+## Amendment (2026-09-28): pressure shortens the window, never an inhibitor
+
+Pressure changes only the length of the window. The inhibitors ADR-004's amendment lists
+(owned work, a client observation lease, a scan in flight) are checked on every tick
+whatever the window, so a pressured daemon with a client blocked on a verdict still does
+not quit; it quits on the first tick after the lease is released and the shortened window
+has elapsed.
+
+The consequence above that idle-exit "never needed `ScanInProgress`" no longer describes
+the code: an in-flight scan is now an explicit inhibitor (`IdleInhibitor.ScanInFlight`),
+because a cold scan spends minutes in project discovery, build settlement and the
+check tiers with no plugin work owned, and under the pressure floor a daemon was read
+as idle and terminated mid-scan. The scan holds its lease for its whole span and releases
+it on every exit (`ScanActivity`). The pressure-trim deletion it records stands.

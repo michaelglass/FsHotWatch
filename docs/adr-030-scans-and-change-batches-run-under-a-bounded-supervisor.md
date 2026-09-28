@@ -153,3 +153,29 @@ fires on.
   records its own failure, the row stops counting, and the wedge fires exactly as before.
   An ordinary event fold is never `Supervised`: nothing will ever time it out, so a handler
   that never returns is still named, which is the case this detector exists for.
+
+## Amendment (2026-09-28): exclusive runs and preprocessor passes stay bounded by their tools
+
+"Not in this change" above left exclusive plugin runs and preprocessor passes without a
+supervisor deadline. That is now the decision, not a gap: the host does not put its own
+deadline around them.
+
+- **What bounds them is the process they spawn.** The tools the shipped plugins and the
+  format preprocessor start go through `ProcessHelper` and ADR-027's per-operation scope,
+  under the `timeoutSec` configured for them; the format preprocessor has its own default
+  (`FormatTimeoutDefaultSec`). A spawn with no timeout is logged as one when it starts. On
+  timeout the helper kills the process tree, so the callback returns with a failure it can
+  report. A third-party plugin or preprocessor owns the same obligation for what it runs.
+- **Why not a host deadline as well.** A host deadline cannot retire a callback that does
+  not return: .NET offers no way to stop a thread, so the host could only record a failure
+  and leave the callback owning its work, which is what a change batch's own deadline
+  already does for a preprocessor inside it. The failure it would record adds nothing the
+  batch deadline and the wedge diagnostic do not already say, and a second clock over the
+  same work is a second answer that can disagree with the first.
+- **What remains visible.** A callback that never returns stays owned: the host is not at
+  rest, `WaitForComplete` names the owner at its deadline, and a change batch that holds it
+  past the batch deadline is recorded as a failed operation. It is never read as rest or as
+  a green.
+
+Reopen this if a hang is seen inside host code that spawns no process, where no tool bound
+can reach it.

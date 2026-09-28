@@ -23,6 +23,11 @@
   later checks replay as before. Until a retired file is analysed again, runs fall back
   to every test project, no change is dropped as uncovered, and the zero-test green is
   refused. Both are logged.
+- change: the `test-scope` and `check-reach` replies carry the scope label under
+  `kind`, the key the verdict file's `scope` object uses, instead of `scope`. A CLI
+  from before this change reads a newer daemon's reply as an unreadable scope and
+  refuses a verdict rather than guessing.
+
 
 ## 0.13.0-alpha.58 - 2026-09-28
 

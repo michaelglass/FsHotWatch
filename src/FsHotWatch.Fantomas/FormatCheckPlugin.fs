@@ -177,8 +177,7 @@ let internal createFormatCheckWith
                         | SourceChanged files -> files
                         | _ -> []
 
-                    let runStarted = DateTime.UtcNow
-                    ctx.ReportStatus(Running(since = runStarted))
+                    let elapsed = PluginCtxHelpers.beginRun ctx
                     ctx.StartSubtask PrimarySubtaskKey $"checking format of %d{files.Length} files"
 
                     let files = formattable (ignoreCache.Get(ctx.RepoRoot)) files
@@ -220,16 +219,7 @@ let internal createFormatCheckWith
                     | Error(reason, Some after) ->
                         Logging.error "format" $"Format check TIMED OUT: %s{reason}"
 
-                        // Flip the recorded outcome to TimedOut; the verdict
-                        // carries the summary (one channel).
-                        ctx.CompleteWithTimeout reason
-
-                        ctx.ReportStatus(
-                            PluginStatus.failedNow
-                                $"format check timed out: {reason}"
-                                $"format check timed out: {reason}"
-                                after
-                        )
+                        PluginCtxHelpers.timedOutWith ctx "format check" reason after
 
                         return state
                     | Error(reason, None) ->
@@ -238,16 +228,12 @@ let internal createFormatCheckWith
                         // cache key is `None` for the same reason).
                         ctx.Log $"format check refused: %s{reason}"
 
-                        PluginCtxHelpers.failedWith
-                            ctx
-                            reason
-                            $"format check refused: %s{reason}"
-                            (DateTime.UtcNow - runStarted)
+                        PluginCtxHelpers.failedWith ctx reason $"format check refused: %s{reason}" (elapsed ())
 
                         return state
                     | Ok None ->
                         // "format OK" would be a green earned by checking nothing.
-                        PluginCtxHelpers.completeWith ctx "no files to check" (DateTime.UtcNow - runStarted)
+                        PluginCtxHelpers.completeWith ctx "no files to check" (elapsed ())
                         return state
                     | Ok(Some(pin, report)) ->
                         let unformatted = Set.ofList report.NeedsFormatting
@@ -299,7 +285,7 @@ let internal createFormatCheckWith
                             else
                                 $"%d{unformattedInRun} of %d{checkedInRun} files need formatting — %s{evidence}"
 
-                        PluginCtxHelpers.completeWith ctx summary (DateTime.UtcNow - runStarted)
+                        PluginCtxHelpers.completeWith ctx summary (elapsed ())
 
                         return { Unformatted = newUnformatted }
                 | _ -> return state

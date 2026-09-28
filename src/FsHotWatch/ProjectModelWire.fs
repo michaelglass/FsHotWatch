@@ -38,28 +38,9 @@ let payload (observation: Observation) : obj =
 
 /// A malformed or unknown payload does not establish an available model.
 let tryRead (root: JsonElement) : Observation option =
-    let field name =
-        match root.TryGetProperty(name: string) with
-        | true, value -> Some value
-        | _ -> None
-
-    let text name =
-        field name
-        |> Option.bind (fun value ->
-            if value.ValueKind = JsonValueKind.String then
-                Some(value.GetString())
-            else
-                None)
-
-    let number name =
-        field name
-        |> Option.bind (fun value ->
-            if value.ValueKind = JsonValueKind.Number then
-                match value.TryGetInt64() with
-                | true, number -> Some number
-                | _ -> None
-            else
-                None)
+    let field = Json.tryProp root
+    let text = Json.tryString root
+    let number = Json.tryInt64 root
 
     if root.ValueKind <> JsonValueKind.Object || text "schema" <> Some Schema then
         None
@@ -70,13 +51,7 @@ let tryRead (root: JsonElement) : Observation option =
         | Some status, Some generation when status = "available" || status = "unavailable" ->
             match field "counts" with
             | Some counts when counts.ValueKind = JsonValueKind.Object ->
-                let count name =
-                    match counts.TryGetProperty(name: string) with
-                    | true, value when value.ValueKind = JsonValueKind.Number ->
-                        match value.TryGetInt32() with
-                        | true, number -> Some number
-                        | _ -> None
-                    | _ -> None
+                let count = Json.tryInt counts
 
                 match count "discovered", count "loaded", count "optionsMapped", count "registered" with
                 | Some discovered, Some loaded, Some mapped, Some registered ->

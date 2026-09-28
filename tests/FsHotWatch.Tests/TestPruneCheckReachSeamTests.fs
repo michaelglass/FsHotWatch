@@ -68,7 +68,7 @@ let ``full-suite completion serves the narrower retained impact selection`` () =
         use reply = checkReachReply host
         let root = reply.RootElement
         Assert.True(root.GetProperty("recorded").GetBoolean())
-        Assert.Equal("filtered", root.GetProperty("scope").GetString())
+        Assert.Equal("filtered", root.GetProperty("kind").GetString())
         Assert.Equal(1, root.GetProperty("ranProjects").GetInt32())
         Assert.Equal(2, root.GetProperty("totalProjects").GetInt32())
         Assert.Equal("no-failures-to-reach", root.GetProperty("reach").GetString()))
@@ -83,7 +83,7 @@ let ``impact completion reports absent comparison instead of inventing a selecti
         use reply = checkReachReply host
         let root = reply.RootElement
         Assert.True(root.GetProperty("recorded").GetBoolean())
-        Assert.Equal(JsonValueKind.Null, root.GetProperty("scope").ValueKind)
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("kind").ValueKind)
         Assert.Equal("unknown", root.GetProperty("reach").GetString())
 
         let expectedReason =

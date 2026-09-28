@@ -312,6 +312,7 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler = create None None None None
     host.RegisterHandler(handler)
@@ -432,6 +433,75 @@ let ``lint refuses a FileChecked captured against a superseded model`` () =
     test <@ errors |> Map.containsKey removed |> not @>
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+
+// The refusal above lives in the plugin's `Update`, but a task-cache hit replays the
+// cached findings WITHOUT running `Update`, and the lint cache key names the file and
+// its inputs, not the model. So a superseded result for a file the new model dropped
+// must not be served from the cache either — otherwise the replay re-adds the finding
+// the rediscovery just cleared.
+[<Fact(Timeout = 20000)>]
+let ``lint does not replay a cached finding for a superseded model's result`` () =
+    let repoRoot = "/my/repo"
+    let removed = "/my/repo/src/Removed.fs"
+    let present = "/my/repo/src/Present.fs"
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+    host.WorkStore.PublishProjectModel fixtureModel
+
+    let linted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let runner (result: FileCheckResult) =
+        linted.Enqueue(AbsFilePath.value result.File)
+        Lint.LintResult.Success []
+
+    let handler = create (Some repoRoot) None (Some runner) None
+    host.RegisterHandler(handler)
+
+    let staleRemoved = fakeFileCheckResult removed
+
+    let currentPresent =
+        { fakeFileCheckResult present with
+            ModelGeneration = Some 2L }
+
+    // Seed a hit for each result, as an earlier run under generation 1 would have.
+    let seed (result: FileCheckResult) =
+        let file = AbsFilePath.value result.File
+        let cacheKey = ((handler.CacheKey.Value handler.Init) (FileChecked result)).Value
+
+        cache.Set
+            { Plugin = "lint"
+              File = Some(compositeFileKey repoRoot file) }
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = [ file, [ ErrorEntry.warningWithDetail "FL0065" "cached" ] ]
+              Status = FsHotWatch.TaskCache.CachedFileCompleted(System.TimeSpan.FromMilliseconds 7.0)
+              EmittedEvents = [] }
+
+    seed staleRemoved
+    seed currentPresent
+
+    // The rediscovery lands: generation 2 no longer has Removed.fs, and the host has
+    // already cleared its findings.
+    host.WorkStore.PublishProjectModel(fixtureModelOf 2L)
+    host.ClearFileEverywhere(removed)
+
+    host.EmitFileChecked(staleRemoved)
+    // Positive control, emitted second: the mailbox serializes per-plugin events, so its
+    // terminal status proves the stale one was already dequeued.
+    host.EmitFileChecked(currentPresent)
+
+    waitForTerminalStatus host "lint" 15000
+
+    let errors = host.GetErrorsByPlugin("lint")
+
+    test <@ errors |> Map.containsKey removed |> not @>
+    // The current-generation result is still served from the cache...
+    test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+    // ...and neither result reached the linter: one was refused, one replayed.
+    test <@ linted.IsEmpty @>
 
 // The refusal has two disjuncts and the test above exercises only one of them: a
 // result stamped with a generation that is no longer in force. The other is a result

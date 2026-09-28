@@ -1434,6 +1434,27 @@ let internal registerHandlerForOwner
                             | None -> None
                         | _ -> None
 
+                    /// The generation of the model the host publishes now; `None` while
+                    /// no model is available.
+                    let currentModelGeneration () =
+                        match services.ProjectGraph.ObserveModel() with
+                        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+                        | _ -> None
+
+                    /// Whether the cache may serve or store this event's result. A
+                    /// `FileChecked` stamped with no generation, or with one other than
+                    /// the available model's, describes a model this host no longer
+                    /// publishes: its cache key names the file and its inputs, not the
+                    /// model, so a hit would replay findings for a file the new model may
+                    /// have dropped, after the rediscovery cleared them, without ever
+                    /// reaching the `Update` that refuses such a result.
+                    let cacheable (event: PluginEvent<'Msg>) =
+                        match event with
+                        | FileChecked result ->
+                            result.ModelGeneration.IsSome
+                            && result.ModelGeneration = currentModelGeneration ()
+                        | _ -> true
+
                     /// The state a replayed event leaves. A replay skips `Update`, but a
                     /// `FileChecked` hit is a completed analysis of the same inputs, and a
                     /// state that records per-file outcomes records this one too, against
@@ -1445,10 +1466,7 @@ let internal registerHandlerForOwner
                         =
                         match event, box state with
                         | FileChecked result, (:? Events.IFileReplayState<'State> as holder) ->
-                            let currentModel =
-                                match services.ProjectGraph.ObserveModel() with
-                                | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
-                                | _ -> None
+                            let currentModel = currentModelGeneration ()
 
                             let analysis =
                                 match replayed.Status with
@@ -1748,7 +1766,11 @@ let internal registerHandlerForOwner
                                 async {
                                     try
                                         // Computed ONCE per dispatched event — see `tryReplayCache`.
-                                        let cacheKeyOpt = handler.CacheKey |> Option.bind (fun key -> key state event)
+                                        let cacheKeyOpt =
+                                            if cacheable event then
+                                                handler.CacheKey |> Option.bind (fun key -> key state event)
+                                            else
+                                                None
 
                                         // A `Custom` message is a cache WRITER, never a cache READER.
                                         //
@@ -1973,6 +1995,25 @@ module PluginCtxHelpers =
     /// measured duration — same single channel as `completeWith`.
     let failedWith (ctx: PluginCtx<'Msg>) (error: string) (summary: string) (elapsed: System.TimeSpan) : unit =
         ctx.ReportStatus(PluginStatus.failedNow error summary elapsed)
+
+    /// Report `Running` now and return the run's clock: the time elapsed since that
+    /// report. A terminal's measured duration read from it cannot come apart from the
+    /// `Running` it is measured from, so a run that reports `Running` this way always
+    /// has a real duration to report.
+    let beginRun (ctx: PluginCtx<'Msg>) : unit -> System.TimeSpan =
+        let started = System.DateTime.UtcNow
+        ctx.ReportStatus(Running(since = started))
+        fun () -> System.DateTime.UtcNow - started
+
+    /// Report a run that timed out after `after`: the recorded outcome is
+    /// `TimedOut reason`, and the terminal `Failed` says "`what` timed out: `reason`"
+    /// as both its error and its summary. The order is the protocol:
+    /// `CompleteWithTimeout` comes first because the terminal consumes it, and a
+    /// terminal on its own records the outcome as a failed run, not a timeout.
+    let timedOutWith (ctx: PluginCtx<'Msg>) (what: string) (reason: string) (after: System.TimeSpan) : unit =
+        ctx.CompleteWithTimeout reason
+        let message = $"%s{what} timed out: %s{reason}"
+        ctx.ReportStatus(PluginStatus.failedNow message message after)
 
     /// Report or clear the per-file error scope based on whether any entries exist.
     /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file

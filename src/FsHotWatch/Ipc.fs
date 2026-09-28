@@ -50,15 +50,11 @@ let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
 /// `FSHW_VERDICT_DEADLINE_SEC` env value). A positive integer count of seconds
 /// wins; anything else (absent, unparseable, non-positive) falls back to
 /// `DefaultVerdictDeadline` — there is intentionally NO "infinite" setting.
-/// Pure so the precedence is unit-testable without touching process env.
-/// Mirrors `ProcessHelper.resolveLaunchDeadline`.
+/// Pure so the precedence is unit-testable without touching process env; the override
+/// is read by `ProcessHelper.tryPositiveSeconds`.
 let resolveVerdictDeadline (overrideSec: string option) : TimeSpan =
-    match overrideSec with
-    | Some s ->
-        match Int32.TryParse(s: string) with
-        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
-        | _ -> DefaultVerdictDeadline
-    | None -> DefaultVerdictDeadline
+    ProcessHelper.tryPositiveSeconds overrideSec
+    |> Option.defaultValue DefaultVerdictDeadline
 
 /// The ambient RPC deadline: `FSHW_VERDICT_DEADLINE_SEC`, else 60 min.
 let internal ambientRpcDeadline () =

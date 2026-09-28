@@ -171,17 +171,9 @@ let private escapesRepo (path: string) =
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// A blank string field reads as absent, like a missing one.
 let private tryStringProp (el: JsonElement) (name: string) : string option =
-    match el.TryGetProperty name with
-    | true, v when v.ValueKind = JsonValueKind.String ->
-        // `IsNullOrWhiteSpace` covers null too. A separate `| null ->` arm would be a
-        // branch nothing can reach — `GetString()` returns null only for a JSON `null`,
-        // which the `ValueKind = String` guard has already excluded — and an unreachable
-        // arm is a permanent coverage hole standing in for a distinction not being made.
-        match v.GetString() with
-        | s when String.IsNullOrWhiteSpace s -> None
-        | s -> Some s
-    | _ -> None
+    Json.tryString el name |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
 /// Parse one `{ path, <reasonKey> }` entry. Both fields are required, and the
 /// error names WHICH entry so a 29-entry declaration is fixable without bisecting.

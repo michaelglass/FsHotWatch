@@ -125,3 +125,34 @@ let ``failedWith reports a Failed status carrying BOTH the diagnosis and the ver
         test <@ v.Summary = "2 failed: A, B" @>
         test <@ v.Elapsed = TimeSpan.FromSeconds 4.0 @>
     | other -> failwithf "expected Failed carrying a verdict, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``timedOutWith flips the outcome to TimedOut before reporting the terminal`` () =
+    let ctx, calls, statuses = makeRecordingCtx ()
+
+    PluginCtxHelpers.timedOutWith ctx "lint" "timed out after 30s" (TimeSpan.FromSeconds 30.0)
+
+    // The terminal consumes the override, so the override must come first.
+    test <@ calls |> Seq.toList = [ "Timeout timed out after 30s"; "ReportStatus" ] @>
+
+    match List.ofSeq statuses with
+    | [ Failed(err, _, v) ] ->
+        test <@ err = "lint timed out: timed out after 30s" @>
+        test <@ v.Summary = "lint timed out: timed out after 30s" @>
+        test <@ v.Elapsed = TimeSpan.FromSeconds 30.0 @>
+    | other -> failwithf "expected one Failed terminal, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``beginRun reports Running and measures from that instant`` () =
+    let ctx, _, statuses = makeRecordingCtx ()
+
+    let elapsed = PluginCtxHelpers.beginRun ctx
+    let measured = elapsed ()
+    let after = DateTime.UtcNow
+
+    match List.ofSeq statuses with
+    | [ Running since ] ->
+        test <@ measured >= TimeSpan.Zero @>
+        // The clock starts at the reported `since`, not at some other instant.
+        test <@ measured <= after - since @>
+    | other -> failwithf "expected one Running status, got %A" other
