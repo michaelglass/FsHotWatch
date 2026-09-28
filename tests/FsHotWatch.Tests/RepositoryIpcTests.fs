@@ -136,3 +136,59 @@ let ``a reply that is not a preamble reply is an error, not an answer`` () =
                     |> ignore)
 
             test <@ ex.Message.Contains "unreadable" @>)
+
+/// A real endpoint serving `handlers` for the length of `body`.
+let private withEndpoint (handlers: EndpointHandlers) (body: string -> unit) =
+    let endpoint = "fshw-test-" + Guid.NewGuid().ToString "N"
+    use cts = new CancellationTokenSource()
+    let serving = Async.StartImmediateAsTask(serve endpoint handlers cts)
+
+    try
+        body endpoint
+    finally
+        cts.Cancel()
+        serving.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+let private refusingHandlers (attachWith: string -> string) : EndpointHandlers =
+    { Attach = attachWith
+      Undelivered = ignore
+      Session = fun _ _ -> Threading.Tasks.Task.FromResult(Error("unknown-session", "no sessions in this test"))
+      Repository = fun _ -> obj () }
+
+/// The smallest frame the endpoint reads as an attach; the handler decides the rest.
+let private attachPreamble =
+    $"{{\"schema\":\"%s{FsHotWatch.AttachHandshake.Schema}\"}}"
+
+// The orphaned-host incident: an attach that took longer than the preamble bound on a
+// loaded box registered its session, then had its reply cancelled. The client read
+// "no reply", and the session it never learned of kept the host up for 11 hours.
+[<Fact(Timeout = 60000)>]
+let ``an attach that outlasts the preamble bound is still answered`` () =
+    let slowAttach _ =
+        Thread.Sleep(PreambleBound + TimeSpan.FromSeconds 1.0)
+        "attached"
+
+    withEndpoint (refusingHandlers slowAttach) (fun endpoint ->
+        test <@ attach endpoint attachPreamble |> Async.RunSynchronously = "attached" @>)
+
+[<Fact(Timeout = 60000)>]
+let ``an attach whose client left before the answer is undone`` () =
+    let clientGone = new ManualResetEventSlim(false)
+    let undone = Threading.Tasks.TaskCompletionSource<string>()
+
+    let handlers =
+        { refusingHandlers (fun _ ->
+              clientGone.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+              "attached") with
+            Undelivered = fun answer -> undone.TrySetResult answer |> ignore }
+
+    withEndpoint handlers (fun endpoint ->
+        do
+            use client =
+                new IO.Pipes.NamedPipeClientStream(".", endpoint, IO.Pipes.PipeDirection.InOut)
+
+            client.Connect 5000
+            (writeFrame client attachPreamble CancellationToken.None).Wait()
+
+        clientGone.Set()
+        test <@ undone.Task.Wait(TimeSpan.FromSeconds 20.0) && undone.Task.Result = "attached" @>)

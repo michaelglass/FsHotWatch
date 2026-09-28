@@ -497,6 +497,19 @@ let private deleteTempDirResilient (tmpDir: string) =
             else
                 System.Threading.Thread.Sleep(25)
 
+/// Delete `dir` and everything under it while something may still be writing there (a
+/// running daemon's `.fshw/`), retrying for up to `timeoutMs`. True once it is gone.
+let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
+    waitUntilTrue
+        (fun () ->
+            try
+                Directory.Delete(dir, true)
+                true
+            with
+            | :? DirectoryNotFoundException -> true
+            | :? IOException -> false)
+        timeoutMs
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).

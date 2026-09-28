@@ -96,6 +96,7 @@
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
     <Compile Include="IdleExitTests.fs" />
+    <Compile Include="VanishedRootTests.fs" />
     <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
     <Compile Include="RepositoryIdentityTests.fs" />
