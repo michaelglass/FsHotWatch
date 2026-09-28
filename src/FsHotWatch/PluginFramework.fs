@@ -1434,6 +1434,27 @@ let internal registerHandlerForOwner
                             | None -> None
                         | _ -> None
 
+                    /// The generation of the model the host publishes now; `None` while
+                    /// no model is available.
+                    let currentModelGeneration () =
+                        match services.ProjectGraph.ObserveModel() with
+                        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+                        | _ -> None
+
+                    /// Whether the cache may serve or store this event's result. A
+                    /// `FileChecked` stamped with no generation, or with one other than
+                    /// the available model's, describes a model this host no longer
+                    /// publishes: its cache key names the file and its inputs, not the
+                    /// model, so a hit would replay findings for a file the new model may
+                    /// have dropped, after the rediscovery cleared them, without ever
+                    /// reaching the `Update` that refuses such a result.
+                    let cacheable (event: PluginEvent<'Msg>) =
+                        match event with
+                        | FileChecked result ->
+                            result.ModelGeneration.IsSome
+                            && result.ModelGeneration = currentModelGeneration ()
+                        | _ -> true
+
                     /// The state a replayed event leaves. A replay skips `Update`, but a
                     /// `FileChecked` hit is a completed analysis of the same inputs, and a
                     /// state that records per-file outcomes records this one too, against
@@ -1445,10 +1466,7 @@ let internal registerHandlerForOwner
                         =
                         match event, box state with
                         | FileChecked result, (:? Events.IFileReplayState<'State> as holder) ->
-                            let currentModel =
-                                match services.ProjectGraph.ObserveModel() with
-                                | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
-                                | _ -> None
+                            let currentModel = currentModelGeneration ()
 
                             let analysis =
                                 match replayed.Status with
@@ -1748,7 +1766,11 @@ let internal registerHandlerForOwner
                                 async {
                                     try
                                         // Computed ONCE per dispatched event — see `tryReplayCache`.
-                                        let cacheKeyOpt = handler.CacheKey |> Option.bind (fun key -> key state event)
+                                        let cacheKeyOpt =
+                                            if cacheable event then
+                                                handler.CacheKey |> Option.bind (fun key -> key state event)
+                                            else
+                                                None
 
                                         // A `Custom` message is a cache WRITER, never a cache READER.
                                         //

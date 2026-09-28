@@ -1476,6 +1476,78 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
 
+// The refusal above lives in the plugin's `Update`, but a task-cache hit replays the
+// cached findings WITHOUT running `Update`, and the analyzers cache key names the file
+// and its inputs, not the model. So a superseded result for a file the new model
+// dropped must not be served from the cache either — otherwise the replay re-adds the
+// finding the rediscovery just cleared.
+[<Fact(Timeout = 20000)>]
+let ``analyzers do not replay a cached finding for a superseded model's result`` () =
+    let repoRoot = "/my/repo"
+    let removed = "/my/repo/src/Removed.fs"
+    let present = "/my/repo/src/Present.fs"
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
+    host.WorkStore.PublishProjectModel fixtureModel
+
+    let mutable analyzedCount = 0
+
+    let hook () =
+        Threading.Interlocked.Increment(&analyzedCount) |> ignore
+        failwith "analyzer boom"
+
+    let handler =
+        createWithSeams (Some repoRoot) [] None DiagnosticSeverity.Hint (Some hook) runSafely
+
+    host.RegisterHandler(handler)
+
+    let staleRemoved = fakeResult removed
+
+    let currentPresent =
+        { fakeResult present with
+            ModelGeneration = Some 2L }
+
+    // Seed a hit for each result, as an earlier run under generation 1 would have.
+    let seed (result: FileCheckResult) =
+        let file = AbsFilePath.value result.File
+        let cacheKey = ((handler.CacheKey.Value handler.Init) (FileChecked result)).Value
+
+        cache.Set
+            { Plugin = "analyzers"
+              File = Some(compositeFileKey repoRoot file) }
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = [ file, [ ErrorEntry.warningWithDetail "GRA-001" "cached" ] ]
+              Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 7.0)
+              EmittedEvents = [] }
+
+    seed staleRemoved
+    seed currentPresent
+
+    // The rediscovery lands: generation 2 no longer has Removed.fs, and the host has
+    // already cleared its findings.
+    host.WorkStore.PublishProjectModel(fixtureModelOf 2L)
+    host.ClearFileEverywhere(removed)
+
+    host.EmitFileChecked(staleRemoved)
+    // Positive control, emitted second: the mailbox serializes per-plugin events, so its
+    // terminal status proves the stale one was already dequeued.
+    host.EmitFileChecked(currentPresent)
+
+    waitForTerminalStatus host "analyzers" 15000
+
+    let errors = host.GetErrorsByPlugin("analyzers")
+
+    test <@ errors |> Map.containsKey removed |> not @>
+    // The current-generation result is still served from the cache...
+    test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+    // ...and neither result reached an analyzer: one was refused, one replayed.
+    let analyzed = Threading.Volatile.Read(&analyzedCount)
+    test <@ analyzed = 0 @>
+
 // A result captured while no model was observable describes no model, so it cannot
 // describe the one in force either.
 [<Fact(Timeout = 20000)>]
