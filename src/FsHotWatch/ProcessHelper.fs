@@ -1356,7 +1356,7 @@ let internal runProcessCore
     // a latch on the FIRST byte — the liveness signal the launch deadline keys off
     // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
     let output = StringBuilder()
-    let outputLock = obj ()
+    let outputLock = Lock()
     let mutable sawOutput = 0
     let mutable sinkBroken = false
 
@@ -1384,12 +1384,12 @@ let internal runProcessCore
     let onChunk (chunk: string) =
         Volatile.Write(&sawOutput, 1)
 
-        lock outputLock (fun () ->
+        Locking.locked outputLock (fun () ->
             output.Append(chunk) |> ignore
             emit chunk)
 
     let drainedOutput () =
-        lock outputLock (fun () -> output.ToString().Trim())
+        Locking.locked outputLock (fun () -> output.ToString().Trim())
 
     // A killed tree still needs draining so partial output is reported. The
     // kill's OUTCOME is returned, never discarded: a tree we could not tear down

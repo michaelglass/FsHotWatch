@@ -50,16 +50,7 @@ let fileSink (path: string) (level: LogLevel) : LogSink =
 
     let gate = System.Threading.Lock()
 
-    // Lock.Enter/Exit rather than F#'s `lock`, whose never-taken "lock not acquired"
-    // check is a branch no input reaches.
-    { Write =
-        fun line ->
-            gate.Enter()
-
-            try
-                System.IO.File.AppendAllText(path, line + "\n")
-            finally
-                gate.Exit()
+    { Write = fun line -> Locking.locked gate (fun () -> System.IO.File.AppendAllText(path, line + "\n"))
       Level = level }
 
 /// Check if a given level is enabled.

@@ -17,13 +17,7 @@ type Registry() =
     let gate = Lock()
     let mutable entries: Map<string, Entry> = Map.empty
 
-    let locked (work: unit -> 'T) : 'T =
-        gate.Enter()
-
-        try
-            work ()
-        finally
-            gate.Exit()
+    let locked work = Locking.locked gate work
 
     /// Whether `session` checks `project`, whose content hashes to `hash`, at the
     /// virtual root.

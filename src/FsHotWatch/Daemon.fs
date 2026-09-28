@@ -532,7 +532,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
         | None -> ignore
 
     let admission = new SemaphoreSlim(1, 1)
-    let stateGate = obj ()
+    let stateGate = Lock()
     let mutable generation = 0L
     let mutable completed: (int64 * DiscoverySnapshot) option = None
     let mutable pendingAttempts = 0
@@ -541,7 +541,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     // Announcements are published outside `stateGate`, so two of them can race. Each
     // takes its place in line under `stateGate`; one that arrives after a later
     // announcement was published is dropped rather than overwriting the newer answer.
-    let announcementGate = obj ()
+    let announcementGate = Lock()
     let mutable announcementsIssued = 0L
     let mutable announcementPublished = 0L
 
@@ -550,7 +550,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
         announcementsIssued
 
     let publishInOrder (place: int64) (observation: ProjectModel.Observation) =
-        lock announcementGate (fun () ->
+        Locking.locked announcementGate (fun () ->
             if place > announcementPublished then
                 announcementPublished <- place
                 announce observation)
@@ -562,7 +562,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
             while searching do
                 let observed =
-                    lock stateGate (fun () ->
+                    Locking.locked stateGate (fun () ->
                         if pendingAttempts = 0 then
                             let snapshot = completed |> Option.map snd
                             Choice1Of2(generation, snapshot)
@@ -588,13 +588,13 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
         | None -> generation, None
 
     member _.Completed =
-        lock stateGate (fun () ->
+        Locking.locked stateGate (fun () ->
             if pendingAttempts = 0 then
                 completed |> Option.map snd
             else
                 None)
 
-    member _.RequestedGeneration = lock stateGate (fun () -> generation)
+    member _.RequestedGeneration = Locking.locked stateGate (fun () -> generation)
 
     /// What a reader should believe about the project model right
     /// now, as a value rather than an absence. `Completed` returns `None` both
@@ -602,7 +602,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     /// distinguishes them, so a scan can wait for `Rediscovering` instead of
     /// treating it as an empty model.
     member _.Observation: ProjectModel.Observation =
-        lock stateGate (fun () ->
+        Locking.locked stateGate (fun () ->
             if pendingAttempts > 0 then
                 ProjectModel.Observation.Rediscovering generation
             else
@@ -632,7 +632,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
                 let captured =
                     try
-                        lock stateGate (fun () -> if pendingAttempts = 0 then Some(currentEpoch ()) else None)
+                        Locking.locked stateGate (fun () -> if pendingAttempts = 0 then Some(currentEpoch ()) else None)
                         |> Option.map read
                     finally
                         admission.Release() |> ignore
@@ -649,7 +649,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     /// begin between them. `write` must be a short publication that never waits on this
     /// coordinator.
     member _.WithCurrent<'T>(captured: int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
-        lock stateGate (fun () ->
+        Locking.locked stateGate (fun () ->
             if pendingAttempts <> 0 || currentEpoch () <> captured then
                 raise (ModelSupersededException(fst captured))
 
@@ -658,7 +658,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
             let attempt, place =
-                lock stateGate (fun () ->
+                Locking.locked stateGate (fun () ->
                     generation <- generation + 1L
                     pendingAttempts <- pendingAttempts + 1
 
@@ -680,7 +680,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                     let! snapshot, result = work ()
 
                     let completion =
-                        lock stateGate (fun () ->
+                        Locking.locked stateGate (fun () ->
                             completed <- Some(attempt, snapshot)
                             pendingAttempts <- pendingAttempts - 1
 
@@ -705,7 +705,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                     return result
                 with ex ->
                     let completion =
-                        lock stateGate (fun () ->
+                        Locking.locked stateGate (fun () ->
                             pendingAttempts <- pendingAttempts - 1
 
                             if pendingAttempts = 0 then

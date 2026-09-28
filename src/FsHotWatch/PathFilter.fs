@@ -106,7 +106,7 @@ type IgnoreFilterCache() =
     // collectIgnoreRules: on miss, acquire syncRoot and re-check Volatile.Read
     // before rebuilding.
     let mutable cached: CacheEntry option = None
-    let syncRoot = obj ()
+    let syncRoot = Lock()
     // Test seam: invoked after the outer Volatile.Read miss but before the lock is
     // acquired, so a test can deterministically pin two threads into the
     // lock-contention path and hit the inner "isFresh" branch.
@@ -130,7 +130,7 @@ type IgnoreFilterCache() =
         | _ ->
             testHookAfterOuterMiss ()
 
-            lock syncRoot (fun () ->
+            Locking.locked syncRoot (fun () ->
                 match Volatile.Read(&cached) with
                 | Some entry when isFresh entry -> entry.Filter
                 | _ ->

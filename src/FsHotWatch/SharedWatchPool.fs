@@ -110,17 +110,9 @@ let internal defaultFallback: FallbackFactory =
     fun root onChange patterns latency -> FileWatcher.create root onChange None patterns latency
 
 type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory) =
-    // `Lock.Enter`/`Exit`, not `lock`: `lock` leaves a never-taken "was the lock
-    // acquired" branch behind in every caller.
     let gate = Lock()
 
-    let locked (work: unit -> 'T) : 'T =
-        gate.Enter()
-
-        try
-            work ()
-        finally
-            gate.Exit()
+    let locked work = Locking.locked gate work
 
     let mutable anchors: Map<string, AnchorEntry> = Map.empty
     let mutable received = 0L
