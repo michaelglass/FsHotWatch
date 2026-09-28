@@ -40,6 +40,19 @@ let fixtureModel =
           OptionsMapped = 1
           Registered = 1 }
 
+/// Options for a test daemon that never waits on a live file event. `OneShot`
+/// constructs no watcher, so the daemon opens no FSEvents stream: each stream is an
+/// fseventsd client, and a suite that builds dozens of watching daemons it never
+/// feeds a file event leaves fseventsd queueing for all of them.
+let oneShotDaemonOptions =
+    { FsHotWatch.Daemon.Daemon.DaemonOptions.defaults with
+        RunMode = FsHotWatch.Daemon.Daemon.RunMode.OneShot }
+
+/// Options for a test daemon that builds its watcher: one that waits on live file
+/// events, or one whose injected watcher factory is the subject. An explicit opt-in,
+/// so a new test does not open a real FSEvents stream by default.
+let watchingDaemonOptions = FsHotWatch.Daemon.Daemon.DaemonOptions.defaults
+
 /// Mark a fixture result as captured against the fixture model, as the daemon stamps
 /// a result it publishes.
 let stampFixture (result: FileCheckResult) : FileCheckResult =
@@ -496,6 +509,19 @@ let private deleteTempDirResilient (tmpDir: string) =
                 deleted <- true
             else
                 System.Threading.Thread.Sleep(25)
+
+/// Delete `dir` and everything under it while something may still be writing there (a
+/// running daemon's `.fshw/`), retrying for up to `timeoutMs`. True once it is gone.
+let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
+    waitUntilTrue
+        (fun () ->
+            try
+                Directory.Delete(dir, true)
+                true
+            with
+            | :? DirectoryNotFoundException -> true
+            | :? IOException -> false)
+        timeoutMs
 
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge

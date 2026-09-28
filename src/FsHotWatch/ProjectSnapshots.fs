@@ -246,6 +246,13 @@ type SnapshotMemo() =
 
     member internal _.CountBuild() = Interlocked.Increment &builds |> ignore
 
+/// A project's reference, resolved for one build: an F# project upstream of it and the
+/// output it is referenced by, or any other reference, as its snapshot.
+[<NoComparison; NoEquality>]
+type private Resolved =
+    | Upstream of output: string * Built
+    | Other of FSharpReferencedProjectSnapshot
+
 /// How one call reaches the snapshots of the projects it needs.
 [<NoComparison; NoEquality>]
 type private Store =
@@ -285,7 +292,9 @@ let private buildTree
             let slot = memo.SlotFor opts
             // Held while this project's upstreams are resolved, which lock theirs: the
             // reference graph is acyclic, so locks are only ever taken downstream-first.
-            lock slot (fun () ->
+            Monitor.Enter slot
+
+            try
                 let prior = slot.Entry
                 let b = compute opts prior
 
@@ -293,7 +302,9 @@ let private buildTree
                 | Some(_, previous) when obj.ReferenceEquals(previous, b) -> ()
                 | _ -> memo.CountBuild()
 
-                b)
+                b
+            finally
+                Monitor.Exit slot
 
     /// `previous`, when its inputs are this call's; otherwise a new build, recorded in
     /// the slot when there is one.
@@ -303,19 +314,21 @@ let private buildTree
         let referenced =
             opts.ReferencedProjects
             |> List.ofArray
-            |> List.map (fun reference ->
-                match reference with
-                | FSharpReferencedProject.FSharpReference(output, project) ->
-                    let upstream = snapshotOf project
-                    reference.OutputFile, Some(output, upstream)
-                | _ -> reference.OutputFile, None)
+            |> List.map (function
+                | FSharpReferencedProject.FSharpReference(output, project) -> Upstream(output, snapshotOf project)
+                | FSharpReferencedProject.PEReference(getStamp, reader) ->
+                    Other(FSharpReferencedProjectSnapshot.PEReference(getStamp, reader))
+                | FSharpReferencedProject.ILModuleReference(output, getStamp, getReader) ->
+                    Other(FSharpReferencedProjectSnapshot.ILModuleReference(output, getStamp, getReader)))
 
-        let upstreams = referenced |> List.choose (snd >> Option.map snd)
-
-        let upstreamByOutput =
+        let upstreamPairs =
             referenced
-            |> List.choose (fun (output, upstream) -> upstream |> Option.map (fun u -> output, snd u))
-            |> Map.ofList
+            |> List.choose (function
+                | Upstream(output, upstream) -> Some(output, upstream)
+                | Other _ -> None)
+
+        let upstreams = upstreamPairs |> List.map snd
+        let upstreamByOutput = Map.ofList upstreamPairs
 
         let references, otherOptions =
             opts.OtherOptions
@@ -336,11 +349,11 @@ let private buildTree
                 | Some { Frame = None }
                 | None -> Some (referenceOnDisk hashFile repoRoot path).LastModified)
 
+        // The memo is keyed by the options object, so the source and upstream lists are
+        // the same length as the entry's: only their contents can differ.
         let sameAs (inputs: Inputs) =
-            inputs.SourceVersions.Length = sourceVersions.Length
-            && Array.forall2 (fun (a: string) b -> String.Equals(a, b)) inputs.SourceVersions sourceVersions
+            Array.forall2 (fun (a: string) b -> String.Equals(a, b)) inputs.SourceVersions sourceVersions
             && inputs.ReferenceStamps = referenceStamps
-            && inputs.Upstreams.Length = upstreams.Length
             && List.forall2 (fun a b -> obj.ReferenceEquals(a, b)) inputs.Upstreams upstreams
 
         let closure =
@@ -351,11 +364,11 @@ let private buildTree
                     repoRoot
                     |> Option.fold (fun (o: string) root -> o.Replace(root, "<root>")) option
 
+                // A path with no upstream always has an on-disk stamp (`referenceStamps`).
                 let referencePart (path: string) (stamp: DateTime option) =
-                    match Map.tryFind path upstreamByOutput, stamp with
-                    | Some upstream, _ -> $"project-reference:%s{relative path}:%s{upstream.Closure}"
-                    | None, Some stamp -> $"reference:%s{relative path}:%d{stamp.Ticks}"
-                    | None, None -> $"reference:%s{relative path}"
+                    match Map.tryFind path upstreamByOutput with
+                    | Some upstream -> $"project-reference:%s{relative path}:%s{upstream.Closure}"
+                    | None -> $"reference:%s{relative path}:%d{stamp.Value.Ticks}"
 
                 List.concat
                     [ [ $"project:%s{relative opts.ProjectFileName}" ]
@@ -395,12 +408,11 @@ let private buildTree
         | _ ->
             // A framed upstream's references are framed too, so its tree has none.
             let realProjectOutputs =
-                referenced
-                |> List.collect (fun (_, upstream) ->
-                    match upstream with
-                    | Some(output, ({ Frame = None } as u)) -> output :: u.RealProjectOutputs
-                    | Some _
-                    | None -> [])
+                upstreamPairs
+                |> List.collect (fun (output, upstream) ->
+                    match upstream.Frame with
+                    | None -> output :: upstream.RealProjectOutputs
+                    | Some _ -> [])
                 |> List.distinct
 
             let inThisGeneration = inGeneration projectGeneration
@@ -409,16 +421,19 @@ let private buildTree
                 Array.map2
                     (fun (path: string) (stamp: DateTime option) ->
                         let reference =
-                            match Map.tryFind path upstreamByOutput, stamp with
+                            match Map.tryFind path upstreamByOutput with
                             // Under a virtual root the output path never exists, so FCS types
                             // the upstream from its snapshot: the closure is what it read.
-                            | Some({ Frame = Some f } as upstream), _ ->
+                            | Some({ Frame = Some f } as upstream) ->
                                 { Path = PathFrame.toVirtual f path
                                   LastModified = contentStamp upstream.Closure }
                             // At a real path FCS types against the output whenever it is at
-                            // least as new as the upstream's sources: its bytes are an input.
-                            | _, Some stamp -> { Path = path; LastModified = stamp }
-                            | _, None -> referenceOnDisk hashFile repoRoot path
+                            // least as new as the upstream's sources: its bytes are an input,
+                            // stamped in `referenceStamps`.
+                            | Some { Frame = None }
+                            | None ->
+                                { Path = path
+                                  LastModified = stamp.Value }
 
                         { reference with
                             LastModified = inThisGeneration reference.LastModified })
@@ -427,23 +442,14 @@ let private buildTree
                 |> List.ofArray
 
             let referencedProjects =
-                List.zip (List.ofArray opts.ReferencedProjects) referenced
-                |> List.map (fun (reference, (_, resolved)) ->
-                    match reference, resolved with
-                    | FSharpReferencedProject.FSharpReference(output, _), Some(_, upstream) ->
-                        let output =
-                            match upstream.Frame with
-                            | Some f -> PathFrame.toVirtual f output
-                            | None -> output
-
-                        FSharpReferencedProjectSnapshot.FSharpReference(output, upstream.Snapshot)
-                    | FSharpReferencedProject.FSharpReference(output, project), None ->
-                        // `referenced` resolves every F# reference; unreachable.
-                        invalidOp $"%s{project.ProjectFileName} (%s{output}) was not resolved"
-                    | FSharpReferencedProject.PEReference(getStamp, reader), _ ->
-                        FSharpReferencedProjectSnapshot.PEReference(getStamp, reader)
-                    | FSharpReferencedProject.ILModuleReference(output, getStamp, getReader), _ ->
-                        FSharpReferencedProjectSnapshot.ILModuleReference(output, getStamp, getReader))
+                referenced
+                |> List.map (function
+                    | Upstream(output, upstream) ->
+                        FSharpReferencedProjectSnapshot.FSharpReference(
+                            PathFrame.nameIn upstream.Frame output,
+                            upstream.Snapshot
+                        )
+                    | Other snapshot -> snapshot)
 
             let files =
                 Array.map2 (fun path version -> fileSnapshot path version (name path)) opts.SourceFiles sourceVersions

@@ -1511,7 +1511,7 @@ let countPlugins (config: DaemonConfiguration) : int =
 /// unit-testable without a process-global `Console.SetError` capture, which races across
 /// parallel tests.
 ///
-/// Reraising from a FileSystemWatcher threadpool callback would crash the process via
+/// Reraising from the config poller's timer callback would crash the process via
 /// unhandled-threadpool-exception, so the failure goes to the error log and execution
 /// continues — the user sees it instead of the daemon mysteriously ignoring config edits.
 let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (reason: string) : unit =
@@ -1523,9 +1523,8 @@ let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (re
 /// Debounce decision for the config watcher: true when `now` is more than
 /// `window` past the previous accepted fire (and records it as the new last
 /// fire). Extracted (like `invokeOnChangeWith` above) so BOTH arms are
-/// unit-testable with an injected clock: the suppressed arm only executes in
-/// production when the OS double-fires events within the window, which is
-/// nondeterministic.
+/// unit-testable with an injected clock: the suppressed arm only executes when
+/// the poller looks more often than the window.
 let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: TimeSpan) (now: DateTime) : bool =
     lock gate (fun () ->
         if now - lastFire.Value > window then
@@ -1537,8 +1536,8 @@ let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: Ti
 /// Compute the human-readable reason for a config-file change by re-parsing
 /// the file: distinguishes "config changed" from "config invalid". Extracted
 /// for the same deterministic-coverage reason as `debounceShouldFire` — both
-/// arms are pinned by direct unit tests instead of depending on which FSW
-/// events the OS happens to deliver.
+/// arms are pinned by direct unit tests instead of depending on what the
+/// poller happens to see.
 let internal configChangeReason (configPath: string) (defaults: DaemonConfiguration) : string =
     try
         let _ = parseConfig (File.ReadAllText configPath) defaults
@@ -1546,11 +1545,9 @@ let internal configChangeReason (configPath: string) (defaults: DaemonConfigurat
     with ex ->
         $"config invalid, stopping: %s{ex.Message}"
 
-/// One config-watcher FS event: debounce, compute the reason, dispatch.
-/// `now` is injected so the debounce path is unit-testable; the FSW lambda in
-/// `watchConfigFile` passes `DateTime.UtcNow` and stays branchless (its line
-/// coverage is pinned by the RealWatchTests; all branches live here and in the
-/// helpers above, covered deterministically).
+/// One observed config change: debounce, compute the reason, dispatch.
+/// `now` is injected so the debounce path is unit-testable; the poller in
+/// `watchConfigFileEvery` passes `DateTime.UtcNow`.
 let internal onConfigFsEvent
     (gate: obj)
     (lastFire: DateTime ref)
@@ -1564,47 +1561,65 @@ let internal onConfigFsEvent
     if debounceShouldFire gate lastFire window now then
         invokeOnChangeWith logError onChange (configChangeReason configPath defaults)
 
-/// Watch `.fshw.json` for any write/rename/create and invoke the callback
-/// once with a human-readable reason. Re-parses the file to distinguish
-/// "config changed" from "config invalid, stopping".
+/// What the config poller compares between looks: the file's last write time and
+/// length, or `None` while it is absent or unreadable.
+let internal configStamp (configPath: string) : (DateTime * int64) option =
+    try
+        let info = FileInfo configPath
+
+        if info.Exists then
+            Some(info.LastWriteTimeUtc, info.Length)
+        else
+            None
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> None
+
+/// Look at `configPath` every `interval` and invoke the callback with a
+/// human-readable reason when it was written, created or renamed into place since
+/// the last look. Re-parses the file to distinguish "config changed" from "config
+/// invalid, stopping". A deletion is not a change.
 ///
-/// Debounces bursts (editors commonly emit multiple events per save) so the
-/// callback fires at most once per ~200 ms window. Returns a disposable that
-/// stops watching.
-let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposable =
-    let dir = Path.GetDirectoryName(configPath)
-    let name = Path.GetFileName(configPath)
-    let watcher = new FileSystemWatcher(dir, name)
-
-    watcher.NotifyFilter <-
-        NotifyFilters.LastWrite
-        ||| NotifyFilters.FileName
-        ||| NotifyFilters.Size
-        ||| NotifyFilters.CreationTime
-
+/// A poll, not a `FileSystemWatcher`: on macOS each `FileSystemWatcher` is an
+/// FSEvents stream over the whole directory — for `.fshw.json`, the repository
+/// root — recursive in the kernel whatever the filter, so fseventsd would queue
+/// every file event in the repository for a watcher that wants one file.
+let internal watchConfigFileEvery (interval: TimeSpan) (configPath: string) (onChange: string -> unit) : IDisposable =
     // Capture defaults once at construction — defaultConfigFor probes the
-    // filesystem (.jj detection) and we don't want that on every event.
-    let defaults = defaultConfigFor dir
+    // filesystem (.jj detection) and we don't want that on every look.
+    let defaults = defaultConfigFor (Path.GetDirectoryName configPath)
     let lastFire = ref DateTime.MinValue
     let gate = obj ()
     let window = TimeSpan.FromMilliseconds(200.0)
+    let stampGate = obj ()
+    let mutable lastStamp = configStamp configPath
 
-    let handler (_: FileSystemEventArgs) =
-        onConfigFsEvent
-            gate
-            lastFire
-            window
-            configPath
-            defaults
-            (FsHotWatch.Logging.error "config-watcher")
-            onChange
-            DateTime.UtcNow
+    let look _ =
+        let current = configStamp configPath
 
-    watcher.Changed.Add(handler)
-    watcher.Created.Add(handler)
-    watcher.Renamed.Add(fun e -> handler (FileSystemEventArgs(WatcherChangeTypes.Renamed, dir, e.Name)))
-    watcher.EnableRaisingEvents <- true
-    watcher :> IDisposable
+        let changed =
+            lock stampGate (fun () ->
+                let changed = current <> lastStamp
+                lastStamp <- current
+                changed)
+
+        if changed && current.IsSome then
+            onConfigFsEvent
+                gate
+                lastFire
+                window
+                configPath
+                defaults
+                (FsHotWatch.Logging.error "config-watcher")
+                onChange
+                DateTime.UtcNow
+
+    new System.Threading.Timer(look, null, interval, interval) :> IDisposable
+
+/// `watchConfigFileEvery` at half a second: a config edit restarts the daemon, so
+/// half a second of latency is invisible next to the restart.
+let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposable =
+    watchConfigFileEvery (TimeSpan.FromMilliseconds 500.0) configPath onChange
 
 /// Watch `.fshw.json` at `repoRoot` if it exists, otherwise return a
 /// no-op disposable. Keeps the `start` call-site tidy and gives tests a

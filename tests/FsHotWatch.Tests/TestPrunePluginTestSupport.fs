@@ -190,19 +190,55 @@ let writeAt (path: string) (contents: string) (mtime: DateTime) =
 
 let p (parts: string list) = Path.Combine(List.toArray parts)
 
+/// Delete the directories directly under `parent` matching `pattern` and last written
+/// before `olderThan` ago. Best effort: one that cannot be deleted is left for the next
+/// prune.
+let pruneStaleRoots (parent: string) (pattern: string) (olderThan: TimeSpan) : unit =
+    let cutoff = DateTime.UtcNow - olderThan
+
+    let dirs =
+        try
+            Directory.GetDirectories(parent, pattern)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> [||]
+
+    for dir in dirs do
+        try
+            if Directory.GetLastWriteTimeUtc dir < cutoff then
+                Directory.Delete(dir, true)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> ()
+
+/// The one temp-directory entry every isolated root lives under, pruned of roots a day
+/// old once per test process. One entry, not one per root: canonicalizing a path lists
+/// each component's parent, so every root left directly in the temp directory slowed
+/// every lookup under it. Roots of the earlier layout (`fshw-tp-<guid>` directly in the
+/// temp directory) are pruned by the same rule, in the background: a first sweep can
+/// meet tens of thousands of them, and no test's timeout should pay for it.
+let private isolatedRootsParent =
+    lazy
+        (let temp = Path.GetFullPath(Path.GetTempPath())
+         let parent = Path.Combine(temp, "fshw-tp")
+         Directory.CreateDirectory(parent) |> ignore
+         pruneStaleRoots parent "*" (TimeSpan.FromDays 1.0)
+
+         Tasks.Task.Run(fun () -> pruneStaleRoots temp "fshw-tp-*" (TimeSpan.FromDays 1.0))
+         |> ignore
+
+         parent)
+
 /// A repo root no other test shares. The full-suite-baseline change made two more TestPrune ledgers
 /// durable (`outstanding-failures.json`, `full-suite-baseline.json`) beside the pending
 /// queue that already was, and a plugin created over a SHARED root (`"/tmp"`) loads
 /// whatever the previous test left there — a red from one test quarantined into the
 /// next test's selection. The queue had the same leak and got away with it only because
-/// most tests end with it empty; reds are the opposite. Not deleted afterwards: these
-/// are a few small JSON files, and a cleanup that raced the plugin's own writes would
-/// be a second source of flakiness.
+/// most tests end with it empty; reds are the opposite. Not deleted by the test that
+/// made it: these are a few small JSON files, and a cleanup that raced the plugin's own
+/// writes would be a second source of flakiness. A later process prunes it a day on.
 let isolatedRoot () : string =
-    let dir =
-        Path.Combine(Path.GetTempPath(), $"fshw-tp-{Guid.NewGuid():N}")
-        |> Path.GetFullPath
-
+    let dir = Path.Combine(isolatedRootsParent.Force(), Guid.NewGuid().ToString "N")
     Directory.CreateDirectory(dir) |> ignore
     dir
 

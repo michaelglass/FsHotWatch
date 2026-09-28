@@ -150,6 +150,15 @@ let internal loadAverageOf (isWindows: bool) (read: unit -> int * float) : float
 let loadAverage () : float option =
     loadAverageOf (OperatingSystem.IsWindows()) nativeLoad
 
+/// How many threads this process has.
+let private threadCount () : int =
+    let self = Diagnostics.Process.GetCurrentProcess()
+
+    try
+        self.Threads.Count
+    finally
+        self.Dispose()
+
 /// The process's current `ResourceReading`.
 let readResources () : ResourceReading =
     { LoadAverage = loadAverage ()
@@ -157,9 +166,7 @@ let readResources () : ResourceReading =
       Gen0 = GC.CollectionCount 0
       Gen1 = GC.CollectionCount 1
       Gen2 = GC.CollectionCount 2
-      Threads =
-        (use self = Diagnostics.Process.GetCurrentProcess()
-         self.Threads.Count) }
+      Threads = threadCount () }
 
 /// The heartbeat's resource suffix: load average, GC heap size, and how many gen0/1/2
 /// collections ran since the previous heartbeat. A GC share near 100% with gen2 counts
@@ -348,11 +355,11 @@ type Watchdog
                   HeapAfter = (resources ()).HeapBytes
                   QuietFor = quietFor
                   Count =
-                    (match lastFiring with
+                    (match Volatile.Read(&lastFiring) with
                      | Some previous -> previous.Count + 1
                      | None -> 1) }
 
-            lock gate (fun () -> lastFiring <- Some firing)
+            Volatile.Write(&lastFiring, Some firing)
             log (heapValveLogLine heapValve firing)
         | None -> ()
 
@@ -385,7 +392,7 @@ type Watchdog
 
     /// The heap valve's report for `status`, or `None` when it has never fired.
     member _.HeapValveReport() : string option =
-        lock gate (fun () -> lastFiring) |> Option.map heapValveReport
+        Volatile.Read(&lastFiring) |> Option.map heapValveReport
 
     interface IDisposable with
         member _.Dispose() = timer.Dispose()

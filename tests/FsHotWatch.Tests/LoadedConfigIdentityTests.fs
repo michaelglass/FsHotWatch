@@ -118,9 +118,8 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
                 member _.Notifications = notifications.Publish }
 
         // The `.fshw.json` watcher Start subscribes, captured so the test delivers the edit
-        // itself: live FSEvents has no delivery bound on a loaded machine (seconds, sometimes
-        // never, with fseventsd saturated), and the real watcher's own path is pinned by
-        // `RealWatchTests`. This test owns what Start does WITH the notification.
+        // itself; the real watcher's own path is pinned by the config poller tests in
+        // DaemonConfigTests. This test owns what Start does WITH the notification.
         let subscribed = TaskCompletionSource<string * (string -> unit)>()
         let mutable unsubscribed = false
 
@@ -131,13 +130,7 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
                 member _.Dispose() = unsubscribed <- true }
 
         use daemon =
-            Daemon.createWithWorkspaceLoader
-                Unchecked.defaultof<_>
-                root
-                { Daemon.DaemonOptions.defaults with
-                    RunMode = Daemon.RunMode.OneShot }
-                loader
-                (fun _ -> [])
+            Daemon.createWithWorkspaceLoader Unchecked.defaultof<_> root oneShotDaemonOptions loader (fun _ -> [])
 
         let run =
             Task.Run(fun () ->
