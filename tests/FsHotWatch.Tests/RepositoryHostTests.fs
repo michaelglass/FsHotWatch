@@ -89,7 +89,7 @@ let private daemonFactory: SessionFactory =
         Daemon.createWithWatcherFactory
             nullChecker
             spec.Worktree.Root.Value
-            { Daemon.DaemonOptions.defaults with
+            { watchingDaemonOptions with
                 Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
             inertWatcher
 
@@ -798,7 +798,7 @@ let private checkingFactory: SessionFactory =
         Daemon.createWithWatcherFactory
             nullChecker
             spec.Worktree.Root.Value
-            { Daemon.DaemonOptions.defaults with
+            { watchingDaemonOptions with
                 Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker)
                 VanishedRootCheckEvery = TimeSpan.FromMilliseconds 100.0 }
             inertWatcher

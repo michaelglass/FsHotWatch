@@ -1362,8 +1362,7 @@ let ``repeated scan force via IPC increments generation each time`` () =
     let pipeName = FsHotWatch.Cli.Program.computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
     test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
@@ -1415,8 +1414,7 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
     let pipeName = FsHotWatch.Cli.Program.computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let serverTask = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
     test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>

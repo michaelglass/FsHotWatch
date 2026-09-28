@@ -544,7 +544,7 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
             Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
         let createDaemon (root: string) =
-            Daemon.createWith nullChecker root Daemon.DaemonOptions.defaults
+            Daemon.createWith nullChecker root oneShotDaemonOptions
 
         let config: DaemonConfiguration =
             { defaultTestConfig () with
@@ -604,10 +604,7 @@ let private noTestProjectsConfig () : DaemonConfiguration =
 
 let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRoot: string) : int =
     let createDaemon (root: string) =
-        Daemon.createWith
-            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
-            root
-            Daemon.DaemonOptions.defaults
+        Daemon.createWith (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>) root oneShotDaemonOptions
 
     FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
         (fun _ -> "")
@@ -624,7 +621,7 @@ let ``runOnceAndReport renders the statuses of the plugins the run registered`` 
             Daemon.createWith
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                Daemon.DaemonOptions.defaults
+                oneShotDaemonOptions
 
         let rendered = ResizeArray<string list>()
 
@@ -655,7 +652,7 @@ let private hostFor (command: FsHotWatch.Cli.Program.Command) (root: string) =
     Daemon.createWithWatcherFactory
         (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
         root
-        { Daemon.DaemonOptions.defaults with
+        { watchingDaemonOptions with
             RunMode = FsHotWatch.Cli.Program.runModeFor command }
         throwingWatcherFactory
 
@@ -735,10 +732,7 @@ let ``format --run-once completes without constructing a file watcher`` () =
 
 let private daemonWithLateVanishedDiagnostic (root: string) =
     let daemon =
-        Daemon.createWith
-            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
-            root
-            Daemon.DaemonOptions.defaults
+        Daemon.createWith (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>) root oneShotDaemonOptions
 
     daemon.Host.ReportErrors("test-prune", "RenamedAway.fs", [ ErrorEntry.error "late old-path finding" ])
     daemon
@@ -811,7 +805,7 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                 Daemon.createWith
                     (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                     root
-                    Daemon.DaemonOptions.defaults
+                    oneShotDaemonOptions
 
             let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
                 { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
@@ -913,7 +907,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             Daemon.createWithWorkspaceLoader
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                Daemon.DaemonOptions.defaults
+                oneShotDaemonOptions
                 (EmptyWorkspaceLoader())
                 (fun _ -> [])
 
@@ -961,7 +955,7 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
                 Daemon.createWithWorkspaceLoader
                     (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                     root
-                    Daemon.DaemonOptions.defaults
+                    oneShotDaemonOptions
                     loader
                     (fun _ -> [])
 
@@ -1037,7 +1031,7 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                 Daemon.createWith
                     (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                     root
-                    Daemon.DaemonOptions.defaults
+                    oneShotDaemonOptions
 
             let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
                 { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
@@ -1110,7 +1104,7 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
             Daemon.createWith
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                Daemon.DaemonOptions.defaults
+                oneShotDaemonOptions
 
         let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
             { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
@@ -1214,7 +1208,7 @@ let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.Che
             Daemon.createWith
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                Daemon.DaemonOptions.defaults
+                oneShotDaemonOptions
 
         daemon.Host.RegisterHandler(crashingHandler ())
         daemon.Host.EmitBuildCompleted(BuildSucceeded)
@@ -1555,10 +1549,7 @@ let private runOnceWithTreeMovedMidCheck (moveTree: bool) (repoRoot: string) : i
     let mutable moved = false
 
     let createDaemon (root: string) =
-        Daemon.createWith
-            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
-            root
-            Daemon.DaemonOptions.defaults
+        Daemon.createWith (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>) root oneShotDaemonOptions
 
     FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
         (fun _ ->
@@ -1614,7 +1605,7 @@ let private runOnceWithAnalysisOnlyTestPrune (repoRoot: string) : int =
             Daemon.createWith
                 (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
                 root
-                Daemon.DaemonOptions.defaults
+                oneShotDaemonOptions
 
         daemon.Host.RegisterHandler(
             FsHotWatch.TestPrune.TestPrunePlugin.create

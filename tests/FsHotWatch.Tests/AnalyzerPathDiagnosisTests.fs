@@ -170,8 +170,7 @@ let ``registerPlugins classifies each zero-loading path from disk and keeps the 
         let junkDir = Path.Combine(root, "junk-bin")
         writeJunkDll junkDir "Junk.Analyzer.dll"
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) root Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) root oneShotDaemonOptions
 
         let config = analyzersConfig [ "never-built/bin"; emptyDir; junkDir ] []
 
@@ -191,8 +190,7 @@ let ``a configured bootstrap hint is echoed verbatim for its path and absent add
     withTempDir "hint" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) root Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) root oneShotDaemonOptions
 
         let hint = "mise run build-analyzers -- --configuration Release"
 
@@ -251,7 +249,7 @@ let ``daemon start with unbuilt analyzers exits 2 with the message and no unhand
         let config = analyzersConfig [ "analyzers/bin/Release/net10.0" ] []
 
         let createDaemon (r: string) =
-            Daemon.createWith (Unchecked.defaultof<_>) r Daemon.DaemonOptions.defaults
+            Daemon.createWith (Unchecked.defaultof<_>) r oneShotDaemonOptions
 
         let stderr, exitCode =
             captureStderr (fun () ->

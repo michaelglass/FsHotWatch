@@ -1518,8 +1518,7 @@ let ``registerPlugins with build config registers build plugin`` () =
     withTempDir "cfg-build-reg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config =
             { stripConfig defaults with
@@ -1534,8 +1533,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
     withTempDir "cfg-build-noreg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config = stripConfig defaults
         registerPlugins daemon tmpDir config
@@ -1547,8 +1545,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
     withTempDir "cfg-fc-register" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config =
             { stripConfig defaults with
@@ -1576,8 +1573,7 @@ let ``registerPlugins raises ConfigError when configured analyzers load zero`` (
     withTempDir "cfg-analyzers-zero" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config =
             { stripConfig defaults with
@@ -1599,8 +1595,7 @@ let ``registerPlugins with unconfigured analyzers does not raise or register`` (
     withTempDir "cfg-analyzers-none" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config = stripConfig defaults
         test <@ config.Analyzers = None @>
@@ -1613,8 +1608,7 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
     withTempDir "cfg-fc-aftertests-only" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let config =
             { stripConfig defaults with
@@ -1712,82 +1706,81 @@ let ``countPlugins returns 0 for stripped config`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
-    // Asserts the callback does NOT fire, so it awaits no OS event and can stay a
-    // parallel module-level fact. Only RealWatchTests below need serializing.
     withTempDir "cfg-watch-none" (fun tmpDir ->
         let mutable called = false
         use w = watchRepoConfigFile tmpDir (fun _ -> called <- true)
         System.Threading.Thread.Sleep(50)
         test <@ not called @>)
 
-// The next three tests block on a live `FileSystemWatcher` OS event, which under heavy
-// parallel load can take >5s to deliver — hence the DisableParallelization collection.
-// They also pin the watcher handler's LINES as covered; its BRANCHES are covered by the
-// injected-clock unit tests below, so an OS double-fire here can only re-hit already
-// covered branches and the ratchet stays deterministic.
-[<Collection(FileWatchCollectionName)>]
-type RealWatchTests() =
+[<Fact(Timeout = 15000)>]
+let ``watchRepoConfigFile watches an existing config file`` () =
+    withTempDir "cfg-watch-existing" (fun tmpDir ->
+        let path = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(path, "{}")
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        use _watcher = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
+        File.WriteAllText(path, """{"lint": false}""")
+        test <@ signal.Wait(5000) @>)
 
-    // All three go through `withWatchedDir`, whose body gets no path to write to and
-    // exactly one mutation — `WriteUntil`, which rewrites until the callback fires. The
-    // shape these used to have (sleep 100ms, write once, `signal.Wait(5000)`) is not
-    // expressible against that fixture: it was a coin flip against an unbounded window of FSEvents
-    // cold-start latency on a fresh temp dir.
-    [<Fact(Timeout = 90000)>]
-    member _.``watchConfigFile invokes callback when .fshw.json is written``() =
+// --- the config poller ---
+
+/// A 20 ms look interval, so each test waits on the poller for milliseconds.
+let private pollEvery = System.TimeSpan.FromMilliseconds 20.0
+
+[<Fact(Timeout = 15000)>]
+let ``the config poller reports a rewrite of .fshw.json`` () =
+    withTempDir "cfg-poll-write" (fun tmpDir ->
+        let path = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(path, "{}")
         use signal = new System.Threading.ManualResetEventSlim(false)
         let observed = ref ""
 
-        withWatchedDir
-            "cfg-watch-write"
-            (fun dir ->
-                watchConfigFile (dir.Seed(".fshw.json", "{}")) (fun reason ->
-                    observed.Value <- reason
-                    signal.Set()))
-            (fun dir ->
-                let fired =
-                    dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
+        use _poller =
+            watchConfigFileEvery pollEvery path (fun reason ->
+                observed.Value <- reason
+                signal.Set())
 
-                Assert.True(fired, $"expected watcher callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s")
-                test <@ observed.Value.Contains("config") @>)
+        File.WriteAllText(path, """{"lint": false}""")
+        test <@ signal.Wait(5000) @>
+        test <@ observed.Value.Contains("config changed") @>)
 
-    [<Fact(Timeout = 90000)>]
-    member _.``watchRepoConfigFile watches existing config file``() =
-        use signal = new System.Threading.ManualResetEventSlim(false)
-
-        withWatchedDir
-            "cfg-watch-existing"
-            (fun dir ->
-                dir.Seed(".fshw.json", "{}") |> ignore
-                watchRepoConfigFile dir.Root (fun _ -> signal.Set()))
-            (fun dir ->
-                let fired =
-                    dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
-
-                Assert.True(fired, $"expected callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s"))
-
-    [<Fact(Timeout = 90000)>]
-    member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
+[<Fact(Timeout = 15000)>]
+let ``the config poller reports a config saved by rename into place`` () =
+    withTempDir "cfg-poll-rename" (fun tmpDir ->
+        let path = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(path, "{}")
         use signal = new System.Threading.ManualResetEventSlim(false)
         let observed = ref ""
 
-        withWatchedDir
-            "cfg-watch-invalid"
-            (fun dir ->
-                watchConfigFile (dir.Seed(".fshw.json", "{}")) (fun reason ->
-                    observed.Value <- reason
-                    signal.Set()))
-            (fun dir ->
-                let fired =
-                    dir.WriteUntil(".fshw.json", "{not valid json", (fun () -> signal.IsSet))
+        use _poller =
+            watchConfigFileEvery pollEvery path (fun reason ->
+                observed.Value <- reason
+                signal.Set())
 
-                Assert.True(fired, $"expected watcher callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s")
-                Assert.Contains("invalid", observed.Value))
+        let staged = Path.Combine(tmpDir, ".fshw.json.tmp")
+        File.WriteAllText(staged, "{not valid json")
+        File.Move(staged, path, true)
+        test <@ signal.Wait(5000) @>
+        test <@ observed.Value.Contains("invalid") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the config poller stays silent for an untouched or deleted .fshw.json`` () =
+    // A deletion is not a config change: only a write, creation or rename into
+    // place is.
+    withTempDir "cfg-poll-quiet" (fun tmpDir ->
+        let path = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(path, "{}")
+        let mutable calls = 0
+        use _poller = watchConfigFileEvery pollEvery path (fun _ -> calls <- calls + 1)
+        System.Threading.Thread.Sleep 200
+        File.Delete path
+        System.Threading.Thread.Sleep 200
+        test <@ calls = 0 @>)
 
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
 // Injected clocks so BOTH arms of every watcher branch are covered deterministically.
-// Production reaches the suppressed-debounce arm only on an OS double-fire inside the
-// window, which used to coin-flip this file's branch coverage in the ratchet.
+// The poller reaches the suppressed-debounce arm only when it looks more often than
+// the window.
 
 [<Fact(Timeout = 15000)>]
 let ``debounceShouldFire fires on first event and suppresses within the window`` () =
@@ -1926,7 +1919,7 @@ let ``parseConfig fileCommand timeoutSec lands on entry`` () =
 [<Fact(Timeout = 5000)>]
 let ``FcsSuppressedCodes default resolves to empty Set when not configured`` () =
     let resolved =
-        Daemon.resolveFcsSuppressedCodes Daemon.DaemonOptions.defaults.FcsSuppressedCodes
+        Daemon.resolveFcsSuppressedCodes oneShotDaemonOptions.FcsSuppressedCodes
 
     test <@ resolved = Set.empty @>
 
@@ -2298,8 +2291,7 @@ let ``registered test owner honors the actual declared project identity`` () =
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.owned")
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         daemon.Graph.RegisterProject(FsHotWatch.Events.AbsProjectPath.create project, [], [])
         registerPlugins daemon tmpDir config
@@ -2393,8 +2385,7 @@ let ``registerPlugins registers configured preprocessors, in order, and the form
     withTempDir "cfg-preprocessors-reg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         let entry name : PreprocessorConfig =
             { Name = name
@@ -2418,8 +2409,7 @@ let ``registerPlugins with no preprocessors registers only the formatter`` () =
     withTempDir "cfg-preprocessors-none" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
         registerPlugins
             daemon

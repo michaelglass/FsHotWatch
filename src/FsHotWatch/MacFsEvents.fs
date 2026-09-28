@@ -497,12 +497,3 @@ let createExcluding
     (latencySeconds: float)
     =
     new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, latencySeconds, exclusionPaths)
-
-/// Create an FsEventStream with a handler for coalesced (MustScanSubDirs) events.
-let createWithCoalesced
-    (directories: string list)
-    (onFileEvent: string -> unit)
-    (onCoalescedEvent: string -> unit)
-    (latencySeconds: float)
-    =
-    new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, latencySeconds)

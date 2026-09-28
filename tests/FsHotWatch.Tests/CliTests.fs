@@ -540,8 +540,7 @@ let ``shutdown via IPC stops the daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let task = Async.StartImmediateAsTask(daemon.RunWithIpc(pipeName, cts))
     test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
@@ -560,8 +559,8 @@ let ``shutdown via IPC stops the daemon`` () =
         if not cts.IsCancellationRequested then
             cts.Cancel()
 
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        // The daemon may still be writing its `.fshw/` when the wait above gives up.
+        deleteWhileWritten tmpDir 10000 |> ignore
 
 // --- computePipeName tests ---
 
@@ -597,8 +596,7 @@ let ``CLI status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let handler =
         { Name = PluginName.create "test-plugin"
@@ -626,8 +624,8 @@ let ``CLI status query works against running daemon`` () =
         with _ ->
             ()
 
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        // The daemon may still be writing its `.fshw/` when the wait above gives up.
+        deleteWhileWritten tmpDir 10000 |> ignore
 
 [<Fact(Timeout = 20000)>]
 let ``CLI plugin status query works against running daemon`` () =
@@ -636,8 +634,7 @@ let ``CLI plugin status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let handler =
         { Name = PluginName.create "my-lint"
@@ -684,8 +681,8 @@ let ``CLI plugin status query works against running daemon`` () =
         with _ ->
             ()
 
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        // The daemon may still be writing its `.fshw/` when the wait above gives up.
+        deleteWhileWritten tmpDir 10000 |> ignore
 
 [<Fact(Timeout = 20000)>]
 let ``CLI command proxying works against running daemon`` () =
@@ -694,8 +691,7 @@ let ``CLI command proxying works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir oneShotDaemonOptions
 
     let handler =
         { Name = PluginName.create "greeter"
@@ -739,8 +735,8 @@ let ``CLI command proxying works against running daemon`` () =
         with _ ->
             ()
 
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        // The daemon may still be writing its `.fshw/` when the wait above gives up.
+        deleteWhileWritten tmpDir 10000 |> ignore
 
 // --- executeCommand with fake IPC tests ---
 
@@ -1126,7 +1122,7 @@ let private daemonWithNativeStream
         Daemon.createWithWatcherFactory
             (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
             root
-            Daemon.DaemonOptions.defaults
+            watchingDaemonOptions
             watcherFactory
 
 /// True iff nobody holds the `daemon.lock` singleton: the same exclusive open `Start` uses.
@@ -1157,7 +1153,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let attempts = ref 0
 
         let alwaysRefused: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory =
-            fun _dirs _onFile _onCoalesced _latency ->
+            fun _dirs _exclusions _onFile _onCoalesced _latency ->
                 Interlocked.Increment(&attempts.contents) |> ignore
                 raise (FsHotWatch.MacFsEvents.StartFailedException())
 
@@ -1212,7 +1208,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         let mutable pidfileSeenDuringStart = false
 
         let accepting: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory =
-            fun _dirs _onFile _onCoalesced _latency ->
+            fun _dirs _exclusions _onFile _onCoalesced _latency ->
                 { new IDisposable with
                     member _.Dispose() = () }
 

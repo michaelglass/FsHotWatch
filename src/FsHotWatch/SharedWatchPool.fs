@@ -5,8 +5,9 @@
 /// for top-level solutions and one per FileCommand pattern — each its own fseventsd
 /// client (ADR-009). A repository host instead opens ONE recursive stream over the
 /// anchor — the repository's primary checkout when the worktree lies beneath it,
-/// otherwise the worktree itself — with the anchor's `.jj`/`.git` excluded in the
-/// kernel, and routes each event to the session that owns it (`WatchRouter`).
+/// otherwise the worktree itself — with the anchor's tooling directories
+/// (`Watcher.kernelExclusions`) excluded in the kernel, and routes each event to the
+/// session that owns it (`WatchRouter`).
 ///
 /// Each session keeps the legacy watch rules after routing: F# inputs under its
 /// discovery roots, solutions at its top level, and its FileCommand patterns anywhere
@@ -27,7 +28,7 @@ open FsHotWatch.RepositoryIdentity
 
 /// Opens a native stream: directories, kernel exclusions, file handler, must-scan
 /// handler, latency in seconds.
-type internal NativeFactory = string list -> string list -> (string -> unit) -> (string -> unit) -> float -> IDisposable
+type internal NativeFactory = FileWatcher.NativeStreamFactory
 
 /// A session's own watcher, used when the shared stream is unavailable (off macOS, or
 /// the native stream refused to start): root, change handler, FileCommand patterns,
@@ -50,27 +51,11 @@ type PoolStats =
         DeliveryFailures: int64
     }
 
-/// The patterns a must-scan rescan walks for, as the per-worktree watcher does.
-let private rescanPatterns =
-    [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |]
-
 /// One subscribed session: its rules, its ledger, its context.
 type private Subscriber
     (root: string, extraPatterns: FilePattern list, onChange: FileChangeKind -> unit, context: ExecutionContext) =
     let ledger = ContentLedger()
-    let discoveryRoots = Discovery.discoveryRoots root
-
-    let isTopLevelSolution (path: string) =
-        let ext = Path.GetExtension(path).ToLowerInvariant()
-        (ext = ".sln" || ext = ".slnx") && Path.GetDirectoryName path = root
-
-    let accepts (path: string) =
-        let underDiscovery = discoveryRoots |> List.exists (fun d -> isWithin d path)
-
-        (underDiscovery && isRelevantFileOrExtra extraPatterns path)
-        || isTopLevelSolution path
-        || (extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
-            && not (PathFilter.isGeneratedPath path))
+    let accepts = acceptsUnderRoot root extraPatterns
 
     let report (path: string) =
         if ledger.Observe path then
@@ -90,19 +75,7 @@ type private Subscriber
 
     /// Rescan what `dir` covers of this session's discovery roots.
     member _.Rescan(dir: string) =
-        for discoveryRoot in discoveryRoots do
-            let target =
-                if isWithin discoveryRoot dir then Some dir
-                elif isWithin dir discoveryRoot then Some discoveryRoot
-                else None
-
-            match target with
-            | Some target when Directory.Exists target ->
-                for pattern in rescanPatterns do
-                    SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern target
-                    |> Seq.filter isRelevantFile
-                    |> Seq.iter report
-            | _ -> ()
+        rescanUnderRoot root dir |> Seq.iter report
 
 [<NoComparison; NoEquality>]
 type private AnchorEntry =
@@ -233,7 +206,8 @@ type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory
                 match Map.tryFind anchor anchors with
                 | Some entry -> entry
                 | None ->
-                    let exclusions = [ Path.Combine(anchor, ".jj"); Path.Combine(anchor, ".git") ]
+                    // Nested checkouts stay in: the sessions this stream routes to live there.
+                    let exclusions = kernelExclusions false anchor
 
                     { Stream =
                         withoutFlow (fun () ->

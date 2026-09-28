@@ -537,17 +537,10 @@ let ``macOS native start refused with no retry budget fails closed at once`` () 
     // the budget: no FileSystemWatcher is created, no polling watcher is chosen.
     withTempDir "watcher-native-failure" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let mutable systemCreations = 0
         let mutable pollingCreations = 0
 
-        let failNative _directories _onFile _onCoalesced _latency : IDisposable =
+        let failNative _directories _exclusions _onFile _onCoalesced _latency : IDisposable =
             raise (FsHotWatch.MacFsEvents.StartFailedException())
-
-        let system _handle _spec =
-            systemCreations <- systemCreations + 1
-
-            { new IDisposable with
-                member _.Dispose() = () }
 
         let polling _repo _onChange _extras : IDisposable =
             pollingCreations <- pollingCreations + 1
@@ -562,13 +555,11 @@ let ``macOS native start refused with no retry budget fails closed at once`` () 
                     0.05
                     FileWatcher.NativeStartRetry.none
                     failNative
-                    system
                     polling
                 |> ignore)
 
         test <@ refused.Refusal.Attempts = 1 @>
         test <@ refused.Refusal.BackoffSpentMs = 0 @>
-        test <@ systemCreations = 0 @>
         test <@ pollingCreations = 0 @>)
 
 // === a transiently refused native start is retried, not demoted ===
@@ -590,7 +581,7 @@ let private inert (_name: string) =
 let private nativeRefusing (refusals: int) (refusal: unit -> exn) =
     let mutable attempts = 0
 
-    let factory _dirs _onFile _onCoalesced _latency : IDisposable =
+    let factory _dirs _exclusions _onFile _onCoalesced _latency : IDisposable =
         attempts <- attempts + 1
 
         if attempts <= refusals then
@@ -609,8 +600,6 @@ let private countingPolling () =
 
     factory, (fun () -> created)
 
-let private inertSystem _handle _spec = inert "system"
-
 [<Fact(Timeout = 15000)>]
 let ``macOS native start refused once then accepted keeps the native watcher`` () =
     withTempDir "watcher-native-transient" (fun tmpDir ->
@@ -623,7 +612,7 @@ let ``macOS native start refused once then accepted keeps the native watcher`` (
         let polling, pollingCreated = countingPolling ()
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
 
         test <@ attempts () = 2 @>
         test <@ sleeps |> Seq.toList = [ 100 ] @>
@@ -642,7 +631,7 @@ let ``macOS native create refusal spends the same retry budget as a start refusa
         let polling, pollingCreated = countingPolling ()
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
 
         test <@ attempts () = 3 @>
         test <@ sleeps |> Seq.toList = [ 100; 300 ] @>
@@ -662,22 +651,16 @@ let ``macOS native start refused past the retry budget fails closed and names th
             nativeRefusing Int32.MaxValue (fun () -> FsHotWatch.MacFsEvents.StartFailedException() :> exn)
 
         let polling, pollingCreated = countingPolling ()
-        let mutable systemCreated = 0
-
-        let system handle spec =
-            systemCreated <- systemCreated + 1
-            inertSystem handle spec
 
         let refused =
             Assert.Throws<NativeStreamRefusedPastBudgetException>(fun () ->
-                FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native system polling
+                FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
                 |> ignore)
 
         // One attempt per budget entry plus the first: the budget is bounded and fully spent.
         test <@ attempts () = 4 @>
         test <@ sleeps |> Seq.toList = [ 100; 300; 900 ] @>
         test <@ pollingCreated () = 0 @>
-        test <@ systemCreated = 0 @>
 
         test
             <@
@@ -704,7 +687,7 @@ let ``macOS native start accepted after a refusal past the budget starts the nat
         let polling, pollingCreated = countingPolling ()
 
         Assert.Throws<NativeStreamRefusedPastBudgetException>(fun () ->
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry refusing inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry refusing polling
             |> ignore)
         |> ignore
 
@@ -712,7 +695,7 @@ let ``macOS native start accepted after a refusal past the budget starts the nat
         let accepting, attempts = nativeRefusing 0 (fun () -> failwith "unreachable")
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry accepting inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry accepting polling
 
         test <@ attempts () = 1 @>
         test <@ sleeps.Count = 0 @>
@@ -731,7 +714,7 @@ let ``macOS non-refusal native fault falls back at once without spending the bud
         let polling, pollingCreated = countingPolling ()
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
 
         test <@ attempts () = 1 @>
         test <@ sleeps.Count = 0 @>
@@ -747,7 +730,7 @@ let ``macOS healthy native start pays no retry delay`` () =
         let polling, pollingCreated = countingPolling ()
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
 
         test <@ attempts () = 1 @>
         test <@ sleeps.Count = 0 @>
@@ -766,13 +749,13 @@ let ``macOS native watcher recovered from one refused start delivers real file e
             let mutable attempts = 0
 
             // First attempt: the refusal seen on 2026-08-21. Second: the real stream.
-            let native dirs onFile onCoalesced latency : IDisposable =
+            let native dirs exclusions onFile onCoalesced latency : IDisposable =
                 attempts <- attempts + 1
 
                 if attempts = 1 then
                     raise (FsHotWatch.MacFsEvents.StartFailedException())
                 else
-                    FsHotWatch.MacFsEvents.createWithCoalesced dirs onFile onCoalesced latency :> IDisposable
+                    FsHotWatch.MacFsEvents.createExcluding dirs exclusions onFile onCoalesced latency :> IDisposable
 
             let changes = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
 
@@ -786,50 +769,6 @@ let ``macOS native watcher recovered from one refused start delivers real file e
             // Recovery is only real if the stream that finally started delivers.
             probeUntilEvent srcDir (fun () -> changes.Count >= 1) 60000
             test <@ changes.Count >= 1 @>)
-
-[<Fact(Timeout = 15000)>]
-let ``macOS setup creates native first and rolls every partial watcher back`` () =
-    withTempDir "watcher-transaction" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let order = ResizeArray<string>()
-        let disposed = ResizeArray<string>()
-
-        let tracked name =
-            { new IDisposable with
-                member _.Dispose() = disposed.Add(name) }
-
-        let native _dirs _onFile _onCoalesced _latency =
-            order.Add("native")
-            tracked "native"
-
-        let mutable systemCount = 0
-
-        let system _handle _spec =
-            systemCount <- systemCount + 1
-            order.Add($"system-%d{systemCount}")
-
-            if systemCount = 2 then
-                failwith "second system watcher failed"
-
-            tracked $"system-%d{systemCount}"
-
-        let polling _repo _onChange _extras = tracked "polling"
-
-        use watcher =
-            FileWatcher.createWithFactories
-                tmpDir
-                ignore
-                [ FilePattern.parse "*.ratchet.json" ]
-                0.05
-                FileWatcher.NativeStartRetry.none
-                native
-                system
-                polling
-
-        test <@ order |> Seq.toList = [ "native"; "system-1"; "system-2" ] @>
-        test <@ disposed |> Seq.contains "native" @>
-        test <@ disposed |> Seq.contains "system-1" @>
-        test <@ watcher.Disposables.Length = 1 @>)
 
 // === a native notification is not evidence that the bytes changed ===
 // FSEvents is advisory. It fires for a touch, for an open-for-write that wrote
@@ -846,7 +785,7 @@ let private withNativeNotifications (tmpDir: string) (body: (string -> unit) -> 
     let changes = ResizeArray<FileChangeKind>()
     let mutable captured: (string -> unit) option = None
 
-    let native _dirs onFile _onCoalesced _latency : IDisposable =
+    let native _dirs _exclusions onFile _onCoalesced _latency : IDisposable =
         captured <- Some onFile
         inert "native"
 
@@ -858,7 +797,6 @@ let private withNativeNotifications (tmpDir: string) (body: (string -> unit) -> 
             0.05
             FileWatcher.NativeStartRetry.none
             native
-            inertSystem
             (fun _repo _onChange _extras -> inert "polling")
 
     test <@ watcher.Mode = WatcherMode.NativeEvents @>
@@ -1383,36 +1321,136 @@ let ``an assets file that is not valid JSON is still compared by its bytes`` () 
 
 // === The macOS layout's seams, driven on any platform ===
 
-[<Fact(Timeout = 15000)>]
-let ``the macOS native path adds a recursive system watcher for each extra pattern`` () =
-    withTempDir "watcher-native-extras" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let specs = ResizeArray<FileWatcher.SystemWatcherSpec>()
+/// Every native stream the macOS layout opens: its directories and kernel exclusions.
+let private recordingNative () =
+    let streams = ResizeArray<string list * string list>()
 
-        let system _handle spec =
-            specs.Add spec
-            inert "system"
+    let factory dirs exclusions _onFile _onCoalesced _latency : IDisposable =
+        streams.Add((dirs, exclusions))
+        inert "native"
+
+    factory, streams
+
+let private canonical (path: string) =
+    match FsHotWatch.RepositoryIdentity.canonicalize path with
+    | Ok p -> p.Value
+    | Error e -> failwith $"%A{e}"
+
+[<Fact(Timeout = 15000)>]
+let ``the macOS layout is one native stream over the worktree root with tooling dirs excluded in the kernel`` () =
+    // Each FSEvents stream is its own fseventsd client, queued per file. The solution
+    // and FileCommand-pattern watchers used to be .NET FileSystemWatchers: each one a
+    // further recursive stream over the whole root that no exclusion reaches.
+    withTempDir "watcher-native-layout" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let native, streams = recordingNative ()
 
         use watcher =
             FileWatcher.createWithFactories
                 tmpDir
                 ignore
-                [ FilePattern.parse "*.ratchet.json" ]
+                [ FilePattern.parse "*.ratchet.json"; FilePattern.parse "CHANGELOG.md" ]
                 0.05
                 FileWatcher.NativeStartRetry.none
-                (fun _dirs _onFile _onCoalesced _latency -> inert "native")
-                system
+                native
                 (fun _repo _onChange _extras -> inert "polling")
 
+        let root = canonical tmpDir
         test <@ watcher.Mode = WatcherMode.NativeEvents @>
-
-        let expected = [ [ "*.sln"; "*.slnx" ], false; [ "*.ratchet.json" ], true ]
+        test <@ watcher.Disposables.Length = 1 @>
 
         test
             <@
-                specs
-                |> Seq.map (fun spec -> spec.Filters, spec.IncludeSubdirectories)
-                |> Seq.toList = expected
+                streams |> Seq.toList = [ [ root ],
+                                          [ ".jj"
+                                            ".git"
+                                            ".fshw"
+                                            "node_modules"
+                                            ".devenv"
+                                            ".direnv"
+                                            ".idea"
+                                            ".workspaces" ]
+                                          |> List.map (fun d -> Path.Combine(root, d)) ]
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``kernel exclusions fit FSEvents and prune only what the polling walk prunes`` () =
+    // Parity with the polling fallback: a path the native stream never sees is one
+    // the polling walk never visits either, so the two watchers agree on scope.
+    for nested in [ true; false ] do
+        let names = kernelExclusions nested "/r" |> List.map Path.GetFileName
+        test <@ names.Length <= FsHotWatch.MacFsEvents.MaxExclusionPaths @>
+        test <@ names |> List.forall FsHotWatch.SafeWalk.ToolingExcludedDirs.Contains @>
+        // A discovery root is never excluded.
+        test <@ names |> List.forall (fun n -> n <> "src" && n <> "tests") @>
+
+    test <@ kernelExclusions true "/r" |> List.contains "/r/.workspaces" @>
+    test <@ not (kernelExclusions false "/r" |> List.contains "/r/.workspaces") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a worktree with no discovery root still watches its solutions and patterns`` () =
+    withTempDir "watcher-native-no-src" (fun tmpDir ->
+        let native, streams = recordingNative ()
+
+        use watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                ignore
+                []
+                0.05
+                FileWatcher.NativeStartRetry.none
+                native
+                (fun _repo _onChange _extras -> inert "polling")
+
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>
+        test <@ streams |> Seq.map fst |> Seq.toList = [ [ canonical tmpDir ] ] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the root stream passes discovery inputs, top-level solutions and patterns, and nothing else`` () =
+    withTempDir "watcher-native-routing" (fun tmpDir ->
+        let changes = ResizeArray<FileChangeKind>()
+        let mutable captured: (string -> unit) option = None
+
+        let native _dirs _exclusions onFile _onCoalesced _latency : IDisposable =
+            captured <- Some onFile
+            inert "native"
+
+        use _watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                changes.Add
+                [ FilePattern.parse "*.ratchet.json" ]
+                0.05
+                FileWatcher.NativeStartRetry.none
+                native
+                (fun _repo _onChange _extras -> inert "polling")
+
+        let onFile =
+            captured |> Option.defaultWith (fun () -> failwith "no native callback")
+
+        let write (relative: string) =
+            let path = Path.Combine(tmpDir, relative)
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+            File.WriteAllText(path, relative)
+            onFile path
+            path
+
+        let source = write "src/App/Program.fs"
+        let project = write "tests/AppTests/AppTests.fsproj"
+        let solution = write "App.sln"
+        let ratchet = write "docs/coverage.ratchet.json"
+        write "docs/Script.fs" |> ignore // an F# file outside the discovery roots
+        write "sub/Nested.sln" |> ignore // a solution below the top level
+        write "src/App/bin/Debug/App.fs" |> ignore // build output
+        write "src/App/obj/x.ratchet.json" |> ignore // a pattern match in build output
+        write "src/App/notes.txt" |> ignore
+
+        test
+            <@
+                changes |> Seq.toList = [ SourceChanged [ source ]
+                                          ProjectChanged [ project ]
+                                          SolutionChanged
+                                          SourceChanged [ ratchet ] ]
             @>)
 
 [<Fact(Timeout = 15000)>]
@@ -1423,7 +1461,7 @@ let ``a coalesced native event rescans its subtree and emits only relevant files
         let changes = ResizeArray<FileChangeKind>()
         let mutable coalesced: (string -> unit) option = None
 
-        let native _dirs _onFile onCoalesced _latency : IDisposable =
+        let native _dirs _exclusions _onFile onCoalesced _latency : IDisposable =
             coalesced <- Some onCoalesced
             inert "native"
 
@@ -1435,7 +1473,6 @@ let ``a coalesced native event rescans its subtree and emits only relevant files
                 0.05
                 FileWatcher.NativeStartRetry.none
                 native
-                inertSystem
                 (fun _repo _onChange _extras -> inert "polling")
 
         let rescan =
@@ -1459,7 +1496,7 @@ let ``a native start fault falls back to the built-in content-polling watcher`` 
     withTempDir "watcher-native-fault" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let native _dirs _onFile _onCoalesced _latency : IDisposable =
+        let native _dirs _exclusions _onFile _onCoalesced _latency : IDisposable =
             raise (InvalidOperationException "no event stream")
 
         use watcher =
@@ -1484,40 +1521,6 @@ let ``forcing the macOS layout where FSEvents cannot load degrades to content po
                 @>)
 
 [<Fact(Timeout = 15000)>]
-let ``a partial watcher that throws on rollback is logged and the rest still roll back`` () =
-    withTempDir "watcher-rollback-throws" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let disposed = ResizeArray<string>()
-
-        let native _dirs _onFile _onCoalesced _latency =
-            { new IDisposable with
-                member _.Dispose() = disposed.Add "native" }
-
-        let system _handle (spec: FileWatcher.SystemWatcherSpec) : IDisposable =
-            if spec.IncludeSubdirectories then
-                failwith "extra-pattern watcher failed"
-
-            { new IDisposable with
-                member _.Dispose() =
-                    disposed.Add "solutions"
-                    raise (IOException "already closed") }
-
-        use watcher =
-            FileWatcher.createWithFactories
-                tmpDir
-                ignore
-                [ FilePattern.parse "*.ratchet.json" ]
-                0.05
-                FileWatcher.NativeStartRetry.none
-                native
-                system
-                (fun _repo _onChange _extras -> inert "polling")
-
-        // Newest first: the throwing solution watcher, then the native stream all the same.
-        test <@ disposed |> Seq.toList = [ "solutions"; "native" ] @>
-        test <@ watcher.Mode = WatcherMode.ContentPolling "extra-pattern watcher failed" @>)
-
-[<Fact(Timeout = 15000)>]
 let ``a repository root the poller cannot list asks for a full refresh`` () =
     if OperatingSystem.IsWindows() then
         Assert.Skip("Unix file modes")
@@ -1540,3 +1543,23 @@ let ``a repository root the poller cannot list asks for a full refresh`` () =
                 )
 
             test <@ changes |> Seq.contains SolutionChanged @>)
+
+// === the suite opens a real FSEvents stream only where a test asks for one ===
+
+[<Fact(Timeout = 15000)>]
+let ``test daemons choose their run mode through TestHelpers`` () =
+    // The library's default options build a Watching daemon, whose watcher is a real FSEvents
+    // stream on macOS. fseventsd keeps what it allocates for each stream, so a suite
+    // that builds dozens of daemons it never feeds an event grows fseventsd on every
+    // run. A test daemon names `oneShotDaemonOptions` or, when its watcher is the
+    // subject, `watchingDaemonOptions`.
+    let offenders =
+        Directory.GetFiles(__SOURCE_DIRECTORY__, "*.fs")
+        |> Array.filter (fun file ->
+            let name = Path.GetFileName file
+
+            name <> "TestHelpers.fs"
+            && File.ReadAllText(file).Contains("DaemonOptions" + ".defaults"))
+        |> Array.map Path.GetFileName
+
+    test <@ offenders = [||] @>
