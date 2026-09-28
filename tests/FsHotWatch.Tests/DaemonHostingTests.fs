@@ -199,11 +199,12 @@ let ``a daemon whose root is deleted stops on its own`` () =
                     VanishedRootCheckEvery = TimeSpan.FromMilliseconds 100.0 }
                 hostWatcher
 
-        let served = TaskCompletionSource()
+        let served = TaskCompletionSource<bool>()
 
+        // Deleted the moment the daemon serves, the earliest a client could act on it.
         let serve (_: DaemonRpcConfig) (serveCts: CancellationTokenSource) =
             async {
-                served.SetResult()
+                served.SetResult(deleteWhileWritten root 10000)
 
                 do!
                     Task.Delay(Timeout.Infinite, serveCts.Token)
@@ -217,8 +218,7 @@ let ``a daemon whose root is deleted stops on its own`` () =
 
         try
             test <@ served.Task.Wait(TimeSpan.FromSeconds 30.0) @>
-            test <@ not run.IsCompleted @>
-            test <@ deleteWhileWritten root 10000 @>
+            test <@ served.Task.Result @>
             test <@ run.Wait(TimeSpan.FromSeconds 20.0) @>
             test <@ cts.IsCancellationRequested @>
         finally
