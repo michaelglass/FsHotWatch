@@ -1068,6 +1068,17 @@ let launchWatchdogLoopWith
 
     loop ()
 
+/// A deadline override from an optional string (an `FSHW_*_SEC` env value): a
+/// positive integer count of seconds, else `None` (absent, unparseable,
+/// non-positive). The one reading every env-configured deadline shares, so there is
+/// intentionally no spelling for "infinite".
+let tryPositiveSeconds (overrideSec: string option) : TimeSpan option =
+    overrideSec
+    |> Option.bind (fun s ->
+        match Int32.TryParse(s: string) with
+        | true, n when n > 0 -> Some(TimeSpan.FromSeconds(float n))
+        | _ -> None)
+
 /// Default launch deadline: the window in which a spawned test child must show
 /// its first sign of life. Deliberately generous — a real runner emits its
 /// discovery/progress banner within seconds, so 5 min only ever trips on a
@@ -1080,12 +1091,7 @@ let DefaultLaunchDeadline = TimeSpan.FromMinutes 5.0
 /// `DefaultLaunchDeadline`. Pure so the precedence is unit-testable without
 /// touching process env.
 let resolveLaunchDeadline (overrideSec: string option) : TimeSpan =
-    match overrideSec with
-    | Some s ->
-        match Int32.TryParse(s: string) with
-        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
-        | _ -> DefaultLaunchDeadline
-    | None -> DefaultLaunchDeadline
+    tryPositiveSeconds overrideSec |> Option.defaultValue DefaultLaunchDeadline
 
 /// Bounded post-exit drain window. Once `HasExited` is true the exit CODE is
 /// available immediately, but the redirected streams may not have reached EOF —

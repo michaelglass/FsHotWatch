@@ -69,6 +69,7 @@
     <Compile Include="PluginFrameworkResultFirstTests.fs" />
     <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
+    <Compile Include="JsonTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
     <Compile Include="PluginHostActivityTests.fs" />

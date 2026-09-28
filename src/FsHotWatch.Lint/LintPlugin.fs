@@ -163,8 +163,7 @@ let create
                     else
 
                         Logging.debug "lint" $"FileChecked received: %s{fileStr}"
-                        let runStarted = DateTime.UtcNow
-                        ctx.ReportStatus(Running(since = runStarted))
+                        let elapsed = PluginCtxHelpers.beginRun ctx
 
                         return!
                             PluginCtxHelpers.withSubtask
@@ -181,16 +180,7 @@ let create
                                             let reason = $"timed out after %d{int after.TotalSeconds}s"
                                             Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
 
-                                            // Flip the recorded outcome to TimedOut; the
-                                            // verdict carries the summary (one channel).
-                                            ctx.CompleteWithTimeout reason
-
-                                            ctx.ReportStatus(
-                                                PluginStatus.failedNow
-                                                    $"lint timed out: {reason}"
-                                                    $"lint timed out: {reason}"
-                                                    after
-                                            )
+                                            PluginCtxHelpers.timedOutWith ctx "lint" reason after
 
                                             return state
                                         | WorkCompleted(Lint.LintResult.Success warnings) ->
@@ -221,7 +211,7 @@ let create
                                             PluginCtxHelpers.completeWith
                                                 ctx
                                                 $"linted {newWarnings.Count} files, {totalIssues} issues"
-                                                (DateTime.UtcNow - runStarted)
+                                                (elapsed ())
 
                                             return newState
                                         | WorkCompleted(Lint.LintResult.Failure failure) ->
@@ -233,7 +223,7 @@ let create
                                                 PluginStatus.failedNow
                                                     msg
                                                     $"lint failed on {System.IO.Path.GetFileName fileStr}"
-                                                    (DateTime.UtcNow - runStarted)
+                                                    (elapsed ())
                                             )
 
                                             return state

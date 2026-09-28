@@ -9,6 +9,34 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 
+/// Where the verdict publisher writes what it says at the terminal: stderr, unless a
+/// caller installs a writer of its own. The writer is an `AsyncLocal`, so it reaches only
+/// the work that flows from where it was installed — a caller reading the sentences back
+/// sees its own and nobody else's, which a process-wide `Console.SetError` cannot offer.
+module VerdictTerminal =
+    let private installed = AsyncLocal<IO.TextWriter option>()
+
+    /// Send this context's verdict sentences to `writer` until the result is disposed,
+    /// when the previous writer (or stderr) takes over again.
+    let install (writer: IO.TextWriter) : IDisposable =
+        let prior = installed.Value
+        installed.Value <- Some writer
+
+        { new IDisposable with
+            member _.Dispose() = installed.Value <- prior }
+
+    /// One plain line.
+    let line (text: string) =
+        match installed.Value with
+        | Some writer -> writer.WriteLine text
+        | None -> eprintfn "%s" text
+
+    /// A refusal, rendered exactly as `UI.fail` renders it.
+    let fail (reason: string) =
+        match installed.Value with
+        | Some writer -> writer.WriteLine $"%s{Color.red}✗ %s{reason}%s{Color.reset}"
+        | None -> UI.fail reason
+
 /// Format one diagnostic entry as a plain agent-mode line:
 ///   `<plugin>:<file>:<line>:<col>: <severity> <message>`
 /// No ANSI, no indentation. Message is single-line (collapses newlines).
@@ -1091,7 +1119,7 @@ let private publishVerdictWithReason
                 // refusal below is: the caller explains the outcome it HANDED IN, which is
                 // clean, so an operator otherwise saw exit 2 and no sentence anywhere but
                 // in the file.
-                UI.fail reason
+                VerdictTerminal.fail reason
 
                 Verdict.Incomplete reason,
                 CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
@@ -1113,7 +1141,7 @@ let private publishVerdictWithReason
                 // Said out loud as well as recorded: the caller explains `Clean` by
                 // printing nothing, so without this an operator sees exit 2 and no reason.
                 | CheckVerdict.CheckOutcome.Clean _, Some reason ->
-                    UI.fail reason
+                    VerdictTerminal.fail reason
 
                     Verdict.Incomplete reason,
                     CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
@@ -1290,10 +1318,10 @@ let private publishVerdictWithReason
         | None -> Verdict.write repoRoot v
 
         if not UI.isInteractive then
-            eprintfn ""
+            VerdictTerminal.line ""
 
             for line in ProgressRenderer.AgentHints.forVerdict (FsHotWatch.Ctrf.runExists repoRoot) priorVerdict v do
-                eprintfn "%s" line
+                VerdictTerminal.line line
 
         exitCode
     with

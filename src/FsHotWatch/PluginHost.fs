@@ -67,8 +67,8 @@ type PluginHost
     let workStore = PluginWorkOwner.Store()
 
     // UTC ticks of the most recent host-level activity (event dispatch, plugin status
-    // change, preprocessor run). The quiescence window in `WaitForComplete` and
-    // idle-exit read it; it is not an ownership record.
+    // change, preprocessor run). Idle-exit and the wedge diagnostic read it; it is
+    // not an ownership record, and `WaitForComplete` does not consult it.
     let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
 
     // Live "checked files" coverage set: the files that currently hold a valid FULL
@@ -567,10 +567,9 @@ type PluginHost
             held.Dispose()
 
     /// UTC timestamp of the most recent host activity: an event dispatch or a
-    /// plugin status transition. Used by `WaitForComplete` to enforce a
-    /// quiescence window so a plugin that's about to start a new cycle isn't
-    /// missed when its predecessor's event has been emitted but not yet
-    /// processed from the plugin's mailbox.
+    /// plugin status transition. Idle-exit measures idleness from it and the wedge
+    /// diagnostic reports how long the host has been quiet. Rest is never read from
+    /// it: an event emitted but not yet processed is already owned in `WorkSnapshot`.
     member _.LastActivityAt() : System.DateTime =
         System.DateTime(System.Threading.Volatile.Read(&lastActivityAtTicks), System.DateTimeKind.Utc)
 

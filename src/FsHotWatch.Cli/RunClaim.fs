@@ -89,18 +89,8 @@ let deserialize (json: string) : Claim option =
     try
         let root = JsonDocument.Parse(json).RootElement
 
-        let str (name: string) =
-            match root.TryGetProperty name with
-            | true, el when el.ValueKind = JsonValueKind.String -> Some(el.GetString())
-            | _ -> None
-
-        let num (name: string) =
-            match root.TryGetProperty name with
-            | true, el when el.ValueKind = JsonValueKind.Number ->
-                match el.TryGetInt32() with
-                | true, v -> Some v
-                | _ -> None
-            | _ -> None
+        let str = Json.tryString root
+        let num = Json.tryInt root
 
         match str "schema", str "invocationId", num "pid", str "host", str "command", str "startedAtUtc" with
         | Some schema, Some invocationId, Some pid, Some host, Some command, Some startedAt when schema = Schema ->
