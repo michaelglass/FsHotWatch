@@ -181,25 +181,22 @@ let internal classifyChange (path: string) =
 /// until that client drains, so a directory no watcher reports from is still memory
 /// in fseventsd while the daemon is busy. Every name is one the polling walk also
 /// prunes (`SafeWalk.ToolingExcludedDirs`): what the native stream never sees, the
-/// polling fallback never visits either.
+/// polling fallback never visits either. `.workspaces` holds sibling checkouts, each
+/// watched by its own stream.
 let private kernelExcludedDirs =
-    [ ".jj"; ".git"; ".fshw"; "node_modules"; ".devenv"; ".direnv"; ".idea" ]
-
-/// The directory sibling checkouts of a repository live in. A per-worktree stream
-/// drops it — each checkout there has its own daemon — but a shared stream cannot:
-/// the sessions it routes to live there.
-let private nestedCheckoutDir = ".workspaces"
+    [ ".jj"
+      ".git"
+      ".fshw"
+      "node_modules"
+      ".devenv"
+      ".direnv"
+      ".idea"
+      ".workspaces" ]
 
 /// The exclusion prefixes for a native stream over `root` (at most
 /// `MacFsEvents.MaxExclusionPaths`).
-let internal kernelExclusions (excludeNestedCheckouts: bool) (root: string) =
-    let names =
-        if excludeNestedCheckouts then
-            kernelExcludedDirs @ [ nestedCheckoutDir ]
-        else
-            kernelExcludedDirs
-
-    names |> List.map (fun name -> Path.Combine(root, name))
+let internal kernelExclusions (root: string) =
+    kernelExcludedDirs |> List.map (fun name -> Path.Combine(root, name))
 
 /// What a stream over the whole of `root` passes on: F# inputs under the discovery
 /// roots, solutions at the top level, and FileCommand patterns anywhere outside
@@ -650,7 +647,7 @@ module FileWatcher =
         // the polling fallback below cannot catch it (case 2).
         match
             startNativeWithRetry nativeStartRetry (fun () ->
-                nativeStreamFactory [ watchRoot ] (kernelExclusions true watchRoot) handle onCoalesced latencySeconds)
+                nativeStreamFactory [ watchRoot ] (kernelExclusions watchRoot) handle onCoalesced latencySeconds)
         with
         | Started nativeStream ->
             { Mode = WatcherMode.NativeEvents

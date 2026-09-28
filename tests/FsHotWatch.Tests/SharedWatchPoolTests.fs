@@ -1,6 +1,7 @@
-/// One native file-event registration shared by every worktree session under a
-/// repository root. The pool must deliver each event to exactly the session that owns
-/// it, apply that session's own watch rules, and run the delivery under that session's
+/// The repository host's watch pool: every worktree session watches its own root on its
+/// own native stream, with that root's tooling directories and nested checkouts excluded
+/// in the kernel. The pool must deliver each event to exactly the session that owns it,
+/// apply that session's own watch rules, and run the delivery under that session's
 /// ExecutionContext — never the stream thread's, never a sibling's.
 module FsHotWatch.Tests.SharedWatchPoolTests
 
@@ -49,6 +50,10 @@ type private FakeNative() =
 
     member this.Live = this.Streams |> List.filter (fun s -> not s.Disposed)
 
+    /// The live stream over `root`.
+    member this.Over(root: string) =
+        this.Live |> List.find (fun s -> s.Dirs = [ root ])
+
 let private noFallback: FallbackFactory =
     fun _ _ _ _ -> failwith "the native stream was expected to start"
 
@@ -80,28 +85,34 @@ let private withTwoSessions body =
         use _b = subscribe pool anchor b [] recB
         body native pool anchor b recA recB)
 
-[<Fact(Timeout = 15000)>]
-let ``two sessions under one anchor share exactly one native stream over the anchor`` () =
-    withTwoSessions (fun native pool anchor _ _ _ ->
-        test <@ native.Streams.Length = 1 @>
-        let stream = native.Streams.Head
-        test <@ stream.Dirs = [ anchor ] @>
-        // The anchor's tooling dirs are dropped in the kernel. `.workspaces` is not:
-        // the sessions this stream routes to live there.
-        test
-            <@
-                stream.Exclusions = ([ ".jj"; ".git"; ".fshw"; "node_modules"; ".devenv"; ".direnv"; ".idea" ]
-                                     |> List.map (fun d -> Path.Combine(anchor, d)))
-            @>
+/// The prefixes a standalone daemon's stream over `root` drops in the kernel.
+let private ownExclusions (root: string) =
+    [ ".jj"
+      ".git"
+      ".fshw"
+      "node_modules"
+      ".devenv"
+      ".direnv"
+      ".idea"
+      ".workspaces" ]
+    |> List.map (fun d -> Path.Combine(root, d))
 
-        test <@ pool.Stats.NativeStreams = 1 @>
+[<Fact(Timeout = 15000)>]
+let ``each session watches its own root with its own tooling dirs and nested checkouts excluded`` () =
+    withTwoSessions (fun native pool anchor b _ _ ->
+        // A nested session's node_modules, .fshw and .jj are dropped by the kernel on
+        // its own stream; no shared stream over the anchor carries them.
+        let expected = [ [ anchor ], ownExclusions anchor; [ b ], ownExclusions b ]
+        test <@ native.Streams |> List.map (fun s -> s.Dirs, s.Exclusions) = expected @>
+
+        test <@ pool.Stats.NativeStreams = 2 @>
         test <@ pool.Stats.Subscribers = 2 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``an event in B's source tree reaches B and only B`` () =
     withTwoSessions (fun native _ _ b recA recB ->
         let file = write (Path.Combine(b, "src", "Lib", "A.fs")) "module A"
-        native.Streams.Head.OnFile file
+        (native.Over b).OnFile file
         test <@ recB.Seen = [ SourceChanged [ file ] ] @>
         test <@ recA.Seen.IsEmpty @>)
 
@@ -109,7 +120,7 @@ let ``an event in B's source tree reaches B and only B`` () =
 let ``an event in the primary's source tree reaches the primary only`` () =
     withTwoSessions (fun native _ anchor _ recA recB ->
         let file = write (Path.Combine(anchor, "tests", "T", "T.fs")) "module T"
-        native.Streams.Head.OnFile file
+        (native.Over anchor).OnFile file
         test <@ recA.Seen = [ SourceChanged [ file ] ] @>
         test <@ recB.Seen.IsEmpty @>)
 
@@ -119,9 +130,30 @@ let ``an event inside an unattached nested worktree reaches no session and is co
         let other = Path.Combine(anchor, ".workspaces", "x")
         Directory.CreateDirectory(Path.Combine(other, ".jj")) |> ignore
         let file = write (Path.Combine(other, "src", "A.fs")) "module A"
-        native.Streams.Head.OnFile file
+        (native.Over anchor).OnFile file
         test <@ recA.Seen.IsEmpty && recB.Seen.IsEmpty @>
         test <@ pool.Stats.EventsUnowned = 1L @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an event another attached session owns is left to that session's own stream`` () =
+    withTempDir "pool-nested" (fun dir ->
+        let anchor = Path.Combine(dir, "r")
+        // Nested outside `.workspaces`, so the primary's stream does not exclude it.
+        let b = Path.Combine(anchor, "checkouts", "b")
+        Directory.CreateDirectory(Path.Combine(b, ".jj")) |> ignore
+        let native = FakeNative()
+        let pool = WatchPool(native.Factory, noFallback)
+        let recA = Recorder()
+        let recB = Recorder()
+        use _a = subscribe pool anchor anchor [] recA
+        use _b = subscribe pool anchor b [] recB
+        let file = write (Path.Combine(b, "src", "B.fs")) "module B"
+        (native.Over anchor).OnFile file
+        test <@ recA.Seen.IsEmpty && recB.Seen.IsEmpty @>
+        test <@ pool.Stats.EventsOwnedElsewhere = 1L && pool.Stats.EventsDelivered = 0L @>
+        (native.Over b).OnFile file
+        test <@ recB.Seen = [ SourceChanged [ file ] ] @>
+        test <@ recA.Seen.IsEmpty @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a nested worktree created after the probe cached its directory is learned from its metadata event`` () =
@@ -180,8 +212,8 @@ let ``each session keeps the legacy watch rules`` () =
 let ``an event whose content did not change is not a change`` () =
     withTwoSessions (fun native _ _ b _ recB ->
         let file = write (Path.Combine(b, "src", "A.fs")) "module A"
-        native.Streams.Head.OnFile file
-        native.Streams.Head.OnFile file
+        (native.Over b).OnFile file
+        (native.Over b).OnFile file
         test <@ recB.Seen = [ SourceChanged [ file ] ] @>)
 
 [<Fact(Timeout = 15000)>]
@@ -213,14 +245,16 @@ let ``delivery runs under the subscribing session's ExecutionContext, not the st
         use _a = subscribeAs "A" anchor
         use _b = subscribeAs "B" b
 
-        test <@ native.Streams.Head.FlowSuppressedAtCreation @>
+        test <@ native.Streams.Length = 2 @>
+        test <@ native.Streams |> List.forall (fun s -> s.FlowSuppressedAtCreation) @>
 
         let fileA = write (Path.Combine(anchor, "src", "A.fs")) "a"
         let fileB = write (Path.Combine(b, "src", "B.fs")) "b"
 
         // Fire from a thread whose own context carries neither session.
         let fireFrom (path: string) =
-            let t = Thread(fun () -> native.Streams.Head.OnFile path)
+            let stream = if path = fileA then native.Over anchor else native.Over b
+            let t = Thread(fun () -> stream.OnFile path)
 
             using (ExecutionContext.SuppressFlow()) (fun _ -> t.Start())
 
@@ -246,13 +280,13 @@ let ``a session whose handler throws does not stop delivery to the others`` () =
         use _b = subscribe pool anchor b [] recB
         let fileA = write (Path.Combine(anchor, "src", "A.fs")) "a"
         let fileB = write (Path.Combine(b, "src", "B.fs")) "b"
-        native.Streams.Head.OnFile fileA
-        native.Streams.Head.OnFile fileB
+        (native.Over anchor).OnFile fileA
+        (native.Over b).OnFile fileB
         test <@ recB.Seen = [ SourceChanged [ fileB ] ] @>
         test <@ pool.Stats.DeliveryFailures = 1L @>)
 
 [<Fact(Timeout = 15000)>]
-let ``the stream lives while any session is subscribed and closes with the last`` () =
+let ``a session's stream closes with its subscription`` () =
     withTempDir "pool-life" (fun dir ->
         let anchor = Path.Combine(dir, "r")
         let b = Path.Combine(anchor, ".workspaces", "b")
@@ -262,13 +296,14 @@ let ``the stream lives while any session is subscribed and closes with the last`
         let a = subscribe pool anchor anchor [] (Recorder())
         let bSub = subscribe pool anchor b [] (Recorder())
         a.Dispose()
-        test <@ native.Live.Length = 1 @>
+        test <@ native.Live |> List.map (fun s -> s.Dirs) = [ [ b ] ] @>
+        test <@ pool.Stats.NativeStreams = 1 @>
         bSub.Dispose()
         test <@ native.Live.IsEmpty @>
         test <@ pool.Stats.NativeStreams = 0 @>
         // A later attach opens a fresh stream.
         use _again = subscribe pool anchor anchor [] (Recorder())
-        test <@ native.Live.Length = 1 && native.Streams.Length = 2 @>)
+        test <@ native.Live.Length = 1 && native.Streams.Length = 3 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``disposing a subscription twice detaches it once`` () =
@@ -277,7 +312,7 @@ let ``disposing a subscription twice detaches it once`` () =
         extra.Dispose()
         extra.Dispose()
         test <@ pool.Stats.Subscribers = 2 @>
-        test <@ native.Live.Length = 1 @>)
+        test <@ native.Live.Length = 2 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a session outside the anchor gets its own stream from the same pool`` () =
@@ -293,12 +328,15 @@ let ``a session outside the anchor gets its own stream from the same pool`` () =
         test <@ native.Streams |> List.map (fun s -> s.Dirs) |> List.sort = List.sort [ [ anchor ]; [ far ] ] @>)
 
 [<Fact(Timeout = 15000)>]
-let ``a must-scan of the anchor makes every session rescan its own discovery roots`` () =
+let ``a must-scan rescans only the session whose stream reported it`` () =
     withTwoSessions (fun native _ anchor b recA recB ->
         let fileA = write (Path.Combine(anchor, "src", "A.fs")) "a"
         let fileB = write (Path.Combine(b, "tests", "B.fs")) "b"
-        native.Streams.Head.OnCoalesced anchor
+        // B's own stream reports B's must-scans; the primary's does not speak for it.
+        (native.Over anchor).OnCoalesced anchor
         test <@ recA.Seen = [ SourceChanged [ fileA ] ] @>
+        test <@ recB.Seen.IsEmpty @>
+        (native.Over b).OnCoalesced b
         test <@ recB.Seen = [ SourceChanged [ fileB ] ] @>)
 
 [<Fact(Timeout = 15000)>]
@@ -306,7 +344,7 @@ let ``a must-scan inside one discovery root rescans only that directory`` () =
     withTwoSessions (fun native _ anchor _ recA recB ->
         let inside = write (Path.Combine(anchor, "src", "Lib", "In.fs")) "a"
         write (Path.Combine(anchor, "src", "Other", "Out.fs")) "b" |> ignore
-        native.Streams.Head.OnCoalesced(Path.Combine(anchor, "src", "Lib"))
+        (native.Over anchor).OnCoalesced(Path.Combine(anchor, "src", "Lib"))
         test <@ recA.Seen = [ SourceChanged [ inside ] ] @>
         test <@ recB.Seen.IsEmpty @>)
 
@@ -314,7 +352,7 @@ let ``a must-scan inside one discovery root rescans only that directory`` () =
 let ``a must-scan outside every discovery root rescans nothing`` () =
     withTwoSessions (fun native _ anchor _ recA _ ->
         write (Path.Combine(anchor, "docs", "D.fs")) "d" |> ignore
-        native.Streams.Head.OnCoalesced(Path.Combine(anchor, "docs"))
+        (native.Over anchor).OnCoalesced(Path.Combine(anchor, "docs"))
         test <@ recA.Seen.IsEmpty @>)
 
 [<Fact(Timeout = 15000)>]
@@ -344,7 +382,7 @@ let ``the Daemon-shaped factory subscribes on macOS and disposing its watcher de
             pool.WatcherFactoryFor (anchor, true) (Path.Combine(anchor, "third")) ignore None [] 0.25
 
         test <@ watcher.Mode = WatcherMode.NativeEvents @>
-        test <@ pool.Stats.Subscribers = 3 && native.Streams.Length = 1 @>
+        test <@ pool.Stats.Subscribers = 3 && native.Streams.Length = 3 @>
         (watcher :> IDisposable).Dispose()
         test <@ pool.Stats.Subscribers = 2 @>)
 
@@ -369,9 +407,9 @@ let ``off macOS the Daemon-shaped factory is the per-session fallback`` () =
 let ``stats count what the stream received and where it went`` () =
     withTwoSessions (fun native pool anchor b _ _ ->
         let fileB = write (Path.Combine(b, "src", "B.fs")) "b"
-        native.Streams.Head.OnFile fileB
-        native.Streams.Head.OnFile(Path.Combine(anchor, ".workspaces", "b", ".jj", "x"))
-        native.Streams.Head.OnFile "/nowhere/near/A.fs"
+        (native.Over b).OnFile fileB
+        (native.Over anchor).OnFile(Path.Combine(anchor, ".workspaces", "b", ".jj", "x"))
+        (native.Over anchor).OnFile "/nowhere/near/A.fs"
         let s = pool.Stats
         test <@ s.EventsReceived = 3L @>
         test <@ s.EventsDelivered = 1L @>
@@ -476,7 +514,7 @@ let ``a standalone directory is its own anchor`` () =
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 150000)>]
-let ``on macOS a real shared stream delivers a write to its owner only`` () =
+let ``on macOS a real pool delivers a write to its owner only`` () =
     if OperatingSystem.IsMacOS() then
         withTempDir "pool-real" (fun dir ->
             let canonical =
@@ -506,13 +544,13 @@ let ``on macOS a real shared stream delivers a write to its owner only`` () =
             test <@ recB.Seen |> List.forall (fun c -> c = SourceChanged [ file ]) @>
             test <@ not recB.Seen.IsEmpty @>
             test <@ recA.Seen.IsEmpty @>
-            test <@ pool.Stats.NativeStreams = 1 @>
+            test <@ pool.Stats.NativeStreams = 2 @>
 
-            // The platform-selecting factory joins the same stream.
+            // The platform-selecting factory opens the session's own stream in the pool.
             let third = Path.Combine(anchor, "third")
             Directory.CreateDirectory third |> ignore
             use _c = pool.WatcherFactoryFor anchor third ignore None [] 0.05
-            test <@ pool.Stats.NativeStreams = 1 && pool.Stats.Subscribers = 3 @>)
+            test <@ pool.Stats.NativeStreams = 3 && pool.Stats.Subscribers = 3 @>)
 
 // ---------------------------------------------------------------------------
 // The default pool, on every platform
@@ -530,7 +568,7 @@ let ``the default pool starts empty, and its platform factory gives a session a 
         let pool = WatchPool()
         test <@ pool.Stats.NativeStreams = 0 && pool.Stats.Subscribers = 0 @>
 
-        // Off macOS this is the session's own watcher; on macOS it joins a native stream.
+        // Off macOS this is the session's own watcher; on macOS its own stream in the pool.
         use watcher = pool.WatcherFactoryFor canonical canonical ignore None [] 0.05
         test <@ not watcher.Disposables.IsEmpty @>
 
