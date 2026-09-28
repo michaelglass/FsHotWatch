@@ -1563,3 +1563,29 @@ let ``test daemons choose their run mode through TestHelpers`` () =
         |> Array.map Path.GetFileName
 
     test <@ Array.isEmpty offenders @>
+
+[<Fact(Timeout = 15000)>]
+let ``tests move the process working directory only through TestHelpers`` () =
+    // Every child process started while the process stands somewhere inherits it, and a
+    // directory deleted while the process stands in it breaks every relative path, in
+    // every test, until the process moves. `withProcessWorkingDirectory` always moves it
+    // back; a test that moves it itself leaves it wherever it was when the test timed out.
+    let testDirs =
+        [ __SOURCE_DIRECTORY__
+          Path.Combine(__SOURCE_DIRECTORY__, "..", "FsHotWatch.IntegrationTests") ]
+
+    let moves (text: string) =
+        text.Contains("SetCurrent" + "Directory")
+        || text.Contains("Environment.Current" + "Directory <-")
+
+    // TestHelpers moves it and moves it back. WorkingDirectoryDeletionTests moves and
+    // deletes it only inside a child process it starts, never the test host's.
+    let allowed = set [ "TestHelpers.fs"; "WorkingDirectoryDeletionTests.fs" ]
+
+    let offenders =
+        testDirs
+        |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fs") |> List.ofArray)
+        |> List.filter (fun file -> not (allowed.Contains(Path.GetFileName file)) && moves (File.ReadAllText file))
+        |> List.map Path.GetFileName
+
+    test <@ List.isEmpty offenders @>

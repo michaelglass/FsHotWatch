@@ -251,14 +251,10 @@ type RelativePathTests() =
         withTempDir "rid-relative" (fun dir ->
             let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
             let expected = (resolved primary).Root
-            let original = Directory.GetCurrentDirectory()
 
-            try
-                Directory.SetCurrentDirectory dir
+            withProcessWorkingDirectory (Some dir) (fun () ->
                 test <@ (resolved "repo").Root = expected @>
-                test <@ (resolved "./repo/../repo").Root = expected @>
-            finally
-                Directory.SetCurrentDirectory original)
+                test <@ (resolved "./repo/../repo").Root = expected @>))
 
 [<Fact(Timeout = 15000)>]
 let ``an exactly spelled name stops the listing at its entry and normalizes nothing`` () =
