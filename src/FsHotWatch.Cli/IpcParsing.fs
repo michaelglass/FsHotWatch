@@ -577,6 +577,15 @@ let parsePluginStatuses (json: string) : Result<Map<string, ParsedPluginStatus>,
         FsHotWatch.Logging.warn "ipc-parsing" $"Failed to parse plugin-status JSON (schema drift?): %s{ex.Message}"
         Result.Error $"the daemon's plugin-status payload could not be parsed (schema drift?): %s{ex.Message}"
 
+/// The heap valve's report in a GetDiagnostics reply: `Some` once the daemon's
+/// backstop collection has fired, which means its allocation has regressed.
+let heapValveOf (json: string) : string option =
+    try
+        use doc = JsonDocument.Parse(json)
+        tryGetStringProp doc.RootElement "heapValve"
+    with :? JsonException ->
+        None
+
 /// Project a ParsedPluginStatus map to plain StatusView values.
 let statusOnly (parsed: Map<string, ParsedPluginStatus>) : Map<string, StatusView> =
     parsed |> Map.map (fun _ p -> p.Status)

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- perf: the daemon runs Server GC with DATAS (`System.GC.Server`,
+  `System.GC.DynamicAdaptationMode=1`), keeping `ConserveMemory=9`. On a ~2,200-file
+  solution a cold scan spent ~25% of its time in GC instead of ~65%, finished in half
+  the time or less, and peaked at 10–13 GB instead of 16–20 GB together with the
+  bounded checks in core (ADR-038). Override with `DOTNET_gcServer=0` or
+  `DOTNET_GCDynamicAdaptationMode=0`.
+- feat: `fshw status` warns when the daemon's heap valve has fired: a backstop
+  compacting collection that means the daemon's allocation has regressed.
+
 - fix: the daemon watches `.fshw.json` by looking at its write time and size every
   half second, instead of with a `FileSystemWatcher`. On macOS a `FileSystemWatcher`
   is an FSEvents stream over its whole directory, recursive in the kernel whatever its
