@@ -1481,6 +1481,21 @@ let internal projectChangeLine (repoRoot: string) (changed: string list) : strin
         let named = paths |> List.map describe |> String.concat ", "
         Some $"project input content changed: %d{paths.Length} [%s{named}]"
 
+/// The checkable files after each changed file in the compile order of every project
+/// that compiles it. F# types a file against the files before it, so an edit can change
+/// what the later ones type-check to. Dependent projects are covered separately.
+let internal laterFilesInOwnProjects
+    (sourceFilesOf: AbsProjectPath -> string list)
+    (projectsOf: AbsFilePath -> AbsProjectPath list)
+    (changed: AbsFilePath list)
+    : string list =
+    [ for file in changed do
+          for project in projectsOf file do
+              match sourceFilesOf project |> List.skipWhile ((<>) (AbsFilePath.value file)) with
+              | _ :: later -> yield! later |> List.filter (not << PathFilter.isGeneratedPath)
+              | [] -> () ]
+    |> List.distinct
+
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files. Raises `ModelSupersededException`
 /// when a publication meets a model newer than the one the attempt captured.
@@ -1794,6 +1809,12 @@ let private processBatchAttempt
 
             let changedProjectSet = Set.ofList changedProjects
 
+            let laterFiles =
+                laterFilesInOwnProjects
+                    (ctx.Graph.GetSourceFiles >> List.map AbsFilePath.value)
+                    ctx.Graph.GetProjectsForFile
+                    absSourceFiles
+
             let dependentProjectFiles =
                 changedProjects
                 |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
@@ -1803,7 +1824,7 @@ let private processBatchAttempt
                 |> List.map AbsFilePath.value
 
             let allFilesToCheck =
-                (allSourceFiles @ dependentProjectFiles)
+                (allSourceFiles @ laterFiles @ dependentProjectFiles)
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
