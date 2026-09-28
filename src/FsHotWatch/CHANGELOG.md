@@ -43,7 +43,10 @@
   example a `CHANGELOG.md` inside a nested `.workspaces/` checkout), matching what the
   polling watcher already did.
 - `MacFsEvents.createWithCoalesced` is removed. Use `MacFsEvents.createExcluding`.
-
+- `DaemonOptions.Restore`: what restores a project whose `obj/project.assets.json` is
+  missing or stale before it is checked, given the repository root. Defaults to
+  `DepsFreshness.productionRestoreRunner`; a test daemon can inject a fake so it never
+  runs `dotnet restore`.
 - fix: a repository host no longer runs forever holding a session no client knows of.
   The host answered an attach under the 10-second bound meant for reading the
   client's preamble, so on a loaded machine an attach that took longer registered its

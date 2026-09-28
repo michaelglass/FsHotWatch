@@ -21,7 +21,7 @@ let private keyOf (handler: PluginHandler<'State, 'Msg>) = handler.CacheKey.Valu
 [<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome success with clean output yields BuildPassed and no entries`` () =
     let output = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
-    let (outcome, entries) = decideBuildOutcome true output
+    let (outcome, entries) = decideBuildOutcome true None output
     test <@ outcome = BuildPassed(output, None) @>
     test <@ entries.IsEmpty @>
 
@@ -30,7 +30,7 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
     let output =
         "/src/Bar.fs(3,1): warning FS0040: This construct causes code to be less generic"
 
-    let (outcome, entries) = decideBuildOutcome true output
+    let (outcome, entries) = decideBuildOutcome true None output
     test <@ outcome = BuildPassed(output, None) @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Warning @>
@@ -87,7 +87,7 @@ let ``successful build is refused when an MSB3026 migration copy remains unresol
     let output =
         "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net10.0/Acme.Database.Migrations.dll\" to \"bin/Debug/net10.0/Acme.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
 
-    let rawOutcome, entries = decideBuildOutcome true output
+    let rawOutcome, entries = decideBuildOutcome true None output
 
     let outcome, verifiedEntries =
         verifyCopyRetryWarningsWith
@@ -121,7 +121,7 @@ let ``MSB3026 retry that eventually copied matching dependency bytes remains suc
     let output =
         $"/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"%s{source}\" to \"%s{destination}\". Beginning retry 2 in 1000ms. The process cannot access the file."
 
-    let rawOutcome, entries = decideBuildOutcome true output
+    let rawOutcome, entries = decideBuildOutcome true None output
 
     let outcome, verifiedEntries =
         verifyCopyRetryWarningsWith (fun _ -> "matching-hash") "/repo" rawOutcome entries
@@ -134,7 +134,7 @@ let ``MSB3026 destination with stale bytes is refused even when the file exists`
     let output =
         "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
 
-    let rawOutcome, entries = decideBuildOutcome true output
+    let rawOutcome, entries = decideBuildOutcome true None output
 
     let outcome, _ =
         verifyCopyRetryWarningsWith
@@ -157,7 +157,7 @@ let ``MSB3026 destination with stale bytes is refused even when the file exists`
 [<Fact(Timeout = 15000)>]
 let ``copy verifier ignores unrelated warnings and existing failed outcomes`` () =
     let warningOutput = "/repo/Lib.fs(1,1): warning FS0040: ordinary compiler warning"
-    let passed, warningEntries = decideBuildOutcome true warningOutput
+    let passed, warningEntries = decideBuildOutcome true None warningOutput
     let mutable hashes = 0
 
     let hash (_: string) =
@@ -176,7 +176,7 @@ let ``duplicate MSB3026 retries verify and diagnose one copy pair`` () =
         "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
 
     let output = line + "\n" + line.Replace("retry 1", "retry 2")
-    let rawOutcome, entries = decideBuildOutcome true output
+    let rawOutcome, entries = decideBuildOutcome true None output
     let mutable hashes = 0
 
     let outcome, _ =
@@ -209,7 +209,7 @@ let ``unreadable source and unreadable destination both refuse copy evidence`` (
     let output =
         "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
 
-    let rawOutcome, entries = decideBuildOutcome true output
+    let rawOutcome, entries = decideBuildOutcome true None output
 
     let refuses unreadablePath =
         verifyCopyRetryWarningsWith
@@ -257,38 +257,69 @@ let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and
     let output =
         "/src/Foo.fs(12,5): error FS0001: This expression was expected to have type int"
 
-    let (outcome, entries) = decideBuildOutcome false output
-    test <@ outcome = BuildOutputFailed [ output ] @>
+    let (outcome, entries) = decideBuildOutcome false (Some 1) output
+    test <@ outcome = BuildOutputFailed [ $"%s{output}\nexit code 1"; output ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
 
 [<Fact(Timeout = 15000)>]
-let ``decideBuildOutcome failure with empty output yields single synthetic error`` () =
-    let (outcome, entries) = decideBuildOutcome false ""
-    test <@ outcome = BuildOutputFailed [ "" ] @>
+let ``decideBuildOutcome failure with empty output yields single synthetic error naming the exit code`` () =
+    let (outcome, entries) = decideBuildOutcome false (Some 1) ""
+    test <@ outcome = BuildOutputFailed [ "exit code 1"; "" ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
-    test <@ entries.[0].Message = "" @>
+    test <@ entries.[0].Message = "exit code 1" @>
 
 [<Fact(Timeout = 15000)>]
-let ``decideBuildOutcome failure with unparseable output falls back to raw-text error`` () =
+let ``decideBuildOutcome failure with unparseable output reports its last lines and exit code`` () =
     let output = "Segmentation fault\nrandom stderr blob\nnot an MSBuild line"
-    let (outcome, entries) = decideBuildOutcome false output
+    let (outcome, entries) = decideBuildOutcome false (Some 139) output
+    let description = $"%s{output}\nexit code 139"
+    test <@ outcome = BuildOutputFailed [ description; output ] @>
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Message = description @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideBuildOutcome failure without an exit code falls back to raw-text error`` () =
+    let output = "timed out after 60s\nrandom stderr blob"
+    let (outcome, entries) = decideBuildOutcome false None output
     test <@ outcome = BuildOutputFailed [ output ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Message = output @>
-    test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
 
 [<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers parsed entries`` () =
     let output =
         "Startup trace noise\n/src/Foo.fs(12,5): error FS0001: Bad type\nrandom stderr\n/src/Bar.fs(3,1): warning FS0040: Less generic"
 
-    let (outcome, entries) = decideBuildOutcome false output
-    test <@ outcome = BuildOutputFailed [ output ] @>
+    let (outcome, entries) = decideBuildOutcome false (Some 1) output
+
+    test <@ outcome = BuildOutputFailed [ "/src/Foo.fs(12,5): error FS0001: Bad type\nexit code 1"; output ] @>
+
     test <@ entries.Length = 2 @>
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideBuildOutcome failure with only warnings parsed still records an error`` () =
+    let output =
+        "/src/Bar.fs(3,1): warning FS0040: Less generic\n/src/Lib.fsproj : error NU1101: Unable to find package Missing"
+
+    let (_, entries) = decideBuildOutcome false (Some 1) output
+    let errors = entries |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+    test <@ errors.Length = 1 @>
+    test <@ errors.[0].Message.StartsWith "/src/Lib.fsproj : error NU1101" @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeBuildFailure keeps only the last lines of output without an error line`` () =
+    let output =
+        [ 1 .. (FailureDescriptionLines + 5) ] |> List.map string |> String.concat "\n"
+
+    let lines = (describeBuildFailure 2 output).Split('\n')
+    test <@ lines.Length = FailureDescriptionLines + 1 @>
+    test <@ lines.[0] = "6" @>
+    test <@ Array.last lines = "exit code 2" @>
 
 [<Fact(Timeout = 15000)>]
 let ``create accepts graph and test project names`` () =
@@ -395,6 +426,45 @@ let ``template build handler verifies MSB3026 copies before emitting BuildSuccee
         host.EmitFileChanged(SourceChanged [ source ])
         waitForTerminalStatus host "build" 12000
         assertUnresolvedCopyFailure getBuild)
+
+[<Fact(Timeout = 15000)>]
+let ``a failed build reports its error line and exit code, not its first output line`` () =
+    withTempDir "build-failure-headline" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let script = System.IO.Path.Combine(tmpDir, "failing-build.sh")
+
+        let errorLine =
+            "MSBUILD : error FS0039: The value or constructor 'missing' is not defined."
+
+        System.IO.File.WriteAllText(
+            script,
+            "#!/bin/sh\n"
+            + "echo 'Determining projects to restore...'\n"
+            + "echo '  All projects are up-to-date for restore.'\n"
+            + $"echo \"%s{errorLine}\"\n"
+            + "echo 'Build FAILED.'\n"
+            + "exit 1\n"
+        )
+
+        let handler = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Lib.fs") ])
+        waitForTerminalStatus host "build" 12000
+
+        let headline (text: string) = text.Split('\n').[0]
+
+        match host.GetStatus("build") with
+        | Some(Failed(error, _, _)) ->
+            test <@ (headline error).Contains "error FS0039" @>
+            test <@ error.Contains "exit code 1" @>
+        | other -> failwithf "expected a failed build status, got %A" other
+
+        let entries = host.GetErrorsByPlugin("build") |> Map.toList |> List.collect snd
+
+        test <@ not entries.IsEmpty @>
+        test <@ entries |> List.forall (fun e -> not (e.Message.StartsWith "Determining")) @>
+        test <@ entries |> List.exists (fun e -> (headline e.Message).Contains "error FS0039") @>
+        test <@ entries |> List.exists (fun e -> e.Message.Contains "exit code 1") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
