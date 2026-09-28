@@ -300,8 +300,7 @@ let ``TestScope.describe names every scope`` () =
 [<Fact(Timeout = 10000)>]
 let ``none scope preserves why no tests ran`` () =
     let scopeOf suffix =
-        parseTestRunReport
-            $"""{{"runId":null,"scope":"none","ranProjects":0,"totalProjects":0{suffix},"projects":[]}}"""
+        parseTestRunReport $"""{{"runId":null,"kind":"none","ranProjects":0,"totalProjects":0{suffix},"projects":[]}}"""
         |> fun report -> report.Scope
 
     let alreadyVerified = scopeOf ",\"noTestsReason\":\"already-verified\""
@@ -409,7 +408,7 @@ let ``parseTaggedOutcome parses failed with its error`` () =
 let ``parseCheckReach reads a recorded projection, run id and scope included`` () =
     let reading =
         parseCheckReach
-            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","kind":"filtered",
                 "ranProjects":2,"totalProjects":6,"reach":"reached-a-failure",
                 "failingSuites":["Lib.Tests"],"reason":null,
                 "conditionalFailureRecall":{"measured":true,"reached":3,"total":4,"threshold":1.0,
@@ -427,7 +426,7 @@ let ``parseCheckReach reads a recorded projection, run id and scope included`` (
 let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
     let replyWith (reach: string) =
         parseCheckReach
-            $"""{{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full",
+            $"""{{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","kind":"full",
                  "ranProjects":6,"totalProjects":6,"reach":"%s{reach}","failingSuites":[],
                  "reason":"a project-level red"}}"""
 
@@ -448,7 +447,7 @@ let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
 let ``check-reach carries named misses and their causes`` () =
     let reading =
         parseCheckReach
-            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","kind":"filtered",
                 "ranProjects":1,"totalProjects":2,"reach":"reached-no-failure","failingSuites":[],
                 "missed":[{"project":"Jobs.Tests","class":"Jobs.ReflectionGuard","cause":"project-not-selected"},
                           {"project":"Api.Tests","class":"Api.ContractTests","cause":"class-not-in-filter"}]}"""
@@ -471,7 +470,7 @@ let ``check-reach carries named misses and their causes`` () =
 let ``missed evidence preserves unknown causes and drops malformed rows`` () =
     let reading =
         parseCheckReach
-            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","kind":"filtered",
                 "ranProjects":1,"totalProjects":2,"reach":"reached-no-failure","failingSuites":[],
                 "missed":[{"project":"Future.Tests","class":"Future.Guard","cause":"generated-edge"},
                           {"project":"Broken.Tests","cause":"project-not-selected"}]}"""
@@ -572,7 +571,7 @@ let ``DaemonEvidence.parse is NotServed for a daemon that sends no ledger`` () =
 let ``a test-scope reply naming a baseline parses to Valid, with its run and project count`` () =
     let report =
         parseTestRunReport
-            """{"scope":"filtered","ranProjects":1,"totalProjects":3,"baseline":{"runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":["A","B","C"]},"baselineAbsent":null}"""
+            """{"kind":"filtered","ranProjects":1,"totalProjects":3,"baseline":{"runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":["A","B","C"]},"baselineAbsent":null}"""
 
     match report.Baseline with
     | BaselineReading.Valid b ->
@@ -585,20 +584,20 @@ let ``a test-scope reply naming a baseline parses to Valid, with its run and pro
 let ``a reply stating why the baseline is absent parses to Absent with that reason`` () =
     let report =
         parseTestRunReport
-            """{"scope":"filtered","ranProjects":1,"totalProjects":3,"baseline":null,"baselineAbsent":"no full-suite run yet"}"""
+            """{"kind":"filtered","ranProjects":1,"totalProjects":3,"baseline":null,"baselineAbsent":"no full-suite run yet"}"""
 
     test <@ report.Baseline = BaselineReading.Absent "no full-suite run yet" @>
 
 [<Fact(Timeout = 10000)>]
 let ``a reply with no baseline field, or a malformed one, is NotReported — never Valid`` () =
     let silent =
-        parseTestRunReport """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+        parseTestRunReport """{"kind":"full","ranProjects":3,"totalProjects":3}"""
 
     test <@ silent.Baseline = BaselineReading.NotReported @>
 
     let malformed =
         parseTestRunReport
-            """{"scope":"full","ranProjects":3,"totalProjects":3,"baseline":{"runId":"not-a-guid","earnedAt":"2026-09-06T12:00:00Z","projects":[]}}"""
+            """{"kind":"full","ranProjects":3,"totalProjects":3,"baseline":{"runId":"not-a-guid","earnedAt":"2026-09-06T12:00:00Z","projects":[]}}"""
 
     test <@ malformed.Baseline = BaselineReading.NotReported @>
 
@@ -613,7 +612,7 @@ let ``a reply with no baseline field, or a malformed one, is NotReported — nev
 let ``a zero-selection reply names the symbols covered only by unlisted projects`` () =
     let report =
         parseTestRunReport
-            """{"scope":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1,"unrunnableSymbolCount":1,"unrunnableProjects":["Unlisted"]}"""
+            """{"kind":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1,"unrunnableSymbolCount":1,"unrunnableProjects":["Unlisted"]}"""
 
     match report.Scope with
     | NoTestsRun(NoTestsReason.ChangesUncovered(symbols, total, unrunnable)) ->
@@ -634,7 +633,7 @@ let ``a zero-selection reply names the symbols covered only by unlisted projects
     // Absent from an older daemon: silence, not a claim.
     let older =
         parseTestRunReport
-            """{"scope":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1}"""
+            """{"kind":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1}"""
 
     match older.Scope with
     | NoTestsRun(NoTestsReason.ChangesUncovered(_, _, unrunnable)) -> test <@ unrunnable = UnrunnableCoverage.none @>

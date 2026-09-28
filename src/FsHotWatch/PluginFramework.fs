@@ -1974,6 +1974,25 @@ module PluginCtxHelpers =
     let failedWith (ctx: PluginCtx<'Msg>) (error: string) (summary: string) (elapsed: System.TimeSpan) : unit =
         ctx.ReportStatus(PluginStatus.failedNow error summary elapsed)
 
+    /// Report `Running` now and return the run's clock: the time elapsed since that
+    /// report. A terminal's measured duration read from it cannot come apart from the
+    /// `Running` it is measured from, so a run that reports `Running` this way always
+    /// has a real duration to report.
+    let beginRun (ctx: PluginCtx<'Msg>) : unit -> System.TimeSpan =
+        let started = System.DateTime.UtcNow
+        ctx.ReportStatus(Running(since = started))
+        fun () -> System.DateTime.UtcNow - started
+
+    /// Report a run that timed out after `after`: the recorded outcome is
+    /// `TimedOut reason`, and the terminal `Failed` says "`what` timed out: `reason`"
+    /// as both its error and its summary. The order is the protocol:
+    /// `CompleteWithTimeout` comes first because the terminal consumes it, and a
+    /// terminal on its own records the outcome as a failed run, not a timeout.
+    let timedOutWith (ctx: PluginCtx<'Msg>) (what: string) (reason: string) (after: System.TimeSpan) : unit =
+        ctx.CompleteWithTimeout reason
+        let message = $"%s{what} timed out: %s{reason}"
+        ctx.ReportStatus(PluginStatus.failedNow message message after)
+
     /// Report or clear the per-file error scope based on whether any entries exist.
     /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file
     /// transitions cleanly between "has findings" and "clean" without leaking

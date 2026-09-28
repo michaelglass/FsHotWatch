@@ -819,9 +819,9 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
 
                               return
                                   if scopeReads = 1 then
-                                      $"""{{"scope":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"{BaselineFixtures.replyFragment}}}"""
+                                      $"""{{"kind":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"{BaselineFixtures.replyFragment}}}"""
                                   else
-                                      """{"scope":"none","noTestsReason":"already-verified"}"""
+                                      """{"kind":"none","noTestsReason":"already-verified"}"""
                           }) ]
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   PrepareCommit = None
@@ -1044,7 +1044,7 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                       FsHotWatch.PluginFramework.PluginCommand.Request(fun _ctx _args ->
                           async {
                               return
-                                  """{"scope":"full","ranProjects":1,"totalProjects":1"""
+                                  """{"kind":"full","ranProjects":1,"totalProjects":1"""
                                   + BaselineFixtures.replyFragment
                                   + "}"
                           }) ]
@@ -1289,7 +1289,7 @@ let ``readTestRun parses a full-suite reply from the in-process host`` () =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
               fun _ ->
-                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  """{"kind":"full","ranProjects":3,"totalProjects":3"""
                   + BaselineFixtures.replyFragment
                   + "}" ]
 
@@ -1303,7 +1303,7 @@ let ``readTestRun reports an impact-filtered run as filtered, never as full`` ()
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
               fun _ ->
-                  """{"scope":"filtered","ranProjects":1,"totalProjects":3"""
+                  """{"kind":"filtered","ranProjects":1,"totalProjects":3"""
                   + BaselineFixtures.replyFragment
                   + "}" ]
 
@@ -1377,7 +1377,7 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
               fun _ ->
-                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  """{"kind":"full","ranProjects":3,"totalProjects":3"""
                   + BaselineFixtures.replyFragment
                   + "}" ]
 
@@ -1388,7 +1388,7 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
     let ranNothing =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"none","ranProjects":0,"totalProjects":3}""" ]
+              fun _ -> """{"kind":"none","ranProjects":0,"totalProjects":3}""" ]
 
     test <@ innerLoopExitFor (scopeReadFrom ranNothing) = 3 @>
 
@@ -1411,7 +1411,7 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
               fun _ ->
-                  """{"scope":"full","ranProjects":2,"totalProjects":4"""
+                  """{"kind":"full","ranProjects":2,"totalProjects":4"""
                   + BaselineFixtures.replyFragment
                   + "}" ]
 
@@ -1428,7 +1428,7 @@ let ``check still tolerates a host with NO test-scope command — nothing to rea
     // A run still IN FLIGHT is the same kind of fact: the daemon answered, and its answer
     // is "not yet". The inner loop keeps tolerating it (`confirm` does not — see below).
     let running =
-        hostWith [ FsHotWatch.Cli.IpcParsing.TestScopeCommand, fun _ -> """{"scope":"running"}""" ]
+        hostWith [ FsHotWatch.Cli.IpcParsing.TestScopeCommand, fun _ -> """{"kind":"running"}""" ]
 
     test <@ innerLoopExitFor (scopeReadFrom running) = 0 @>
 
@@ -1455,7 +1455,7 @@ let ``confirm refuses every scope it did not positively establish — fault or n
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
               fun _ ->
-                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  """{"kind":"full","ranProjects":3,"totalProjects":3"""
                   + BaselineFixtures.replyFragment
                   + "}" ]
 

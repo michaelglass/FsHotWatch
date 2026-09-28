@@ -2801,7 +2801,7 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
                         seen <- (name, args) :: seen
 
                         return
-                            """{"scope":"full","ranProjects":6,"totalProjects":6"""
+                            """{"kind":"full","ranProjects":6,"totalProjects":6"""
                             + BaselineFixtures.replyFragment
                             + "}"
                     } }
@@ -2883,7 +2883,7 @@ let ``both transports say and decide the same thing for the same scope-command a
         | _ -> Replies
 
     let reply =
-        """{"scope":"full","ranProjects":6,"totalProjects":6"""
+        """{"kind":"full","ranProjects":6,"totalProjects":6"""
         + BaselineFixtures.replyFragment
         + "}"
 

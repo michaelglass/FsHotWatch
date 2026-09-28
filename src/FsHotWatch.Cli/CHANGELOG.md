@@ -29,6 +29,10 @@
   removed. A repository host also no longer stays up indefinitely after an attach
   whose answer was lost on a loaded machine (reported by the CLI as "the repository
   host sent no reply").
+- change: the CLI reads the scope label of the `test-scope` and `check-reach`
+  replies from `kind`, the key the verdict file uses. It reads a reply from an older
+  daemon, which sends `scope`, as an unreadable scope.
+
 
 ## 0.14.0-alpha.77 - 2026-09-28
 
