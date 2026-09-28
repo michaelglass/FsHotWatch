@@ -1377,15 +1377,12 @@ let ``the macOS layout is one native stream over the worktree root with tooling 
 let ``kernel exclusions fit FSEvents and prune only what the polling walk prunes`` () =
     // Parity with the polling fallback: a path the native stream never sees is one
     // the polling walk never visits either, so the two watchers agree on scope.
-    for nested in [ true; false ] do
-        let names = kernelExclusions nested "/r" |> List.map Path.GetFileName
-        test <@ names.Length <= FsHotWatch.MacFsEvents.MaxExclusionPaths @>
-        test <@ names |> List.forall FsHotWatch.SafeWalk.ToolingExcludedDirs.Contains @>
-        // A discovery root is never excluded.
-        test <@ names |> List.forall (fun n -> n <> "src" && n <> "tests") @>
-
-    test <@ kernelExclusions true "/r" |> List.contains "/r/.workspaces" @>
-    test <@ not (kernelExclusions false "/r" |> List.contains "/r/.workspaces") @>
+    let names = kernelExclusions "/r" |> List.map Path.GetFileName
+    test <@ names.Length <= FsHotWatch.MacFsEvents.MaxExclusionPaths @>
+    test <@ names |> List.forall FsHotWatch.SafeWalk.ToolingExcludedDirs.Contains @>
+    // A discovery root is never excluded.
+    test <@ names |> List.forall (fun n -> n <> "src" && n <> "tests") @>
+    test <@ kernelExclusions "/r" |> List.contains "/r/.workspaces" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a worktree with no discovery root still watches its solutions and patterns`` () =
