@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A failed build now reports what failed instead of its first output line. The status
+  line and the error ledger lead with the build's MSBuild `error XX####:` lines (positioned
+  or not, e.g. `MSBUILD : error FS0039: …` or `Lib.fsproj : error NU1101: …`), or with its
+  last 20 output lines when it printed none, followed by `exit code N`. Previously a build
+  that failed without a positioned diagnostic was reported as
+  `Build failed: Determining projects to restore...`. `decideBuildOutcome` takes the exit
+  code (`int option`); a failure with one carries this description ahead of the raw output
+  in `BuildFailed`. New: `describeBuildFailure`.
+
 ## 0.7.0-alpha.42 - 2026-09-25
 
 - TestPrune: a BuildSucceeded during a held tests lane queues its re-run without selecting
