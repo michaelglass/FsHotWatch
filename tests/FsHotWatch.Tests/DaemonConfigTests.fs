@@ -1763,6 +1763,7 @@ let ``the config poller reports a rewrite, not the empty file the writer truncat
         do
             use stream = new FileStream(path, FileMode.Create, FileAccess.Write)
             stream.Flush(true)
+            // FSHW-WAIT-001 ok: holds the truncated file for several looks; no report is due
             System.Threading.Thread.Sleep(int (pollEvery.TotalMilliseconds * 5.0))
             let content = System.Text.Encoding.UTF8.GetBytes("""{"lint": false}""")
             stream.Write(content, 0, content.Length)
