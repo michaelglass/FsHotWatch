@@ -23,6 +23,7 @@
     <Compile Include="PluginActivityConcurrencyTests.fs" />
     <Compile Include="PluginTimeoutTests.fs" />
     <Compile Include="TestPruneStormTests.fs" />
+    <Compile Include="TestPruneIndexReplayTests.fs" />
     <Compile Include="NuGetToolBarrierOracleTests.fs" />
     <Compile Include="ColdCheckFixture.fs" />
     <Compile Include="ColdCheckCommandTests.fs" />

@@ -1283,6 +1283,7 @@ let ``no cache participation while a red is outstanding`` () =
             (fun () -> None)
             (fun () -> hasOutstanding)
             (fun () -> true)
+            (fun _ -> true)
             event
 
     // A clean plugin keeps the green fast-path ...
