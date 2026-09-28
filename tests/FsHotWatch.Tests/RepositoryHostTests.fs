@@ -824,18 +824,25 @@ let ``an attach never answered ends the session it started, and a rejoin's sessi
         host.Handlers.Undelivered(host.Handlers.Attach "{\"schema\":\"fshw.attach\",\"protocol\":2}"))
 
 [<Fact(Timeout = 60000)>]
-let ``an unanswered reload ends the incarnation it started`` () =
+let ``an unanswered configuration change ends the incarnation it started, and an unreadable answer ends nothing`` () =
     withHost settingsFor daemonFactory (fun fx host ->
-        attachedId (attachVia host (requestFrom fx.Primary "a")) |> ignore
+        let first = attachedId (attachVia host (requestFrom fx.Primary "a"))
 
-        // A changed configuration replaces the session with a new incarnation, whose
-        // id only this lost answer carried.
-        let reloaded =
-            host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "a-edited"))
+        // The reload's answer is lost: its new incarnation was started by this attach
+        // (the old one it replaced is already gone), so nobody knows it, and it ends.
+        let reloaded = host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "b"))
 
-        match decodeResponse reloaded with
-        | Ok(AttachedReply(_, AttachDisposition.RejoinedConfigChanged, _)) -> ()
-        | other -> failwith $"positive control: expected a reload, got %A{other}"
+        let incarnation =
+            match decodeResponse reloaded with
+            | Ok(AttachedReply(id, AttachDisposition.RejoinedConfigChanged, _)) -> id
+            | other -> failwith $"expected a configuration-change rejoin, got %A{other}"
+
+        test <@ incarnation <> first @>
+        test <@ (host.Registry.TryGet incarnation).IsSome @>
+
+        // An answer that does not decode names no session, so nothing is ended.
+        host.Handlers.Undelivered "not an attach response"
+        test <@ (host.Registry.TryGet incarnation).IsSome @>
 
         host.Handlers.Undelivered reloaded
         test <@ List.isEmpty host.Registry.Sessions @>)

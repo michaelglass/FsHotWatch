@@ -29,6 +29,14 @@
              Benchmarked ~25-40% footprint reduction at no throughput cost (2026-06).
              Users can override per-process with the DOTNET_GCConserveMemory env var. -->
         <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
+        <!-- Server GC with DATAS (dynamic adaptation to application sizes): the heap
+             count and gen0 budget follow the live data instead of a fixed per-core
+             budget, and it starts at one heap, so an idle daemon stays small. Under
+             workstation GC a cold scan of a ~2,200-file solution spent ~65% of its
+             time paused; with DATAS ~25%, in half the time (ADR-038). Override per process with DOTNET_gcServer=0 or
+             DOTNET_GCDynamicAdaptationMode=0. -->
+        <RuntimeHostConfigurationOption Include="System.GC.Server" Value="true" />
+        <RuntimeHostConfigurationOption Include="System.GC.DynamicAdaptationMode" Value="1" />
     </ItemGroup>
 
     <!-- Allow tests to access internal members (mirrors src/FsHotWatch) -->

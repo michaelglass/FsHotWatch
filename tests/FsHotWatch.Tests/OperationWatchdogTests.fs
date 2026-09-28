@@ -128,7 +128,8 @@ let private steadyResources: ResourceReading =
       HeapBytes = 1073741824L
       Gen0 = 100
       Gen1 = 50
-      Gen2 = 20 }
+      Gen2 = 20
+      Threads = 42 }
 
 [<Fact(Timeout = 10000)>]
 let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbeat`` () =
@@ -190,7 +191,8 @@ let ``Watchdog heartbeat carries load, heap and the collections since the previo
           HeapBytes = 8L * 1073741824L
           Gen0 = 112
           Gen1 = 53
-          Gen2 = 22 }
+          Gen2 = 22
+          Threads = 313 }
 
     clock.Value <- t0.AddSeconds 30.0
 
@@ -200,7 +202,7 @@ let ``Watchdog heartbeat carries load, heap and the collections since the previo
 
     test
         <@
-            line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2"
+            line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2; threads 313"
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -210,7 +212,7 @@ let ``resourceSuffix says when the platform has no load average`` () =
             resourceSuffix
                 steadyResources
                 { steadyResources with
-                    LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0"
+                    LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0; threads 42"
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -218,6 +220,7 @@ let ``readResources reads this process's heap and collection counts`` () =
     let reading = readResources ()
     test <@ reading.HeapBytes > 0L @>
     test <@ reading.Gen0 >= reading.Gen1 && reading.Gen1 >= reading.Gen2 @>
+    test <@ reading.Threads > 0 @>
 
     if not (OperatingSystem.IsWindows()) then
         test <@ reading.LoadAverage |> Option.exists (fun load -> load >= 0.0) @>
@@ -346,7 +349,7 @@ let ``Watchdog re-arms the overrun record for a new op after End`` () =
     w.End first
     clock.Value <- t0.AddSeconds 200.0
     w.Begin "second-op" |> ignore // StartedAt = t0+200s
-    clock.Value <- t0.AddSeconds 300.0 // wedged again
+    clock.Value <- t0.AddSeconds 340.0 // wedged again
     waitUntil (fun () -> logcontains "second-op") 5000
 
     test <@ logcontains "first-op" @>
@@ -399,7 +402,7 @@ let ``a wedged op stays visible when a concurrent op begins and ends over it`` (
 
     // A wedges: a `check` client blocked on WaitForComplete.
     w.Begin "WaitForComplete" |> ignore
-    clock.Value <- t0.AddSeconds 300.0
+    clock.Value <- t0.AddSeconds 340.0
     test <@ (w.WedgeReport() |> Option.isSome) @>
 
     // B is a SECOND client's short op on a free acceptor. Under the old single-slot
@@ -419,3 +422,129 @@ let ``loadAverageOf reads one sample, and has none on Windows or when the read r
     test <@ loadAverageOf false (fun () -> 1, 3.25) = Some 3.25 @>
     test <@ loadAverageOf false (fun () -> -1, 0.0) = None @>
     test <@ loadAverageOf true (fun () -> failwith "Windows must not read a load average") = None @>
+
+// --- Heap valve: a backstop compacting collection ---
+
+let private gib (n: float) = int64 (n * 1073741824.0)
+
+let private valvePolicy =
+    { Threshold = gib 4.0
+      Quiet = TimeSpan.FromMinutes 2.0 }
+
+let private bloated =
+    { steadyResources with
+        HeapBytes = gib 12.0 }
+
+let private startState =
+    { Gen2 = bloated.Gen2
+      Gen2MovedAt = t0
+      LastFired = None }
+
+[<Fact(Timeout = 5000)>]
+let ``the heap valve holds while the heap is under its threshold`` () =
+    let small = { bloated with HeapBytes = gib 3.0 }
+    test <@ not (heapValveFires valvePolicy startState (t0.AddMinutes 10.0) small) @>
+
+[<Fact(Timeout = 5000)>]
+let ``the heap valve holds while gen2 collections are still running`` () =
+    let now = t0.AddMinutes 10.0
+    let moved = observeGen2 startState now { bloated with Gen2 = bloated.Gen2 + 1 }
+
+    let justUnder = now.AddSeconds 119.0
+
+    test <@ moved.Gen2MovedAt = now @>
+    test <@ not (heapValveFires valvePolicy moved justUnder bloated) @>
+
+[<Fact(Timeout = 5000)>]
+let ``the heap valve fires on a heap over its threshold that no gen2 has touched for the quiet interval`` () =
+    let state = observeGen2 startState (t0.AddSeconds 120.0) bloated
+
+    test <@ state.Gen2MovedAt = t0 @>
+    test <@ heapValveFires valvePolicy state (t0.AddSeconds 120.0) bloated @>
+
+[<Fact(Timeout = 5000)>]
+let ``the heap valve fires at most once per quiet interval`` () =
+    let fired =
+        { startState with
+            LastFired = Some(t0.AddMinutes 5.0) }
+
+    test <@ not (heapValveFires valvePolicy fired (t0.AddMinutes 6.0) bloated) @>
+    test <@ heapValveFires valvePolicy fired (t0.AddMinutes 7.0) bloated @>
+
+[<Fact(Timeout = 10000)>]
+let ``Watchdog fires the heap valve once, logs it loudly and reports it for status`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+    let clock = ref t0
+    let reading = ref bloated
+    let collections = ref 0
+
+    // A compacting gen2 that frees most of the heap, as a storm's garbage does.
+    let collect () =
+        Interlocked.Increment collections |> ignore
+
+        reading.Value <-
+            { reading.Value with
+                HeapBytes = gib 1.5
+                Gen2 = reading.Value.Gen2 + 1 }
+
+    use w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromSeconds(30.0),
+            now = (fun () -> clock.Value),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            gcPauseTotal = (fun () -> TimeSpan.Zero),
+            resources = (fun () -> reading.Value),
+            heapValve = valvePolicy,
+            collect = collect
+        )
+
+    let valveLines () =
+        logged
+        |> Seq.filter (fun line -> line.StartsWith "HEAP VALVE FIRED")
+        |> List.ofSeq
+
+    // Bloated, but gen2 last seen moving at t0: within the quiet interval, nothing.
+    clock.Value <- t0.AddSeconds 60.0
+    waitUntil (fun () -> logged |> Seq.exists (fun l -> l.StartsWith "heartbeat:")) 5000
+    test <@ collections.Value = 0 @>
+    test <@ w.HeapValveReport() = None @>
+
+    clock.Value <- t0.AddSeconds 150.0
+    waitUntil (fun () -> not (List.isEmpty (valveLines ()))) 5000
+
+    test <@ collections.Value = 1 @>
+    test <@ (valveLines ()).Head.Contains "heap 12.00 GB above 4.00 GB" @>
+    test <@ (valveLines ()).Head.Contains "heap now 1.50 GB" @>
+
+    match w.HeapValveReport() with
+    | Some report -> test <@ report.Contains "fired 1 time(s)" && report.Contains "12.00 GB -> 1.50 GB" @>
+    | None -> Assert.Fail "expected a heap-valve report once it fired"
+
+    // Bloated again at once, but the valve's own collection just ran: no second one.
+    reading.Value <-
+        { reading.Value with
+            HeapBytes = gib 12.0 }
+
+    clock.Value <- t0.AddSeconds 200.0
+    waitUntil (fun () -> (logged |> Seq.filter (fun l -> l.StartsWith "heartbeat:") |> Seq.length) >= 3) 5000
+    test <@ collections.Value = 1 @>
+
+    // Still bloated, and no gen2 since the valve's own for the quiet interval: it fires
+    // again, and the report counts both.
+    reading.Value <-
+        { reading.Value with
+            HeapBytes = gib 12.0 }
+
+    clock.Value <- t0.AddSeconds 340.0
+    waitUntil (fun () -> (valveLines ()).Length = 2) 5000
+
+    test <@ collections.Value = 2 @>
+    test <@ w.HeapValveReport() |> Option.exists (fun r -> r.Contains "fired 2 time(s)") @>
+
+[<Fact(Timeout = 30000)>]
+let ``compactingCollect runs a full blocking collection`` () =
+    let before = GC.CollectionCount 2
+    compactingCollect ()
+    test <@ GC.CollectionCount 2 > before @>

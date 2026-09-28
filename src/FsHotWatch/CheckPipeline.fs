@@ -178,9 +178,41 @@ type CheckPipeline
         ?activity: PluginActivity.IActivitySink,
         ?repoRoot: string,
         ?recheckCooldown: TimeSpan,
-        ?frames: PathFrame.FrameChoice
+        ?frames: PathFrame.FrameChoice,
+        ?maxConcurrentChecks: int
     ) =
     let activity = defaultArg activity noopSink
+
+    /// How many checks may build their snapshot or run in FCS at once. Every caller
+    /// asks for a whole tier or batch of files at once (`Async.Parallel`, unbounded),
+    /// and a snapshot build blocks its thread, so without a bound here the thread pool
+    /// grew by starvation to hundreds of threads, each building snapshots and holding
+    /// their garbage live. Waiting for a slot holds no thread.
+    let maxConcurrentChecks =
+        max 1 (defaultArg maxConcurrentChecks Environment.ProcessorCount)
+
+    let checkSlots = new SemaphoreSlim(maxConcurrentChecks, maxConcurrentChecks)
+    let mutable checksInSlots = 0
+    let mutable checksInSlotsPeak = 0
+
+    let enterSlot () =
+        let now = Interlocked.Increment &checksInSlots
+        let mutable seen = Volatile.Read &checksInSlotsPeak
+
+        while now > seen && Interlocked.CompareExchange(&checksInSlotsPeak, now, seen) <> seen do
+            seen <- Volatile.Read &checksInSlotsPeak
+
+    let leaveSlot () =
+        Interlocked.Decrement &checksInSlots |> ignore
+        checkSlots.Release() |> ignore
+
+    /// Wait for a check slot without holding a thread: true once one is held, false
+    /// when `ct` gave up first.
+    let waitForSlot (ct: CancellationToken) : Async<bool> =
+        checkSlots
+            .WaitAsync(Timeout.Infinite, ct)
+            .ContinueWith(fun (t: Threading.Tasks.Task) -> t.IsCompletedSuccessfully)
+        |> Async.AwaitTask
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.
     let frames = defaultArg frames PathFrame.realPaths
@@ -232,6 +264,10 @@ type CheckPipeline
     /// Content hashes shared by the upstream fingerprints and the snapshot versions,
     /// so a file is read and hashed once per change for both.
     let hashFile = upstreamFingerprints.HashFile
+
+    /// The project snapshots every check of this pipeline shares: each project's is
+    /// built once per distinct inputs, not once per file checked.
+    let snapshots = ProjectSnapshots.SnapshotMemo()
     let mutable nextVersion = 0L
 
     /// A check canceled outside CheckFileCore's guarded body: logged at debug level,
@@ -311,6 +347,15 @@ type CheckPipeline
         | other -> other
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
+
+    /// The most checks this pipeline has had building a snapshot or in FCS at once.
+    member internal _.CheckConcurrencyPeak: int = Volatile.Read &checksInSlotsPeak
+
+    /// How many checks may run at once (see `maxConcurrentChecks`).
+    member internal _.CheckConcurrencyBound: int = maxConcurrentChecks
+
+    /// How many project snapshots this pipeline has built, as opposed to reused.
+    member internal _.SnapshotBuilds: int64 = snapshots.Builds
 
     /// Start a generation — one scan or one change batch. Upstream fingerprints are
     /// then computed once per project for the generation instead of once per file;
@@ -670,7 +715,8 @@ type CheckPipeline
                     let generation = generationNow ()
 
                     let framed =
-                        ProjectSnapshots.buildFramed
+                        ProjectSnapshots.buildFramedWith
+                            snapshots
                             (ProjectSnapshots.generationOf checker)
                             hashFile
                             repoRoot
@@ -680,78 +726,106 @@ type CheckPipeline
 
                     framed,
                     { Generation = generation
-                      SnapshotKey = ProjectSnapshots.snapshotKey framed.Snapshot }
+                      SnapshotKey = framed.SnapshotKey }
 
-                let built =
-                    try
-                        Ok(framedNow ())
-                    with ex ->
-                        Result.Error ex
+                // The snapshot build and the FCS check hold a slot; joining another
+                // check's answer or giving way does not.
+                let! entered = waitForSlot ct
 
-                match built with
-                | Result.Error ex ->
-                    Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                if not entered then
+                    logCanceled absPath
                     return None
-                | Ok(framed, origin) ->
-                    let snapshotTime = sw.Elapsed
+                else
+                    enterSlot ()
+                    // Timed from here: the wait for a slot is queueing, not checking.
+                    sw.Restart()
+                    let handedOff = ref false
 
-                    let decision =
-                        lock gate (fun () ->
-                            let alive =
-                                match running.TryGetValue checkedFile with
-                                | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted -> Some r
-                                | _ -> None
+                    let outcome =
+                        try
+                            match
+                                (try
+                                    Ok(framedNow ())
+                                 with ex ->
+                                     Result.Error ex)
+                            with
+                            | Result.Error ex -> Result.Error ex
+                            | Ok(framed, origin) ->
+                                let snapshotTime = sw.Elapsed
 
-                            let newerStarted =
-                                ticket < rediscoveredAt
-                                || (match lastStarted.TryGetValue checkedFile with
-                                    | true, latest -> latest > ticket
-                                    | false, _ -> false)
+                                lock gate (fun () ->
+                                    let alive =
+                                        match running.TryGetValue checkedFile with
+                                        | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted ->
+                                            Some r
+                                        | _ -> None
 
-                            match alive with
-                            | Some r when r.Project = project && r.Origin = origin -> Join r
-                            | _ when newerStarted -> GiveWay
-                            | _ ->
-                                let cts = new CancellationTokenSource()
+                                    let newerStarted =
+                                        ticket < rediscoveredAt
+                                        || (match lastStarted.TryGetValue checkedFile with
+                                            | true, latest -> latest > ticket
+                                            | false, _ -> false)
 
-                                let task =
-                                    Async.StartAsTask(
-                                        this.RunCheck(
-                                            openFile,
-                                            options,
-                                            framed,
-                                            origin,
-                                            snapshotTime,
-                                            sw,
-                                            framedNow,
-                                            generationNow,
-                                            cts
-                                        )
-                                    )
+                                    match alive with
+                                    | Some r when r.Project = project && r.Origin = origin -> Ok(origin, Join r)
+                                    | _ when newerStarted -> Ok(origin, GiveWay)
+                                    | _ ->
+                                        let cts = new CancellationTokenSource()
 
-                                let started =
-                                    { Project = project
-                                      Origin = origin
-                                      Caller = caller
-                                      Ticket = ticket
-                                      Cts = cts
-                                      Task = task }
+                                        // The started check owns the slot from here and
+                                        // gives it back however it ends.
+                                        let task =
+                                            Async.StartAsTask(
+                                                async {
+                                                    try
+                                                        return!
+                                                            this.RunCheck(
+                                                                openFile,
+                                                                options,
+                                                                framed,
+                                                                origin,
+                                                                snapshotTime,
+                                                                sw,
+                                                                framedNow,
+                                                                generationNow,
+                                                                cts
+                                                            )
+                                                    finally
+                                                        leaveSlot ()
+                                                }
+                                            )
 
-                                lastStarted[checkedFile] <- ticket
-                                running[checkedFile] <- started
-                                Start(started, alive))
+                                        handedOff.Value <- true
 
-                    match decision with
-                    | GiveWay ->
+                                        let started =
+                                            { Project = project
+                                              Origin = origin
+                                              Caller = caller
+                                              Ticket = ticket
+                                              Cts = cts
+                                              Task = task }
+
+                                        lastStarted[checkedFile] <- ticket
+                                        running[checkedFile] <- started
+                                        Ok(origin, Start(started, alive)))
+                        finally
+                            if not handedOff.Value then
+                                leaveSlot ()
+
+                    match outcome with
+                    | Result.Error ex ->
+                        Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                        return None
+                    | Ok(_, GiveWay) ->
                         logCanceledAsFailure absPath ct
                         return None
-                    | Join r ->
+                    | Ok(_, Join r) ->
                         let line = joinLine fileName r.Caller caller (originText projectName r.Origin)
 
                         activity.Log line
                         Logging.debug "check" line
                         return! this.AwaitRunning(r, checkedFile, absPath, ct)
-                    | Start(started, superseded) ->
+                    | Ok(origin, Start(started, superseded)) ->
                         match superseded with
                         | Some previous ->
                             let sharers =

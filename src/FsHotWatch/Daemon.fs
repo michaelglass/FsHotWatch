@@ -3647,6 +3647,13 @@ let private performScan
                     "scan"
                     $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
+                // What the scan cost the checker: a peak at the bound with builds near
+                // the project count is the healthy shape; builds near the file count
+                // mean snapshots stopped being shared.
+                Logging.info
+                    "scan"
+                    $"Check concurrency peak %d{pipeline.CheckConcurrencyPeak} of %d{pipeline.CheckConcurrencyBound}; project snapshots built so far: %d{pipeline.SnapshotBuilds}"
+
                 uncoveredTotal <- files |> List.filter (tierCovered.Contains >> not) |> List.length
 
                 if uncoveredTotal > 0 then
