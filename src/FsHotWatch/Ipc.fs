@@ -205,6 +205,10 @@ type DaemonRpcConfig =
 [<Literal>]
 let WedgeStatusKey = "fshw-wedge"
 
+/// The status-map key under which the heap valve's report travels once it has fired
+/// (`OperationWatchdog.Watchdog.HeapValveReport`).
+let HeapValveStatusKey = "fshw-heap-valve"
+
 /// RPC target object exposed to clients via StreamJsonRpc.
 ///
 /// `watchdog`: each RPC method that does real work brackets itself
@@ -306,6 +310,10 @@ type DaemonRpcTarget
         |> Option.bind (fun w -> w.WedgeReport())
         |> Option.map (fun msg -> WedgeStatusKey, (box msg))
 
+    /// The heap valve's report, once it has fired.
+    let heapValveReport () : string option =
+        watchdog |> Option.bind (fun w -> w.HeapValveReport())
+
     /// Returns a JSON string of all plugin statuses. When the daemon's RPC loop
     /// is wedged on a stuck op, a `WedgeStatusKey` entry carrying the
     /// `WEDGED: ...` report (stuck op + inline recovery) is spliced in so the
@@ -323,7 +331,12 @@ type DaemonRpcTarget
             | Some(k, v) -> entries |> Map.add k v
             | None -> entries
 
-        JsonSerializer.Serialize(withWedge)
+        let withValve =
+            match heapValveReport () with
+            | Some report -> withWedge |> Map.add HeapValveStatusKey (box report)
+            | None -> withWedge
+
+        JsonSerializer.Serialize(withValve)
 
     /// Returns a single plugin's status as a single-entry tagged JSON map,
     /// or an empty map JSON object when the plugin is not registered.
@@ -486,7 +499,12 @@ type DaemonRpcTarget
                // The versioned `fshw-project-model-v1` payload. Without
                // it an empty model mid-rediscovery and a healthy model that selected
                // nothing reach the CLI as the same reply, and the second is a green.
-               projectModel = ProjectModelWire.payload (config.GetProjectModel()) |}
+               projectModel = ProjectModelWire.payload (config.GetProjectModel())
+               // null until the heap valve fires; then its report, for `status`.
+               heapValve =
+                (match heapValveReport () with
+                 | Some report -> report
+                 | None -> null) |}
 
         JsonSerializer.Serialize(result)
 

@@ -3050,6 +3050,8 @@ let internal executeCommandWatchingConfig
 
                     eprintfn "%s" output
 
+                    IpcParsing.heapValveOf json |> Option.iter (eprintfn "⚠ %s")
+
                     // Same nudge as `check`/`confirm`: when a machine is reading, name the
                     // files rather than leaving it to scrape a display built for a human.
                     if not UI.isInteractive then

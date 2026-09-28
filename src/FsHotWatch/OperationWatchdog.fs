@@ -116,11 +116,15 @@ let gcPauseSuffix (paused: TimeSpan) (window: TimeSpan) : string =
 /// gen0/gen1/gen2 collection counts.
 [<NoComparison>]
 type ResourceReading =
-    { LoadAverage: float option
-      HeapBytes: int64
-      Gen0: int
-      Gen1: int
-      Gen2: int }
+    {
+        LoadAverage: float option
+        HeapBytes: int64
+        Gen0: int
+        Gen1: int
+        Gen2: int
+        /// The process's thread count: a pool grown by starvation shows here first.
+        Threads: int
+    }
 
 module private Native =
     [<Runtime.InteropServices.DllImport("libc", SetLastError = false)>]
@@ -146,13 +150,23 @@ let internal loadAverageOf (isWindows: bool) (read: unit -> int * float) : float
 let loadAverage () : float option =
     loadAverageOf (OperatingSystem.IsWindows()) nativeLoad
 
+/// How many threads this process has.
+let private threadCount () : int =
+    let self = Diagnostics.Process.GetCurrentProcess()
+
+    try
+        self.Threads.Count
+    finally
+        self.Dispose()
+
 /// The process's current `ResourceReading`.
 let readResources () : ResourceReading =
     { LoadAverage = loadAverage ()
       HeapBytes = GC.GetGCMemoryInfo().HeapSizeBytes
       Gen0 = GC.CollectionCount 0
       Gen1 = GC.CollectionCount 1
-      Gen2 = GC.CollectionCount 2 }
+      Gen2 = GC.CollectionCount 2
+      Threads = threadCount () }
 
 /// The heartbeat's resource suffix: load average, GC heap size, and how many gen0/1/2
 /// collections ran since the previous heartbeat. A GC share near 100% with gen2 counts
@@ -166,7 +180,72 @@ let resourceSuffix (previous: ResourceReading) (current: ResourceReading) : stri
 
     let heapGb = float current.HeapBytes / 1073741824.0
 
-    $"; %s{load}; heap %.2f{heapGb} GB; collections gen0 +%d{current.Gen0 - previous.Gen0}, gen1 +%d{current.Gen1 - previous.Gen1}, gen2 +%d{current.Gen2 - previous.Gen2}"
+    $"; %s{load}; heap %.2f{heapGb} GB; collections gen0 +%d{current.Gen0 - previous.Gen0}, gen1 +%d{current.Gen1 - previous.Gen1}, gen2 +%d{current.Gen2 - previous.Gen2}; threads %d{current.Threads}"
+
+/// When the heap valve (see `Watchdog`) forces a collection: the heap is above
+/// `Threshold` and no gen2 collection has run for `Quiet`.
+[<NoComparison>]
+type HeapValvePolicy = { Threshold: int64; Quiet: TimeSpan }
+
+/// The default valve: a quarter of the memory the GC may use, and two minutes without a
+/// gen2. A daemon whose live set is a few GB never comes near it; the incident it backs
+/// up was a 32 GB heap of garbage that no gen2 had touched for minutes.
+let defaultHeapValvePolicy () : HeapValvePolicy =
+    { Threshold = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 4L
+      Quiet = TimeSpan.FromMinutes 2.0 }
+
+/// What the valve has seen: the gen2 count at the last reading and when it last moved,
+/// and when the valve last fired.
+[<NoComparison>]
+type HeapValveState =
+    { Gen2: int
+      Gen2MovedAt: DateTime
+      LastFired: DateTime option }
+
+/// `state` updated with `reading`, taken at `now`.
+let observeGen2 (state: HeapValveState) (now: DateTime) (reading: ResourceReading) : HeapValveState =
+    if reading.Gen2 <> state.Gen2 then
+        { state with
+            Gen2 = reading.Gen2
+            Gen2MovedAt = now }
+    else
+        state
+
+/// Whether the valve fires on `reading` at `now`, given `state` already updated with it:
+/// the heap is above the threshold, no gen2 has run for the quiet interval, and the valve
+/// itself has not fired within it — so it can never collect in a loop.
+let heapValveFires (policy: HeapValvePolicy) (state: HeapValveState) (now: DateTime) (reading: ResourceReading) : bool =
+    reading.HeapBytes > policy.Threshold
+    && now - state.Gen2MovedAt >= policy.Quiet
+    && (match state.LastFired with
+        | Some fired -> now - fired >= policy.Quiet
+        | None -> true)
+
+/// One firing of the valve, for the log and `status`.
+[<NoComparison>]
+type HeapValveFiring =
+    { At: DateTime
+      HeapBefore: int64
+      HeapAfter: int64
+      QuietFor: TimeSpan
+      Count: int }
+
+let private gb (bytes: int64) = float bytes / 1073741824.0
+
+/// The loud line the valve logs when it fires.
+let heapValveLogLine (policy: HeapValvePolicy) (firing: HeapValveFiring) : string =
+    $"HEAP VALVE FIRED (#%d{firing.Count}): heap %.2f{gb firing.HeapBefore} GB above %.2f{gb policy.Threshold} GB with no gen2 collection for %d{int firing.QuietFor.TotalSeconds}s; forced one compacting gen2, heap now %.2f{gb firing.HeapAfter} GB. This is a backstop: the check bound, the shared snapshots or the GC configuration has regressed"
+
+/// The `status` line for the valve, once it has fired.
+let heapValveReport (firing: HeapValveFiring) : string =
+    let at = firing.At.ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    $"HEAP VALVE: fired %d{firing.Count} time(s), last at %s{at} (heap %.2f{gb firing.HeapBefore} GB -> %.2f{gb firing.HeapAfter} GB) — the daemon's allocation has regressed; see logs/daemon.log"
+
+/// One blocking, compacting collection of every generation, the large-object heap included.
+let compactingCollect () : unit =
+    Runtime.GCSettings.LargeObjectHeapCompactionMode <- Runtime.GCLargeObjectHeapCompactionMode.CompactOnce
+    GC.Collect(2, GCCollectionMode.Forced, true, true)
 
 /// Live watchdog over the daemon's in-flight RPC operations.
 ///
@@ -190,10 +269,14 @@ type Watchdog
         log: string -> unit,
         ?tick: TimeSpan,
         ?gcPauseTotal: unit -> TimeSpan,
-        ?resources: unit -> ResourceReading
+        ?resources: unit -> ResourceReading,
+        ?heapValve: HeapValvePolicy,
+        ?collect: unit -> unit
     ) =
     let gcPauseTotal = defaultArg gcPauseTotal GC.GetTotalPauseDuration
     let resources = defaultArg resources readResources
+    let heapValve = defaultArg heapValve (defaultHeapValvePolicy ())
+    let collect = defaultArg collect compactingCollect
     let gate = obj ()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
@@ -203,6 +286,13 @@ type Watchdog
     let mutable lastHeartbeat = now ()
     let mutable lastGcPause = gcPauseTotal ()
     let mutable lastResources = resources ()
+
+    let mutable valveState =
+        { Gen2 = lastResources.Gen2
+          Gen2MovedAt = now ()
+          LastFired = None }
+
+    let mutable lastFiring: HeapValveFiring option = None
 
     let snapshotOps () = inFlight.Values |> List.ofSeq
 
@@ -214,6 +304,8 @@ type Watchdog
     let onTick () =
         let n = now ()
         // Read + decide under the lock so Begin/End can't mutate mid-read.
+        let valve = ref None
+
         let toLog =
             lock gate (fun () ->
                 let logs = List<string>()
@@ -231,6 +323,11 @@ type Watchdog
                     lastHeartbeat <- n
                     lastGcPause <- gcPause
                     lastResources <- reading
+                    valveState <- observeGen2 valveState n reading
+
+                    if heapValveFires heapValve valveState n reading then
+                        valveState <- { valveState with LastFired = Some n }
+                        valve.Value <- Some(reading.HeapBytes, n - valveState.Gen2MovedAt)
 
                     logs.Add(
                         heartbeatLine
@@ -245,6 +342,26 @@ type Watchdog
 
         for line in toLog do
             log line
+
+        // Outside the lock: a blocking full collection takes seconds, and `Begin`/`End`
+        // must not wait on it.
+        match valve.Value with
+        | Some(heapBefore, quietFor) ->
+            collect ()
+
+            let firing =
+                { At = n
+                  HeapBefore = heapBefore
+                  HeapAfter = (resources ()).HeapBytes
+                  QuietFor = quietFor
+                  Count =
+                    (match Volatile.Read(&lastFiring) with
+                     | Some previous -> previous.Count + 1
+                     | None -> 1) }
+
+            Volatile.Write(&lastFiring, Some firing)
+            log (heapValveLogLine heapValve firing)
+        | None -> ()
 
     let timer =
         let interval = defaultArg tick (TimeSpan.FromSeconds(5.0))
@@ -272,6 +389,10 @@ type Watchdog
 
     /// The wedge report for `status`, or `None` when not wedged.
     member this.WedgeReport() = wedgeReport (now ()) this.State
+
+    /// The heap valve's report for `status`, or `None` when it has never fired.
+    member _.HeapValveReport() : string option =
+        Volatile.Read(&lastFiring) |> Option.map heapValveReport
 
     interface IDisposable with
         member _.Dispose() = timer.Dispose()
