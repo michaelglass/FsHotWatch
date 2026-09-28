@@ -629,29 +629,34 @@ let ``a tracked child that has exited is not listed as live`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``once the helper is lost, a hook step starts directly`` () =
-    use helper = new ScriptedHelper()
-    helper.Vanish()
-    helper.WaitUntilLost()
-    use _ = SpawnHelper.install helper.Connection
-    let registry = ProcessRegistry.Registry()
-    use _ = ProcessRegistry.install registry
-    let mutable localHandles = []
+    withTempDir "spawn-helper-lost-direct" (fun directory ->
+        let gate = mkfifo directory "gate"
+        use helper = new ScriptedHelper()
+        helper.Vanish()
+        helper.WaitUntilLost()
+        use _ = SpawnHelper.install helper.Connection
+        let registry = ProcessRegistry.Registry()
+        use _ = ProcessRegistry.install registry
+        let mutable localHandles = []
 
-    let outcome =
-        runProcessObserved
-            (fun _ -> localHandles <- registry.Snapshot())
-            "/bin/sh"
-            (shell "echo direct")
-            "/"
-            []
-            tenSeconds
+        let onStarted _ =
+            // `Snapshot` lists only live children. Opening the gate for writing blocks
+            // until the child opens it to read, which is after it printed: the point
+            // where a child with nothing to wait for has already exited. It stays alive
+            // until the observer has read the registry and released it.
+            use release = new FileStream(gate, FileMode.Open, FileAccess.Write)
+            localHandles <- registry.Snapshot()
+            release.Write("go\n"B, 0, 3)
 
-    match outcome with
-    | Succeeded(ProcessOutput.Drained "direct") -> ()
-    | other -> failwith $"expected the direct spawn to succeed, got %A{other}"
+        let outcome =
+            runProcessObserved onStarted "/bin/sh" (shell "echo direct; read line < gate") directory [] tenSeconds
 
-    // A local `Process` handle: this process started the child itself.
-    Assert.Equal(1, List.length localHandles)
+        match outcome with
+        | Succeeded(ProcessOutput.Drained "direct") -> ()
+        | other -> failwith $"expected the direct spawn to succeed, got %A{other}"
+
+        // A local `Process` handle: this process started the child itself.
+        Assert.Equal(1, List.length localHandles))
 
 [<Fact(Timeout = 30000)>]
 let ``every spawn is counted and logged with its route`` () =
