@@ -83,6 +83,29 @@ let private conventionRulesPath =
 
 [<Fact(Timeout = 5000)>]
 let ``all plugins receive events when checking a file`` () =
+    // Plugins registered here start their workers in this context, so what they log
+    // lands in `lines` as well as on stderr.
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _log =
+        FsHotWatch.Logging.installSink
+            { Write =
+                fun line ->
+                    lines.Enqueue line
+                    eprintfn "%s" line
+              Level = FsHotWatch.Logging.LogLevel.Info }
+
+    // The host's plugins spawn into this scope, as a daemon's plugins spawn into the
+    // daemon's: it is installed before any handler registers, so each worker captures
+    // it, and whatever is still running when the test ends is reaped.
+    let processes = FsHotWatch.ProcessRegistry.Registry()
+
+    use _reap =
+        { new IDisposable with
+            member _.Dispose() = processes.KillAll() }
+
+    use _processScope = FsHotWatch.ProcessRegistry.install processes
+
     let repoRoot = findRepoRoot ()
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -154,6 +177,10 @@ let ``all plugins receive events when checking a file`` () =
     let filesResult = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
     test <@ filesResult.IsSome @>
     test <@ filesResult.Value.StartsWith("[") @>
+
+    // format-check spawns `dotnet tool run fantomas`; every child a plugin spawns is
+    // owned by a process scope that can reap it.
+    test <@ not (lines |> Seq.exists (fun l -> l.Contains "no registry in scope")) @>
 
     try
         File.Delete(dbPath)
