@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `fshw host`, and a per-worktree daemon started by `fshw start`, no longer
+  outlive a deleted worktree: each shuts down once the directory it was started in is
+  removed. A repository host also no longer stays up indefinitely after an attach
+  whose answer was lost on a loaded machine (reported by the CLI as "the repository
+  host sent no reply").
+
 ## 0.14.0-alpha.77 - 2026-09-28
 
 - chore: rebuild to bundle updated dependencies

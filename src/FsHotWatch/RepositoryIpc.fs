@@ -214,7 +214,8 @@ let decodeReply (json: string) : Result<PreambleReply, string> =
 // ---------------------------------------------------------------------------
 
 /// How long a connection may take to send its preamble, and a session to begin
-/// serving, before the connection is refused.
+/// serving, before the connection is refused. It bounds the client, never the host's
+/// answer: an attach that takes longer on a loaded box is still answered.
 let PreambleBound = TimeSpan.FromSeconds 10.0
 
 /// How long a refused connection's unread bytes are drained before it closes.
@@ -245,6 +246,9 @@ type EndpointHandlers =
     {
         /// Answer an attach request (JSON in, JSON out).
         Attach: string -> string
+        /// An attach's answer (as `Attach` returned it) could not be sent: undo what it
+        /// started, which no client knows of and so none would ever end.
+        Undelivered: string -> unit
         /// The RPC configuration of session `id`, or why the call is refused (kind,
         /// message). May wait for a just-attached session to begin serving.
         Session: SessionId -> InvocationId -> Task<Result<DaemonRpcConfig, string * string>>
@@ -257,11 +261,15 @@ type EndpointHandlers =
 let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Watchdog) : IpcServer.ConnectionOpener =
     fun pipe disconnected ->
         async {
+            // Bounds reading the preamble only. Under it, a host's answer that took
+            // longer than the bound (an attach building its session on a loaded box)
+            // was cancelled after the session was registered, and the session outlived
+            // the client that never learned of it.
             use bound = CancellationTokenSource.CreateLinkedTokenSource disconnected
             bound.CancelAfter PreambleBound
 
             let reply text =
-                writeFrame pipe text bound.Token |> Async.AwaitTask
+                writeFrame pipe text disconnected |> Async.AwaitTask
 
             let refuse kind message =
                 reply (encodeReply (PreambleReply.Refused(kind, message)))
@@ -287,7 +295,14 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
                     do! refuse "malformed-preamble" reason
                     return None
                 | Ok(Preamble.Attach json) ->
-                    do! reply (handlers.Attach json)
+                    let answer = handlers.Attach json
+
+                    match! reply answer |> Async.Catch with
+                    | Choice1Of2() -> ()
+                    | Choice2Of2 ex ->
+                        Logging.warn "host" $"an attach's answer could not be sent (%s{ex.Message}); undoing it"
+                        handlers.Undelivered answer
+
                     return None
                 | Ok(Preamble.Repository invocation) ->
                     do! reply (encodeReply PreambleReply.Accepted)

@@ -277,6 +277,21 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
         finally
             attaching.Release() |> ignore
 
+    /// End the session an attach started when its answer never reached the client:
+    /// nobody knows its id, so nobody would ever stop it, and while it lives the host
+    /// never goes idle. A rejoined session was started by an earlier attach, and stays.
+    let undelivered (responseJson: string) : unit =
+        match decodeResponse responseJson with
+        | Ok(AttachedReply(id, (AttachDisposition.NewSession | AttachDisposition.RejoinedConfigChanged), _)) ->
+            attaching.Wait()
+
+            try
+                Logging.warn "host" $"ending %s{SessionId.render id}: its attach was never answered"
+                registry.Detach id |> ignore
+            finally
+                attaching.Release() |> ignore
+        | _ -> ()
+
     /// Route a session call: the live incarnation's RPC configuration, once it serves.
     let session (id: SessionId) (invocation: InvocationId) : Task<Result<Ipc.DaemonRpcConfig, string * string>> =
         task {
@@ -322,6 +337,7 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
 
     member _.Handlers: EndpointHandlers =
         { Attach = attach
+          Undelivered = undelivered
           Session = session
           Repository = fun _ -> box (HostRpcTarget(listSessions, stop)) }
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a repository host no longer runs forever holding a session no client knows of.
+  The host answered an attach under the 10-second bound meant for reading the
+  client's preamble, so on a loaded machine an attach that took longer registered its
+  session and then had its answer cancelled: the client reported "the repository host
+  sent no reply", and the session, which nothing would ever stop, kept the host from
+  going idle. The bound now covers reading the preamble only, and an attach whose
+  answer cannot be delivered ends the session it started
+  (`RepositoryIpc.EndpointHandlers.Undelivered`).
+- fix: a daemon, or a repository host's session, now shuts down once its worktree root
+  is deleted, instead of watching a directory that no longer exists until it is
+  killed. A host whose sessions have all ended this way then exits after its idle
+  grace. The daemon writes a token to `.fshw/root-witness` when it starts and checks
+  for it every 30 seconds (`DaemonOptions.VanishedRootCheckEvery`); checking that the
+  directory exists is not enough, because the daemon's own next write creates it again.
+
 ## 0.10.0-alpha.58 - 2026-09-28
 
 - fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL

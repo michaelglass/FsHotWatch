@@ -2536,6 +2536,8 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
+        // How often a running daemon checks that its root still exists (`VanishedRoot`).
+        vanishedRootCheckEvery: TimeSpan,
         // Live scan-activity leases, shared with the scan supervisor that takes them.
         // Read by the idle-exit scheduler and the heartbeat so
         // a cold or forced scan is never mistaken for idleness.
@@ -2978,6 +2980,16 @@ type Daemon
                         // No-op disposable when idle-exit is off.
                         { new IDisposable with
                             member _.Dispose() = () }
+
+                // A deleted root ends the daemon through the same `cts.Cancel()` path.
+                // Nothing else would: a detached daemon and a host's session outlive
+                // whatever started them, and a host never idles while a session lives.
+                use _vanishedRoot =
+                    VanishedRoot.watch
+                        vanishedRootCheckEvery
+                        (VanishedRoot.mark repoRoot (Logging.warn "daemon"))
+                        (fun () -> cts.Cancel())
+                        (Logging.warn "daemon")
 
                 // Activity heartbeat. Publishes `<repoRoot>/.fshw/heartbeat` — Unix
                 // epoch seconds, rewritten every 15s — for exactly as long as a run
@@ -3844,6 +3856,9 @@ module Daemon =
             /// `pressureIdleFloorMin` config is done by the caller
             /// (`IdleExit.resolvePressureFloor`).
             PressureIdleFloorMin: int option
+            /// How often a running daemon checks that its root still exists; it shuts
+            /// down once it does not (`VanishedRoot`).
+            VanishedRootCheckEvery: TimeSpan
             /// TransparentCompiler cache size factor, from the `checker.cacheSizeFactor`
             /// config key. See `DefaultCheckerCacheSizeFactor`.
             CheckerCacheSizeFactor: int
@@ -3863,6 +3878,7 @@ module Daemon =
               FsEventsLatencySeconds = 0.25
               IdleExitMin = None
               PressureIdleFloorMin = None
+              VanishedRootCheckEvery = VanishedRoot.DefaultCheckEvery
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
               Hosting = DaemonHosting.standalone () }
 
@@ -4301,6 +4317,7 @@ module Daemon =
                 excludePatterns,
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
+                opts.VanishedRootCheckEvery,
                 scanLeases,
                 processRegistry,
                 changeInput.Close,

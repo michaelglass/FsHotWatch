@@ -787,3 +787,70 @@ let ``a session that fails to start releases what it was given`` () =
     withHost settings (fun _ -> invalidOp "no projects") (fun fx host ->
         test <@ refusalKind (attachVia host (requestFrom fx.Primary "a")) = "session-start-failed" @>
         test <@ released.Value = 1 @>)
+
+// ---------------------------------------------------------------------------
+// A host outliving its purpose
+// ---------------------------------------------------------------------------
+
+/// `daemonFactory`, with sessions that look for their root every 100ms.
+let private checkingFactory: SessionFactory =
+    fun spec ->
+        Daemon.createWithWatcherFactory
+            nullChecker
+            spec.Worktree.Root.Value
+            { Daemon.DaemonOptions.defaults with
+                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker)
+                VanishedRootCheckEvery = TimeSpan.FromMilliseconds 100.0 }
+            inertWatcher
+
+[<Fact(Timeout = 60000)>]
+let ``an attach never answered ends the session it started, and a rejoin's session stays`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        let answer = host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "a"))
+        let a = attachedId (attachVia host (requestFrom fx.Primary "a"))
+
+        // The rejoin's answer is lost: the session is an earlier attach's, and stays.
+        let rejoined = host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "a"))
+        host.Handlers.Undelivered rejoined
+        test <@ (host.Registry.TryGet a).IsSome @>
+
+        // The answer that started it is lost: nobody knows the session, so it ends.
+        host.Handlers.Undelivered answer
+        test <@ List.isEmpty host.Registry.Sessions @>
+        use relock = (tryLockWorktree fx.Primary.Root.Value).Value
+        test <@ not (File.Exists(HostSessionRecord.path fx.Primary.Root.Value)) @>
+
+        // A refusal started nothing, and undoing it does nothing.
+        host.Handlers.Undelivered(host.Handlers.Attach "{\"schema\":\"fshw.attach\",\"protocol\":2}"))
+
+// The orphaned-host incident: a test's temporary repository was deleted under a host
+// that still held a session for it. Nothing ended that session, so the idle exit never
+// began counting, and the host watched a deleted directory for 11 hours.
+[<Fact(Timeout = 120000)>]
+let ``a host whose only worktree is deleted ends that session, and then exits idle`` () =
+    withRepository (fun fx ->
+        let settings = settingsFor fx
+        use cts = new CancellationTokenSource()
+        // Long enough that a loaded box still attaches before the new host idles out.
+        let idleGrace = TimeSpan.FromSeconds 10.0
+
+        let running =
+            Task.Run(fun () -> RepositoryHost.run settings checkingFactory idleGrace cts)
+
+        try
+            test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning settings.Control.Endpoint) 20000 @>
+
+            let reply =
+                RepositoryIpc.attach settings.Control.Endpoint (encodeRequest (requestFrom fx.Primary "a"))
+                |> Async.RunSynchronously
+                |> decodeResponse
+
+            test <@ reply |> Result.map attachedId |> Result.isOk @>
+
+            test <@ deleteWhileWritten fx.Primary.Root.Value 10000 @>
+
+            test <@ running.Wait(idleGrace + TimeSpan.FromSeconds 30.0) @>
+            test <@ running.Result = HostRun.Stopped @>
+        finally
+            cts.Cancel()
+            running.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
