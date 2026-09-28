@@ -1389,32 +1389,19 @@ type AffectedTestsState =
     | NotYetAnalyzed
     | Analyzed of TestMethodInfo list
 
+/// A receipt input tree as read: its identity and the per-file entries hashed into it.
+/// The identity is a content address of `Entries`, so a tree carries its own paths
+/// wherever it goes — a launch binding can name what moved without finding its entries
+/// in any store another reader could evict them from.
+type ReceiptTree =
+    { Identity: string
+      Entries: (string * string) list }
+
 module internal ReceiptInputTree =
-    /// How many recent identities keep the per-file entries they were computed from. A
-    /// run's launch identity has to survive every read taken while it is in flight; a
-    /// handful covers that, and an evicted one is reported as such, never as "no path".
-    let private ManifestsKept = 16
-
-    let private manifests =
-        Collections.Concurrent.ConcurrentDictionary<string, (string * string) list>(StringComparer.Ordinal)
-
-    let private manifestOrder = Collections.Concurrent.ConcurrentQueue<string>()
-
-    /// Hold `entries` under the identity hashed from them. The identity is a content
-    /// address, so these entries ARE that tree: nothing can be held under a stale key.
-    let private remember (identity: string) (entries: (string * string) list) =
-        if manifests.TryAdd(identity, entries) then
-            manifestOrder.Enqueue identity
-
-            while manifestOrder.Count > ManifestsKept do
-                match manifestOrder.TryDequeue() with
-                | true, evicted -> manifests.TryRemove evicted |> ignore
-                | _ -> ()
-
     /// A receipt identity, not a new verdict hash scheme. Use the core input walk,
     /// conservatively including config-excluded source files too. Refuse holes and
     /// unreadable bytes rather than letting an unhashable sentinel authorize reuse.
-    let read repoRoot =
+    let readTree repoRoot : ReceiptTree option =
         try
             let walked = TreeHash.files repoRoot []
 
@@ -1433,13 +1420,25 @@ module internal ReceiptInputTree =
                     |> List.map (fun rel -> VerdictInputs.SentinelPrefix + rel, VerdictInputs.AbsentDeclaration)
 
                 let manifest = List.sortBy fst (entries @ absent)
-                let identity = TreeHash.hashEntries manifest
-                remember identity manifest
-                Some identity
+
+                Some
+                    { Identity = TreeHash.hashEntries manifest
+                      Entries = manifest }
         with
         | :? IOException
         | :? UnauthorizedAccessException
         | :? JsonException -> None
+
+    /// The identity alone, for a comparison that never has to say what moved.
+    let read repoRoot =
+        readTree repoRoot |> Option.map _.Identity
+
+    /// Both trees read and different: the pair a move is described from.
+    let private (|Moved|_|) (launch: ReceiptTree option, current: ReceiptTree option) =
+        match launch, current with
+        | Some before, Some after when not (String.Equals(before.Identity, after.Identity, StringComparison.Ordinal)) ->
+            Some(before, after)
+        | _ -> None
 
     /// Which paths differ between two receipt manifests. Sorted, so a log line is stable.
     type TreeDelta =
@@ -1479,18 +1478,11 @@ module internal ReceiptInputTree =
         |> List.map (fun (kind, paths) -> $"%s{kind} (%d{List.length paths}): %s{namePaths paths}")
         |> String.concat "; "
 
-    /// The paths that moved between two identities this process read, for a revocation
-    /// log line. `None` when there is no move to explain (either side unbound, or equal).
-    let movedPaths (launch: string option) (current: string option) : string option =
+    /// The paths that moved between two trees, for a revocation log line. `None` when
+    /// there is no move to explain (either side unbound, or equal).
+    let movedPaths (launch: ReceiptTree option) (current: ReceiptTree option) : string option =
         match launch, current with
-        | Some before, Some after when not (String.Equals(before, after, StringComparison.Ordinal)) ->
-            match manifests.TryGetValue before, manifests.TryGetValue after with
-            | (true, was), (true, now) -> Some(describeDelta (delta was now))
-            | _ ->
-                Some(
-                    "the per-file entries of the launch or completion tree are no longer held "
-                    + "(read by another process, or evicted), so the paths that moved cannot be named"
-                )
+        | Moved(before, after) -> Some(describeDelta (delta before.Entries after.Entries))
         | _ -> None
 
     /// How far a file's write time may trail the clock read that preceded the write.
@@ -1525,39 +1517,34 @@ module internal ReceiptInputTree =
         (watcherObserves: string -> bool)
         (watcherReported: Set<string> option)
         (testHostStartedAt: DateTime option)
-        (launch: string option)
-        (current: string option)
+        (launch: ReceiptTree option)
+        (current: ReceiptTree option)
         : RunWrites option =
-        match launch, current, watcherReported, testHostStartedAt with
-        | Some before, Some after, Some reported, Some hostStarted when
-            not (String.Equals(before, after, StringComparison.Ordinal))
-            ->
-            match manifests.TryGetValue before, manifests.TryGetValue after with
-            | (true, was), (true, now) ->
-                let moved = delta was now
-                let written = List.sort (moved.Changed @ moved.Added)
+        match (launch, current), watcherReported, testHostStartedAt with
+        | Moved(before, after), Some reported, Some hostStarted ->
+            let moved = delta before.Entries after.Entries
+            let written = List.sort (moved.Changed @ moved.Added)
 
-                let writtenWhileHostRan (rel: string) =
-                    not (reported.Contains rel)
-                    && try
-                        File.GetLastWriteTimeUtc(Path.Combine(repoRoot, rel))
-                        >= hostStarted - WriteTimeSlack
-                       with
-                       | :? IOException
-                       | :? UnauthorizedAccessException -> false
+            let writtenWhileHostRan (rel: string) =
+                not (reported.Contains rel)
+                && try
+                    File.GetLastWriteTimeUtc(Path.Combine(repoRoot, rel))
+                    >= hostStarted - WriteTimeSlack
+                   with
+                   | :? IOException
+                   | :? UnauthorizedAccessException -> false
 
-                if
-                    List.isEmpty moved.Removed
-                    && not (List.isEmpty written)
-                    && List.forall writtenWhileHostRan written
-                then
-                    if List.forall watcherObserves written then
-                        Some(Observed written)
-                    else
-                        Some(Unobserved written)
+            if
+                List.isEmpty moved.Removed
+                && not (List.isEmpty written)
+                && List.forall writtenWhileHostRan written
+            then
+                if List.forall watcherObserves written then
+                    Some(Observed written)
                 else
-                    None
-            | _ -> None
+                    Some(Unobserved written)
+            else
+                None
         | _ -> None
 
     /// Whether a repo-relative receipt entry is something a BUILD consumed — and so was
@@ -1587,36 +1574,28 @@ module internal ReceiptInputTree =
     /// binding and, when the tree moved, a line saying which way it went and why.
     let afterBeforeRun
         (feedsCompile: string -> bool)
-        (launch: string option)
-        (afterSetup: string option)
-        : string option * string option =
+        (launch: ReceiptTree option)
+        (afterSetup: ReceiptTree option)
+        : ReceiptTree option * string option =
         match launch, afterSetup with
-        | Some before, Some after when not (String.Equals(before, after, StringComparison.Ordinal)) ->
-            match manifests.TryGetValue before, manifests.TryGetValue after with
-            | (true, was), (true, now) ->
-                let moved = delta was now
+        | Moved(before, after) ->
+            let moved = delta before.Entries after.Entries
 
-                let compileInputs =
-                    moved.Changed @ moved.Added @ moved.Removed |> List.filter feedsCompile
+            let compileInputs =
+                moved.Changed @ moved.Added @ moved.Removed |> List.filter feedsCompile
 
-                if List.isEmpty compileInputs then
-                    afterSetup,
-                    Some(
-                        "beforeRun moved only paths no build compiles, so the receipt binds to the tree "
-                        + $"the tests run against — %s{describeDelta moved}"
-                    )
-                else
-                    launch,
-                    Some(
-                        "a compile input moved between launch and the end of beforeRun, so the receipt "
-                        + "keeps its launch binding and this run cannot earn one — "
-                        + $"%d{List.length compileInputs} compile input(s) among them; %s{describeDelta moved}"
-                    )
-            | _ ->
+            if List.isEmpty compileInputs then
+                afterSetup,
+                Some(
+                    "beforeRun moved only paths no build compiles, so the receipt binds to the tree "
+                    + $"the tests run against — %s{describeDelta moved}"
+                )
+            else
                 launch,
                 Some(
-                    "the input tree moved during beforeRun, but its per-file entries are no longer held, "
-                    + "so the receipt keeps its launch binding"
+                    "a compile input moved between launch and the end of beforeRun, so the receipt "
+                    + "keeps its launch binding and this run cannot earn one — "
+                    + $"%d{List.length compileInputs} compile input(s) among them; %s{describeDelta moved}"
                 )
         | Some _, None ->
             launch, Some "the input tree could not be read after beforeRun, so the receipt keeps its launch binding"
@@ -2115,8 +2094,9 @@ module TestRunInputs =
 /// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     {
-        /// Immutable input identity captured before this run executes.
-        InputTreeHash: string option
+        /// Immutable input tree captured before this run executes, entries and all: what
+        /// moved by completion is named from these, never looked up.
+        InputTree: ReceiptTree option
         /// The available project-model generation this run was selected under. A
         /// completion observed under a different model keeps the results of the projects
         /// whose compile inputs it did not change (`ProjectInputs`) and discharges nothing
@@ -2158,6 +2138,9 @@ type TestRunLaunch =
         /// it was made while the tests ran. `None` until the run reaches the host.
         TestHostStartedAt: DateTime option
     }
+
+    /// The launch tree's identity: what a receipt binds to.
+    member this.InputTreeHash = this.InputTree |> Option.map _.Identity
 
 module CheckReach =
     let private recallThreshold = 1.0
@@ -4881,8 +4864,9 @@ let private executeTests
     // a force run's `ctx = None` would otherwise lose); `None` when not configured, which
     // leaves every launch exactly as it is without traces.
     (traces: TraceRunHost option)
-    // The input tree hash the run was launched against, for the traces it records.
-    (launchTreeHash: string option)
+    // The input tree the run was launched against, for the traces it records and the
+    // receipt's re-binding once `beforeRun` is done.
+    (launchTree: ReceiptTree option)
     // Which repo-relative paths a build consumed, observed once `beforeRun` finishes:
     // decides whether the receipt may re-bind to the tree the tests actually run against.
     (feedsCompile: unit -> string -> bool)
@@ -4944,11 +4928,11 @@ let private executeTests
                 Logging.info "test-prune" "beforeRun complete"
 
                 let binding, why =
-                    ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTreeHash (ReceiptInputTree.read repoRoot)
+                    ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree (ReceiptInputTree.readTree repoRoot)
 
                 why |> Option.iter (Logging.info "test-prune")
                 binding
-            | None -> launchTreeHash
+            | None -> launchTree
 
         let testHostStartedAt = DateTime.UtcNow
 
@@ -5696,7 +5680,7 @@ let private executeTests
                     (TestPrune.Ports.toSymbolStore db)
                     host.IndexFold
                     (runId.ToString("N"))
-                    boundTree
+                    (boundTree |> Option.map _.Identity)
                     (fun () -> ReceiptInputTree.read repoRoot)
                     runs
                     host.TraceLog
@@ -7425,7 +7409,7 @@ let internal createWithQueries
                         |> Some
 
                 let launch =
-                    { InputTreeHash = ReceiptInputTree.read repoRoot
+                    { InputTree = ReceiptInputTree.readTree repoRoot
                       ModelGeneration = observeModelGeneration ctx
                       ProjectInputs = observeTestInputs ctx
                       Symbols = launchedSymbols
@@ -7625,7 +7609,7 @@ let internal createWithQueries
                             repoRoot
                             launchDeadline
                             (tracesFor ctx inputs.Mode)
-                            launch.InputTreeHash
+                            launch.InputTree
                             (compileInputsOf ctx)
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
@@ -7647,7 +7631,7 @@ let internal createWithQueries
                             started,
                             completed,
                             { launch with
-                                InputTreeHash = boundTree
+                                InputTree = boundTree
                                 TestHostStartedAt = Some testHostStartedAt }
                         )
             with ex ->
@@ -7670,7 +7654,7 @@ let internal createWithQueries
                 // The empty SELECTION says the same thing about the ledger: an
                 // aborted run executed nothing, so it clears nothing.
                 let launch =
-                    { InputTreeHash = None
+                    { InputTree = None
                       ModelGeneration = observeModelGeneration ctx
                       ProjectInputs = observeTestInputs ctx
                       Symbols = launchedSymbols
@@ -7719,7 +7703,7 @@ let internal createWithQueries
         // (`--only-failed`, `--projects`) are absent from the selection and so are
         // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
-            { InputTreeHash = None
+            { InputTree = None
               ModelGeneration = observeModelGeneration ctx
               ProjectInputs = observeTestInputs ctx
               Symbols = Set.empty
@@ -7741,7 +7725,7 @@ let internal createWithQueries
         async {
             let commandLaunch =
                 { commandLaunch with
-                    InputTreeHash = ReceiptInputTree.read repoRoot }
+                    InputTree = ReceiptInputTree.readTree repoRoot }
 
             logLaunch "forced" mode commandLaunch
 
@@ -7762,7 +7746,7 @@ let internal createWithQueries
                             repoRoot
                             launchDeadline
                             (tracesFor ctx mode)
-                            commandLaunch.InputTreeHash
+                            commandLaunch.InputTree
                             (compileInputsOf ctx)
                             beforeRun
                             (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
@@ -7797,7 +7781,7 @@ let internal createWithQueries
                             started,
                             completed,
                             { commandLaunch with
-                                InputTreeHash = boundTree
+                                InputTree = boundTree
                                 TestHostStartedAt = Some testHostStartedAt },
                             reply,
                             formatTestResultsJson filter runReports results
@@ -9687,7 +9671,8 @@ let internal createWithQueries
                     // assert a result this process never ran.
                     let debtDuringFullRun = state.DebtDuringFullRun
 
-                    let currentInputTree = ReceiptInputTree.read repoRoot
+                    let currentTree = ReceiptInputTree.readTree repoRoot
+                    let currentInputTree = currentTree |> Option.map _.Identity
                     let currentModelGeneration = observeModelGeneration ctx
                     let currentInputs = ObservedModel.inputs ctx.ProjectGraph
 
@@ -9702,8 +9687,8 @@ let internal createWithQueries
                                 (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd))
                             (state.InFlight |> Option.map (fun run -> run.WatcherReported))
                             launch.TestHostStartedAt
-                            launch.InputTreeHash
-                            currentInputTree
+                            launch.InputTree
+                            currentTree
 
                     let receiptTransition =
                         ReceiptTransition.classify
@@ -9724,7 +9709,7 @@ let internal createWithQueries
                         // WHICH paths, so a revocation with no watcher event behind it
                         // (a gitignored build output under a discovery root, say) is
                         // answered by this line rather than by an afternoon of ctimes.
-                        match ReceiptInputTree.movedPaths launch.InputTreeHash currentInputTree with
+                        match ReceiptInputTree.movedPaths launch.InputTree currentTree with
                         | Some paths -> ctx.Log $"    moved paths: %s{paths}"
                         | None -> ()
                     | ReceiptTransition.Earned _

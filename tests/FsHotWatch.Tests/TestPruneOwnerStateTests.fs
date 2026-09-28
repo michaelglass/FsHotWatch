@@ -216,7 +216,7 @@ let private pendingDebtFixture () =
 
     let launch =
         { fullSuiteLaunch [ "ProjA" ] with
-            InputTreeHash = ReceiptInputTree.read root
+            InputTree = ReceiptInputTree.readTree root
             Symbols = Set.singleton symbol
             CoveringProjectsBySymbol = Map.ofList [ symbol, Set.singleton "ProjA" ] }
 
@@ -589,7 +589,7 @@ let private replayEligibleOwner () =
     // replay.
     let launch =
         { fullSuiteLaunch [ "ProjA" ] with
-            InputTreeHash = ReceiptInputTree.read root }
+            InputTree = ReceiptInputTree.readTree root }
 
     let green =
         update (recordingCtx ()) handler handler.Init (finished [ "ProjA", passing ] launch)

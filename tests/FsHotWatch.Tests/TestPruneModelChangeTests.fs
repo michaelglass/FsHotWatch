@@ -253,7 +253,7 @@ let ``a build over an empty graph does not erase the fingerprints the next build
             f.Handler.Init
             (finishedGreen
                 { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
-                    InputTreeHash = ReceiptInputTree.read root })
+                    InputTree = ReceiptInputTree.readTree root })
 
     // Positive control: with the graph available, an unchanged build fans out nothing.
     let quiet, afterFirst = settle verified
