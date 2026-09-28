@@ -80,3 +80,10 @@ above are deleted. What replaces each:
 - `requireVerdict`, the quiescence window and `activeVerdictWaits` remain.
 - TestPrune and Build still keep closure-local mirrors of their state, and Build's
   force-rebuild is a flag rather than an owner intent.
+
+## Amendment (2026-09-28): no host deadline for exclusive runs and preprocessor passes
+
+The "Not in this change" item on exclusive runs and preprocessor passes is settled: they
+get no host deadline, and the process each one spawns carries the bound. The reasoning is
+in ADR-030's amendment of the same date. The other items in that list were closed by
+ADR-030 and ADR-031.
