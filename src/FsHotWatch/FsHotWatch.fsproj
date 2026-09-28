@@ -80,6 +80,7 @@
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="ContentHash.fs" />
     <Compile Include="DaemonIdentity.fs" />
+    <Compile Include="StoredName.fs" />
     <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="AttachHandshake.fs" />
     <Compile Include="WatchRouter.fs" />

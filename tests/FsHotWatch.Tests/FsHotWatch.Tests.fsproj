@@ -99,6 +99,7 @@
     <Compile Include="VanishedRootTests.fs" />
     <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
+    <Compile Include="StoredNameTests.fs" />
     <Compile Include="RepositoryIdentityTests.fs" />
     <Compile Include="AttachHandshakeTests.fs" />
     <Compile Include="WatchRouterTests.fs" />
