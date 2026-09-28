@@ -723,7 +723,7 @@ let private indexTypeM (root: string) =
         [ TestPrune.AstAnalyzer.AnalysisResult.Create([ symbol ], [], []) ]
 
 /// Ingest one traced project `T` hitting `L.M`, against `index`, keeping the summary.
-let private ingestTypeUse (root: string) (index: IndexFold) (lines: ResizeArray<string>) =
+let private ingestTypeUseLogging (root: string) (index: IndexFold) (log: string -> unit) =
     let session = sessionOf root "T" typeUseManifest
     writeDumpHittingId0 session.DumpDir
     let ctrf = Path.Combine(root, "run", "T.ctrf.json")
@@ -754,10 +754,13 @@ let private ingestTypeUse (root: string) (index: IndexFold) (lines: ResizeArray<
               )
             Filtered = false
             CtrfPath = Some ctrf } ]
-        lines.Add
+        log
     |> Async.RunSynchronously
 
     List.ofSeq summaries
+
+let private ingestTypeUse (root: string) (index: IndexFold) (lines: ResizeArray<string>) =
+    ingestTypeUseLogging root index lines.Add
 
 /// A fold that is still writing the index when ingestion starts: it indexes `write` only
 /// after `delay`, then reports folded. `asked` counts the waits.
@@ -854,9 +857,29 @@ let ``a run of refusals stores without waiting on the index`` () =
 let ``every join logs how long the index took to fold, before the project's line`` () =
     let root = tempRoot ()
     let lines = ResizeArray()
+    let waitLogged = Tasks.TaskCompletionSource()
 
-    ingestTypeUse root (slowFold (TimeSpan.FromMilliseconds 300.0) (fun () -> indexTypeM root) (ref 0)) lines
-    |> ignore
+    let slow =
+        slowFold (TimeSpan.FromMilliseconds 300.0) (fun () -> indexTypeM root) (ref 0)
+
+    // The fold cannot finish before ingestion has seen it behind: a starved thread between
+    // asking and checking would otherwise find it folded, and rightly log no wait.
+    let behind =
+        { slow with
+            Folded =
+                fun () ->
+                    task {
+                        do! waitLogged.Task
+                        do! slow.Folded()
+                    } }
+
+    let log (line: string) =
+        lines.Add line
+
+        if line = TraceRun.indexWaitLine then
+            waitLogged.TrySetResult() |> ignore
+
+    ingestTypeUseLogging root behind log |> ignore
 
     test <@ lines.Count = 3 @>
     test <@ lines[0] = TraceRun.indexWaitLine @>
