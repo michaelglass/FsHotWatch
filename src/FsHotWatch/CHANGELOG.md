@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL
+  KEPT CHANGING", when the workspace loads a project from outside the discovery roots
+  (a project reference outside `src/` and `tests/`) that has an
+  `obj/project.assets.json`. The check added in 0.10.0-alpha.56 compares each
+  registered project's assets file with the bytes read before its model was loaded,
+  but only projects under the discovery roots were ever read, so such a project's
+  assets file counted as changed on every attempt. A re-discovery now also records the
+  assets bytes of every project the model it replaces held, so the same bytes trigger
+  at most one re-discovery.
+
 ## 0.10.0-alpha.57 - 2026-09-28
 
 - fix: a repository's `.gitignore` / `.fantomasignore` no longer ignore files outside
