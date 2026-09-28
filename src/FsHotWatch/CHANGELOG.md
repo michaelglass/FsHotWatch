@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.58 - 2026-09-28
+
 - fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL
   KEPT CHANGING", when the workspace loads a project from outside the discovery roots
   (a project reference outside `src/` and `tests/`) that has an
