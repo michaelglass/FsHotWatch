@@ -316,6 +316,20 @@ let ``a directory that cannot be listed keeps the name as given`` () =
             File.SetUnixFileMode(locked, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute))
 
 [<Fact(Timeout = 15000)>]
+let ``a listing that fails while it is read keeps the name as given`` () =
+    // The listing is lazy, so an unreadable directory fails while its names are walked.
+    withTempDir "rid-listing-fails" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, "Name"), "")
+
+        let failing (_: string) =
+            seq {
+                yield "other"
+                raise (UnauthorizedAccessException "denied")
+            }
+
+        test <@ storedNameIn failing dir "Name" = Some "Name" @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a case-variant root is the same worktree on a case-insensitive volume and absent on a sensitive one`` () =
     withTempDir "rid-case" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "MyRepo")))

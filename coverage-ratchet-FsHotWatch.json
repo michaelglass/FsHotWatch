@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "StoredName.fs": [
+      {
+        "line": 93,
+        "branch": 100,
+        "reason": "macOS-native path file: the Linux (`AsGiven`) and other-platform (`Listing`) arms of `current` are unreachable on macOS, 2 of 32 lines. Measured 2026-09-28 on macOS by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 93.8% (30/32), branch 100% (12/12), rounded down. Every platform-neutral line (lookupWith over every Source, listNames) is covered by StoredNameTests on any platform.",
+        "platform": "macos"
+      },
+      {
+        "line": 62,
+        "branch": 60,
+        "reason": "macOS-native path file: `askMacOS` (the getattrlist call and its errno mapping, 11 lines) and the other-platform arm of `current` are unreachable on Linux. Measured 2026-09-28 on Linux (Docker, mcr.microsoft.com/dotnet/sdk:10.0.401, non-root) by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 62.5% (20/32), branch 60% (12/20), rounded down. Every platform-neutral line is covered.",
+        "platform": "linux"
+      }
+    ],
     "SpawnHelper.fs": [
       {
         "line": 100,
