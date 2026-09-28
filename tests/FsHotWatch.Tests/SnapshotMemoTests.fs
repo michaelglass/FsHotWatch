@@ -184,3 +184,19 @@ let ``an open file read while it moved is checked under its own version`` () =
     let buildsBefore = memo.Builds
     buildWith memo tree (List.last tree.BFiles) |> ignore
     test <@ memo.Builds = buildsBefore @>
+
+[<Fact>]
+let ``a file checked in a project that does not list it gets the project's own snapshot`` () =
+    let tree = tree 3
+    let memo = SnapshotMemo()
+
+    let stranger =
+        Path.Combine(Path.GetDirectoryName(List.head tree.BFiles), "Elsewhere.fs")
+
+    let built =
+        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths (tree.Open stranger) tree.B
+
+    let fresh = buildFresh tree (List.head tree.BFiles)
+
+    test <@ built.SnapshotKey = snapshotKey fresh.Snapshot @>
+    test <@ built.Snapshot.SourceFiles |> List.forall (fun f -> f.FileName <> stranger) @>

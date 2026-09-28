@@ -22,6 +22,43 @@
   most once per two minutes. It firing means the daemon's allocation has regressed.
 - The scan logs its check concurrency peak and how many project snapshots it built.
 
+- fix: a macOS daemon opens one FSEvents stream instead of 2 + one per FileCommand
+  pattern, and the kernel drops events from its tooling directories before they are
+  queued. fseventsd buffers every per-file event for every stream until the process
+  reads it. Each `FileSystemWatcher` the daemon opened for top-level solutions and for
+  each FileCommand pattern was another stream over the whole worktree, with no
+  exclusions and no coalescing: `node_modules/`, `.fshw/`, `.jj/`, and, for a daemon at a
+  repository's primary checkout, every build in `.workspaces/`. While a busy daemon read
+  slowly, fseventsd held all of them. The watcher is now one stream over the worktree
+  root with `.jj`, `.git`, `.fshw`, `node_modules`, `.devenv`, `.direnv`, `.idea` and
+  `.workspaces` excluded in the kernel (`Watcher.kernelExclusions`). It routes F# inputs
+  under `src/`/`tests/`, top-level solutions and FileCommand patterns as before. The
+  excluded names are directories the polling watcher already never walked. Measured
+  with a nested checkout's build plus `.fshw`, `node_modules` and `.jj` writes: the
+  checkout's daemon had events queued for 2,566 file events across 4 streams, and now
+  for 79 on 1. The primary checkout's daemon went from 2,487 to 0. The same two
+  relevant edits reached both. A repository host's shared stream also excludes those
+  directories, except `.workspaces`, where its sessions live.
+- A FileCommand pattern no longer matches files under the directories above (for
+  example a `CHANGELOG.md` inside a nested `.workspaces/` checkout), matching what the
+  polling watcher already did.
+- `MacFsEvents.createWithCoalesced` is removed. Use `MacFsEvents.createExcluding`.
+
+- fix: a repository host no longer runs forever holding a session no client knows of.
+  The host answered an attach under the 10-second bound meant for reading the
+  client's preamble, so on a loaded machine an attach that took longer registered its
+  session and then had its answer cancelled: the client reported "the repository host
+  sent no reply", and the session, which nothing would ever stop, kept the host from
+  going idle. The bound now covers reading the preamble only, and an attach whose
+  answer cannot be delivered ends the session it started
+  (`RepositoryIpc.EndpointHandlers.Undelivered`).
+- fix: a daemon, or a repository host's session, now shuts down once its worktree root
+  is deleted, instead of watching a directory that no longer exists until it is
+  killed. A host whose sessions have all ended this way then exits after its idle
+  grace. The daemon writes a token to `.fshw/root-witness` when it starts and checks
+  for it every 30 seconds (`DaemonOptions.VanishedRootCheckEvery`); checking that the
+  directory exists is not enough, because the daemon's own next write creates it again.
+
 ## 0.10.0-alpha.58 - 2026-09-28
 
 - fix: a scan no longer re-discovers forever, failing every `check` with "SCAN MODEL

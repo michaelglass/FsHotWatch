@@ -127,6 +127,7 @@
     <Compile Include="RepositoryIpc.fs" />
     <Compile Include="ScanActivity.fs" />
     <Compile Include="IdleExit.fs" />
+    <Compile Include="VanishedRoot.fs" />
     <Compile Include="Heartbeat.fs" />
     <Compile Include="PluginWedge.fs" />
     <Compile Include="HookStep.fs" />

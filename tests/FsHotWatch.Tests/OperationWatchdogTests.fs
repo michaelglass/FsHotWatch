@@ -349,7 +349,7 @@ let ``Watchdog re-arms the overrun record for a new op after End`` () =
     w.End first
     clock.Value <- t0.AddSeconds 200.0
     w.Begin "second-op" |> ignore // StartedAt = t0+200s
-    clock.Value <- t0.AddSeconds 300.0 // wedged again
+    clock.Value <- t0.AddSeconds 340.0 // wedged again
     waitUntil (fun () -> logcontains "second-op") 5000
 
     test <@ logcontains "first-op" @>
@@ -402,7 +402,7 @@ let ``a wedged op stays visible when a concurrent op begins and ends over it`` (
 
     // A wedges: a `check` client blocked on WaitForComplete.
     w.Begin "WaitForComplete" |> ignore
-    clock.Value <- t0.AddSeconds 300.0
+    clock.Value <- t0.AddSeconds 340.0
     test <@ (w.WedgeReport() |> Option.isSome) @>
 
     // B is a SECOND client's short op on a free acceptor. Under the old single-slot
@@ -530,3 +530,21 @@ let ``Watchdog fires the heap valve once, logs it loudly and reports it for stat
     clock.Value <- t0.AddSeconds 200.0
     waitUntil (fun () -> (logged |> Seq.filter (fun l -> l.StartsWith "heartbeat:") |> Seq.length) >= 3) 5000
     test <@ collections.Value = 1 @>
+
+    // Still bloated, and no gen2 since the valve's own for the quiet interval: it fires
+    // again, and the report counts both.
+    reading.Value <-
+        { reading.Value with
+            HeapBytes = gib 12.0 }
+
+    clock.Value <- t0.AddSeconds 340.0
+    waitUntil (fun () -> (valveLines ()).Length = 2) 5000
+
+    test <@ collections.Value = 2 @>
+    test <@ w.HeapValveReport() |> Option.exists (fun r -> r.Contains "fired 2 time(s)") @>
+
+[<Fact(Timeout = 30000)>]
+let ``compactingCollect runs a full blocking collection`` () =
+    let before = GC.CollectionCount 2
+    compactingCollect ()
+    test <@ GC.CollectionCount 2 > before @>

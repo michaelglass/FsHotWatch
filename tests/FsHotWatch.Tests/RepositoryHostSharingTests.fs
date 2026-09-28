@@ -108,7 +108,7 @@ let private withWorldUnder (framesOn: bool) (body: World -> unit) =
             Daemon.Daemon.createUsing
                 Daemon.Daemon.createCheckerWithCacheSizes
                 root
-                { Daemon.Daemon.DaemonOptions.defaults with
+                { watchingDaemonOptions with
                     Hosting =
                         DaemonHosting.hostedUnderFrames
                             inertWatcher

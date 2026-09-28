@@ -208,6 +208,55 @@ let private runCliOk (stateHome: string) (root: string) (args: string list) : un
 
     Assert.True((p.ExitCode = 0), $"fshw %A{args} exited %d{p.ExitCode}:\n%s{String.concat Environment.NewLine output}")
 
+/// Kill every host this test may have started for `root`: the pids it saw, and the one
+/// the repository's pid file names now, which a command that failed part-way leaves
+/// unseen. A pid file can outlive its host and its pid be reused, so only a dotnet
+/// process started since `since` is taken for the host. Fails if one survives; returns
+/// the pids it killed.
+let private reapHosts (since: DateTime) (stateHome: string) (root: string) (seen: int seq) =
+    let named =
+        match resolveWorktree root with
+        | Ok w ->
+            let pidFile = (repositoryControlPaths stateHome w.Repository).PidFile
+
+            match
+                Int32.TryParse(
+                    try
+                        File.ReadAllText(pidFile).Trim()
+                    with _ ->
+                        ""
+                )
+            with
+            | true, pid -> [ pid ]
+            | _ -> []
+        | Error _ -> []
+
+    let ours (pid: int) =
+        try
+            use p = Process.GetProcessById pid
+
+            not p.HasExited
+            && p.ProcessName.StartsWith "dotnet"
+            && p.StartTime >= since.ToLocalTime()
+        with _ ->
+            false
+
+    let candidates =
+        Seq.append seen named |> Seq.distinct |> Seq.filter ours |> List.ofSeq
+
+    for pid in candidates do
+        try
+            use p = Process.GetProcessById pid
+            p.Kill true
+            p.WaitForExit 30000 |> ignore
+        with _ ->
+            // Gone between the look and the kill.
+            ()
+
+    let survivors = candidates |> List.filter ours
+    Assert.True(List.isEmpty survivors, $"host process(es) %A{survivors} outlived the test")
+    candidates
+
 [<Fact(Timeout = 600000)>]
 let ``a host killed outright leaves the worktree to the next command, which starts a new host`` () =
     if not (OperatingSystem.IsWindows()) then
@@ -223,6 +272,7 @@ let ``a host killed outright leaves the worktree to the next command, which star
                 int (File.ReadAllText(control.PidFile).Trim())
 
             let seen = Collections.Generic.HashSet<int>()
+            let since = DateTime.UtcNow.AddSeconds -1.0
 
             try
                 runCliOk stateHome root [ "scan" ]
@@ -266,10 +316,26 @@ let ``a host killed outright leaves the worktree to the next command, which star
                 use relock = (RepositoryHost.tryLockWorktree root).Value
                 ()
             finally
-                for pid in seen do
-                    if RepositoryHost.processAlive pid then
-                        use p = Process.GetProcessById pid
-                        p.Kill true)
+                // Not only the pids seen: the incident this guards against was a first
+                // `scan` that failed after launching its host, before any pid was seen.
+                reapHosts since stateHome root seen |> ignore)
+
+[<Fact(Timeout = 600000)>]
+let ``a host the test never saw is reaped all the same`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withRepository (fun root stateHome ->
+            let since = DateTime.UtcNow.AddSeconds -1.0
+
+            let reaped = ref []
+
+            try
+                // The command succeeds here; in the incident it failed after launching
+                // the host. Either way the test holds no pid for it.
+                runCliOk stateHome root [ "scan" ]
+            finally
+                reaped.Value <- reapHosts since stateHome root []
+
+            test <@ reaped.Value.Length = 1 @>)
 
 // ---------------------------------------------------------------------------
 // The host verb, in process
@@ -398,7 +464,7 @@ let private daemonFactory: SessionRegistry.SessionFactory =
         FsHotWatch.Daemon.Daemon.createWithWatcherFactory
             nullChecker
             spec.Worktree.Root.Value
-            { FsHotWatch.Daemon.Daemon.DaemonOptions.defaults with
+            { watchingDaemonOptions with
                 Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
             inertWatcher
 

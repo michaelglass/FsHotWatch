@@ -2,8 +2,28 @@
 
 ## Unreleased
 
+- perf: the daemon runs Server GC with DATAS (`System.GC.Server`,
+  `System.GC.DynamicAdaptationMode=1`), keeping `ConserveMemory=9`. On a ~2,200-file
+  solution a cold scan spent ~25% of its time in GC instead of ~65%, finished in half
+  the time or less, and peaked at 10–13 GB instead of 16–20 GB together with the
+  bounded checks in core (ADR-038). Override with `DOTNET_gcServer=0` or
+  `DOTNET_GCDynamicAdaptationMode=0`.
 - feat: `fshw status` warns when the daemon's heap valve has fired: a backstop
   compacting collection that means the daemon's allocation has regressed.
+
+- fix: the daemon watches `.fshw.json` by looking at its write time and size every
+  half second, instead of with a `FileSystemWatcher`. On macOS a `FileSystemWatcher`
+  is an FSEvents stream over its whole directory, recursive in the kernel whatever its
+  filter. For `.fshw.json` that directory is the repository root, so fseventsd queued
+  every file event in the repository for a watcher that wanted one file. A write,
+  creation or rename into place still stops the daemon with "config changed" or
+  "config invalid". A deletion still does not.
+
+- fix: `fshw host`, and a per-worktree daemon started by `fshw start`, no longer
+  outlive a deleted worktree: each shuts down once the directory it was started in is
+  removed. A repository host also no longer stays up indefinitely after an attach
+  whose answer was lost on a loaded machine (reported by the CLI as "the repository
+  host sent no reply").
 
 ## 0.14.0-alpha.77 - 2026-09-28
 

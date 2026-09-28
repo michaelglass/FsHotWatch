@@ -21,8 +21,7 @@ open FsHotWatch.Tests.TestHelpers
 let private createAndDispose (dir: string) =
     Directory.CreateDirectory(Path.Combine(dir, "src")) |> ignore
 
-    let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) dir Daemon.DaemonOptions.defaults
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) dir oneShotDaemonOptions
 
     (daemon :> IDisposable).Dispose()
 
@@ -101,7 +100,7 @@ let private spawnAfter (dir: string) (start: unit -> unit) =
 
 let private daemonIn (dir: string) =
     Directory.CreateDirectory(Path.Combine(dir, "src")) |> ignore
-    Daemon.createWith (Unchecked.defaultof<_>) dir Daemon.DaemonOptions.defaults
+    Daemon.createWith (Unchecked.defaultof<_>) dir oneShotDaemonOptions
 
 [<Fact(Timeout = 60000)>]
 let ``a daemon served on the caller's thread leaves the caller's scope as it was`` () =
@@ -210,8 +209,7 @@ let ``a plugin registered after the daemon is built spawns into the daemon's sco
             isolated (fun () ->
                 // Registered from a context with no process scope of its own, as the CLI
                 // and a repository host register plugins once the daemon is built.
-                let daemon =
-                    Daemon.createWith (Unchecked.defaultof<_>) dir Daemon.DaemonOptions.defaults
+                let daemon = Daemon.createWith (Unchecked.defaultof<_>) dir oneShotDaemonOptions
 
                 let handler: PluginFramework.PluginHandler<unit, obj> =
                     { Name = PluginFramework.PluginName.create "spawner"

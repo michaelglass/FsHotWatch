@@ -129,7 +129,7 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
         let factory (spec: SessionSpec) =
             Daemon.Daemon.create
                 spec.Worktree.Root.Value
-                { Daemon.Daemon.DaemonOptions.defaults with
+                { watchingDaemonOptions with
                     Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher partitions.For }
 
         use registry = new SessionRegistry(factory, run)

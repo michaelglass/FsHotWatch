@@ -176,6 +176,68 @@ let internal classifyChange (path: string) =
     else
         SourceChanged [ path ]
 
+/// Top-level directories whose events FSEvents drops in the kernel, before they are
+/// queued for the daemon. fseventsd buffers every per-file event for every client
+/// until that client drains, so a directory no watcher reports from is still memory
+/// in fseventsd while the daemon is busy. Every name is one the polling walk also
+/// prunes (`SafeWalk.ToolingExcludedDirs`): what the native stream never sees, the
+/// polling fallback never visits either.
+let private kernelExcludedDirs =
+    [ ".jj"; ".git"; ".fshw"; "node_modules"; ".devenv"; ".direnv"; ".idea" ]
+
+/// The directory sibling checkouts of a repository live in. A per-worktree stream
+/// drops it — each checkout there has its own daemon — but a shared stream cannot:
+/// the sessions it routes to live there.
+let private nestedCheckoutDir = ".workspaces"
+
+/// The exclusion prefixes for a native stream over `root` (at most
+/// `MacFsEvents.MaxExclusionPaths`).
+let internal kernelExclusions (excludeNestedCheckouts: bool) (root: string) =
+    let names =
+        if excludeNestedCheckouts then
+            kernelExcludedDirs @ [ nestedCheckoutDir ]
+        else
+            kernelExcludedDirs
+
+    names |> List.map (fun name -> Path.Combine(root, name))
+
+/// What a stream over the whole of `root` passes on: F# inputs under the discovery
+/// roots, solutions at the top level, and FileCommand patterns anywhere outside
+/// build output.
+let internal acceptsUnderRoot (root: string) (extraPatterns: FilePattern list) : string -> bool =
+    let discoveryRoots = Discovery.discoveryRoots root
+
+    fun path ->
+        let ext = Path.GetExtension(path).ToLowerInvariant()
+
+        (discoveryRoots |> List.exists (fun d -> WatchRouter.isWithin d path)
+         && isRelevantFileOrExtra extraPatterns path)
+        || ((ext = ".sln" || ext = ".slnx") && Path.GetDirectoryName path = root)
+        || (extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
+            && not (PathFilter.isGeneratedPath path))
+
+/// The F# inputs a must-scan of `dir` finds under `root`'s discovery roots: the part
+/// of `dir` inside one, or the whole discovery root when `dir` contains it.
+let internal rescanUnderRoot (root: string) (dir: string) : string seq =
+    seq {
+        for discoveryRoot in Discovery.discoveryRoots root do
+            let target =
+                if WatchRouter.isWithin discoveryRoot dir then
+                    Some dir
+                elif WatchRouter.isWithin dir discoveryRoot then
+                    Some discoveryRoot
+                else
+                    None
+
+            match target with
+            | Some target when Directory.Exists target ->
+                for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
+                    yield!
+                        SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern target
+                        |> Seq.filter isRelevantFile
+            | _ -> ()
+    }
+
 /// The one question both watchers ask of a path: have its BYTES changed since we
 /// last looked at it?
 ///
@@ -435,7 +497,10 @@ type internal PollingFileWatcher
 
 /// Functions for creating file watchers.
 module FileWatcher =
-    type internal NativeStreamFactory = string list -> (string -> unit) -> (string -> unit) -> float -> IDisposable
+    /// Opens a native stream: directories, kernel exclusions, file handler, must-scan
+    /// handler, latency in seconds.
+    type internal NativeStreamFactory =
+        string list -> string list -> (string -> unit) -> (string -> unit) -> float -> IDisposable
 
     type internal SystemWatcherSpec =
         { Directory: string
@@ -539,6 +604,11 @@ module FileWatcher =
     let private defaultPollingWatcherFactory repoRoot onChange extraPatterns =
         new PollingFileWatcher(repoRoot, onChange, extraPatterns, true, None, None) :> IDisposable
 
+    /// One native stream over the whole worktree root, its tooling directories and
+    /// nested checkouts excluded in the kernel, routing F# inputs under the discovery
+    /// roots, top-level solutions and FileCommand patterns. One stream is one fseventsd
+    /// client; a `FileSystemWatcher` per solution or pattern would each be another
+    /// recursive, per-file client over the same root that no exclusion reaches.
     let private createMacOS
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
@@ -546,99 +616,58 @@ module FileWatcher =
         (latencySeconds: float)
         (nativeStartRetry: NativeStartRetry)
         (nativeStreamFactory: NativeStreamFactory)
-        (systemWatcherFactory: SystemWatcherFactory)
         (pollingWatcherFactory: PollingWatcherFactory)
         : FileWatcher =
         // A notification names a path; it does not establish that the path changed.
-        // The ledger is per-watcher, and every watcher this function builds shares
-        // it, so a coalesced batch and a single-file event agree about a given path.
+        // One ledger for the per-file and must-scan callbacks, so a coalesced batch
+        // and a single-file event agree about a given path.
         let ledger = ContentLedger()
 
-        let handle path =
-            if isRelevantFileOrExtra extraPatterns path && ledger.Observe path then
+        // FSEvents reports real paths. A root spelled through a symlink (`/var` is
+        // `/private/var`) is watched at its real path and matched under both spellings.
+        let watchRoot =
+            match RepositoryIdentity.canonicalize repoRoot with
+            | Ok canonical -> canonical.Value
+            | Error _ -> repoRoot
+
+        let roots = List.distinct [ repoRoot; watchRoot ]
+        let accepts = roots |> List.map (fun root -> acceptsUnderRoot root extraPatterns)
+
+        let report path =
+            if ledger.Observe path then
                 onChange (classifyChange path)
 
-        let partial = ResizeArray<IDisposable>()
+        let handle path =
+            if accepts |> List.exists (fun accept -> accept path) then
+                report path
 
-        let register disposable =
-            partial.Add(disposable)
-            disposable
+        // A coalesced native event means Apple requires a recursive scan of that subtree.
+        let onCoalesced dirPath =
+            for root in roots do
+                rescanUnderRoot root dirPath |> Seq.iter report
 
-        let rollBack () =
-            for disposable in Seq.rev partial do
-                try
-                    disposable.Dispose()
-                with disposeEx ->
-                    Logging.warn "watcher" $"partial watcher disposal failed: %s{disposeEx.Message}"
-
-        /// The generic fallback: a non-refusal fault demotes this daemon to polling.
-        let fallBackToPolling (ex: exn) =
-            rollBack ()
-
+        // Matched OUTSIDE any exception handler: the refusal is a value here, so
+        // the polling fallback below cannot catch it (case 2).
+        match
+            startNativeWithRetry nativeStartRetry (fun () ->
+                nativeStreamFactory [ watchRoot ] (kernelExclusions true watchRoot) handle onCoalesced latencySeconds)
+        with
+        | Started nativeStream ->
+            { Mode = WatcherMode.NativeEvents
+              Disposables = [ nativeStream ] }
+        | Faulted ex ->
+            // The generic fallback: a non-refusal fault demotes this daemon to polling.
             Logging.warn
                 "watcher"
                 $"macOS file-event setup failed (%s{ex.Message}); using a 1-second content-snapshot polling watcher"
 
-            let polling = pollingWatcherFactory repoRoot onChange extraPatterns
-
             { Mode = WatcherMode.ContentPolling ex.Message
-              Disposables = [ polling ] }
-
-        /// Native first (it is the component that can be refused), then the
-        /// `FileSystemWatcher`s for solution files and extra patterns.
-        let completeNative (nativeStream: IDisposable option) =
-            try
-                nativeStream |> Option.iter (register >> ignore)
-
-                systemWatcherFactory
-                    handle
-                    { Directory = repoRoot
-                      IncludeSubdirectories = false
-                      Filters = [ "*.sln"; "*.slnx" ] }
-                |> register
-                |> ignore
-
-                for pattern in extraPatterns do
-                    systemWatcherFactory
-                        handle
-                        { Directory = repoRoot
-                          IncludeSubdirectories = true
-                          Filters = [ FilePattern.toString pattern ] }
-                    |> register
-                    |> ignore
-
-                { Mode = WatcherMode.NativeEvents
-                  Disposables = partial |> Seq.toList }
-            with ex ->
-                fallBackToPolling ex
-
-        let dirs = Discovery.existingDiscoveryRoots repoRoot
-
-        if dirs.IsEmpty then
-            completeNative None
-        else
-            // SafeWalk, not SearchOption.AllDirectories: a coalesced native
-            // event means Apple requires a recursive scan of that subtree.
-            let onCoalesced dirPath =
-                if Directory.Exists(dirPath) then
-                    for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
-                        for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
-                            if isRelevantFile file && ledger.Observe file then
-                                onChange (classifyChange file)
-
-            // Matched OUTSIDE any exception handler: the refusal is a value here, so
-            // the polling fallback below cannot catch it (case 2).
-            match
-                startNativeWithRetry nativeStartRetry (fun () ->
-                    nativeStreamFactory dirs handle onCoalesced latencySeconds)
-            with
-            | Started nativeStream -> completeNative (Some nativeStream)
-            | Faulted ex -> fallBackToPolling ex
-            | RefusedPastBudget refusal ->
-                // Nothing was registered before the native start, so there is nothing
-                // to roll back; the daemon owns the pidfile and lock and releases them.
-                Logging.error "watcher" (NativeStartRefusal.describe refusal)
-                raise (NativeStreamRefusedPastBudgetException refusal)
+              Disposables = [ pollingWatcherFactory repoRoot onChange extraPatterns ] }
+        | RefusedPastBudget refusal ->
+            // Nothing was built, so there is nothing to roll back; the daemon owns
+            // the pidfile and lock and releases them.
+            Logging.error "watcher" (NativeStartRefusal.describe refusal)
+            raise (NativeStreamRefusedPastBudgetException refusal)
 
     /// macOS construction seam used by deterministic failure-path tests.
     let internal createWithNativeStream
@@ -656,10 +685,9 @@ module FileWatcher =
             latencySeconds
             nativeStartRetry
             nativeStreamFactory
-            defaultSystemWatcherFactory
             defaultPollingWatcherFactory
 
-    /// Complete setup seam used to prove native-first ordering and transactional rollback.
+    /// Complete setup seam: native stream and polling fallback both injected.
     let internal createWithFactories
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
@@ -667,7 +695,6 @@ module FileWatcher =
         (latencySeconds: float)
         (nativeStartRetry: NativeStartRetry)
         (nativeStreamFactory: NativeStreamFactory)
-        (systemWatcherFactory: SystemWatcherFactory)
         (pollingWatcherFactory: PollingWatcherFactory)
         =
         createMacOS
@@ -677,7 +704,6 @@ module FileWatcher =
             latencySeconds
             nativeStartRetry
             nativeStreamFactory
-            systemWatcherFactory
             pollingWatcherFactory
 
     /// The non-macOS layout: one recursive system watcher per existing discovery
@@ -758,9 +784,8 @@ module FileWatcher =
                 extraPatterns
                 latencySeconds
                 NativeStartRetry.defaults
-                (fun dirs onFile onCoalesced latency ->
-                    MacFsEvents.createWithCoalesced dirs onFile onCoalesced latency :> IDisposable)
-                defaultSystemWatcherFactory
+                (fun dirs exclusions onFile onCoalesced latency ->
+                    MacFsEvents.createExcluding dirs exclusions onFile onCoalesced latency :> IDisposable)
                 defaultPollingWatcherFactory
         else
             createPortable repoRoot onChange extraPatterns defaultSystemWatcherFactory
