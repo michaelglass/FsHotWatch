@@ -17,8 +17,21 @@
   with a nested checkout's build plus `.fshw`, `node_modules` and `.jj` writes: the
   checkout's daemon had events queued for 2,566 file events across 4 streams, and now
   for 79 on 1. The primary checkout's daemon went from 2,487 to 0. The same two
-  relevant edits reached both. A repository host's shared stream also excludes those
-  directories, except `.workspaces`, where its sessions live.
+  relevant edits reached both.
+- fix: a repository host gives each worktree session its own FSEvents stream over its
+  own root, with that root's tooling directories and nested checkouts excluded in the
+  kernel, the same as a standalone daemon. The host had one stream over the primary
+  checkout. FSEvents takes at most 8 exclusion paths per stream, so that stream could
+  exclude only the primary's tooling directories: every nested session's
+  `node_modules/`, `.fshw/` and `.jj/` writes were still queued for the host. Events are
+  still routed among the sessions under one anchor, and a checkout nested outside
+  `.workspaces/` reaches only its own session (`PoolStats.EventsOwnedElsewhere` counts the
+  copies its parent's stream saw). Measured with a primary and a `.workspaces/` session
+  attached, and 100 writes each into the nested checkout's `node_modules`, `.fshw`,
+  `.jj`, `obj` and `bin` plus one source edit per checkout: 502 events received on 1
+  stream before, 202 on 2 after (only `obj`/`bin` under `src/`, which no kernel exclusion
+  can name, and the two edits). Both edits were delivered. `Watcher.kernelExclusions`
+  takes only the root.
 - A FileCommand pattern no longer matches files under the directories above (for
   example a `CHANGELOG.md` inside a nested `.workspaces/` checkout), matching what the
   polling watcher already did.
