@@ -1562,4 +1562,4 @@ let ``test daemons choose their run mode through TestHelpers`` () =
             && File.ReadAllText(file).Contains("DaemonOptions" + ".defaults"))
         |> Array.map Path.GetFileName
 
-    test <@ offenders = [||] @>
+    test <@ Array.isEmpty offenders @>
