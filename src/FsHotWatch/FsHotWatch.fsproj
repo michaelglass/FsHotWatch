@@ -62,6 +62,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Locking.fs" />
     <Compile Include="Logging.fs" />
     <Compile Include="SessionScope.fs" />
     <Compile Include="OperationWatchdog.fs" />

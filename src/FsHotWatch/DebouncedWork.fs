@@ -114,11 +114,11 @@ type Queue<'State, 'Request>
             | Error failure -> settle head (Some failure)
         }
 
-    let admissionGate = obj ()
+    let admissionGate = Lock()
     let mutable admissions = Task.CompletedTask
 
     let scheduleAdmission () =
-        lock admissionGate (fun () ->
+        Locking.locked admissionGate (fun () ->
             admissions <-
                 admissions
                     .ContinueWith(

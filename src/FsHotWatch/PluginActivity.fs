@@ -108,7 +108,7 @@ type private ActivityPhase =
 
 [<NoComparison; NoEquality>]
 type private PerPlugin =
-    { Gate: obj
+    { Gate: System.Threading.Lock
       mutable Phase: ActivityPhase
       History: Queue<RunRecord>
       mutable Bytes: int }
@@ -120,17 +120,17 @@ type Snapshot =
       LastRun: RunRecord option }
 
 type State() =
-    let pluginsGate = obj ()
+    let pluginsGate = System.Threading.Lock()
     let plugins = Dictionary<string, PerPlugin>()
     let mutable totalBytes = 0
 
     let getOrCreate name =
-        lock pluginsGate (fun () ->
+        Locking.locked pluginsGate (fun () ->
             match plugins.TryGetValue name with
             | true, p -> p
             | _ ->
                 let p =
-                    { Gate = obj ()
+                    { Gate = System.Threading.Lock()
                       Phase = Idle
                       History = Queue<RunRecord>()
                       Bytes = 0 }
@@ -145,9 +145,9 @@ type State() =
         while totalBytes > maxTotalBytes do
             let mutable candidate: (PerPlugin * DateTime) option = None
 
-            lock pluginsGate (fun () ->
+            Locking.locked pluginsGate (fun () ->
                 for KeyValue(_, p) in plugins do
-                    lock p.Gate (fun () ->
+                    Locking.locked p.Gate (fun () ->
                         if p.History.Count > 0 then
                             let h = p.History.Peek()
 
@@ -158,7 +158,7 @@ type State() =
 
             match candidate with
             | Some(p, _) ->
-                lock p.Gate (fun () ->
+                Locking.locked p.Gate (fun () ->
                     if p.History.Count > 0 then
                         let evicted = p.History.Dequeue()
                         let sz = runRecordBytes evicted
@@ -185,7 +185,7 @@ type State() =
     member _.StartSubtask(plugin: string, key: string, label: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
 
             if not (r.Subtasks.ContainsKey key) then
@@ -203,7 +203,7 @@ type State() =
     member _.UpdateSubtask(plugin: string, key: string, label: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             match p.Phase with
             | Recording r ->
                 match r.Subtasks.TryGetValue key with
@@ -221,7 +221,7 @@ type State() =
     member _.EndSubtask(plugin: string, key: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             match p.Phase with
             | Recording r ->
                 match r.Subtasks.TryGetValue key with
@@ -234,7 +234,7 @@ type State() =
     member _.Log(plugin: string, message: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
             r.ActivityLog.Enqueue(message)
             addBytes p (stringBytes message)
@@ -249,7 +249,7 @@ type State() =
     member _.SetSummary(plugin: string, summary: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
             addBytes p (-r.SummaryBytes)
             r.SummaryOverride <- Some summary
@@ -262,14 +262,14 @@ type State() =
     member _.SetNextTerminalOutcome(plugin: string, outcome: RunOutcome) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
             r.OutcomeOverride <- Some outcome)
 
     member _.RecordTerminal(plugin: string, outcome: RunOutcome, startedAt: DateTime, at: DateTime) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             let tail, derivedSummary, discarded, outcomeOverride =
                 match p.Phase with
                 | Recording r ->
@@ -313,7 +313,7 @@ type State() =
     member _.ResetRun(plugin: string) : unit =
         let p = getOrCreate plugin
 
-        lock p.Gate (fun () ->
+        Locking.locked p.Gate (fun () ->
             match p.Phase with
             | Recording r ->
                 let discarded =
@@ -326,14 +326,14 @@ type State() =
             | Idle -> ())
 
     member _.GetSnapshot(plugin: string) : Snapshot =
-        let exists, p = lock pluginsGate (fun () -> plugins.TryGetValue plugin)
+        let exists, p = Locking.locked pluginsGate (fun () -> plugins.TryGetValue plugin)
 
         if not exists then
             { Subtasks = []
               ActivityTail = []
               LastRun = None }
         else
-            lock p.Gate (fun () ->
+            Locking.locked p.Gate (fun () ->
                 let subtasks, tail =
                     match p.Phase with
                     | Recording r -> r.Subtasks.Values |> Seq.toList, r.ActivityLog |> List.ofSeq
@@ -354,11 +354,11 @@ type State() =
     member this.GetActivityTail(plugin: string) : string list = this.GetSnapshot(plugin).ActivityTail
 
     member _.GetHistory(plugin: string) : RunRecord list =
-        let exists, p = lock pluginsGate (fun () -> plugins.TryGetValue plugin)
+        let exists, p = Locking.locked pluginsGate (fun () -> plugins.TryGetValue plugin)
 
         if not exists then
             []
         else
-            lock p.Gate (fun () -> p.History |> List.ofSeq)
+            Locking.locked p.Gate (fun () -> p.History |> List.ofSeq)
 
     member _.TotalByteSize: int = totalBytes

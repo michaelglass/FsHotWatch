@@ -35,6 +35,7 @@
     <Compile Include="RepoTasks.fs" />
     <Compile Include="AnalyzerFixtures.fs" />
     <Compile Include="StringHelpersTests.fs" />
+    <Compile Include="LockingTests.fs" />
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />

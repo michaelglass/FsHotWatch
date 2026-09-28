@@ -43,7 +43,7 @@ type internal Pool() =
             with _ ->
                 ignore
 
-        lock gate (fun () -> idle <- idle + 1)
+        Locking.monitored gate (fun () -> idle <- idle + 1)
 
         try
             publish ()
@@ -51,7 +51,7 @@ type internal Pool() =
             ()
 
         work (
-            lock gate (fun () ->
+            Locking.monitored gate (fun () ->
                 while pending.Count = 0 do
                     Monitor.Wait gate |> ignore
 
@@ -59,15 +59,15 @@ type internal Pool() =
                 pending.Dequeue())
         )
 
-    member _.Created: int = lock gate (fun () -> created)
+    member _.Created: int = Locking.monitored gate (fun () -> created)
 
     /// Workers counted idle: waiting for a job, or publishing one's outcome.
-    member _.Idle: int = lock gate (fun () -> idle)
+    member _.Idle: int = Locking.monitored gate (fun () -> idle)
 
     /// Run `job` on an idle worker, or on a new one when none is free.
     member _.Post(job: Job) : unit =
         let spawn =
-            lock gate (fun () ->
+            Locking.monitored gate (fun () ->
                 if idle > pending.Count then
                     pending.Enqueue job
                     Monitor.Pulse gate

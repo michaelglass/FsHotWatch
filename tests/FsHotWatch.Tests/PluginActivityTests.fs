@@ -158,9 +158,10 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
 [<Fact(Timeout = 15000)>]
 let ``global cap evicts oldest history entries first (single-threaded, deterministic)`` () =
     let s = State()
-    // ~80 KB per record (40_000-char string * 2 bytes/char). 2 MB / 80 KB ≈ 26
-    // records, so 80 records forces many evictions deterministically.
-    let big = String('x', 40_000)
+    // ~200 KB per record (100_000-char string * 2 bytes/char). 2 MB / 200 KB ≈ 10
+    // records — under the 16-per-plugin history cap, so it is the GLOBAL cap that
+    // evicts, and 80 records force many evictions deterministically.
+    let big = String('x', 100_000)
     let baseTime = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 
     for i in 1..80 do
@@ -172,7 +173,8 @@ let ``global cap evicts oldest history entries first (single-threaded, determini
 
     let hist = s.GetHistory("p")
     let histLen = hist.Length
-    test <@ histLen > 0 && histLen < 80 @>
+    // Fewer than the per-plugin cap keeps: the global cap did this.
+    test <@ histLen > 0 && histLen < 16 @>
 
     // The oldest survivor's StartedAt is strictly later than the first pushed
     // record, which is what proves eviction happened oldest-first.
@@ -189,6 +191,35 @@ let ``global cap evicts oldest history entries first (single-threaded, determini
     let ascending = starts = List.sort starts
     test <@ ascending @>
     test <@ newestSurvivor = lastPushed @>
+
+[<Fact(Timeout = 15000)>]
+let ``global cap evicts the oldest history entry across plugins`` () =
+    let s = State()
+    // ~200 KB per record: ten fit under the 2 MB cap.
+    let big = String('x', 100_000)
+    let baseTime = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+
+    // Alternating plugins, each record newer than the last: "p" holds the odd seconds,
+    // "q" the even ones.
+    for i in 1..20 do
+        let plugin = if i % 2 = 1 then "p" else "q"
+        s.Log(plugin, big)
+        let started = baseTime.AddSeconds(float i)
+        s.RecordTerminal(plugin, CompletedRun, started, started.AddMilliseconds(1.0))
+
+    test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+
+    // Oldest-first across both plugins leaves one contiguous newest window, ending
+    // at the last record pushed.
+    let survivors =
+        s.GetHistory("p") @ s.GetHistory("q")
+        |> List.map (fun r -> int (r.StartedAt - baseTime).TotalSeconds)
+        |> List.sort
+
+    let first = List.head survivors
+    test <@ survivors = [ first..20 ] @>
+    test <@ first > 1 @>
+    test <@ not (List.isEmpty (s.GetHistory "p")) && not (List.isEmpty (s.GetHistory "q")) @>
 
 [<Fact(Timeout = 15000)>]
 let ``SetNextTerminalOutcome overrides the outcome of the next RecordTerminal`` () =

@@ -86,7 +86,7 @@ let private finishSharedStartFailure (release: unit -> unit) (afterRelease: Resu
 /// Ownership is handed directly to the oldest waiter, so a releasing plugin cannot
 /// repeatedly reacquire ahead of already-owed work.
 type SharedRunScheduler() =
-    let gate = obj ()
+    let gate = System.Threading.Lock()
     let owners = System.Collections.Generic.HashSet<string>()
 
     let resourceStates =
@@ -99,7 +99,7 @@ type SharedRunScheduler() =
          >()
 
     member _.ClaimOrQueue(key: string, start: SharedResourceState -> SharedRunStart) =
-        lock gate (fun () ->
+        Locking.locked gate (fun () ->
             if owners.Add key then
                 match resourceStates.TryGetValue key with
                 | true, state -> Some state
@@ -121,7 +121,7 @@ type SharedRunScheduler() =
     member _.Release(key: string, resourceState: SharedResourceState) =
         let rec handOff state =
             let next =
-                lock gate (fun () ->
+                Locking.locked gate (fun () ->
                     resourceStates[key] <- state
 
                     match waiters.TryGetValue key with
@@ -366,12 +366,12 @@ let slowFoldLine (kind: string) (elapsed: TimeSpan) (queuedBehind: int) (results
             $"%d{int elapsed.TotalSeconds}s"
 
     let behind =
-        match queuedBehind, resultsQueued with
-        | 0, [] -> "nothing queued behind it"
-        | n, [] -> $"%d{n} event(s) queued behind it"
-        | n, results ->
+        match resultsQueued with
+        | [] when queuedBehind = 0 -> "nothing queued behind it"
+        | [] -> $"%d{queuedBehind} event(s) queued behind it"
+        | results ->
             let named = String.concat ", " results
-            $"%d{n} event(s) queued behind it, among them %s{named}"
+            $"%d{queuedBehind} event(s) queued behind it, among them %s{named}"
 
     $"%s{kind} fold took %s{took}; %s{behind}"
 
@@ -698,7 +698,7 @@ let internal registerHandlerForOwner
     // decision and the report it leads to one step, so a terminal decided before a claim
     // cannot land after the claim's `Running`. `services.ReportStatus` never calls back
     // into this plugin, and no owner transition waits on this lock.
-    let statusLock = obj ()
+    let statusLock = System.Threading.Lock()
 
     // Per-file results this registration produced by running `Update` in the current run,
     // and per-file results it served from cache instead. A per-file replay's summary is
@@ -751,7 +751,7 @@ let internal registerHandlerForOwner
         (status: unit -> PluginStatus)
         (source: string)
         : bool =
-        lock statusLock (fun () ->
+        Locking.locked statusLock (fun () ->
             if isTerminal && owner.Snapshot.OwesRunVerdict reporter then
                 debug
                     pluginName
@@ -772,7 +772,7 @@ let internal registerHandlerForOwner
         try
             error pluginName $"RunExclusive '%s{key}' %s{stage}: %s{failure.ToString()}"
 
-            lock statusLock (fun () ->
+            Locking.locked statusLock (fun () ->
                 reportToHost (
                     PluginStatus.Failed(
                         $"RunExclusive '%s{key}' %s{stage}: %s{failure.ToString()}",
@@ -933,7 +933,7 @@ let internal registerHandlerForOwner
         match released with
         | Result.Ok() ->
             try
-                lock statusLock (fun () -> reportToHost displaced)
+                Locking.locked statusLock (fun () -> reportToHost displaced)
             with failure ->
                 error pluginName $"Reporting the cancellation of '%s{key}' failed: %s{failure.ToString()}"
 
@@ -1011,7 +1011,7 @@ let internal registerHandlerForOwner
     /// status funnel. `after` names the event making the claim, so a result fold can
     /// launch its successor before it commits. Answers the status `Running` displaced.
     let claim (after: PluginWorkOwner.WorkId) (key: string) =
-        lock statusLock (fun () ->
+        Locking.locked statusLock (fun () ->
             match admit (fun () -> owner.TryClaim(key, after = after)) with
             | None -> None
             | Some identity ->

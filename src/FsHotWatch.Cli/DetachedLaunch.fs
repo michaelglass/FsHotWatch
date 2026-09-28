@@ -199,17 +199,24 @@ let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command:
     // daemon that may locate its runtime through exactly that variable. The helper is
     // still bounded and reaped below; what it launches detaches on purpose and must not
     // be registered, or the next CLI shutdown would kill the daemon it asked for.
-    use helper = Process.Start psi
-    helper.StandardInput.Close()
-    let boundMs = int bound.TotalMilliseconds
+    //
+    // try/finally rather than `use`: `use` guards Dispose with a null check that a
+    // started helper, whose stdin is redirected, can never take.
+    let helper = Process.Start psi
 
     let observation =
-        if helper.WaitForExit boundMs then
-            HelperObservation.Exited helper.ExitCode
-        else
-            // Our own just-started helper, never a pidfile-discovered process.
-            helper.Kill(entireProcessTree = true)
-            HelperObservation.Stuck(helper.WaitForExit boundMs)
+        try
+            helper.StandardInput.Close()
+            let boundMs = int bound.TotalMilliseconds
+
+            if helper.WaitForExit boundMs then
+                HelperObservation.Exited helper.ExitCode
+            else
+                // Our own just-started helper, never a pidfile-discovered process.
+                helper.Kill(entireProcessTree = true)
+                HelperObservation.Stuck(helper.WaitForExit boundMs)
+        finally
+            helper.Dispose()
 
     launchFailure bound command observation |> Option.iter raise
 
