@@ -19,10 +19,10 @@ let configFile (repoRoot: string) = Path.Combine(repoRoot, ConfigFileName)
 /// torn-write-safe persistence step — caches, history files, etc. — so a
 /// daemon crash mid-write can't leave a half-written file at `path`.
 let atomicWriteAllText (path: string) (contents: string) : unit =
-    let dir = Path.GetDirectoryName(path)
-
-    if not (System.String.IsNullOrEmpty dir) then
-        Directory.CreateDirectory(dir) |> ignore
+    // Resolved first, so a bare file name still has a directory (the working one) and
+    // creating it is always well-defined: a no-op when it exists.
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath path))
+    |> ignore
 
     // The temp name is UNIQUE per write, not a fixed `path + ".tmp"`. Since
     // a cache store can be shared between the daemons of two

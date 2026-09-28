@@ -332,59 +332,65 @@ module TraceRun =
         (log: string -> unit)
         =
         try
-            use store = TraceStore.Store.Open(dbPath rt)
-            let launch, current = treeHashes launchTreeHash (currentTreeHash ())
+            // try/finally rather than `use`: `use` guards Dispose with a null check that
+            // a store `Open` returned can never take.
+            let store = TraceStore.Store.Open(dbPath rt)
 
-            let failed (project: string) kind (reason: string) =
-                store.RecordRunWithoutTraces
-                    { RunId = runId
-                      TestProject = project
-                      TreeHash = launch
-                      EnvFingerprint = ""
-                      RecordedAt = DateTimeOffset.UtcNow
-                      Kind = kind
-                      Status = TraceStore.FailedToRecord
-                      Reason = reason
-                      StatsJson = "{}" }
+            try
+                let launch, current = treeHashes launchTreeHash (currentTreeHash ())
 
-            recorded
-            |> List.iter (fun (run, work) ->
-                let kind =
-                    if run.Filtered then
-                        TraceStore.PartialRun
-                    else
-                        TraceStore.FullRun
+                let failed (project: string) kind (reason: string) =
+                    store.RecordRunWithoutTraces
+                        { RunId = runId
+                          TestProject = project
+                          TreeHash = launch
+                          EnvFingerprint = ""
+                          RecordedAt = DateTimeOffset.UtcNow
+                          Kind = kind
+                          Status = TraceStore.FailedToRecord
+                          Reason = reason
+                          StatsJson = "{}" }
 
-                try
-                    match work, index with
-                    | Refusal reason, _ ->
-                        TraceSession.recordRefusal store runId run.Project kind launch reason
-                        log $"traces: %s{run.Project} not recorded — %s{reason}"
-                    | Ingest _, Error reason ->
-                        failed run.Project kind reason
-                        log $"traces: %s{run.Project} not recorded — %s{reason}"
-                    | Ingest session, Ok() ->
-                        let outcomes = readOutcomes run.CtrfPath
+                recorded
+                |> List.iter (fun (run, work) ->
+                    let kind =
+                        if run.Filtered then
+                            TraceStore.PartialRun
+                        else
+                            TraceStore.FullRun
 
-                        let completion: TraceSession.Completion =
-                            { RunId = runId
-                              Kind = kind
-                              LaunchTreeHash = launch
-                              CurrentTreeHash = current
-                              Outcomes = outcomes
-                              Symbols = symbols
-                              FingerprintFiles = rt.Settings.FingerprintInputs
-                              FingerprintEnv = rt.Settings.FingerprintEnv }
-
-                        match ingest store rt.RepoRoot session completion with
-                        | Ok summary -> log (summaryLine run.Project (not outcomes.IsEmpty) summary)
-                        | Error reason ->
+                    try
+                        match work, index with
+                        | Refusal reason, _ ->
+                            TraceSession.recordRefusal store runId run.Project kind launch reason
+                            log $"traces: %s{run.Project} not recorded — %s{reason}"
+                        | Ingest _, Error reason ->
                             failed run.Project kind reason
                             log $"traces: %s{run.Project} not recorded — %s{reason}"
-                with ex ->
-                    log $"traces: %s{run.Project} not recorded — trace storage failed: %s{ex.Message}"
-                    // A store that cannot take this row either is the outer handler's.
-                    failed run.Project kind $"trace storage failed: %s{ex.Message}")
+                        | Ingest session, Ok() ->
+                            let outcomes = readOutcomes run.CtrfPath
+
+                            let completion: TraceSession.Completion =
+                                { RunId = runId
+                                  Kind = kind
+                                  LaunchTreeHash = launch
+                                  CurrentTreeHash = current
+                                  Outcomes = outcomes
+                                  Symbols = symbols
+                                  FingerprintFiles = rt.Settings.FingerprintInputs
+                                  FingerprintEnv = rt.Settings.FingerprintEnv }
+
+                            match ingest store rt.RepoRoot session completion with
+                            | Ok summary -> log (summaryLine run.Project (not outcomes.IsEmpty) summary)
+                            | Error reason ->
+                                failed run.Project kind reason
+                                log $"traces: %s{run.Project} not recorded — %s{reason}"
+                    with ex ->
+                        log $"traces: %s{run.Project} not recorded — trace storage failed: %s{ex.Message}"
+                        // A store that cannot take this row either is the outer handler's.
+                        failed run.Project kind $"trace storage failed: %s{ex.Message}")
+            finally
+                (store :> IDisposable).Dispose()
         with ex ->
             log $"traces: not recorded — could not use the trace store at %s{dbPath rt}: %s{ex.Message}"
 

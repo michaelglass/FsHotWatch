@@ -92,11 +92,6 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
             slots.Remove(slotOf result) |> ignore
         | false, _ -> ()
 
-    /// Evict the least-recently-used entry.
-    let evictLru () =
-        if lruList.Count > 0 then
-            remove lruList.First.Value
-
     let currentThrashWarning () =
         match capacity with
         | CacheCapacity.Entries n -> thrashWarning n (Locking.locked lockObj (fun () -> admittedWorkingSet))
@@ -164,8 +159,10 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                     // The result may be another file's: its slot must name this key too.
                     slots[slot] <- hashedKey
                 elif bound > 0 then
+                    // Full, and `bound > 0`, so the list is not empty: evict its
+                    // least-recently-used entry.
                     if lruList.Count >= bound then
-                        evictLru ()
+                        remove lruList.First.Value
 
                     store[hashedKey] <- entry
                     addToEnd hashedKey

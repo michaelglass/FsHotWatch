@@ -366,12 +366,12 @@ let slowFoldLine (kind: string) (elapsed: TimeSpan) (queuedBehind: int) (results
             $"%d{int elapsed.TotalSeconds}s"
 
     let behind =
-        match queuedBehind, resultsQueued with
-        | 0, [] -> "nothing queued behind it"
-        | n, [] -> $"%d{n} event(s) queued behind it"
-        | n, results ->
+        match resultsQueued with
+        | [] when queuedBehind = 0 -> "nothing queued behind it"
+        | [] -> $"%d{queuedBehind} event(s) queued behind it"
+        | results ->
             let named = String.concat ", " results
-            $"%d{n} event(s) queued behind it, among them %s{named}"
+            $"%d{queuedBehind} event(s) queued behind it, among them %s{named}"
 
     $"%s{kind} fold took %s{took}; %s{behind}"
 

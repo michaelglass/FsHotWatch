@@ -79,6 +79,11 @@ let ``isExcludedPath always excludes obj and bin`` () =
     test <@ isExcludedPath "/repo" [] "/repo/src/obj/Debug/net10.0/Info.fs" @>
     test <@ isExcludedPath "/repo" [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
 
+[<Fact>]
+let ``isExcludedPath excludes obj and bin alongside patterns they do not match`` () =
+    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/obj/Debug/net10.0/Info.fs" @>
+    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/bin/Release/net10.0/Thing.fs" @>
+
 // --- isExcludedPath: gitignore patterns must be matched against repo-relative paths ---
 // Regression: matching against absolute paths made a pattern like `.workspaces/`
 // hit every absolute path containing that segment, even when the repo root was

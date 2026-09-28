@@ -610,25 +610,31 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
                 UseShellExecute = false
             )
 
-        use ps = Process.Start psi
-        recordSpawn false "ps" ps.Id
-        let text = ps.StandardOutput.ReadToEndAsync()
+        // try/finally rather than `use`: `use` guards Dispose with a null check that a
+        // started `ps`, whose output is redirected, can never take.
+        let ps = Process.Start psi
 
-        if
-            ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
-            && text.Wait ProcessTableBudget
-        then
-            if ps.ExitCode = 0 then
-                Ok(parseProcessTable text.Result)
+        try
+            recordSpawn false "ps" ps.Id
+            let text = ps.StandardOutput.ReadToEndAsync()
+
+            if
+                ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
+                && text.Wait ProcessTableBudget
+            then
+                if ps.ExitCode = 0 then
+                    Ok(parseProcessTable text.Result)
+                else
+                    Error $"`ps` exited %d{ps.ExitCode}"
             else
-                Error $"`ps` exited %d{ps.ExitCode}"
-        else
-            (try
-                ps.Kill true
-             with _ ->
-                 ())
+                (try
+                    ps.Kill true
+                 with _ ->
+                     ())
 
-            Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+                Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+        finally
+            ps.Dispose()
     with ex ->
         Error $"`ps` could not run: %s{ex.GetType().Name}: %s{ex.Message}"
 
