@@ -62,8 +62,47 @@ let ``an inherited MSBUILD_LOGGING_ARGS wins over the side log, a blank one does
     test <@ sideLogFor "dotnet" "build" [] (Some "  ") "/d" = SideLog.Attached "/d" @>
 
 [<Fact>]
-let ``the side log lives under the fshw state directory`` () =
-    test <@ sideLogDir "/r" = Path.Combine("/r", ".fshw", "build-binlog") @>
+let ``each build's side log gets its own directory, outside the fshw state directory`` () =
+    let first = sideLogDir ()
+    let second = sideLogDir ()
+    test <@ first <> second @>
+    test <@ first.StartsWith(Path.GetTempPath()) @>
+    test <@ not (first.Contains ".fshw") @>
+
+[<Fact>]
+let ``discarding a side log deletes its directory and everything in it`` () =
+    let dir = tempDir ()
+    File.WriteAllText(Path.Combine(dir, "1.binlog"), "x")
+    File.WriteAllText(Path.Combine(dir, "1.log"), "x")
+    discardSideLog (SideLog.Attached dir)
+    test <@ not (Directory.Exists dir) @>
+
+[<Fact>]
+let ``discarding a side log that was never written, or never attached, does nothing`` () =
+    let missing =
+        Path.Combine(Path.GetTempPath(), "fshw-sidelog-missing-" + Guid.NewGuid().ToString("N"))
+
+    discardSideLog (SideLog.Attached missing)
+    discardSideLog (SideLog.NotAttached "no")
+    test <@ not (Directory.Exists missing) @>
+
+// ---------------------------------------------------------------------------
+// requireInterruptible — the log is written only by an MSBuild that SIGINT can reach
+
+[<Fact>]
+let ``a side log is detached when this process ignores SIGINT, since every build inherits that`` () =
+    test
+        <@
+            match requireInterruptible (Ok true) (SideLog.Attached "/d") with
+            | SideLog.NotAttached reason -> reason.Contains "SIGINT ignored"
+            | SideLog.Attached _ -> false
+        @>
+
+[<Fact>]
+let ``a side log stays attached when SIGINT is not ignored, or when that cannot be read`` () =
+    test <@ requireInterruptible (Ok false) (SideLog.Attached "/d") = SideLog.Attached "/d" @>
+    test <@ requireInterruptible (Error "no libc") (SideLog.Attached "/d") = SideLog.Attached "/d" @>
+    test <@ requireInterruptible (Ok true) (SideLog.NotAttached "no") = SideLog.NotAttached "no" @>
 
 [<Fact>]
 let ``the side log env asks MSBuild for a uniquely named binlog without imports`` () =

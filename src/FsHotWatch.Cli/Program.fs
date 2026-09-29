@@ -3814,6 +3814,13 @@ let private runCli (args: string array) : int =
 
 [<EntryPoint>]
 let main args =
+    // Before anything sets up the runtime's signal handling: a process started as a
+    // shell's background job — the detached daemon is one — has SIGINT ignored, and so
+    // would every build it runs, out of reach of the overrun interrupt. Restored here,
+    // the runtime then installs its SIGINT handler as for a terminal launch. A
+    // disposition that cannot be read is left as it is; a build's report says so.
+    FsHotWatch.ProcessHelper.restoreInterruptDefault () |> ignore
+
     // The detached-launch helper is a copy of this CLI; it must never reach parsing.
     match DetachedLaunch.tryRun args with
     | Some exitCode -> exitCode

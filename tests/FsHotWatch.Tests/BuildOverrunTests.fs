@@ -595,8 +595,57 @@ let ``accountTeardownWith does not interrupt a tree it could not read`` () =
 // ---------------------------------------------------------------------------
 // sendInterrupt / interruptAttempts — the production signal and grace
 
+/// A child answers SIGINT only if this process does not ignore it: an ignored disposition
+/// survives fork and exec. A host launched as a shell's background job starts with it
+/// ignored; the CLI restores the default at entry, and so do the tests that need a live
+/// SIGINT to land.
+let private interruptibleChildren () =
+    test <@ Result.isOk (restoreInterruptDefault ()) @>
+
+[<Fact>]
+let ``after restoreInterruptDefault this process does not ignore SIGINT, and a second call changes nothing`` () =
+    interruptibleChildren ()
+    test <@ interruptIgnored () = Ok false @>
+    test <@ restoreInterruptDefault () = Ok false @>
+
+[<Fact>]
+let ``restoreInterruptWith resets an ignored SIGINT and says it did`` () =
+    let reset = ref 0
+
+    let restored =
+        restoreInterruptWith (fun () -> Ok 1n) (fun () ->
+            reset.Value <- reset.Value + 1
+            Ok())
+
+    test <@ restored = Ok true @>
+    test <@ reset.Value = 1 @>
+
+[<Fact>]
+let ``restoreInterruptWith leaves a default or handled SIGINT alone`` () =
+    let reset () =
+        failwith "a SIGINT that is not ignored must not be reset"
+
+    let defaulted = restoreInterruptWith (fun () -> Ok 0n) reset
+    let handled = restoreInterruptWith (fun () -> Ok 0x1234n) reset
+    test <@ defaulted = Ok false @>
+    test <@ handled = Ok false @>
+
+[<Fact>]
+let ``restoreInterruptWith reports a disposition it could not read or reset`` () =
+    test <@ restoreInterruptWith (fun () -> Error "no libc") (fun () -> Ok()) = Error "no libc" @>
+    let refused = restoreInterruptWith (fun () -> Ok 1n) (fun () -> Error "EINVAL")
+    test <@ refused = Error "EINVAL" @>
+
+[<Fact>]
+let ``only SIG_IGN reads as ignored`` () =
+    Assert.True(isIgnoredDisposition 1n)
+    Assert.False(isIgnoredDisposition 0n)
+    Assert.False(isIgnoredDisposition 0x1234n)
+
 [<Fact(Timeout = 20000)>]
 let ``sendInterrupt stops a live process`` () =
+    interruptibleChildren ()
+
     use p =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
 
@@ -634,6 +683,8 @@ let ``interruptWith no grace interrupts nothing`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``interruptWith a grace interrupts a live tree and sees it exit`` () =
+    interruptibleChildren ()
+
     use p =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
 

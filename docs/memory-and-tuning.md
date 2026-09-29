@@ -185,10 +185,12 @@ the child's environment:
 - `MSBUILDDISABLENODEREUSE=1`, unless the configuration already sets it. A
   wrapper that never names `dotnet` is left alone; if it runs `dotnet` from a
   script, set the variable in that script.
-- `MSBUILD_LOGGING_ARGS=-bl:.fshw/build-binlog/{}.binlog;ProjectImports=None`,
+- `MSBUILD_LOGGING_ARGS=-bl:<temp>/fshw-build-binlog-<id>/{}.binlog;ProjectImports=None`,
   fshw's own binary log, unless `MSBUILD_LOGGING_ARGS` is already set (MSBuild
   honours one value, and yours wins). It is written whatever console verbosity
-  the command asks for, so a `-v q` build is still readable afterwards.
+  the command asks for, so a `-v q` build is still readable afterwards. Each
+  build gets a fresh directory under the system temp directory, deleted when the
+  build is done; nothing is written under `.fshw/`.
 
 When the budget expires, fshw sends SIGINT to the build's process tree — the
 signal MSBuild answers by cancelling and writing its logs — waits up to 15
@@ -198,6 +200,13 @@ interrupt, with its project and how long it had been running. MSBuild writes the
 binary log only when it shuts down in order, so a build that ignores the
 interrupt, or an MSBuild too old to read `MSBUILD_LOGGING_ARGS`, reports the
 targets as unknown and says why.
+
+The interrupt reaches the build only if SIGINT is not ignored: an ignored
+disposition survives fork and exec, and a shell starts its background jobs with
+SIGINT ignored — the detached daemon is one. fshw therefore restores SIGINT's
+default when it starts. A process embedding fshw that has SIGINT ignored gets no
+side log at all, and the overrun report says why, instead of waiting out a grace
+no build can answer.
 
 ## Wedge diagnostics
 

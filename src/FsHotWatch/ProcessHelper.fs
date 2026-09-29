@@ -642,6 +642,12 @@ module private Libc =
     [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
     extern int kill(int pid, int signal)
 
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int sigaction(int signum, nativeint act, nativeint oldact)
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern nativeint signal(int signum, nativeint handler)
+
 /// `kill(pid, 0)`: signal 0 delivers nothing and only checks the pid. 0 = it exists;
 /// ESRCH = no such process; EPERM = it exists but is not ours to signal (alive).
 ///
@@ -671,6 +677,75 @@ let internal sendInterrupt (pid: int) : Result<unit, string> =
                 $"kill(%d{pid}, SIGINT) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// `SIG_IGN`, the ignored disposition (1 on macOS and Linux alike).
+let private SigIgn = 1n
+
+/// Whether a SIGINT handler read from `sigaction` is the ignored disposition.
+let internal isIgnoredDisposition (handler: nativeint) = handler = SigIgn
+
+/// Room for a `struct sigaction` on macOS (16 bytes) and Linux (152 on glibc). Both put
+/// the handler first, and it is the only field read.
+[<Literal>]
+let private SigactionBytes = 256
+
+/// This process's SIGINT handler, from `sigaction(SIGINT, NULL, &old)`.
+let private interruptHandler () : Result<nativeint, string> =
+    let buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal SigactionBytes
+
+    try
+        try
+            for offset in 0 .. SigactionBytes - 1 do
+                System.Runtime.InteropServices.Marshal.WriteByte(buffer, offset, 0uy)
+
+            if Libc.sigaction (2, 0n, buffer) = 0 then
+                Ok(System.Runtime.InteropServices.Marshal.ReadIntPtr buffer)
+            else
+                Error
+                    $"sigaction(SIGINT) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
+        with ex ->
+            Error $"sigaction(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+    finally
+        System.Runtime.InteropServices.Marshal.FreeHGlobal buffer
+
+/// `signal(SIGINT, SIG_DFL)`.
+let private defaultInterrupt () : Result<unit, string> =
+    try
+        if Libc.signal (2, 0n) = -1n then
+            Error
+                $"signal(SIGINT, SIG_DFL) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
+        else
+            Ok()
+    with ex ->
+        Error $"signal(3) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// Whether this process has SIGINT ignored. Every child it starts inherits that: an
+/// ignored disposition survives fork and exec, and `Process.Start` keeps it.
+let internal interruptIgnored () : Result<bool, string> =
+    interruptHandler () |> Result.map isIgnoredDisposition
+
+/// `restoreInterruptDefault` with the read and the reset injected. `Ok true` = SIGINT was
+/// ignored and is now at its default; `Ok false` = it was not ignored and is untouched.
+let internal restoreInterruptWith
+    (read: unit -> Result<nativeint, string>)
+    (reset: unit -> Result<unit, string>)
+    : Result<bool, string> =
+    match read () with
+    | Ok handler when isIgnoredDisposition handler -> reset () |> Result.map (fun () -> true)
+    | Ok _ -> Ok false
+    | Error reason -> Error reason
+
+/// Put SIGINT back to its default disposition if this process has it ignored, so the
+/// children it starts can be interrupted. A shell starts its background jobs with SIGINT
+/// ignored, and the detached launch backgrounds the daemon, so without this no build a
+/// daemon runs would answer the overrun interrupt (`interruptTree`).
+///
+/// Called before the runtime sets up its own signal handling — first thing in a
+/// process — the runtime then installs its SIGINT handler as it does for a process
+/// started from a terminal. Called after, the process itself is stopped by a SIGINT
+/// rather than ignoring it. A handled SIGINT is left alone.
+let restoreInterruptDefault () : Result<bool, string> =
+    restoreInterruptWith interruptHandler defaultInterrupt
 
 /// The pause between polls while an interrupted tree shuts down.
 let internal InterruptPoll = TimeSpan.FromMilliseconds 100.0

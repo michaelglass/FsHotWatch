@@ -5,8 +5,10 @@
 - An overrunning build names the MSBuild targets that were running, whatever console
   verbosity the configured command uses. For a command line that invokes `dotnet`,
   fshw attaches its own binary log through `MSBUILD_LOGGING_ARGS`
-  (`.fshw/build-binlog/`, one file per MSBuild invocation) unless that variable is
-  already set. On overrun it interrupts the build (SIGINT, 15 s grace) so MSBuild
+  (one file per MSBuild invocation, in a fresh directory under the system temp
+  directory that is deleted when the build is done; never under `.fshw/`) unless that
+  variable is already set, or this process has SIGINT ignored, which every build
+  would inherit. On overrun it interrupts the build (SIGINT, 15 s grace) so MSBuild
   cancels and writes the log, then replays it with `dotnet msbuild <binlog>`. The
   report lists each in-flight target with its project and how long it had run, and
   the summary leads with the innermost one. When no log could be read, it says why.
