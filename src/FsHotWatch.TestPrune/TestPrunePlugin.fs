@@ -5316,12 +5316,10 @@ let private executeTests
                             // lines), so its first byte is a sound liveness proof and the
                             // launch deadline can bound the spawn even when the config sets
                             // no TimeoutSec at all.
-                            let runOnce =
+                            let launch (decision: TraceDecision) =
                                 async {
                                     let command, args, environment =
-                                        TraceRun.launchOf
-                                            traceDecision.Value
-                                            (config.Command, finalArgs, config.Environment)
+                                        TraceRun.launchOf decision (config.Command, finalArgs, config.Environment)
 
                                     return
                                         runProcessTo
@@ -5333,30 +5331,39 @@ let private executeTests
                                             (ProcessBounds.streaming timeoutSpan launchDeadline)
                                 }
 
-                            // A traced launch that verified nothing is repeated untraced
-                            // (see `TraceRun.untracedRetry`), so tracing cannot turn a run red.
+                            let runOnce = async { return! launch traceDecision.Value }
+
+                            // A traced launch that verified nothing is repeated untraced,
+                            // unless it timed out (see `TraceRun.untracedRetry`): tracing
+                            // cannot turn a crash red, and a timeout is not run twice.
                             let runOnceTracedOrNot =
                                 async {
-                                    let! first = runOnce
+                                    let announce followUp =
+                                        let reason, seam =
+                                            match followUp with
+                                            | RelaunchUntraced reason ->
+                                                reason,
+                                                "the traced launch failed without writing a test report; relaunching \
+                                                 untraced. Everything above is the TRACED attempt, everything below the \
+                                                 untraced one."
+                                            | KeepTimeout reason ->
+                                                reason,
+                                                "the traced launch was killed at the project timeout; not relaunching \
+                                                 untraced, so the timeout is this project's outcome. `\"traces\": false` \
+                                                 on the project runs it untraced."
 
-                                    match
-                                        TraceRun.untracedRetry
-                                            traceDecision.Value
-                                            (isSucceeded first)
-                                            (ctrfPath |> Option.exists File.Exists)
-                                    with
-                                    | Some reason ->
                                         Logging.warn "test-prune" $"%s{config.Project}: %s{reason}"
+                                        RunLog.note runLog seam
 
-                                        RunLog.note
-                                            runLog
-                                            "the traced launch failed without writing a test report; relaunching \
-                                         untraced. Everything above is the TRACED attempt, everything below the \
-                                         untraced one."
+                                    let! outcome, decision =
+                                        TraceRun.launchTracedOrNot
+                                            traceDecision.Value
+                                            (fun () -> ctrfPath |> Option.exists File.Exists)
+                                            announce
+                                            launch
 
-                                        traceDecision.Value <- Untraced(Some reason)
-                                        return! runOnce
-                                    | None -> return first
+                                    traceDecision.Value <- decision
+                                    return outcome
                                 }
 
                             // See `tryApphostPresent`; `looksLikeApphostMissing` is the
