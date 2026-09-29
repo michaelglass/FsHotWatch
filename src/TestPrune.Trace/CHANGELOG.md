@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-29
+
 - fix: the shadow bin copies, never hard-links, an assembly with symbols (a sibling `.pdb` or
   an embedded portable PDB) and its `.pdb`. MS CodeCoverage instruments such an assembly by
   writing into the file and restores it by replacing it, so through a hardlink a traced run

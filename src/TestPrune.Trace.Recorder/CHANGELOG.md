@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-29
+
 - fix: the exit dump can no longer crash the traced process. Under `--coverage`, MTP runs a
   test-host controller next to the test host, and MS CodeCoverage instruments the app's
   assemblies in place on disk and restores them afterwards; the controller's recorder module

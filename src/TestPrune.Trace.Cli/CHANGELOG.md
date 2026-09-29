@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-29
+
 - feat: `audit`, `overhead` and `file-census` take `--weave-tests sites|full`: how the test
   assembly is woven, as `TraceSession.PrepareRequest.WeaveTests`. The default, `sites`, is
   the weave these verbs always used.
