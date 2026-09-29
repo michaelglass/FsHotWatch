@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `audit`, `overhead` and `file-census` take `--weave-tests sites|full`: how the test
+  assembly is woven, as `TraceSession.PrepareRequest.WeaveTests`. The default, `sites`, is
+  the weave these verbs always used.
+
 ## 0.4.1 - 2026-09-28
 
 - changelog: the TestPrune.Inline attribute index is a feature, not a breaking change

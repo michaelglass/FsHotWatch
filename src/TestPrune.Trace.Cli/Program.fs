@@ -94,7 +94,7 @@ let measures =
       FileCensus = FileCensus.run }
 
 let private measureTail =
-    "  [--repo <root>] [--timeout-min 30] [--json] [-- <app args>]\n"
+    "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--json] [-- <app args>]\n"
     + "  exit 0 when the project meets the bar, 1 when it does not, 2 on a usage error or a project that cannot be measured"
 
 /// The usage of the audit verb.
@@ -116,6 +116,7 @@ type private MeasureArgs =
     { ProjectDir: string option
       Assembly: string option
       Repo: string option
+      WeaveTests: Model.WeaveMode
       Sample: float
       Seed: int
       Reps: int
@@ -133,18 +134,28 @@ let private whole (flag: string) (v: string) (set: int -> MeasureArgs) =
     | true, n -> Ok(set n)
     | _ -> Error $"%s{flag} needs a whole number, got %s{v}"
 
+/// How the test assembly is woven: its sites only (the default), or fully, as every other
+/// repository assembly is.
+let private weaveMode (v: string) (a: MeasureArgs) =
+    match v with
+    | "sites" -> Ok { a with WeaveTests = Model.SitesOnly }
+    | "full" -> Ok { a with WeaveTests = Model.Full }
+    | _ -> Error $"--weave-tests needs sites or full, got %s{v}"
+
 /// Every valued flag of the measurement verbs and how it sets its argument.
 let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, string>> =
     Map
         [ "--project-dir", (fun v a -> Ok { a with ProjectDir = Some v })
           "--assembly", (fun v a -> Ok { a with Assembly = Some v })
           "--repo", (fun v a -> Ok { a with Repo = Some v })
+          "--weave-tests", weaveMode
           "--sample", (fun v a -> number "--sample" v (fun n -> { a with Sample = n }))
           "--seed", (fun v a -> whole "--seed" v (fun n -> { a with Seed = n }))
           "--reps", (fun v a -> whole "--reps" v (fun n -> { a with Reps = n }))
           "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n })) ]
 
-let private common = [ "--project-dir"; "--assembly"; "--repo"; "--timeout-min" ]
+let private common =
+    [ "--project-dir"; "--assembly"; "--repo"; "--weave-tests"; "--timeout-min" ]
 
 let rec private parseMeasure (flags: Set<string>) (acc: MeasureArgs) (args: string list) =
     match args with
@@ -174,6 +185,7 @@ let private measure
         { ProjectDir = None
           Assembly = None
           Repo = None
+          WeaveTests = Model.SitesOnly
           Sample = 0.01
           Seed = 1
           Reps = 3
@@ -199,7 +211,7 @@ let private measure
               ProjectDir = Path.GetFullPath(dir, cwd)
               AssemblyName = name
               TestProject = name
-              WeaveTests = Model.SitesOnly
+              WeaveTests = a.WeaveTests
               RunDir = runDir
               VerifyTimeout = timeout }
 

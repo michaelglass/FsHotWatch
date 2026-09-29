@@ -194,6 +194,9 @@ options:
 --project-dir <dir>   the test project's directory (holds bin/Debug/<tfm>/); required
 --assembly <name>     the test app's assembly name; required
 --repo <root>         the repository root (default: the current directory)
+--weave-tests sites   how the test assembly is woven: `sites` (entry probes on its test
+                      methods only, site probes everywhere) or `full` (entry probes on every
+                      method, as in every other repository assembly)
 --timeout-min 30      how long one launch may run before its process tree is killed
 --json                print the report as JSON
 -- <app args>         everything after -- is passed to every launch of the test app

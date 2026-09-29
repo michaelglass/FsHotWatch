@@ -267,6 +267,42 @@ let ``usage errors exit 2 with the verb's usage`` () =
     test <@ calls.Count = 0 @>
 
 [<Fact>]
+let ``--weave-tests takes sites or full and nothing else`` () =
+    let m, calls = passing ()
+
+    let weave value =
+        Program.runWith m cwd [ "overhead"; "--project-dir"; "P"; "--assembly"; "P"; "--weave-tests"; value ]
+
+    test <@ (weave "sites").Exit = 0 @>
+    test <@ (calls |> Seq.exactlyOne).Request.WeaveTests = Model.SitesOnly @>
+
+    let bad = weave "all"
+
+    test
+        <@
+            bad.Exit = 2
+            && bad.Stderr.StartsWith "--weave-tests needs sites or full, got all\nusage: test-prune-traces overhead"
+        @>
+
+    let missing =
+        Program.runWith m cwd [ "audit"; "--project-dir"; "P"; "--assembly"; "P"; "--weave-tests" ]
+
+    test <@ missing.Exit = 2 && missing.Stderr.StartsWith "--weave-tests needs a value\n" @>
+    test <@ calls.Count = 1 @>
+
+[<Fact>]
+let ``--weave-tests full reaches every verb's request`` () =
+    let m, calls = passing ()
+
+    for verb in [ "audit"; "overhead"; "file-census" ] do
+        let o =
+            Program.runWith m cwd [ verb; "--project-dir"; "P"; "--assembly"; "P"; "--weave-tests"; "full" ]
+
+        test <@ o.Exit = 0 @>
+
+    test <@ calls |> Seq.map (fun c -> c.Request.WeaveTests) |> List.ofSeq = List.replicate 3 Model.Full @>
+
+[<Fact>]
 let ``the real measurements are wired to the verbs`` () =
     let empty = Directory.CreateTempSubdirectory("tp-cli-none-").FullName
 
