@@ -20,6 +20,28 @@ dumps. The mode first applies to full runs (`confirm`/nightly), then to every ru
 (in the box); Microsoft.Data.Sqlite (already a Core dependency); xUnit v3 on Microsoft Testing Platform v2;
 Unquote; FsHotWatch plugin framework.
 
+## Status (2026-09-29)
+
+Phase 1a (record on full runs) is done on TestPrune's own suite. F5 (phase 1b, record on every run) is open,
+and so is the consumer side (the separate consumer plan).
+
+| Task | Landed as |
+|---|---|
+| T1–T11 | TestPrune `38cc05e9` (T1), `0e43bf1e` (T2), `66a1ed48` (T3), `6da94e0e` (T4), `e6b6fe23` (T5), `eabf29ce` (T6), `f71161eb` (T7), `66f14e0a` (T8), `f22bde86` (T9), `ed9fc322` (T10), `aae4d3c6` (T11) |
+| T12 | TestPrune `c341d16f`, with follow-ups `8062b2bc`, `fd57d22e` and `a7fa71e2` |
+| T13 | TestPrune `ad2a246a` (ADRs 0005–0008, README, `trace-v` enrollment); first release `trace-v0.1.0` |
+| F1–F4 | FsHotWatch `03ae2171` and `51992c64` (F1), `9b799353` (F2), `cdbd2615` (F3), `3d752aa3` (F4), with follow-ups `df18d377` and `c6d7dd4c` |
+| D1 | TestPrune `1b8a3d91` (traces on), results in `2026-09-25-recorded-per-test-traces-phase1-results.md`; every bar met on fshw `0.14.0-alpha.78` |
+
+Released versions, and which FsHotWatch CLI bundles which TestPrune.Trace (`src/FsHotWatch.TestPrune`):
+
+| FsHotWatch CLI | TestPrune.Core | TestPrune.Trace (with .Recorder, .Cli) |
+|---|---|---|
+| 0.14.0-alpha.69 | 13.2.1 | 0.1.0 |
+| 0.14.0-alpha.74 | 13.2.3 | 0.3.0 |
+| 0.14.0-alpha.75, alpha.77 | 13.2.3 | 0.4.0 |
+| 0.14.0-alpha.78 | 13.3.0 | 0.4.1 |
+
 ## Global Constraints
 
 - Open-source repositories: no private tracker ids, no consumer project names, no session links in code,
@@ -618,7 +640,7 @@ The fixtures are laid out as a miniature repository (`src/`, `tests/`) so TestPr
 - Produces: `Fixtures.fxLibDir`, `Fixtures.fxDriverDir`, `Fixtures.fxTestsDir`, `Fixtures.repoRoot`. Each is an
   absolute `bin/Debug/net10.0` directory of a fixture built by the normal solution build.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/TestPrune.Trace.Tests/ScaffoldTests.fs`:
 
@@ -665,13 +687,13 @@ let ``the fixtures are built next to the tests`` () =
     test <@ File.Exists(Path.Combine(Fixtures.fxTestsDir, "FxTests.dll")) @>
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet build`
 Expected: FAIL. The build breaks because `tests/TestPrune.Trace.Tests` does not exist yet, so nothing named
 `TestPrune.Trace.Recorder` compiles.
 
-- [ ] **Step 3: Create the projects**
+- [x] **Step 3: Create the projects**
 
 `src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj`:
 
@@ -1208,12 +1230,12 @@ One tag covers both packages: they version in lockstep because the weaver resolv
 { "project": "TestPrune.Trace.Tests", "command": "dotnet", "args": "run --project tests/TestPrune.Trace.Tests --no-build --", "filterTemplate": "--filter-class {classes}", "classJoin": " ", "group": "trace" }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.ScaffoldTests`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t1-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict. Commit:
 
@@ -1259,7 +1281,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   `DumpReader.readDirectory (dir: string) : Model.ProcessDump list * (string * string) list`, which returns
   the good dumps plus a `(file, reason)` for each rejected one.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/RecorderStateTests.fs`:
 
@@ -1443,12 +1465,12 @@ let ``readDirectory ignores tmp files and reports rejected dumps by name`` () =
     test <@ bad |> List.map fst = [ Path.Combine(dir, "trace-4.ndjson") ] @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL. `RecorderState`, `XunitContextSource`, `DumpWriter` and `DumpReader` are undefined.
 
-- [ ] **Step 3: Implement the recorder**
+- [x] **Step 3: Implement the recorder**
 
 `Scope.fs`:
 
@@ -2074,12 +2096,12 @@ The "truncated" test writes a file whose single line is the header, and the head
 reader parses that line as `last`, finds no `end`, and returns `Error "truncated"`, which is what the test
 asserts.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.RecorderStateTests --filter-class TestPrune.Trace.Tests.XunitContextTests --filter-class TestPrune.Trace.Tests.DumpRoundTripTests`
 Expected: PASS, 10 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t2-gate.log 2>&1; echo "exit=$?"` and read the log and the verdict. Then:
 
@@ -2151,7 +2173,7 @@ type Store =
     interface System.IDisposable
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/TraceStoreTests.fs`:
 
@@ -2290,12 +2312,12 @@ let ``a TestPrune.Core schema recreate of the index never touches the trace file
     test <@ store.TryRead("P|Ns.C|m", "E1") |> Option.isSome @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `TraceStore` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/TraceStore.fs`:
 
@@ -2670,12 +2692,12 @@ links it: that is the intended retention rule. The test-key `IN` list travels as
 `json_each`, following this repository's ADR 0003 ("name sets travel as one JSON parameter"). That avoids
 SQLite's variable limit.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.TraceStoreTests`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t3-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -2742,7 +2764,7 @@ val weave: passes: IWeavePass list -> inputs: WeaveInput list -> outputDir: stri
 `Touched` maps an assembly name to `"<CLR type full name>::<method name>"` keys, every method whose body
 changed. Task 8 hands the list to the JIT verifier.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/ManifestTests.fs`:
 
@@ -2889,12 +2911,12 @@ let ``the woven driver runs and attributes each scenario to its own scope`` () =
 stops emitting the marker, the test fails loudly; that is the intended alarm, because the guarded code path
 would then be dead.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `Manifest`, `PdbCheck`, `Launch` and `Weaver` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/Manifest.fs`:
 
@@ -3285,13 +3307,13 @@ let weave (passes: IWeavePass list) (inputs: WeaveInput list) (outputDir: string
 
 `typeof<Probes>` is used only to locate the recorder DLL. The weaver never *calls* the recorder.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.WeaverTests --filter-class TestPrune.Trace.Tests.ManifestTests`
 Expected: PASS, 8 tests. Add `tests/TraceFixtures/bin-scratch/` to `.gitignore`, and delete scratch directories
 in a `finally` inside `copyFixture` callers once the assertions are done.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t4-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -3331,7 +3353,7 @@ jj new
   records `baseId + tag`. Rows of kind `TypeUse` have `TypeName` set to the type's CLR name and an empty
   `Member`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/TestPrune.Trace.Tests/SiteProbeScenarioTests.fs`:
 
@@ -3423,12 +3445,12 @@ purpose: a Debug `x.IsCircle` on a `Square` records `Circle`. That over-approxim
 must not freeze it either way. `tricky_tag` is new: it is the regression for both invalid-IL bugs. With either
 bug present, the driver throws `InvalidProgramException` and `recorded` fails first.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet build`
 Expected: FAIL, with `SiteProbes` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/SiteProbes.fs`:
 
@@ -3703,7 +3725,7 @@ type private Pass() =
 let pass () : IWeavePass = Pass() :> IWeavePass
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.SiteProbeScenarioTests`
 Expected: PASS, 21 test cases (20 scenario rows + the static-init test).
@@ -3712,7 +3734,7 @@ If a scenario fails, dump the method's IL with Cecil (`for i in meth.Body.Instru
 compare it with the spike's IL notes in "Background". Do not loosen the table: each row is a measured property
 of the spike weaver.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t5-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -3768,7 +3790,7 @@ type Redirect =
       Shim: string }            // shim method name on ShimType
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/InputCaptureTests.fs`:
 
@@ -3847,12 +3869,12 @@ let ``the woven driver's file read lands in its scope`` () =
     test <@ scope.Inputs |> List.exists (fun i -> i.Kind = Model.FileRead && i.Path = Path.Combine(Fixtures.repoRoot, "global.json")) @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `Io`, `ProcessShims` and `Redirects` undefined, and `RecorderState` having no `RepoRoot`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `RecorderState.fs`, add these members to `RecorderState`, using the existing `staticInit`/`ambient` lets:
 
@@ -4095,14 +4117,14 @@ let pass () : IWeavePass = Pass() :> IWeavePass
 type and picks the overload by its parameter list. `table` mixes single rows with a `for` loop, which F#'s
 implicit-yield list expressions allow.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.InputCaptureTests`
 Expected: PASS, 5 tests.
 
 Also re-run `SiteProbeScenarioTests` and `WeaverTests`: the redirect pass must not change their results.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t6-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -4183,7 +4205,7 @@ val joinManifest: SymbolIndex -> Model.Manifest -> JoinTarget[]   // indexed by 
 removed, and the same with a `Module` suffix removed from each segment (F# `ModuleSuffix`). Every candidate is
 checked with `Exists` before use, so a wrong candidate can never match.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/JoinerTests.fs`:
 
@@ -4326,12 +4348,12 @@ let ``the woven fixture joins to the real index`` () =
     test <@ float unmapped.Length / float fxLib.Length <= 0.02 @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `Joiner` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/TestPrune.Core/AstAnalyzer.fs`, change `let internal canonicalShortName` to `let canonicalShortName`
 and keep its doc comment.
@@ -4488,12 +4510,12 @@ let joinManifest (ix: SymbolIndex) (m: Manifest) : JoinTarget[] =
     m.Rows |> Array.map (joinRow ix unions)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.JoinerTests`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t7-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict. The Core change is
 an API addition, so `fssemantictagger` will see a minor bump; that is intended.
@@ -4557,7 +4579,7 @@ val prepare: ShadowRequest -> Result<Shadow, ShadowRefusal>
 val verify: shadowDir: string -> apphost: string -> touched: Map<string, string list> -> reportPath: string -> timeout: System.TimeSpan -> Result<VerifyReport, ShadowRefusal>
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/ShadowBinTests.fs`:
 
@@ -4659,12 +4681,12 @@ let ``JIT verification in the app's own runtime names an invalid method`` () =
     test <@ r = Error(JitInvalid [ "FxLib.Logic::area" ]) @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `HardLink`, `DepsJson`, `ShadowBin` and `StartupHook` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace.Recorder/StartupHook.fs`. The runtime requires this exact shape: a type named
 `StartupHook` in **no namespace**, with a `public static void Initialize()`.
@@ -5051,12 +5073,12 @@ let prepare (req: ShadowRequest) : Result<Shadow, ShadowRefusal> =
 reused: the next `prepare` re-weaves and re-verifies. A verify *report* is written by the startup hook, so a
 `done.json` with no `verify.json` beside it cannot occur.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.ShadowBinTests`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t8-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -5154,7 +5176,7 @@ val ingest: store: TraceStore.Store -> IngestRequest -> IngestSummary
 
 The module also exports `val versionHashes: TestPrune.Ports.SymbolStore -> Map<string, string>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/TraceIngestTests.fs`:
 
@@ -5323,12 +5345,12 @@ let ``the fingerprint changes with any input and is stable otherwise`` () =
     test <@ Fingerprint.compute i <> Fingerprint.compute { i with DepsJsonSha256 = "e" } @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `Fingerprint` and `TraceIngest` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/Fingerprint.fs`:
 
@@ -5696,12 +5718,12 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
           UnmappedIds = unmappedIds }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.TraceIngestTests`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t9-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -5761,7 +5783,7 @@ val recordRefusal: store: TraceStore.Store -> runId: string -> testProject: stri
 - `TESTPRUNE_TRACE_REPO_ROOT` = the repository root;
 - `DOTNET_ROOT` = `Launch.dotnetRoot ()`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/TestPrune.Trace.Tests/EndToEndTests.fs`:
 
@@ -5863,12 +5885,12 @@ Two roots are in play:
 
 In production both roots are the repository root.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet build`
 Expected: FAIL, with `Ctrf` and `TraceSession` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/Ctrf.fs`:
 
@@ -6022,7 +6044,7 @@ module TraceScope =
 - the coverage note from Decision D1;
 - that Release builds are refused.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.EndToEndTests --filter-class TestPrune.Trace.Tests.TraceIngestTests`
 Expected: PASS, 13 tests.
@@ -6031,7 +6053,7 @@ If `Executed = 9` fails because the CTRF report counts theory rows differently, 
 **expectation's number** only after confirming, from the CTRF file, that every row the runner executed is
 present. Do not weaken the equality between `Executed` and `Traced`.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t10-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -6090,7 +6112,7 @@ test-prune-traces census [--db <path>] [--run <runId>] [--json]
     exit 0 when every project passes the bars, 1 otherwise
 ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/TestPrune.Trace.Tests/CensusTests.fs`:
 
@@ -6139,12 +6161,12 @@ symbols are listed, which is the "explained" arm. `passes` therefore returns tru
 are all present in the report. A human signs off on them in the results file (Task D1); the verb never claims
 the explanation is *good*.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet build`
 Expected: FAIL, with `Census` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/TestPrune.Trace/Census.fs`:
 
@@ -6296,12 +6318,12 @@ let main argv =
         2
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.CensusTests`
 Expected: PASS.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t11-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -6410,7 +6432,7 @@ let children () : struct (TimeSpan * int64) =
     struct (tv 0 + tv 16, (if OperatingSystem.IsMacOS() then rss else rss * 1024L))
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/TestPrune.Trace.Tests/MeasurementTests.fs`:
 
@@ -6465,12 +6487,12 @@ let ``the file census names the reading test and the tests that break outside th
 The overhead test asserts shape, not a threshold: one fixture rep on a shared machine proves nothing about
 overhead. The threshold is applied by the verb on real suites in D1.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet build`
 Expected: FAIL, with `Rusage`, `Audit`, `Overhead` and `FileCensus` undefined.
 
-- [ ] **Step 3: Implement** each module exactly per the procedures above. Constraints on the code:
+- [x] **Step 3: Implement** each module exactly per the procedures above. Constraints on the code:
 
   - Use `Launch.run` for every process and `DumpReader.readDirectory` for every dump.
   - For the audit, keep the manifest row kind next to each id through `Manifest.read shadow.ManifestDir`.
@@ -6487,12 +6509,12 @@ Expected: FAIL, with `Rusage`, `Audit`, `Overhead` and `FileCensus` undefined.
 
   Each prints a report, writes it as JSON with `--json`, and exits 0 when `passes`, else 1.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet build && dotnet run --project tests/TestPrune.Trace.Tests --no-build -- --filter-class TestPrune.Trace.Tests.MeasurementTests`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/t12-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -6527,20 +6549,20 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:** none.
 
-- [ ] **Step 1: Run the release-enrollment tests to see what they require of a new package**
+- [x] **Step 1: Run the release-enrollment tests to see what they require of a new package**
 
 Run: `dotnet run --project tests/TestPrune.Tests --no-build -- --filter-class TestPrune.Tests.ReleaseEnrollmentTests --filter-class TestPrune.Tests.ReleaseOrchestrationTests`
 Expected: FAIL. The new `trace-v` package is not enrolled in `mise.toml`'s release levels. Read the failure: it
 names what enrollment requires.
 
-- [ ] **Step 2: Enroll the package**
+- [x] **Step 2: Enroll the package**
 
 In `mise.toml` `[tasks.release]`, add `TestPrune.Trace.Recorder` to the second level, the one that already
 releases `TestPrune.Falco,TestPrune.Sql`. `TestPrune.Trace` depends only on Core, and the tag's
 `fsProjsSharingSameTag` carries `TestPrune.Trace` and `TestPrune.Trace.Cli`. Then run the tests from Step 1
 again. Expected: PASS.
 
-- [ ] **Step 3: Write the ADRs** in the repository's minimal ADR format (context, decision, consequences; one
+- [x] **Step 3: Write the ADRs** in the repository's minimal ADR format (context, decision, consequences; one
   paragraph each):
 
   - **0005, exit dump:**
@@ -6570,12 +6592,12 @@ again. Expected: PASS.
     - `[<ExcludeFromCodeCoverage>]` on the recorder: rejected, because it hides the recorder from this
       repository's own ratchet.
 
-- [ ] **Step 4: Verify the docs gates**
+- [x] **Step 4: Verify the docs gates**
 
 Run: `mise run sync-docs-check > /tmp/t13-docs.log 2>&1; echo "exit=$?"`, then `mise run ci > /tmp/t13-gate.log 2>&1; echo "exit=$?"`.
 Expected: exit 0 for both, and a current verdict.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 jj commit -m "Document recorded per-test traces and enroll the trace-v release
@@ -6648,7 +6670,7 @@ module TraceSettings =
     val parseRecord: string -> TraceRecordPolicy option
 ```
 
-- [ ] **Step 1: Write the failing tests** (append to `DaemonConfigTests.fs`):
+- [x] **Step 1: Write the failing tests** (append to `DaemonConfigTests.fs`):
 
 ```fsharp
 // --- parseConfig: tests.traces ---
@@ -6691,12 +6713,12 @@ let ``parseConfig a project opts out with traces false; the default is in`` () =
     test <@ ps |> List.map (fun p -> p.Project, p.Traces) = [ "A", true; "B", false ] @>
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `mise run compile`
 Expected: FAIL, with `Traces`/`RecordFullRuns` undefined and `TestProjectConfig` having no `Traces` field.
 
-- [ ] **Step 3: Implement.** `Traces.fs`:
+- [x] **Step 3: Implement.** `Traces.fs`:
 
 ```fsharp
 namespace FsHotWatch.TestPrune
@@ -6770,12 +6792,12 @@ In `DaemonConfig.parseConfig`:
 - Every other construction of `TestProjectConfig` and of the `Tests` record in `src/` and `tests/` gains
   `Traces = true` or `Traces = None`. The compiler lists each one.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `mise run compile && dotnet run --project tests/FsHotWatch.Tests --no-build -- --filter-class FsHotWatch.Tests.DaemonConfigTests`
 Expected: PASS, all tests (5 new).
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/f1-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -6804,7 +6826,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Consumes: `TraceRecordPolicy` (F1).
 - Produces: `TestMode.recordsTraces: TraceRecordPolicy -> TestMode -> bool`.
 
-- [ ] **Step 1: Write the failing test** (append):
+- [x] **Step 1: Write the failing test** (append):
 
 ```fsharp
 [<Theory>]
@@ -6817,12 +6839,12 @@ let ``recordsTraces follows the policy per mode`` (policy: string, underCheck: b
     test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p FsHotWatch.TestPrune.PassThrough = underConfirm @>
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `mise run compile`
 Expected: FAIL, with `recordsTraces` undefined.
 
-- [ ] **Step 3: Implement.** Append to the `TestMode` module:
+- [x] **Step 3: Implement.** Append to the `TestMode` module:
 
 ```fsharp
     /// Whether a run launched under `mode` records per-test traces. `full-runs` records only
@@ -6835,12 +6857,12 @@ Expected: FAIL, with `recordsTraces` undefined.
         | RecordFullRuns -> requestsFullSuite mode
 ```
 
-- [ ] **Step 4: Run it to verify it passes**
+- [x] **Step 4: Run it to verify it passes**
 
 Run: `mise run compile && dotnet run --project tests/FsHotWatch.Tests --no-build -- --filter-class FsHotWatch.Tests.TestModeSeamTests`
 Expected: PASS. The existing seam scan also passes, because the new branch is inside `TestMode.fs`.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 ```bash
 jj commit -m "TestMode.recordsTraces: when a run records per-test traces
@@ -6876,7 +6898,7 @@ module TracedLaunch =
 - Tokens after a `--`, then every token of each `extraArgs` element (split with `ProcessHelper.splitArgs`,
   and again without standalone `--`), are kept in order.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```fsharp
 module FsHotWatch.Tests.TracedLaunchTests
@@ -6908,12 +6930,12 @@ let ``a non-dotnet-run command refuses the traced launch`` () =
     test <@ TracedLaunch.appArgs "./run-tests.sh" "" [] |> Result.isError @>
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `mise run compile`
 Expected: FAIL, with `TracedLaunch` undefined.
 
-- [ ] **Step 3: Implement** in `Traces.fs`:
+- [x] **Step 3: Implement** in `Traces.fs`:
 
 ```fsharp
 module TracedLaunch =
@@ -6937,12 +6959,12 @@ module TracedLaunch =
         | _ -> Error "not-a-dotnet-run-command"
 ```
 
-- [ ] **Step 4: Run them to verify they pass**
+- [x] **Step 4: Run them to verify they pass**
 
 Run: `mise run compile && dotnet run --project tests/FsHotWatch.Tests --no-build -- --filter-class FsHotWatch.Tests.TracedLaunchTests`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 ```bash
 jj commit -m "Derive a traced launch's app arguments from its dotnet run line
@@ -7040,7 +7062,7 @@ module TraceRun =
 4. Catches every exception into a log line and a `failed` run row. **A trace failure never changes a test
    result, the verdict, or the run's lifecycle.**
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/FsHotWatch.Tests/TestPruneTracesTests.fs` covers the decisions and the refusal path without building
 anything. The traced launch itself is covered end to end by the integration test described after the block.
@@ -7110,12 +7132,12 @@ It is built once with `dotnet build` in the fixture's constructor. Add one test 
 - it asserts that `.fshw/test-traces.db` has a `recorded` run with one complete trace;
 - it asserts that the verdict equals the verdict of the same run with `tests.traces` removed.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `mise run compile`
 Expected: FAIL, with `TraceRuntime`, `TraceDecision` and `TraceRun` undefined.
 
-- [ ] **Step 3: Implement** `TraceRuntime`, `TraceDecision` and `TraceRun` in `Traces.fs` per the interface and
+- [x] **Step 3: Implement** `TraceRuntime`, `TraceDecision` and `TraceRun` in `Traces.fs` per the interface and
 the numbered rules above. Then wire them in `TestPrunePlugin.executeTests`:
 
   - **Launch:** immediately after `let finalArgs = …` and before the `Logging.info "test-prune" $"Running: …"`
@@ -7156,13 +7178,13 @@ the numbered rules above. Then wire them in `TestPrunePlugin.executeTests`:
     the launch's `Mode`. It passes `launch.InputTreeHash |> Option.defaultValue ""` as `launchTreeHash`, and
     passes both into `executeTests`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `mise run compile && dotnet run --project tests/FsHotWatch.Tests --no-build -- --filter-class FsHotWatch.Tests.TestPruneTracesTests --filter-class FsHotWatch.Tests.TestPrunePluginTests --filter-class FsHotWatch.Tests.TestPruneConfirmPassThroughTests`
 Expected: PASS. The existing plugin and pass-through suites are unchanged, because `traces = None` everywhere
 they construct the plugin.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run `mise run ci > /tmp/f4-gate.log 2>&1; echo "exit=$?"`, then read the log and the verdict.
 
@@ -7222,10 +7244,10 @@ full gate.
 - Modify: `.fshw.json` (add `tests.traces`: `{"record": "full-runs", "fingerprintInputs": ["global.json", "Directory.Packages.props"]}`)
 - Create: `docs/plans/2026-09-25-recorded-per-test-traces-phase1-results.md` (the measurements)
 
-- [ ] **Step 1: Bump the pin** exactly per the runbook. Commit that alone.
-- [ ] **Step 2: Enable traces.** Add `tests.traces` to `.fshw.json`. Run `dotnet fshw confirm` three times on
+- [x] **Step 1: Bump the pin** exactly per the runbook. Commit that alone.
+- [x] **Step 2: Enable traces.** Add `tests.traces` to `.fshw.json`. Run `dotnet fshw confirm` three times on
   an unchanged tree. Traced runs are full runs, so `confirm` is the mode that records.
-- [ ] **Step 3: Measure every bar** and paste the verb output into the results file:
+- [x] **Step 3: Measure every bar** and paste the verb output into the results file:
 
   ```bash
   dotnet tool run test-prune-traces census > /tmp/d1-census.log 2>&1; echo "exit=$?"
@@ -7245,9 +7267,9 @@ full gate.
   | coverage parity | run `confirm` once more with `tests.traces` removed. The shared cobertura must be identical per file (lines and branches), and no `TestPrune.Trace.Recorder` package may appear. |
   | PDB / JIT | `prepare` refused nothing, verified from the census run's `trace_runs.status`. |
 
-- [ ] **Step 4: Record the results** (tables, not prose) and any explained exceptions. File each
+- [x] **Step 4: Record the results** (tables, not prose) and any explained exceptions. File each
   unexplained item as a defect in the owning repository's tracker **before** declaring the bar met.
-- [ ] **Step 5: Commit** `.fshw.json` and the results file:
+- [x] **Step 5: Commit** `.fshw.json` and the results file:
   `"Record per-test traces on full runs of TestPrune's own suite"`, with the trailer.
 
 The consumer's done-bar (pooled servers, browser tests, child processes) is in the separate consumer plan.

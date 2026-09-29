@@ -24,3 +24,9 @@ phase 1, with the measurement or reason that decided it.
   into a traced app without its PDB, which keeps it out of the app's coverage report.
 - **Selection from traces: out of scope for phase 1.** Phase 1 records and measures only;
   selection rules start in phase 2 in shadow mode.
+- **Tracing TestPrune.Trace.Tests: rejected.** That suite builds and tests its own
+  recorder, and a traced launch would replace that build with the weaver's bundled one, so
+  the suite would test a different recorder. On the first dogfood run, 10 of its tests
+  failed traced and the run overflowed. The shadow bin now refuses an app whose deps.json
+  lists the recorder as a project, and the project runs untraced. The phase-1 bars cover
+  TestPrune.Tests only.
