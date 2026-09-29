@@ -8,6 +8,17 @@
   The index schema moves from 19 to 20: the first open after upgrading recreates the index,
   and the first check runs the full suite.
 
+- fix: a traced test launch killed at the project timeout is no longer relaunched
+  untraced. The relaunch got a fresh timeout, so a project that overran its timeout
+  ran for up to twice it. The timeout is now the project's outcome, and its traces
+  are stored as refused ("the traced launch timed out; the project was not re-run
+  untraced"). A traced launch that crashes or exits without a test report is still
+  relaunched untraced with the full timeout.
+
+- **BREAKING (API): `TraceRun.untracedRetry` takes the launch's `ProcessOutcome` instead of a
+  `succeeded: bool`, and returns a `TracedFailure option` (`RelaunchUntraced reason` or
+  `KeepTimeout reason`) instead of a `string option`.**
+
 ## 0.13.0-alpha.59 - 2026-09-29
 
 - deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
