@@ -120,6 +120,40 @@ type Shape =
         test <@ circleCase.IsSome @>
         test <@ rectCase.IsSome @>
 
+    [<Fact>]
+    let ``a generic union's cases are named under the union's own name`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Lookup<'value> =
+    | Found of 'value
+    | Absent
+
+let describe (lookup: Lookup<int>) =
+    match lookup with
+    | Found n -> n
+    | Absent -> 0
+"""
+
+        let named kind =
+            result.Symbols
+            |> List.filter (fun s -> s.Kind = kind)
+            |> List.map _.FullName
+            |> set
+
+        test <@ named Type = set [ "M.Lookup`1" ] @>
+        test <@ named DuCase = set [ "M.Lookup`1.Found"; "M.Lookup`1.Absent" ] @>
+
+        let edgesToCases =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol = "M.describe" && d.Kind = PatternMatches)
+            |> List.map _.ToSymbol
+            |> set
+
+        test <@ edgesToCases = set [ "M.Lookup`1.Found"; "M.Lookup`1.Absent" ] @>
+
 [<Collection("FCS-AstAnalyzer")>]
 module ``Dependency extraction`` =
 

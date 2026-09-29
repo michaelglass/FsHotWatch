@@ -14,7 +14,6 @@ module TestPrune.Trace.Joiner
 open System
 open System.Collections.Concurrent
 open System.IO
-open System.Text.RegularExpressions
 open TestPrune.AstAnalyzer
 open TestPrune.Trace.Model
 
@@ -55,8 +54,6 @@ let ofStore (store: TestPrune.Ports.SymbolStore) (repoRoot: string) : SymbolInde
       IsIndexedFile = fun f -> indexed.GetOrAdd(f, fun f -> (store.GetFileKey f).IsSome)
       RepoRoot = repoRoot }
 
-let private arity = Regex(@"`\d+", RegexOptions.Compiled)
-
 let private stripModuleSuffix (segment: string) =
     if segment.Length > 6 && segment.EndsWith("Module", StringComparison.Ordinal) then
         segment.Substring(0, segment.Length - 6)
@@ -74,7 +71,8 @@ let private isNamespaceless (clrName: string) =
     not (outermost.Contains '.')
 
 /// The index names a CLR type could have, most specific first: the dotted name, then
-/// without generic arity, then without F#'s implicit `Module` suffix on any segment.
+/// without F#'s implicit `Module` suffix on any segment. A generic type keeps its arity
+/// (`Box`1`): the index names it so too.
 /// A namespace-less CLR name (`StartupHook`) is a global-namespace type, which the index
 /// names under `GlobalNamespaceQualifier` (`<global>.StartupHook`), or a top-level module,
 /// which keeps its bare name; both are tried, qualified first. A `Module`-suffixed name
@@ -82,8 +80,7 @@ let private isNamespaceless (clrName: string) =
 /// Callers check each with `Exists`, so a wrong candidate never matches.
 let typeCandidates (clrName: string) : string list =
     let dotted = clrName.Replace('+', '.')
-    let noArity = arity.Replace(dotted, "")
-    let noSuffix = noArity.Split '.' |> Seq.map stripModuleSuffix |> String.concat "."
+    let noSuffix = dotted.Split '.' |> Seq.map stripModuleSuffix |> String.concat "."
 
     let qualifiedThenBare name =
         if isNamespaceless clrName then
@@ -91,7 +88,7 @@ let typeCandidates (clrName: string) : string list =
         else
             [ name ]
 
-    List.distinct [ yield! qualifiedThenBare dotted; yield! qualifiedThenBare noArity; noSuffix ]
+    List.distinct [ yield! qualifiedThenBare dotted; noSuffix ]
 
 /// Split a nested CLR name at its last `+`: (declaring type, last segment).
 let private splitNested (clr: string) =
@@ -132,10 +129,6 @@ let private memberName (m: string) =
             m.Substring 4
         else
             m
-
-let private lastSegment (clr: string) =
-    let dotted = clr.Replace('+', '.')
-    dotted.Substring(dotted.LastIndexOf '.' + 1)
 
 /// Every enclosing name of a dotted name, innermost first: `N.M.T` → `N.M`, `N`.
 let rec private enclosingNames (name: string) =
@@ -187,7 +180,7 @@ let private byDocument (ix: SymbolIndex) (row: ManifestRow) (doc: string) =
         let name =
             match closureName, row.Member with
             | Some n, _ -> n
-            | None, ".ctor" -> lastSegment row.TypeName
+            | None, ".ctor" -> canonicalShortName (row.TypeName.Replace('+', '.'))
             | None, m -> memberName m
 
         let preceding (cands: SymbolInfo list) =
@@ -244,10 +237,18 @@ let private byLocation (ix: SymbolIndex) (row: ManifestRow) =
     | Some doc -> byDocument ix row doc
     | None -> byName ix row
 
+/// An F# anonymous record's type (`<>f__AnonymousType1234`1`). The compiler emits one per
+/// record shape, shared by every file of the assembly that uses the shape, so it has no
+/// source document and no symbol. Its members' own probes mean nothing: the code that
+/// builds and reads the record is probed where it is written.
+let private isAnonymousRecordType (clrName: string) =
+    clrName.StartsWith("<>f__AnonymousType", StringComparison.Ordinal)
+
 /// Map one manifest row. `unionTypes` holds the CLR names of the union types in the
 /// manifest (`joinManifest` derives them).
 let joinRow (ix: SymbolIndex) (unionTypes: Set<string>) (row: ManifestRow) : JoinTarget =
     match row.Kind with
+    | _ when isAnonymousRecordType row.TypeName -> Dropped
     | UnionCase ->
         caseOf ix row.TypeName row.Member
         |> Option.map ToSymbol

@@ -9,7 +9,6 @@
   charged by `getrusage` to a later one), and for a traced launch the bytes and files it
   dumped (`DumpBytes`, `DumpFiles`). A traced CPU that climbs across reps while the dumps
   stay flat and no descendant lingers points outside the recorder's own work.
-
 - fix: coverage of a woven assembly keeps the branch points of nested patterns: a union case
   whose field is matched too, as a case (`| Measured(InSync, _) ->`) or a literal
   (`| Command 0 ->`). The outer case test, the case class, its field and the inner test each
@@ -17,6 +16,14 @@
   point: the field's test stayed under a hidden point with probe calls ahead of it, and MS
   CodeCoverage dropped its branch points. Every branch after a probe, before the next probe,
   now gets its own copy of the line's point. Probes and their ids are unchanged.
+- fix: hits on a generic union's cases (`Lookup`1+Found`) map to the indexed case instead of
+  being reported as unmapped code; needs the TestPrune.Core release that indexes them under
+  the union's own name. A generic type's constructor matches its type by the same short name
+  the index uses, and `Joiner.typeCandidates` no longer tries an arity-less name, which no
+  index entry has.
+- fix: an F# anonymous record's generated type (`<>f__AnonymousType…`) is dropped instead of
+  reported as unmapped code. It has no source document or symbol; the code that builds and
+  reads the record is traced where it is written.
 
 ## 0.4.1 - 2026-09-28
 

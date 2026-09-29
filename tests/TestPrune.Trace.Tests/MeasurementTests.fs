@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 14 @>
+        test <@ report.Sampled = 15 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -241,7 +241,7 @@ let ``the file census names the reading tests, those that break outside the repo
                   t "ClassE.e first licence reader"
                   t "ClassE.e second licence reader" ]
 
-        test <@ r.ReadsRepo.Count = 12 && Set.isSubset users r.ReadsRepo @>
+        test <@ r.ReadsRepo.Count = 13 && Set.isSubset users r.ReadsRepo @>
         test <@ r.FailOutside = users @>
         test <@ r.ReachOutside = set [ t "ClassC.c reads a repo file" ] @>
         test <@ r.FailInRepo = Set.empty @>
@@ -249,7 +249,7 @@ let ``the file census names the reading tests, those that break outside the repo
         test
             <@
                 r.SymmetricDifference = Set.difference r.ReadsRepo (Set.add (t "ClassC.c reads a repo file") users)
-                && r.SymmetricDifference.Count = 8
+                && r.SymmetricDifference.Count = 9
             @>)
 
 [<Fact>]

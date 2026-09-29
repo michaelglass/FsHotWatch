@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: a case of a generic union is indexed under the union's own name, `M.Lookup`1.Found`,
+  instead of FCS's display form `M.Lookup<_>.Found`. The union itself, its members and the
+  CLR type all use `Lookup`1`, so runtime traces could not map a generic union's cases and
+  reported them as unmapped code.
+- fix (selection soundness): an edit to the body of a generic record or union (its fields,
+  its case list, its attributes) now changes the type's hash. Before, dependents of the type
+  could be skipped after such an edit. The hash covered only the line naming the type,
+  because the type's arity-suffixed name (`Box`1`) matched no declaration in the syntax
+  tree. `AstAnalyzer.canonicalShortName` now strips the arity suffix.
+- Index schema 20 (`SchemaVersion` 19 -> 20) for both fixes: every existing index is
+  recreated on first open, so the first run re-indexes the whole repository, and recorded
+  traces are not read under the new schema until the next full run re-records them.
+
 ## 13.3.0 - 2026-09-28
 
 - feat: inline members are indexed with the synthetic attribute `TestPrune.Inline`

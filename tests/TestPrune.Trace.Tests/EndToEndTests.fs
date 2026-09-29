@@ -102,7 +102,8 @@ let private traceOf (meth: string) =
         elif meth.StartsWith "b " then "ClassB"
         elif meth.StartsWith "c " then "ClassC"
         elif meth.StartsWith "d " then "ClassD"
-        else "ClassE"
+        elif meth.StartsWith "e " then "ClassE"
+        else "ClassF"
 
     e.Store.TryRead(
         TraceIngest.testKey "FxTests" $"FxTests.AttributionTests+%s{cls}" meth,
@@ -132,14 +133,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 14 && s.Traced = 14 @>
+    test <@ s.Executed = 15 && s.Traced = 15 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Fourteen CTRF rows are twelve tests (each theory's two rows share one trace). Only the test
+    // Fifteen CTRF rows are thirteen tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 12 @>
-    test <@ s.Complete = 11 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 13 @>
+    test <@ s.Complete = 12 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -176,6 +177,23 @@ let ``sync, task, Task.Run, async and Async.Parallel tests each record exactly t
         <@
             names (traceOf "b theory aboveThreshold") |> Set.isSuperset
             <| set [ "FxLib.Logic.aboveThreshold"; "FxLib.Values.threshold" ]
+        @>
+
+[<Fact>]
+let ``a generic union's cases, a generic class and a generic method map to their indexed names`` () =
+    test
+        <@
+            names (traceOf "f generic union, class and method") |> Set.isSuperset
+            <| set
+                [ "FxLib.Generics.Lookup`1.Found"
+                  "FxLib.Generics.Lookup`1.Absent"
+                  "FxLib.Generics.Lookup`1.CouldNotRead"
+                  "FxLib.Generics.Either`2.Left"
+                  "FxLib.Generics.Either`2.Right"
+                  "FxLib.Generics.fromOption"
+                  "FxLib.Generics.describe"
+                  "FxLib.Generics.swap"
+                  "FxLib.Crate`1.Map" ]
         @>
 
 [<Fact>]

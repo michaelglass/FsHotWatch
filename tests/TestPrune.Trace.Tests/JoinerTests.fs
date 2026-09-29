@@ -159,8 +159,15 @@ let ``without a document: member, then type, then enclosing module`` () =
     test <@ join (row GeneratedMethod "Q.Nowhere" "f" None 0) = Unmapped "no-document" @>
 
 [<Fact>]
-let ``type candidates cover arity and module suffix, most specific first`` () =
-    test <@ typeCandidates "N.M+AnswerState`1" = [ "N.M.AnswerState`1"; "N.M.AnswerState" ] @>
+let ``an anonymous record's generated type is dropped, not unmapped`` () =
+    let anon = "<>f__AnonymousType188005119`1"
+    test <@ join (row GeneratedMethod anon ".ctor" None 0) = Dropped @>
+    test <@ join (row GeneratedMethod anon "get_files" None 0) = Dropped @>
+    test <@ join (row TypeUse anon "" None 0) = Dropped @>
+
+[<Fact>]
+let ``type candidates keep arity and cover the module suffix, most specific first`` () =
+    test <@ typeCandidates "N.M+AnswerState`1" = [ "N.M.AnswerState`1" ] @>
     test <@ typeCandidates "N.ShapeModule" = [ "N.ShapeModule"; "N.Shape" ] @>
     test <@ typeCandidates "N.Module" = [ "N.Module" ] @>
     test <@ join (row GeneratedMethod "N.ShapeModule" "helper" None 0) = ToSymbol "N.Shape" @>
@@ -185,7 +192,7 @@ let ``a global-namespace type and its members join to the qualified index name``
     let hook = Some "/r/src/Hook.fs"
 
     test <@ typeCandidates "StartupHook" = [ q "StartupHook"; "StartupHook" ] @>
-    test <@ typeCandidates "Box`1" = [ q "Box`1"; "Box`1"; q "Box"; "Box" ] @>
+    test <@ typeCandidates "Box`1" = [ q "Box`1"; "Box`1" ] @>
     test <@ typeCandidates "TopModule" = [ q "TopModule"; "TopModule"; "Top" ] @>
     test <@ join (row TypeUse "StartupHook" "" None 0) = ToSymbol(q "StartupHook") @>
     test <@ join (row GeneratedMethod "StartupHook" "Initialize" None 0) = ToSymbol(q "StartupHook.Initialize") @>
@@ -257,6 +264,39 @@ let ``the woven fixture joins to the real index`` () =
         test <@ find "<StartupCode$FxLib>.$Pipelines+DoubleAll@12" "Invoke" = ToSymbol "FxLib.Pipeline.DoubleAll" @>
         // An F# exception is an indexed type.
         test <@ find "FxLib.Overflowed" "" = ToSymbol "FxLib.Overflowed" @>
+        // Generic types carry their CLR arity (`Crate`1`); a union nested in a module is
+        // `Generics+Lookup`1`, and its case classes are nested in it once more.
+        test <@ find "FxLib.Generics+Lookup`1" "NewFound" = ToSymbol "FxLib.Generics.Lookup`1.Found" @>
+        test <@ find "FxLib.Generics+Either`2" "NewLeft" = ToSymbol "FxLib.Generics.Either`2.Left" @>
+        test <@ find "FxLib.Crate`1" "Map" = ToSymbol "FxLib.Crate`1.Map" @>
+        test <@ find "FxLib.Generics" "swap" = ToSymbol "FxLib.Generics.swap" @>
+
+        let genericCases =
+            r.Manifest.Rows
+            |> Array.filter (fun x -> x.Kind = UnionCase && x.TypeName.StartsWith "FxLib.Generics+")
+            |> Array.map (fun x -> targets.[x.Id])
+            |> set
+
+        let indexedCases =
+            set
+                [ ToSymbol "FxLib.Generics.Lookup`1.Found"
+                  ToSymbol "FxLib.Generics.Lookup`1.Absent"
+                  ToSymbol "FxLib.Generics.Lookup`1.CouldNotRead"
+                  ToSymbol "FxLib.Generics.Either`2.Left"
+                  ToSymbol "FxLib.Generics.Either`2.Right" ]
+
+        test <@ not genericCases.IsEmpty && Set.isSubset genericCases indexedCases @>
+
+        let unmappedGeneric =
+            r.Manifest.Rows
+            |> Array.filter (fun x ->
+                (x.TypeName.StartsWith "FxLib.Generics" || x.TypeName.StartsWith "FxLib.Crate`1")
+                && (match targets.[x.Id] with
+                    | Unmapped _ -> true
+                    | _ -> false))
+            |> Array.map (fun x -> $"%s{x.TypeName}::%s{x.Member}")
+
+        test <@ Array.isEmpty unmappedGeneric @>
 
         let fxLib = r.Manifest.Rows |> Array.filter (fun x -> x.Assembly = "FxLib")
 

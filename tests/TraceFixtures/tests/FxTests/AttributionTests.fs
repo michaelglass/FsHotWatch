@@ -92,3 +92,17 @@ type ClassE() =
     [<Fact>]
     member _.``e second licence reader``() =
         Assert.Contains("License", SuiteFiles.licence)
+
+type ClassF() =
+    [<Fact>]
+    member _.``f generic union, class and method``() =
+        let described =
+            [ Generics.fromOption (Some 1)
+              Generics.fromOption None
+              Generics.CouldNotRead "unreadable" ]
+            |> List.map Generics.describe
+
+        Assert.Equal<string list>([ "found"; "absent"; "unreadable" ], described)
+        let swapped: Generics.Either<string, int> = Generics.swap (Generics.Left 1)
+        Assert.Equal(Generics.Right 1, swapped)
+        Assert.Equal("2", Crate(2).Map(string).Item)

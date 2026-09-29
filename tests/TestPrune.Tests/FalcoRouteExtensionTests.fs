@@ -2048,6 +2048,31 @@ type Route =
         // A longer identifier that merely ENDS in the leaf name must not match.
         test <@ not (matches "MyAdminPages.SettingsExtra") @>
 
+    [<Fact>]
+    let ``a generic route union's cases link by the name source code references them with`` () =
+        // The leaf key is matched against source text, where a case of `ItemPages<'id>` is
+        // written `ItemPages.Detail`: never with the CLR arity (`ItemPages`1`) the symbol
+        // index names the type by.
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type ItemPages<'id> =
+    | [<Route(RouteMethod.Get, Path = "detail")>] Detail
+type Route =
+    | [<Route(Path = "items")>] Items of ItemPages<System.Guid>
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "ItemPages.Detail" map = Some(set [ "/items/detail" ]) @>
+
+        let regexes = UnionRouteLinks.leafReferenceRegexes map (set [ "/items/detail" ])
+
+        test
+            <@
+                regexes
+                |> List.exists (fun r -> r.IsMatch "Route.link (Route.Items ItemPages.Detail)")
+            @>
+
 module ``UnionRouteLinks additional composition rules`` =
 
     let private linksOf (du: string) =

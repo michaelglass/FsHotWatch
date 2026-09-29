@@ -378,6 +378,62 @@ type Config =
         test <@ changed = set [ Property, "M.Config.Url" ] @>
 
 [<Collection("FCS-TypeHashSplit")>]
+module ``Generic type edits`` =
+
+    [<Fact>]
+    let ``changing a generic record's field type changes the header`` () =
+        let mk t =
+            $"""
+module M
+
+type Box<'item> =
+    {{ Item: 'item
+      Count: %s{t} }}
+"""
+
+        let changed = changedBetween (analyze (mk "int")) (analyze (mk "int64"))
+        test <@ changed = set [ Type, "M.Box`1" ] @>
+
+    [<Fact>]
+    let ``editing a generic union's case payload changes that case and not the header`` () =
+        let mk t =
+            $"""
+module M
+
+type Lookup<'value> =
+    | Found of 'value
+    | CouldNotRead of %s{t}
+"""
+
+        let changed = changedBetween (analyze (mk "string")) (analyze (mk "exn"))
+        test <@ changed = set [ DuCase, "M.Lookup`1.CouldNotRead" ] @>
+
+    [<Fact>]
+    let ``adding a case to a generic union changes the header`` () =
+        let before =
+            analyze
+                """
+module M
+
+type Lookup<'value> =
+    | Found of 'value
+    | Absent
+"""
+
+        let after =
+            analyze
+                """
+module M
+
+type Lookup<'value> =
+    | Found of 'value
+    | Absent
+    | CouldNotRead of string
+"""
+
+        test <@ changedBetween before after |> Set.contains (Type, "M.Lookup`1") @>
+
+[<Collection("FCS-TypeHashSplit")>]
 module ``Selection through split hashes`` =
 
     let private source squarePayload =
