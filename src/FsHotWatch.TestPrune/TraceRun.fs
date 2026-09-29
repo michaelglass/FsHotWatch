@@ -74,6 +74,17 @@ type TracedProjectRun =
         CtrfPath: string option
     }
 
+/// What follows a traced launch that ended without writing its test report.
+type TracedFailure =
+    /// It crashed or exited without its report: the trace (the woven copy, the recorder)
+    /// is the likeliest cause, so the project runs again untraced, with the full project
+    /// timeout it would have had without traces.
+    | RelaunchUntraced of reason: string
+    /// It was killed at the project timeout, and is not relaunched. An untraced run given
+    /// what is left of the timeout could not finish; one given a fresh timeout doubles the
+    /// project's wall-clock bound. The timeout stands as the project's outcome.
+    | KeepTimeout of reason: string
+
 /// Storing one traced project's finished run (`TraceSession.ingestProject`'s shape).
 type TraceIngestion =
     TraceStore.Store
@@ -237,17 +248,50 @@ module TraceRun =
         | Traced(spec, _) -> spec.Command, TracedLaunch.argsLine spec.Args, spec.Environment
         | Untraced _ -> plain
 
-    /// Why a traced launch must be repeated untraced, or `None`. A traced launch that
-    /// failed without writing its CTRF report verified nothing, and the trace (the woven
-    /// copy, the recorder) is the likeliest cause: the project re-runs untraced so the
-    /// run's verdict is the one it would have had without traces. A traced run that
-    /// reported is never repeated, whatever it reported, so a real failure (or a flake)
-    /// is never re-rolled into a pass.
-    let untracedRetry (decision: TraceDecision) (succeeded: bool) (reportExists: bool) : string option =
-        match decision with
-        | Traced _ when not succeeded && not reportExists ->
-            Some "the traced launch failed without writing a test report; the project re-ran untraced"
-        | _ -> None
+    [<Literal>]
+    let RelaunchReason =
+        "the traced launch failed without writing a test report; the project re-ran untraced"
+
+    [<Literal>]
+    let TimeoutReason =
+        "the traced launch timed out; the project was not re-run untraced"
+
+    /// How a traced launch that verified nothing (it did not succeed and wrote no CTRF
+    /// report) is followed up, or `None`. A traced run that reported is never repeated,
+    /// whatever it reported, so a real failure (or a flake) is never re-rolled into a pass.
+    let untracedRetry (decision: TraceDecision) (outcome: ProcessOutcome) (reportExists: bool) : TracedFailure option =
+        match decision, outcome with
+        | Untraced _, _
+        | _, Succeeded _ -> None
+        | Traced _, _ when reportExists -> None
+        | Traced _, TimedOut _ -> Some(KeepTimeout TimeoutReason)
+        | Traced _, Failed _ -> Some(RelaunchUntraced RelaunchReason)
+
+    /// Launch under `decision`, then follow a traced launch that verified nothing up as
+    /// `untracedRetry` says. Returns the outcome that stands and the decision the trace
+    /// store records: a traced launch that verified nothing is stored as a refusal naming
+    /// what followed it. `reportExists` asks whether the launch wrote its report;
+    /// `announce` is told the follow-up before it happens.
+    let launchTracedOrNot
+        (decision: TraceDecision)
+        (reportExists: unit -> bool)
+        (announce: TracedFailure -> unit)
+        (launch: TraceDecision -> Async<ProcessOutcome>)
+        : Async<ProcessOutcome * TraceDecision> =
+        async {
+            let! first = launch decision
+
+            match untracedRetry decision first (reportExists ()) with
+            | Some(RelaunchUntraced reason as followUp) ->
+                announce followUp
+                let untraced = Untraced(Some reason)
+                let! second = launch untraced
+                return second, untraced
+            | Some(KeepTimeout reason as followUp) ->
+                announce followUp
+                return first, Untraced(Some reason)
+            | None -> return first, decision
+        }
 
     /// The input tree hashes a traced run is ingested with. An unbound tree at either end
     /// is never "unchanged": each side gets a distinct sentinel, so ingestion stores the

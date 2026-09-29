@@ -9,6 +9,7 @@ open System.IO
 open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ProcessHelper
 open FsHotWatch.TestPrune
 open TestPrune.Trace
 open TestPrune.Trace.Model
@@ -889,39 +890,92 @@ let ``every join logs how long the index took to fold, before the project's line
 
 // --- untracedRetry: a traced launch that verified nothing is repeated untraced ---
 
+let private tracedIn root =
+    Traced(
+        { Command = ""
+          Args = []
+          Environment = [] },
+        sessionOf root "T" oneRowManifest
+    )
+
+let private crashed = FsHotWatch.ProcessHelper.Failed(134, ProcessOutput.Drained "")
+
+let private passed = FsHotWatch.ProcessHelper.Succeeded(ProcessOutput.Drained "")
+
+let private timedOut =
+    FsHotWatch.ProcessHelper.TimedOut(TimeSpan.FromSeconds 300.0, ProcessOutput.Drained "", KillOutcome.Killed)
+
 [<Fact>]
 let ``a traced launch that failed without a report is repeated untraced`` () =
-    let root = tempRoot ()
-
-    let traced =
-        Traced(
-            { Command = ""
-              Args = []
-              Environment = [] },
-            sessionOf root "T" oneRowManifest
-        )
-
     test
         <@
-            TraceRun.untracedRetry traced false false = Some
-                "the traced launch failed without writing a test report; the project re-ran untraced"
+            TraceRun.untracedRetry (tracedIn (tempRoot ())) crashed false = Some(
+                RelaunchUntraced TraceRun.RelaunchReason
+            )
         @>
 
 [<Fact>]
-let ``a traced launch that reported, or succeeded, is never repeated`` () =
-    let root = tempRoot ()
+let ``a traced launch that timed out without a report is kept, not repeated`` () =
+    test <@ TraceRun.untracedRetry (tracedIn (tempRoot ())) timedOut false = Some(KeepTimeout TraceRun.TimeoutReason) @>
 
-    let traced =
-        Traced(
-            { Command = ""
-              Args = []
-              Environment = [] },
-            sessionOf root "T" oneRowManifest
-        )
+[<Fact>]
+let ``a traced launch that reported, or succeeded, is never repeated`` () =
+    let traced = tracedIn (tempRoot ())
     // A reported failure is the run's verdict; re-running it could re-roll a flake green.
-    test <@ TraceRun.untracedRetry traced false true = None @>
-    test <@ TraceRun.untracedRetry traced true false = None @>
+    test <@ TraceRun.untracedRetry traced crashed true = None @>
+    test <@ TraceRun.untracedRetry traced timedOut true = None @>
+    test <@ TraceRun.untracedRetry traced passed false = None @>
 
 [<Fact>]
 let ``an untraced launch is never repeated`` () =
-    test <@ TraceRun.untracedRetry (Untraced(Some "x")) false false = None @>
+    test <@ TraceRun.untracedRetry (Untraced(Some "x")) crashed false = None @>
+    test <@ TraceRun.untracedRetry (Untraced None) timedOut false = None @>
+
+/// `launchTracedOrNot` over a stand-in launch that answers each attempt from `outcomes`
+/// in order, recording the decision each attempt launched under.
+let private launchWith (decision: TraceDecision) (reportExists: bool) (outcomes: ProcessOutcome list) =
+    let launched = ResizeArray<TraceDecision>()
+    let announced = ResizeArray<TracedFailure>()
+    let remaining = Collections.Generic.Queue<ProcessOutcome>(outcomes)
+
+    let outcome, stored =
+        TraceRun.launchTracedOrNot decision (fun () -> reportExists) announced.Add (fun d ->
+            async {
+                launched.Add d
+                return remaining.Dequeue()
+            })
+        |> Async.RunSynchronously
+
+    outcome, stored, List.ofSeq launched, List.ofSeq announced
+
+[<Fact>]
+let ``a traced launch that timed out is launched once, its timeout stands, and a refusal is stored`` () =
+    let traced = tracedIn (tempRoot ())
+    let outcome, stored, launched, announced = launchWith traced false [ timedOut ]
+
+    test <@ outcome = timedOut @>
+    test <@ launched = [ traced ] @>
+    test <@ stored = Untraced(Some TraceRun.TimeoutReason) @>
+    test <@ announced = [ KeepTimeout TraceRun.TimeoutReason ] @>
+
+[<Fact>]
+let ``a traced launch that crashed without a report is relaunched untraced, and the relaunch stands`` () =
+    let traced = tracedIn (tempRoot ())
+
+    let outcome, stored, launched, announced =
+        launchWith traced false [ crashed; passed ]
+
+    test <@ outcome = passed @>
+    test <@ launched = [ traced; Untraced(Some TraceRun.RelaunchReason) ] @>
+    test <@ stored = Untraced(Some TraceRun.RelaunchReason) @>
+    test <@ announced = [ RelaunchUntraced TraceRun.RelaunchReason ] @>
+
+[<Fact>]
+let ``a traced launch that reported is launched once and stays traced`` () =
+    let traced = tracedIn (tempRoot ())
+    let outcome, stored, launched, announced = launchWith traced true [ timedOut ]
+
+    test <@ outcome = timedOut @>
+    test <@ launched = [ traced ] @>
+    test <@ stored = traced @>
+    test <@ List.isEmpty announced @>
