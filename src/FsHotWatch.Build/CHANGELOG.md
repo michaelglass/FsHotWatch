@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.44 - 2026-09-29
+
 - An overrunning build names the MSBuild targets that were running, whatever console
   verbosity the configured command uses. For a command line that invokes `dotnet`,
   fshw attaches its own binary log through `MSBUILD_LOGGING_ARGS`
