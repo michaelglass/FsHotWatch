@@ -32,10 +32,10 @@ type RerunFlag =
         string
     | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)")>] FilterTrait of
         string
-    | [<CmdFlag(Description = "Limit the rerun to this test project (repeatable; matches the project name in your test config). Without it the filter is fanned out across EVERY configured test project, so a class living in one of them makes all the others report zero matches.");
-        CmdArg("project")>] Project of string
-    | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.");
-        CmdArg("seconds")>] WaitSec of int
+    | [<CmdFlag(Description = "Limit the rerun to this test project (repeatable; matches the project name in your test config). Without it the filter is fanned out across EVERY configured test project, so a class living in one of them makes all the others report zero matches.")>] Project of
+        string
+    | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.")>] WaitSec of
+        int
     | [<CmdFlag(Description =
                     "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun refuses rather than silently buying that run.",
                 Name = "allow-full-suite",
@@ -210,8 +210,8 @@ type CoverageCommand =
 /// CLI's existing GLOBAL `-v/--verbose` flag — CommandTree rejects a command
 /// flag that collides with a global, and the global already means "more detail".
 type DeadCodeFlag =
-    | [<CmdFlag(Description = "Entry-point name pattern (repeatable; replaces the defaults: *.main, *.Program.*, *.Routes.*, *.Scheduler.*)");
-        CmdArg("pattern")>] Entry of string
+    | [<CmdFlag(Description = "Entry-point name pattern (repeatable; replaces the defaults: *.main, *.Program.*, *.Routes.*, *.Scheduler.*)")>] Entry of
+        string
     | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
 
 /// `--repository`: act on the repository host and every worktree it serves.
@@ -286,8 +286,7 @@ type Command =
 
 type GlobalFlag =
     | [<CmdFlag(Short = "v", Description = "Enable debug-level logging")>] Verbose
-    | [<CmdFlag(Description = "Set log level: error|warning|info|debug"); CmdArg("level", Default = "info")>] LogLevel of
-        string
+    | [<CmdFlag(Description = "Set log level: error|warning|info|debug")>] LogLevel of string
     | [<CmdFlag(Description = "Disable on-disk task result cache")>] NoCache
     | [<CmdFlag(Description = "Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
     | [<CmdFlag(Short = "q", Description = "Compact one-line-per-plugin output")>] Compact
