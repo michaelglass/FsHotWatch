@@ -208,13 +208,17 @@ let ``lastFinishedProject is None when the build reported finishing nothing`` ()
 
 let private teardown tree survivors kill : TreeTeardown =
     { RootPid = 45128
+      Interrupt = None
       Tree = tree
       KillTook = TimeSpan.FromMilliseconds 74.0
       Kill = kill
       Survivors = survivors }
 
+/// What the report says when the side log could not be read.
+let private noSideLog = SideLogReading.Unavailable "not attached: test"
+
 /// The node-reuse value fshw set on the child, as `mergeDotnetEnv` computes it.
-let private describe = describeBuildOverrun "1"
+let private describe = describeBuildOverrun (Some "1") noSideLog
 
 let private whole = BuildScope.WholeCommand "sh -c \"dotnet build\""
 let private budget = TimeSpan.FromSeconds 600.0
@@ -344,7 +348,8 @@ let ``an already-exited root is named as such`` () =
 let ``the report says which MSBuild node-reuse setting the child was given`` () =
     let _, report =
         describeBuildOverrun
-            "0"
+            (Some "0")
+            noSideLog
             whole
             budget
             elapsed
@@ -362,3 +367,277 @@ let ``with no teardown record the report says the tree was not recorded and time
     test <@ summary.Contains "KILL FAILED" @>
     test <@ report.Contains "process tree: not recorded" @>
     test <@ report.Contains "  kill: KILL FAILED — " @>
+
+[<Fact>]
+let ``a command that never names dotnet is reported as given no node-reuse setting`` () =
+    let _, report =
+        describeBuildOverrun
+            None
+            noSideLog
+            whole
+            budget
+            elapsed
+            ""
+            (Some(teardown (Ok tree) (Ok []) KillOutcome.Killed))
+            KillOutcome.Killed
+
+    test <@ report.Contains "MSBUILDDISABLENODEREUSE not set by fshw" @>
+    test <@ not (report.Contains "MSBUILDDISABLENODEREUSE=") @>
+
+// ---------------------------------------------------------------------------
+// the side log in the report — what was running when the build was interrupted
+
+let private target name project (seconds: float) : InFlightTarget =
+    { Target = name
+      Project = project
+      Running = TimeSpan.FromSeconds seconds }
+
+let private cleanTeardown () =
+    Some(teardown (Ok tree) (Ok []) KillOutcome.Killed)
+
+[<Fact>]
+let ``the innermost in-flight target leads the summary and every one is listed with its time`` () =
+    let reading =
+        SideLogReading.Read
+            [ "/r/.fshw/build-binlog/a.binlog",
+              Ok
+                  [ target "Build" "/r/src/Api/Api.fsproj" 580.0
+                    target "CoreCompile" "/r/src/Api/Api.fsproj" 312.5 ] ]
+
+    let summary, report =
+        describeBuildOverrun (Some "1") reading whole budget elapsed "" (cleanTeardown ()) KillOutcome.Killed
+
+    test <@ summary.Contains "while in target CoreCompile (Api.fsproj) and 1 other target(s)" @>
+    test <@ report.Contains "target CoreCompile in /r/src/Api/Api.fsproj — running 312.5s" @>
+    test <@ report.Contains "target Build in /r/src/Api/Api.fsproj — running 580.0s" @>
+    test <@ report.IndexOf "CoreCompile in" < report.IndexOf "Build in" @>
+
+[<Fact>]
+let ``a single in-flight target is named without an 'others' count`` () =
+    let reading =
+        SideLogReading.Read [ "/r/a.binlog", Ok [ target "StallsHere" "/r/stall.proj" 18.0 ] ]
+
+    let summary, _ =
+        describeBuildOverrun (Some "1") reading whole budget elapsed "" (cleanTeardown ()) KillOutcome.Killed
+
+    test <@ summary.Contains "while in target StallsHere (stall.proj);" @>
+
+[<Fact>]
+let ``a side log that shows nothing running says so, and names a binlog it could not read`` () =
+    let reading =
+        SideLogReading.Read [ "/r/a.binlog", Ok []; "/r/b.binlog", Error "replay failed" ]
+
+    let summary, report =
+        describeBuildOverrun (Some "1") reading whole budget elapsed "" (cleanTeardown ()) KillOutcome.Killed
+
+    test <@ not (summary.Contains "while in target") @>
+    test <@ report.Contains "none of 2 side binary log(s) shows a target running at the interrupt" @>
+    test <@ report.Contains "/r/b.binlog could not be read: replay failed" @>
+
+[<Fact>]
+let ``an unavailable side log is reported as unknown, with the reason`` () =
+    let _, report =
+        describeBuildOverrun
+            (Some "1")
+            (SideLogReading.Unavailable "no binary log in /r/x")
+            whole
+            budget
+            elapsed
+            ""
+            (cleanTeardown ())
+            KillOutcome.Killed
+
+    test <@ report.Contains "in flight: unknown — fshw's side binary log is unavailable: no binary log in /r/x" @>
+
+// ---------------------------------------------------------------------------
+// the interrupt in the report
+
+let private interrupted signalled refused exited : TreeInterrupt =
+    { At = DateTime.UtcNow
+      Signalled = signalled
+      Refused = refused
+      Waited = TimeSpan.FromSeconds 0.4
+      Exited = exited }
+
+let private reportWithInterrupt (i: TreeInterrupt) =
+    let t =
+        { teardown (Ok tree) (Ok []) KillOutcome.AlreadyExited with
+            Interrupt = Some i }
+
+    describe whole budget elapsed "" (Some t) KillOutcome.AlreadyExited |> snd
+
+[<Fact>]
+let ``an interrupt the tree answered is reported with how long it took`` () =
+    let report = reportWithInterrupt (interrupted [ 45128; 45129 ] [] true)
+    test <@ report.Contains "interrupt: sent SIGINT to 2 process(es)" @>
+    test <@ report.Contains "the tree exited 0.4s later" @>
+    test <@ report.IndexOf "interrupt:" < report.IndexOf "  kill:" @>
+
+[<Fact>]
+let ``an interrupt the tree ignored is reported as followed by the kill`` () =
+    let report = reportWithInterrupt (interrupted [ 45128 ] [] false)
+    test <@ report.Contains "it had not exited after 0.4s, so it was killed" @>
+
+[<Fact>]
+let ``an interrupt that could not be sent names the pid and the reason`` () =
+    let report = reportWithInterrupt (interrupted [] [ 45128, "errno 1" ] false)
+    test <@ report.Contains "nothing was signalled, so nothing was waited for" @>
+    test <@ report.Contains "could not signal pid 45128 (errno 1)" @>
+
+// ---------------------------------------------------------------------------
+// interruptTree — SIGINT the snapshot, then wait for it to go
+
+[<Fact>]
+let ``interruptTree signals every member and stops waiting once they are gone`` () =
+    let alive = ref (Set.ofList [ 10; 11 ])
+    let signalled = ref []
+    let pauses = ref 0
+
+    let i =
+        interruptTree
+            (fun pid ->
+                signalled.Value <- pid :: signalled.Value
+                Ok())
+            (aliveIn alive)
+            50
+            (fun () ->
+                pauses.Value <- pauses.Value + 1
+                alive.Value <- Set.empty)
+            [ row 10 1 "sh -c x"; row 11 10 "dotnet build" ]
+
+    test <@ List.rev signalled.Value = [ 10; 11 ] @>
+    test <@ i.Signalled = [ 10; 11 ] @>
+    test <@ i.Exited @>
+    test <@ pauses.Value = 1 @>
+
+[<Fact>]
+let ``interruptTree gives up after its attempts and says the tree did not exit`` () =
+    let pauses = ref 0
+
+    let i =
+        interruptTree (fun _ -> Ok()) (fun _ -> Ok true) 3 (fun () -> pauses.Value <- pauses.Value + 1) [ row 10 1 "x" ]
+
+    test <@ not i.Exited @>
+    test <@ pauses.Value = 2 @>
+
+[<Fact>]
+let ``interruptTree counts an unanswerable liveness probe as still running`` () =
+    let i =
+        interruptTree (fun _ -> Ok()) (fun _ -> Error "errno 22") 2 noPause [ row 10 1 "x" ]
+
+    test <@ not i.Exited @>
+
+[<Fact>]
+let ``interruptTree records a member it could not signal and does not wait on it`` () =
+    let probed = ref 0
+
+    let i =
+        interruptTree
+            (fun _ -> Error "errno 1")
+            (fun _ ->
+                probed.Value <- probed.Value + 1
+                Ok true)
+            5
+            noPause
+            [ row 10 1 "x" ]
+
+    test <@ List.isEmpty i.Signalled @>
+    test <@ i.Refused = [ 10, "errno 1" ] @>
+    test <@ not i.Exited @>
+    test <@ probed.Value = 0 @>
+
+// ---------------------------------------------------------------------------
+// accountTeardownWith — the interrupt runs on the snapshot, before the kill
+
+[<Fact>]
+let ``accountTeardownWith interrupts the snapshotted tree before the kill`` () =
+    let order = ref []
+    let alive = ref (Set.ofList [ 10; 11 ])
+
+    let t =
+        accountTeardownWith
+            (table [ row 10 1 "sh -c x"; row 11 10 "sleep 60" ])
+            (aliveIn alive)
+            3
+            noPause
+            10
+            (fun members ->
+                order.Value <- "interrupt" :: order.Value
+                Some(interrupted (members |> List.map _.Pid) [] true))
+            (fun () ->
+                order.Value <- "kill" :: order.Value
+                alive.Value <- Set.empty
+                KillOutcome.AlreadyExited)
+
+    test <@ List.rev order.Value = [ "interrupt"; "kill" ] @>
+    test <@ t.Interrupt |> Option.map _.Signalled = Some [ 10; 11 ] @>
+    test <@ t.Survivors = Ok [] @>
+
+[<Fact>]
+let ``accountTeardownWith does not interrupt a tree it could not read`` () =
+    let called = ref false
+
+    let t =
+        accountTeardownWith
+            (fun () -> Error "ps: not found")
+            (fun _ -> Ok false)
+            3
+            noPause
+            10
+            (fun _ ->
+                called.Value <- true
+                None)
+            (fun () -> KillOutcome.Killed)
+
+    test <@ not called.Value @>
+    test <@ t.Interrupt = None @>
+
+// ---------------------------------------------------------------------------
+// sendInterrupt / interruptAttempts — the production signal and grace
+
+[<Fact(Timeout = 20000)>]
+let ``sendInterrupt stops a live process`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
+
+    test <@ sendInterrupt p.Id = Ok() @>
+    test <@ p.WaitForExit 10000 @>
+
+[<Fact>]
+let ``sendInterrupt to a process that does not exist is an error, not a success`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("true", UseShellExecute = false))
+
+    p.WaitForExit()
+
+    test
+        <@
+            match sendInterrupt p.Id with
+            | Error reason -> reason.Contains "SIGINT"
+            | Ok() -> false
+        @>
+
+[<Fact>]
+let ``interruptAttempts fits the grace into polls, and never fewer than one`` () =
+    test <@ interruptAttempts (TimeSpan.FromSeconds 15.0) = 150 @>
+    test <@ interruptAttempts TimeSpan.Zero = 1 @>
+
+[<Fact>]
+let ``interruptPause waits one poll`` () =
+    let clock = Diagnostics.Stopwatch.StartNew()
+    interruptPause ()
+    test <@ clock.Elapsed >= InterruptPoll - TimeSpan.FromMilliseconds 1.0 @>
+
+[<Fact>]
+let ``interruptWith no grace interrupts nothing`` () =
+    test <@ interruptWith None [ row 10 1 "x" ] = None @>
+
+[<Fact(Timeout = 20000)>]
+let ``interruptWith a grace interrupts a live tree and sees it exit`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
+
+    let i = interruptWith (Some(TimeSpan.FromSeconds 10.0)) [ row p.Id 1 "sleep 30" ]
+    test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
+    test <@ i |> Option.map _.Exited = Some true @>
+    test <@ p.WaitForExit 10000 @>

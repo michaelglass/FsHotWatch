@@ -145,9 +145,11 @@ Configure it with `pressureIdleFloorMin`:
 Operations are bounded by **default** so a hung op (a deadlocked `dotnet build`,
 a test runner stuck on a socket) can never wedge the daemon forever. With no
 `timeoutSec` configured anywhere, every op inherits a global default of
-**600 seconds (10 minutes)** — deliberately generous so it never falsely kills
-real work (large builds / full suites legitimately run for minutes) and only
-ever fires on a genuine hang. On expiry the daemon kills the child process tree
+**1200 seconds (20 minutes)**. The number is derived from a measurement: the
+slowest cold `dotnet build` on record for the largest repository fshw is run
+against took 999 seconds, and the previous 600-second default killed builds that
+were still making progress. 1200 is that worst case plus a fifth, so the default
+only ever fires on a genuine hang. If your cold build is slower, raise it. On expiry the daemon kills the child process tree
 (and cancels in-process work so it releases any lock it held), records the run
 with outcome `timed out` (a distinct `⏱` glyph in the UI, `timed-out` token in
 agent mode), and stays running — the next change retriggers normally.
@@ -156,9 +158,15 @@ Tune it via the global `timeoutSec` key, or per entry:
 
 - **Global** `timeoutSec` (top-level): the default for every op. A positive
   integer sets the bound; `0` or `false` **disables** the global default (opt
-  out to unbounded ops — not recommended); absent uses the 600s default.
-- **Per-entry** `timeoutSec` on any `build[]`, `tests.projects[]`, or
-  `fileCommands[]` entry overrides the global value for that op.
+  out to unbounded ops — not recommended); absent uses the 1200s default.
+- **Per-entry** `timeoutSec` on the `build` entry, any `tests.projects[]`,
+  `fileCommands[]` or `preprocessors[]` entry overrides the global value for that
+  op.
+
+When a build overruns its budget, its failure report names the budget and which
+of the two keys set it, the MSBuild targets that were still running (see
+[Overrunning builds](#overrunning-builds)), the process tree it killed, and
+anything that survived the kill.
 
 ```jsonc
 {
@@ -167,6 +175,29 @@ Tune it via the global `timeoutSec` key, or per entry:
   "tests": { "projects": [ { "project": "Slow", "timeoutSec": 1200 } ] }
 }
 ```
+
+## Overrunning builds
+
+For a build command that invokes `dotnet` — directly, or as a word of a shell
+wrapper's arguments (`sh -c "dotnet build 2> log"`) — fshw sets two variables in
+the child's environment:
+
+- `MSBUILDDISABLENODEREUSE=1`, unless the configuration already sets it. A
+  wrapper that never names `dotnet` is left alone; if it runs `dotnet` from a
+  script, set the variable in that script.
+- `MSBUILD_LOGGING_ARGS=-bl:.fshw/build-binlog/{}.binlog;ProjectImports=None`,
+  fshw's own binary log, unless `MSBUILD_LOGGING_ARGS` is already set (MSBuild
+  honours one value, and yours wins). It is written whatever console verbosity
+  the command asks for, so a `-v q` build is still readable afterwards.
+
+When the budget expires, fshw sends SIGINT to the build's process tree — the
+signal MSBuild answers by cancelling and writing its logs — waits up to 15
+seconds, then kills whatever is left. It replays the binary log with
+`dotnet msbuild <binlog>` and reports each target that was running at the
+interrupt, with its project and how long it had been running. MSBuild writes the
+binary log only when it shuts down in order, so a build that ignores the
+interrupt, or an MSBuild too old to read `MSBUILD_LOGGING_ARGS`, reports the
+targets as unknown and says why.
 
 ## Wedge diagnostics
 

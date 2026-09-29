@@ -54,7 +54,7 @@ let ``loadConfig on a repo with no .fshw.json applies the baked-in default timeo
     try
         let config = loadConfig tmp
         test <@ config.TimeoutSec = Some DefaultGlobalTimeoutSec @>
-        test <@ DefaultGlobalTimeoutSec = 600 @>
+        test <@ DefaultGlobalTimeoutSec = 1200 @>
     finally
         Directory.Delete(tmp, true)
 

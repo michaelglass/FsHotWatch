@@ -216,6 +216,16 @@ let decideBuildOutcome (success: bool) (exitCode: int option) (output: string) :
 
         BuildOutputFailed outputs, entries
 
+/// Overrun reports lead a build's error entries. Interrupting a build makes MSBuild print
+/// its own cancellation errors; without this they would stand in for the report that
+/// says what overran, what was running and what was killed. An entry that IS a report
+/// (the no-diagnostics fallback) is not repeated.
+let internal leadWithOverruns (reports: string list) (entries: ErrorEntry list) : ErrorEntry list =
+    let isReport (entry: ErrorEntry) = List.contains entry.Message reports
+
+    (reports |> List.map ErrorEntry.error)
+    @ (entries |> List.filter (isReport >> not))
+
 /// How many of the outputs a build's `Project -> path.dll` lines name were written
 /// after `buildStarted`. MSBuild prints that line for every project it visits, and
 /// an up-to-date project keeps its output's timestamp, so this is the count the
@@ -620,6 +630,250 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
     describeCoverageGap (examineArtifacts graph)
 
+// ---------------------------------------------------------------------------
+// The side log: fshw's own binary log of a dotnet build, whatever console verbosity the
+// configured command chose. MSBuild takes `-bl` from `MSBUILD_LOGGING_ARGS`, so it reaches
+// a `dotnet build` inside a shell wrapper without the configured command line changing.
+// MSBuild writes the file only when it shuts down in order — a SIGKILL leaves it empty —
+// so an overrunning build is interrupted first (`runProcessAccounted`'s interrupt grace),
+// then its log is replayed to text and read for the targets still running.
+
+/// The environment variable MSBuild reads `-bl` (and nothing but `-bl`/`-check`) from.
+[<Literal>]
+let internal SideLogVariable = "MSBUILD_LOGGING_ARGS"
+
+/// How long an interrupted build gets to cancel and write its binary log before the
+/// tree is killed. MSBuild cancels in well under a second; a task that ignores
+/// cancellation is what this bounds.
+let internal InterruptGrace = TimeSpan.FromSeconds 15.0
+
+/// How long replaying one binary log to text may take.
+let internal ReplayBudget = TimeSpan.FromSeconds 60.0
+
+/// Where a build's side binlogs go.
+let internal sideLogDir (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "build-binlog")
+
+/// Whether fshw attaches its binary log to a build, and if not, why not.
+[<RequireQualifiedAccess>]
+type internal SideLog =
+    | Attached of dir: string
+    | NotAttached of reason: string
+
+/// Attach the side log to a command line that invokes dotnet, unless the child's
+/// environment (`env`, else the daemon's own value, `inherited`) already sets
+/// `MSBUILD_LOGGING_ARGS` — that is the user's, and MSBuild takes only one.
+let internal sideLogFor
+    (command: string)
+    (args: string)
+    (env: (string * string) list)
+    (inherited: string option)
+    (dir: string)
+    : SideLog =
+    let existing =
+        env
+        |> List.tryFind (fun (key, _) -> key = SideLogVariable)
+        |> Option.map snd
+        |> Option.orElse inherited
+        |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+    match existing with
+    | _ when not (invokesDotnet command args) ->
+        SideLog.NotAttached "the build command never names dotnet, so there is no MSBuild to attach it to"
+    | Some value ->
+        SideLog.NotAttached $"%s{SideLogVariable} is already set (`%s{value}`), and fshw does not override it"
+    | None -> SideLog.Attached dir
+
+/// Empty the side-log directory for a new build, so only this build's logs are read.
+/// A directory that cannot be prepared detaches the log rather than failing the build.
+let internal prepareSideLog (sideLog: SideLog) : SideLog =
+    match sideLog with
+    | SideLog.Attached dir ->
+        try
+            if Directory.Exists dir then
+                Directory.Delete(dir, true)
+
+            Directory.CreateDirectory dir |> ignore
+            sideLog
+        with ex ->
+            SideLog.NotAttached $"its directory %s{dir} could not be prepared (%s{ex.GetType().Name}: %s{ex.Message})"
+    | SideLog.NotAttached _ -> sideLog
+
+/// The `MSBUILDDISABLENODEREUSE` value `runProcess` puts in the child's env: the
+/// configured one, the `1` fshw injects when the command line invokes dotnet, or none.
+let internal nodeReuseFor (env: (string * string) list) (command: string) (args: string) : string option =
+    mergeDotnetEnv command args env
+    |> List.tryFind (fun (key, _) -> key = "MSBUILDDISABLENODEREUSE")
+    |> Option.map snd
+
+/// The interrupt grace for a build: only a build whose side log is attached is
+/// interrupted, because the interrupt exists to make MSBuild write that log. Anything
+/// else is killed outright, as before — a shell's background job ignores SIGINT and
+/// would hold the teardown for the whole grace for nothing.
+let internal interruptGraceFor (sideLog: SideLog) : TimeSpan option =
+    match sideLog with
+    | SideLog.Attached _ -> Some InterruptGrace
+    | SideLog.NotAttached _ -> None
+
+/// The environment entry that attaches the side log: one binlog per MSBuild invocation
+/// (`{}` is MSBuild's own unique name, so a nested `dotnet build` cannot overwrite the
+/// outer one), imports left out to keep it small.
+let internal sideLogEnv (sideLog: SideLog) : (string * string) list =
+    match sideLog with
+    | SideLog.Attached dir ->
+        let binlog = Path.Combine(dir, "{}.binlog")
+        [ SideLogVariable, $"-bl:%s{binlog};ProjectImports=None" ]
+    | SideLog.NotAttached _ -> []
+
+/// A target MSBuild had started and not finished when fshw interrupted the build.
+type internal InFlightTarget =
+    {
+        Target: string
+        Project: string
+        /// How long it had been running at the interrupt.
+        Running: TimeSpan
+    }
+
+// A replayed binlog at detailed verbosity with ShowTimestamp: `HH:mm:ss.fff  1:2>Target
+// "Name" in [file "..." from ]project "/path"` and `... 1:2>Done building target "Name" in
+// project "file"`. The `1:2>` context prefix pairs a start with its done.
+let private targetStartedLine =
+    Text.RegularExpressions.Regex(
+        @"^(\d\d:\d\d:\d\d\.\d{3})\s+(?:(\d+(?::\d+)?)>)?Target ""([^""]+)"" in (?:file ""[^""]*"" from )?project ""([^""]+)"""
+    )
+
+let private targetDoneLine =
+    Text.RegularExpressions.Regex(
+        @"^(\d\d:\d\d:\d\d\.\d{3})\s+(?:(\d+(?::\d+)?)>)?Done building target ""([^""]+)"" in project "
+    )
+
+let private timeOfDay (text: string) =
+    TimeSpan.ParseExact(text, @"hh\:mm\:ss\.fff", Globalization.CultureInfo.InvariantCulture)
+
+/// `until - from` for two times of day, taken the short way round midnight.
+let private dayDelta (from: TimeSpan) (until: TimeSpan) =
+    let delta = until - from
+
+    if delta < TimeSpan.FromHours -12.0 then
+        delta + TimeSpan.FromDays 1.0
+    elif delta > TimeSpan.FromHours 12.0 then
+        delta - TimeSpan.FromDays 1.0
+    else
+        delta
+
+/// The targets running at `interruptedAt` (local time of day), read from a replayed
+/// binlog: started at or before it, and finished at or after it or never. Cancelling
+/// the build finishes every running target, so "finished after the interrupt" is how a
+/// target that was in flight shows up in a log MSBuild completed.
+let internal inFlightTargets (interruptedAt: TimeSpan) (log: string) : InFlightTarget list =
+    let atOrBefore (time: TimeSpan) =
+        dayDelta time interruptedAt >= TimeSpan.Zero
+
+    let before (time: TimeSpan) =
+        dayDelta time interruptedAt > TimeSpan.Zero
+
+    let step (running: Map<string * string, (TimeSpan * string) list>, inFlight) (line: string) =
+        let started = targetStartedLine.Match line
+        let fin = targetDoneLine.Match line
+
+        if started.Success then
+            let key = started.Groups[2].Value, started.Groups[3].Value
+            let at = timeOfDay started.Groups[1].Value
+            let stack = running |> Map.tryFind key |> Option.defaultValue []
+            running |> Map.add key ((at, started.Groups[4].Value) :: stack), inFlight
+        elif fin.Success then
+            let key = fin.Groups[2].Value, fin.Groups[3].Value
+
+            match running |> Map.tryFind key |> Option.defaultValue [] with
+            | (startedAt, project) :: rest ->
+                let doneAt = timeOfDay fin.Groups[1].Value
+
+                let inFlight =
+                    if atOrBefore startedAt && not (before doneAt) then
+                        { Target = snd key
+                          Project = project
+                          Running = dayDelta startedAt interruptedAt }
+                        :: inFlight
+                    else
+                        inFlight
+
+                running |> Map.add key rest, inFlight
+            | [] -> running, inFlight
+        else
+            running, inFlight
+
+    let running, finishedLate = log.Split('\n') |> Array.fold step (Map.empty, [])
+
+    let neverFinished =
+        [ for KeyValue((_, target), stack) in running do
+              for startedAt, project in stack do
+                  if atOrBefore startedAt then
+                      { Target = target
+                        Project = project
+                        Running = dayDelta startedAt interruptedAt } ]
+
+    finishedLate @ neverFinished |> List.sortByDescending _.Running
+
+let private clip (text: string) =
+    if text.Length <= 160 then
+        text
+    else
+        text.Substring(0, 157) + "..."
+
+/// Replay one binlog to a detailed text log with `dotnet msbuild <binlog>`, run by the
+/// same SDK the build used (the repository root's `global.json` applies), in English so
+/// the lines `inFlightTargets` reads are the ones it knows.
+let internal replayBinlogWith (dotnet: string) (repoRoot: string) (binlog: string) : Result<string, string> =
+    let text = Path.ChangeExtension(binlog, ".log")
+
+    let fileLogger = $"-flp:logfile=%s{text};verbosity=detailed;ShowTimestamp"
+    let args = $"msbuild %s{quoteArg binlog} -noconlog -nologo %s{quoteArg fileLogger}"
+
+    let outcome =
+        runProcess dotnet args repoRoot [ "DOTNET_CLI_UI_LANGUAGE", "en" ] (ProcessBounds.silent ReplayBudget)
+
+    if File.Exists text then
+        Ok(File.ReadAllText text)
+    else
+        Result.Error $"`%s{dotnet} %s{args}` wrote no log (%s{clip (outputOf outcome)})"
+
+/// What the side log said about an overrun.
+[<RequireQualifiedAccess>]
+type internal SideLogReading =
+    /// Nothing to read, and why.
+    | Unavailable of reason: string
+    /// Each binlog found, with the targets it shows in flight or why it could not be read.
+    | Read of (string * Result<InFlightTarget list, string>) list
+
+/// Read the side log of an overrun: the binlogs in its directory (`list`), each replayed
+/// (`replay`) and searched for what was running at the interrupt.
+let internal readSideLog
+    (list: string -> string list)
+    (replay: string -> Result<string, string>)
+    (sideLog: SideLog)
+    (interrupt: TreeInterrupt option)
+    : SideLogReading =
+    match sideLog, interrupt with
+    | SideLog.NotAttached reason, _ -> SideLogReading.Unavailable $"not attached: %s{reason}"
+    | SideLog.Attached _, None ->
+        SideLogReading.Unavailable "the build was not interrupted, so MSBuild never wrote its binary log"
+    | SideLog.Attached dir, Some interrupted ->
+        let at = interrupted.At.ToLocalTime().TimeOfDay
+
+        match list dir with
+        | [] ->
+            SideLogReading.Unavailable
+                $"no binary log in %s{dir}: MSBuild writes it only when it shuts down, and nothing did within \
+                  %s{renderBudget interrupted.Waited} of the interrupt (or this MSBuild predates %s{SideLogVariable})"
+        | binlogs -> SideLogReading.Read [ for b in binlogs -> b, replay b |> Result.map (inFlightTargets at) ]
+
+/// The binlogs in a side-log directory, oldest name first; none when it is missing.
+let internal listBinlogs (dir: string) : string list =
+    if Directory.Exists dir then
+        Directory.GetFiles(dir, "*.binlog") |> Array.sort |> Array.toList
+    else
+        []
+
 /// What an overrunning build was building, as far as fshw can say.
 [<RequireQualifiedAccess>]
 type internal BuildScope =
@@ -641,12 +895,6 @@ let internal lastFinishedProject (output: string) : string option =
     |> Seq.tryLast
     |> Option.map (fun m -> m.Groups[1].Value)
 
-let private clip (text: string) =
-    if text.Length <= 160 then
-        text
-    else
-        text.Substring(0, 157) + "..."
-
 let private renderRow (row: ProcessRow) =
     $"pid %d{row.Pid} `%s{clip row.Command}`"
 
@@ -664,7 +912,8 @@ let private seconds (span: TimeSpan) = $"%.1f{span.TotalSeconds}s"
 /// the tree was left. A kill call that returned has sent signals; it has not shown
 /// anything is gone.
 let internal describeBuildOverrun
-    (nodeReuse: string)
+    (nodeReuse: string option)
+    (sideLog: SideLogReading)
     (scope: BuildScope)
     (budget: TimeSpan)
     (elapsed: TimeSpan)
@@ -692,15 +941,37 @@ let internal describeBuildOverrun
                     $"killed pid %d{t.RootPid} and its tree (%d{tree.Length} process(es)), none left running"
             | _, Ok survivors -> $"LEAKED %s{renderRows survivors}"
 
+    let inFlight =
+        match sideLog with
+        | SideLogReading.Read binlogs ->
+            binlogs
+            |> List.collect (fun (_, read) -> read |> Result.defaultValue [])
+            |> List.sortBy _.Running
+        | SideLogReading.Unavailable _ -> []
+
+    // The innermost target — the one started last — is what the build was doing.
+    let whileIn =
+        match inFlight with
+        | [] -> ""
+        | innermost :: rest ->
+            let others =
+                if List.isEmpty rest then
+                    ""
+                else
+                    $" and %d{rest.Length} other target(s)"
+
+            $" while in target %s{innermost.Target} (%s{Path.GetFileName innermost.Project})%s{others}"
+
     let summary =
-        [ $"timed out: %s{subject} overran its %s{budgetText} budget"; treeBrief ]
+        [ $"timed out: %s{subject} overran its %s{budgetText} budget%s{whileIn}"
+          treeBrief ]
         |> List.filter (String.IsNullOrWhiteSpace >> not)
         |> String.concat "; "
 
     let building =
         match scope with
         | BuildScope.WholeCommand commandLine ->
-            $"  building: `%s{commandLine}` — the whole configured command (fshw does not know which project it had reached)"
+            $"  building: `%s{commandLine}` — the whole configured command, which fshw runs as one unit"
         | BuildScope.TemplateRoot(commandLine, root, finished, queued) ->
             let finishedText =
                 if List.isEmpty finished then
@@ -717,6 +988,30 @@ let internal describeBuildOverrun
                     String.concat ", " queued
 
             $"  building: template root %s{root} via `%s{commandLine}`; finished before it: %s{finishedText}; queued after it: %s{queuedText}"
+
+    let sideLogLines =
+        match sideLog with
+        | SideLogReading.Unavailable reason ->
+            [ $"  in flight: unknown — fshw's side binary log is unavailable: %s{reason}" ]
+        | SideLogReading.Read binlogs ->
+            let targetLines =
+                inFlight
+                |> List.map (fun t -> $"    target %s{t.Target} in %s{t.Project} — running %s{seconds t.Running}")
+
+            let unreadable =
+                binlogs
+                |> List.choose (fun (binlog, read) ->
+                    match read with
+                    | Result.Error reason -> Some $"    %s{binlog} could not be read: %s{reason}"
+                    | Ok _ -> None)
+
+            let lead =
+                if List.isEmpty targetLines then
+                    $"  in flight: none of %d{binlogs.Length} side binary log(s) shows a target running at the interrupt"
+                else
+                    "  in flight when fshw interrupted the build (from its side binary log), innermost first:"
+
+            lead :: targetLines @ unreadable
 
     let progress =
         match lastFinishedProject output with
@@ -771,7 +1066,35 @@ let internal describeBuildOverrun
                     $"  after the kill: LEAKED — still running and no longer watched: %s{renderRows survivors}. \
                       They may hold obj/ locks the next build trips over; kill them by hand."
 
-            [ aimedAt; killLine (Some t.KillTook); after ]
+            let interruptLine =
+                t.Interrupt
+                |> Option.map (fun i ->
+                    let refused =
+                        i.Refused
+                        |> List.map (fun (pid, reason) -> $"pid %d{pid} (%s{reason})")
+                        |> String.concat ", "
+
+                    let refusedText =
+                        if List.isEmpty i.Refused then
+                            ""
+                        else
+                            $"; could not signal %s{refused}"
+
+                    let result =
+                        if i.Exited then
+                            $"the tree exited %s{seconds i.Waited} later"
+                        elif List.isEmpty i.Signalled then
+                            "nothing was signalled, so nothing was waited for"
+                        else
+                            $"it had not exited after %s{seconds i.Waited}, so it was killed"
+
+                    $"  interrupt: sent SIGINT to %d{i.Signalled.Length} process(es) so MSBuild could cancel and \
+                      write its logs; %s{result}%s{refusedText}")
+
+            [ aimedAt
+              yield! Option.toList interruptLine
+              killLine (Some t.KillTook)
+              after ]
 
     let report =
         [ $"Build overran its %s{budgetText} budget after %s{seconds elapsed} and was stopped."
@@ -780,8 +1103,14 @@ let internal describeBuildOverrun
           // A dotnet reusing an MSBuild node from an earlier build is one way a build
           // overruns; this is the value fshw SET for the child. A wrapper script can
           // still override it for what it launches.
-          $"  environment: MSBUILDDISABLENODEREUSE=%s{nodeReuse} set for the child (fshw sets it on every spawn, \
-            so a dotnet launched inside a shell wrapper inherits it unless the wrapper changes it)"
+          (match nodeReuse with
+           | Some value ->
+               $"  environment: MSBUILDDISABLENODEREUSE=%s{value} set for the child (the command invokes dotnet, so \
+                 a dotnet inside a shell wrapper inherits it unless the wrapper changes it)"
+           | None ->
+               "  environment: MSBUILDDISABLENODEREUSE not set by fshw — the command never names dotnet, so a \
+                dotnet started by a script it runs gets only what that script sets")
+          yield! sideLogLines
           progress
           lastLine
           yield! treeLines ]
@@ -822,13 +1151,21 @@ let createWith
     // build — `buildTimeout` is the bound.
     let buildBounds = ProcessBounds.silent buildTimeout
 
-    // What `runProcess` puts in the child's env for this key: the caller's own value, or
-    // the `1` fshw injects into every spawn. `mergeDotnetEnv` always sets it, so the
-    // lookup cannot miss. Named in the overrun report.
-    let nodeReuse =
-        mergeDotnetEnv buildCommand environment
-        |> List.find (fun (key, _) -> key = "MSBUILDDISABLENODEREUSE")
-        |> snd
+    // Named in the overrun report.
+    let nodeReuseOf command args = nodeReuseFor environment command args
+
+    /// The side log for one spawn of `command args`, prepared and ready to attach.
+    let sideLogOf (repoRoot: string) command args =
+        sideLogFor
+            command
+            args
+            environment
+            (Option.ofObj (Environment.GetEnvironmentVariable SideLogVariable))
+            (sideLogDir repoRoot)
+        |> prepareSideLog
+
+    let readSideLogOf (repoRoot: string) (sideLog: SideLog) (teardown: TreeTeardown option) =
+        readSideLog listBinlogs (replayBinlogWith "dotnet" repoRoot) sideLog (teardown |> Option.bind _.Interrupt)
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
     // (callers inject `AbsFilePath.create` per file).
@@ -1129,15 +1466,24 @@ let createWith
                         "dotnet build"
                         (async {
                             try
+                                let sideLog = sideLogOf ctx.RepoRoot buildCommand buildArgs
+
                                 let result, teardown =
-                                    runProcessAccounted buildCommand buildArgs ctx.RepoRoot environment buildBounds
+                                    runProcessAccounted
+                                        (interruptGraceFor sideLog)
+                                        buildCommand
+                                        buildArgs
+                                        ctx.RepoRoot
+                                        (environment @ sideLogEnv sideLog)
+                                        buildBounds
 
                                 let overrun =
                                     match result with
                                     | TimedOut(after, tail, kill) ->
                                         let summary, report =
                                             describeBuildOverrun
-                                                nodeReuse
+                                                (nodeReuseOf buildCommand buildArgs)
+                                                (readSideLogOf ctx.RepoRoot sideLog teardown)
                                                 (BuildScope.WholeCommand $"%s{buildCommand} %s{buildArgs}")
                                                 after
                                                 (DateTime.UtcNow - buildStarted)
@@ -1158,8 +1504,13 @@ let createWith
                                     | Failed(code, _) -> Some code
                                     | _ -> None
 
-                                let (rawOutcome, entries) =
+                                let (rawOutcome, parsedEntries) =
                                     decideBuildOutcome (isSucceeded result) exitCode outputText
+
+                                let entries =
+                                    match overrun with
+                                    | Some(_, _, text) -> leadWithOverruns [ text ] parsedEntries
+                                    | None -> parsedEntries
 
                                 let copyVerifiedOutcome, verifiedEntries =
                                     verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
@@ -1272,6 +1623,7 @@ let createWith
                                     let mutable outputs = []
 
                                     let mutable finished = []
+                                    let mutable overruns = []
 
                                     for index, root in List.indexed roots do
                                         let rootStr = AbsProjectPath.value root
@@ -1281,8 +1633,16 @@ let createWith
                                         let rootStarted = DateTime.UtcNow
 
                                         try
+                                            let sideLog = sideLogOf ctx.RepoRoot cmd cmdArgs
+
                                             let result, teardown =
-                                                runProcessAccounted cmd cmdArgs ctx.RepoRoot environment buildBounds
+                                                runProcessAccounted
+                                                    (interruptGraceFor sideLog)
+                                                    cmd
+                                                    cmdArgs
+                                                    ctx.RepoRoot
+                                                    (environment @ sideLogEnv sideLog)
+                                                    buildBounds
 
                                             match result with
                                             | Succeeded _ -> outputs <- outputOf result :: outputs
@@ -1292,7 +1652,8 @@ let createWith
 
                                                 let summary, report =
                                                     describeBuildOverrun
-                                                        nodeReuse
+                                                        (nodeReuseOf cmd cmdArgs)
+                                                        (readSideLogOf ctx.RepoRoot sideLog teardown)
                                                         (BuildScope.TemplateRoot(
                                                             $"%s{cmd} %s{cmdArgs}",
                                                             rootStr,
@@ -1306,6 +1667,7 @@ let createWith
                                                         kill
 
                                                 let output = $"%s{report}\n%s{renderOutput tail}"
+                                                overruns <- output :: overruns
                                                 outputs <- output :: outputs
                                                 ctx.Log report
                                                 error "build" report
@@ -1340,7 +1702,8 @@ let createWith
                                                 else
                                                     parsed
 
-                                            BuildOutputFailed failedOutputs, entries
+                                            BuildOutputFailed failedOutputs,
+                                            leadWithOverruns (List.rev overruns) entries
 
                                     let copyVerifiedOutcome, verifiedEntries =
                                         verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries

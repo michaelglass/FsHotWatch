@@ -178,6 +178,7 @@ let ``output reaches the sink while the helper's child is still running`` () =
             runProcessCore
                 true
                 false
+                None
                 (Some sink)
                 ignore
                 "/bin/sh"

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- change: `MSBUILDDISABLENODEREUSE=1` is injected only into a child whose command line
+  invokes `dotnet` — the command itself, or a word of its arguments, so
+  `sh -c "dotnet build 2> log"` still gets it. A wrapper that never names `dotnet` is
+  left alone; a script that runs `dotnet` itself sets the variable. New
+  `ProcessHelper.invokesDotnet`; `mergeDotnetEnv` now takes the arguments
+  (`command args env`).
+- feat: an accounted teardown (`runProcessAccounted`) can interrupt the overrunning
+  tree with SIGINT and give it a grace period before the kill. The interrupt runs on
+  the pre-kill snapshot, so descendants re-parented by it are still accounted for, and
+  `TreeTeardown.Interrupt` records what was signalled, what refused and whether the
+  tree exited in time.
+
 ## 0.10.0-alpha.59 - 2026-09-29
 
 - fix: a `FileChecked` result stamped with no model generation, or with one other

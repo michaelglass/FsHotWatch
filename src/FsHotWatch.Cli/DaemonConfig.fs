@@ -206,12 +206,15 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
 /// unbounded op becomes `TimedOut`: the process tree is killed and the daemon stays
 /// responsive.
 ///
-/// 600s (10 min) is deliberately generous — large builds and full test suites
-/// legitimately run for minutes, so it only ever fires on a genuine hang. Tighten per
-/// repo via the global `timeoutSec` key or a per-entry `timeoutSec`, which take
-/// precedence.
+/// 1200s (20 min) is derived, not picked: the slowest cold `dotnet build` on record for
+/// the largest repository this daemon is run against took 999s, and the previous 600s
+/// default killed builds that were still making progress. 1200s is that worst case plus
+/// a fifth, so it only ever fires on a genuine hang — a bound on hangs, not a
+/// performance budget. Tune per repo via the global `timeoutSec` key or a per-entry
+/// `timeoutSec` (on `build`, `tests.projects[]`, `fileCommands[]`, `preprocessors[]`),
+/// which take precedence; an overrunning build's report names the budget it was given.
 [<Literal>]
-let DefaultGlobalTimeoutSec = 600
+let DefaultGlobalTimeoutSec = 1200
 
 /// Where the daemon writes `daemon.log` when `.fshw.json` says nothing. Relative to the
 /// repo root; `logDir` overrides it, and may be absolute. ONE definition, because every

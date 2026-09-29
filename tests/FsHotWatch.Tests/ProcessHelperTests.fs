@@ -483,23 +483,43 @@ let ``isDotnetCommand rejects non-dotnet commands`` () =
     Assert.False(isDotnetCommand "/bin/sh")
     Assert.False(isDotnetCommand "dotnet-coverage")
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("dotnet", "build")>]
+[<InlineData("/usr/local/share/dotnet/dotnet", "build")>]
+[<InlineData("sh", "-c \"dotnet build 2> log; echo EXITCODE=$?\"")>]
+[<InlineData("sh", "-c \"cd src && /opt/dotnet/dotnet build\"")>]
+[<InlineData("env", "MSBUILDDISABLENODEREUSE=0 dotnet build")>]
+[<InlineData("sh", "-c 'make restore;dotnet.exe build'")>]
+let ``invokesDotnet finds dotnet as the command or as a word of its arguments`` (command: string, args: string) =
+    Assert.True(invokesDotnet command args)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("sh", "-c \"make all\"")>]
+[<InlineData("sh", "-c \"dotnet-coverage collect x\"")>]
+[<InlineData("sh", "build-dotnet.sh")>]
+[<InlineData("echo", "")>]
+let ``invokesDotnet does not treat every wrapper as dotnet`` (command: string, args: string) =
+    Assert.False(invokesDotnet command args)
+
 [<Fact(Timeout = 15000)>]
 let ``mergeDotnetEnv injects MSBUILDDISABLENODEREUSE for dotnet`` () =
-    let merged = mergeDotnetEnv "dotnet" []
+    let merged = mergeDotnetEnv "dotnet" "build" []
     Assert.Contains(("MSBUILDDISABLENODEREUSE", "1"), merged)
 
 [<Fact(Timeout = 15000)>]
-let ``mergeDotnetEnv injects the guard for wrapper commands`` () =
-    Assert.Contains(("MSBUILDDISABLENODEREUSE", "1"), mergeDotnetEnv "sh" [])
-
+let ``mergeDotnetEnv injects the guard for a wrapper that invokes dotnet`` () =
     Assert.Equal<(string * string) list>(
         [ "MSBUILDDISABLENODEREUSE", "1"; "FOO", "bar" ],
-        mergeDotnetEnv "sh" [ "FOO", "bar" ]
+        mergeDotnetEnv "sh" "-c \"dotnet build\"" [ "FOO", "bar" ]
     )
 
 [<Fact(Timeout = 15000)>]
+let ``mergeDotnetEnv leaves a wrapper that never invokes dotnet alone`` () =
+    Assert.Equal<(string * string) list>([ "FOO", "bar" ], mergeDotnetEnv "sh" "-c \"make all\"" [ "FOO", "bar" ])
+
+[<Fact(Timeout = 15000)>]
 let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
-    let merged = mergeDotnetEnv "dotnet" [ "MSBUILDDISABLENODEREUSE", "0" ]
+    let merged = mergeDotnetEnv "dotnet" "build" [ "MSBUILDDISABLENODEREUSE", "0" ]
     Assert.Equal<(string * string) list>([ "MSBUILDDISABLENODEREUSE", "0" ], merged)
 
 // Spawn-env contract — see the strip in ProcessHelper.runProcessWithTimeout
@@ -520,11 +540,50 @@ let ``runProcess inherits the parent process environment (no scrubbing)`` () =
 
     withEnv key (Some value) (fun () -> runProcess "sh" (echoEnv key) "." [] |> expectStdout value)
 
+/// A directory holding an executable named `dotnet` that prints the node-reuse guard it
+/// received — a stand-in the wrapper tests put first on PATH, so "the descendant dotnet
+/// received it" is observed on a real descendant without running a real build.
+let private withFakeDotnet (body: string -> unit) =
+    let dir =
+        IO.Path.Combine(IO.Path.GetTempPath(), "fshw-fake-dotnet-" + Guid.NewGuid().ToString("N"))
+
+    IO.Directory.CreateDirectory dir |> ignore
+    let exe = IO.Path.Combine(dir, "dotnet")
+    IO.File.WriteAllText(exe, "#!/bin/sh\nprintf %s \"$MSBUILDDISABLENODEREUSE\"\n")
+
+    IO.File.SetUnixFileMode(
+        exe,
+        IO.UnixFileMode.UserRead
+        ||| IO.UnixFileMode.UserWrite
+        ||| IO.UnixFileMode.UserExecute
+    )
+
+    try
+        body dir
+    finally
+        IO.Directory.Delete(dir, true)
+
+let private pathWith (dir: string) =
+    "PATH", dir + string IO.Path.PathSeparator + Environment.GetEnvironmentVariable "PATH"
+
 [<Fact(Timeout = 20000)>]
-let ``runProcess gives wrapper descendants the MSBuild node-reuse guard`` () =
+let ``runProcess gives a dotnet inside a shell wrapper the MSBuild node-reuse guard`` () =
+    withFakeDotnet (fun dir ->
+        withEnv "MSBUILDDISABLENODEREUSE" None (fun () ->
+            runProcess "sh" "-c \"dotnet build\"" "." [ pathWith dir ] |> expectStdout "1"))
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess gives a directly configured dotnet the MSBuild node-reuse guard`` () =
+    withFakeDotnet (fun dir ->
+        withEnv "MSBUILDDISABLENODEREUSE" None (fun () ->
+            runProcess (IO.Path.Combine(dir, "dotnet")) "build" "." [] |> expectStdout "1"))
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess leaves a wrapper that never invokes dotnet without the node-reuse guard`` () =
+    // The negative control: the guard follows an inner `dotnet`, not every shell.
     let args = "-c \"sh -c 'printf %s \\\"$MSBUILDDISABLENODEREUSE\\\"'\""
 
-    withEnv "MSBUILDDISABLENODEREUSE" None (fun () -> runProcess "sh" args "." [] |> expectStdout "1")
+    withEnv "MSBUILDDISABLENODEREUSE" None (fun () -> runProcess "sh" args "." [] |> expectStdout "")
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess strips DOTNET_ROOT_ARM64 unconditionally`` () =

@@ -474,12 +474,33 @@ let internal treeOf (rootPid: int) (rows: ProcessRow list) : ProcessRow list =
     // A zombie has already exited: nothing to aim a kill at, nothing that can leak.
     root @ below rootPid |> List.filter (fun r -> not r.Zombie)
 
+/// What asking a timed-out tree to stop (SIGINT to every member) established before
+/// it was killed. An orderly stop lets a child write what it only writes on shutdown —
+/// MSBuild flushes its binary log — which a SIGKILL throws away.
+[<NoComparison>]
+type internal TreeInterrupt =
+    {
+        /// When the first signal was sent (UTC).
+        At: DateTime
+        /// Members the signal was delivered to.
+        Signalled: int list
+        /// Members it could not be sent to, and why.
+        Refused: (int * string) list
+        /// How long the tree was given to exit.
+        Waited: TimeSpan
+        /// Every signalled member was gone before the grace ran out.
+        Exited: bool
+    }
+
 /// What tearing down a timed-out child's tree ESTABLISHED, as data a caller can put in
 /// its report — the kill outcome alone says what the kill CALL did, not what is left.
 [<NoComparison>]
 type internal TreeTeardown =
     {
         RootPid: int
+        /// The interrupt sent before the kill, when the caller asked for one and the
+        /// tree could be read.
+        Interrupt: TreeInterrupt option
         /// The root and its descendants read from the process table immediately BEFORE
         /// the kill. `Error` = the table could not be read, so the tree is unknown.
         Tree: Result<ProcessRow list, string>
@@ -504,17 +525,28 @@ type internal TreeTeardown =
 /// false "nothing leaked" is the failure this exists to prevent. A pid recycled inside
 /// the (sub-second) window would read as alive; that errs the same way.
 ///
-/// The table reader, the liveness probe, the pause and the kill are injected so the
-/// throwing, blocking and survivor arms are all deterministic.
-let internal accountTeardown
+/// `interrupt` runs between the snapshot and the kill, on the snapshot: a member that
+/// exits on the interrupt has left descendants re-parented, and only the snapshot still
+/// names them.
+///
+/// The table reader, the liveness probe, the pause, the interrupt and the kill are
+/// injected so the throwing, blocking and survivor arms are all deterministic.
+let internal accountTeardownWith
     (readTable: unit -> Result<ProcessRow list, string>)
     (isAlive: int -> Result<bool, string>)
     (settleAttempts: int)
     (pause: unit -> unit)
     (rootPid: int)
+    (interrupt: ProcessRow list -> TreeInterrupt option)
     (kill: unit -> KillOutcome)
     : TreeTeardown =
     let tree = readTable () |> Result.map (treeOf rootPid)
+
+    let interrupted =
+        match tree with
+        | Ok members when not (List.isEmpty members) -> interrupt members
+        | _ -> None
+
     let clock = Stopwatch.StartNew()
     let outcome = kill ()
     let took = clock.Elapsed
@@ -542,10 +574,68 @@ let internal accountTeardown
         | Ok members -> settle 1 members
 
     { RootPid = rootPid
+      Interrupt = interrupted
       Tree = tree
       KillTook = took
       Kill = outcome
       Survivors = survivors }
+
+/// `accountTeardownWith` with no interrupt: the tree is killed outright.
+let internal accountTeardown
+    (readTable: unit -> Result<ProcessRow list, string>)
+    (isAlive: int -> Result<bool, string>)
+    (settleAttempts: int)
+    (pause: unit -> unit)
+    (rootPid: int)
+    (kill: unit -> KillOutcome)
+    : TreeTeardown =
+    accountTeardownWith readTable isAlive settleAttempts pause rootPid (fun _ -> None) kill
+
+/// Send the interrupt to every member of `members`, then poll the signalled ones until
+/// all are gone or `attempts` polls are spent (`pause` between them). A liveness probe
+/// that cannot answer counts as still running: the wait errs toward the kill that
+/// follows, never toward "it stopped".
+let internal interruptTree
+    (signal: int -> Result<unit, string>)
+    (isAlive: int -> Result<bool, string>)
+    (attempts: int)
+    (pause: unit -> unit)
+    (members: ProcessRow list)
+    : TreeInterrupt =
+    let at = DateTime.UtcNow
+    let clock = Stopwatch.StartNew()
+    let sent = members |> List.map (fun m -> m.Pid, signal m.Pid)
+
+    let signalled =
+        sent |> List.choose (fun (pid, r) -> if Result.isOk r then Some pid else None)
+
+    let refused =
+        sent
+        |> List.choose (fun (pid, r) ->
+            match r with
+            | Error reason -> Some(pid, reason)
+            | Ok() -> None)
+
+    let running pid = isAlive pid <> Ok false
+
+    let rec wait attempt =
+        let left = signalled |> List.filter running
+
+        if List.isEmpty left then
+            true
+        elif attempt >= attempts then
+            false
+        else
+            pause ()
+            wait (attempt + 1)
+
+    let exited = not (List.isEmpty signalled) && wait 1
+
+    { At = at
+      Signalled = signalled
+      Refused = refused
+      Waited = clock.Elapsed
+      Exited = exited }
 
 [<RequireQualifiedAccess>]
 module private Libc =
@@ -569,6 +659,35 @@ let internal isProcessAlive (pid: int) : Result<bool, string> =
             | errno -> Error $"kill(%d{pid}, 0) failed with errno %d{errno}"
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// `kill(pid, SIGINT)`: the signal a terminal's Ctrl+C sends, which MSBuild answers by
+/// cancelling the build and shutting its loggers down in order.
+let internal sendInterrupt (pid: int) : Result<unit, string> =
+    try
+        if Libc.kill (pid, 2) = 0 then
+            Ok()
+        else
+            Error
+                $"kill(%d{pid}, SIGINT) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
+    with ex ->
+        Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// The pause between polls while an interrupted tree shuts down.
+let internal InterruptPoll = TimeSpan.FromMilliseconds 100.0
+
+/// How many `InterruptPoll`s fit in `grace` (at least one).
+let internal interruptAttempts (grace: TimeSpan) =
+    max 1 (int (Math.Ceiling(grace.TotalMilliseconds / InterruptPoll.TotalMilliseconds)))
+
+let internal interruptPause () = Thread.Sleep InterruptPoll
+
+/// The interrupt step of an accounted teardown: none without a grace; with one, SIGINT
+/// the snapshotted tree and wait up to the grace for it to exit.
+let internal interruptWith (grace: TimeSpan option) : ProcessRow list -> TreeInterrupt option =
+    match grace with
+    | Some g ->
+        fun members -> Some(interruptTree sendInterrupt isProcessAlive (interruptAttempts g) interruptPause members)
+    | None -> fun _ -> None
 
 let mutable private directSpawns = 0L
 let mutable private helperSpawns = 0L
@@ -669,13 +788,25 @@ let internal classifyDrain
     else
         ProcessOutput.DrainTimedOut(captured, window)
 
-/// True when the command will spawn `dotnet` (matching `dotnet`, `dotnet.exe`,
-/// or paths ending in either). Retained as a public command-classification helper;
-/// the node-reuse guard itself now applies before every child process because a
-/// non-dotnet wrapper can launch dotnet later.
+/// True when the command IS `dotnet` (matching `dotnet`, `dotnet.exe`, or paths
+/// ending in either).
 let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
+
+/// What ends a word on a shell command line: whitespace, quotes, and the operators that
+/// separate one command from the next.
+let private commandLineSeparators =
+    [| ' '; '\t'; '\r'; '\n'; '"'; '\''; '`'; ';'; '&'; '|'; '('; ')'; '<'; '>' |]
+
+/// True when the command line names `dotnet`: the command itself, or any word of its
+/// arguments — so `sh -c "dotnet build 2> log"` and `env X=1 dotnet build` count, and
+/// `sh -c "make all"` does not. A wrapper that reaches dotnet only through a script it
+/// runs is not detected; such a script sets what its own `dotnet` needs.
+let invokesDotnet (command: string) (args: string) =
+    isDotnetCommand command
+    || args.Split(commandLineSeparators, StringSplitOptions.RemoveEmptyEntries)
+       |> Array.exists isDotnetCommand
 
 /// Env keys that are only meaningful to the parent's in-process hosts (the .NET
 /// host, the in-process MSBuild ProjInfo stood up) and poison spawned children if
@@ -708,12 +839,15 @@ let private sanitizedChildEnvKeys =
       "MSBuildExtensionsPath"
       "MSBuildSDKsPath" ]
 
-/// Merge `MSBUILDDISABLENODEREUSE=1` into every child env unless the caller
-/// already set the key. A shell or other wrapper may launch `dotnet` after the
-/// immediate child starts, so deciding from the first executable loses the guard
-/// at exactly that process boundary. See docs/msbuild-node-reuse-bug.md.
-let mergeDotnetEnv (_command: string) (env: (string * string) list) : (string * string) list =
-    if not (env |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE")) then
+/// Merge `MSBUILDDISABLENODEREUSE=1` into the env of a child whose command line
+/// invokes `dotnet` (`invokesDotnet`), unless the caller already set the key. A shell
+/// wrapper that runs `dotnet` gets it, so its descendant `dotnet` inherits it; a
+/// wrapper that never names `dotnet` is left alone. See docs/msbuild-node-reuse-bug.md.
+let mergeDotnetEnv (command: string) (args: string) (env: (string * string) list) : (string * string) list =
+    if
+        invokesDotnet command args
+        && not (env |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE"))
+    then
         ("MSBUILDDISABLENODEREUSE", "1") :: env
     else
         env
@@ -921,7 +1055,7 @@ let private makeChildProcessStartInfo
     for key in sanitizedChildEnvKeys do
         psi.Environment.Remove(key) |> ignore
 
-    for (key, value) in mergeDotnetEnv command env do
+    for (key, value) in mergeDotnetEnv command args env do
         psi.Environment[key] <- value
 
     // Realpath DOTNET_HOST_PATH (`installedDotnet`). A no-op on normal installs. On
@@ -1282,8 +1416,8 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 /// emitted a byte within its launch deadline raises `LaunchStalledException`.
 ///
 /// Reads stdout/stderr incrementally so the FIRST byte is observed as liveness.
-/// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the caller
-/// already set it (via `makeChildProcessStartInfo`).
+/// For a command line that invokes `dotnet`, injects `MSBUILDDISABLENODEREUSE=1`
+/// unless the caller already set it (via `makeChildProcessStartInfo`).
 ///
 /// `sink`, when given, receives every chunk AS IT ARRIVES, on the pump thread,
 /// before the call returns. That ordering is the point: the returned `ProcessOutcome`
@@ -1300,6 +1434,9 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 /// the kill and names its survivors after it (`accountTeardown`), returned alongside
 /// the outcome. `runProcessTo` passes false; `runProcessAccounted` passes true.
 ///
+/// `interruptGrace` (accounted teardowns only): interrupt the snapshotted tree first
+/// and give it this long to exit before the kill (`interruptTree`).
+///
 /// `viaHelper`: when true and a spawn helper is installed in this scope
 /// (`SpawnHelper.install`), the helper starts the child and this process does not fork.
 /// Ownership, bounds, output and teardown are the same either way. Once the helper is
@@ -1313,6 +1450,7 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 let internal runProcessCore
     (viaHelper: bool)
     (accounted: bool)
+    (interruptGrace: TimeSpan option)
     (sink: (string -> unit) option)
     (onStarted: int -> unit)
     (command: string)
@@ -1420,7 +1558,14 @@ let internal runProcessCore
     let killTree () : KillOutcome =
         if accounted then
             let t =
-                accountTeardown readProcessTable isProcessAlive SettleAttempts settlePause pid plainKill
+                accountTeardownWith
+                    readProcessTable
+                    isProcessAlive
+                    SettleAttempts
+                    settlePause
+                    pid
+                    (interruptWith interruptGrace)
+                    plainKill
 
             match t.Survivors with
             | Ok survivors ->
@@ -1518,19 +1663,24 @@ let runProcessTo
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome =
-    runProcessCore false false sink ignore command args workDir env bounds |> fst
+    runProcessCore false false None sink ignore command args workDir env bounds
+    |> fst
 
 /// `runProcess`, plus — when the child overran and was torn down — WHICH tree the
 /// kill was aimed at and which of its members survived (`TreeTeardown`). For callers
 /// whose timeout report must name what it killed and what it leaked.
+///
+/// `interruptGrace`: when given, the overrunning tree is interrupted first and given
+/// that long to exit before it is killed (`TreeTeardown.Interrupt`).
 let internal runProcessAccounted
+    (interruptGrace: TimeSpan option)
     (command: string)
     (args: string)
     (workDir: string)
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome * TreeTeardown option =
-    runProcessCore false true None ignore command args workDir env bounds
+    runProcessCore false true interruptGrace None ignore command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
@@ -1557,7 +1707,8 @@ let runProcessObserved
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome =
-    runProcessCore true false None onStarted command args workDir env bounds |> fst
+    runProcessCore true false None None onStarted command args workDir env bounds
+    |> fst
 
 /// The expiry policy of `runWithCancellableTimeoutTracked`, with the deadline wait and
 /// the worker pool injected: `awaitWork task` returns true iff the work finished inside

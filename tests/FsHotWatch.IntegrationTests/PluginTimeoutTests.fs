@@ -116,7 +116,8 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
     test <@ summary.Contains "sleep 62" @>
     test <@ summary.Contains "none left running" @>
     test <@ report.Contains "timeoutSec" @>
-    test <@ report.Contains "MSBUILDDISABLENODEREUSE=1" @>
+    // The command never names dotnet, so fshw gave it no node-reuse setting.
+    test <@ report.Contains "MSBUILDDISABLENODEREUSE not set by fshw" @>
     test <@ report.Contains "last project the build reported finishing: Lib" @>
     // The shell AND both of its children, by command, read off the process table.
     test <@ report.Contains "`sleep 61`" @>
@@ -165,3 +166,61 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
                 (System.Diagnostics.Process.GetProcessById s.Pid).Kill()
             with _ ->
                 ()
+
+/// A real `dotnet build`, run quiet (`-v q`) inside a shell wrapper, stalls in a target
+/// whose name is known. The report must name THAT target — read from the side binlog fshw
+/// attaches, not from the console, which at quiet verbosity names nothing — and must not
+/// name the target that finished before it.
+[<Fact(Timeout = 120000)>]
+let ``an overrunning quiet dotnet build names the target it was stalled in`` () =
+    let root =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fshw-stall-" + System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory root |> ignore
+
+    System.IO.File.WriteAllText(
+        System.IO.Path.Combine(root, "stall.proj"),
+        """<Project>
+  <Target Name="Build" DependsOnTargets="FinishesFirst;StallsHere" />
+  <Target Name="FinishesFirst"><Message Importance="high" Text="done early" /></Target>
+  <Target Name="StallsHere"><Exec Command="sleep 120" /></Target>
+</Project>"""
+    )
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        let handler =
+            FsHotWatch.Build.BuildPlugin.create
+                "sh"
+                "-c \"dotnet build stall.proj -v q -nologo 2> build-stderr.log; rc=$?; echo EXITCODE=$rc; exit $rc\""
+                []
+                (ProjectGraph())
+                []
+                None
+                []
+                (Some 20)
+
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+        waitForTerminalStatus host "build" 100000
+
+        let summary =
+            match (List.last (host.GetHistory "build")).Outcome with
+            | TimedOut summary -> summary
+            | other -> failwith $"expected TimedOut, got %A{other}"
+
+        let report =
+            host.GetErrorsByPlugin "build"
+            |> Map.toList
+            |> List.collect snd
+            |> List.map _.Message
+            |> String.concat "\n"
+
+        test <@ summary.Contains "StallsHere" @>
+        test <@ report.Contains "target StallsHere" @>
+        test <@ report.Contains "stall.proj" @>
+        test <@ not (report.Contains "target FinishesFirst") @>
+        test <@ not (report.Contains "LEAKED") @>
+    finally
+        System.IO.Directory.Delete(root, true)
