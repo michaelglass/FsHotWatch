@@ -194,7 +194,7 @@ let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command:
 
     // FSHW-SPAWN-001 ok: the helper is started here rather than through ProcessHelper
     // because its environment passes, unmodified, to the shell it execs and so to the
-    // daemon. ProcessHelper strips `DOTNET_ROOT_<arch>` and forces
+    // daemon. ProcessHelper strips `DOTNET_ROOT_<arch>` and may force
     // `MSBUILDDISABLENODEREUSE` — right for a build child, wrong for a long-lived apphost
     // daemon that may locate its runtime through exactly that variable. The helper is
     // still bounded and reaped below; what it launches detaches on purpose and must not

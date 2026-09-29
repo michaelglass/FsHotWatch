@@ -287,6 +287,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `build` | `object \| bool` | `{"command": "dotnet", "args": "build"}` | Build command. `false` disables. |
+| `timeoutSec` | `number \| false` | `1200` | Default bound (seconds) on every build, test project, file command and preprocessor run; a per-entry `timeoutSec` overrides it. `0` or `false` disables it. See [Memory & tuning](docs/memory-and-tuning.md#per-task-timeouts). |
 | `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. |
 | `lint` | `bool` | `true` | Enable FSharpLint plugin. Uses `fsharplint.json` if found. |
 | `cache` | `string \| bool` | `"file"` | Cache strategy: `"none"`, `"memory"`, or `"file"`. (`"jj"` is a legacy alias for `"file"`.) |
@@ -314,6 +315,7 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 | `command` | `string` | `"dotnet"` | Build command. |
 | `args` | `string` | `"build"` | Arguments to the build command. |
 | `buildTemplate` | `string` | — | Template for incremental builds. `{projects}` is replaced with changed project paths. |
+| `timeoutSec` | `number` | global `timeoutSec` | Bound on one build. Resolution: this → the top-level `timeoutSec` → the built-in 1200s default. An overrunning build reports the targets still running, what it killed and what survived. See [Memory & tuning](docs/memory-and-tuning.md#per-task-timeouts). |
 
 **`tests` fields:**
 

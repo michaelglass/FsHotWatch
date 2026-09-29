@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- change: the default per-operation timeout (`DefaultGlobalTimeoutSec`, used when
+  neither a per-entry nor the top-level `timeoutSec` is set) is 1200 s, up from 600 s.
+  The slowest cold build on record for the largest repository fshw watches took 999 s,
+  so the old default killed builds that were still making progress; 1200 s is that
+  worst case plus a fifth. The README now documents the top-level `timeoutSec` and the
+  `build` entry's `timeoutSec`.
+
 ## 0.14.0-alpha.78 - 2026-09-29
 
 - deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
