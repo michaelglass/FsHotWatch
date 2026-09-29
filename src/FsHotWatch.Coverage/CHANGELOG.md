@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deps: CoverageRatchet.Core 0.1.0-alpha.12 (from 0.1.0-alpha.6). Its report readers now read
+  `.fs`/`.cs`/`.vb` sources by default and choose which test directories they read
+  differently, so a repository's measured coverage — and the floors it is judged against —
+  can move on the first run after upgrading.
+
 ## 0.7.0-alpha.26 - 2026-09-25
 
 - TestPrune: a BuildSucceeded during a held tests lane queues its re-run without selecting

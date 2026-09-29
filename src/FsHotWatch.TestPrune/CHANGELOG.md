@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic
+  record or union now changes the type's hash, so its dependents are no longer skipped after
+  such an edit, and traces map a generic union's cases instead of reporting them as unmapped.
+  The index schema moves from 19 to 20: the first open after upgrading recreates the index,
+  and the first check runs the full suite.
+
 ## 0.13.0-alpha.59 - 2026-09-29
 
 - deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
