@@ -41,7 +41,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -78,7 +78,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -107,7 +107,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -136,7 +136,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -165,7 +165,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -194,7 +194,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -223,7 +223,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -252,7 +252,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
@@ -281,7 +281,7 @@ jobs:
         with:
           name: nuget-packages
           path: ./artifacts
-      - uses: nuget/login@v1
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: ${{ vars.NUGET_USER }}
