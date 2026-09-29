@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.60 - 2026-09-29
+
 - fix: a check whose answer declared a type incompatible with ITSELF is no longer written
   to the check-result cache. The cache key is the file's content and options, so a
   stored suspect answer was replayed by every later scan of the unchanged file, and only

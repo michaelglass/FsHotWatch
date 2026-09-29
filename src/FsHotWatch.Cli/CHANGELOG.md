@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.79 - 2026-09-29
+
 - deps: CommandTree 0.11.3, which indents a multi-line command description's continuation
   lines under the description column in the `--help` listing and leaves `<verb> --help`
   flush-left. `confirm`'s description no longer carries its own continuation indent, so
