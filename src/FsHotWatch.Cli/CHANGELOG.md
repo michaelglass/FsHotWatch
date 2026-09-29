@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the `--project`, `--wait-sec`, `--entry` and `--log-level` flags no longer carry
+  `[<CmdArg>]`, which CommandTree ignores on a flag but which made each flag union read
+  as a second command root, so release tooling could not recover the CLI grammar to
+  diff. Parsing and `--help` output are unchanged.
+
 ## 0.14.0-alpha.79 - 2026-09-29
 
 - deps: CommandTree 0.11.3, which indents a multi-line command description's continuation
