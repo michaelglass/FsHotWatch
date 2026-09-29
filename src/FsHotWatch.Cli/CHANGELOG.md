@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic
+  record or union now changes the type's hash, so its dependents are no longer skipped after
+  such an edit, and traces map a generic union's cases instead of reporting them as unmapped.
+  The index schema moves from 19 to 20: the first open after upgrading recreates the index,
+  and the first check runs the full suite.
+
+- deps: CommandTree 0.12.0. Its breaking change (`GroupData.Default` becomes the default
+  child's name as a `string option`; `DefaultCommand` is removed) touches no API the CLI
+  uses; the CLI compiles against it unchanged.
+
 ## 0.14.0-alpha.79 - 2026-09-29
 
 - deps: CommandTree 0.11.3, which indents a multi-line command description's continuation

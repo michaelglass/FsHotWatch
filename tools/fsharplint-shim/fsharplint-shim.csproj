@@ -29,6 +29,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FSharpLintAnalyzerShim" Version="0.4.0-alpha.2" />
+    <PackageReference Include="FSharpLintAnalyzerShim" Version="0.5.0-alpha.1" />
   </ItemGroup>
 </Project>
