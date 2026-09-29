@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- deps: CoverageRatchet.Core 0.1.0-alpha.13. The plugin now reads coverage reports with the
+  reader options its floor file asks for (`loadReaderOptions` + `readReports`), as the
+  `coverageratchet` CLI does. The directory rules see only the directories below the floor
+  file, so a checkout under a directory named `tests`, `test` or `obj` is measured instead
+  of reading nothing, and a floor file's `includedExtensions` list is honoured. The daemon's
+  coverage verdict and the CLI's now agree on the same reports.
+- fix: a floor file whose reader options cannot be read (e.g. an empty `includedExtensions`
+  list) fails the coverage check, whatever the run's scope, instead of judging nothing.
+  `coverage-ratchet` reports the same error and leaves the file untouched.
+
 - deps: CoverageRatchet.Core 0.1.0-alpha.12 (from 0.1.0-alpha.6). Its report readers now read
   `.fs`/`.cs`/`.vb` sources by default and choose which test directories they read
   differently, so a repository's measured coverage — and the floors it is judged against —

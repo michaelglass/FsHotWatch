@@ -196,7 +196,8 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
         [ for _ in 1..10 ->
               match CovPlugin.gateVerdict RunScope.Partial (SomeFailed belowFloor) with
               | CovPlugin.NotGatedFiltered n -> Some n
-              | CovPlugin.Failed _ -> None
+              | CovPlugin.Failed _
+              | CovPlugin.Unreadable _ -> None
               | CovPlugin.Passed -> Some 0 ]
 
     test <@ verdicts |> List.forall (fun v -> v = Some 3) @>
@@ -229,6 +230,61 @@ let ``plugin reports errors when file is below threshold`` () =
         let fileErrors = errors |> Map.tryFind "MyModule.fs"
         test <@ fileErrors.IsSome @>
         test <@ not fileErrors.Value.IsEmpty @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a checkout under a directory named tests is still measured`` () =
+    // The reader's directory rules skip a file under `tests/`. They must see only the
+    // directories below the floor file, as the coverageratchet CLI does: judged against
+    // the whole absolute path, every file in this checkout would be skipped and the
+    // check would pass having read nothing.
+    withTempDir "coverage-root" (fun dir ->
+        let checkout = Path.Combine(dir, "tests", "checkout")
+        let source = Path.Combine(checkout, "src", "MyModule.fs")
+        Directory.CreateDirectory(Path.GetDirectoryName source) |> ignore
+        let xmlPath = Path.Combine(checkout, "coverage.cobertura.xml")
+        let configPath = Path.Combine(checkout, "coverage-ratchet.json")
+
+        File.WriteAllText(xmlPath, coberturaXml source [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) checkout
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath checkout)
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey "MyModule.fs" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a floor file whose reader options cannot be read fails the check`` () =
+    // An empty `includedExtensions` list is refused by the reader. The check has then
+    // judged nothing, so it must fail rather than pass.
+    withTempDir "coverage-unreadable" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1) ])
+        File.WriteAllText(configPath, """{ "includedExtensions": [] }""")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a file below only its branch floor is reported for branches alone`` () =
