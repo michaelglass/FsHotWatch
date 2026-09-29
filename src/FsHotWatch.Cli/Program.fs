@@ -214,19 +214,6 @@ type DeadCodeFlag =
         CmdArg("pattern")>] Entry of string
     | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
 
-/// The column CommandTree indents a command's description to in the `fshw --help`
-/// listing (two spaces, then the name padded to 17). A description is emitted VERBATIM
-/// on both surfaces, so a multi-line one must carry its own continuation indent — an
-/// un-indented second line starts at column 0 in the listing and reads as if it were
-/// another COMMAND.
-///
-/// The cost is that `fshw confirm --help`, which prints the description as a left-aligned
-/// block, shows those continuation lines indented: readable but ragged. The fix would be
-/// for CommandTree to re-indent per surface; until then the LISTING wins, because that is
-/// where the verb is discovered.
-[<Literal>]
-let private HelpIndent = "                   "
-
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
     | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
@@ -259,17 +246,11 @@ type Command =
     /// `CheckVerdict.Freshness`.
     | [<CmdExample("", "--run-once", "--fresh");
         Cmd("Run the FULL suite and confirm `check` told the truth.\n"
-            + HelpIndent
             + "Any disagreement is a BUG:\n"
-            + HelpIndent
             + "  failed here, not selected by check  → the selector MISSED a test\n"
-            + HelpIndent
             + "  passed here, but check says failed  → a stale red, a flake, or a\n"
-            + HelpIndent
             + "                                        test that only passes with company\n"
-            + HelpIndent
             + "Refuses a green verdict from anything less than the full suite (exit 3).\n"
-            + HelpIndent
             + "An unchanged tree is answered from the evidence already earned; --fresh runs it again.")>] Confirm of
         ConfirmFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
