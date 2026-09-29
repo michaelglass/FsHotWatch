@@ -310,3 +310,79 @@ test, not a woven-in module.
 | `confirm` on an unchanged tree cannot be forced to re-run | `confirm`, `invalidate` + `confirm` and `--no-cache confirm --run-once` all replay the previous verdict (`.fshw/verdict.json` and the daemon's receipt). Runs 2 and 3 were forced by stopping the daemon and moving `verdict.json` aside |
 | census of an older run loses its incomplete reasons | `census --run 1d0448d5…` after run 2 prints no `incomplete` line; the same tests' traces were re-recorded by run 2, which replaced run 1's reasons. The newest run prints `child-process-untraced 14` |
 | audit's parallel run has 17 `child-process-untraced` tests, the census 14 | audit: dotnet 9, sleep 5, sh 2, chmod 1; `confirm` run: 14 (second run's breakdown: dotnet 6, sleep 5, sh 2, chmod 1). The 3 extra `dotnet` children are in the audit's own launch only; not investigated |
+
+## Fourth run (alpha.78, 2026-09-29)
+
+FsHotWatch CLI `0.14.0-alpha.78`, which bundles TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. That includes
+0.3.1's fix for branch points under a match's later hidden sequence points and 0.4.0's static-init inheritance.
+Same `tests.traces`, macOS arm64 on AC power, a fresh workspace off `main` with only the pin bump. Each traced
+full run is `dotnet fshw confirm --fresh`. The measurement verbs ran from this tree's `src/TestPrune.Trace.Cli`,
+whose `TestPrune.Trace` is the released 0.4.1. CPU busy is the mean over two 1 s `top` samples just before each
+launch.
+
+### Runs
+
+| Run | Start (UTC) | Load at start (1/5/15 min) | CPU busy | Result | TestPrune.Tests | TestPrune.Trace.Tests |
+|---|---|---|---|---|---|---|
+| `confirm` 1 (`4d10d1f7…`) | 12:24:14 | 9.7 / 13.0 / 38.3 | 93 % | exit 0 | 1041: 0 failed, 1 skipped; recorded | 328: 0 failed; refused (own recorder) |
+| `confirm` 2 (`9240123e…`) | 12:30:27 | 29.0 / 38.1 / 43.5 | 72 % | exit 0 | 1041: 0 failed, 1 skipped; recorded | 328: 0 failed; refused (own recorder) |
+| `confirm` 3 (`be272951…`) | 12:48:51 | 9.7 / 21.4 / 30.7 | 35 % | exit 0 | 1041: 0 failed, 1 skipped; recorded | 328: 0 failed; refused (own recorder) |
+| untraced full run (`6cd21e06…`), `tests.traces` removed | 12:49:48 | 14.5 / 21.2 / 30.1 | 21 % | exit 0 | 1041: 0 failed, 1 skipped | 328: 0 failed |
+
+All three traced runs have the same input tree (`sha256:8e2e8784…`). `.fshw.json` was restored byte-identical
+after the untraced run.
+
+| Recorded stats, TestPrune.Tests | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| executed / traced / complete | 1037 / 1037 / 946 | 1037 / 1037 / 946 | 1037 / 1037 / 946 |
+| test-scope hits | 19,785,966 | 19,785,966 | 19,785,966 |
+| static-init / ambient / overflow hits | 770 / 0 / 0 | 770 / 0 / 0 | 770 / 0 / 0 |
+| unmapped ids, rejected dumps | 0, none | 0, none | 0, none |
+| recorder CPU | 70.2 s | 67.7 s | 70.1 s |
+
+Against alpha.74 there are 946 complete traces instead of 942, and 770 static-init hits instead of 410. Both
+changes come from 0.4.0, which records each type initializer in its own scope and links it to the tests that
+use the type.
+
+### Bars (TestPrune.Tests; every verb refuses TestPrune.Trace.Tests with the own-recorder reason, exit 2)
+
+| Bar | Pass when | Measured | Start (UTC), load, CPU busy | Verdict |
+|---|---|---|---|---|
+| census: traced | ≥ 0.99 on 3 consecutive full runs | 1037/1037 (1.0000) on runs 1, 2 and 3 | see Runs | pass |
+| census: ambient | < 0.001, or listed | 0 / 19,786,736 on each run | see Runs | pass |
+| audit | `ExtraTotal = 0`; `MissingUser` explained | sampled 11, extra 0; missing only `cctor`; no `missing user` | 12:50:48, 17.2, 17 % | pass |
+| overhead | CPU ratio ≤ 1.15 | 1.067 (untraced median 78.1 s, range 78.0–78.2; traced 83.4 s, range 81.8–84.5); peak RSS 1,856.5 MiB; all 6 samples exit 0 | 12:51:40, 9.9, 22 % | pass |
+| file-census | ratio ≤ 0.05 | 0.000 (fail-outside 20, reach-outside 1, reads-repo 21, fail-in-repo 0) | 12:54:42, 6.2, 30 % | pass |
+| coverage parity | identical per-file lines and branches; no recorder module | identical in every file, line hit counts included (below) | see Runs | pass |
+| PDB / JIT | `prepare` refused nothing on a traced project | `trace_runs.status` `recorded`, no rejected dump, on all 3 runs; the only refusal is the intended own-recorder one | — | pass |
+
+The file-census ratio fell from 0.048 to 0. The one test that used to account for the difference reads a
+repository file at an absolute path. 0.4.0's `file-census` now counts that read, made from outside the
+repository, as a dependency on the repository (`reach-outside 1`).
+
+### Coverage parity (traced run 3 against the untraced run)
+
+| Report | Files | Lines covered / valid | Branches covered / valid | Differing files |
+|---|---|---|---|---|
+| TestPrune.Tests traced | 31 = 31 | 5,561 / 5,957 = | 2,160 / 2,690 = | 0 |
+| TestPrune.Trace.Tests (refused, untraced both times) | 33 = 33 | 3,250 / 3,251 = | 1,051 / 1,067 = | 0 |
+| merged `coverage/coverage.cobertura.xml` | 64 = 64 | 8,811 / 9,208 = | none reported | 0 |
+
+Every line's hit count and condition coverage is identical as well. The traced TestPrune.Tests report has no
+`TestPrune.Trace.Recorder` package. TestPrune.Trace.Tests reports one traced and untraced alike, because that
+suite's code under test is the recorder. The totals are not comparable with earlier rounds (the tree
+and the pinned SDK band both changed since then); parity is measured within this round.
+
+### Observations
+
+| Observation | Detail |
+|---|---|
+| audit and census count `child-process-untraced` differently | explained: the audit's parallel run counts 9 `dotnet` tests and the census 6. The census stores one trace per test method (`class` + `method`), while the audit counts each xUnit test instance. `NuGetPublicationBarrierTests` starts `dotnet` from 5 facts and from one theory with 4 `InlineData` rows: 5 + 1 = 6 methods, 5 + 4 = 9 instances. The other kinds (sleep 5, sh 2, chmod 1) have no theories, so they agree. Nothing to fix |
+| the untraced full run was launched by the daemon, not by `confirm` | removing `tests.traces` changed `.fshw.json`, so the daemon stopped and a new daemon ran the full suite (`6cd21e06…`, coverage written 12:50:41). `confirm --fresh`, started four seconds after the edit, graded that run and printed "no test needed: nothing changed since run 6cd21e06…, which verified this tree". The run was real and complete; only the wording reads like a skip |
+| census of an older run loses its incomplete reasons | unchanged from the third run: re-recording a test replaces its reasons |
+| no traced launch exited nonzero | 3 traced `confirm`s, 3 traced `overhead` samples, and the audit's parallel run and 11 isolated launches |
+
+### Phase-1 bar on TestPrune's own suite
+
+Every D6 bar holds for TestPrune.Tests on a released toolchain. TestPrune.Trace.Tests is intentionally not
+traced (ADR 0008). No unexplained item remains, so no defect was filed.
