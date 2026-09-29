@@ -182,6 +182,7 @@
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="CliGrammarRootTests.fs" />
     <Compile Include="HookStepSubtaskTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
