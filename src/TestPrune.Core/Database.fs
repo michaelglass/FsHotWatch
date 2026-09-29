@@ -350,6 +350,14 @@ let private openConnection (dbPath: string) =
 /// v19    — no schema text change; a REBUILD. Inline members carry the TestPrune.Inline
 ///          attribute. A file not re-indexed would keep none, so its inline members would
 ///          look like ordinary ones to every reader of the attribute index.
+/// v20    — no schema text change; a REBUILD, because stored names and hashes changed
+///          meaning for generic types. A case of a generic union is named under the
+///          union's own name (`M.Lookup`1.Found`), not FCS's display form
+///          (`M.Lookup<_>.Found`), which neither the union's symbol nor the CLR type a
+///          runtime trace records uses. And a generic type's hash now covers its header;
+///          before, its arity-suffixed name matched no declaration in the syntax tree, so
+///          the hash covered only the line naming the type. A file not re-indexed would
+///          keep the old case names, the edges to them, and header hashes that miss edits.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -365,7 +373,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 19
+let SchemaVersion = 20
 
 /// The `dependencies.source_file` value that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

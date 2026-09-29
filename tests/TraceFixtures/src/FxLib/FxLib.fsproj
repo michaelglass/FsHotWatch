@@ -12,6 +12,7 @@
         <Compile Include="Logic.fs" />
         <Compile Include="Pipelines.fs" />
         <Compile Include="Settings.fs" />
+        <Compile Include="Generics.fs" />
     </ItemGroup>
 
 </Project>

@@ -291,8 +291,8 @@ let internal entityName (entity: FSharpEntity) : string =
     else
         fullName
 
-/// Qualify `name` — a member's or union case's — when its declaring entity is a
-/// global-namespace type, so it stays under that type's indexed name.
+/// Qualify a member's `name` when its declaring entity is a global-namespace type, so it
+/// stays under that type's indexed name.
 let private withGlobalQualifier (declaring: FSharpEntity option) (name: string) : string =
     match declaring with
     | Some entity ->
@@ -441,9 +441,13 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
     with _ ->
         None
 
+/// A union case is named under its union's indexed name: `M.Lookup`1.Found` for a case
+/// of `type Lookup<'value>`. FCS's `FSharpUnionCase.FullName` renders a generic union in
+/// display form instead (`M.Lookup<_>.Found`), a name nothing else uses: the union's own
+/// symbol, its members and the CLR type a runtime trace records are all `M.Lookup`1`.
 let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) option =
     try
-        Some(DuCase, withGlobalQualifier (Some uc.DeclaringEntity) uc.FullName)
+        Some(DuCase, entityName uc.DeclaringEntity + "." + uc.Name)
     with _ ->
         None
 
@@ -1318,6 +1322,12 @@ let private lastNameSegment (n: string) : string =
         | -1 -> n
         | i -> n.[i + 1 ..]
 
+/// A name without its trailing CLR generic arity: ``Lookup`1`` → `Lookup`.
+let private withoutArity (name: string) : string =
+    match name.LastIndexOf '`' with
+    | i when i > 0 && i < name.Length - 1 && Seq.forall Char.IsDigit name.[i + 1 ..] -> name.[.. i - 1]
+    | _ -> name
+
 /// Reduce the name FCS reports (`FullName`) to the name the AST collector records
 /// (`Ident.idText`), so the two can be matched.
 ///
@@ -1329,6 +1339,7 @@ let private lastNameSegment (n: string) : string =
 /// | `let (+.) a b`        | `M.(+.)`               | `op_PlusDot`         |
 /// | `let (\|Even\|Odd\|) n` | `M.(\|Even\|Odd\|)`  | `\|Even\|Odd\|`      |
 /// | ``let ``a b`` x``     | ``M.``a b`` ``         | `a b`                |
+/// | `type Lookup<'value>` | ``M.Lookup`1``         | `Lookup`             |
 ///
 /// A symbol is only tracked when the two agree, so any mismatch is a binding silently
 /// dropped from the graph: a change to it selects no tests, and a green run that
@@ -1340,6 +1351,9 @@ let private lastNameSegment (n: string) : string =
 /// The operator/active-pattern split is F#'s own, not a heuristic: `(|||)` is a
 /// bitwise-or OPERATOR whose display name has the same outer shape as an active
 /// pattern, and only `PrettyNaming` tells them apart correctly.
+///
+/// A generic type's `FullName` carries the CLR arity suffix (`` `1 ``), which no F#
+/// identifier can end in unless backticked, so it is stripped from unbackticked names only.
 let canonicalShortName (n: string) : string =
     let segment = lastNameSegment n
 
@@ -1351,7 +1365,7 @@ let canonicalShortName (n: string) : string =
         then
             segment.[2 .. segment.Length - 3]
         else
-            segment
+            withoutArity segment
 
     if
         unbackticked.Length > 2

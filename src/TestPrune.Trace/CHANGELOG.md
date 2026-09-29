@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: hits on a generic union's cases (`Lookup`1+Found`) map to the indexed case instead of
+  being reported as unmapped code; needs the TestPrune.Core release that indexes them under
+  the union's own name. A generic type's constructor matches its type by the same short name
+  the index uses, and `Joiner.typeCandidates` no longer tries an arity-less name, which no
+  index entry has.
+- fix: an F# anonymous record's generated type (`<>f__AnonymousType…`) is dropped instead of
+  reported as unmapped code. It has no source document or symbol; the code that builds and
+  reads the record is traced where it is written.
+
 ## 0.4.1 - 2026-09-28
 
 - changelog: the TestPrune.Inline attribute index is a feature, not a breaking change
