@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.59 - 2026-09-29
+
 - deps: TestPrune.Core 13.3.0 and TestPrune.Trace 0.4.1. The index now records F#
   `inline` members, so a test that reaches code only through an inline function is
   selected when that code changes. The index schema moves from 18 to 19: the first

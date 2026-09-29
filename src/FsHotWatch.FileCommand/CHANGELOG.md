@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.25 - 2026-09-29
+
+- Share JSON accessors, deadline parsing and run helpers; one scope-label key
+
+
 ## 0.7.0-alpha.24 - 2026-09-18
 
 - One settled read decides a check: the convergence loop is deleted

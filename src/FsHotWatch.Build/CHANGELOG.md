@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.43 - 2026-09-29
+
 - A failed build now reports what failed instead of its first output line. The status
   line and the error ledger lead with the build's MSBuild `error XX####:` lines (positioned
   or not, e.g. `MSBUILD : error FS0039: …` or `Lib.fsproj : error NU1101: …`), or with its
