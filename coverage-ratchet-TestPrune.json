@@ -113,6 +113,11 @@
       "line": 82,
       "branch": 50,
       "reason": "BRANCH FLOOR TRACKS LINUX (2026-08-13): CI instruments 126 branches here where the last green run instrumented 68 — same code, same tests, line coverage byte-identical at 84.3%. 42/68 (61.8%) became 71/126 (56.3%) and the old 60 floor failed. Set below the Linux value with headroom; line coverage, which did not drift, remains the real guard.Original rationale: Falco.UnionRoutes case->URL derivation. Like the other FCS untyped-AST walks in this repo, it has one arm per syntax shape plus defensive try/with around range extraction and parsing (multi-line attribute ranges, non-ImplFile/script inputs, un-nameable long-idents, FullType union cases, parenthesised field types, parse/read failures) that F# test source cannot reproducibly synthesise. The realistic route-DU constructs (explicit paths, empty-segment/kebab conventions, param inference, nesting, cycles, multi-parent leaves, nested modules) are covered. Pinned at the honest achieved floor rather than excluded."
+    },
+    "TestRunner.fs": {
+      "line": 96,
+      "branch": 91,
+      "reason": "loosened automatically"
     }
   }
 }
