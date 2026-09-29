@@ -245,8 +245,10 @@ type CheckOutcome =
     ///
     /// So the tool stops picking a side: NO VERDICT (exit 3), same as an unearned
     /// scope. Nothing is claimed broken and nothing is claimed sound, the gate still
-    /// refuses, and — the part that closes the loop — the output names `fshw stop`,
-    /// which is the only thing that clears this state.
+    /// refuses, and — the part that closes the loop — the output names the remedy. The
+    /// daemon has already re-checked the suspect answers once for this tree before grading
+    /// (`SuspectRecheck`), keeping the test evidence it holds; what reaches this outcome
+    /// survived that, and `fshw stop` is what clears it.
     ///
     /// Never reached while any plugin failed or any diagnostic IS attributable: a
     /// single real red outranks any amount of stale noise beside it.

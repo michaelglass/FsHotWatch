@@ -224,8 +224,16 @@ let private runOnceAndVerdictIn
             | None -> ()
 
         let scanAndSettle () : Map<string, PluginStatus> =
-            let statuses = runScan daemon
+            let scanned = runScan daemon
             awaitDiscovery ()
+
+            // Suspect answers are re-checked once for this tree before the verdict reads
+            // anything, exactly as the daemon path does in `SettleForVerdict`.
+            let statuses =
+                match daemon.RecheckSuspectOnce daemon.Settle |> Async.RunSynchronously with
+                | Some _ -> daemon.Host.GetAllStatuses()
+                | None -> scanned
+
             daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
             settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
             statuses

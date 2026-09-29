@@ -3918,10 +3918,13 @@ let ``AC5: an ordinary red says none of that`` () =
 [<Fact>]
 let ``AC5: the stale-state outcome is INCOMPLETE and names the remedy`` () =
     // Never `red`: the structured outcome is what a deploy preflight reads, and "the
-    // daemon is stale" must route to retry-after-stop, not to "tests failed".
+    // daemon is stale" must route to a restart, not to "tests failed". The daemon has
+    // already re-checked the suspect answers once before grading, so the reader is told
+    // that, and `stop` is named as what is left for the ones that survived it.
     match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.StaleDaemonState 51) with
     | Verdict.Incomplete reason ->
         test <@ reason.Contains "51" @>
+        test <@ reason.Contains "already re-checked" @>
         test <@ reason.Contains "fshw stop" @>
         test <@ reason.Contains "does NOT" @>
     | other -> failwithf "stale daemon state must be INCOMPLETE, got %A" other

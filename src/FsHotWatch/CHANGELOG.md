@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix: a check whose answer declared a type incompatible with ITSELF is no longer written
+  to the check-result cache. The cache key is the file's content and options, so a
+  stored suspect answer was replayed by every later scan of the unchanged file, and only
+  a new process cleared it.
+- feat: a check that settles holding `fcs-internal` entries re-checks them once for its
+  tree before it is graded (`SuspectRecheck`, `Daemon.SettleForVerdict`): each such
+  file's cached answer and its project's checker generation are dropped, the tree is
+  scanned, and the host settles again. Everything else the daemon holds is kept,
+  including the test evidence a completed run earned for the tree, so a check whose
+  tests passed grades that run instead of the next check running the suite again. It
+  waits for an exclusive run (a test run, a build) to finish rather than interrupting
+  it, happens at most once per tree hash, and logs one line naming the files re-checked
+  and the survivors.
+- feat: `PluginHost.ExclusiveHolders` names the plugins holding an exclusive run,
+  counting a finished run whose result fold has not committed.
+
 - change: `MSBUILDDISABLENODEREUSE=1` is injected only into a child whose command line
   invokes `dotnet` — the command itself, or a word of its arguments, so
   `sh -c "dotnet build 2> log"` still gets it. A wrapper that never names `dotnet` is

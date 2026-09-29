@@ -3267,6 +3267,84 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
 
         test <@ report.Scope = expectedScope @>)
 
+[<Fact(Timeout = 30000)>]
+let ``a suspect re-check of an unchanged file leaves the earned receipt and launches nothing`` () =
+    // The settle re-check (`SuspectRecheck`) checks a file again inside the daemon that
+    // earned the receipt: TestPrune sees a fresh FileChecked and its cohort seal for bytes
+    // it has already analysed, then the scan's ordinary build. None of that is a change, so the
+    // run the receipt names must still be the one graded, and no test may execute.
+    withTempDir "suspect-recheck-receipt" (fun root ->
+        // Under `src/`, where the receipt's input tree is walked, so an edit would move it.
+        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+        let source = Path.Combine(root, "src", "Lib.fsx")
+        let text = "module Lib\nlet value = 42\n"
+        File.WriteAllText(source, text)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let options = getScriptOptions checker source text |> Async.RunSynchronously
+        pipeline.RegisterProject(source, options)
+
+        let checkedNow () =
+            pipeline.CheckFile(AbsFilePath.create source)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+            |> stampFixture
+
+        let config =
+            { projConfig "ProjA" with
+                Command = "unexpected-test-execution" }
+
+        let configs = [ config; { config with Project = "ProjB" } ]
+        let handler = create ":memory:" root (Some configs) None None None None []
+        let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+        let mutable scheduled: (SharedResourceState -> Async<TestPruneMsg>) option = None
+
+        let ctx =
+            { recordingCtx with
+                RepoRoot = root
+                RunExclusiveShared =
+                    fun _ _ work _ _ ->
+                        scheduled <- Some work
+                        SharedClaimed }
+
+        let step state event =
+            handler.Update ctx state event |> Async.RunSynchronously
+
+        // The scan that preceded the run analysed the file and sealed its cohort.
+        let scanned =
+            step (step handler.Init (FileChecked(checkedNow ()))) (BatchChecked(fakeBatchChecked [ source ]))
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree root)
+
+        let earned = step scanned fullRun
+        let earnedRunId = earned.EvidenceReceipt.Value.RunId
+        scheduled <- None
+
+        // The re-check: a fresh answer for the same bytes, its seal, then the scan's build.
+        let rechecked =
+            step (step earned (FileChecked(checkedNow ()))) (BatchChecked(fakeBatchChecked [ source ]))
+
+        test <@ rechecked.EvidenceReceipt |> Option.map (fun r -> r.RunId) = Some earnedRunId @>
+
+        let launched = step rechecked (BuildCompleted BuildSucceeded)
+        Assert.True(scheduled.IsSome, "the build must schedule the ordinary impact selection")
+
+        let completion = scheduled.Value Ready |> Async.RunSynchronously
+
+        match completion with
+        | TestsFinished(_, completed, launch) ->
+            test <@ completed.Results.IsEmpty @>
+            test <@ launch.ZeroSelection = ZeroSelection.AlreadyVerified @>
+        | other -> Assert.Fail($"expected an already-verified completion, got %A{other}")
+
+        let settled = step launched (Custom completion)
+        test <@ (receiptScope root handler settled).RunId = Some earnedRunId @>
+        test <@ (receiptScope root handler settled).Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>)
+
 [<Theory(Timeout = 20000)>]
 [<InlineData(false)>]
 [<InlineData(true)>]

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- change: `check` (both the daemon and `--run-once` paths) re-checks suspect answers once
+  for the tree before grading, so a phantom that the re-check clears no longer ends the
+  check with no verdict. A no-verdict for stale daemon state now says that re-check
+  already happened and names `fshw stop` only for what survived it.
+
 - fix: fshw restores SIGINT's default disposition when it starts. A shell starts its
   background jobs with SIGINT ignored, including the daemon the detached launch
   backgrounds, and every build and test run the daemon started inherited that, so

@@ -586,6 +586,10 @@ type PluginHost
     /// committed, or a host operation (dispatch fan-out, preprocessor pass).
     member _.AnyPluginBusy() : bool = workStore.Snapshot.IsBusy
 
+    /// The plugins holding an exclusive run right now (`PluginCtx.RunExclusive`),
+    /// counting a finished run whose result fold has not committed.
+    member _.ExclusiveHolders() : string list = workStore.Snapshot.ExclusiveHolders
+
     /// WHICH plugins and host operations own work, from the same publication as
     /// `AnyPluginBusy`, so a `WaitForComplete` that times out can say what blocked it.
     member _.BusyPluginNames() : string list = workStore.Snapshot.BusyNames

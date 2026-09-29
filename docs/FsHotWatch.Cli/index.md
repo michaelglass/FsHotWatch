@@ -285,14 +285,25 @@ Two kinds of failing diagnostic are not claims about the tree on disk at all:
 no verdict: **exit 3**, not exit 1. The gate still refuses; it just stops claiming your
 code is broken when it has no evidence that it is.
 
+The daemon clears most of these itself. When a check settles holding `checker-fault`
+entries, it drops each such file's cached answer and its project's checker state, checks
+those files again, and settles once more before the verdict is graded. That happens once
+per tree, waits for a running test run to finish rather than interrupting it, and logs
+one line naming the files and what survived. Everything else the daemon holds is kept,
+including the test evidence a completed run earned for this tree, so a check whose
+tests had passed grades that run instead of running the suite again. A suspect answer is
+also never written to the check-result cache.
+
+What survives that re-check reaches the verdict as above:
+
 ```bash
 fshw stop              # then re-run. `fshw scan` does NOT clear these.
 ```
 
-That is the honest answer to "is the `fshw stop` workaround still needed?": **for this
-one class, yes** — the FCS faults are upstream and fshw cannot prevent them. What it can
-do, and now does, is name the class and the remedy at the moment you hit it, instead of
-leaving you to work out which of the two opposite responses this red wants.
+That is the honest answer to "is the `fshw stop` workaround still needed?": **only for
+what survives the daemon's own re-check**. The FCS faults are upstream and fshw cannot
+prevent them. A new daemon starts with no checker state, and also with no test evidence,
+so its first check runs the suite again.
 
 ## Options
 
@@ -442,7 +453,8 @@ names.
 When **every** failing diagnostic is one of the latter two and no plugin failed, there
 is no verdict to give: the outcome is `incomplete` and the exit code is **3**, not 1.
 Nothing is reported broken — do not go looking for a defect — and nothing is reported
-sound either. That state is cleared by `fshw stop`, and **`fshw scan` does not clear
+sound either. The daemon has already re-checked the suspect answers once for this tree
+before grading; what survived is cleared by `fshw stop`, and **`fshw scan` does not clear
 it**; the tool says so on the spot rather than leaving it to be rediscovered. A single
 cause that IS about this tree keeps the whole run a red, because one real defect
 outranks any amount of stale state beside it.

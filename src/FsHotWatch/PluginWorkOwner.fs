@@ -76,6 +76,10 @@ type RowStatus =
         /// Events admitted to this row and not yet committed: the backlog its next fold
         /// waits behind. A result handed to a plugin's mailbox waits behind exactly these.
         Pending: int
+        /// Does this row hold an exclusive run's key: a live worker, or a finished worker
+        /// whose result fold has not committed? Work that folds against checker state it
+        /// started under must not have that state dropped beneath it.
+        HoldsExclusive: bool
     }
 
 module RowStatus =
@@ -90,7 +94,8 @@ module RowStatus =
           BuildFailure = None
           OffersEvidence = false
           Supervised = false
-          Pending = 0 }
+          Pending = 0
+          HoldsExclusive = false }
 
     /// The projection of a row whose work runs under a finite deadline. Live work here is
     /// WORKING, not stalled: if it overruns, its own deadline records the failure.
@@ -249,6 +254,14 @@ type HostSnapshot =
 
     member this.CompletedEvents =
         this.Rows |> Map.toList |> List.sumBy (fun (_, row) -> row.Status.Completed)
+
+    /// The names of the rows holding an exclusive run (`RowStatus.HoldsExclusive`).
+    member this.ExclusiveHolders =
+        this.Rows
+        |> Map.toList
+        |> List.filter (fun (_, row) -> row.Status.HoldsExclusive)
+        |> List.map (fun (_, row) -> row.Name)
+        |> List.distinct
 
     /// Events committed by the rows registered under `name`.
     member this.CompletedEventsOf(name: string) =
@@ -1230,6 +1243,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                   // A plugin's event folds run under no deadline: see `Supervised`.
                   Supervised = false
                   Pending = obligations snapshot.Work |> fst |> Map.count
+                  HoldsExclusive = not (obligations snapshot.Work |> snd |> Map.isEmpty)
                   Completed = snapshot.Committed
                   Failure = snapshot.Failure }
         )
