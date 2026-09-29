@@ -317,6 +317,37 @@ let ``a traced child's hits, static init and children merge into the parent test
     test <@ s.Counters.Test = 3L @>
 
 [<Fact>]
+let ``a process that neither ran a test nor was started by one is dropped next to the one that ran them`` () =
+    let w = World()
+
+    // A test-host controller: the woven app's startup (a type initializer, ambient code) and
+    // no test. Its pid sorts first.
+    w.Process(
+        10,
+        null,
+        fun st ->
+            st.EnterStatic "N.M"
+            st.Hit 0
+            st.ExitStatic()
+            st.Hit 1
+    )
+
+    w.Process(20, null, fun st -> asTest st "T:1" "N.Tests" "t" "N.Tests.t")
+    use store = TraceStore.Store.Open w.TraceDb
+    let s = ingest store (w.Request [ passed "N.Tests.t" ])
+    test <@ s.Status = TraceStore.Recorded && s.Traced = 1 @>
+    // World stamps one test hit into every dump's counters: one dump counted, the test host's.
+    test <@ s.Counters.Test = 1L @>
+
+[<Fact>]
+let ``a run that ran no test keeps its main-process dump`` () =
+    let w = World()
+    w.Process(20, null, fun st -> st.Hit 1)
+    use store = TraceStore.Store.Open w.TraceDb
+    let s = ingest store (w.Request [])
+    test <@ s.Status = TraceStore.Recorded && s.EnvFingerprint.IsSome @>
+
+[<Fact>]
 let ``a child dump for another scope does not complete a test`` () =
     let w = World()
 

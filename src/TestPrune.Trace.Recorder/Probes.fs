@@ -8,6 +8,18 @@ open System.Runtime.CompilerServices
 
 /// The process-wide recorder and its bootstrap from the environment.
 module internal Runtime =
+    /// The exit handler that writes `s`'s dump into `outDir`. It never throws: an exception
+    /// out of a ProcessExit handler kills its host, and the host is the app under test. A
+    /// write that fails says so on `err` in one line; a dump it left half-written stays a
+    /// `.tmp`, which every reader treats as unfinished.
+    let exitDump (outDir: string) (s: RecorderState) (err: TextWriter) : EventHandler =
+        EventHandler(fun _ _ ->
+            try
+                Directory.CreateDirectory outDir |> ignore
+                DumpWriter.write (DumpWriter.pathIn outDir) s
+            with e ->
+                err.WriteLine("testprune-trace: dump write failed: " + e.GetType().FullName + ": " + e.Message))
+
     /// Build the recorder the environment asks for, registering its exit dump with
     /// `onExit`. Null when `TESTPRUNE_TRACE_OUT` is unset or empty.
     let install (getEnv: string -> string) (onExit: EventHandler -> unit) : RecorderState =
@@ -26,11 +38,12 @@ module internal Runtime =
 
             s.RepoRoot <- getEnv Contract.RepoRootEnv
 
-            onExit (
-                EventHandler(fun _ _ ->
-                    Directory.CreateDirectory outDir |> ignore
-                    DumpWriter.write (DumpWriter.pathIn outDir) s)
-            )
+            let handler = exitDump outDir s Console.Error
+            // Compiled now, while the module's IL is readable: a coverage collector that
+            // instruments this assembly in place on disk can leave its image unreadable by
+            // exit, and a handler first compiled then would throw outside its own `try`.
+            RuntimeHelpers.PrepareMethod handler.Method.MethodHandle
+            onExit handler
 
             s
 

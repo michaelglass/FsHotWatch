@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: ingestion drops the dump of a process that neither ran a test nor was started by one
+  when another such process ran the tests. Under `--coverage`, MTP runs a test-host
+  controller next to the test host; both are the woven app, and the controller's dump (its
+  startup, no test) was read as the run's main process when its pid sorted first. With no
+  process that ran tests, every dump is kept, so a run whose filter selected nothing still
+  records.
 - overhead: each traced launch starts from an emptied dump directory. Without that, rep N
   started with every earlier rep's dumps in place. Each sample, and its line in the table,
   now also reports the launch's wall time (`Wall`), the live descendant processes of the

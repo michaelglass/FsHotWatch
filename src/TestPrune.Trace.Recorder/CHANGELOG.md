@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: the exit dump can no longer crash the traced process. Under `--coverage`, MTP runs a
+  test-host controller next to the test host, and MS CodeCoverage instruments the app's
+  assemblies in place on disk and restores them afterwards; the controller's recorder module
+  could be unreadable by exit, so its ProcessExit handler failed to compile and the process
+  died (exit 139) after every test had passed. The handler is compiled when it is registered
+  and catches any failure, which it reports on stderr in one line
+  (`testprune-trace: dump write failed: <type>: <message>`); a dump it left unfinished stays
+  a `.tmp`, which no reader takes for a dump.
+
 ## 0.4.1 - 2026-09-28
 
 - changelog: the TestPrune.Inline attribute index is a feature, not a breaking change

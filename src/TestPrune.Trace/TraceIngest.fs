@@ -301,7 +301,21 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
         DumpReader.readEach req.DumpDir
         |> List.map (fun (f, r) -> f, r |> Result.bind (validate manifest.IdCount))
 
-    let dumps = results |> List.choose (snd >> Result.toOption)
+    // A process no test started that ran no test itself, next to one that ran the tests, is
+    // not part of the run: a test-host controller (MTP runs one under `--coverage`) is the
+    // same woven app and records its startup, but the test host it launched ran the tests.
+    // With no such test host, every dump is kept, so a run whose filter selected nothing
+    // still has its main-process dump.
+    let dumps =
+        let valid = results |> List.choose (snd >> Result.toOption)
+
+        let ranTests (d: ProcessDump) =
+            d.Scopes |> List.exists (fun sc -> sc.Test.IsSome)
+
+        if valid |> List.exists (fun d -> d.ParentScope.IsNone && ranTests d) then
+            valid |> List.filter (fun d -> d.ParentScope.IsSome || ranTests d)
+        else
+            valid
 
     let rejected =
         results

@@ -149,6 +149,26 @@ let ``an output directory installs a recorder that dumps at exit`` () =
     test <@ mine.Parents = [ "C:TestPrune.Trace.Tests.RuntimeTests"; "L:recorder-counters"; "A:assembly" ] @>
 
 [<Fact>]
+let ``a dump that cannot be written is reported on one line and never throws`` () =
+    let blocker = Path.GetTempFileName()
+    let err = new StringWriter()
+
+    try
+        // A directory cannot be created under a file.
+        let handler =
+            Runtime.exitDump (Path.Combine(blocker, "out")) (RecorderState(4, None, null)) err
+
+        handler.Invoke(null, EventArgs.Empty)
+
+        let lines = err.ToString().TrimEnd().Split '\n'
+        test <@ lines.Length = 1 @>
+        // The exception type is the platform's (DirectoryNotFoundException on macOS).
+        test <@ lines.[0].StartsWith "testprune-trace: dump write failed: System.IO." @>
+        test <@ lines.[0].Contains blocker @>
+    finally
+        File.Delete blocker
+
+[<Fact>]
 let ``a missing or bad id count falls back to a generous default`` () =
     let out = Directory.CreateTempSubdirectory().FullName
     let ignoreExit (_: EventHandler) = ()
