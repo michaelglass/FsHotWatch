@@ -650,15 +650,43 @@ let internal InterruptGrace = TimeSpan.FromSeconds 15.0
 /// How long replaying one binary log to text may take.
 let internal ReplayBudget = TimeSpan.FromSeconds 60.0
 
-/// Where a build's side binlogs go.
-let internal sideLogDir (repoRoot: string) =
-    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "build-binlog")
+
 
 /// Whether fshw attaches its binary log to a build, and if not, why not.
 [<RequireQualifiedAccess>]
 type internal SideLog =
     | Attached of dir: string
     | NotAttached of reason: string
+
+/// A fresh directory for one build's side logs, under the system temp directory. Not
+/// under the state directory: a binlog is a diagnostic, read once when the build
+/// overruns and deleted with its directory when the build is done (`discardSideLog`).
+let internal sideLogDir () =
+    Path.Combine(Path.GetTempPath(), "fshw-build-binlog-" + Guid.NewGuid().ToString("N"))
+
+/// Delete a build's side-log directory with everything in it: its binlogs and their text
+/// replays. A directory that cannot be deleted stays behind in the temp directory; that
+/// never fails the build.
+let internal discardSideLog (sideLog: SideLog) =
+    match sideLog with
+    | SideLog.Attached dir ->
+        try
+            if Directory.Exists dir then
+                Directory.Delete(dir, true)
+        with ex ->
+            warn "build" $"could not delete side-log directory %s{dir}: %s{ex.GetType().Name}: %s{ex.Message}"
+    | SideLog.NotAttached _ -> ()
+
+/// Detach the side log when this process has SIGINT ignored (`interruptIgnored`): every
+/// build inherits that, so no interrupt could make MSBuild write the log, and an overrun
+/// would wait out the grace for nothing. A disposition that cannot be read leaves the
+/// log attached; the interrupt is tried and its report says what happened.
+let internal requireInterruptible (ignored: Result<bool, string>) (sideLog: SideLog) : SideLog =
+    match ignored, sideLog with
+    | Ok true, SideLog.Attached _ ->
+        SideLog.NotAttached
+            "fshw's own process has SIGINT ignored and every build inherits that, so no interrupt could make MSBuild write it"
+    | _ -> sideLog
 
 /// Attach the side log to a command line that invokes dotnet, unless the child's
 /// environment (`env`, else the daemon's own value, `inherited`) already sets
@@ -684,7 +712,7 @@ let internal sideLogFor
         SideLog.NotAttached $"%s{SideLogVariable} is already set (`%s{value}`), and fshw does not override it"
     | None -> SideLog.Attached dir
 
-/// Empty the side-log directory for a new build, so only this build's logs are read.
+/// Create an empty side-log directory for a new build, so only this build's logs are read.
 /// A directory that cannot be prepared detaches the log rather than failing the build.
 let internal prepareSideLog (sideLog: SideLog) : SideLog =
     match sideLog with
@@ -1154,18 +1182,43 @@ let createWith
     // Named in the overrun report.
     let nodeReuseOf command args = nodeReuseFor environment command args
 
-    /// The side log for one spawn of `command args`, prepared and ready to attach.
-    let sideLogOf (repoRoot: string) command args =
-        sideLogFor
-            command
-            args
-            environment
-            (Option.ofObj (Environment.GetEnvironmentVariable SideLogVariable))
-            (sideLogDir repoRoot)
-        |> prepareSideLog
+    /// Run one build spawn of `command args` with its side log: attached, read when the
+    /// build overran, and deleted before this returns. A build that did not overrun has
+    /// its log deleted unread; its reading is never reported.
+    let runWithSideLog (repoRoot: string) command args : ProcessOutcome * TreeTeardown option * SideLogReading =
+        let sideLog =
+            sideLogFor
+                command
+                args
+                environment
+                (Option.ofObj (Environment.GetEnvironmentVariable SideLogVariable))
+                (sideLogDir ())
+            |> requireInterruptible (interruptIgnored ())
+            |> prepareSideLog
 
-    let readSideLogOf (repoRoot: string) (sideLog: SideLog) (teardown: TreeTeardown option) =
-        readSideLog listBinlogs (replayBinlogWith "dotnet" repoRoot) sideLog (teardown |> Option.bind _.Interrupt)
+        try
+            let result, teardown =
+                runProcessAccounted
+                    (interruptGraceFor sideLog)
+                    command
+                    args
+                    repoRoot
+                    (environment @ sideLogEnv sideLog)
+                    buildBounds
+
+            let reading =
+                match result with
+                | TimedOut _ ->
+                    readSideLog
+                        listBinlogs
+                        (replayBinlogWith "dotnet" repoRoot)
+                        sideLog
+                        (teardown |> Option.bind _.Interrupt)
+                | _ -> SideLogReading.Unavailable "the build did not overrun"
+
+            result, teardown, reading
+        finally
+            discardSideLog sideLog
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
     // (callers inject `AbsFilePath.create` per file).
@@ -1466,16 +1519,8 @@ let createWith
                         "dotnet build"
                         (async {
                             try
-                                let sideLog = sideLogOf ctx.RepoRoot buildCommand buildArgs
-
-                                let result, teardown =
-                                    runProcessAccounted
-                                        (interruptGraceFor sideLog)
-                                        buildCommand
-                                        buildArgs
-                                        ctx.RepoRoot
-                                        (environment @ sideLogEnv sideLog)
-                                        buildBounds
+                                let result, teardown, sideLogReading =
+                                    runWithSideLog ctx.RepoRoot buildCommand buildArgs
 
                                 let overrun =
                                     match result with
@@ -1483,7 +1528,7 @@ let createWith
                                         let summary, report =
                                             describeBuildOverrun
                                                 (nodeReuseOf buildCommand buildArgs)
-                                                (readSideLogOf ctx.RepoRoot sideLog teardown)
+                                                sideLogReading
                                                 (BuildScope.WholeCommand $"%s{buildCommand} %s{buildArgs}")
                                                 after
                                                 (DateTime.UtcNow - buildStarted)
@@ -1633,16 +1678,8 @@ let createWith
                                         let rootStarted = DateTime.UtcNow
 
                                         try
-                                            let sideLog = sideLogOf ctx.RepoRoot cmd cmdArgs
-
-                                            let result, teardown =
-                                                runProcessAccounted
-                                                    (interruptGraceFor sideLog)
-                                                    cmd
-                                                    cmdArgs
-                                                    ctx.RepoRoot
-                                                    (environment @ sideLogEnv sideLog)
-                                                    buildBounds
+                                            let result, teardown, sideLogReading =
+                                                runWithSideLog ctx.RepoRoot cmd cmdArgs
 
                                             match result with
                                             | Succeeded _ -> outputs <- outputOf result :: outputs
@@ -1653,7 +1690,7 @@ let createWith
                                                 let summary, report =
                                                     describeBuildOverrun
                                                         (nodeReuseOf cmd cmdArgs)
-                                                        (readSideLogOf ctx.RepoRoot sideLog teardown)
+                                                        sideLogReading
                                                         (BuildScope.TemplateRoot(
                                                             $"%s{cmd} %s{cmdArgs}",
                                                             rootStr,

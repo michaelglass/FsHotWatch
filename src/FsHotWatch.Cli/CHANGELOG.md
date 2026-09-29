@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: fshw restores SIGINT's default disposition when it starts. A shell starts its
+  background jobs with SIGINT ignored, including the daemon the detached launch
+  backgrounds, and every build and test run the daemon started inherited that, so
+  no interrupt could reach them.
 - change: the default per-operation timeout (`DefaultGlobalTimeoutSec`, used when
   neither a per-entry nor the top-level `timeoutSec` is set) is 1200 s, up from 600 s.
   The slowest cold build on record for the largest repository fshw watches took 999 s,

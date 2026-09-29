@@ -13,6 +13,9 @@
   the pre-kill snapshot, so descendants re-parented by it are still accounted for, and
   `TreeTeardown.Interrupt` records what was signalled, what refused and whether the
   tree exited in time.
+- feat: `ProcessHelper.restoreInterruptDefault` puts SIGINT back to its default
+  disposition when the process has it ignored. An ignored SIGINT survives fork and
+  exec, so every child would ignore the interrupt too.
 
 ## 0.10.0-alpha.59 - 2026-09-29
 

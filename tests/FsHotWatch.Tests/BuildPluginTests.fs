@@ -427,6 +427,76 @@ let ``template build handler verifies MSB3026 copies before emitting BuildSuccee
         waitForTerminalStatus host "build" 12000
         assertUnresolvedCopyFailure getBuild)
 
+/// A stand-in for a dotnet build that writes the binlog `MSBUILD_LOGGING_ARGS` asks for,
+/// the way MSBuild does on shutdown, and records the directory it wrote it in.
+let private writeBinlogWritingScript (tmpDir: string) =
+    let script = System.IO.Path.Combine(tmpDir, "binlog-build.sh")
+    let recorded = System.IO.Path.Combine(tmpDir, "side-log-dir")
+
+    System.IO.File.WriteAllText(
+        script,
+        "#!/bin/sh\n"
+        + "spec=\"${MSBUILD_LOGGING_ARGS#-bl:}\"\n"
+        + "binlog=$(printf '%s' \"${spec%%;*}\" | sed 's/{}/1/')\n"
+        + "printf 'binlog' > \"$binlog\"\n"
+        + $"dirname \"$binlog\" > '%s{recorded}'\n"
+    )
+
+    script, recorded
+
+let private assertNoBinlogLeft (tmpDir: string) (recorded: string) =
+    let state = FsHotWatch.FsHwPaths.root tmpDir
+
+    let left =
+        if System.IO.Directory.Exists state then
+            System.IO.Directory.GetFiles(state, "*.binlog", System.IO.SearchOption.AllDirectories)
+        else
+            [||]
+
+    test <@ Array.isEmpty left @>
+    test <@ System.IO.File.Exists recorded @>
+    let sideLog = (System.IO.File.ReadAllText recorded).Trim()
+    test <@ not (sideLog.StartsWith state) @>
+    test <@ not (System.IO.Directory.Exists sideLog) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a build leaves no binlog under the state directory and removes its side log`` () =
+    // Builds inherit SIGINT from this process, and a side log is attached only to a build
+    // SIGINT can reach; the CLI restores it at entry, and so does this host.
+    FsHotWatch.ProcessHelper.restoreInterruptDefault () |> ignore
+
+    withTempDir "build-side-log-ordinary" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let script, recorded = writeBinlogWritingScript tmpDir
+
+        let handler =
+            BuildPlugin.create "sh" $"%s{script} dotnet" [] (ProjectGraph()) [] None [] None
+
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Lib.fs") ])
+        waitForTerminalStatus host "build" 12000
+        assertNoBinlogLeft tmpDir recorded)
+
+[<Fact(Timeout = 15000)>]
+let ``a template build leaves no binlog under the state directory and removes its side log`` () =
+    FsHotWatch.ProcessHelper.restoreInterruptDefault () |> ignore
+
+    withTempDir "build-side-log-template" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let script, recorded = writeBinlogWritingScript tmpDir
+        let graph = ProjectGraph()
+        let project = System.IO.Path.Combine(tmpDir, "src", "Lib", "Lib.fsproj")
+        let source = System.IO.Path.Combine(tmpDir, "src", "Lib", "Lib.fs")
+        graph.RegisterProject(AbsProjectPath.create project, [ AbsFilePath.create source ], [])
+
+        let handler =
+            BuildPlugin.create "should-not-run" "" [] graph [] (Some $"sh %s{script} dotnet {{project}}") [] None
+
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitForTerminalStatus host "build" 12000
+        assertNoBinlogLeft tmpDir recorded)
+
 [<Fact(Timeout = 15000)>]
 let ``a failed build reports its error line and exit code, not its first output line`` () =
     withTempDir "build-failure-headline" (fun tmpDir ->
