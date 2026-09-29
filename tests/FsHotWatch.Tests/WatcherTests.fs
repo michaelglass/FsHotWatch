@@ -1489,6 +1489,49 @@ let ``a coalesced native event rescans its subtree and emits only relevant files
         test <@ changes |> Seq.toList |> List.isEmpty @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a coalesced native event on the repository root rescans every discovery root and nothing outside them`` () =
+    withTempDir "watcher-native-coalesced-root" (fun tmpDir ->
+        let src = Path.Combine(tmpDir, "src")
+        let tests = Path.Combine(tmpDir, "tests")
+        let docs = Path.Combine(tmpDir, "docs")
+
+        for dir in [ src; tests; docs ] do
+            Directory.CreateDirectory(dir) |> ignore
+
+        let changes = ResizeArray<FileChangeKind>()
+        let mutable coalesced: (string -> unit) option = None
+
+        let native _dirs _exclusions _onFile onCoalesced _latency : IDisposable =
+            coalesced <- Some onCoalesced
+            inert "native"
+
+        use _watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                changes.Add
+                []
+                0.05
+                FileWatcher.NativeStartRetry.none
+                native
+                (fun _repo _onChange _extras -> inert "polling")
+
+        let rescan =
+            coalesced
+            |> Option.defaultWith (fun () -> failwith "the macOS watcher never installed a coalesced callback")
+
+        let lib = Path.Combine(src, "Lib.fs")
+        let libTests = Path.Combine(tests, "LibTests.fs")
+        File.WriteAllText(lib, "let x = 1")
+        File.WriteAllText(libTests, "let y = 2")
+        File.WriteAllText(Path.Combine(docs, "Outside.fs"), "let z = 3")
+
+        // FSEvents can coalesce a whole worktree into one must-scan of its root; that
+        // scan covers each discovery root in full, and only them.
+        rescan tmpDir
+
+        test <@ changes |> Seq.toList = [ SourceChanged [ lib ]; SourceChanged [ libTests ] ] @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a native start fault falls back to the built-in content-polling watcher`` () =
     withTempDir "watcher-native-fault" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
