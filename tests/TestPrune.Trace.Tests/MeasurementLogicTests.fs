@@ -257,7 +257,11 @@ let private sample traced cpu rss : Overhead.Sample =
       Cpu = ms cpu
       MaxRssBytes = rss
       ExitCode = 0
-      Output = "" }
+      Output = ""
+      Wall = ms (cpu + 20.0)
+      LiveDescendants = 0
+      DumpBytes = 0L
+      DumpFiles = 0 }
 
 [<Fact>]
 let ``the median of an odd count is the middle, of an even count the mean of the middle two`` () =
@@ -304,10 +308,36 @@ let ``the overhead table prints medians, spread, ratio and every sample`` () =
                 [ "overhead  PASS  ratio 1.050 (bar <= 1.15)"
                   "  untraced  median 100 ms  range 100-100 ms"
                   "  traced    median 105 ms  range 105-105 ms  peak rss 3.0 MiB"
-                  "  sample untraced  100 ms  exit 0"
-                  "  sample traced    105 ms  exit 0"
+                  "  sample untraced  100 ms  wall 120 ms  live 0  exit 0"
+                  "  sample traced    105 ms  wall 125 ms  live 0  exit 0"
                   "" ]
         @>
+
+[<Fact>]
+let ``a traced sample's line names its dumps, and every line its live descendants`` () =
+    let traced =
+        { sample true 105.0 0L with
+            LiveDescendants = 2
+            DumpBytes = 3072L
+            DumpFiles = 2 }
+
+    let text = Overhead.render (Overhead.summarize [ sample false 100.0 0L; traced ])
+
+    test <@ text.Contains "  sample traced    105 ms  wall 125 ms  live 2  exit 0  dumps 3.0 KiB in 2\n" @>
+
+[<Fact>]
+let ``the process table skips the listing process and any line that is not two numbers`` () =
+    let output = "  1     0\n 42     1\n 43    42\nPID PPID\n 44\n x 1\n 45 y\n"
+    test <@ Overhead.parseProcessTable 43 output = [ 1, 0; 42, 1 ] @>
+
+[<Fact>]
+let ``a process's descendants are its children and theirs, however deep, and nothing else`` () =
+    let table = [ 10, 1; 11, 10; 12, 11; 13, 10; 20, 1; 21, 20; 1, 0 ]
+
+    test <@ Overhead.descendantsOf 10 table = set [ 11; 12; 13 ] @>
+    test <@ Overhead.descendantsOf 12 table = Set.empty @>
+    // A table that names the root as its own parent still ends.
+    test <@ Overhead.descendantsOf 5 [ 5, 5; 6, 5 ] = set [ 6 ] @>
 
 // ---------------------------------------------------------------- file census
 
@@ -487,7 +517,7 @@ let ``overhead refuses Windows before preparing or reading anything`` () =
 
     test
         <@
-            Overhead.runWith true read req [] 1 (TimeSpan.FromMinutes 1.0) = Error
+            Overhead.runWith true read (fun () -> failwith "ps on Windows") req [] 1 (TimeSpan.FromMinutes 1.0) = Error
                 "cannot measure CPU overhead: getrusage is macOS/Linux only"
         @>
 

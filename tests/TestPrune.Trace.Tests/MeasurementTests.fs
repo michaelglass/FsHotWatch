@@ -95,8 +95,8 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
             text.EndsWith(
                 String.concat
                     "\n"
-                    [ "  sample untraced  0 ms  exit 0"
-                      "  sample traced    0 ms  exit 2"
+                    [ $"  sample untraced  0 ms  wall %.0f{passing.Wall.TotalMilliseconds} ms  live 0  exit 0"
+                      $"  sample traced    0 ms  wall %.0f{failing.Wall.TotalMilliseconds} ms  live 0  exit 2"
                       "    output ends:"
                       "      failed N.C.t"
                       "      boom"
@@ -161,6 +161,63 @@ let ``overhead reports medians and a ratio over interleaved runs`` () =
         test <@ r.Samples |> List.map (fun s -> s.Traced) = [ false; true ] @>
         test <@ r.Samples |> List.forall (fun s -> s.ExitCode = 0) @>
         test <@ r.BaseMedianCpu > TimeSpan.Zero && r.Ratio > 0.0 @>)
+
+[<Fact>]
+let ``a child still running is a live descendant, and one that exited is not`` () =
+    let child () =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("/bin/sleep", "30", UseShellExecute = false))
+
+    let live () =
+        Overhead.descendantsOf Environment.ProcessId (Overhead.processTable ())
+
+    use p = child ()
+
+    try
+        test <@ (live ()).Contains p.Id @>
+        test <@ Overhead.liveDescendants () >= 1 @>
+    finally
+        p.Kill()
+        p.WaitForExit()
+
+    test <@ not ((live ()).Contains p.Id) @>
+
+/// A traced launch dumps into the run's dump directory. Were it not emptied first, every
+/// later launch would start with the earlier launches' dumps there, and the dumps measured
+/// after rep N would be N reps' worth.
+[<Fact>]
+let ``each traced rep dumps its own work into an emptied directory, and the work does not grow`` () =
+    withScratch (fun req ->
+        let r = Overhead.run req [] 3 timeout |> ok
+
+        let dumps =
+            r.Samples |> List.filter (fun s -> s.Traced) |> List.map (fun s -> s.DumpBytes)
+
+        test <@ dumps.Length = 3 && List.min dumps > 0L @>
+
+        test
+            <@
+                r.Samples
+                |> List.filter (fun s -> s.Traced)
+                |> List.forall (fun s -> s.DumpFiles >= 1)
+            @>
+
+        test
+            <@
+                r.Samples
+                |> List.forall (fun s -> s.Wall > TimeSpan.Zero && s.LiveDescendants >= 0)
+            @>
+        // The header's pid, CPU time and counters vary by a few bytes; a leftover rep's dumps
+        // would at least double the total.
+        test <@ float (List.max dumps) <= 1.2 * float (List.min dumps) @>
+
+        test
+            <@
+                r.Samples
+                |> List.filter (fun s -> not s.Traced)
+                |> List.forall (fun s -> s.DumpBytes = 0L && s.DumpFiles = 0)
+            @>
+
+        test <@ (Overhead.render r).Contains " KiB in " @>)
 
 [<Fact>]
 let ``the file census names the reading tests, those that break outside the repository and those that reach it from there``

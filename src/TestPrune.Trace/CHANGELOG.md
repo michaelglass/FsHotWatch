@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- overhead: each traced launch starts from an emptied dump directory. Without that, rep N
+  started with every earlier rep's dumps in place. Each sample, and its line in the table,
+  now also reports the launch's wall time (`Wall`), the live descendant processes of the
+  verb when it started (`LiveDescendants`: a process an earlier launch left behind is
+  charged by `getrusage` to a later one), and for a traced launch the bytes and files it
+  dumped (`DumpBytes`, `DumpFiles`). A traced CPU that climbs across reps while the dumps
+  stay flat and no descendant lingers points outside the recorder's own work.
+
 - fix: coverage of a woven assembly keeps the branch points of nested patterns: a union case
   whose field is matched too, as a case (`| Measured(InSync, _) ->`) or a literal
   (`| Command 0 ->`). The outer case test, the case class, its field and the inner test each

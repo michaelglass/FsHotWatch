@@ -35,12 +35,20 @@ let private overheadReport (traced: float) : Overhead.OverheadReport =
             Cpu = TimeSpan.FromMilliseconds 100.0
             MaxRssBytes = 1L
             ExitCode = 0
-            Output = "" }
+            Output = ""
+            Wall = TimeSpan.Zero
+            LiveDescendants = 0
+            DumpBytes = 0L
+            DumpFiles = 0 }
           { Traced = true
             Cpu = TimeSpan.FromMilliseconds traced
             MaxRssBytes = 1L
             ExitCode = 0
-            Output = "" } ]
+            Output = ""
+            Wall = TimeSpan.Zero
+            LiveDescendants = 0
+            DumpBytes = 0L
+            DumpFiles = 0 } ]
 
 /// Measurements that record their calls and return the given results.
 let private fake audit overhead census =
@@ -204,7 +212,7 @@ let ``overhead on Windows exits 2 naming why`` () =
 
     let windows =
         { m with
-            Overhead = Overhead.runWith true (fun () -> failwith "read on Windows") }
+            Overhead = Overhead.runWith true (fun () -> failwith "read on Windows") (fun () -> failwith "ps on Windows") }
 
     let o =
         Program.runWith windows cwd [ "overhead"; "--project-dir"; "P"; "--assembly"; "P" ]
