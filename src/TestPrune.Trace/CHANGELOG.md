@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the shadow bin copies, never hard-links, an assembly with symbols (a sibling `.pdb` or
+  an embedded portable PDB) and its `.pdb`. MS CodeCoverage instruments such an assembly by
+  writing into the file and restores it by replacing it, so through a hardlink a traced run
+  under `--coverage` would have left the instrumented bytes in the build output. Assemblies
+  without symbols, which a collector does not instrument, are still hard-linked.
 - fix: ingestion drops the dump of a process that neither ran a test nor was started by one
   when another such process ran the tests. Under `--coverage`, MTP runs a test-host
   controller next to the test host; both are the woven app, and the controller's dump (its

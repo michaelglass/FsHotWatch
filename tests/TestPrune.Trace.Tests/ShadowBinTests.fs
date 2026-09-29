@@ -78,6 +78,52 @@ let ``mirroring copies a file it cannot link`` () =
     File.AppendAllText(Path.Combine(dst, "a.dll"), "!")
     test <@ File.ReadAllText(Path.Combine(src, "a.dll")) = "bytes" @>
 
+/// FxLib written without symbols, with a sibling `.pdb`, and with an embedded portable PDB,
+/// plus a `.dll` that is not an assembly.
+let private assemblies (dir: string) =
+    Directory.CreateDirectory dir |> ignore
+
+    let write (name: string) (parameters: WriterParameters) =
+        use m =
+            ModuleDefinition.ReadModule(
+                Path.Combine(Fixtures.fxLibDir, "FxLib.dll"),
+                ReaderParameters(ReadSymbols = true)
+            )
+
+        m.Write(Path.Combine(dir, name + ".dll"), parameters)
+
+    write "plain" (WriterParameters())
+    write "sibling" (WriterParameters(WriteSymbols = true))
+
+    write "embedded" (WriterParameters(WriteSymbols = true, SymbolWriterProvider = EmbeddedPortablePdbWriterProvider()))
+
+    File.WriteAllText(Path.Combine(dir, "native.dll"), "not an assembly")
+
+[<Fact>]
+let ``an assembly with symbols is mirrored as a copy, so instrumenting it in place cannot reach the build`` () =
+    let root = tempDir ()
+    let src, dst = Path.Combine(root, "src"), Path.Combine(root, "dst")
+    assemblies src
+
+    test
+        <@
+            File.Exists(Path.Combine(src, "sibling.pdb"))
+            && not (File.Exists(Path.Combine(src, "embedded.pdb")))
+        @>
+
+    let stats = HardLink.mirror src dst
+    test <@ stats = { Linked = 2; Copied = 3; Removed = 0 } @>
+
+    // Written into in place, as MS CodeCoverage instruments an assembly.
+    let reaches name =
+        let before = File.ReadAllBytes(Path.Combine(src, name))
+        File.AppendAllText(Path.Combine(dst, name), "!")
+        File.ReadAllBytes(Path.Combine(src, name)) <> before
+
+    test <@ [ "sibling.dll"; "sibling.pdb"; "embedded.dll" ] |> List.forall (reaches >> not) @>
+    // Without symbols there is nothing to instrument: still a link, and still no copy's space.
+    test <@ [ "plain.dll"; "native.dll" ] |> List.forall reaches @>
+
 // ---------------------------------------------------------------- DepsJson
 
 let private deps =
