@@ -279,9 +279,12 @@ type private Pass() =
     /// probe in the chain's prefix (up to its first call, transfer or jump target) precedes
     /// a conditional branch of that prefix, the instruction the probe resumes at gets a copy
     /// of the visible point: the branch is governed by the line again, and the copy runs only
-    /// when the line's code did. The instruction after the prefix's last branch gets a hidden
-    /// point, unless a point is already there: the copy's range then holds no call, so the
-    /// branches under the chain's later hidden points count as they did unwoven. Nothing else
+    /// when the line's code did. A nested pattern (a case whose field is itself tested, as a
+    /// case or a literal) puts several probes in one prefix, each call ahead of later branches,
+    /// so every probe followed by a branch before the next probe gets its own copy. The
+    /// instruction after the prefix's last branch gets a hidden point, unless a point is
+    /// already there: the last copy's range then holds no call, so the branches under the
+    /// chain's later hidden points count as they did unwoven. Nothing else
     /// gets a point: a copy in a chain reached by a jump would mark the line hit when only the
     /// chain ran, and past a transfer or a target (a handler, a filter's `endfilter`, a
     /// match's join) coverage does not carry the line.
@@ -335,6 +338,22 @@ type private Pass() =
         let hiddenAt (i: Instruction) (document: Document) =
             i.Offset, SequencePoint(i, document, StartLine = hiddenLine, EndLine = hiddenLine)
 
+        let isBranch (i: Instruction) =
+            i.OpCode.FlowControl = FlowControl.Cond_Branch
+
+        // What follows each probed instruction of `xs`, up to and including the next one: the
+        // instructions one probe's call precedes and the next probe's call does not.
+        let rec runsAfterProbes (xs: Instruction list) =
+            match List.skipWhile (probed.Contains >> not) xs with
+            | [] -> []
+            | _ :: after ->
+                let run =
+                    match List.tryFindIndex probed.Contains after with
+                    | Some next -> List.take (next + 1) after
+                    | None -> after
+
+                run :: runsAfterProbes after
+
         points
         |> Array.pairwise
         |> Array.toList
@@ -355,16 +374,18 @@ type private Pass() =
                         |> List.takeWhile startsNothingNew)
                     |> List.takeWhile (isCall >> not)
 
-                prefix
-                |> List.tryFindIndex probed.Contains
-                |> Option.map (fun site -> List.skip (site + 1) prefix)
-                |> Option.bind (fun rest ->
-                    rest
-                    |> List.tryFindBack (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch)
-                    |> Option.map (fun lastBranch ->
-                        [ copyAt rest.Head visible
-                          if not (pointed.Contains lastBranch.Next.Offset) then
-                              hiddenAt lastBranch.Next visible.Document ]))
+                match runsAfterProbes prefix |> List.filter (List.exists isBranch) with
+                | [] -> None
+                | branching ->
+                    let lastBranch = List.last branching |> List.findBack isBranch
+
+                    Some(
+                        List.map (fun (run: Instruction list) -> copyAt run.Head visible) branching
+                        @ (if pointed.Contains lastBranch.Next.Offset then
+                               []
+                           else
+                               [ hiddenAt lastBranch.Next visible.Document ])
+                    )
             | _ -> None)
         |> List.concat
 

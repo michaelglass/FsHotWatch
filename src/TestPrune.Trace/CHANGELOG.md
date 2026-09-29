@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: coverage of a woven assembly keeps the branch points of nested patterns: a union case
+  whose field is matched too, as a case (`| Measured(InSync, _) ->`) or a literal
+  (`| Command 0 ->`). The outer case test, the case class, its field and the inner test each
+  get a probe, and only the branch after the first probe got a copy of the line's sequence
+  point: the field's test stayed under a hidden point with probe calls ahead of it, and MS
+  CodeCoverage dropped its branch points. Every branch after a probe, before the next probe,
+  now gets its own copy of the line's point. Probes and their ids are unchanged.
+
 ## 0.4.1 - 2026-09-28
 
 - changelog: the TestPrune.Inline attribute index is a feature, not a breaking change

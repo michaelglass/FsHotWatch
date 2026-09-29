@@ -333,6 +333,92 @@ let ``a copied line's range is closed by a hidden point after its last branch wh
             test <@ not (isNull copy) && copy.StartLine = 11 @>
             test <@ not (isNull closing) && closing.IsHidden @>)
 
+/// For every conditional branch of `meth`, in order: the line of the last visible sequence
+/// point at or before it, and whether the point governing it (the last one at or before it)
+/// is hidden with a call between it and the branch.
+let private governing (meth: MethodDefinition) =
+    let points = meth.DebugInformation.SequencePoints |> Seq.toList
+
+    meth.Body.Instructions
+    |> Seq.filter (fun i -> i.OpCode.FlowControl = FlowControl.Cond_Branch)
+    |> Seq.map (fun branch ->
+        let before = points |> List.filter (fun p -> p.Offset <= branch.Offset)
+        let point = List.last before
+        let line = before |> List.findBack (fun p -> not p.IsHidden)
+
+        let calls =
+            branch.Previous
+            |> List.unfold (fun (i: Instruction) ->
+                if isNull i || i.Offset < point.Offset then
+                    None
+                else
+                    Some(i, i.Previous))
+            |> List.exists (fun i -> i.OpCode.FlowControl = FlowControl.Call)
+
+        line.StartLine, point.IsHidden && calls)
+    |> Seq.toList
+
+/// A nested match laid out as SDK 10.0.3xx's F# emits it: a hidden point at each reload of a
+/// value the match stored (the value, the case, the case's field) within its line's range,
+/// so the case and then its field are each tested under a hidden point. 10.0.4xx emits none
+/// there; they are added here, so the layout is the same on every SDK.
+let private hideNestedTests (meth: MethodDefinition) =
+    let points = meth.DebugInformation.SequencePoints
+    let line = points |> Seq.find (fun p -> not p.IsHidden)
+    let pointed = points |> Seq.map (fun p -> p.Offset) |> set
+
+    let isStore (i: Instruction) =
+        i.OpCode.Code.ToString().StartsWith "Stloc"
+
+    let reloads =
+        meth.Body.Instructions
+        |> Seq.skipWhile (fun i -> i.Offset < line.Offset)
+        |> Seq.pairwise
+        |> Seq.takeWhile (fun (_, next) -> not (pointed.Contains next.Offset))
+        |> Seq.filter (fst >> isStore)
+        |> Seq.map snd
+        |> Seq.toList
+
+    let all =
+        [ yield! points
+          for i in reloads -> SequencePoint(i, line.Document, StartLine = 0xfeefee, EndLine = 0xfeefee) ]
+        |> List.sortBy (fun p -> p.Offset)
+
+    points.Clear()
+
+    for p in all do
+        points.Add p
+
+/// A nested pattern tests a case and then its field (a case or a literal) under a chain of
+/// hidden points, and the weave puts a probe call after each test: on the outer case class,
+/// on its field, and on the inner case. MS CodeCoverage drops a branch under a hidden point
+/// when a call precedes it there, so each branch must stay the match line's with no probe
+/// call between it and a hidden point governing it.
+[<Fact>]
+let ``every branch of a nested pattern stays its line's with no probe call under its hidden point`` () =
+    let nested = [ "failure", 16; "describeOutcome", 26; "divergence", 55 ]
+    let before = Collections.Generic.Dictionary<string, (int * bool) list>()
+
+    weaveEdited
+        (fun m ->
+            for name, _ in nested do
+                let meth = methodOf m "FxLib.Nested" name
+                hideNestedTests meth
+                before.[name] <- governing meth)
+        (fun _ path ->
+            use woven =
+                AssemblyDefinition.ReadAssembly(path, ReaderParameters(ReadSymbols = true))
+
+            for name, line in nested do
+                let plain = before.[name]
+                let after = governing (methodOf woven.MainModule "FxLib.Nested" name)
+
+                // The shape: two or more of the line's branches, none after a call.
+                test <@ plain |> List.filter (fst >> (=) line) |> List.length >= 2 @>
+                test <@ not (plain |> List.exists snd) @>
+                test <@ after |> List.map fst = (plain |> List.map fst) @>
+                test <@ not (after |> List.exists snd) @>)
+
 /// Another compiler can give a nullary case of a union with fields its own class, `_X`; a type
 /// test on that class records the case.
 [<Fact>]
