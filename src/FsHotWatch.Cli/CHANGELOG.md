@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deps: CommandTree 0.11.3, which indents a multi-line command description's continuation
+  lines under the description column in the `--help` listing and leaves `<verb> --help`
+  flush-left. `confirm`'s description no longer carries its own continuation indent, so
+  `fshw confirm --help` is no longer ragged.
+
 - change: `check` (both the daemon and `--run-once` paths) re-checks suspect answers once
   for the tree before grading, so a phantom that the re-check clears no longer ends the
   check with no verdict. A no-verdict for stale daemon state now says that re-check
