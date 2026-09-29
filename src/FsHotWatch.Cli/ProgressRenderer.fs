@@ -911,7 +911,8 @@ module AgentHints =
                     | [] -> []
                     | stale ->
                         [ $"             %d{List.length stale} of the cause(s) above are NOT about this tree — stale \
-                             daemon state. Run `fshw stop`, then re-run; `fshw scan` does NOT clear it." ]
+                             daemon state that survived the daemon's own re-check. Run `fshw stop`, then re-run; \
+                             `fshw scan` does NOT clear it." ]
 
                 shown @ truncation @ staleAdvice
 

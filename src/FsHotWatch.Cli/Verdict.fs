@@ -873,8 +873,10 @@ module CheckProse =
            disk: an FCS fault (an `internal error:`, or an error from a check that reported a type incompatible \
            with ITSELF — either way the checker found nothing) or a diagnostic against a file \
            that is no longer there.\nNothing is reported broken — do NOT go looking for a defect — and nothing is \
-           reported sound either. This is stale daemon state: run `fshw stop`, then re-run. `fshw scan` does NOT \
-           clear it. See `reddenedBy[].kind` in the verdict for which cause was which."
+           reported sound either. The daemon already re-checked the suspect answers once for this tree before \
+           grading, and these survived. This is stale daemon state: run `fshw stop`, then re-run; a new daemon runs \
+           the suite again. Re-running `check` or `fshw scan` does NOT clear it. See `reddenedBy[].kind` in the \
+           verdict for which cause was which."
 
     /// The run FINISHED and its result never made it back.
     ///

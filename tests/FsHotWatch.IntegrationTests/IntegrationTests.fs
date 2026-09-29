@@ -2263,10 +2263,11 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
+    // Each handler folds the event on its own; wait for every status asserted below.
     waitUntil
         (fun () ->
-            match host.GetStatus("d") with
-            | Some(PluginStatus.Failed _) -> true
+            match host.GetStatus("b"), host.GetStatus("c"), host.GetStatus("d") with
+            | Some(PluginStatus.Running _), Some(PluginStatus.Completed _), Some(PluginStatus.Failed _) -> true
             | _ -> false)
         20000
 

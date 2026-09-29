@@ -5199,3 +5199,166 @@ let ``the batch line names the changed files that caused it and counts the depen
         <@
             Daemon.checkingAfterChangeLine "/repo" [ "/repo/a/A.fs" ] 1 = "Checking 1 files after change — 1 changed [a/A.fs], 0 dependent"
         @>
+
+// ============================================================================
+// Re-checking suspect answers in this process
+// ============================================================================
+
+/// A daemon over one real, clean source file, scanned once. `body` receives the daemon
+/// and the source path.
+let private withScannedCleanProject (name: string) (body: Daemon -> string -> unit) =
+    withTempDir name (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Clean.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Clean.fs")
+        File.WriteAllText(sourcePath, "module Clean\nlet value = 1\n")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ sourcePath ] }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ] ])
+        loader.Resume(0)
+
+        // The deps guard reads the assets marker; the minimal project is never restored.
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this test drives every scan itself")
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        body daemon sourcePath)
+
+/// The entry a check that declared a type incompatible with itself leaves behind.
+let private suspectEntry: ErrorLedger.ErrorEntry =
+    { Message = "The type 'Clean.T' does not match the type 'Clean.T'"
+      Severity = ErrorLedger.DiagnosticSeverity.Error
+      Line = 2
+      Column = 4
+      Detail = None }
+
+/// The settle a `check` grades after, with a bound fit for a test.
+let private settleForVerdict (daemon: Daemon) =
+    daemon.SettleForVerdict(TimeSpan.FromSeconds 30.0, CancellationToken.None).Wait()
+
+let private suspectEntries (daemon: Daemon) =
+    daemon.Host.GetErrorsByPlugin(PluginActivity.FcsInternalPluginName)
+
+[<Fact(Timeout = 60000)>]
+let ``a check that settles holding a suspect answer re-checks it once and grades a clean ledger`` () =
+    withScannedCleanProject "daemon-suspect-settle" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(PluginActivity.FcsInternalPluginName, sourcePath, [ suspectEntry ])
+        test <@ (suspectEntries daemon).ContainsKey sourcePath @>
+
+        settleForVerdict daemon
+
+        // Every check writes both ledger keys, so the entry is gone only because the file
+        // was checked again and its new answer declared no type incompatible with itself.
+        test <@ (suspectEntries daemon).IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a tree is re-checked once: a suspect answer that returns on it stays for the verdict`` () =
+    withScannedCleanProject "daemon-suspect-once" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(PluginActivity.FcsInternalPluginName, sourcePath, [ suspectEntry ])
+        settleForVerdict daemon
+        test <@ (suspectEntries daemon).IsEmpty @>
+
+        // The same tree, suspect again: its one re-check is spent, so the entry stays and
+        // the verdict reads it as no verdict rather than retrying.
+        daemon.Host.ReportErrors(PluginActivity.FcsInternalPluginName, sourcePath, [ suspectEntry ])
+
+        let second =
+            daemon.RecheckSuspectOnce(fun () -> daemon.Settle()) |> Async.RunSynchronously
+
+        test <@ second = None @>
+        test <@ (suspectEntries daemon).ContainsKey sourcePath @>)
+
+type private HeldRunMsg = | HeldRunDone
+
+[<Fact(Timeout = 60000)>]
+let ``the settle re-check waits for a held test run and never interrupts it`` () =
+    withScannedCleanProject "daemon-suspect-settle-held" (fun daemon sourcePath ->
+        use workerGo = new ManualResetEventSlim(false)
+        use claimed = new ManualResetEventSlim(false)
+        let finished = ref false
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "test-run"
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | BuildCompleted _ ->
+                            match
+                                ctx.RunExclusive
+                                    "tests"
+                                    (async {
+                                        claimed.Set()
+                                        workerGo.Wait()
+                                        return HeldRunDone
+                                    })
+                            with
+                            | Claimed -> ()
+                            | SlotBusy -> failwith "test setup: expected to claim the tests key"
+                        | Custom HeldRunDone -> finished.Value <- true
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+              PrepareCommit = None
+              CacheKey = None
+              Teardown = None }
+
+        try
+            daemon.Host.ReportErrors(PluginActivity.FcsInternalPluginName, sourcePath, [ suspectEntry ])
+            daemon.Host.EmitBuildCompleted(BuildSucceeded)
+            Assert.True(claimed.Wait(TimeSpan.FromSeconds 10.0), "the test run must start")
+
+            // The wait the re-check makes while the run holds its key. What it sees is
+            // recorded, then the run is allowed to finish on its own.
+            let seenWhileHeld = ResizeArray<bool * bool>()
+
+            let awaitQuiet () =
+                async {
+                    seenWhileHeld.Add((suspectEntries daemon).ContainsKey sourcePath, finished.Value)
+                    workerGo.Set()
+                    do! daemon.Settle()
+                }
+
+            let outcome = daemon.RecheckSuspectOnce awaitQuiet |> Async.RunSynchronously
+
+            test <@ outcome = Some(SuspectRecheck.Outcome.Rechecked([ sourcePath ], [])) @>
+            // First wait: the entry had not been dropped, and the run was still going.
+            test <@ seenWhileHeld[0] = (true, false) @>
+            // The run finished on its own, and the entry was then re-checked away.
+            test <@ finished.Value @>
+            test <@ (suspectEntries daemon).IsEmpty @>
+        finally
+            workerGo.Set())

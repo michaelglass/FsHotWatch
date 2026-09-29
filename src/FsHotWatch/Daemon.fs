@@ -2580,6 +2580,9 @@ type Daemon
 
     let mutable disposed = false
 
+    // The trees this daemon has already re-checked suspect answers for (`SuspectRecheck`).
+    let retriedTrees = SuspectRecheck.RetriedTrees()
+
     // Expose a read-only view of the live project graph to plugins (via
     // PluginCtx.ProjectGraph) BEFORE DaemonConfig.registerPlugins runs, so the
     // TestPrune plugin can compute dependency fingerprints + fan out to dependent
@@ -2729,6 +2732,52 @@ type Daemon
 
     /// Set scan state (internal, for testing).
     member internal _.SetScanState(state: ScanState) = setScanStatus scanAgent state
+
+    /// Once per tree, before a verdict is graded: re-check every file whose latest check
+    /// left an `fcs-internal` entry (`SuspectRecheck.settle`). `awaitQuiet` waits until the
+    /// host owns no work; it is what a held test run is waited for with, and what the
+    /// re-check's own scan is settled with.
+    member internal this.RecheckSuspectOnce(awaitQuiet: unit -> Async<unit>) : Async<SuspectRecheck.Outcome option> =
+        SuspectRecheck.settle
+            retriedTrees
+            { Recheck =
+                { ExclusiveHolders = host.ExclusiveHolders
+                  SuspectFiles =
+                    fun () ->
+                        host.GetErrorsByPlugin(PluginActivity.FcsInternalPluginName)
+                        |> Map.toList
+                        |> List.filter (fun (_, entries) -> not entries.IsEmpty)
+                        |> List.map fst
+                  Drop = fun file -> pipeline.DropAnswer(AbsFilePath.create file)
+                  Recheck = this.ScanAll }
+              TreeHash =
+                fun () ->
+                    try
+                        Some (FsHotWatch.TreeHash.compute repoRoot excludePatterns).Hash
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException -> None
+              AwaitQuiet = awaitQuiet
+              Log = Logging.info "daemon" }
+
+    /// The wait a `check` grades after: settle, re-check suspect answers once for this
+    /// tree, and settle again when it did.
+    member internal this.SettleForVerdict(timeout: TimeSpan, ct: CancellationToken) : Task<unit> =
+        task {
+            let settleNow () =
+                waitForVerdictUnlessDiscoveryFailed
+                    this.WaitForDiscoveryAdmission
+                    (fun timeout -> waitForVerdict host timeout ct)
+                    timeout
+
+            do! settleNow ()
+
+            let! _ =
+                this.RecheckSuspectOnce(fun () -> settleNow () |> Async.AwaitTask)
+                |> Async.StartAsTask
+
+            ()
+        }
 
     /// Scan all registered files — check each one and emit events to plugins.
     /// Completes when this request's scan has settled; a scan already running finishes
@@ -2921,12 +2970,10 @@ type Daemon
                       // observation lease itself, so an in-flight client wait inhibits
                       // idle-exit on every exit path (verdict, timeout, or shutdown
                       // cancellation) without a bracket at this call site to forget.
-                      WaitForAllTerminal =
-                        fun timeout ->
-                            waitForVerdictUnlessDiscoveryFailed
-                                this.WaitForDiscoveryAdmission
-                                (fun timeout -> waitForVerdict host timeout cts.Token)
-                                timeout
+                      //
+                      // A check that settles holding suspect answers re-checks them once
+                      // for this tree before it is graded (`SettleForVerdict`).
+                      WaitForAllTerminal = fun timeout -> this.SettleForVerdict(timeout, cts.Token)
                       RerunPlugin = rerunPlugin
                       InvalidateCache =
                         fun () ->

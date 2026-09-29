@@ -50,6 +50,17 @@ let internal answerMessages (answer: FSharpCheckFileAnswer) : string seq =
     | FSharpCheckFileAnswer.Succeeded r -> r.Diagnostics |> Seq.map (fun d -> d.Message)
     | FSharpCheckFileAnswer.Aborted -> Seq.empty
 
+/// Whether a finished check with these diagnostic messages may be stored in the
+/// check-result cache.
+///
+/// Not when any of them declares a type incompatible with ITSELF: that answer is not a
+/// reading of the code (`FcsDiagnosticFilter`). The cache key is the file's content and
+/// options, so a stored suspect answer is replayed by every later check of the unchanged
+/// file, and the fault outlives the checker state that produced it until the process
+/// exits.
+let internal cacheableAnswer (messages: string seq) : bool =
+    not (Seq.exists FcsDiagnosticFilter.isSelfIncompatibleTypeMessage messages)
+
 /// Where a check's answer came from: the generation of its project's checker state
 /// and the key of the snapshot it asked FCS about (`ProjectSnapshots.snapshotKey`).
 /// Two checks logging the same pair asked for the same project type-check.
@@ -431,6 +442,18 @@ type CheckPipeline
                 Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(AbsFilePath.value filePath)}"
             | _ -> ()
         | None -> ()
+
+    /// Drop what this process holds for `filePath`'s last answer: its cached result, and
+    /// the checker state its project was type-checked under (a new generation, as
+    /// `ProjectSnapshots.invalidateShared` starts). The next check of the file asks the
+    /// checker afresh instead of replaying an answer that declared a type incompatible
+    /// with itself.
+    member this.DropAnswer(filePath: AbsFilePath) =
+        this.InvalidateFile filePath
+
+        match projectOptionsByFile.TryGetValue(filePath) with
+        | true, optionsList -> optionsList |> List.iter (ProjectSnapshots.invalidateShared checker)
+        | false, _ -> ()
 
     /// Register project options for a project. Maps each of its checkable source files
     /// to these options; the generated files in obj/ and bin/ are compiled but never
@@ -904,6 +927,12 @@ type CheckPipeline
                             && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
 
                         match r.CheckResults with
+                        | FullCheck results when
+                            not (cacheableAnswer (results.Diagnostics |> Seq.map (fun d -> d.Message)))
+                            ->
+                            Logging.debug
+                                "check"
+                                $"Not caching %s{Path.GetFileName absPath}: its answer declared a type incompatible with itself"
                         | FullCheck _ when inputsHeld ->
                             backend.Set
                                 key

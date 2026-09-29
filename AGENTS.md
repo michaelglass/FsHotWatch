@@ -74,6 +74,11 @@ earn one: run `check` again, or `confirm`.
 the daemon. Use it from repo-side clean commands; the next check rebuilds while FCS
 stays warm.
 
+**`check` says NO VERDICT: stale daemon state (a type incompatible with itself).**
+The daemon already re-checked those files once for this tree before grading, keeping the
+test evidence it holds, and they survived. Run `fshw stop`, then `check` again; a new
+daemon starts without that evidence, so its first check runs the suite.
+
 **Renamed / moved / added files and they aren't being checked.**
 `fshw scan` re-discovers the tree. Edits to `.fshw.json` trigger this automatically.
 
