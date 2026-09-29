@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.3.1 - 2026-09-29
+
 - fix: a case of a generic union is indexed under the union's own name, `M.Lookup`1.Found`,
   instead of FCS's display form `M.Lookup<_>.Found`. The union itself, its members and the
   CLR type all use `Lookup`1`, so runtime traces could not map a generic union's cases and

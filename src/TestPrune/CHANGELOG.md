@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.3.1 - 2026-09-29
+
+- Name generic types by one canonical form in the index
+
+
 ## 13.3.0 - 2026-09-28
 
 - feat: **Your `.test-prune.db` is rebuilt on first run (`SchemaVersion` 18 -> 19).**
