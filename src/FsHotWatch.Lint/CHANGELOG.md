@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-09-29
+
+- Share JSON accessors, deadline parsing and run helpers; one scope-label key
+
+
 ## 0.7.0-alpha.26 - 2026-09-23
 
 - Fixed: a phantom lint finding for a file the project model dropped. A

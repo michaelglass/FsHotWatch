@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.42 - 2026-09-29
+
+- Share JSON accessors, deadline parsing and run helpers; one scope-label key
+
+
 ## 0.7.0-alpha.41 - 2026-09-28
 
 - coverage: AnalyzerIdentity.fs's Linux gap was the checkout's depth; cover it in any checkout

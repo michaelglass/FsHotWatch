@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.59 - 2026-09-29
+
 - fix: a `FileChecked` result stamped with no model generation, or with one other
   than the available model's, is no longer served from or written to the task cache.
   The cache key names the file and its inputs, not the model, so a queued result from

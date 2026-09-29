@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-09-29
+
+- test(integration): stub fantomas in the all-plugins test
+- Share JSON accessors, deadline parsing and run helpers; one scope-label key
+
+
 ## 0.7.0-alpha.28 - 2026-09-26
 
 - perf: the format preprocessor no longer hands the pinned Fantomas bytes it has already
