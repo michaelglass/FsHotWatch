@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.28 - 2026-09-30
+
 - deps: CoverageRatchet.Core 0.1.0-alpha.13. The plugin now reads coverage reports with the
   reader options its floor file asks for (`loadReaderOptions` + `readReports`), as the
   `coverageratchet` CLI does. The directory rules see only the directories below the floor

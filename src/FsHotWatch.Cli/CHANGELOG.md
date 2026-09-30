@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.81 - 2026-09-30
+
 - deps: TestPrune.Trace 0.6.0. Traces recorded by an earlier version are not read back
   (the environment fingerprint now includes the test assembly's weave mode), so the next
   traced run records them again.

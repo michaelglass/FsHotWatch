@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.61 - 2026-09-30
+
 - deps: TestPrune.Trace 0.6.0. The environment fingerprint of a stored trace now includes
   how the test assembly was woven, so a project switched between `sites` and `full` never
   reads the other mode's traces back; every fingerprint changes, and traces recorded by an
