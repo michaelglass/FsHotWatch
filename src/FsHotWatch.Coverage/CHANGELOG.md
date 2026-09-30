@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-09-30
+
 - feat: a failed coverage check names the files below their floors. The status summary reads
   "N file(s) below threshold: A.fs, B.fs" (the first five, then "+k more"), and the status
   error lists each file with every floor it missed.

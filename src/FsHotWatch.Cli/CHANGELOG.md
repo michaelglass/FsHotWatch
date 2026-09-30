@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.82 - 2026-09-30
+
 - feat: `coverage.reports` in `.fshw.json` names the exact report files the coverage check
   reads, instead of searching `searchDir` for `coverage.cobertura.xml`. A value that is not a
   non-empty array of paths, or `reports` given together with `searchDir`, is a `ConfigError`.
