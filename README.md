@@ -113,7 +113,7 @@ This matters more than the feature list, so it is stated up front:
 | Command | What it does |
 |---------|--------------|
 | `fshw check` | **The inner loop.** Run every plugin and report findings; tests are impact-filtered. Auto-starts the daemon. Exits 0 (clean), 1 (failures), 2 (completeness unconfirmed). `--run-once` runs without a daemon; `-q`/`--compact` for one line per plugin. |
-| `fshw confirm` | **The unfiltered verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. On an unchanged tree it answers from the full-suite evidence already earned; `--fresh` launches a new full-suite run instead. |
+| `fshw confirm` | **The unfiltered verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. On an unchanged tree it answers from the full-suite evidence already earned; `--fresh` launches a new full-suite run instead. A daemon `confirm` had to start is stopped before it returns (`--keep-daemon` keeps it); one that was already running is left alone. |
 | `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
 | `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |

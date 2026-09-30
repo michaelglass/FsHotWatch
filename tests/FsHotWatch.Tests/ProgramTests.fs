@@ -1559,3 +1559,127 @@ let ``every IpcFault case yields a non-empty hint`` () =
         let hint = ipcErrorHint sample
         test <@ hint.Length > 0 @>
         test <@ not (hint.Contains "None") @>
+
+// --- A daemon `confirm` started does not outlive it ---
+//
+// A daemon left running after a gate keeps watching the tree, so a later edit (a jj
+// operation, a checkout) rebuilds the workspace and rewrites bin/ under whatever runs
+// next. `confirm` therefore stops a daemon it had to start; a daemon it found running
+// is someone's warm daemon and stays, and `check`, the warm inner loop, never stops one.
+
+/// A fake daemon connection that is up only after a launch and down after a shutdown,
+/// counting both.
+type private FakeDaemon(initiallyRunning: bool) =
+    let mutable running = initiallyRunning
+    let mutable launches = 0
+    let mutable shutdowns = 0
+    member _.Launches = launches
+    member _.Shutdowns = shutdowns
+    member _.Running = running
+
+    member _.Ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> running
+            LaunchDaemon =
+                fun _ _ _ ->
+                    launches <- launches + 1
+                    running <- true
+            Shutdown =
+                fun _ ->
+                    async {
+                        shutdowns <- shutdowns + 1
+                        running <- false
+                        return "shutting down"
+                    } }
+
+/// Run `command` in a temp repo with one project, against `daemon`.
+let private runAgainst (daemon: FakeDaemon) (command: Command) =
+    withTempDir "prog-gate-daemon" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        // A running daemon is reused only when it loaded this configuration and is this
+        // binary; record both, or the CLI restarts it instead.
+        if daemon.Running then
+            let stateDir = Path.Combine(tmpDir, ".fshw")
+            Directory.CreateDirectory(stateDir) |> ignore
+            File.WriteAllText(Path.Combine(stateDir, "config.hash"), computeConfigHashWith defaultFileOps tmpDir)
+            FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        executeCommand
+            ""
+            (fun _ -> Unchecked.defaultof<_>)
+            daemon.Ipc
+            tmpDir
+            "pipe"
+            command
+            defaultGlobalOptions
+            fakeConfig
+            5.0
+        |> ignore)
+
+[<Fact(Timeout = 30000)>]
+let ``confirm stops the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (Confirm [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 1 @>
+    test <@ not daemon.Running @>
+
+[<Fact(Timeout = 30000)>]
+let ``confirm leaves a daemon it found running`` () =
+    let daemon = FakeDaemon(true)
+    runAgainst daemon (Confirm [])
+
+    test <@ daemon.Launches = 0 @>
+    test <@ daemon.Shutdowns = 0 @>
+
+[<Fact(Timeout = 30000)>]
+let ``check leaves the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (Command.Check [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
+
+[<Fact(Timeout = 30000)>]
+let ``confirm --keep-daemon leaves the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (Confirm [ ConfirmFlag.KeepDaemon ])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
+
+/// The whole policy: only `confirm`, only a daemon it started, and not when told to keep it.
+[<Fact>]
+let ``only confirm releases, and only a daemon it started`` () =
+    let outcomes = [ EnsureOutcome.Reused; EnsureOutcome.Started; EnsureOutcome.Failed ]
+
+    let releasing command =
+        outcomes |> List.filter (releasesDaemon command)
+
+    test <@ releasing (Confirm []) = [ EnsureOutcome.Started ] @>
+    test <@ releasing (Confirm [ ConfirmFlag.Fresh ]) = [ EnsureOutcome.Started ] @>
+    test <@ List.isEmpty (releasing (Confirm [ ConfirmFlag.KeepDaemon ])) @>
+    test <@ List.isEmpty (releasing (Command.Check [])) @>
+    test <@ List.isEmpty (releasing (Format [])) @>
+
+/// A host session this command attached is one it started; one the worktree already had
+/// is reused; a failed attach serves nothing.
+[<Fact>]
+let ``a host session reports whether this command attached it`` () =
+    let link attaches attachedHere =
+        hostSessionLink
+            { Endpoint = ""
+              Session = fun () -> failwith "Ensure does not read the session"
+              Reattach = fun () -> attaches }
+            attachedHere
+
+    test <@ (link true true).Ensure() = EnsureOutcome.Started @>
+    test <@ (link true false).Ensure() = EnsureOutcome.Reused @>
+    test <@ (link false true).Ensure() = EnsureOutcome.Failed @>
+    test <@ (link true false).ForceRestart() = EnsureOutcome.Reused @>

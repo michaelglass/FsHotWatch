@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a daemon `confirm` had to start is stopped before `confirm` returns, and `confirm` waits
+  until its pipe is gone. Left running, it kept watching the tree and rebuilt the workspace,
+  rewriting `bin/`, when files changed after the verdict. A daemon that was already running
+  is left alone, and `check` never stops one. In repository-host mode, the session `confirm`
+  attached is detached; the host stays up.
+
+- feat: `confirm --keep-daemon` leaves running a daemon `confirm` started.
+
 ## 0.14.0-alpha.82 - 2026-09-30
 
 - feat: `coverage.reports` in `.fshw.json` names the exact report files the coverage check
