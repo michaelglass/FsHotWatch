@@ -40,7 +40,8 @@ let private project (root: string) name : TraceProject =
       Args = $"run --project tests/%s{name} --no-build"
       Environment = [ "APP_ENV", "test" ]
       Target = Some(target root name)
-      CtrfPath = Some(Path.Combine(root, "run", $"%s{name}.ctrf.json")) }
+      CtrfPath = Some(Path.Combine(root, "run", $"%s{name}.ctrf.json"))
+      TraceWeave = None }
 
 let private tempRoot () =
     Directory.CreateTempSubdirectory("fshw-traces-").FullName
@@ -306,6 +307,43 @@ let ``weaveTests full weaves the test assembly in full, and a project's own DOTN
     | other -> failwith $"%A{other}"
 
     test <@ mode = Some Full @>
+
+/// The weave mode `decideWith` prepares a project with, under a global and a
+/// per-project setting.
+let private preparedWeave (globalWeave: TraceWeaveTests) (projectWeave: TraceWeaveTests option) =
+    let root = tempRoot ()
+
+    let rt =
+        { runtime root RecordFullRuns Set.empty PassThrough with
+            Settings =
+                { settings RecordFullRuns with
+                    WeaveTests = globalWeave } }
+
+    let session = sessionOf root "T" oneRowManifest
+    let mutable mode = None
+
+    let prepare (req: TraceSession.PrepareRequest) =
+        mode <- Some req.WeaveTests
+        Ok session
+
+    let p =
+        { project root "T" with
+            TraceWeave = projectWeave }
+
+    TraceRun.decideWith prepare someRoot rt p (Path.Combine(root, "run")) []
+    |> ignore
+
+    mode
+
+[<Fact>]
+let ``a project's own weaveTests overrides the global one, either way`` () =
+    test <@ preparedWeave WeaveTestSites (Some WeaveTestFull) = Some Full @>
+    test <@ preparedWeave WeaveTestFull (Some WeaveTestSites) = Some SitesOnly @>
+
+[<Fact>]
+let ``a project without its own weaveTests takes the global one`` () =
+    test <@ preparedWeave WeaveTestSites None = Some SitesOnly @>
+    test <@ preparedWeave WeaveTestFull None = Some Full @>
 
 [<Fact>]
 let ``the launch is the traced one only when the decision is Traced`` () =

@@ -118,6 +118,7 @@ let private runTests (root: string) (traces: TraceSettings option) =
         createWithTraces
             traces
             Set.empty
+            Map.empty
             (fun () -> Map.empty)
             (Path.Combine(root, "tp.db"))
             root
