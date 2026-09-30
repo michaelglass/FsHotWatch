@@ -112,6 +112,27 @@ let ``check reads the graded run's rows from the trace database`` () =
         Directory.Delete(root, true)
 
 [<Fact>]
+let ``an every-run graded run that recorded a project owes nothing`` () =
+    let rows = [ "A", [ row runId TraceStore.TreeMovedDuringRun "" ] ]
+    test <@ ConfirmTraces.unrecordedWarning RecordEveryRun runId rows = None @>
+
+[<Fact>]
+let ``check names a trace database it cannot read`` () =
+    let root = Directory.CreateTempSubdirectory("fshw-confirm-traces-").FullName
+    let dbPath = Path.Combine(root, ".fshw", "test-traces.db")
+    Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore
+    File.WriteAllText(dbPath, "not a sqlite database")
+
+    try
+        let warning =
+            ConfirmTraces.check root (Some(settings RecordFullRuns)) [ "A" ] (Some(Guid.Parse runId))
+
+        test <@ warning.IsSome && warning.Value.Contains "could not be read" @>
+        test <@ warning.Value.Contains ".fshw/test-traces.db" @>
+    finally
+        Directory.Delete(root, true)
+
+[<Fact>]
 let ``check owes nothing without traces configured or without a graded run`` () =
     test <@ ConfirmTraces.check "/nowhere" None [ "A" ] (Some(Guid.Parse runId)) = None @>
     test <@ ConfirmTraces.check "/nowhere" (Some(settings RecordFullRuns)) [ "A" ] None = None @>
