@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a reused verdict says what its freshness key covered. `confirm`'s "still applies" and
+  `fshw verdict`'s green name the files in the key (everything under the source roots, the
+  toolchain files, the declared inputs, and any declared path that matches nothing) and the
+  top-level directories outside it, e.g. "not in the key: docs/, infra/ — a change there does
+  not make this verdict stale". The description is read off the same walk that computes the
+  tree hash; what is hashed is unchanged, so the hash algorithm stays v3. `fshw verdict`'s JSON
+  envelope gains an additive `key` object (`fileCount`, `roots`, `toolKnownCount`,
+  `declaredCount`, `absent`, `declaredOnly`, `outside`).
+
 - fix: a daemon `confirm` had to start is stopped before `confirm` returns, and `confirm` waits
   until its pipe is gone. Left running, it kept watching the tree and rebuilt the workspace,
   rewriting `bin/`, when files changed after the verdict. A daemon that was already running

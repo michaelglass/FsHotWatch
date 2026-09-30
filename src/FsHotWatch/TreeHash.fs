@@ -85,6 +85,10 @@ type Walked =
         AbsentDeclarations: string list
         /// How many of `Files` came from declarations rather than from the walk.
         DeclaredCount: int
+        /// The discovery roots the walk covered, repo-relative (`src`, `tests`).
+        Roots: string list
+        /// How many of `Files` are tool-known root inputs (`.fshw.json`, toolchain files).
+        ToolKnownCount: int
     }
 
 /// Everything that makes up "the tree fshw verifies", INCLUDING the holes in it.
@@ -127,8 +131,9 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
     // Deduplicated by ABSOLUTE path before relativising: a repo may well declare a
     // file the walk already found (a source file that is also a rule input), and
     // hashing it twice would make the entry list disagree with the file count.
-    let walkAndToolKnown =
-        filePaths @ VerdictInputs.toolKnownInputs repoRoot |> List.distinct
+    let toolKnown = VerdictInputs.toolKnownInputs repoRoot
+
+    let walkAndToolKnown = filePaths @ toolKnown |> List.distinct
 
     let alreadyHashed = Set.ofList walkAndToolKnown
     let declaredOnly = resolved.Files |> List.filter (alreadyHashed.Contains >> not)
@@ -139,6 +144,11 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
         |> sorted
       AbsentDeclarations = resolved.Absent
       DeclaredCount = List.length declaredOnly
+      Roots = Discovery.existingDiscoveryRoots repoRoot |> List.map relativeTo
+      ToolKnownCount =
+        toolKnown
+        |> List.filter (fun f -> not (List.contains f filePaths))
+        |> List.length
       Skipped =
         walked
         |> List.collect (fun w -> w.Skipped |> List.map (fun s -> s.Path))
@@ -173,9 +183,7 @@ let hashEntries (entries: (string * string) list) : string =
 /// FILE, applied one level up: a tree we could not fully see must not hash like
 /// the tree we could, or a verdict earned over the visible part silently covers
 /// the invisible part.
-let compute (repoRoot: string) (excludePatterns: string list) : Tree =
-    let walked = files repoRoot excludePatterns
-
+let ofWalked (walked: Walked) : Tree =
     // `ContentHash` owns the sentinel policy for an unreadable file.
     let hashedFiles =
         walked.Files |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs)
@@ -201,3 +209,88 @@ let compute (repoRoot: string) (excludePatterns: string list) : Tree =
       SkippedCount = List.length hashedHoles
       DeclaredCount = walked.DeclaredCount
       AbsentDeclarationCount = List.length hashedAbsent }
+
+/// The content address of the repo's current tree: `files`, then `ofWalked`.
+let compute (repoRoot: string) (excludePatterns: string list) : Tree =
+    ofWalked (files repoRoot excludePatterns)
+
+/// What a tree hash covered, read off the walk that produced it, so the description
+/// cannot claim more (or less) than the hash does. Reporting it changes nothing about
+/// WHAT is hashed, so `Algorithm` stays where it is.
+type Coverage =
+    {
+        /// Files in the key: the walk, the tool-known inputs and the declared inputs.
+        FileCount: int
+        /// The discovery roots walked, repo-relative.
+        Roots: string list
+        /// Tool-known root inputs outside the roots (`.fshw.json`, toolchain files).
+        ToolKnownCount: int
+        /// Declared inputs outside the roots and the tool-known files.
+        DeclaredCount: int
+        /// Declared paths that matched nothing (each hashed as a sentinel).
+        Absent: string list
+        /// Top-level directories outside the roots that hold only declared inputs,
+        /// with how many.
+        DeclaredOnly: (string * int) list
+        /// Top-level directories no file in the key lives under.
+        Outside: string list
+    }
+
+/// Read `Coverage` off a walk. Only the top-level directory listing is new I/O; every
+/// count and path comes from `walked`, the list the hash is computed over.
+let coverage (repoRoot: string) (walked: Walked) : Coverage =
+    let topLevel (rel: string) =
+        match rel.IndexOf '/' with
+        | -1 -> None
+        | i -> Some(rel.Substring(0, i))
+
+    let perDirectory =
+        walked.Files |> List.choose (fst >> topLevel) |> List.countBy id |> Map.ofList
+
+    // A root that cannot be listed names no neighbours: this is a description of the
+    // key, and the hash itself already carries any hole the walk met.
+    let others =
+        SafeWalk.subdirectories repoRoot
+        |> Result.defaultValue [||]
+        |> Array.map Path.GetFileName
+        |> Array.filter (fun name ->
+            not (name.StartsWith(".", StringComparison.Ordinal))
+            && not (List.contains name walked.Roots)
+            && not (SafeWalk.SourceExcludedDirs.Contains name))
+        |> Array.sortWith (fun a b -> String.CompareOrdinal(a, b))
+        |> Array.toList
+
+    { FileCount = List.length walked.Files
+      Roots = walked.Roots
+      ToolKnownCount = walked.ToolKnownCount
+      DeclaredCount = walked.DeclaredCount
+      Absent = walked.AbsentDeclarations
+      DeclaredOnly =
+        others
+        |> List.choose (fun d -> perDirectory |> Map.tryFind d |> Option.map (fun n -> d, n))
+      Outside = others |> List.filter (fun d -> not (Map.containsKey d perDirectory)) }
+
+/// The human lines for a `Coverage`: what the key holds, then what lies outside it.
+let describeCoverage (c: Coverage) : string list =
+    let roots =
+        match c.Roots with
+        | [] -> "no source roots"
+        | roots -> roots |> List.map (fun r -> r + "/") |> String.concat " and "
+
+    let declared =
+        match c.DeclaredCount, c.Absent with
+        | 0, [] -> ""
+        | n, [] -> $", %d{n} declared input(s)"
+        | n, absent ->
+            let listed = String.concat ", " absent
+            $", %d{n} declared input(s) (%d{List.length absent} declared path(s) match nothing: %s{listed})"
+
+    let outside =
+        (c.DeclaredOnly
+         |> List.map (fun (d, n) -> $"%s{d}/ (%d{n} declared file(s) only)"))
+        @ (c.Outside |> List.map (fun d -> d + "/"))
+
+    [ $"key: %d{c.FileCount} file(s) — everything under %s{roots}, %d{c.ToolKnownCount} toolchain file(s)%s{declared}"
+      if not (List.isEmpty outside) then
+          let listed = String.concat ", " outside
+          $"not in the key: %s{listed} — a change there does not make this verdict stale" ]

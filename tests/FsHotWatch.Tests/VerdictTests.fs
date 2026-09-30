@@ -3462,16 +3462,172 @@ let ``a full-suite green over THIS tree, from THIS binary, still applies`` () =
                         Skipped = 0 } ] }
 
         match Verdict.priorConfirmation root [] with
-        | Verdict.PriorConfirmation.StillApplies v ->
+        | Verdict.PriorConfirmation.StillApplies(v, covered) ->
             test <@ Verdict.isFullSuiteGreen v @>
             // It must NAME its evidence — a green a reader cannot audit is one they have to
             // take on trust.
-            let described = Verdict.describeStillApplies v
+            let described = Verdict.describeStillApplies v covered
             test <@ described.Contains "still applies" @>
             test <@ described.Contains "treeHash + producer match" @>
             test <@ described.Contains "full suite" @>
             test <@ described.Contains "1965 passed" @>
         | Verdict.PriorConfirmation.MustEarn -> failwith "a full-suite green over this very tree must still apply")
+
+/// A reused green is a claim about the files its key covered, and nothing else. It says
+/// which ones, and names the top-level directories outside the key, so "still applies"
+/// cannot be read as a claim about the whole repository.
+[<Fact>]
+let ``a green that still applies names what its key covered and what lies outside it`` () =
+    withTempDir "confirm-key-coverage" (fun root ->
+        makeRepo root
+        Directory.CreateDirectory(Path.Combine(root, "docs", "adr")) |> ignore
+        File.WriteAllText(Path.Combine(root, "docs", "adr", "0001-a.md"), "# 0001")
+        Directory.CreateDirectory(Path.Combine(root, "infra")) |> ignore
+        File.WriteAllText(Path.Combine(root, "infra", "deploy.sh"), "echo")
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = FullSuite 1
+                Baseline = BaselineFixtures.reading }
+
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies(v, covered) ->
+            let described = Verdict.describeStillApplies v covered
+            test <@ described.Contains "src/" && described.Contains "tests/" @>
+            test <@ described.Contains "not in the key: docs/, infra/" @>
+        | Verdict.PriorConfirmation.MustEarn -> failwith "a full-suite green over this very tree must still apply")
+
+/// A repo with a source root, a docs/ tree holding one declared input, an infra/ tree
+/// holding none, and one declaration that matches nothing.
+let private coverageRepo (root: string) (declareDocs: bool) =
+    makeRepo root
+    Directory.CreateDirectory(Path.Combine(root, "docs", "adr")) |> ignore
+    File.WriteAllText(Path.Combine(root, "docs", "adr", "0001-a.md"), "# 0001")
+    Directory.CreateDirectory(Path.Combine(root, "infra")) |> ignore
+    File.WriteAllText(Path.Combine(root, "infra", "deploy.sh"), "echo")
+
+    let docs =
+        if declareDocs then
+            """{"path": "docs/adr/0001-a.md", "why": "a test reads it"},"""
+        else
+            ""
+
+    File.WriteAllText(
+        FsHwPaths.configFile root,
+        $"""{{"verdictInputs": {{"hashed": [{docs}
+             {{"path": "config/missing.json", "why": "a floor file not written yet"}}]}}}}"""
+    )
+
+[<Fact>]
+let ``the key's coverage is read off the walk that feeds the hash`` () =
+    withTempDir "key-coverage-walk" (fun root ->
+        coverageRepo root true
+        let walked = TreeHash.files root []
+        let covered = TreeHash.coverage root walked
+
+        test <@ covered.FileCount = List.length walked.Files @>
+        test <@ covered.Roots = [ "src"; "tests" ] @>
+        test <@ covered.DeclaredOnly = [ "docs", 1 ] @>
+        test <@ covered.Outside = [ "infra" ] @>
+        test <@ covered.Absent = [ "config/missing.json" ] @>
+
+        let lines = TreeHash.describeCoverage covered
+        test <@ lines.Head.Contains "everything under src/ and tests/" @>
+        test <@ lines.Head.Contains "1 declared path(s) match nothing: config/missing.json" @>
+
+        test
+            <@ lines[1].StartsWith("not in the key: docs/ (1 declared file(s) only), infra/", StringComparison.Ordinal) @>)
+
+[<Fact>]
+let ``a declaration moves the hash and the coverage together, and removing it reverts both`` () =
+    // Single-source control: the description is not a restatement that could drift from
+    // what is hashed. Declaring the docs file moves docs/ into the key AND changes the
+    // hash; undeclaring it puts both back exactly.
+    withTempDir "key-coverage-single-source" (fun root ->
+        coverageRepo root false
+        let undeclared = TreeHash.files root []
+        let before = TreeHash.ofWalked undeclared, TreeHash.coverage root undeclared
+
+        coverageRepo root true
+        let declared = TreeHash.files root []
+        let during = TreeHash.ofWalked declared, TreeHash.coverage root declared
+
+        coverageRepo root false
+        let reverted = TreeHash.files root []
+        let after = TreeHash.ofWalked reverted, TreeHash.coverage root reverted
+
+        test <@ (fst during).Hash <> (fst before).Hash @>
+        test <@ (snd before).Outside = [ "docs"; "infra" ] @>
+        test <@ (snd during).DeclaredOnly = [ "docs", 1 ] && (snd during).Outside = [ "infra" ] @>
+        test <@ (fst after).Hash = (fst before).Hash @>
+        test <@ snd after = snd before @>)
+
+[<Fact>]
+let ``fshw verdict's envelope carries the key it was judged against`` () =
+    withTempDir "key-coverage-envelope" (fun root ->
+        coverageRepo root true
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = FullSuite 1
+                Baseline = BaselineFixtures.reading }
+
+        let report, covered = Verdict.reportWithCoverage root []
+        use doc = JsonDocument.Parse(Verdict.serializeReportWith report covered)
+        let key = doc.RootElement.GetProperty "key"
+
+        let first (name: string) = (key.GetProperty name).[0]
+        let applies = doc.RootElement.GetProperty("applies").GetBoolean()
+        let outside = (first "outside").GetString()
+        let declaredOnly = (first "declaredOnly").GetProperty("directory").GetString()
+        let absent = (first "absent").GetString()
+
+        test <@ applies @>
+        test <@ outside = "infra" @>
+        test <@ declaredOnly = "docs" @>
+        test <@ absent = "config/missing.json" @>)
+
+[<Fact>]
+let ``the key's description and envelope hold for the edge shapes`` () =
+    // A root that is not there lists no neighbours, a key with declared
+    // inputs that all matched says so without an absent list, and a report with no
+    // tree to judge carries no `key` at all.
+    let missingRoot =
+        Path.Combine(Path.GetTempPath(), "fshw-no-such-root-" + Guid.NewGuid().ToString "N")
+
+    let walked: TreeHash.Walked =
+        { Files = [ "docs/a.md", "h" ]
+          Skipped = []
+          AbsentDeclarations = []
+          DeclaredCount = 1
+          Roots = []
+          ToolKnownCount = 0 }
+
+    let c = TreeHash.coverage missingRoot walked
+
+    test <@ List.isEmpty c.DeclaredOnly && List.isEmpty c.Outside @>
+
+    test
+        <@
+            TreeHash.describeCoverage c = [ "key: 1 file(s) — everything under no source roots, 0 toolchain file(s), 1 declared input(s)" ]
+        @>
+
+    // Every declaration missing: nothing declared was hashed, and the key still names them.
+    let allAbsent =
+        { c with
+            DeclaredCount = 0
+            Absent = [ "config/missing.json" ] }
+        |> TreeHash.describeCoverage
+        |> List.head
+
+    test <@ allAbsent.EndsWith ", 0 declared input(s) (1 declared path(s) match nothing: config/missing.json)" @>
+
+    let r = Verdict.report missingRoot []
+    test <@ Verdict.serializeReportWith r None = Verdict.serializeReport r @>
 
 [<Fact>]
 let ``a CHANGED tree is never satisfied by the stale verdict`` () =
@@ -5639,7 +5795,7 @@ let ``confirm still reuses a full-suite green earned over this tree while a run 
 
         // The EVIDENCE question is answered on its own terms.
         match Verdict.priorConfirmation root [] with
-        | Verdict.PriorConfirmation.StillApplies v -> test <@ BaselineFixtures.isGreen (v.Outcome) @>
+        | Verdict.PriorConfirmation.StillApplies(v, _) -> test <@ BaselineFixtures.isGreen (v.Outcome) @>
         | Verdict.PriorConfirmation.MustEarn ->
             failwith "an earned full-suite green over this tree must survive a concurrent run")
 

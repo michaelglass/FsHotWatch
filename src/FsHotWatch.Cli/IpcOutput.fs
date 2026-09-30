@@ -820,7 +820,7 @@ let internal priorVerdictToPreserve
     match outcome with
     | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun _) ->
         match priorConfirmation () with
-        | Verdict.PriorConfirmation.StillApplies prior when
+        | Verdict.PriorConfirmation.StillApplies(prior, _) when
             prior.TreeHash = currentTreeHash
             && prior.TreeHashAlgorithm = currentTreeHashAlgorithm
             ->
