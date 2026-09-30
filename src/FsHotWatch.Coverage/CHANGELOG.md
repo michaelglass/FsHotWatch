@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-09-30
+
 - deps: CoverageRatchet.Core 0.1.0-alpha.12 (from 0.1.0-alpha.6). Its report readers now read
   `.fs`/`.cs`/`.vb` sources by default and choose which test directories they read
   differently, so a repository's measured coverage — and the floors it is judged against —
