@@ -31,21 +31,21 @@
       "rollForward": false
     },
     "syncdocs": {
-      "version": "0.13.0-alpha.5",
+      "version": "0.13.0-alpha.8",
       "commands": [
         "syncdocs"
       ],
       "rollForward": false
     },
     "fssemantictagger": {
-      "version": "0.14.0-alpha.17",
+      "version": "0.14.0-alpha.22",
       "commands": [
         "fssemantictagger"
       ],
       "rollForward": false
     },
     "fsprojlint": {
-      "version": "0.10.0-alpha.17",
+      "version": "0.10.0-alpha.21",
       "commands": [
         "fsprojlint"
       ],

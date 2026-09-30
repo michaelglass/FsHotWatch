@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- deps: build tooling fssemantictagger 0.14.0-alpha.22, fsprojlint 0.10.0-alpha.21,
+  syncdocs 0.13.0-alpha.8 and RefStamp 0.1.0-alpha.4.
+
 ## 13.3.1 - 2026-09-29
 
 - fix: a case of a generic union is indexed under the union's own name, `M.Lookup`1.Found`,
