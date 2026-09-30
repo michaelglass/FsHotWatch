@@ -238,20 +238,41 @@ let internal prepareCoverageArtifact
       Before = before
       DeletionProven = afterDelete = Missing }
 
+/// Whether the artifact now at the launch's path is one the run wrote, rather than one it
+/// found there: absent before, changed, or proven deleted at launch.
+let internal writtenByRun (launch: CoverageArtifactLaunch) (after: CoverageArtifactState) =
+    match launch.Before, after with
+    | _, Missing
+    | _, Unreadable _ -> false
+    | Unreadable _, Fingerprinted _ -> launch.DeletionProven
+    | Missing, Fingerprinted _ -> true
+    | Fingerprinted before, Fingerprinted after -> launch.DeletionProven || before <> after
+
+/// Where a run keeps its own copy of the raw coverage `project` wrote, beside its CTRF
+/// report and output log. The per-project baseline and partial files are overwritten by
+/// every later run; this copy is not.
+let internal runCoveragePath (runDir: string) (project: string) =
+    Path.Combine(runDir, $"%s{project}.coverage.cobertura.xml")
+
+/// Copy the raw coverage the run wrote for `launch.Project` into the run's directory.
+/// Nothing is copied when the run wrote nothing; a failed copy is logged, never fatal.
+let internal keepRunCoverage (runDir: string) (launch: CoverageArtifactLaunch) =
+    if writtenByRun launch (coverageArtifactState launch.RawPath) then
+        try
+            File.Copy(launch.RawPath, runCoveragePath runDir launch.Project, true)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            Logging.warn
+                "test-prune"
+                $"%s{launch.Project}: could not keep this run's coverage in %s{runDir}: %s{ex.Message}"
+
 let internal coverageInputFromObservedState
     (verifiedGreen: bool)
     (launch: CoverageArtifactLaunch)
     (after: CoverageArtifactState)
     : CoverageInput option =
-    let isNewArtifact =
-        match launch.Before, after with
-        | _, Missing
-        | _, Unreadable _ -> false
-        | Unreadable _, Fingerprinted _ -> launch.DeletionProven
-        | Missing, Fingerprinted _ -> true
-        | Fingerprinted before, Fingerprinted after -> launch.DeletionProven || before <> after
-
-    if verifiedGreen && isNewArtifact then
+    if verifiedGreen && writtenByRun launch after then
         Some
             { Project = launch.Project
               RawPath = launch.RawPath
@@ -3042,6 +3063,30 @@ module internal ObservedModel =
                     elapsed
         }
 
+    /// Wait, bounded by `settleBound`, while the host discovers its project model, before
+    /// a run is launched. A launch reads the model's generation, and during a discovery
+    /// that reading is `None`: a run launched under `None` that completes under a real
+    /// model cannot show which projects the model changed, so all of it is revoked.
+    ///
+    /// Waits on `Rediscovering` only. `Unobserved` is also a host that never discovers
+    /// (analysis-only, or a test host), so waiting on it would only spend the bound.
+    /// Returns how long it waited and whether the discovery finished within the bound.
+    let awaitDiscovery (graph: ProjectGraphAccessor) : Async<TimeSpan * bool> =
+        let started = Diagnostics.Stopwatch.StartNew()
+
+        let rec wait (slept: bool) =
+            async {
+                match graph.ObserveModel() with
+                | FsHotWatch.ProjectModel.Observation.Rediscovering _ when started.Elapsed < settleBound ->
+                    do! Async.Sleep 100
+                    return! wait true
+                | FsHotWatch.ProjectModel.Observation.Rediscovering _ -> return started.Elapsed, false
+                | _ when slept -> return started.Elapsed, true
+                | _ -> return TimeSpan.Zero, true
+            }
+
+        wait false
+
     /// A generation for a log line; `None` is a model that was not available.
     let describe (generation: int64 option) =
         match generation with
@@ -5580,6 +5625,8 @@ let private executeTests
                             | TestsDeferred _
                             | TestsNoMatch _ -> ()
 
+                            projectCoverageLaunch |> Option.iter (keepRunCoverage runDir)
+
                             // Collect this project's raw runner cobertura for SERIAL
                             // ingest after Async.Parallel (a parallel DB write +
                             // shared-file write would race). A run that never executed
@@ -7238,6 +7285,23 @@ let internal createWithQueries
     let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
         ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
 
+    /// Hold a launch while the host discovers its project model (`ObservedModel.awaitDiscovery`),
+    /// so the run is launched under the model it completes under. Called inside the launch's
+    /// exclusive work, before anything about the model is read.
+    let awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
+        async {
+            let! waited, settled = ObservedModel.awaitDiscovery ctx.ProjectGraph
+
+            if not settled then
+                Logging.warn
+                    "test-prune"
+                    $"project discovery was still running after %.0f{waited.TotalSeconds}s; launching without a model, so the run is revoked if the model it completes under differs"
+            elif waited > TimeSpan.Zero then
+                Logging.info
+                    "test-prune"
+                    $"waited %.1f{waited.TotalSeconds}s for project discovery to finish before launching"
+        }
+
     /// A launch, named by the model it was selected under and what it selected, so the
     /// completion line (`describeCompletionEvidence`) can be read against it.
     let logLaunch (kind: string) (mode: TestMode) (launch: TestRunLaunch) =
@@ -7280,6 +7344,8 @@ let internal createWithQueries
         (fanoutProjects: Set<string>)
         : Async<TestPruneMsg> =
         async {
+            do! awaitDiscoveryBeforeLaunch ctx
+
             let mutable emittedStart: TestRunStarted option = None
 
             let emitStarted started =
@@ -7840,9 +7906,14 @@ let internal createWithQueries
               ZeroSelection = ZeroSelection.NotAZero }
 
         async {
+            do! awaitDiscoveryBeforeLaunch ctx
+
+            // The model is read after the wait, not when the run was requested.
             let commandLaunch =
                 { commandLaunch with
-                    InputTree = ReceiptInputTree.readTree repoRoot }
+                    InputTree = ReceiptInputTree.readTree repoRoot
+                    ModelGeneration = observeModelGeneration ctx
+                    ProjectInputs = observeTestInputs ctx }
 
             logLaunch "forced" mode commandLaunch
 
