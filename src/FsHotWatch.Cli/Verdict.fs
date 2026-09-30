@@ -3249,41 +3249,52 @@ let reportExitCode (r: Report) : int =
 /// Read the verdict and decide whether it applies to the tree on disk RIGHT NOW.
 ///
 /// Touches no socket, starts no daemon, triggers no run — reading cannot perturb.
-let report (repoRoot: string) (excludePatterns: string list) : Report =
+/// `report`, also returning what the current tree's key covered (`None` when no verdict
+/// was read, so no tree was hashed). One walk feeds both, so the description is of the
+/// very files the applicability decision hashed.
+/// Whether verdict `v` applies to `currentTree`, and if not, which provenance link broke.
+let private reportAgainst (repoRoot: string) (v: Verdict) (currentTree: TreeHash.Tree) : Report =
+    let currentProducer = Producer.current ()
+
+    match applicability (RunClaim.live repoRoot) currentProducer currentTree.Hash v with
+    | Applicability.Applies -> Report.Applies v
+    | Applicability.RunInFlight held ->
+        let who = held |> List.map RunClaim.describe |> String.concat ", "
+
+        Report.InFlight(
+            v,
+            $"in flight: a run is verifying THIS tree right now — %s{who}. The verdict on disk was earned by \
+              an EARLIER run and is not that run's answer; wait for it to publish, then read again"
+        )
+    | Applicability.StaleTree(verdictTree, current) ->
+        Report.Stale(v, $"stale: the verdict describes a different tree (verdict %s{verdictTree}, current %s{current})")
+    | Applicability.StaleProducer(verdictBinary, current) ->
+        Report.Stale(
+            v,
+            $"stale: the verdict was produced by a DIFFERENT fshw binary (verdict %s{verdictBinary}, current %s{current}) — a stale daemon's green about an unchanged tree is still a stale daemon's green"
+        )
+    | Applicability.StaleAlgorithm(verdictAlgorithm, current) ->
+        Report.Stale(
+            v,
+            $"stale: the verdict's tree hash was computed by a DIFFERENT scheme (verdict %s{verdictAlgorithm}, current %s{current}) — it addresses a different set of files, so the two hashes are not comparable"
+        )
+
+/// `report`, also returning what the current tree's key covered (`None` when no verdict
+/// was read, so no tree was hashed). One walk feeds both, so the description is of the
+/// very files the applicability decision hashed.
+let reportWithCoverage (repoRoot: string) (excludePatterns: string list) : Report * TreeHash.Coverage option =
     match read repoRoot with
     | Reading.Missing ->
         Report.NoVerdict
-            $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence)"
-    | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}"
+            $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence)",
+        None
+    | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}", None
     | Reading.Found v ->
-        let currentTree = TreeHash.compute repoRoot excludePatterns
-        let currentProducer = Producer.current ()
+        let walked = TreeHash.files repoRoot excludePatterns
+        reportAgainst repoRoot v (TreeHash.ofWalked walked), Some(TreeHash.coverage repoRoot walked)
 
-        match applicability (RunClaim.live repoRoot) currentProducer currentTree.Hash v with
-        | Applicability.Applies -> Report.Applies v
-        | Applicability.RunInFlight held ->
-            let who = held |> List.map RunClaim.describe |> String.concat ", "
-
-            Report.InFlight(
-                v,
-                $"in flight: a run is verifying THIS tree right now — %s{who}. The verdict on disk was earned by \
-                  an EARLIER run and is not that run's answer; wait for it to publish, then read again"
-            )
-        | Applicability.StaleTree(verdictTree, current) ->
-            Report.Stale(
-                v,
-                $"stale: the verdict describes a different tree (verdict %s{verdictTree}, current %s{current})"
-            )
-        | Applicability.StaleProducer(verdictBinary, current) ->
-            Report.Stale(
-                v,
-                $"stale: the verdict was produced by a DIFFERENT fshw binary (verdict %s{verdictBinary}, current %s{current}) — a stale daemon's green about an unchanged tree is still a stale daemon's green"
-            )
-        | Applicability.StaleAlgorithm(verdictAlgorithm, current) ->
-            Report.Stale(
-                v,
-                $"stale: the verdict's tree hash was computed by a DIFFERENT scheme (verdict %s{verdictAlgorithm}, current %s{current}) — it addresses a different set of files, so the two hashes are not comparable"
-            )
+let report (repoRoot: string) (excludePatterns: string list) : Report =
+    fst (reportWithCoverage repoRoot excludePatterns)
 
 // ---------------------------------------------------------------------------
 // Has `confirm`'s evidence ALREADY been earned?
@@ -3310,9 +3321,9 @@ let isFullSuiteGreen (v: Verdict) : bool =
 /// daemon, sets a scope, or runs a test.
 [<RequireQualifiedAccess>]
 type PriorConfirmation =
-    /// A full-suite green, earned over THIS tree by THIS binary. `confirm` may report it
-    /// and exit 0 without running anything.
-    | StillApplies of Verdict
+    /// A full-suite green, earned over THIS tree by THIS binary, with what the tree's
+    /// key covered. `confirm` may report it and exit 0 without running anything.
+    | StillApplies of Verdict * TreeHash.Coverage
     /// Nothing on disk discharges this `confirm`. Go and earn it.
     | MustEarn
 
@@ -3341,19 +3352,19 @@ type PriorConfirmation =
 /// verification — and it would buy nothing, because the evidence it discarded is the
 /// same evidence the re-run would have to produce.
 let priorConfirmation (repoRoot: string) (excludePatterns: string list) : PriorConfirmation =
-    match report repoRoot excludePatterns with
-    | Report.Applies v when isFullSuiteGreen v -> PriorConfirmation.StillApplies v
-    | Report.InFlight(v, _) when isFullSuiteGreen v -> PriorConfirmation.StillApplies v
-    | Report.Applies _
-    | Report.InFlight _
-    | Report.Stale _
-    | Report.NoVerdict _ -> PriorConfirmation.MustEarn
+    match reportWithCoverage repoRoot excludePatterns with
+    | Report.Applies v, Some covered when isFullSuiteGreen v -> PriorConfirmation.StillApplies(v, covered)
+    | Report.InFlight(v, _), Some covered when isFullSuiteGreen v -> PriorConfirmation.StillApplies(v, covered)
+    | Report.Applies _, _
+    | Report.InFlight _, _
+    | Report.Stale _, _
+    | Report.NoVerdict _, _ -> PriorConfirmation.MustEarn
 
 /// One line for a human: WHAT still applies, WHEN it was earned, and on WHAT evidence.
 ///
 /// It names the two things that had to match, so the green is auditable rather than
 /// taken on trust.
-let describeStillApplies (v: Verdict) : string =
+let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
     let earnedAt = v.ProducedAt.ToLocalTime().ToString("HH:mm")
 
     let evidence =
@@ -3393,7 +3404,12 @@ let describeStillApplies (v: Verdict) : string =
         | Incomplete _
         | ModelUnavailable _ -> ""
 
-    $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence}%s{baseline})"
+    let key =
+        TreeHash.describeCoverage covered
+        |> List.map (fun line -> "\n            " + line)
+        |> String.concat ""
+
+    $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence}%s{baseline})%s{key}"
 
 /// The machine-readable envelope `fshw verdict` prints on stdout.
 ///
@@ -3441,6 +3457,28 @@ let serializeReport (r: Report) : string =
             :> obj
 
     JsonSerializer.Serialize(payload, jsonOptions)
+
+/// `serializeReport`, plus an additive `key` object naming what the current tree's hash
+/// covered when there is one (`TreeHash.coverage`).
+let serializeReportWith (r: Report) (covered: TreeHash.Coverage option) : string =
+    let json = serializeReport r
+
+    match covered with
+    | None -> json
+    | Some c ->
+        let root = JsonNode.Parse(json).AsObject()
+
+        let key =
+            {| fileCount = c.FileCount
+               roots = c.Roots
+               toolKnownCount = c.ToolKnownCount
+               declaredCount = c.DeclaredCount
+               absent = c.Absent
+               declaredOnly = c.DeclaredOnly |> List.map (fun (d, n) -> {| directory = d; files = n |})
+               outside = c.Outside |}
+
+        root["key"] <- JsonSerializer.SerializeToNode(key, jsonOptions)
+        root.ToJsonString(jsonOptions)
 
 // ---------------------------------------------------------------------------
 // Building a verdict from what the check observed

@@ -3286,8 +3286,8 @@ let internal executeCommandWatchingConfig
                     // 17ms over this repo (246 files) and 156ms over 1,884 files / 11MB —
                     // low single-digit percent of any hook worth running.
                     match Verdict.priorConfirmation repoRoot config.Exclude with
-                    | Verdict.PriorConfirmation.StillApplies confirmed ->
-                        UI.success $"confirm — %s{Verdict.describeStillApplies confirmed}"
+                    | Verdict.PriorConfirmation.StillApplies(confirmed, covered) ->
+                        UI.success $"confirm — %s{Verdict.describeStillApplies confirmed covered}"
                         eprintfn ""
 
                         eprintfn
@@ -3343,7 +3343,7 @@ let internal executeCommandWatchingConfig
                 exitCode
         | Verdict ->
             // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
-            let report = Verdict.report repoRoot config.Exclude
+            let report, covered = Verdict.reportWithCoverage repoRoot config.Exclude
 
             // STDOUT IS THE MACHINE SURFACE, and nothing else may touch it: an agent
             // piping this must get an envelope that parses, every time. (`UI.success`
@@ -3351,7 +3351,7 @@ let internal executeCommandWatchingConfig
             // ANSI and all, into the JSON. Exactly the class of thing that makes an
             // agent give up and go back to grepping.) Every human line below goes to
             // stderr, where the rest of the CLI's prose already lives.
-            printfn "%s" (Verdict.serializeReport report)
+            printfn "%s" (Verdict.serializeReportWith report covered)
 
             let say (line: string) = eprintfn "%s" line
 
@@ -3365,6 +3365,9 @@ let internal executeCommandWatchingConfig
                     // Say what the green is relative to, so "green" is
                     // read as a claim about the whole suite and can be audited as one.
                     say $"  %s{CheckVerdict.Baseline.describe baseline}"
+
+                    for line in covered |> Option.map TreeHash.describeCoverage |> Option.defaultValue [] do
+                        say $"  %s{line}"
                 | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
                 | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
                 // The reason already opens with "NO VERDICT — PROJECT MODEL …".
