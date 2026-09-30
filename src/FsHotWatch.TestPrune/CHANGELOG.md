@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a run that ran every configured project in full but that `tests.traces.record:
+  "full-runs"` does not record (one launched under impact selection, such as a cold
+  daemon earning its baseline) is no longer skipped in silence. Each project that takes
+  part stores and logs a refusal, "not-recorded: tests.traces.record is "full-runs",
+  which records only a run `confirm` launched; …", and the run logs one warning. An
+  impact-selected subset is still skipped without a word: that is what `full-runs` means.
+  Considered and not done: recording every run that happens to run the full suite. It
+  would quietly add tracing overhead to `check` runs that widen to the full suite.
+
+- **BREAKING (API): `TraceRuntime` has a `RunsEveryProjectInFull: bool` field.**
+
 - fix: `confirm`'s full-suite scope is no longer spent by a run that executed nothing.
   When every project of the confirm's run was deferred (stale build output), had its
   results revoked by a project-model move, or the launch found no artifacts or test host,

@@ -4917,6 +4917,32 @@ let private executeTests
 
         let isFilteredRun = not affectedClassesByProject.IsEmpty || Option.isSome rawFilter
 
+        // Every configured project launched, none of them filtered: a full run whatever
+        // mode launched it.
+        let runsEveryProjectInFull =
+            Option.isNone rawFilter
+            && configuredCoverageProjects
+               |> List.forall (fun configured ->
+                   configs |> List.exists (fun c -> c.Project = configured.Project)
+                   && (affectedClassesByProject.IsEmpty
+                       || affectedClassesByProject
+                          |> Map.tryFind configured.Project
+                          |> Option.exists List.isEmpty))
+
+        let traces =
+            traces
+            |> Option.map (fun host ->
+                { host with
+                    TraceRuntime =
+                        { host.TraceRuntime with
+                            RunsEveryProjectInFull = runsEveryProjectInFull } })
+
+        // Said once per run, loudly: every project below then stores and logs the same
+        // reason as its refusal.
+        traces
+        |> Option.bind (fun host -> TraceRun.unrecordedReason host.TraceRuntime)
+        |> Option.iter (fun reason -> Logging.warn "test-prune" $"traces: this run records none — %s{reason}")
+
         let primaryLabel =
             if isFilteredRun then
                 $"running %d{configs.Length} selected test projects"
@@ -6200,7 +6226,9 @@ let internal createWithQueries
                 { Settings = wiring.Policy
                   RepoRoot = repoRoot
                   ExcludedProjects = wiring.OptedOut
-                  Mode = mode }
+                  Mode = mode
+                  // Known once the run's selection is: set by `executeTests`.
+                  RunsEveryProjectInFull = false }
               TraceWiring = wiring
               TraceLog = ctx.Log
               HoldSubtask =

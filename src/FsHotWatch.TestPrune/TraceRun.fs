@@ -39,6 +39,8 @@ type TraceRuntime =
         ExcludedProjects: Set<string>
         /// The mode the run was launched under.
         Mode: TestMode
+        /// Whether the run launches every configured project, unfiltered.
+        RunsEveryProjectInFull: bool
     }
 
 /// What `decide` needs from a configured test project.
@@ -137,6 +139,22 @@ module TraceRun =
         | WeaveTestSites -> Model.SitesOnly
         | WeaveTestFull -> Model.Full
 
+    /// Why a run records no traces although the configuration reads as if it would, or
+    /// `None` when not recording is what was asked for. `full-runs` records only runs
+    /// launched by `confirm`; a run launched under impact selection that still runs every
+    /// project in full (a cold daemon earning its baseline, say) is the one a reader
+    /// expects traced, so it is named rather than skipped in silence. An impact-selected
+    /// subset is not named: skipping it is `full-runs`' whole meaning.
+    let unrecordedReason (rt: TraceRuntime) : string option =
+        match rt.Settings.Record with
+        | RecordFullRuns when
+            rt.RunsEveryProjectInFull
+            && not (TestMode.recordsTraces rt.Settings.Record rt.Mode)
+            ->
+            Some
+                "not-recorded: tests.traces.record is \"full-runs\", which records only a run `confirm` launched; this run ran every project in full but was launched under impact selection"
+        | _ -> None
+
     /// The trace database: `Settings.DbPath`, resolved against the repository root.
     let dbPath (rt: TraceRuntime) =
         Path.Combine(rt.RepoRoot, rt.Settings.DbPath)
@@ -155,11 +173,11 @@ module TraceRun =
         (runDir: string)
         (extraArgs: string list)
         : TraceDecision =
-        if
-            not (TestMode.recordsTraces rt.Settings.Record rt.Mode)
-            || rt.ExcludedProjects.Contains project.Project
-        then
+        if rt.ExcludedProjects.Contains project.Project then
             Untraced None
+        elif not (TestMode.recordsTraces rt.Settings.Record rt.Mode) then
+            // A named reason is stored and logged like any refusal.
+            Untraced(unrecordedReason rt)
         else
             // Every cheap refusal before `prepare`, which weaves and JIT-verifies.
             match project.CtrfPath, TracedLaunch.appArgs project.Command project.Args extraArgs with

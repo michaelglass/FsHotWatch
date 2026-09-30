@@ -26,7 +26,8 @@ let private runtime root record excluded mode =
     { Settings = settings record
       RepoRoot = root
       ExcludedProjects = excluded
-      Mode = mode }
+      Mode = mode
+      RunsEveryProjectInFull = false }
 
 let private target (root: string) project : FsHotWatch.TestPrune.ArtifactFreshness.RunnerTarget =
     { ProjectFile = None
@@ -306,6 +307,39 @@ let ``weaveTests full weaves the test assembly in full, and a project's own DOTN
     | other -> failwith $"%A{other}"
 
     test <@ mode = Some Full @>
+
+[<Fact>]
+let ``a full run under impact selection that full-runs skips is a named refusal`` () =
+    let rt =
+        { runtime "/nowhere" RecordFullRuns Set.empty ImpactSelection with
+            RunsEveryProjectInFull = true }
+
+    match TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] with
+    | Untraced(Some reason) -> test <@ reason.StartsWith "not-recorded:" && reason.Contains "full-runs" @>
+    | other -> failwith $"%A{other}"
+
+[<Fact>]
+let ``an impact-selected subset that full-runs skips is not named`` () =
+    let rt = runtime "/nowhere" RecordFullRuns Set.empty ImpactSelection
+    test <@ TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] = Untraced None @>
+
+[<Fact>]
+let ``an opted-out project in a full run is not named`` () =
+    let rt =
+        { runtime "/nowhere" RecordFullRuns (Set.ofList [ "T" ]) ImpactSelection with
+            RunsEveryProjectInFull = true }
+
+    test <@ TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] = Untraced None @>
+
+[<Theory>]
+[<InlineData("off")>]
+[<InlineData("every-run")>]
+let ``only full-runs names a full run it does not record`` (policy: string) =
+    let rt =
+        { runtime "/nowhere" (TraceSettings.parseRecord policy).Value Set.empty ImpactSelection with
+            RunsEveryProjectInFull = true }
+
+    test <@ TraceRun.unrecordedReason rt = None @>
 
 [<Fact>]
 let ``the launch is the traced one only when the decision is Traced`` () =

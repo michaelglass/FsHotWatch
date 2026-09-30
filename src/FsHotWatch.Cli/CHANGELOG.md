@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `confirm` warns when `tests.traces` asks for traces and the run its verdict
+  graded recorded none: "tests.traces is configured, but run <id>, the run this verdict
+  graded, traced no project — <project>: <reason>; …", or "stored no trace and no reason
+  for any project" when nothing at all was stored. The exit code is unchanged: tracing
+  never decides a verdict.
+
 ## 0.14.0-alpha.80 - 2026-09-30
 
 - deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic
