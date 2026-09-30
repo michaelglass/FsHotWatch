@@ -3,8 +3,8 @@
     "StoredName.fs": [
       {
         "line": 93,
-        "branch": 100,
-        "reason": "macOS-native path file: the Linux (`AsGiven`) and other-platform (`Listing`) arms of `current` are unreachable on macOS, 2 of 32 lines. Measured 2026-09-28 on macOS by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 93.8% (30/32), branch 100% (12/12), rounded down. Every platform-neutral line (lookupWith over every Source, listNames) is covered by StoredNameTests on any platform.",
+        "branch": 85,
+        "reason": "macOS-native path file: the Linux (`AsGiven`) and other-platform (`Listing`) arms of `current` are unreachable on macOS, 2 of 32 lines. Measured 2026-09-28 on macOS by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 93.8% (30/32), branch 100% (12/12), rounded down. Every platform-neutral line (lookupWith over every Source, listNames) is covered by StoredNameTests on any platform. || 2026-09-30: branch 100 -> 85. The 12/12 was a targeted run; a full macOS coverage run counts 20 branch edges, 3 of them the `current` arms above (`IsLinux` false, and both `AsGiven` edges), unreachable here. 17/20 = 85% is every reachable edge; no test was lost.",
         "platform": "macos"
       },
       {
@@ -2023,9 +2023,9 @@
     ],
     "VerdictInputs.fs": [
       {
-        "coveredLines": 153,
+        "coveredLines": 148,
         "coveredBranches": 20,
-        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "min of two full local runs 2026-09-15 (3172 tests each; both runs byte-identical, so the minimum equals either). Recaptured after the 2026-09-04 floors drifted. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only. || 2026-09-30: 153 -> 148. The 2026-09-28 JSON-accessor extraction (92fb98f7) moved covered property-read code into Json.fs, which the Linux entry already records (2026-09-29); the file is still 100% line-covered (148/148) on macOS, so no test was lost.",
         "platform": "macos"
       },
       {
