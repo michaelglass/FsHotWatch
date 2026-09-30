@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a repository host no longer idles out under an attach in flight. Its idle check counted
+  only registered sessions, and an attach registers its session only after building it (a
+  `dotnet --version` probe of up to 30s), so a grace ending mid-attach exited under a client
+  about to be told `Attached`. The decision to exit (`RepositoryHost.TryRetire`) now takes the
+  attach lock: an attach in flight restarts the grace, and an attach after the decision starts
+  nothing and is closed unanswered.
+
 ## 0.10.0-alpha.60 - 2026-09-29
 
 - fix: a check whose answer declared a type incompatible with ITSELF is no longer written

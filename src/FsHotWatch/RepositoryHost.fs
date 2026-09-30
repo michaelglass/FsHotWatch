@@ -175,6 +175,9 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
     let attaching = new SemaphoreSlim(1, 1)
     let hostPid = Environment.ProcessId
 
+    /// Set once the host has decided to exit; read and written only under `attaching`.
+    let mutable retired = false
+
     let refuse refusal = Refused(refusal, settings.Identity)
 
     /// Build a fresh session for `worktree`, or refuse; nothing is left behind on a
@@ -241,6 +244,11 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
         attaching.Wait()
 
         try
+            // A retired host starts nothing: the connection closes unanswered, and the
+            // client reads that as a host that has gone (`RepositoryHostMode.attach`).
+            if retired then
+                raise (InvalidOperationException "the repository host is exiting; it starts no session")
+
             let response =
                 match decodeRequest requestJson with
                 | Error _ ->
@@ -335,6 +343,22 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
 
     member _.Registry = registry
 
+    /// Decide to exit for want of work: true, and no attach starts a session after it,
+    /// only when no session is attached and no attach is in flight. Taken under the
+    /// attach lock, so the decision and an attach cannot interleave: an attach builds its
+    /// session before the registry holds it (a `dotnet --version` probe of up to 30s on a
+    /// real host), and a host reading "no session" then would exit under a client it was
+    /// about to answer `Attached`.
+    member _.TryRetire() : bool =
+        if attaching.Wait 0 then
+            try
+                retired <- List.isEmpty registry.Sessions
+                retired
+            finally
+                attaching.Release() |> ignore
+        else
+            false
+
     member _.Handlers: EndpointHandlers =
         { Attach = attach
           Undelivered = undelivered
@@ -349,6 +373,21 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
 
 /// How long a host with no sessions stays up before it exits.
 let DefaultIdleGrace = TimeSpan.FromMinutes 5.0
+
+/// One tick of a host's idle watch: when its idle time now began (`Some`), or `None`
+/// to exit. `busy` is whether a session is attached; `tryRetire` is asked only once the
+/// grace has passed, and an attach it finds in flight is work, so the grace starts over.
+let internal idleTick
+    (idleGrace: TimeSpan)
+    (now: DateTime)
+    (idleSince: DateTime)
+    (busy: bool)
+    (tryRetire: unit -> bool)
+    : DateTime option =
+    if busy then Some now
+    elif now - idleSince < idleGrace then Some idleSince
+    elif tryRetire () then None
+    else Some now
 
 /// What running a host came to.
 [<RequireQualifiedAccess>]
@@ -408,9 +447,11 @@ let run
                 while not cts.IsCancellationRequested do
                     cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
-                    if not (List.isEmpty registry.Sessions) then
-                        idleSince <- DateTime.UtcNow
-                    elif DateTime.UtcNow - idleSince >= idleGrace then
+                    let busy = not (List.isEmpty registry.Sessions)
+
+                    match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
+                    | Some since -> idleSince <- since
+                    | None ->
                         Logging.info "host" $"no session for %s{string idleGrace}; exiting"
                         cts.Cancel()
 
