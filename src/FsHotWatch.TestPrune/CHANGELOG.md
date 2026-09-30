@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a test run no longer launches while the host is discovering its project model. A launch
+  read the model's generation as none during a discovery, so a run completing under the new
+  model was revoked whole ("the project model was replaced between launch and completion"). On
+  a cold daemon that was the first full-suite run `confirm` asked for, which also left later
+  runs to re-run every project untraced. Every launch now waits (up to 5 minutes, logged) while
+  a discovery is in flight, then reads the model. A host that has observed no discovery does
+  not wait.
+
+- feat: each run keeps its own copy of the raw coverage each project wrote, as
+  `.fshw/test-runs/<runId>/<Project>.coverage.cobertura.xml`, beside its CTRF report and output
+  log. The per-project baseline and partial files are still overwritten by every later run.
+
 ## 0.13.0-alpha.61 - 2026-09-30
 
 - deps: TestPrune.Trace 0.6.0. The environment fingerprint of a stored trace now includes
