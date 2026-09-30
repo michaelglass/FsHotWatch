@@ -948,6 +948,68 @@ let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () 
         test <@ TestResult.wasFiltered p1 @>
         test <@ TestResult.verifiedGreen p1 @>)
 
+/// Rewrite the `verification` token of every cached `testRunCompleted` in `dir`:
+/// `None` removes the field, `Some token` replaces it.
+let private rewriteVerification (dir: string) (token: string option) =
+    for path in System.IO.Directory.EnumerateFiles(dir, "*.json", System.IO.SearchOption.AllDirectories) do
+        let root = System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText path)
+
+        let rec visit (node: System.Text.Json.Nodes.JsonNode) =
+            match node with
+            | :? System.Text.Json.Nodes.JsonObject as obj ->
+                if obj.ContainsKey "verification" then
+                    match token with
+                    | None -> obj.Remove "verification" |> ignore
+                    | Some t -> obj["verification"] <- System.Text.Json.Nodes.JsonValue.Create t
+
+                for KeyValue(_, child) in List.ofSeq obj do
+                    if not (isNull child) then
+                        visit child
+            | :? System.Text.Json.Nodes.JsonArray as arr ->
+                for child in List.ofSeq arr do
+                    if not (isNull child) then
+                        visit child
+            | _ -> ()
+
+        visit root
+        System.IO.File.WriteAllText(path, root.ToJsonString())
+
+/// A cached run whose verification this build cannot read is a MISS, never a default: no
+/// verification is an honest reading of "unknown", so the run is redone.
+[<Theory(Timeout = 15000)>]
+[<InlineData("missing")>]
+[<InlineData("garbled")>]
+let ``FileTaskCache reads a missing or garbled verification token as a miss, never a default`` (damage: string) =
+    withTempDir "ftc-verification-token" (fun tmpDir ->
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.FromSeconds(1.0)
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
+                        Verification = Ran RunScope.FullSuite } ] }
+
+        (FileTaskCache(tmpDir) :> ITaskCache).Set (ck "test-prune" "X.fs") (hash "k") result
+
+        // Control: the entry as written is a hit, so the miss below is the damage's doing.
+        test
+            <@
+                (FileTaskCache(tmpDir) :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+                |> Option.isSome
+            @>
+
+        rewriteVerification tmpDir (if damage = "missing" then None else Some "ran-everything")
+
+        match FileTaskCache(tmpDir).Lookup(ck "test-prune" "X.fs", hash "k") with
+        | CacheMiss(CacheMissReason.UnreadableEntry reason) ->
+            if damage = "garbled" then
+                test <@ reason.Contains "uninterpretable verification token" @>
+        | other -> Assert.Fail $"a %s{damage} verification token must be an unreadable entry, got %A{other}")
+
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
     // The case must survive serialization AS ITSELF. Coming back as a plain
