@@ -71,6 +71,7 @@ let private shadowOf (dir: string) manifest : ShadowBin.Shadow =
       ManifestDir = dir
       Manifest = manifest
       WeaveKey = "k"
+      WeaveTests = SitesOnly
       Reused = false
       OriginalDepsJsonSha256 = "0"
       Verify =

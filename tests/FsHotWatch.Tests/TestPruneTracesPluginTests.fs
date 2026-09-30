@@ -104,6 +104,7 @@ let private preparedAs
               ManifestDir = root
               Manifest = oneRowManifest
               WeaveKey = "k"
+              WeaveTests = SitesOnly
               Reused = false
               OriginalDepsJsonSha256 = "0"
               Verify =
