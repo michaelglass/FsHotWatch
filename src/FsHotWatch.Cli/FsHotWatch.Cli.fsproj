@@ -87,7 +87,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
-        <PackageReference Include="CommandTree" Version="0.12.0" />
+        <PackageReference Include="CommandTree" Version="0.13.0" />
         <PackageReference Include="TestPrune.Falco" Version="4.0.0" />
         <PackageReference Include="TestPrune.Sql" Version="0.3.0" />
         <PackageReference Include="TestPrune.SqlHydra" Version="0.2.0" />

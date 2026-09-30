@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- deps: CommandTree 0.13.0. It adds four `SpecError` cases; the CLI matches on none of them
+  and compiles unchanged.
+
+- deps: build tooling fssemantictagger 0.14.0-alpha.21, fsprojlint 0.10.0-alpha.20,
+  syncdocs 0.13.0-alpha.8 and RefStamp 0.1.0-alpha.4.
+
 - deps: TestPrune.Trace 0.6.0. Traces recorded by an earlier version are not read back
   (the environment fingerprint now includes the test assembly's weave mode), so the next
   traced run records them again.
