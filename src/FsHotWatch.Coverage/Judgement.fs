@@ -79,6 +79,20 @@ module FloorFailures =
         |> List.groupBy fst
         |> List.map (fun (file, parts) -> file, parts |> List.collect snd |> String.concat ", ")
 
+    /// How many files `details` names, and the first few of them, for a status line that
+    /// says which files failed rather than only how many.
+    let summary (details: (string * string) list) : string =
+        let shown = 5
+        let names = details |> List.truncate shown |> List.map fst |> String.concat ", "
+
+        let more =
+            if details.Length > shown then
+                $", +%d{details.Length - shown} more"
+            else
+                ""
+
+        $"%d{details.Length} file(s) below threshold: %s{names}%s{more}"
+
 /// The floor check the `coverageratchet check` CLI makes: percentage floors, then count
 /// floors. `None` when every floor holds.
 let internal floorCheck (config: Config) (coverage: FileCoverage list) : FloorFailures option =

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: a failed coverage check names the files below their floors. The status summary reads
+  "N file(s) below threshold: A.fs, B.fs" (the first five, then "+k more"), and the status
+  error lists each file with every floor it missed.
+
 - feat: `CoveragePlugin.createWith configPath reports` takes a `CoverageReports`: `SearchUnder dir`
   (what `create` does) or `Named paths`, the exact report files a check reads. Named reports
   are a full-suite run's own runner output: an impact-filtered run is not judged by them

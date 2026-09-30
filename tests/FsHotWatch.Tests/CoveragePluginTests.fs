@@ -559,7 +559,7 @@ let ``a coverage failure carries a verdict with an honest elapsed and a UTC time
 
         match host.GetStatus("coverage") with
         | Some(Failed(_, at, v)) ->
-            test <@ v.Summary.Contains "below threshold" @>
+            test <@ v.Summary.Contains "1 file(s) below threshold: MyModule.fs" @>
             // The timestamp is UTC. A `DateTime.Now` here mixes into UTC arithmetic
             // and skews or NEGATES the elapsed a human reads when coverage gates
             // them; a local reading in a non-UTC zone lands outside this window.
@@ -1110,6 +1110,147 @@ let ``a full-suite run judges its named report exactly as coverageratchet check 
             Judgement.judge configPath (Judgement.CoverageReports.Named [ xmlPath ]) RunScope.FullSuite startedAt []
 
         test <@ pluginVerdict judged = Some(cliVerdict configPath xmlPath) @>)
+
+/// A report in the shape the test platform's coverage collector writes: each line listed
+/// under its method AND again under its class, branch lines carrying `condition-coverage`
+/// and a `<conditions>` child. Lines are `(number, hits, (covered, total) branches)`.
+let private collectorReportXml (fileName: string) (lines: (int * int * (int * int) option) list) =
+    let lineEl (number, hits, branches) =
+        match branches with
+        | Some(covered, total) ->
+            let percent = covered * 100 / total
+
+            $"""<line number="{number}" hits="{hits}" branch="True" condition-coverage="{percent}%% ({covered}/{total})">
+                  <conditions><condition number="0" type="jump" coverage="{percent}%%" /></conditions>
+                </line>"""
+        | None -> $"""<line number="{number}" hits="{hits}" branch="False" />"""
+
+    let lineEls = lines |> List.map lineEl |> String.concat "\n"
+
+    $"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<coverage line-rate="0.75" branch-rate="0.5" version="1.9">
+  <packages>
+    <package name="pkg" line-rate="0.75" branch-rate="0.5">
+      <classes>
+        <class name="Pkg.Module" filename="{fileName}" line-rate="0.75" branch-rate="0.5">
+          <methods>
+            <method name="detail" signature="()" line-rate="0.75" branch-rate="0.5">
+              <lines>{lineEls}</lines>
+            </method>
+          </methods>
+          <lines>{lineEls}</lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>"""
+
+/// The lines the gate's own report gave `FloorFailures.countDetail` in `Judgement.fs`: two
+/// half-covered branch lines and one line never run.
+let private countDetailExcerpt =
+    [ 69, 1, Some(1, 2); 70, 1, None; 71, 1, Some(1, 2); 72, 0, None ]
+
+/// Floors for `MyModule.fs`: percentage floors, and count floors of covered lines and
+/// covered branches.
+let private countFloorsJson (line: int) (branch: int) (coveredLines: int) (coveredBranches: int) =
+    $"""{{ "overrides": {{ "MyModule.fs": {{ "line": {line}, "branch": {branch} }} }},
+          "countFloors": {{ "MyModule.fs": [ {{ "coveredLines": {coveredLines}, "coveredBranches": {coveredBranches}, "reason": "test" }} ] }} }}"""
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(0, 0, 3, 2)>] // every floor holds
+[<InlineData(0, 0, 3, 3)>] // below the covered-branches count floor only
+[<InlineData(0, 60, 4, 2)>] // below the branch percentage floor and the covered-lines count floor
+[<InlineData(100, 100, 4, 3)>] // below everything
+let ``a collector-shaped report is judged exactly as coverageratchet check does``
+    (line: int, branch: int, coveredLines: int, coveredBranches: int)
+    =
+    withTempDir "coverage-parity-collector" (fun dir ->
+        let xmlPath = Path.Combine(dir, "report.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, collectorReportXml (Path.Combine(dir, "src", "MyModule.fs")) countDetailExcerpt)
+        File.WriteAllText(configPath, countFloorsJson line branch coveredLines coveredBranches)
+
+        let judged =
+            Judgement.judge
+                configPath
+                (Judgement.CoverageReports.Named [ xmlPath ])
+                RunScope.FullSuite
+                (DateTime.UtcNow.AddMinutes -1.0)
+                []
+
+        test <@ pluginVerdict judged = Some(cliVerdict configPath xmlPath) @>)
+
+/// The failing floors of a collector-shaped `MyModule.fs` under `floors`, as the plugin
+/// reports them per file.
+let private detailsUnder (floors: string) =
+    withTempDir "coverage-details" (fun dir ->
+        let xmlPath = Path.Combine(dir, "report.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, collectorReportXml (Path.Combine(dir, "src", "MyModule.fs")) countDetailExcerpt)
+        File.WriteAllText(configPath, floors)
+
+        match
+            Judgement.judge
+                configPath
+                (Judgement.CoverageReports.Named [ xmlPath ])
+                RunScope.FullSuite
+                (DateTime.UtcNow.AddMinutes -1.0)
+                []
+        with
+        | Judgement.Judged(Judgement.Failed failures) -> Judgement.FloorFailures.details failures
+        | other -> failwith $"expected Failed, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``a covered-branches shortfall is named with its covered count`` () =
+    test <@ detailsUnder (countFloorsJson 0 0 3 3) = [ "MyModule.fs", "covered branches 2 < 3" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``every floor a file misses is named in one detail, percentage floors first`` () =
+    test
+        <@
+            detailsUnder (countFloorsJson 100 100 4 3) = [ "MyModule.fs",
+                                                           "line=75.0% < min 100.0%, branch=50.0% < min 100.0%, covered lines 3 < 4, covered branches 2 < 3" ]
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``the status line names the first files below threshold and counts the rest`` () =
+    let details = [ for i in 1..7 -> $"F%d{i}.fs", "line=1.0% < min 2.0%" ]
+
+    test
+        <@
+            Judgement.FloorFailures.summary details = "7 file(s) below threshold: F1.fs, F2.fs, F3.fs, F4.fs, F5.fs, +2 more"
+        @>
+
+    test <@ Judgement.FloorFailures.summary (List.truncate 1 details) = "1 file(s) below threshold: F1.fs" @>
+
+[<Fact(Timeout = 15000)>]
+let ``an impact-filtered run below only a count floor is a notice naming that one file`` () =
+    withTempDir "coverage-partial-counts" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, collectorReportXml (Path.Combine(dir, "src", "MyModule.fs")) countDetailExcerpt)
+        File.WriteAllText(configPath, countFloorsJson 0 0 3 3)
+
+        let judged =
+            Judgement.judge
+                configPath
+                (Judgement.CoverageReports.SearchUnder dir)
+                RunScope.Partial
+                DateTime.UtcNow
+                [ xmlPath ]
+
+        match judged with
+        | Judgement.Judged(Judgement.NotGatedFiltered count) -> test <@ count = 1 @>
+        | other -> failwith $"expected NotGatedFiltered, got %A{other}")
+
+[<Fact(Timeout = 5000)>]
+let ``named reports that exist are the ones read`` () =
+    withTempDir "coverage-existing" (fun dir ->
+        let present = Path.Combine(dir, "present.cobertura.xml")
+        File.WriteAllText(present, "")
+        let missing = Path.Combine(dir, "missing.cobertura.xml")
+
+        test <@ Judgement.existingReports (Judgement.CoverageReports.Named [ present; missing ]) = [ present ] @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a searched report is judged with count floors too`` () =

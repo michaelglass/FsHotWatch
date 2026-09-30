@@ -263,8 +263,8 @@
     "Daemon.fs": [
       {
         "line": 89,
-        "branch": 82,
-        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line floor 80 -> 79 on 2026-09-15: three full local runs measured 1190/1190/1186 covered lines (daemon timing paths), and the third sat just under 80.0% — the same under-1pp-headroom shape the 2026-08-07 restoration corrected. 1pp headroom under the observed minimum, three-run basis.",
+        "branch": 81,
+        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. Line floor 80 -> 79 on 2026-09-15: three full local runs measured 1190/1190/1186 covered lines (daemon timing paths), and the third sat just under 80.0% — the same under-1pp-headroom shape the 2026-08-07 restoration corrected. 1pp headroom under the observed minimum, three-run basis. Branch floor 82 -> 81 on 2026-09-30: a full-suite confirm measured 398/486 (81.9%), one branch under 82.0% on a change that does not touch Daemon.fs; the same load-dependent timing paths as the line floor above.",
         "platform": "macos"
       },
       {

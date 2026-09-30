@@ -366,8 +366,12 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                     for file, detail in details do
                         ctx.ReportErrors file [ ErrorEntry.error $"coverage: %s{detail}" ]
 
-                    let summary = $"%d{details.Length} file(s) below threshold"
-                    ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
+                    let error =
+                        details
+                        |> List.map (fun (file, detail) -> $"%s{file}: %s{detail}")
+                        |> String.concat "; "
+
+                    ctx.ReportStatus(PluginStatus.failedNow error (FloorFailures.summary details) elapsed)
 
                     return
                         drainOwed
