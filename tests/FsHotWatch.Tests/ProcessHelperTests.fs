@@ -1960,3 +1960,10 @@ let ``splitArgs keeps a backslash run at the end of an unquoted arg string liter
 let ``splitArgs fails closed on an unfinished quote`` () =
     Assert.Equal<string[] option>(None, splitArgs "--filter-class \"unterminated")
     Assert.Equal<string[] option>(Some [||], splitArgs "   ")
+
+[<Fact>]
+let ``a start observer that throws does not stop the run it observes`` () =
+    let outcome =
+        runProcessObserved (fun _ -> failwith "observer broke") "echo" "hi" "." [] quick
+
+    outcome |> expectStdout "hi"

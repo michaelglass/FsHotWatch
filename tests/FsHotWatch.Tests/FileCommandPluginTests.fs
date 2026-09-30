@@ -1237,6 +1237,31 @@ let ``argsStalerThan flags files modified after the reference time`` () =
         with _ ->
             ()
 
+[<Fact(Timeout = 15000)>]
+let ``argsStalerThan skips a token whose modification time cannot be read`` () =
+    // A NUL in a path makes the stat throw; the token is skipped, not the whole list.
+    test <@ List.isEmpty (argsStalerThan "/tmp" "cfg\u0000.json" DateTime.UtcNow) @>
+
+[<Fact(Timeout = 15000)>]
+let ``events a file command does not act on leave its state alone`` () =
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "cmd") (fileTrigger (fun _ -> true)) "echo" "" "/tmp" None
+
+    let ignored: PluginEvent<_> list =
+        [ FileChecked Unchecked.defaultof<_>
+          BatchChecked Unchecked.defaultof<_>
+          BuildCompleted BuildSucceeded
+          TestRunStarted Unchecked.defaultof<_>
+          CommandCompleted Unchecked.defaultof<_>
+          Custom Unchecked.defaultof<_> ]
+
+    for event in ignored do
+        let after =
+            handler.Update Unchecked.defaultof<_> handler.Init event
+            |> Async.RunSynchronously
+
+        test <@ obj.ReferenceEquals(after, handler.Init) @>
+
 // --- DI-injected error paths ---
 // hashFileWith and Update's defensive arms are reached by injection rather than real OS
 // errors. The integration suite confirms the injected behaviour matches reality — without
