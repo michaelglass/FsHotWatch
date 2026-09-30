@@ -7,15 +7,35 @@ open CoverageRatchet.Cobertura
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
+/// Where a check reads a run's Cobertura reports.
+[<RequireQualifiedAccess>]
+type CoverageReports =
+    /// Every `coverage.cobertura.xml` under the directory, whatever the run's scope.
+    | SearchUnder of dir: string
+    /// Exactly these files: a full-suite run's own runner output. Only a full-suite run
+    /// writes them, so no other run is judged by them.
+    | Named of paths: string list
+
+/// The floors a run's coverage fell below, as the `coverageratchet check` CLI reads
+/// them: per-file percentage floors and absolute count floors.
+[<NoComparison; NoEquality>]
+type FloorFailures =
+    {
+        /// Files below a line or branch percentage floor.
+        Files: FileResult list
+        /// Files below a covered-lines or covered-branches count floor.
+        Counts: CountResult list
+    }
+
 /// The gated coverage verdict for a cycle, after applying the impact-filter
-/// guard. Distinct from the raw `CheckResult` so the message that drives the
+/// guard. Distinct from the raw floor check so the message that drives the
 /// plugin's pass/fail status carries the already-gated decision.
 [<NoComparison; NoEquality>]
 type CoverageVerdict =
-    /// Every evaluated file met its floor (or no coverage XML was produced).
+    /// Every evaluated file met its floors (or no coverage XML was produced).
     | Passed
     /// A full-suite run found real shortfalls — these GATE (exit non-zero).
-    | Failed of CoverageRatchet.Thresholds.FileResult list
+    | Failed of FloorFailures
     /// An impact-filtered run produced shortfalls, but it did NOT run every
     /// project's tests this cycle, so an un-run source file reads `0.0%`
     /// indistinguishably from a genuine zero. We do NOT gate on a filtered
@@ -23,13 +43,22 @@ type CoverageVerdict =
     /// the shortfall is visible without a false red.
     | NotGatedFiltered of belowFloorCount: int
     /// The floor file's reader options could not be read (e.g. an invalid
-    /// `includedExtensions` list), so no report was judged. Gates whatever the run's
-    /// scope: a check that cannot read its own configuration has verified nothing.
+    /// `includedExtensions` list), or a named report was not written by the run it is
+    /// judged for, so nothing was judged. Gates whatever the run's scope: a check that
+    /// cannot read what it judges has verified nothing.
     | Unreadable of reason: string
+
+/// What a completed run's coverage comes to.
+[<NoComparison; NoEquality>]
+type CoverageJudgement =
+    /// The run's reports were judged against the floors.
+    | Judged of CoverageVerdict
+    /// The run is not one the configured reports describe, so nothing was judged.
+    | NotJudged of reason: string
 
 [<NoComparison; NoEquality>]
 type CoverageMsg =
-    | CheckDone of verdict: CoverageVerdict * elapsed: System.TimeSpan
+    | CheckDone of judgement: CoverageJudgement * elapsed: System.TimeSpan
     /// A `coverage-ratchet` IPC command asking the MAILBOX to rewrite the
     /// thresholds config. The rewrite runs under the SAME "coverage-check"
     /// exclusive slot as a check, because a check READS the config the ratchet
@@ -58,29 +87,58 @@ type CoverageState =
         /// whatever Cobertura XML is on disk when it runs, which is the newest run's
         /// output, so the newest run's scope is the one that describes what it reads.
         /// Cleared the moment a check for it is claimed.
-        Owed: RunScope option
+        Owed: (RunScope * System.DateTime) option
+        /// When each run still in flight started (`TestRunStarted`), by run id: a
+        /// named report older than its run's start was not written by that run.
+        Started: Map<System.Guid, System.DateTime>
     }
 
 [<RequireQualifiedAccess>]
 module CoverageState =
 
     /// No check has run and nothing is owed.
-    let initial = { LastCheckPassed = None; Owed = None }
+    let initial =
+        { LastCheckPassed = None
+          Owed = None
+          Started = Map.empty }
 
-/// Decide the gated verdict from a raw ratchet `CheckResult` and what the run
-/// established. Pure, so the gating policy is unit-testable without spinning a
-/// daemon.
+/// The floor check the `coverageratchet check` CLI makes: percentage floors, then count
+/// floors. `None` when every floor holds.
+let internal floorCheck (config: Config) (coverage: FileCoverage list) : FloorFailures option =
+    let files =
+        match check config coverage with
+        | AllPassed -> []
+        | SomeFailed results -> results
+
+    let counts =
+        match checkCounts config coverage with
+        | CountsAllPassed -> []
+        | CountsFailed results -> results
+
+    if List.isEmpty files && List.isEmpty counts then
+        None
+    else
+        Some { Files = files; Counts = counts }
+
+/// Decide the gated verdict from a raw floor check and what the run established. Pure,
+/// so the gating policy is unit-testable without spinning a daemon.
 ///
 /// Takes the scope a run PROVED, not a bool. `FullSuite` gates normally; `Partial`
-/// downgrades a `SomeFailed` to a non-gating notice, because un-run files cannot be
+/// downgrades a shortfall to a non-gating notice, because un-run files cannot be
 /// distinguished from genuine zeros. A run that executed nothing has no `RunScope`
 /// to pass, so it cannot reach here at all and cannot be mistaken for a filtered
 /// one — the caller has already had to decide what to do about it.
-let internal gateVerdict (scope: RunScope) (result: CheckResult) : CoverageVerdict =
-    match result, scope with
-    | AllPassed, _ -> Passed
-    | SomeFailed results, FullSuite -> Failed results
-    | SomeFailed results, Partial -> NotGatedFiltered results.Length
+let internal gateVerdict (scope: RunScope) (failures: FloorFailures option) : CoverageVerdict =
+    match failures, scope with
+    | None, _ -> Passed
+    | Some failures, FullSuite -> Failed failures
+    | Some failures, Partial ->
+        let files =
+            (failures.Files |> List.map _.File.FileName)
+            @ (failures.Counts |> List.map _.File.FileName)
+            |> List.distinct
+
+        NotGatedFiltered files.Length
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
@@ -112,28 +170,89 @@ let private readCoverage (configPath: string) (xmlPaths: string list) : Result<F
         (readReports options (xmlPaths |> List.map System.IO.File.ReadAllText)).Lines
         |> buildCoverage)
 
+/// Judge `xmlPaths` against the floor file and gate the result by `scope`.
+let private verdictOf (configPath: string) (scope: RunScope) (xmlPaths: string list) : CoverageVerdict =
+    match readCoverage configPath xmlPaths with
+    | Ok coverage -> gateVerdict scope (floorCheck (loadConfig configPath) coverage)
+    | Result.Error reason -> Unreadable reason
+
+/// The reports of `reports` that exist now.
+let private existingReports (reports: CoverageReports) : string list =
+    match reports with
+    | CoverageReports.SearchUnder dir -> findCoverageFiles dir
+    | CoverageReports.Named paths -> paths |> List.filter System.IO.File.Exists
+
+/// Why a run of `scope` is not judged by `reports`, or `None` when it is. Decided
+/// from the run's kind alone, before anything is read.
+let internal notJudgedReason (reports: CoverageReports) (scope: RunScope) : string option =
+    match reports, scope with
+    | CoverageReports.Named _, Partial ->
+        Some "an impact-filtered run does not write the named coverage reports, which a full-suite run does"
+    | CoverageReports.Named _, FullSuite
+    | CoverageReports.SearchUnder _, _ -> None
+
+/// Whether a run's coverage is judged, and against what, before any report is read.
+/// `Named` reports are a full-suite run's own output: a run that did not run the full
+/// suite did not write them, so it is not judged by them; a full-suite run is, and a
+/// named report it did not write (missing, or older than `runStartedAt`) is
+/// `Unreadable`, never a verdict on an earlier run's output. `found` is what a
+/// `SearchUnder` check found on disk.
+let internal judge
+    (configPath: string)
+    (reports: CoverageReports)
+    (scope: RunScope)
+    (runStartedAt: System.DateTime)
+    (found: string list)
+    : CoverageJudgement =
+    match notJudgedReason reports scope, reports with
+    | Some reason, _ -> NotJudged reason
+    | None, CoverageReports.Named paths ->
+        let notWritten =
+            paths
+            |> List.filter (fun path ->
+                not (System.IO.File.Exists path)
+                || System.IO.File.GetLastWriteTimeUtc path < runStartedAt)
+
+        if List.isEmpty notWritten then
+            Judged(verdictOf configPath scope paths)
+        else
+            let listed = String.concat ", " notWritten
+
+            Judged(
+                Unreadable $"coverage report(s) not written by this run (missing, or older than its start): %s{listed}"
+            )
+    | None, CoverageReports.SearchUnder _ ->
+        if List.isEmpty found then
+            Judged Passed
+        else
+            Judged(verdictOf configPath scope found)
+
 /// One coverage check: find this run's Cobertura output, judge it, and gate the raw
 /// result by the scope the run PROVED.
-let private checkWork (configPath: string) (searchDir: string) (scope: RunScope) =
+let private checkWork
+    (configPath: string)
+    (reports: CoverageReports)
+    (scope: RunScope)
+    (runStartedAt: System.DateTime)
+    =
     async {
-        let runStarted = System.DateTime.UtcNow
-        let! xmlPaths = pollForFiles searchDir 50 100
+        let checkStarted = System.DateTime.UtcNow
 
-        let verdict =
-            if List.isEmpty xmlPaths then
-                Passed
-            else
-                match readCoverage configPath xmlPaths with
-                | Ok coverage -> gateVerdict scope (check (loadConfig configPath) coverage)
-                | Result.Error reason -> Unreadable reason
+        let! found =
+            match reports with
+            | CoverageReports.SearchUnder dir -> pollForFiles dir 50 100
+            | CoverageReports.Named _ -> async { return [] }
+
+        let judgement = judge configPath reports scope runStartedAt found
 
         // No baseline to refresh here: the TestPrune DB is the coverage
         // high-watermark, ingested (max-merged across projects) per run, and emits
         // the shared cobertura.
-        return CheckDone(verdict, System.DateTime.UtcNow - runStarted)
+        return CheckDone(judgement, System.DateTime.UtcNow - checkStarted)
     }
 
-/// Launch a check for `scope`, returning what the launch leaves OWED.
+/// Launch a check for a run of `scope` that started at `runStartedAt`, returning what
+/// the launch leaves OWED.
 ///
 /// A claim the framework accepted owns the trigger, so nothing is owed. A refused one
 /// means "coverage-check" is held — by a live check, or by a finished check whose
@@ -143,14 +262,15 @@ let private checkWork (configPath: string) (searchDir: string) (scope: RunScope)
 let private startCheck
     (ctx: PluginCtx<CoverageMsg>)
     (configPath: string)
-    (searchDir: string)
+    (reports: CoverageReports)
     (scope: RunScope)
-    : RunScope option =
-    match ctx.RunExclusive "coverage-check" (checkWork configPath searchDir scope) with
+    (runStartedAt: System.DateTime)
+    : (RunScope * System.DateTime) option =
+    match ctx.RunExclusive "coverage-check" (checkWork configPath reports scope runStartedAt) with
     | Claimed -> None
     | SlotBusy ->
         ctx.Log "coverage-check slot held — keeping this trigger for the holder's result fold to run"
-        Some scope
+        Some(scope, runStartedAt)
 
 /// Run whatever a refused claim left owed. Called from the folds that HOLD
 /// "coverage-check": a result fold may claim the next run under its own key before it
@@ -158,23 +278,38 @@ let private startCheck
 let private drainOwed
     (ctx: PluginCtx<CoverageMsg>)
     (configPath: string)
-    (searchDir: string)
+    (reports: CoverageReports)
     (state: CoverageState)
     : CoverageState =
     match state.Owed with
     | None -> state
-    | Some scope ->
+    | Some(scope, runStartedAt) ->
         { state with
-            Owed = startCheck ctx configPath searchDir scope }
+            Owed = startCheck ctx configPath reports scope runStartedAt }
 
-/// <summary>Create a CoveragePlugin handler that checks per-file line and branch coverage
-/// thresholds after each <c>TestRunCompleted</c> event.</summary>
+/// The ratchet's per-file error text for a file below its percentage floors.
+let private percentDetail (r: FileResult) =
+    [ if not (FileResult.linePassed r) then
+          $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%"
+      if not (FileResult.branchPassed r) then
+          $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
+
+/// The ratchet's per-file error text for a file below its count floors.
+let private countDetail (r: CountResult) =
+    [ if not (CountResult.linesPassed r) then
+          $"covered lines %d{r.File.LinesCovered} < %d{r.Floor.CoveredLines}"
+      if not (CountResult.branchesPassed r) then
+          $"covered branches %d{r.File.BranchesCovered} < %d{r.Floor.CoveredBranches}" ]
+
+/// <summary>Create a CoveragePlugin handler that checks per-file coverage floors (line and
+/// branch percentages, and covered-line and covered-branch counts) after each
+/// <c>TestRunCompleted</c> event, reading the reports <paramref name="reports"/> names.</summary>
 /// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
-/// <param name="searchDir">Directory tree to search for <c>coverage.cobertura.xml</c> files.</param>
-let create (configPath: string) (searchDir: string) : PluginHandler<CoverageState, CoverageMsg> =
+/// <param name="reports">Where each check reads the run's Cobertura reports.</param>
+let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<CoverageState, CoverageMsg> =
     { Name = PluginName.create "coverage"
       Init = CoverageState.initial
-      Subscriptions = Set.singleton SubscribeTestRunCompleted
+      Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
       CacheKey = None
       Teardown = None
       PrepareCommit = None
@@ -227,7 +362,25 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
       Update =
         fun ctx state event ->
             match event with
+            | TestRunStarted started ->
+                async {
+                    return
+                        { state with
+                            Started = state.Started |> Map.add started.RunId started.StartedAt }
+                }
+
             | TestRunCompleted trc ->
+                // The run's own start bounds which reports it wrote. A run whose start
+                // was not seen falls back to its completion less its elapsed time.
+                let runStartedAt =
+                    state.Started
+                    |> Map.tryFind trc.RunId
+                    |> Option.defaultWith (fun () -> System.DateTime.UtcNow - trc.TotalElapsed)
+
+                let state =
+                    { state with
+                        Started = state.Started |> Map.remove trc.RunId }
+
                 match trc.Outcome, RunVerification.scope trc.Verification with
                 | Aborted _, _ -> async { return state }
                 | Normal, None ->
@@ -237,16 +390,21 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
                 | Normal, Some scope ->
-                    // A refused claim (a check or a ratchet rewrite holds the key, or a
-                    // finished one's result fold still does) KEEPS this trigger owed;
-                    // the holder's fold runs it. `startCheck` answers with what is left
-                    // owed, so a claim that succeeded clears any older debt this run
-                    // supersedes.
-                    async {
-                        return
-                            { state with
-                                Owed = startCheck ctx configPath searchDir scope }
-                    }
+                    match notJudgedReason reports scope with
+                    | Some reason ->
+                        ctx.Log $"coverage not judged: %s{reason}"
+                        async { return state }
+                    | None ->
+                        // A refused claim (a check or a ratchet rewrite holds the key, or
+                        // a finished one's result fold still does) KEEPS this trigger
+                        // owed; the holder's fold runs it. `startCheck` answers with what
+                        // is left owed, so a claim that succeeded clears any older debt
+                        // this run supersedes.
+                        async {
+                            return
+                                { state with
+                                    Owed = startCheck ctx configPath reports scope runStartedAt }
+                        }
 
             | Custom(RatchetRequested(cfgPath, reply)) ->
                 let work =
@@ -255,11 +413,15 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
 
                         try
                             try
-                                let xmlPaths = findCoverageFiles searchDir
+                                let xmlPaths = existingReports reports
 
                                 let message =
                                     if List.isEmpty xmlPaths then
-                                        "coverage-ratchet: no coverage.cobertura.xml found"
+                                        match reports with
+                                        | CoverageReports.SearchUnder _ ->
+                                            "coverage-ratchet: no coverage.cobertura.xml found"
+                                        | CoverageReports.Named _ ->
+                                            "coverage-ratchet: none of the named coverage reports exists"
                                     else
                                         match readCoverage cfgPath xmlPaths with
                                         | Result.Error reason -> $"coverage-ratchet failed: %s{reason}"
@@ -303,10 +465,24 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
 
                     // This fold holds "coverage-check" until it commits, so a trigger
                     // refused while the ratchet ran starts here.
-                    return drainOwed ctx configPath searchDir state
+                    return drainOwed ctx configPath reports state
                 }
 
-            | Custom(CheckDone(Passed, elapsed)) ->
+            | Custom(CheckDone(NotJudged reason, elapsed)) ->
+                async {
+                    ctx.Log $"coverage not judged: %s{reason}"
+
+                    ctx.ReportStatus(
+                        PluginStatus.Completed(
+                            System.DateTime.UtcNow,
+                            RunVerdict.create $"coverage not judged: %s{reason}" elapsed
+                        )
+                    )
+
+                    return drainOwed ctx configPath reports state
+                }
+
+            | Custom(CheckDone(Judged Passed, elapsed)) ->
                 async {
                     ctx.ClearAllErrors()
 
@@ -324,12 +500,12 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                         drainOwed
                             ctx
                             configPath
-                            searchDir
+                            reports
                             { state with
                                 LastCheckPassed = Some true }
                 }
 
-            | Custom(CheckDone(NotGatedFiltered belowFloorCount, elapsed)) ->
+            | Custom(CheckDone(Judged(NotGatedFiltered belowFloorCount), elapsed)) ->
                 async {
                     // Clear any prior reds so the verdict is a deterministic ✓ on an
                     // unchanged commit; the notice below keeps the gap visible. A real
@@ -347,54 +523,56 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                         drainOwed
                             ctx
                             configPath
-                            searchDir
+                            reports
                             { state with
                                 LastCheckPassed = Some true }
                 }
 
-            | Custom(CheckDone(Failed results, elapsed)) ->
+            | Custom(CheckDone(Judged(Failed failures), elapsed)) ->
                 async {
-                    for r in results do
-                        let lineMsg =
-                            if not (FileResult.linePassed r) then
-                                [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
-                            else
-                                []
+                    let details =
+                        (failures.Files |> List.map (fun r -> r.File.FileName, percentDetail r))
+                        @ (failures.Counts |> List.map (fun r -> r.File.FileName, countDetail r))
+                        |> List.groupBy fst
+                        |> List.map (fun (file, parts) -> file, parts |> List.collect snd)
 
-                        let branchMsg =
-                            if not (FileResult.branchPassed r) then
-                                [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
-                            else
-                                []
+                    for file, parts in details do
+                        let detail = String.concat ", " parts
+                        ctx.ReportErrors file [ ErrorEntry.error $"coverage: %s{detail}" ]
 
-                        let detail = String.concat ", " (lineMsg @ branchMsg)
-                        ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
-
-                    let summary = $"%d{results.Length} file(s) below threshold"
+                    let summary = $"%d{details.Length} file(s) below threshold"
                     ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
 
                     return
                         drainOwed
                             ctx
                             configPath
-                            searchDir
+                            reports
                             { state with
                                 LastCheckPassed = Some false }
                 }
 
-            | Custom(CheckDone(Unreadable reason, elapsed)) ->
+            | Custom(CheckDone(Judged(Unreadable reason), elapsed)) ->
                 async {
                     ctx.ReportErrors configPath [ ErrorEntry.error $"coverage: %s{reason}" ]
-                    let summary = "coverage floor file unreadable"
+                    let summary = "coverage not readable"
                     ctx.ReportStatus(PluginStatus.failedNow reason summary elapsed)
 
                     return
                         drainOwed
                             ctx
                             configPath
-                            searchDir
+                            reports
                             { state with
                                 LastCheckPassed = Some false }
                 }
 
             | _ -> async { return state } }
+
+/// <summary>Create a CoveragePlugin handler that checks per-file coverage floors after each
+/// <c>TestRunCompleted</c> event, reading every <c>coverage.cobertura.xml</c> under
+/// <paramref name="searchDir"/>.</summary>
+/// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
+/// <param name="searchDir">Directory tree to search for <c>coverage.cobertura.xml</c> files.</param>
+let create (configPath: string) (searchDir: string) : PluginHandler<CoverageState, CoverageMsg> =
+    createWith configPath (CoverageReports.SearchUnder searchDir)

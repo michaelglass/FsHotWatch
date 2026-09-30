@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `coverage.reports` in `.fshw.json` names the exact report files the coverage check
+  reads, instead of searching `searchDir` for `coverage.cobertura.xml`. A value that is not a
+  non-empty array of paths, or `reports` given together with `searchDir`, is a `ConfigError`.
+  Existing configs without `reports` behave as before.
+
 ## 0.14.0-alpha.81 - 2026-09-30
 
 - deps: TestPrune.Trace 0.6.0. Traces recorded by an earlier version are not read back

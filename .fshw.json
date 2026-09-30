@@ -45,6 +45,10 @@
       "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/"
     ]
   },
+  "coverage": {
+    "configPath": "coverage-ratchet-FsHotWatch.json",
+    "reports": ["coverage/FsHotWatch.Tests/coverage.baseline.cobertura.xml"]
+  },
   "tests": {
     "beforeRun": "dotnet build",
     "projects": [
@@ -54,7 +58,10 @@
         "args": "run --project tests/FsHotWatch.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "default"
+        "group": "default",
+        "coverage": {
+          "argsTemplate": "--coverage --coverage-output-format cobertura --coverage-output \"{output}\" --coverage-settings coverage.settings"
+        }
       },
       {
         "project": "FsHotWatch.Bench.Tests",

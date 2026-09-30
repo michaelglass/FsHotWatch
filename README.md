@@ -553,6 +553,9 @@ merge verdict without one.
 |-------|------|---------|-------------|
 | `configPath` | `string` | `"coverage-ratchet.json"` | Path to the coverage-ratchet thresholds file (relative to repo root or absolute). |
 | `searchDir` | `string` | `"."` | Directory tree to search for `coverage.cobertura.xml` files after each test run. |
+| `reports` | `string[]` | — | The exact report files a check reads instead of searching (repo-relative or absolute), typically a project's raw full-suite runner output, `coverage/<project>/coverage.baseline.cobertura.xml`. Only a full-suite run writes them, so only a full-suite run is judged; an impact-filtered run is not, and a named report missing or older than its run's start fails the check. Give `searchDir` or `reports`, not both. |
+
+Every check judges both the percentage floors and the count floors (`countFloors`) of the thresholds file, as `coverageratchet check` does.
 
 ### Preprocessors
 

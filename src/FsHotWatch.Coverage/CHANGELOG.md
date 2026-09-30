@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- feat: `CoveragePlugin.createWith configPath reports` takes a `CoverageReports`: `SearchUnder dir`
+  (what `create` does) or `Named paths`, the exact report files a check reads. Named reports
+  are a full-suite run's own runner output: an impact-filtered run is not judged by them
+  (`NotJudged`, one log line), and in a full-suite run a named report that is missing or older
+  than the run's start (`TestRunStarted`) is `Unreadable`, never a verdict on an earlier run's
+  output. The plugin now also subscribes to `TestRunStarted`.
+
+- **fix!: every check also judges the thresholds file's count floors (`countFloors`, via
+  `Thresholds.checkCounts`), as `coverageratchet check` does.** The plugin judged percentage
+  floors only, so a count-floor shortfall the CLI fails passed in the daemon. A floor file
+  whose count floors a run misses now fails the check.
+
+- **feat!: `CoverageVerdict.Failed` carries `FloorFailures` (`Files`: percentage shortfalls,
+  `Counts`: count shortfalls) instead of a `FileResult list`; `gateVerdict` takes the
+  `FloorFailures option` of `floorCheck`; `CheckDone` carries a `CoverageJudgement` (`Judged
+  verdict | NotJudged reason`); `CoverageState.Owed` carries the run's start beside its scope,
+  and `CoverageState` gains `Started`.**
+
 ## 0.7.0-alpha.28 - 2026-09-30
 
 - deps: CoverageRatchet.Core 0.1.0-alpha.13. The plugin now reads coverage reports with the

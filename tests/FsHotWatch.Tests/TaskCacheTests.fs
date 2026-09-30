@@ -1764,7 +1764,7 @@ let ``FileTaskCache reads an old-format entry as a miss, counted as a parse fail
 let ``FileTaskCache rejects a testRunCompleted entry with no verification, rather than replaying it as a full suite``
     ()
     =
-    // The verification is a gating input: `gateVerdict` gates a `SomeFailed` on
+    // The verification is a gating input: `gateVerdict` gates a floor shortfall on
     // `Ran FullSuite` and downgrades it on `Ran Partial`, and FileCommandPlugin turns it
     // into FSHW_RAN_FULL_SUITE for user hooks.
     //

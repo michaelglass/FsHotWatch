@@ -356,7 +356,8 @@ type DaemonConfiguration =
         Preprocessors: PreprocessorConfig list
         Coverage:
             {| ConfigPath: string
-               SearchDir: string |} option
+               SearchDir: string
+               Reports: string list option |} option
         Exclude: string list
         /// When false (default), the report-producing plugins (analyzers, lint) skip
         /// compile items that resolve OUTSIDE the repo root — e.g. NuGet-injected
@@ -1174,9 +1175,35 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, sd when sd.ValueKind = JsonValueKind.String -> sd.GetString()
                 | _ -> "."
 
+            // `reports`: the exact report files a check reads, a full-suite run's own
+            // runner output. They replace the search, so the two cannot both be given.
+            let reports =
+                match v.TryGetProperty("reports") with
+                | false, _ -> None
+                | true, r when
+                    r.ValueKind = JsonValueKind.Array
+                    && r.GetArrayLength() > 0
+                    && (r.EnumerateArray() |> Seq.forall (fun e -> e.ValueKind = JsonValueKind.String))
+                    ->
+                    Some(r.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList)
+                | true, r ->
+                    raise (
+                        ConfigError
+                            $"coverage.reports: expected a non-empty array of report paths, got '%s{describeValue r}'"
+                    )
+
+            match reports, v.TryGetProperty("searchDir") with
+            | Some _, (true, _) ->
+                raise (
+                    ConfigError
+                        "coverage: give either searchDir or reports, not both — reports names the exact files a check reads"
+                )
+            | _ -> ()
+
             Some
                 {| ConfigPath = configPath
-                   SearchDir = searchDir |}
+                   SearchDir = searchDir
+                   Reports = reports |}
         | _ -> None
 
     let exclude =
@@ -2382,6 +2409,25 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         if not (Directory.Exists absSearchDir) then
             Logging.warn "config" $"CoveragePlugin: searchDir does not exist: %s{absSearchDir}"
 
-        Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} searchDir=%s{absSearchDir}"
-        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create absConfigPath absSearchDir)
+        let reports =
+            match cov.Reports with
+            | Some paths ->
+                paths
+                |> List.map (fun path ->
+                    if Path.IsPathRooted path then
+                        path
+                    else
+                        Path.GetFullPath(Path.Combine(repoRoot, path)))
+                |> FsHotWatch.Coverage.CoveragePlugin.CoverageReports.Named
+            | None -> FsHotWatch.Coverage.CoveragePlugin.CoverageReports.SearchUnder absSearchDir
+
+        let source =
+            match reports with
+            | FsHotWatch.Coverage.CoveragePlugin.CoverageReports.Named paths ->
+                let listed = String.concat ", " paths
+                $"reports=%s{listed}"
+            | FsHotWatch.Coverage.CoveragePlugin.CoverageReports.SearchUnder dir -> $"searchDir=%s{dir}"
+
+        Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} %s{source}"
+        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createWith absConfigPath reports)
     | None -> ()
