@@ -18,7 +18,11 @@
   `Counts`: count shortfalls) instead of a `FileResult list`; `gateVerdict` takes the
   `FloorFailures option` of `floorCheck`; `CheckDone` carries a `CoverageJudgement` (`Judged
   verdict | NotJudged reason`); `CoverageState.Owed` carries the run's start beside its scope,
-  and `CoverageState` gains `Started`.**
+  and `CoverageState` gains `Started`. `CoverageReports`, `FloorFailures`, `CoverageVerdict`
+  and `CoverageJudgement` move from `FsHotWatch.Coverage.CoveragePlugin` to the new
+  `FsHotWatch.Coverage.Judgement` module, beside `FloorFailures.details`, the per-file
+  failure text; `create`, `createWith`, `CoverageMsg` and `CoverageState` stay in
+  `CoveragePlugin`.**
 
 ## 0.7.0-alpha.28 - 2026-09-30
 

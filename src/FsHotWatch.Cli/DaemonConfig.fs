@@ -2418,15 +2418,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                         path
                     else
                         Path.GetFullPath(Path.Combine(repoRoot, path)))
-                |> FsHotWatch.Coverage.CoveragePlugin.CoverageReports.Named
-            | None -> FsHotWatch.Coverage.CoveragePlugin.CoverageReports.SearchUnder absSearchDir
+                |> FsHotWatch.Coverage.Judgement.CoverageReports.Named
+            | None -> FsHotWatch.Coverage.Judgement.CoverageReports.SearchUnder absSearchDir
 
         let source =
             match reports with
-            | FsHotWatch.Coverage.CoveragePlugin.CoverageReports.Named paths ->
+            | FsHotWatch.Coverage.Judgement.CoverageReports.Named paths ->
                 let listed = String.concat ", " paths
                 $"reports=%s{listed}"
-            | FsHotWatch.Coverage.CoveragePlugin.CoverageReports.SearchUnder dir -> $"searchDir=%s{dir}"
+            | FsHotWatch.Coverage.Judgement.CoverageReports.SearchUnder dir -> $"searchDir=%s{dir}"
 
         Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} %s{source}"
         daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createWith absConfigPath reports)

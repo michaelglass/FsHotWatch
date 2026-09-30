@@ -10,6 +10,7 @@ open FsHotWatch.Tests.TestHelpers
 open CoverageRatchet.Thresholds
 
 module CovPlugin = FsHotWatch.Coverage.CoveragePlugin
+module Judgement = FsHotWatch.Coverage.Judgement
 
 /// Minimal Cobertura XML with the given filename and line hits. All non-zero hits = covered.
 let private coberturaXml (fileName: string) (lines: (int * int) list) =
@@ -109,8 +110,8 @@ let private mkFileResult (fileName: string) (linePct: float) (lineThreshold: flo
 let ``gateVerdict: full-suite shortfall gates (Failed)`` () =
     let below = [ mkFileResult "OutOfDiff.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict RunScope.FullSuite (Some { Files = below; Counts = [] }) with
-    | CovPlugin.Failed failures -> test <@ failures.Files.Length = 1 @>
+    match Judgement.gateVerdict RunScope.FullSuite (Some { Files = below; Counts = [] }) with
+    | Judgement.Failed failures -> test <@ failures.Files.Length = 1 @>
     | other -> Assert.Fail $"Expected Failed, got {other}"
 
 [<Fact(Timeout = 5000)>]
@@ -119,23 +120,23 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
         [ mkFileResult "OutOfDiff1.fs" 0.0 100.0
           mkFileResult "OutOfDiff2.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict RunScope.Partial (Some { Files = below; Counts = [] }) with
-    | CovPlugin.NotGatedFiltered count -> test <@ count = 2 @>
+    match Judgement.gateVerdict RunScope.Partial (Some { Files = below; Counts = [] }) with
+    | Judgement.NotGatedFiltered count -> test <@ count = 2 @>
     | other -> Assert.Fail $"Expected NotGatedFiltered, got {other}"
 
 [<Fact(Timeout = 5000)>]
 let ``gateVerdict: no shortfall is Passed regardless of full-suite flag`` () =
     test
         <@
-            match CovPlugin.gateVerdict RunScope.Partial None with
-            | CovPlugin.Passed -> true
+            match Judgement.gateVerdict RunScope.Partial None with
+            | Judgement.Passed -> true
             | _ -> false
         @>
 
     test
         <@
-            match CovPlugin.gateVerdict RunScope.FullSuite None with
-            | CovPlugin.Passed -> true
+            match Judgement.gateVerdict RunScope.FullSuite None with
+            | Judgement.Passed -> true
             | _ -> false
         @>
 
@@ -194,11 +195,11 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
 
     let verdicts =
         [ for _ in 1..10 ->
-              match CovPlugin.gateVerdict RunScope.Partial (Some { Files = belowFloor; Counts = [] }) with
-              | CovPlugin.NotGatedFiltered n -> Some n
-              | CovPlugin.Failed _
-              | CovPlugin.Unreadable _ -> None
-              | CovPlugin.Passed -> Some 0 ]
+              match Judgement.gateVerdict RunScope.Partial (Some { Files = belowFloor; Counts = [] }) with
+              | Judgement.NotGatedFiltered n -> Some n
+              | Judgement.Failed _
+              | Judgement.Unreadable _ -> None
+              | Judgement.Passed -> Some 0 ]
 
     test <@ verdicts |> List.forall (fun v -> v = Some 3) @>
 
@@ -1025,7 +1026,7 @@ let ``the trigger retained behind a finished check is run by that check's result
             handler.Update
                 holderFold
                 retained
-                (Custom(CovPlugin.CheckDone(CovPlugin.Judged CovPlugin.Passed, TimeSpan.Zero)))
+                (Custom(CovPlugin.CheckDone(Judgement.Judged Judgement.Passed, TimeSpan.Zero)))
             |> Async.RunSynchronously
 
         test <@ drained.Owed = None @>
@@ -1040,7 +1041,7 @@ let ``the trigger retained behind a finished check is run by that check's result
             // And it checks for the NEWER run: the shortfall is gated by the retained
             // `Partial` scope (a notice), not by the full-suite holder's (a red).
             match work |> Async.RunSynchronously with
-            | CovPlugin.CheckDone(CovPlugin.Judged(CovPlugin.NotGatedFiltered count), _) -> test <@ count = 1 @>
+            | CovPlugin.CheckDone(Judgement.Judged(Judgement.NotGatedFiltered count), _) -> test <@ count = 1 @>
             | other -> Assert.Fail $"expected the retained Partial trigger's verdict, got {other}")
 
 // ---------------------------------------------------------------------------
@@ -1085,10 +1086,10 @@ let private cliVerdict (configPath: string) (xmlPath: string) =
     files, counts
 
 /// The plugin's decision on the same inputs, in the same shape.
-let private pluginVerdict (judgement: CovPlugin.CoverageJudgement) =
+let private pluginVerdict (judgement: Judgement.CoverageJudgement) =
     match judgement with
-    | CovPlugin.Judged CovPlugin.Passed -> Some([], [])
-    | CovPlugin.Judged(CovPlugin.Failed f) ->
+    | Judgement.Judged Judgement.Passed -> Some([], [])
+    | Judgement.Judged(Judgement.Failed f) ->
         Some(f.Files |> List.map _.File.FileName, f.Counts |> List.map _.File.FileName)
     | other -> failwith $"expected Passed or Failed, got %A{other}"
 
@@ -1106,7 +1107,7 @@ let ``a full-suite run judges its named report exactly as coverageratchet check 
         File.WriteAllText(configPath, floorsJson line (if coveredLines < 0 then None else Some coveredLines))
 
         let judged =
-            CovPlugin.judge configPath (CovPlugin.CoverageReports.Named [ xmlPath ]) RunScope.FullSuite startedAt []
+            Judgement.judge configPath (Judgement.CoverageReports.Named [ xmlPath ]) RunScope.FullSuite startedAt []
 
         test <@ pluginVerdict judged = Some(cliVerdict configPath xmlPath) @>)
 
@@ -1119,9 +1120,9 @@ let ``a searched report is judged with count floors too`` () =
         File.WriteAllText(configPath, floorsJson 0 (Some 2))
 
         let judged =
-            CovPlugin.judge
+            Judgement.judge
                 configPath
-                (CovPlugin.CoverageReports.SearchUnder dir)
+                (Judgement.CoverageReports.SearchUnder dir)
                 RunScope.FullSuite
                 DateTime.UtcNow
                 [ xmlPath ]
@@ -1139,14 +1140,14 @@ let ``a named report older than its full-suite run is unreadable, never a verdic
         File.SetLastWriteTimeUtc(xmlPath, DateTime.UtcNow.AddHours -1.0)
 
         match
-            CovPlugin.judge
+            Judgement.judge
                 configPath
-                (CovPlugin.CoverageReports.Named [ xmlPath ])
+                (Judgement.CoverageReports.Named [ xmlPath ])
                 RunScope.FullSuite
                 (DateTime.UtcNow.AddMinutes -1.0)
                 []
         with
-        | CovPlugin.Judged(CovPlugin.Unreadable reason) -> test <@ reason.Contains xmlPath @>
+        | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains xmlPath @>
         | other -> failwith $"expected Unreadable, got %A{other}")
 
 [<Fact(Timeout = 15000)>]
@@ -1157,26 +1158,26 @@ let ``a missing named report is unreadable in a full-suite run`` () =
         let missing = Path.Combine(dir, "absent.cobertura.xml")
 
         match
-            CovPlugin.judge
+            Judgement.judge
                 configPath
-                (CovPlugin.CoverageReports.Named [ missing ])
+                (Judgement.CoverageReports.Named [ missing ])
                 RunScope.FullSuite
                 DateTime.UtcNow
                 []
         with
-        | CovPlugin.Judged(CovPlugin.Unreadable reason) -> test <@ reason.Contains missing @>
+        | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains missing @>
         | other -> failwith $"expected Unreadable, got %A{other}")
 
 [<Fact(Timeout = 5000)>]
 let ``an impact-filtered run is not judged by named reports`` () =
-    let reports = CovPlugin.CoverageReports.Named [ "/nowhere/report.cobertura.xml" ]
+    let reports = Judgement.CoverageReports.Named [ "/nowhere/report.cobertura.xml" ]
 
-    match CovPlugin.judge "/nowhere/floors.json" reports RunScope.Partial DateTime.UtcNow [] with
-    | CovPlugin.NotJudged reason -> test <@ reason.Contains "impact-filtered" @>
+    match Judgement.judge "/nowhere/floors.json" reports RunScope.Partial DateTime.UtcNow [] with
+    | Judgement.NotJudged reason -> test <@ reason.Contains "impact-filtered" @>
     | other -> failwith $"expected NotJudged, got %A{other}"
 
-    test <@ (CovPlugin.notJudgedReason reports RunScope.FullSuite).IsNone @>
-    test <@ (CovPlugin.notJudgedReason (CovPlugin.CoverageReports.SearchUnder "/nowhere") RunScope.Partial).IsNone @>
+    test <@ (Judgement.notJudgedReason reports RunScope.FullSuite).IsNone @>
+    test <@ (Judgement.notJudgedReason (Judgement.CoverageReports.SearchUnder "/nowhere") RunScope.Partial).IsNone @>
 
 [<Fact(Timeout = 15000)>]
 let ``a count-floor shortfall fails the plugin with the covered counts`` () =
@@ -1216,7 +1217,7 @@ let ``a full-suite run whose named report predates it fails the plugin`` () =
         File.SetLastWriteTimeUtc(xmlPath, DateTime.UtcNow.AddHours -1.0)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(CovPlugin.createWith configPath (CovPlugin.CoverageReports.Named [ xmlPath ]))
+        host.RegisterHandler(CovPlugin.createWith configPath (Judgement.CoverageReports.Named [ xmlPath ]))
         let runId = Guid.NewGuid()
 
         host.EmitTestRunStarted
