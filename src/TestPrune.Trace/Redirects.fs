@@ -36,8 +36,8 @@ let private io t name ps shim =
       ShimType = Contract.IoType
       Shim = shim }
 
-let private ioInstance t name shim =
-    { io t name [] shim with
+let private ioInstance t name ps shim =
+    { io t name ps shim with
         IsInstance = true }
 
 let private proc ps =
@@ -63,6 +63,12 @@ let private Opt = "System.IO.SearchOption"
 let private Ct = "System.Threading.CancellationToken"
 
 [<Literal>]
+let private Enc = "System.Text.Encoding"
+
+[<Literal>]
+let private LoadOpts = "System.Xml.Linq.LoadOptions"
+
+[<Literal>]
 let private F = "System.IO.File"
 
 [<Literal>]
@@ -74,8 +80,10 @@ let table: Redirect list =
       io F "ReadAllText" [ S ] "File_ReadAllText"
       io F "ReadAllText" [ S; "System.Text.Encoding" ] "File_ReadAllText"
       io F "ReadAllLines" [ S ] "File_ReadAllLines"
+      io F "ReadAllLines" [ S; Enc ] "File_ReadAllLines"
       io F "ReadAllBytes" [ S ] "File_ReadAllBytes"
       io F "ReadLines" [ S ] "File_ReadLines"
+      io F "ReadLines" [ S; Enc ] "File_ReadLines"
       io F "OpenRead" [ S ] "File_OpenRead"
       io F "OpenText" [ S ] "File_OpenText"
       io F "Open" [ S; Mode ] "File_Open"
@@ -83,6 +91,8 @@ let table: Redirect list =
       io F "Open" [ S; Mode; Access; Share ] "File_Open"
       io F "ReadAllTextAsync" [ S; Ct ] "File_ReadAllTextAsync"
       io F "ReadAllLinesAsync" [ S; Ct ] "File_ReadAllLinesAsync"
+      io F "ReadAllTextAsync" [ S; Enc; Ct ] "File_ReadAllTextAsync"
+      io F "ReadAllLinesAsync" [ S; Enc; Ct ] "File_ReadAllLinesAsync"
       io F "ReadAllBytesAsync" [ S; Ct ] "File_ReadAllBytesAsync"
       io D "Exists" [ S ] "Directory_Exists"
       io D "GetFiles" [ S ] "Directory_GetFiles"
@@ -97,15 +107,35 @@ let table: Redirect list =
       io D "EnumerateDirectories" [ S ] "Directory_EnumerateDirectories"
       io D "EnumerateDirectories" [ S; S ] "Directory_EnumerateDirectories"
       io D "EnumerateDirectories" [ S; S; Opt ] "Directory_EnumerateDirectories"
+      io D "GetFileSystemEntries" [ S ] "Directory_GetFileSystemEntries"
+      io D "GetFileSystemEntries" [ S; S ] "Directory_GetFileSystemEntries"
+      io D "GetFileSystemEntries" [ S; S; Opt ] "Directory_GetFileSystemEntries"
+      io D "EnumerateFileSystemEntries" [ S ] "Directory_EnumerateFileSystemEntries"
+      io D "EnumerateFileSystemEntries" [ S; S ] "Directory_EnumerateFileSystemEntries"
+      io D "EnumerateFileSystemEntries" [ S; S; Opt ] "Directory_EnumerateFileSystemEntries"
       io "System.IO.FileStream" ".ctor" [ S; Mode ] "FileStream_ctor"
       io "System.IO.FileStream" ".ctor" [ S; Mode; Access ] "FileStream_ctor"
       io "System.IO.FileStream" ".ctor" [ S; Mode; Access; Share ] "FileStream_ctor"
       io "System.IO.StreamReader" ".ctor" [ S ] "StreamReader_ctor"
-      ioInstance "System.IO.FileSystemInfo" "get_Exists" "FileSystemInfo_get_Exists"
-      ioInstance "System.IO.FileInfo" "get_Exists" "FileInfo_get_Exists"
-      ioInstance "System.IO.FileInfo" "OpenRead" "FileInfo_OpenRead"
-      ioInstance "System.IO.FileInfo" "OpenText" "FileInfo_OpenText"
-      ioInstance "System.IO.DirectoryInfo" "get_Exists" "DirectoryInfo_get_Exists"
+      io "System.IO.StreamReader" ".ctor" [ S; Enc ] "StreamReader_ctor"
+      io "System.Xml.Linq.XDocument" "Load" [ S ] "XDocument_Load"
+      io "System.Xml.Linq.XDocument" "Load" [ S; LoadOpts ] "XDocument_Load"
+      io "System.Xml.Linq.XElement" "Load" [ S ] "XElement_Load"
+      io "System.Xml.Linq.XElement" "Load" [ S; LoadOpts ] "XElement_Load"
+      io "System.Xml.XmlReader" "Create" [ S ] "XmlReader_Create"
+      io "System.Xml.XmlReader" "Create" [ S; "System.Xml.XmlReaderSettings" ] "XmlReader_Create"
+      ioInstance "System.Xml.XmlDocument" "Load" [ S ] "XmlDocument_Load"
+      ioInstance "System.IO.FileSystemInfo" "get_Exists" [] "FileSystemInfo_get_Exists"
+      ioInstance "System.IO.FileInfo" "get_Exists" [] "FileInfo_get_Exists"
+      ioInstance "System.IO.FileInfo" "OpenRead" [] "FileInfo_OpenRead"
+      ioInstance "System.IO.FileInfo" "OpenText" [] "FileInfo_OpenText"
+      ioInstance "System.IO.DirectoryInfo" "get_Exists" [] "DirectoryInfo_get_Exists"
+      ioInstance "System.IO.DirectoryInfo" "GetFiles" [] "DirectoryInfo_GetFiles"
+      ioInstance "System.IO.DirectoryInfo" "GetFiles" [ S ] "DirectoryInfo_GetFiles"
+      ioInstance "System.IO.DirectoryInfo" "GetFiles" [ S; Opt ] "DirectoryInfo_GetFiles"
+      ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [] "DirectoryInfo_EnumerateFiles"
+      ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [ S ] "DirectoryInfo_EnumerateFiles"
+      ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [ S; Opt ] "DirectoryInfo_EnumerateFiles"
       proc [ "System.Diagnostics.ProcessStartInfo" ]
       proc [ S ]
       proc [ S; S ]

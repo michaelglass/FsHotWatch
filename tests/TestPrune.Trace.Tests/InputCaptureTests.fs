@@ -9,6 +9,7 @@ open System.IO
 open System.Reflection
 open System.Text
 open System.Threading
+open System.Xml.Linq
 open Xunit
 open Swensen.Unquote
 open Mono.Cecil
@@ -22,7 +23,10 @@ let private shimType name =
     typeof<Probes>.Assembly.GetType(name, true)
 
 let private bclType (name: string) =
-    [ "System.Private.CoreLib"; "System.Diagnostics.Process" ]
+    [ "System.Private.CoreLib"
+      "System.Diagnostics.Process"
+      "System.Private.Xml"
+      "System.Private.Xml.Linq" ]
     |> List.pick (fun a -> Type.GetType(name + ", " + a, false) |> Option.ofObj)
 
 /// The runtime type Cecil spells `name`; a generic instance such as
@@ -132,6 +136,7 @@ let ``every file shim notes its input and does what the original does`` () =
     let root = Fixtures.repoRoot
     let file = Path.Combine(root, "global.json")
     let text = File.ReadAllText file
+    let solution = Path.Combine(root, "TestPrune.slnx")
     let size = FileInfo(file).Length
     let state = recorderWithRoot root
     state.EnterScope "T:io"
@@ -151,6 +156,31 @@ let ``every file shim notes its input and does what the original does`` () =
             test <@ Io.File_ReadAllLines file = File.ReadAllLines file @>
             test <@ Io.File_ReadAllBytes file = File.ReadAllBytes file @>
             test <@ List.ofSeq (Io.File_ReadLines file) = List.ofArray (File.ReadAllLines file) @>
+            test <@ Io.File_ReadAllLines(file, Encoding.UTF8) = File.ReadAllLines file @>
+            test <@ List.ofSeq (Io.File_ReadLines(file, Encoding.UTF8)) = List.ofArray (File.ReadAllLines file) @>
+            test <@ Io.File_ReadAllTextAsync(file, Encoding.UTF8, ct).Result = text @>
+            test <@ Io.File_ReadAllLinesAsync(file, Encoding.UTF8, ct).Result = File.ReadAllLines file @>
+
+            do
+                use r = Io.StreamReader_ctor(file, Encoding.UTF8)
+                test <@ r.ReadToEnd() = text @>
+
+            // XML loaded by path: the solution file is XML.
+            let xml = XDocument.Load(solution).ToString()
+            test <@ Io.XDocument_Load(solution).ToString() = xml @>
+            test <@ Io.XDocument_Load(solution, LoadOptions.None).ToString() = xml @>
+            test <@ Io.XElement_Load(solution).ToString() = xml @>
+            test <@ Io.XElement_Load(solution, LoadOptions.None).ToString() = xml @>
+
+            for create in
+                [ fun () -> Io.XmlReader_Create solution
+                  fun () -> Io.XmlReader_Create(solution, Xml.XmlReaderSettings()) ] do
+                use r = create ()
+                test <@ r.MoveToContent() = Xml.XmlNodeType.Element @>
+
+            let doc = Xml.XmlDocument()
+            Io.XmlDocument_Load(doc, solution)
+            test <@ not (isNull doc.DocumentElement) @>
 
             // One at a time, touching nothing else: File.Open(path, mode) shares nothing.
             for opener in
@@ -225,6 +255,55 @@ let ``every file shim notes its input and does what the original does`` () =
                     )
                 @>
 
+            let entries = List.ofSeq (Directory.EnumerateFileSystemEntries root)
+            test <@ Io.Directory_GetFileSystemEntries root = Directory.GetFileSystemEntries root @>
+
+            test
+                <@ Io.Directory_GetFileSystemEntries(root, "*.json") = Directory.GetFileSystemEntries(root, "*.json") @>
+
+            test
+                <@
+                    Io.Directory_GetFileSystemEntries(root, "*.json", all) = Directory.GetFileSystemEntries(
+                        root,
+                        "*.json",
+                        all
+                    )
+                @>
+
+            test <@ List.ofSeq (Io.Directory_EnumerateFileSystemEntries root) = entries @>
+
+            test
+                <@
+                    List.ofSeq (Io.Directory_EnumerateFileSystemEntries(root, "*.json")) = List.ofSeq (
+                        Directory.EnumerateFileSystemEntries(root, "*.json")
+                    )
+                @>
+
+            test
+                <@
+                    List.ofSeq (Io.Directory_EnumerateFileSystemEntries(root, "*.json", all)) = List.ofSeq (
+                        Directory.EnumerateFileSystemEntries(root, "*.json", all)
+                    )
+                @>
+
+            let di = DirectoryInfo root
+
+            let names (fs: FileInfo seq) =
+                fs |> Seq.map (fun f -> f.FullName) |> List.ofSeq
+
+            test <@ names (Io.DirectoryInfo_GetFiles di) = names (di.GetFiles()) @>
+            test <@ names (Io.DirectoryInfo_GetFiles(di, "*.json")) = names (di.GetFiles "*.json") @>
+            test <@ names (Io.DirectoryInfo_GetFiles(di, "*.json", all)) = names (di.GetFiles("*.json", all)) @>
+            test <@ names (Io.DirectoryInfo_EnumerateFiles di) = names (di.EnumerateFiles()) @>
+            test <@ names (Io.DirectoryInfo_EnumerateFiles(di, "*.json")) = names (di.EnumerateFiles "*.json") @>
+
+            test
+                <@
+                    names (Io.DirectoryInfo_EnumerateFiles(di, "*.json", all)) = names (
+                        di.EnumerateFiles("*.json", all)
+                    )
+                @>
+
             // A stream opened for writing is noted too: over-approximating is sound.
             do
                 use w = Io.FileStream_ctor(written, FileMode.Create)
@@ -235,7 +314,12 @@ let ``every file shim notes its input and does what the original does`` () =
     test
         <@
             inputsOf (state.CurrentScope()) = set
-                [ "read", file; "exists", file; "exists", root; "list", root; "read", written ]
+                [ "read", file
+                  "read", solution
+                  "exists", file
+                  "exists", root
+                  "list", root
+                  "read", written ]
         @>
 
 [<Fact>]

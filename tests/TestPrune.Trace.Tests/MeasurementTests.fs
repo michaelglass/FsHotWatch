@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 17 @>
+        test <@ report.Sampled = 18 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -251,8 +251,9 @@ let ``the file census names the reading tests, those that break outside the repo
     =
     // "d reads a module value" reads mise.toml in a type initializer it found by walking up
     // from the binary: outside the repository that walk fails, and so does the test. "c reads
-    // a repo file" reads global.json at an absolute path (the recorder's repository root):
-    // from outside it still reaches the repository and passes. Both traces hold the read.
+    // a repo file" reads global.json, and "c loads a repo xml file" loads TestPrune.slnx, at
+    // an absolute path (the recorder's repository root): from outside they still reach the
+    // repository and pass. All three traces hold the read.
     // The test project's own module value reads LICENSE at startup; the test assembly is
     // woven without method probes, so nothing places that initializer and every test
     // inherits the read. Only the two "e" tests use it and fail outside; the census reports
@@ -270,9 +271,13 @@ let ``the file census names the reading tests, those that break outside the repo
                   "FxTests.RootedA.rooted a reads its own module value"
                   "FxTests.RootedB.rooted b reads its own module value" ]
 
-        test <@ r.ReadsRepo.Count = 15 && Set.isSubset users r.ReadsRepo @>
+        test <@ r.ReadsRepo.Count = 16 && Set.isSubset users r.ReadsRepo @>
         test <@ r.FailOutside = users @>
-        test <@ r.ReachOutside = set [ t "ClassC.c reads a repo file" ] @>
+
+        let reachers =
+            set [ t "ClassC.c reads a repo file"; t "ClassC.c loads a repo xml file" ]
+
+        test <@ r.ReachOutside = reachers @>
         test <@ r.FailInRepo = Set.empty @>
 
         // The outside run's dumps outlive its temp directory, for a run directory kept to inspect.
@@ -282,7 +287,7 @@ let ``the file census names the reading tests, those that break outside the repo
 
         test
             <@
-                r.SymmetricDifference = Set.difference r.ReadsRepo (Set.add (t "ClassC.c reads a repo file") users)
+                r.SymmetricDifference = Set.difference r.ReadsRepo (Set.union reachers users)
                 && r.SymmetricDifference.Count = 9
             @>)
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: the redirect pass rewrites the call sites of the new recorder shims (XML loaders
+  by path, `Encoding` overloads, file-system-entry and `DirectoryInfo` listings).
 - fix: a test inherits the static init of a module it reads a value of. Reading an F# module
   value from another file runs only the value's getter, which has no document, and in an
   executable (a test project) the module has no type initializer of its own. So under a

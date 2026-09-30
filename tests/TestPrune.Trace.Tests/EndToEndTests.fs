@@ -139,14 +139,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 17 && s.Traced = 17 @>
+    test <@ s.Executed = 18 && s.Traced = 18 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Seventeen CTRF rows are fifteen tests (each theory's two rows share one trace). Only the test
+    // Eighteen CTRF rows are sixteen tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 15 @>
-    test <@ s.Complete = 14 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 16 @>
+    test <@ s.Complete = 15 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -223,6 +223,15 @@ let ``a repository file read is an input; an untraced child makes the trace inco
         <@
             read.Complete
             && read.Inputs |> Set.exists (fun (k, key, _) -> k = "read" && key = "global.json")
+        @>
+
+    let xml = traceOf "c loads a repo xml file"
+
+    test
+        <@
+            xml.Complete
+            && xml.Inputs
+               |> Set.exists (fun (k, key, _) -> k = "read" && key = "TestPrune.slnx")
         @>
 
     let child = traceOf "c starts a child process"

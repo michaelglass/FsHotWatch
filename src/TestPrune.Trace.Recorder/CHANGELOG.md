@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: more file reads are recorded as inputs. `XDocument.Load`, `XElement.Load`,
+  `XmlReader.Create` and `XmlDocument.Load` by path; the `Encoding` overloads of
+  `File.ReadAllLines`, `File.ReadLines`, `File.ReadAllTextAsync`, `File.ReadAllLinesAsync`
+  and `new StreamReader`; `Directory.GetFileSystemEntries` and
+  `Directory.EnumerateFileSystemEntries`; and `DirectoryInfo.GetFiles` and
+  `DirectoryInfo.EnumerateFiles`. A test that read a file only through one of them had no
+  input for it, and so did not depend on that file.
+
 ## 0.5.0 - 2026-09-29
 
 - fix: the exit dump can no longer crash the traced process. Under `--coverage`, MTP runs a

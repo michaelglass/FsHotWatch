@@ -71,6 +71,14 @@ type ClassC() =
             Assert.NotEmpty(Logic.readRepoFile (IO.Path.Combine(root, "global.json")))
 
     [<Fact>]
+    member _.``c loads a repo xml file``() =
+        let root = Environment.GetEnvironmentVariable "TESTPRUNE_TRACE_REPO_ROOT"
+
+        if not (String.IsNullOrEmpty root) then
+            let solution = Xml.Linq.XDocument.Load(IO.Path.Combine(root, "TestPrune.slnx"))
+            Assert.Equal("Solution", solution.Root.Name.LocalName)
+
+    [<Fact>]
     member _.``c starts a child process``() =
         let psi =
             ProcessStartInfo("/bin/echo", "hi", UseShellExecute = false, RedirectStandardOutput = true)

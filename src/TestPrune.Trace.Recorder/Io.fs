@@ -6,9 +6,11 @@ open System.IO
 open System.Text
 open System.Threading
 open System.Threading.Tasks
+open System.Xml
+open System.Xml.Linq
 
-/// Call-site replacements for the BCL's file readers, existence probes and directory
-/// listings. Each shim notes (kind, absolute path) on the scope doing the I/O, then does
+/// Call-site replacements for the BCL's file readers (XML loaders by path among them),
+/// existence probes and directory listings. Each shim notes (kind, absolute path) on the scope doing the I/O, then does
 /// exactly what the original does. The weaver rewrites `call File::ReadAllText(string)`
 /// into `call Io::File_ReadAllText(string)`, `newobj FileStream(string, FileMode)` into
 /// `call Io::FileStream_ctor(string, FileMode)`, and an instance call into a static one
@@ -58,6 +60,11 @@ type Io =
         Io.NoteWith(Runtime.state, "read", path)
         File.ReadAllLines path
 
+    /// Shim for `File.ReadAllLines(string, Encoding)`.
+    static member File_ReadAllLines(path: string, encoding: Encoding) : string[] =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadAllLines(path, encoding)
+
     /// Shim for `File.ReadAllBytes(string)`.
     static member File_ReadAllBytes(path: string) : byte[] =
         Io.NoteWith(Runtime.state, "read", path)
@@ -67,6 +74,11 @@ type Io =
     static member File_ReadLines(path: string) : IEnumerable<string> =
         Io.NoteWith(Runtime.state, "read", path)
         File.ReadLines path
+
+    /// Shim for `File.ReadLines(string, Encoding)`.
+    static member File_ReadLines(path: string, encoding: Encoding) : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadLines(path, encoding)
 
     /// Shim for `File.OpenRead(string)`.
     static member File_OpenRead(path: string) : FileStream =
@@ -102,6 +114,16 @@ type Io =
     static member File_ReadAllLinesAsync(path: string, ct: CancellationToken) : Task<string[]> =
         Io.NoteWith(Runtime.state, "read", path)
         File.ReadAllLinesAsync(path, ct)
+
+    /// Shim for `File.ReadAllTextAsync(string, Encoding, CancellationToken)`.
+    static member File_ReadAllTextAsync(path: string, encoding: Encoding, ct: CancellationToken) : Task<string> =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadAllTextAsync(path, encoding, ct)
+
+    /// Shim for `File.ReadAllLinesAsync(string, Encoding, CancellationToken)`.
+    static member File_ReadAllLinesAsync(path: string, encoding: Encoding, ct: CancellationToken) : Task<string[]> =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadAllLinesAsync(path, encoding, ct)
 
     /// Shim for `File.ReadAllBytesAsync(string, CancellationToken)`.
     static member File_ReadAllBytesAsync(path: string, ct: CancellationToken) : Task<byte[]> =
@@ -175,6 +197,38 @@ type Io =
         Io.NoteWith(Runtime.state, "list", path)
         Directory.EnumerateDirectories(path, pattern, option)
 
+    /// Shim for `Directory.GetFileSystemEntries(string)`.
+    static member Directory_GetFileSystemEntries(path: string) : string[] =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.GetFileSystemEntries path
+
+    /// Shim for `Directory.GetFileSystemEntries(string, string)`.
+    static member Directory_GetFileSystemEntries(path: string, pattern: string) : string[] =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.GetFileSystemEntries(path, pattern)
+
+    /// Shim for `Directory.GetFileSystemEntries(string, string, SearchOption)`.
+    static member Directory_GetFileSystemEntries(path: string, pattern: string, option: SearchOption) : string[] =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.GetFileSystemEntries(path, pattern, option)
+
+    /// Shim for `Directory.EnumerateFileSystemEntries(string)`.
+    static member Directory_EnumerateFileSystemEntries(path: string) : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.EnumerateFileSystemEntries path
+
+    /// Shim for `Directory.EnumerateFileSystemEntries(string, string)`.
+    static member Directory_EnumerateFileSystemEntries(path: string, pattern: string) : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.EnumerateFileSystemEntries(path, pattern)
+
+    /// Shim for `Directory.EnumerateFileSystemEntries(string, string, SearchOption)`.
+    static member Directory_EnumerateFileSystemEntries
+        (path: string, pattern: string, option: SearchOption)
+        : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, "list", path)
+        Directory.EnumerateFileSystemEntries(path, pattern, option)
+
     /// Shim for `new FileStream(string, FileMode)`.
     static member FileStream_ctor(path: string, mode: FileMode) : FileStream =
         Io.NoteWith(Runtime.state, "read", path)
@@ -195,6 +249,46 @@ type Io =
         Io.NoteWith(Runtime.state, "read", path)
         new StreamReader(path)
 
+    /// Shim for `new StreamReader(string, Encoding)`.
+    static member StreamReader_ctor(path: string, encoding: Encoding) : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, encoding)
+
+    /// Shim for `XDocument.Load(string)`.
+    static member XDocument_Load(uri: string) : XDocument =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XDocument.Load uri
+
+    /// Shim for `XDocument.Load(string, LoadOptions)`.
+    static member XDocument_Load(uri: string, options: LoadOptions) : XDocument =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XDocument.Load(uri, options)
+
+    /// Shim for `XElement.Load(string)`.
+    static member XElement_Load(uri: string) : XElement =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XElement.Load uri
+
+    /// Shim for `XElement.Load(string, LoadOptions)`.
+    static member XElement_Load(uri: string, options: LoadOptions) : XElement =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XElement.Load(uri, options)
+
+    /// Shim for `XmlReader.Create(string)`.
+    static member XmlReader_Create(uri: string) : XmlReader =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XmlReader.Create uri
+
+    /// Shim for `XmlReader.Create(string, XmlReaderSettings)`.
+    static member XmlReader_Create(uri: string, settings: XmlReaderSettings) : XmlReader =
+        Io.NoteWith(Runtime.state, "read", uri)
+        XmlReader.Create(uri, settings)
+
+    /// Shim for `XmlDocument.Load(string)`.
+    static member XmlDocument_Load(doc: XmlDocument, uri: string) : unit =
+        Io.NoteWith(Runtime.state, "read", uri)
+        doc.Load uri
+
     /// Shim for `FileSystemInfo.Exists`, the virtual a compiler may bind `fi.Exists` to.
     static member FileSystemInfo_get_Exists(info: FileSystemInfo) : bool =
         Io.NoteWith(Runtime.state, "exists", info.FullName)
@@ -214,6 +308,38 @@ type Io =
     static member FileInfo_OpenText(fi: FileInfo) : StreamReader =
         Io.NoteWith(Runtime.state, "read", fi.FullName)
         fi.OpenText()
+
+    /// Shim for `DirectoryInfo.GetFiles()`.
+    static member DirectoryInfo_GetFiles(di: DirectoryInfo) : FileInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetFiles()
+
+    /// Shim for `DirectoryInfo.GetFiles(string)`.
+    static member DirectoryInfo_GetFiles(di: DirectoryInfo, pattern: string) : FileInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetFiles pattern
+
+    /// Shim for `DirectoryInfo.GetFiles(string, SearchOption)`.
+    static member DirectoryInfo_GetFiles(di: DirectoryInfo, pattern: string, option: SearchOption) : FileInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetFiles(pattern, option)
+
+    /// Shim for `DirectoryInfo.EnumerateFiles()`.
+    static member DirectoryInfo_EnumerateFiles(di: DirectoryInfo) : IEnumerable<FileInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateFiles()
+
+    /// Shim for `DirectoryInfo.EnumerateFiles(string)`.
+    static member DirectoryInfo_EnumerateFiles(di: DirectoryInfo, pattern: string) : IEnumerable<FileInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateFiles pattern
+
+    /// Shim for `DirectoryInfo.EnumerateFiles(string, SearchOption)`.
+    static member DirectoryInfo_EnumerateFiles
+        (di: DirectoryInfo, pattern: string, option: SearchOption)
+        : IEnumerable<FileInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateFiles(pattern, option)
 
     /// Shim for `DirectoryInfo.Exists`.
     static member DirectoryInfo_get_Exists(di: DirectoryInfo) : bool =
