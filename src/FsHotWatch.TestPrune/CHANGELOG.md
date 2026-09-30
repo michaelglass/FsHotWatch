@@ -2,14 +2,23 @@
 
 ## Unreleased
 
+- deps: TestPrune.Trace 0.6.0. The environment fingerprint of a stored trace now includes
+  how the test assembly was woven, so a project switched between `sites` and `full` never
+  reads the other mode's traces back; every fingerprint changes, and traces recorded by an
+  earlier version are recorded again on the next traced run. A recursive directory listing
+  is recorded over its whole tree, and a test inherits the static init of a module whose
+  value it reads. Trace's API changes (`Audit.observe`, `Audit.compareTest`,
+  `Audit.auditAlone`, `TestAudit.UncoveredInit`, `InputKind.DeepDirectoryListing`,
+  `ShadowBin.Shadow.WeaveTests`, `Fingerprint.gather`) touch no API this plugin uses.
+
 - feat: a test project can set its own trace weave mode. `TraceProject.TraceWeave` carries
   it, and `TraceRun.decide` weaves the project's test assembly with it instead of
   `TraceSettings.WeaveTests` (`TraceRun.effectiveWeave`). Woven output stays cached per
   mode: the weave cache key includes each assembly's mode, so switching a project between
   `sites` and `full` never reuses the other mode's woven copy.
 
-- **BREAKING (API): `createWithTraces` takes `weaveOverrides: Map<string, TraceWeaveTests>`
-  after `untracedProjects`, and `TraceProject` has a `TraceWeave: TraceWeaveTests option`
+- **feat!: `createWithTraces` takes `weaveOverrides: Map<string, TraceWeaveTests>` after
+  `untracedProjects`, and `TraceProject` has a `TraceWeave: TraceWeaveTests option`
   field.** Pass `Map.empty` and `None` for the previous behaviour.
 
 - fix: a run that ran every configured project in full but that `tests.traces.record:
@@ -21,7 +30,7 @@
   Considered and not done: recording every run that happens to run the full suite. It
   would quietly add tracing overhead to `check` runs that widen to the full suite.
 
-- **BREAKING (API): `TraceRuntime` has a `RunsEveryProjectInFull: bool` field.**
+- **feat!: `TraceRuntime` has a `RunsEveryProjectInFull: bool` field.**
 
 - fix: `confirm`'s full-suite scope is no longer spent by a run that executed nothing.
   When every project of the confirm's run was deferred (stale build output), had its
@@ -32,7 +41,7 @@
   only with a run that executed at least one project to a verdict, and the log says
   "Scope stays FULL SUITE" when it holds.
 
-- **BREAKING (API): `TestMode.afterRun` takes `executedAny: bool` after `launchedUnder`.**
+- **feat!: `TestMode.afterRun` takes `executedAny: bool` after `launchedUnder`.**
 
 ## 0.13.0-alpha.60 - 2026-09-30
 

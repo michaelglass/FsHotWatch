@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- deps: TestPrune.Trace 0.6.0. Traces recorded by an earlier version are not read back
+  (the environment fingerprint now includes the test assembly's weave mode), so the next
+  traced run records them again.
+
 - feat: `confirm` warns when `tests.traces` asks for traces and the run its verdict
   graded recorded none: "tests.traces is configured, but run <id>, the run this verdict
   graded, traced no project — <project>: <reason>; …", or "stored no trace and no reason
@@ -12,15 +16,14 @@
   which opts the project into `tests.traces` recording and weaves its test assembly in that
   mode instead of `tests.traces.weaveTests`. `true` and `false` mean what they did.
 
-- **fix (BREAKING for configs that relied on it): a per-project `traces` value that is not
-  `true`, `false` or that object is now a `ConfigError`.** Every other value (a string,
-  a number, `null`, an object with a misspelt or unknown key) used to be read as "traced,
-  with the global weave", so a typo silently recorded with a weave the config never asked
-  for.
+- **fix!: a per-project `traces` value that is not `true`, `false` or that object is now a
+  `ConfigError`.** Every other value (a string, a number, `null`, an object with a misspelt
+  or unknown key) used to be read as "traced, with the global weave", so a typo silently
+  recorded with a weave the config never asked for.
 
-- **fix (BREAKING for configs that relied on it): an unknown `tests.traces.weaveTests` is
-  now a `ConfigError`,** like an unknown `record`. It used to be read as `"sites"`, so a
-  misspelt `"full"` recorded call sites only, unnoticed.
+- **fix!: an unknown `tests.traces.weaveTests` is now a `ConfigError`,** like an unknown
+  `record`. It used to be read as `"sites"`, so a misspelt `"full"` recorded call sites
+  only, unnoticed.
 
 ## 0.14.0-alpha.80 - 2026-09-30
 
