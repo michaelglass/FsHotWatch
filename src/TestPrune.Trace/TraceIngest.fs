@@ -371,6 +371,7 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
                     req.FingerprintEnv
                     mainDump.Value
                     req.Shadow.OriginalDepsJsonSha256
+                    req.Shadow.WeaveTests
             )
 
         let effects, unmappedId = effectsOf req

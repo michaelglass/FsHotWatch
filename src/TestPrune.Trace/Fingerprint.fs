@@ -23,6 +23,10 @@ type Inputs =
         WeaverVersion: string
         /// What a stored content hash means; TestPrune.Core's `SchemaVersion`.
         HashScheme: int
+        /// How the test assembly itself was woven. `Full` probes the test assembly's own
+        /// methods, which `SitesOnly` does not see, so a trace recorded under one mode says
+        /// nothing about what the other would record.
+        WeaveTests: WeaveMode
         /// (repo-relative path, SHA-256 or "missing") per configured fingerprint file.
         ConfigFiles: (string * string) list
         /// (variable name, SHA-256 of the value or "unset") per configured variable.
@@ -41,6 +45,7 @@ type CanonicalFingerprint =
       os: string
       recorder: string
       runtime: string
+      weaveTests: string
       weaver: string }
 
 let private sha256Hex (bytes: byte[]) =
@@ -61,6 +66,10 @@ let compute (i: Inputs) : string =
           os = i.Os
           recorder = i.RecorderVersion
           runtime = i.Runtime
+          weaveTests =
+            match i.WeaveTests with
+            | SitesOnly -> "sites"
+            | Full -> "full"
           weaver = i.WeaverVersion }
         : CanonicalFingerprint
     )
@@ -80,13 +89,15 @@ let private version (asm: Reflection.Assembly) = asm.GetName().Version.ToString 
 
 /// Gather the inputs for one traced launch: the runtime from its main process's dump, the
 /// original deps.json hash, this weaver's and recorder's versions, core's schema version as
-/// the hash scheme, and the configured files and environment variables.
+/// the hash scheme, the test assembly's weave mode, and the configured files and environment
+/// variables.
 let gather
     (repoRoot: string)
     (files: string list)
     (env: string list)
     (dump: ProcessDump)
     (depsJsonSha256: string)
+    (weaveTests: WeaveMode)
     : Inputs =
     { Runtime = dump.Runtime
       Os = dump.Os
@@ -98,6 +109,7 @@ let gather
       // are recomputed), so it is the hash-scheme number: traces from an older scheme
       // become a fingerprint mismatch, never a spurious "still verifies".
       HashScheme = TestPrune.Database.SchemaVersion
+      WeaveTests = weaveTests
       ConfigFiles = files |> List.map (fun f -> f, hashFile repoRoot f)
       ConfigEnv =
         env

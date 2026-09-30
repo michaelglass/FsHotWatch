@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: the environment fingerprint includes how the test assembly itself was woven
+  (`weaveTests`: `sites` or `full`). `full` probes the test assembly's own methods and
+  `sites` does not, yet both recorded under the same fingerprint, so switching a project's
+  mode left the other mode's traces standing as current, and a filtered run refreshed only
+  the tests it ran, mixing the two modes under one fingerprint. The canonical fingerprint
+  JSON gains a `weaveTests` field, so every fingerprint changes: traces stored by an earlier
+  version are no longer read back and are recorded again. The woven-output cache was already
+  keyed by each assembly's mode.
+
+- **BREAKING (API): `ShadowBin.Shadow` has a `WeaveTests: WeaveMode` field,
+  `Fingerprint.Inputs` has a `WeaveTests: WeaveMode` field, and `Fingerprint.gather` takes
+  the weave mode as its last argument.**
+
 ## 0.5.0 - 2026-09-29
 
 - fix: the shadow bin copies, never hard-links, an assembly with symbols (a sibling `.pdb` or
