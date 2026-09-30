@@ -23,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Judgement.fs" />
     <Compile Include="CoveragePlugin.fs" />
   </ItemGroup>
 
