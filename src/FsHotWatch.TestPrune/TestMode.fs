@@ -58,12 +58,18 @@ module TestMode =
     /// Whether `mode` removes `work` from the lifecycle.
     let skips (work: PassThroughSkip) (mode: TestMode) = Set.contains work (skipped mode)
 
-    /// The mode once a run launched under `launchedUnder` has concluded. Pass-through
-    /// lasts for the confirm's run: the run it launched ends it, so a later `check` in the
-    /// same daemon is back under impact selection.
-    let afterRun (launchedUnder: TestMode) (current: TestMode) =
+    /// The mode once a run launched under `launchedUnder` has concluded; `executedAny`
+    /// says whether it executed at least one project to a verdict. Pass-through lasts
+    /// for the confirm's run: a run that executed something ends it, so a later `check`
+    /// in the same daemon is back under impact selection. A run that executed nothing
+    /// (every project deferred on stale build output, its results revoked by a
+    /// project-model move, an aborted setup, a launch that found no artifacts or test
+    /// host) has not run the suite the scope asked for, so the scope stands and the next
+    /// launch is the confirm's.
+    let afterRun (launchedUnder: TestMode) (executedAny: bool) (current: TestMode) =
         match launchedUnder with
-        | PassThrough -> ImpactSelection
+        | PassThrough when executedAny -> ImpactSelection
+        | PassThrough
         | ImpactSelection -> current
 
     /// Whether every launch runs every configured project in full, unfiltered.

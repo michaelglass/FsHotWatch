@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: `confirm`'s full-suite scope is no longer spent by a run that executed nothing.
+  When every project of the confirm's run was deferred (stale build output), had its
+  results revoked by a project-model move, or the launch found no artifacts or test host,
+  the scope reverted to impact selection anyway. The relaunch after the rebuild then ran
+  as a `check`: the suite still ran in full, but as check-mode runs, so
+  `tests.traces.record: "full-runs"` recorded nothing and said nothing. The scope now ends
+  only with a run that executed at least one project to a verdict, and the log says
+  "Scope stays FULL SUITE" when it holds.
+
+- **BREAKING (API): `TestMode.afterRun` takes `executedAny: bool` after `launchedUnder`.**
+
 ## 0.13.0-alpha.60 - 2026-09-30
 
 - deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic

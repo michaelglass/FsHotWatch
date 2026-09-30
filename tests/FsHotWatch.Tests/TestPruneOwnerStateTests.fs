@@ -278,6 +278,67 @@ let ``a failed command receipt acknowledges only its published owner outcome`` (
     prepared.Finalize |> Async.RunSynchronously
     Assert.Contains("fixture refusal", reply.Task.GetAwaiter().GetResult())
 
+/// A daemon with `confirm`'s full-suite scope set and its run in flight.
+let private confirmInFlight (handler: PluginHandler<TestPruneState, TestPruneMsg>) =
+    { handler.Init with
+        Mode = PassThrough
+        InFlight =
+            Some
+                { Scope = LaunchedFullSuite
+                  Mode = PassThrough
+                  WatcherReported = Set.empty } }
+
+[<Fact(Timeout = 15000)>]
+let ``a confirm run that executed a project ends the full-suite scope`` () =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ config "ProjA" ]) None None None None []
+
+    let after =
+        update
+            (recordingCtx ())
+            handler
+            (confirmInFlight handler)
+            (finished [ "ProjA", passing ] (fullSuiteLaunch [ "ProjA" ]))
+
+    Assert.Equal(ImpactSelection, after.Mode)
+
+[<Fact(Timeout = 15000)>]
+let ``a confirm run that executed no project keeps the full-suite scope for the next launch`` () =
+    // Every project deferred on stale build output: nothing ran, so the suite the scope
+    // asked for is still owed, and the relaunch after the rebuild must be the confirm's.
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ config "ProjA"; config "ProjB" ]) None None None None []
+
+    let deferred = TestsDeferred "waiting on build (stale build output)"
+
+    let after =
+        update
+            (recordingCtx ())
+            handler
+            (confirmInFlight handler)
+            (finished [ "ProjA", deferred; "ProjB", deferred ] (fullSuiteLaunch [ "ProjA"; "ProjB" ]))
+
+    Assert.Equal(PassThrough, after.Mode)
+    Assert.True(after.InFlight.IsNone, "the concluded run is still held in flight")
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a confirm launch that could not start keeps the full-suite scope`` (invalidArtifacts: bool) =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ config "ProjA" ]) None None None None []
+
+    let message =
+        if invalidArtifacts then
+            ArtifactsUnavailable("fixture refusal", Set.empty, None)
+        else
+            TestHostUnavailable("fixture refusal", Set.empty, None)
+
+    let after =
+        update (recordingCtx ()) handler (confirmInFlight handler) (Custom message)
+
+    Assert.Equal(PassThrough, after.Mode)
+
 [<Fact(Timeout = 15000)>]
 let ``pending debt persistence follows the successful proposal and precedes acknowledgement`` () =
     let root, symbol, make, handler, ctx, prior, launch = pendingDebtFixture ()

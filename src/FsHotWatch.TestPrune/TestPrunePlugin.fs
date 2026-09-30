@@ -1831,9 +1831,10 @@ type TestPruneState =
     {
         Debt: VerificationDebt
         /// Set by `set-scope`. Pass-through lasts for the run launched under it: that
-        /// run's fold, or its failure to launch, returns the daemon to impact selection
-        /// (`TestMode.afterRun`). A request, not evidence; `test-scope` reports what
-        /// actually ran.
+        /// run's fold returns the daemon to impact selection once it executed a project
+        /// to a verdict; a run that executed nothing, or a launch that could not start,
+        /// leaves it (`TestMode.afterRun`). A request, not evidence; `test-scope` reports
+        /// what actually ran.
         Mode: TestMode
         /// The run holding the "tests" key whose result is not folded yet, if a launch
         /// here claimed it. Cleared by that run's completion fold.
@@ -8524,11 +8525,12 @@ let internal createWithQueries
                     else
                         Map.add symbol (revisionOf state.Debt symbol) captured) }
 
-    /// The run in flight has concluded: forget it, and end the pass-through it ran for.
-    let endRun (state: TestPruneState) =
+    /// The run in flight has concluded: forget it, and end the pass-through it ran for
+    /// when it executed at least one project to a verdict (`TestMode.afterRun`).
+    let endRun (executedAny: bool) (state: TestPruneState) =
         let mode =
             match state.InFlight with
-            | Some run -> TestMode.afterRun run.Mode state.Mode
+            | Some run -> TestMode.afterRun run.Mode executedAny state.Mode
             | None -> state.Mode
 
         // Said out loud: a later launch in the same session is impact-selected again, and
@@ -8537,6 +8539,13 @@ let internal createWithQueries
             Logging.info
                 "test-prune"
                 "Scope back to IMPACT-FILTERED: the full-suite run the scope was set for has concluded; later launches in this session are impact-selected"
+        elif
+            not executedAny
+            && state.InFlight |> Option.exists (fun run -> TestMode.requestsFullSuite run.Mode)
+        then
+            Logging.info
+                "test-prune"
+                "Scope stays FULL SUITE: the run launched for it executed no project to a verdict, so the next launch runs every project in full"
 
         { state with
             InFlight = None
@@ -8553,7 +8562,7 @@ let internal createWithQueries
         =
         ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
-        { endRun state with
+        { endRun false state with
             EvidenceReceipt = None
             ReceiptRevoked = Some $"the test run could not start: %s{message}"
             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
@@ -9865,7 +9874,12 @@ let internal createWithQueries
                             // let a later unrelated run claim it implicitly.
                             DebtDuringFullRun = Map.empty
                             InFlight = None
-                            Mode = (endRun state).Mode
+                            Mode =
+                                (endRun
+                                    (completed.Results
+                                     |> Map.exists (fun _ result -> TestResult.executedTests result))
+                                    state)
+                                    .Mode
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
