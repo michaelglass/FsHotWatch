@@ -90,6 +90,20 @@ let ``a module member touches the initializer of the module's startup class`` ()
     test <@ inherits scopes [ "T:1" ] = set [ "S:<StartupCode$A>.$N.Solo" ] @>
 
 [<Fact>]
+let ``a startup class name with no module part names no module`` () =
+    let odd =
+        { Rows = [| row 0 StaticCtor "<StartupCode$A>" None; row 1 UserMethod "N.X" None |]
+          Documents = Map.empty
+          IdCount = 2 }
+
+    let scopes =
+        [ testScope "T:1" "N.Tests" [ 1 ]; scope "S:<StartupCode$A>" [ 0 ] ]
+        |> List.map (fun s -> s.Key, s)
+        |> Map.ofList
+
+    test <@ RunScopes.staticInheritance odd scopes (set [ "T:1" ]) = Set.empty @>
+
+[<Fact>]
 let ``a test inherits the initializer of its own class`` () =
     let scopes = [ testScope "T:1" "N.Colour" []; scope "S:N.Colour" [ 2 ] ]
     test <@ inherits scopes [ "T:1" ] = set [ "S:N.Colour" ] @>

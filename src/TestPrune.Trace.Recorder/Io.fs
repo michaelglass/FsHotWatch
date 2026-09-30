@@ -3,6 +3,7 @@ namespace TestPrune.Trace.Recorder
 open System
 open System.Collections.Generic
 open System.IO
+open System.Runtime.CompilerServices
 open System.Text
 open System.Threading
 open System.Threading.Tasks
@@ -27,7 +28,10 @@ type Io =
         full.StartsWith(r, StringComparison.Ordinal)
         && (full.Length = r.Length || full.[r.Length] = Path.DirectorySeparatorChar)
 
-    /// `list-deep` for a listing that recurses into subdirectories, else `list`.
+    /// `list-deep` for a listing that recurses into subdirectories, else `list`. Kept out of
+    /// line: this assembly is optimized, and inlined into each shim the branch would be
+    /// duplicated at every call site.
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     static member private ListKind(option: SearchOption) =
         if option = SearchOption.AllDirectories then
             "list-deep"

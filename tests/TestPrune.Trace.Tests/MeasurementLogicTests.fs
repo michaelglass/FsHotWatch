@@ -580,3 +580,20 @@ let ``an exception reading getrusage is the cannot-measure error`` () =
 
     test <@ Overhead.readCpu read = Error "cannot measure CPU overhead: getrusage failed: no getrusage in libc" @>
     test <@ Overhead.readCpu (fun () -> struct (ms 5.0, 7L)) = Ok(struct (ms 5.0, 7L)) @>
+
+[<Fact>]
+let ``copying a tree keeps relative paths, and a missing source copies nothing`` () =
+    let root = IO.Directory.CreateTempSubdirectory("tp-copytree-").FullName
+
+    try
+        let source = IO.Path.Combine(root, "src")
+        IO.Directory.CreateDirectory(IO.Path.Combine(source, "a", "b")) |> ignore
+        IO.File.WriteAllText(IO.Path.Combine(source, "a", "b", "f.txt"), "x")
+        let dest = IO.Path.Combine(root, "dst")
+        FileCensus.copyTree source dest
+        test <@ IO.File.ReadAllText(IO.Path.Combine(dest, "a", "b", "f.txt")) = "x" @>
+        let nowhere = IO.Path.Combine(root, "missing")
+        FileCensus.copyTree nowhere (IO.Path.Combine(root, "dst2"))
+        test <@ not (IO.Directory.Exists(IO.Path.Combine(root, "dst2"))) @>
+    finally
+        IO.Directory.Delete(root, true)

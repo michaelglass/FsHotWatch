@@ -118,8 +118,9 @@ let render (r: FileCensusReport) : string =
 
     sb.ToString()
 
-/// Copy every file under `source` to the same relative path under `destination`.
-let private copyTree (source: string) (destination: string) =
+/// Copy every file under `source` to the same relative path under `destination`; nothing
+/// when `source` does not exist (a run that ended before writing it).
+let internal copyTree (source: string) (destination: string) =
     if Directory.Exists source then
         for f in Directory.GetFiles(source, "*", SearchOption.AllDirectories) do
             let dst = Path.Combine(destination, Path.GetRelativePath(source, f))
