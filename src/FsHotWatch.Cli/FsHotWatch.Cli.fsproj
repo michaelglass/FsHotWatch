@@ -65,6 +65,7 @@
         <Compile Include="CheckVerdict.fs" />
         <Compile Include="RunClaim.fs" />
         <Compile Include="Verdict.fs" />
+        <Compile Include="ConfirmTraces.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="IpcOutput.fs" />
         <Compile Include="SourceRef.fs" />

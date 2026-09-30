@@ -311,6 +311,23 @@ let private freshnessOf (flags: ConfirmFlag list) : CheckVerdict.Freshness =
     else
         CheckVerdict.Freshness.MayReuse
 
+/// `confirm`'s last word on traces: warn when the verdict this invocation wrote (since
+/// `since`) was graded by a run that recorded no traces although `tests.traces` asks for
+/// them (`ConfirmTraces`). The exit code is the verdict's alone.
+let private warnUnrecordedTraces (repoRoot: string) (config: DaemonConfiguration) (since: DateTime) =
+    let verdictPath = Path.Combine(repoRoot, Verdict.RelativePath)
+
+    match config.Tests with
+    | Some tests when File.Exists verdictPath && File.GetLastWriteTimeUtc verdictPath >= since ->
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict when verdict.Command = Verdict.Command.Confirm ->
+            let participating = tests.Projects |> List.filter _.Traces |> List.map _.Project
+
+            ConfirmTraces.check repoRoot tests.Traces participating verdict.RunId
+            |> Option.iter UI.warn
+        | _ -> ()
+    | _ -> ()
+
 /// The run mode a command's in-process host is constructed with. `--run-once`
 /// scans, settles and exits, so its host is `OneShot` and constructs no file
 /// watcher; every persistent command keeps `Watching`.
@@ -3252,11 +3269,17 @@ let internal executeCommandWatchingConfig
                 //
                 // `--run-once` needs no `freshness`: its host is created for this
                 // invocation, so every run it can grade is one this invocation launched.
-                withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
-                    if confirmsRunOnce flags then
-                        runOnceIn invocation CheckVerdict.Confirmation
-                    else
-                        queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
+                let startedAt = DateTime.UtcNow
+
+                let exitCode =
+                    withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
+                        if confirmsRunOnce flags then
+                            runOnceIn invocation CheckVerdict.Confirmation
+                        else
+                            queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
+
+                warnUnrecordedTraces repoRoot config startedAt
+                exitCode
         | Verdict ->
             // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
             let report = Verdict.report repoRoot config.Exclude

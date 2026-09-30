@@ -224,7 +224,39 @@ let ``a refused project runs as configured with the same verdict, and the refusa
         test <@ (run.Status, run.Reason) = (TraceStore.Refused, "not-a-dotnet-run-command") @>)
 
 [<Fact(Timeout = 60000)>]
-let ``a policy that does not record this mode leaves no trace store at all`` () =
+let ``a full run that full-runs does not record says why, and stores it`` () =
+    withTempDir "tp-unrecorded" (fun root ->
+        let runner = Path.Combine(root, "runner.sh")
+        writeRunner runner (Path.Combine(root, "ran")) false
+
+        let wiring =
+            { Policy = settings RecordFullRuns
+              OptedOut = Set.empty
+              Decide = TraceRun.decide }
+
+        // run-tests launches every project in full under `check`'s mode, which full-runs
+        // does not record: the reader who configured traces expects this run traced.
+        let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
+
+        test <@ statusOf json "T" = "passed" @>
+
+        test
+            <@
+                activity
+                |> List.exists (fun l ->
+                    l.StartsWith "traces: T not recorded — not-recorded:" && l.Contains "full-runs")
+            @>
+
+        let run = runsOf root "T" |> List.exactlyOne
+
+        test
+            <@
+                run.Status = TraceStore.Refused
+                && run.Reason.Contains "launched under impact selection"
+            @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a filtered run that full-runs does not record stays silent and stores nothing`` () =
     withTempDir "tp-untraced" (fun root ->
         let runner = Path.Combine(root, "runner.sh")
         writeRunner runner (Path.Combine(root, "ran")) false
@@ -234,10 +266,33 @@ let ``a policy that does not record this mode leaves no trace store at all`` () 
               OptedOut = Set.empty
               Decide = TraceRun.decide }
 
-        // run-tests launches under `check`'s mode here, which full-runs does not record.
-        let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
+        let host = createModelHost (Unchecked.defaultof<_>) root
 
-        test <@ statusOf json "T" = "passed" @>
+        host.RegisterHandler(
+            createWithLaunchDeadline
+                (TimeSpan.FromMinutes 2.0)
+                (fun () -> Map.empty)
+                (Path.Combine(root, "tp.db"))
+                root
+                (Some [ config "T" runner "" ])
+                None
+                None
+                None
+                None
+                []
+                (Some wiring)
+        )
+
+        // A raw filter: the run is a selection, which full-runs skips by definition.
+        host.RunCommand("run-tests", [| """{"filter": "Ns.C"}""" |])
+        |> Async.RunSynchronously
+        |> ignore
+
+        let activity =
+            host.GetActivitySnapshot("test-prune").LastRun
+            |> Option.map (fun r -> r.ActivityTail)
+            |> Option.defaultValue []
+
         test <@ activity |> List.exists (fun l -> l.StartsWith "traces:") |> not @>
         test <@ not (File.Exists(Path.Combine(root, ".fshw", "test-traces.db"))) @>)
 
