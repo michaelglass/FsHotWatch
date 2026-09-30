@@ -3070,14 +3070,14 @@ module internal ObservedModel =
     ///
     /// Waits on `Rediscovering` only. `Unobserved` is also a host that never discovers
     /// (analysis-only, or a test host), so waiting on it would only spend the bound.
-    /// Returns how long it waited and whether the discovery finished within the bound.
-    let awaitDiscovery (graph: ProjectGraphAccessor) : Async<TimeSpan * bool> =
+    /// Returns how long it waited and whether the discovery finished within `bound`.
+    let internal awaitDiscoveryWithin (bound: TimeSpan) (graph: ProjectGraphAccessor) : Async<TimeSpan * bool> =
         let started = Diagnostics.Stopwatch.StartNew()
 
         let rec wait (slept: bool) =
             async {
                 match graph.ObserveModel() with
-                | FsHotWatch.ProjectModel.Observation.Rediscovering _ when started.Elapsed < settleBound ->
+                | FsHotWatch.ProjectModel.Observation.Rediscovering _ when started.Elapsed < bound ->
                     do! Async.Sleep 100
                     return! wait true
                 | FsHotWatch.ProjectModel.Observation.Rediscovering _ -> return started.Elapsed, false
@@ -3086,6 +3086,18 @@ module internal ObservedModel =
             }
 
         wait false
+
+    /// `awaitDiscoveryWithin settleBound`.
+    let awaitDiscovery (graph: ProjectGraphAccessor) : Async<TimeSpan * bool> = awaitDiscoveryWithin settleBound graph
+
+    /// Report what a launch's wait for discovery came to: a warning when discovery was
+    /// still running at the bound, a note when the launch waited, nothing when it did not.
+    let internal reportDiscoveryWait (warn: string -> unit) (info: string -> unit) (waited: TimeSpan, settled: bool) =
+        if not settled then
+            warn
+                $"project discovery was still running after %.0f{waited.TotalSeconds}s; launching without a model, so the run is revoked if the model it completes under differs"
+        elif waited > TimeSpan.Zero then
+            info $"waited %.1f{waited.TotalSeconds}s for project discovery to finish before launching"
 
     /// A generation for a log line; `None` is a model that was not available.
     let describe (generation: int64 option) =
@@ -7297,16 +7309,8 @@ let internal createWithQueries
                     $"project discovery (generation %d{generation}) is in flight; waiting for it before launching"
             | _ -> ()
 
-            let! waited, settled = ObservedModel.awaitDiscovery ctx.ProjectGraph
-
-            if not settled then
-                Logging.warn
-                    "test-prune"
-                    $"project discovery was still running after %.0f{waited.TotalSeconds}s; launching without a model, so the run is revoked if the model it completes under differs"
-            elif waited > TimeSpan.Zero then
-                Logging.info
-                    "test-prune"
-                    $"waited %.1f{waited.TotalSeconds}s for project discovery to finish before launching"
+            let! wait = ObservedModel.awaitDiscovery ctx.ProjectGraph
+            ObservedModel.reportDiscoveryWait (Logging.warn "test-prune") (Logging.info "test-prune") wait
         }
 
     /// A launch, named by the model it was selected under and what it selected, so the

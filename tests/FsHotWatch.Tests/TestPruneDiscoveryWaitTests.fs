@@ -218,3 +218,69 @@ let ``each run keeps its own copy of the coverage it wrote`` () =
             |> List.ofArray
 
         test <@ kept = [ "<coverage run='1'/>"; "<coverage run='2'/>" ] @>)
+
+/// A graph whose model reads `Rediscovering` for every observation.
+let private alwaysDiscovering =
+    { FsHotWatch.PluginFramework.ProjectGraphAccessor.none with
+        ObserveModel = fun () -> FsHotWatch.ProjectModel.Observation.Rediscovering fixtureModelGeneration }
+
+[<Fact(Timeout = 10000)>]
+let ``a discovery still running at the bound ends the wait unsettled`` () =
+    let waited, settled =
+        ObservedModel.awaitDiscoveryWithin (TimeSpan.FromMilliseconds 200.0) alwaysDiscovering
+        |> Async.RunSynchronously
+
+    test <@ not settled @>
+    test <@ waited >= TimeSpan.FromMilliseconds 200.0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a wait that ran out warns, a wait that settled says how long, no wait says nothing`` () =
+    let warned = ResizeArray<string>()
+    let noted = ResizeArray<string>()
+    let report = ObservedModel.reportDiscoveryWait warned.Add noted.Add
+
+    report (TimeSpan.FromSeconds 300.0, false)
+    report (TimeSpan.FromSeconds 1.5, true)
+    report (TimeSpan.Zero, true)
+
+    test
+        <@
+            List.ofSeq warned = [ "project discovery was still running after 300s; launching without a model, so the run is revoked if the model it completes under differs" ]
+        @>
+
+    test <@ List.ofSeq noted = [ "waited 1.5s for project discovery to finish before launching" ] @>
+
+/// A launch whose raw coverage the run wrote (absent at launch, present now).
+let private writtenLaunch (dir: string) =
+    let raw = Path.Combine(dir, "raw.cobertura.xml")
+    let launch = prepareCoverageArtifact "ProjA" false false raw
+    File.WriteAllText(raw, "<coverage/>")
+    launch
+
+[<Fact(Timeout = 5000)>]
+let ``a run's coverage that cannot be kept is a warning, not a failure`` () =
+    withTempDir "keep-coverage" (fun dir ->
+        let launch = writtenLaunch dir
+
+        // No run directory: the copy fails with an IOException.
+        keepRunCoverage (Path.Combine(dir, "no-such-run")) launch
+
+        // A run directory the process may not write into.
+        let readOnly = Directory.CreateDirectory(Path.Combine(dir, "read-only")).FullName
+        File.SetUnixFileMode(readOnly, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+        try
+            keepRunCoverage readOnly launch
+            test <@ not (File.Exists(runCoveragePath readOnly "ProjA")) @>
+        finally
+            File.SetUnixFileMode(
+                readOnly,
+                UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+            ))
+
+[<Fact(Timeout = 5000)>]
+let ``a copy failure other than IO or access is not swallowed`` () =
+    withTempDir "keep-coverage-other" (fun dir ->
+        let launch = writtenLaunch dir
+        // A NUL character makes the destination an invalid path argument.
+        raises<ArgumentException> <@ keepRunCoverage "\u0000" launch @>)
