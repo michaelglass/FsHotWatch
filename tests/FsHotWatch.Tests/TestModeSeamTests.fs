@@ -113,3 +113,22 @@ let ``a daemon session starts recording only under every-run`` () =
               FsHotWatch.TestPrune.RecordEveryRun ]
             |> List.map at = [ false; false; true ]
         @>
+
+// --- afterRun: when a concluded run ends confirm's full-suite scope ---
+
+[<Fact>]
+let ``pass-through ends only with a run that executed a project`` () =
+    let afterRun = FsHotWatch.TestPrune.TestMode.afterRun
+    let passThrough = FsHotWatch.TestPrune.PassThrough
+    let impact = FsHotWatch.TestPrune.ImpactSelection
+    test <@ afterRun passThrough true passThrough = impact @>
+    test <@ afterRun passThrough false passThrough = passThrough @>
+
+[<Fact>]
+let ``a run launched under impact selection leaves the current mode alone`` () =
+    let afterRun = FsHotWatch.TestPrune.TestMode.afterRun
+    let passThrough = FsHotWatch.TestPrune.PassThrough
+    let impact = FsHotWatch.TestPrune.ImpactSelection
+    // `set-scope full` arrived while a check's run was in flight: that run does not spend it.
+    test <@ afterRun impact true passThrough = passThrough @>
+    test <@ afterRun impact false impact = impact @>
