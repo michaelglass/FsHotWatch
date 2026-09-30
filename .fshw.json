@@ -55,7 +55,7 @@
       {
         "project": "FsHotWatch.Tests",
         "command": "dotnet",
-        "args": "run --project tests/FsHotWatch.Tests --no-build --",
+        "args": "run --project tests/FsHotWatch.Tests --no-build -- --hangdump --hangdump-timeout 10m --hangdump-type Triage",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "default",
