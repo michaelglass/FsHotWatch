@@ -22,6 +22,7 @@ type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")
 type ConfirmFlag =
     | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
     | [<CmdFlag(Description = "Launch a new full-suite run even when the tree is unchanged: never answer from .fshw/verdict.json or the daemon's retained full-suite receipt, and refuse a green (exit 3) unless the run graded is one this confirm launched")>] Fresh
+    | [<CmdFlag(Description = "Leave running a daemon this confirm had to start. By default confirm stops it before returning, so it cannot rebuild the workspace when files change after the verdict; a daemon that was already running is never stopped")>] KeepDaemon
 
 /// Flags for `fshw test-rerun`. Forward-progress `fshw test` deliberately
 /// has no filter knobs — the test-prune plugin runs everything downstream of
@@ -327,6 +328,33 @@ let private warnUnrecordedTraces (repoRoot: string) (config: DaemonConfiguration
             |> Option.iter UI.warn
         | _ -> ()
     | _ -> ()
+
+/// How a command came by the daemon it talks to.
+[<RequireQualifiedAccess>]
+type EnsureOutcome =
+    /// One was already serving this worktree, and it was kept.
+    | Reused
+    /// This command started it (or replaced one it could not reuse).
+    | Started
+    /// None serves.
+    | Failed
+
+module EnsureOutcome =
+    /// Whether a daemon serves after the attempt.
+    let serves (outcome: EnsureOutcome) = outcome <> EnsureOutcome.Failed
+
+    /// The outcome of starting one: `Started` when it came up.
+    let ofStart (up: bool) =
+        if up then EnsureOutcome.Started else EnsureOutcome.Failed
+
+/// Whether `command` ends the daemon it came by as `outcome`. Only `confirm` does, and
+/// only a daemon it started: left running, that daemon keeps watching the tree and
+/// rebuilds the workspace when files change after the verdict. A daemon that was
+/// already running is someone's warm daemon, and `check` is the warm inner loop.
+let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
+    match command, outcome with
+    | Confirm flags, EnsureOutcome.Started -> not (List.contains ConfirmFlag.KeepDaemon flags)
+    | _ -> false
 
 /// The run mode a command's in-process host is constructed with. `--run-once`
 /// scans, settles and exits, so its host is `OneShot` and constructs no file
@@ -1223,14 +1251,16 @@ let private ensureDaemon
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
-    : bool =
+    : EnsureOutcome =
     let stateDir = Path.Combine(repoRoot, ".fshw")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
 
     if not (ipc.IsRunning pipeName) then
         killStaleDaemon repoRoot
+
         startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+        |> EnsureOutcome.ofStart
     else
         let storedHash =
             if File.Exists hashPath then
@@ -1245,7 +1275,7 @@ let private ensureDaemon
         // `NotRecorded`, which restarts it. So a new CLI can never silently "verify"
         // anything through an old daemon.
         match decideRunningDaemonAction (DaemonIdentity.verdictFor repoRoot) storedHash currentHash with
-        | Reuse -> true
+        | Reuse -> EnsureOutcome.Reused
         | restart ->
             restartReasonLine restart |> Option.iter (eprintfn "%s")
 
@@ -1256,7 +1286,9 @@ let private ensureDaemon
                 eprintfn "  Shutdown request failed: %s" ex.Message
 
             killStaleDaemon repoRoot
+
             startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+            |> EnsureOutcome.ofStart
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate.
@@ -2578,11 +2610,14 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
 [<NoComparison; NoEquality>]
 type DaemonLink =
     {
-        /// Bring the daemon up, or attach; true when it serves.
-        Ensure: unit -> bool
+        /// Bring the daemon up, or attach, saying whether this command started it.
+        Ensure: unit -> EnsureOutcome
         /// Replace a daemon whose pipe answers garbage. A host is never restarted from a
         /// CLI, because siblings share it; the session is attached again instead.
-        ForceRestart: unit -> bool
+        ForceRestart: unit -> EnsureOutcome
+        /// End what this command started: stop the per-worktree daemon and wait until its
+        /// pipe is gone, or detach the host session. The host itself stays up.
+        Release: unit -> unit
         /// Say so when the serving daemon was built from different code. A host
         /// session's binary was already checked by the attach handshake.
         WarnIfStale: unit -> unit
@@ -2614,37 +2649,50 @@ let internal ownDaemonLink
         else
             None
 
+    // Stop EVERYTHING answering on the pipe (a corrupted reply usually means two daemons
+    // share it, so one Shutdown is not enough) until it is gone, then reap the pidfile.
+    let stopAnswering () =
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+
+        while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
+            try
+                ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+            with ex ->
+                FsHotWatch.Logging.debug "cli-heal" $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
+
+            Thread.Sleep(200)
+
+        killStaleDaemon repoRoot
+
     { Ensure = ensure
-      // Stop EVERYTHING answering on the pipe (a corrupted reply usually means two
-      // daemons share it, so one Shutdown is not enough), reap the pidfile, start
-      // fresh. Unlike `Ensure` this never reuses: the pipe's occupant emits garbage.
+      // Unlike `Ensure` this never reuses: the pipe's occupant emits garbage.
       ForceRestart =
         fun () ->
-            let sw = System.Diagnostics.Stopwatch.StartNew()
+            stopAnswering ()
 
-            while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
-                try
-                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                with ex ->
-                    FsHotWatch.Logging.debug
-                        "cli-heal"
-                        $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
-
-                Thread.Sleep(200)
-
-            killStaleDaemon repoRoot
             startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+            |> EnsureOutcome.ofStart
+      Release = stopAnswering
       WarnIfStale = fun () -> staleness () |> Option.iter (staleIdentityStatusWarning >> eprintfn "%s")
       RestartIfStale = fun () -> staleness () |> Option.iter (fun _ -> ensure () |> ignore)
       Start = fun startHere -> startHere ()
       Stop = fun stopHere -> stopHere () }
 
-/// The worktree's session of the repository host.
-let internal hostSessionLink (host: HostLink) : DaemonLink =
+/// The worktree's session of the repository host. `attachedHere` is whether this command
+/// attached the session (the worktree had none before it), which `Ensure` reports as
+/// `Started`.
+let internal hostSessionLink (host: HostLink) (attachedHere: bool) : DaemonLink =
     let ipc = sessionIpcOps host
 
-    { Ensure = host.Reattach
-      ForceRestart = host.Reattach
+    let attach () =
+        match host.Reattach(), attachedHere with
+        | false, _ -> EnsureOutcome.Failed
+        | true, true -> EnsureOutcome.Started
+        | true, false -> EnsureOutcome.Reused
+
+    { Ensure = attach
+      ForceRestart = attach
+      Release = fun () -> ipc.Shutdown "" |> Async.RunSynchronously |> ignore
       WarnIfStale = ignore
       RestartIfStale = ignore
       Start =
@@ -2748,7 +2796,16 @@ let internal executeCommandWatchingConfig
     | Some exitCode -> exitCode
     | None ->
 
-        let ensureDaemonFn () = link.Ensure()
+        // How this invocation came by its daemon; `Started` wins over a later reuse.
+        let cameBy = ref EnsureOutcome.Reused
+
+        let record (outcome: EnsureOutcome) =
+            if outcome = EnsureOutcome.Started then
+                cameBy.Value <- EnsureOutcome.Started
+
+            EnsureOutcome.serves outcome
+
+        let ensureDaemonFn () = record (link.Ensure())
 
         // Gate the check on the daemon actually answering RPCs, not just the pipe
         // being listenable. The readiness deadline is at least
@@ -2757,7 +2814,7 @@ let internal executeCommandWatchingConfig
             waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
 
         // Forced restart for corrupted-pipe self-healing (see `DaemonLink.ForceRestart`).
-        let forceRestartDaemon () : bool = link.ForceRestart()
+        let forceRestartDaemon () : bool = record (link.ForceRestart())
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -3272,11 +3329,15 @@ let internal executeCommandWatchingConfig
                 let startedAt = DateTime.UtcNow
 
                 let exitCode =
-                    withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
-                        if confirmsRunOnce flags then
-                            runOnceIn invocation CheckVerdict.Confirmation
-                        else
-                            queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
+                    try
+                        withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
+                            if confirmsRunOnce flags then
+                                runOnceIn invocation CheckVerdict.Confirmation
+                            else
+                                queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
+                    finally
+                        if releasesDaemon command cameBy.Value then
+                            link.Release()
 
                 warnUnrecordedTraces repoRoot config startedAt
                 exitCode
@@ -3682,7 +3743,7 @@ let private chooseLink
                         eprintfn $"fshw: %s{reason}"
                         false }
 
-        Ok(hostSessionLink host, sessionIpcOps host)
+        Ok(hostSessionLink host live.IsNone, sessionIpcOps host)
 
     let enabled =
         RepositoryHostMode.enabled configText Environment.GetEnvironmentVariable
