@@ -44,15 +44,46 @@ let merged (dumps: ProcessDump list) : Map<string, RecordedScope> =
           Children = group |> List.collect (fun s -> s.Children) })
     |> Map.ofList
 
+/// The module a `<StartupCode$Assembly>.$N.M` class initializes the values of: `N.M`.
+let private startupModule (typeName: string) =
+    if typeName.StartsWith("<StartupCode$", StringComparison.Ordinal) then
+        match typeName.IndexOf(">.$", StringComparison.Ordinal) with
+        | -1 -> None
+        | i -> Some(typeName.Substring(i + 3))
+    else
+        None
+
+/// A CLR type name's outermost type: a closure `N.M+f@12` belongs to `N.M`.
+let private outermost (typeName: string) =
+    match typeName.IndexOf '+' with
+    | -1 -> typeName
+    | i -> typeName.Substring(0, i)
+
 /// What touching a type's initializer looks like: executing a probe on the type, or in a
 /// source file its initializer's code is in. The file matters for F#: a module's values
 /// initialize in a `<StartupCode$…>` class that no user code names, and the module's
-/// members (in the same file) read them.
-let private touchKeysOf (row: ManifestRow) =
+/// members (in the same file) read them. Reading a module value from another file runs only
+/// the value's getter, which has no sequence points and so no document; in an executable
+/// the module has no type initializer of its own either. So a member with no document is
+/// in the files of its type's other members, and every member of a module touches the
+/// module's startup class.
+let private touchKeysOf
+    (typeDocuments: Map<string, string list>)
+    (startupClasses: Map<string, string list>)
+    (row: ManifestRow)
+    =
     [ yield "type:" + row.TypeName
       match row.Document with
       | Some d -> yield "doc:" + d
-      | None -> () ]
+      | None ->
+          yield!
+              typeDocuments.TryFind row.TypeName
+              |> Option.defaultValue []
+              |> List.map ((+) "doc:")
+      yield!
+          startupClasses.TryFind(outermost row.TypeName)
+          |> Option.defaultValue []
+          |> List.map ((+) "type:") ]
 
 /// The static-init scopes a test inherits, given every scope it holds or inherits otherwise.
 ///
@@ -62,6 +93,22 @@ let private touchKeysOf (row: ManifestRow) =
 /// links to it. A scope whose type has no initializer row in the manifest cannot be placed,
 /// and neither can `S:static-init`; every test inherits those.
 let staticInheritance (manifest: Manifest) (scopes: Map<string, RecordedScope>) : Set<string> -> Set<string> =
+    let typeDocuments =
+        manifest.Rows
+        |> Array.choose (fun r -> r.Document |> Option.map (fun d -> r.TypeName, d))
+        |> Array.groupBy fst
+        |> Array.map (fun (t, ds) -> t, ds |> Array.map snd |> Array.distinct |> List.ofArray)
+        |> Map.ofArray
+
+    let startupClasses =
+        manifest.Rows
+        |> Array.choose (fun r -> startupModule r.TypeName |> Option.map (fun m -> m, r.TypeName))
+        |> Array.groupBy fst
+        |> Array.map (fun (m, ts) -> m, ts |> Array.map snd |> Array.distinct |> List.ofArray)
+        |> Map.ofArray
+
+    let touchKeysOf = touchKeysOf typeDocuments startupClasses
+
     let initializers =
         manifest.Rows
         |> Array.filter (fun r -> r.Kind = StaticCtor)

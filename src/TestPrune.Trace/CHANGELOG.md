@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a test inherits the static init of a module it reads a value of. Reading an F# module
+  value from another file runs only the value's getter, which has no document, and in an
+  executable (a test project) the module has no type initializer of its own. So under a
+  full weave of the test assembly, a module value computed from another module's value
+  reached that module's `<StartupCode$…>` initializer only when it ran nested inside its
+  own; if it had run first elsewhere, the file inputs it recorded (an existence probe that
+  locates the repository root, for example) were missing from the dependent tests' traces.
+  Every member of a module now touches the module's startup class, and a member with no
+  document touches the files of its type's other members.
 - audit: a type initializer a sampled test runs alone but not in parallel must be one it
   inherits in parallel, or the audit fails (`UncoveredInit`, `uncovered init <type>` in the
   table). Missing ids now compare everything a test holds or inherits, not only its own
