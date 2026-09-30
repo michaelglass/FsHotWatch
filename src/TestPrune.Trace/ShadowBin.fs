@@ -62,6 +62,8 @@ type Shadow =
         Manifest: Manifest
         /// Content key of the weave inputs (cache directory name under `obj/traced`).
         WeaveKey: string
+        /// How the test assembly itself was woven (`ShadowRequest.WeaveTests`).
+        WeaveTests: WeaveMode
         /// True when the woven files came from the cache.
         Reused: bool
         OriginalDepsJsonSha256: string
@@ -407,6 +409,7 @@ let prepareWith
                               ManifestDir = manifestDir
                               Manifest = manifest
                               WeaveKey = key
+                              WeaveTests = req.WeaveTests
                               Reused = reused
                               OriginalDepsJsonSha256 = sha256Text originalDeps
                               Verify = report }

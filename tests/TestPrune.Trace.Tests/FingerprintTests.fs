@@ -15,6 +15,7 @@ let private inputs: Fingerprint.Inputs =
       RecorderVersion = "0.1.0"
       WeaverVersion = "0.1.0"
       HashScheme = 16
+      WeaveTests = SitesOnly
       ConfigFiles = [ "global.json", "h" ]
       ConfigEnv = [] }
 
@@ -35,6 +36,7 @@ let ``the fingerprint changes with any input and is stable otherwise`` () =
 
     test <@ Fingerprint.compute i <> Fingerprint.compute { i with WeaverVersion = "0.2.0" } @>
     test <@ Fingerprint.compute i <> Fingerprint.compute { i with HashScheme = 17 } @>
+    test <@ Fingerprint.compute i <> Fingerprint.compute { i with WeaveTests = Full } @>
 
     test
         <@
@@ -72,8 +74,8 @@ let ``the fingerprint is a pinned lowercase sha256 of canonical json`` () =
     // must be a deliberate edit of this value (and a note in the changelog). The value is
     // sha256 of the compact, key-sorted JSON:
     // {"arch":"Arm64","deps":"d","env":[],"files":["global.json=h"],"hashScheme":16,
-    //  "os":"OSX","recorder":"0.1.0","runtime":".NET 10.0.0","weaver":"0.1.0"}
-    test <@ Fingerprint.compute inputs = "4d69f1872f10cdaaaa3ebbf3da64a9b173dc3c8143e30783c28e643ec3974bc1" @>
+    //  "os":"OSX","recorder":"0.1.0","runtime":".NET 10.0.0","weaveTests":"sites","weaver":"0.1.0"}
+    test <@ Fingerprint.compute inputs = "0872b6677b1dca90cd251474fc9f59a3299abf96ba49e91a3a23abb34150fa9f" @>
 
 [<Fact>]
 let ``hashFile hashes a repo file's bytes and marks a missing file`` () =
@@ -114,11 +116,11 @@ let ``gather folds in the dump, versions, core's schema as hash scheme and hashe
 
     try
         let i =
-            Fingerprint.gather root [ "global.json"; "absent.json" ] [ setVar; unsetVar ] dump "deps-sha"
+            Fingerprint.gather root [ "global.json"; "absent.json" ] [ setVar; unsetVar ] dump "deps-sha" Full
 
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         test <@ i.Runtime = ".NET 10.0.0" && i.Os = "OSX" && i.Arch = "Arm64" @>
-        test <@ i.DepsJsonSha256 = "deps-sha" @>
+        test <@ i.DepsJsonSha256 = "deps-sha" && i.WeaveTests = Full @>
         test <@ i.HashScheme = TestPrune.Database.SchemaVersion @>
         test <@ i.RecorderVersion.Split('.').Length = 3 && i.WeaverVersion.Split('.').Length = 3 @>
         test <@ i.ConfigFiles = [ "global.json", abc; "absent.json", "missing" ] @>

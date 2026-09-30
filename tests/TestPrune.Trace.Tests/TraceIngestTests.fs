@@ -83,6 +83,7 @@ type World() =
           ManifestDir = ""
           Manifest = this.Manifest
           WeaveKey = "k"
+          WeaveTests = SitesOnly
           Reused = false
           OriginalDepsJsonSha256 = "d"
           Verify =
@@ -338,6 +339,43 @@ let ``a process that neither ran a test nor was started by one is dropped next t
     test <@ s.Status = TraceStore.Recorded && s.Traced = 1 @>
     // World stamps one test hit into every dump's counters: one dump counted, the test host's.
     test <@ s.Counters.Test = 1L @>
+
+[<Fact>]
+let ``a trace recorded under one test weave mode is never read back under the other`` () =
+    let w = World()
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            asTest st "T:1" "N.Tests" "t" "N.Tests.t"
+            st.Hit 0
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+    let req = w.Request [ passed "N.Tests.t" ]
+
+    let sites =
+        ingest
+            store
+            { req with
+                Shadow = { w.Shadow with WeaveTests = SitesOnly } }
+
+    let full =
+        ingest
+            store
+            { req with
+                RunId = "run2"
+                Shadow = { w.Shadow with WeaveTests = Full } }
+
+    test <@ sites.EnvFingerprint.IsSome && full.EnvFingerprint.IsSome @>
+    test <@ sites.EnvFingerprint <> full.EnvFingerprint @>
+    // Each mode's trace stands under its own fingerprint; recording one never replaced the other.
+    test
+        <@
+            (read store sites "N.Tests" "t").Complete
+            && (read store full "N.Tests" "t").Complete
+        @>
 
 [<Fact>]
 let ``a run that ran no test keeps its main-process dump`` () =

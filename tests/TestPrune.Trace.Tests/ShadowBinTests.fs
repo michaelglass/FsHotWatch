@@ -830,6 +830,26 @@ let ``another build of a pass of the same version re-weaves, and the same build 
         Directory.Delete(copyDir, true)
 
 [<Fact>]
+let ``the test assembly's weave mode is part of the weave key, so neither mode reuses the other's weave`` () =
+    let projectDir = scratchProject ()
+
+    try
+        let sites = prepared (request projectDir)
+
+        let full =
+            prepared
+                { request projectDir with
+                    WeaveTests = Full }
+
+        test <@ (sites.WeaveTests, full.WeaveTests) = (SitesOnly, Full) @>
+        test <@ full.WeaveKey <> sites.WeaveKey && not full.Reused @>
+
+        let sitesAgain = prepared (request projectDir)
+        test <@ sitesAgain.Reused && sitesAgain.WeaveKey = sites.WeaveKey @>
+    finally
+        deleteProject projectDir
+
+[<Fact>]
 let ``the passes are part of the weave key, and an unreadable cache entry is re-woven`` () =
     let projectDir = scratchProject ()
 

@@ -28,6 +28,22 @@
   takes each run's `Observed` and whether the parallel run recorded a scope.
 - file census: the outside-the-repository run's dumps and CTRF report are copied to
   `file-census/outside/` under the run directory before its temp directory is deleted.
+- fix: the environment fingerprint includes how the test assembly itself was woven
+  (`weaveTests`: `sites` or `full`). `full` probes the test assembly's own methods and
+  `sites` does not, yet both recorded under the same fingerprint, so switching a project's
+  mode left the other mode's traces standing as current, and a filtered run refreshed only
+  the tests it ran, mixing the two modes under one fingerprint. The canonical fingerprint
+  JSON gains a `weaveTests` field, so every fingerprint changes: traces stored by an earlier
+  version are no longer read back and are recorded again. The woven-output cache was already
+  keyed by each assembly's mode.
+
+- **BREAKING (API): `ShadowBin.Shadow` has a `WeaveTests: WeaveMode` field,
+  `Fingerprint.Inputs` has a `WeaveTests: WeaveMode` field, and `Fingerprint.gather` takes
+  the weave mode as its last argument.**
+
+- **BREAKING (API): `Audit.ownIds` is replaced by `Audit.observe`; `Audit.compareTest` and
+  `Audit.auditAlone` take each run's `Observed`; `Audit.TestAudit` has an `UncoveredInit`
+  field; `Model.InputKind` has a `DeepDirectoryListing` case.**
 
 ## 0.5.0 - 2026-09-29
 

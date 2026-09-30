@@ -413,6 +413,7 @@ let ``ingestion never throws`` () =
                   Documents = Map.empty
                   IdCount = 0 }
               WeaveKey = ""
+              WeaveTests = SitesOnly
               Reused = false
               OriginalDepsJsonSha256 = ""
               Verify =
