@@ -42,6 +42,34 @@
         "platform": "linux"
       }
     ],
+    "TestPrunePlugin.fs": [
+      {
+        "line": 94,
+        "branch": 84,
+        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. Measured 2026-09-30 on macOS by the unit suite (mise run test-direct): line 94.2%, branch 84.0% (1509/1796), rounded down.",
+        "platform": "macos"
+      },
+      {
+        "line": 94,
+        "branch": 84,
+        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. Measured on Linux CI run 36647760512: line 94.2%, branch 84.0% (1509/1796), rounded down.",
+        "platform": "linux"
+      }
+    ],
+    "TestMode.fs": [
+      {
+        "line": 93,
+        "branch": 100,
+        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. The one uncovered line of 16 is `let initial = ImpactSelection` in the file's static initializer: its callers (TestPrunePlugin.fs, TestModeSeamTests) are covered, but the initializer never runs. Measured 2026-09-30 on macOS by the unit suite: line 93.8% (15/16), branch 100% (12/12).",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 100,
+        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. The one uncovered line is the static initializer of `initial`, as on macOS. Measured on Linux CI run 36647760512: line 93.8%, branch 100% (12/12).",
+        "platform": "linux"
+      }
+    ],
     "DeadlineWorkers.fs": [
       {
         "line": 100,
