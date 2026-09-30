@@ -7290,6 +7290,13 @@ let internal createWithQueries
     /// exclusive work, before anything about the model is read.
     let awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
         async {
+            match ctx.ProjectGraph.ObserveModel() with
+            | FsHotWatch.ProjectModel.Observation.Rediscovering generation ->
+                Logging.info
+                    "test-prune"
+                    $"project discovery (generation %d{generation}) is in flight; waiting for it before launching"
+            | _ -> ()
+
             let! waited, settled = ObservedModel.awaitDiscovery ctx.ProjectGraph
 
             if not settled then
