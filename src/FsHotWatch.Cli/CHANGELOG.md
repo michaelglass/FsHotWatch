@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.80 - 2026-09-30
+
 - deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic
   record or union now changes the type's hash, so its dependents are no longer skipped after
   such an edit, and traces map a generic union's cases instead of reporting them as unmapped.
