@@ -117,6 +117,22 @@ let ``audit defaults: repository is the working directory, 1 % sample, seed 1, 3
     test <@ not (Directory.Exists c.Request.RunDir) @>
 
 [<Fact>]
+let ``--keep runs a verb in the given directory and leaves it for inspection`` () =
+    let m, calls = passing ()
+
+    let keep =
+        Path.Combine(Path.GetTempPath(), "tp-cli-keep-" + Guid.NewGuid().ToString "N")
+
+    try
+        let o =
+            Program.runWith m cwd [ "file-census"; "--project-dir"; "tests/P"; "--assembly"; "P"; "--keep"; keep ]
+
+        test <@ o.Exit = 0 && o.Stderr = $"kept the run directory %s{keep}\n" @>
+        test <@ (calls |> Seq.exactlyOne).Request.RunDir = keep && Directory.Exists keep @>
+    finally
+        Directory.Delete(keep, true)
+
+[<Fact>]
 let ``audit takes its flags and passes everything after -- to the app`` () =
     let m, calls = passing ()
 

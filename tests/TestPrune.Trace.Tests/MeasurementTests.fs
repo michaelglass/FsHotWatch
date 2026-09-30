@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 15 @>
+        test <@ report.Sampled = 17 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -230,7 +230,8 @@ let ``the file census names the reading tests, those that break outside the repo
     // The test project's own module value reads LICENSE at startup; the test assembly is
     // woven without method probes, so nothing places that initializer and every test
     // inherits the read. Only the two "e" tests use it and fail outside; the census reports
-    // the rest as reading the repository while passing outside it.
+    // the rest as reading the repository while passing outside it. RootedA's and RootedB's
+    // module values need SuiteRoot's walk up to src/FxLib/FxLib.fsproj, which fails outside.
     withScratch (fun req ->
         let r = FileCensus.run req [] timeout |> ok
         let t (name: string) = "FxTests.AttributionTests." + name
@@ -239,18 +240,43 @@ let ``the file census names the reading tests, those that break outside the repo
             set
                 [ t "ClassD.d reads a module value"
                   t "ClassE.e first licence reader"
-                  t "ClassE.e second licence reader" ]
+                  t "ClassE.e second licence reader"
+                  "FxTests.RootedA.rooted a reads its own module value"
+                  "FxTests.RootedB.rooted b reads its own module value" ]
 
-        test <@ r.ReadsRepo.Count = 13 && Set.isSubset users r.ReadsRepo @>
+        test <@ r.ReadsRepo.Count = 15 && Set.isSubset users r.ReadsRepo @>
         test <@ r.FailOutside = users @>
         test <@ r.ReachOutside = set [ t "ClassC.c reads a repo file" ] @>
         test <@ r.FailInRepo = Set.empty @>
+
+        // The outside run's dumps outlive its temp directory, for a run directory kept to inspect.
+        let keptDumps = Path.Combine(req.RunDir, "file-census", "outside", "traces")
+
+        test <@ Directory.GetFiles(keptDumps, "*.ndjson", SearchOption.AllDirectories).Length > 0 @>
 
         test
             <@
                 r.SymmetricDifference = Set.difference r.ReadsRepo (Set.add (t "ClassC.c reads a repo file") users)
                 && r.SymmetricDifference.Count = 9
             @>)
+
+[<Fact>]
+let ``under a full weave, the file census counts a test whose module value probes the repository through another module``
+    ()
+    =
+    // The test assembly's initializers get manifest rows, so each is inherited only by the
+    // tests that touch it. RootedA's and RootedB's tests break outside the repository only
+    // because their files' initializers need SuiteRoot's probe: both must read it.
+    withScratch (fun req ->
+        let r = FileCensus.run { req with WeaveTests = Full } [] timeout |> ok
+
+        let rooted =
+            set
+                [ "FxTests.RootedA.rooted a reads its own module value"
+                  "FxTests.RootedB.rooted b reads its own module value" ]
+
+        test <@ Set.isSubset rooted r.FailOutside @>
+        test <@ Set.isSubset rooted r.ReadsRepo @>)
 
 [<Fact>]
 let ``the file census refuses a run that wrote no CTRF report`` () =

@@ -198,6 +198,9 @@ options:
                       methods only, site probes everywhere) or `full` (entry probes on every
                       method, as in every other repository assembly)
 --timeout-min 30      how long one launch may run before its process tree is killed
+--keep <dir>          run in <dir> and leave its dumps and CTRF reports there (file-census
+                      also copies the outside run's to file-census/outside/) instead of
+                      deleting the scratch run directory
 --json                print the report as JSON
 -- <app args>         everything after -- is passed to every launch of the test app
 ```

@@ -94,7 +94,8 @@ let measures =
       FileCensus = FileCensus.run }
 
 let private measureTail =
-    "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--json] [-- <app args>]\n"
+    "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--keep <dir>] [--json] [-- <app args>]\n"
+    + "  --keep runs in <dir> and leaves its dumps and CTRF reports there instead of deleting them\n"
     + "  exit 0 when the project meets the bar, 1 when it does not, 2 on a usage error or a project that cannot be measured"
 
 /// The usage of the audit verb.
@@ -121,6 +122,7 @@ type private MeasureArgs =
       Seed: int
       Reps: int
       TimeoutMin: float
+      Keep: string option
       Json: bool
       AppArgs: string list }
 
@@ -152,10 +154,16 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           "--sample", (fun v a -> number "--sample" v (fun n -> { a with Sample = n }))
           "--seed", (fun v a -> whole "--seed" v (fun n -> { a with Seed = n }))
           "--reps", (fun v a -> whole "--reps" v (fun n -> { a with Reps = n }))
-          "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n })) ]
+          "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n }))
+          "--keep", (fun v a -> Ok { a with Keep = Some v }) ]
 
 let private common =
-    [ "--project-dir"; "--assembly"; "--repo"; "--weave-tests"; "--timeout-min" ]
+    [ "--project-dir"
+      "--assembly"
+      "--repo"
+      "--weave-tests"
+      "--timeout-min"
+      "--keep" ]
 
 let rec private parseMeasure (flags: Set<string>) (acc: MeasureArgs) (args: string list) =
     match args with
@@ -190,6 +198,7 @@ let private measure
           Seed = 1
           Reps = 3
           TimeoutMin = 30.0
+          Keep = None
           Json = false
           AppArgs = [] }
 
@@ -203,7 +212,16 @@ let private measure
     match parsed with
     | Error why -> fail 2 $"%s{why}\n%s{verbUsage}"
     | Ok(a, dir, name) ->
-        let runDir = Directory.CreateTempSubdirectory("test-prune-traces-").FullName
+        let runDir =
+            match a.Keep with
+            | Some dir -> Directory.CreateDirectory(Path.GetFullPath(dir, cwd)).FullName
+            | None -> Directory.CreateTempSubdirectory("test-prune-traces-").FullName
+
+        let kept =
+            match a.Keep with
+            | Some _ -> $"kept the run directory %s{runDir}\n"
+            | None -> ""
+
         let timeout = TimeSpan.FromMinutes a.TimeoutMin
 
         let req: TraceSession.PrepareRequest =
@@ -216,18 +234,23 @@ let private measure
               VerifyTimeout = timeout }
 
         try
-            match go req a with
-            | Error why -> fail 2 why
-            | Ok report ->
-                { Exit = if passes report then 0 else 1
-                  Stdout =
-                    if a.Json then
-                        JsonSerializer.Serialize(report, jsonOptions) + "\n"
-                    else
-                        render report
-                  Stderr = "" }
+            let outcome =
+                match go req a with
+                | Error why -> fail 2 why
+                | Ok report ->
+                    { Exit = if passes report then 0 else 1
+                      Stdout =
+                        if a.Json then
+                            JsonSerializer.Serialize(report, jsonOptions) + "\n"
+                        else
+                            render report
+                      Stderr = "" }
+
+            { outcome with
+                Stderr = outcome.Stderr + kept }
         finally
-            Directory.Delete(runDir, true)
+            if a.Keep.IsNone then
+                Directory.Delete(runDir, true)
 
 /// Runs a verb against `cwd` with the given measurements, returning its output rather
 /// than printing it.

@@ -11,12 +11,12 @@ open TestPrune.Trace.Recorder
 open TestPrune.Trace.TraceSession
 open TestPrune.Trace.Tests
 
-let private request projectDir runDir =
+let private request weaveTests projectDir runDir =
     { RepoRoot = Fixtures.repoRoot
       ProjectDir = projectDir
       AssemblyName = "FxTests"
       TestProject = "FxTests"
-      WeaveTests = SitesOnly
+      WeaveTests = weaveTests
       RunDir = runDir
       VerifyTimeout = TimeSpan.FromMinutes 2.0 }
 
@@ -28,74 +28,84 @@ type private E2e =
       Outcomes: TestOutcome list
       StaleDumpSurvived: bool }
 
-/// Prepare a scratch copy of the fixture's xUnit v3 build output, run its woven apphost
-/// with the CTRF switches a host passes, ingest, and hand back the store and the summary.
-/// A stale dump left in the run's dump directory must not survive preparation.
-let private run =
-    lazy
-        (let runDir = Directory.CreateTempSubdirectory("tp-e2e-").FullName
-         let projectDir = ShadowBinTests.scratchProject ()
+/// Prepare a scratch copy of the fixture's xUnit v3 build output, weave its test assembly
+/// as `weaveTests` says, run its woven apphost with the CTRF switches a host passes,
+/// ingest, and hand back the store and the summary. A stale dump left in the run's dump
+/// directory must not survive preparation.
+let private runWoven weaveTests =
+    (let runDir = Directory.CreateTempSubdirectory("tp-e2e-").FullName
+     let projectDir = ShadowBinTests.scratchProject ()
 
-         try
-             let stale = Path.Combine(runDir, "traces", "FxTests", "trace-1.ndjson")
-             Directory.CreateDirectory(Path.GetDirectoryName stale) |> ignore
-             File.WriteAllText(stale, "stale")
+     try
+         let stale = Path.Combine(runDir, "traces", "FxTests", "trace-1.ndjson")
+         Directory.CreateDirectory(Path.GetDirectoryName stale) |> ignore
+         File.WriteAllText(stale, "stale")
 
-             let launch =
-                 prepareProject (request projectDir runDir) |> Result.defaultWith failwith
+         let launch =
+             prepareProject (request weaveTests projectDir runDir)
+             |> Result.defaultWith failwith
 
-             let staleSurvived = File.Exists stale
+         let staleSurvived = File.Exists stale
 
-             let code, output =
-                 Launch.run
-                     launch.Apphost
-                     [ "--report-xunit-ctrf"
-                       "--report-xunit-ctrf-filename"
-                       "FxTests.ctrf.json"
-                       "--results-directory"
-                       runDir ]
-                     launch.Env
-                     Fixtures.repoRoot
-                     (TimeSpan.FromMinutes 3.0)
+         let code, output =
+             Launch.run
+                 launch.Apphost
+                 [ "--report-xunit-ctrf"
+                   "--report-xunit-ctrf-filename"
+                   "FxTests.ctrf.json"
+                   "--results-directory"
+                   runDir ]
+                 launch.Env
+                 Fixtures.repoRoot
+                 (TimeSpan.FromMinutes 3.0)
 
-             if code <> 0 then
-                 failwith $"woven fixture suite failed (exit %d{code}):\n%s{output}"
+         if code <> 0 then
+             failwith $"woven fixture suite failed (exit %d{code}):\n%s{output}"
 
-             let outcomes =
-                 Ctrf.parse (File.ReadAllText(Path.Combine(runDir, "FxTests.ctrf.json")))
+         let outcomes =
+             Ctrf.parse (File.ReadAllText(Path.Combine(runDir, "FxTests.ctrf.json")))
 
-             let store = TraceStore.Store.Open(Path.Combine(runDir, "traces.db"))
-             let symbols = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
+         let store = TraceStore.Store.Open(Path.Combine(runDir, "traces.db"))
+         let symbols = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
 
-             // The fixture index is rooted at a scratch copy with the fixtures' relative
-             // layout; the woven PDB documents live under the real fixture root. Ingest
-             // against that root. File inputs stay relative to the repository root the
-             // recorder filtered them against (TraceLaunch.InputRoot).
-             let summary =
-                 ingestProject
-                     store
-                     Fixtures.fixtureRoot
-                     launch
-                     { RunId = "e2e"
-                       Kind = TraceStore.FullRun
-                       LaunchTreeHash = "t"
-                       CurrentTreeHash = "t"
-                       Outcomes = outcomes
-                       Symbols = symbols
-                       FingerprintFiles = []
-                       FingerprintEnv = [] }
-                 |> Result.defaultWith failwith
+         // The fixture index is rooted at a scratch copy with the fixtures' relative
+         // layout; the woven PDB documents live under the real fixture root. Ingest
+         // against that root. File inputs stay relative to the repository root the
+         // recorder filtered them against (TraceLaunch.InputRoot).
+         let summary =
+             ingestProject
+                 store
+                 Fixtures.fixtureRoot
+                 launch
+                 { RunId = "e2e"
+                   Kind = TraceStore.FullRun
+                   LaunchTreeHash = "t"
+                   CurrentTreeHash = "t"
+                   Outcomes = outcomes
+                   Symbols = symbols
+                   FingerprintFiles = []
+                   FingerprintEnv = [] }
+             |> Result.defaultWith failwith
 
-             { Store = store
-               Summary = summary
-               Launch = launch
-               Outcomes = outcomes
-               StaleDumpSurvived = staleSurvived }
-         finally
-             ShadowBinTests.deleteProject projectDir)
+         { Store = store
+           Summary = summary
+           Launch = launch
+           Outcomes = outcomes
+           StaleDumpSurvived = staleSurvived }
+     finally
+         ShadowBinTests.deleteProject projectDir)
+
+let private run = lazy (runWoven SitesOnly)
+
+/// The same run with the test assembly fully woven: its type initializers get manifest
+/// rows, so each static-init scope is inherited only by the tests that touch its type.
+let private runFull = lazy (runWoven Full)
+
+let private traceIn (e: E2e) (cls: string) (meth: string) =
+    e.Store.TryRead(TraceIngest.testKey "FxTests" cls meth, e.Summary.EnvFingerprint.Value)
+    |> Option.get
 
 let private traceOf (meth: string) =
-    let e = run.Value
 
     let cls =
         if meth.StartsWith "a " then "ClassA"
@@ -105,11 +115,7 @@ let private traceOf (meth: string) =
         elif meth.StartsWith "e " then "ClassE"
         else "ClassF"
 
-    e.Store.TryRead(
-        TraceIngest.testKey "FxTests" $"FxTests.AttributionTests+%s{cls}" meth,
-        e.Summary.EnvFingerprint.Value
-    )
-    |> Option.get
+    traceIn run.Value $"FxTests.AttributionTests+%s{cls}" meth
 
 let private names (t: TraceStore.StoredTrace) = t.Symbols |> Set.map fst
 
@@ -133,14 +139,14 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 15 && s.Traced = 15 @>
+    test <@ s.Executed = 17 && s.Traced = 17 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Fifteen CTRF rows are thirteen tests (each theory's two rows share one trace). Only the test
+    // Seventeen CTRF rows are fifteen tests (each theory's two rows share one trace). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 13 @>
-    test <@ s.Complete = 12 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 15 @>
+    test <@ s.Complete = 14 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -241,13 +247,44 @@ let ``a file a test-project module value reads while it initializes is an input 
     test <@ readsLicence (traceOf "e first licence reader") @>
     test <@ readsLicence (traceOf "e second licence reader") @>
 
+[<Fact>]
+let ``under a full weave, a file probed by another module's initializer is an input of each test whose module value uses it``
+    ()
+    =
+    // RootedA's and RootedB's module values are computed from SuiteRoot.root, whose
+    // initializer walks up probing for src/FxLib/FxLib.fsproj. Their tests read only their
+    // own file's other value, which runs their file's initializer. At most one of the two
+    // initializers runs SuiteRoot's inside its own; the other reads the value SuiteRoot
+    // already holds. Both tests still depend on the probe.
+    let e = runFull.Value
+
+    let probesLibrary (t: TraceStore.StoredTrace) =
+        t.Inputs
+        |> Set.contains ("exists", "tests/TraceFixtures/src/FxLib/FxLib.fsproj", "present")
+
+    test <@ probesLibrary (traceIn e "FxTests.RootedA" "rooted a reads its own module value") @>
+    test <@ probesLibrary (traceIn e "FxTests.RootedB" "rooted b reads its own module value") @>
+    test <@ not (probesLibrary (traceIn e "FxTests.AttributionTests+ClassB" "b async block colorCode")) @>
+
+[<Fact>]
+let ``under a full weave, a test-project module value's read is an input of each test that uses it`` () =
+    let e = runFull.Value
+
+    let readsLicence (t: TraceStore.StoredTrace) =
+        t.Inputs |> Set.exists (fun (k, key, _) -> k = "read" && key = "LICENSE")
+
+    let classE = traceIn e "FxTests.AttributionTests+ClassE"
+    test <@ readsLicence (classE "e first licence reader") @>
+    test <@ readsLicence (classE "e second licence reader") @>
+    test <@ not (readsLicence (traceIn e "FxTests.AttributionTests+ClassB" "b async block colorCode")) @>
+
 // ---------------------------------------------------------------- refusals
 
 [<Fact>]
 let ``a project with no build output is refused with the shadow bin's reason`` () =
     let dir = Directory.CreateTempSubdirectory("tp-e2e-none-").FullName
 
-    match prepareProject (request dir dir) with
+    match prepareProject (request SitesOnly dir dir) with
     | Error why -> test <@ why = $"""no build output under %s{Path.Combine(dir, "bin", "Debug")}""" @>
     | Ok _ -> failwith "prepared a project with no build output"
 
@@ -259,7 +296,7 @@ let ``a project with nothing woven is refused before it runs`` () =
     try
         let result =
             prepareProject
-                { request projectDir elsewhere with
+                { request SitesOnly projectDir elsewhere with
                     RepoRoot = elsewhere }
 
         test <@ result = Error(TraceIngest.nothingWovenReason elsewhere) @>
@@ -280,7 +317,9 @@ let ``a cancelled preparation raises instead of refusing`` () =
                 cts.Cancel()
                 137, "killed"
 
-        raises<OperationCanceledException> <@ prepareProjectWith cancelling cts.Token (request projectDir runDir) @>
+        raises<OperationCanceledException>
+            <@ prepareProjectWith cancelling cts.Token (request SitesOnly projectDir runDir) @>
+
         test <@ not (Directory.Exists(Path.Combine(runDir, "traces"))) @>
     finally
         ShadowBinTests.deleteProject projectDir
@@ -295,7 +334,7 @@ let ``a launcher's cancellation that is not the run's is a refusal`` () =
 
         test
             <@
-                prepareProjectWith timedOut CancellationToken.None (request projectDir projectDir) = Error
+                prepareProjectWith timedOut CancellationToken.None (request SitesOnly projectDir projectDir) = Error
                     "trace preparation failed: the launcher gave up"
             @>
     finally
@@ -329,7 +368,9 @@ let ``a host-launched preparation refuses an app that ships its own recorder bef
         let expected =
             ShadowBin.describeRefusal (ShadowBin.AppShipsOwnRecorder "its deps.json lists the recorder as a project")
 
-        test <@ prepareProjectWith launcher CancellationToken.None (request projectDir runDir) = Error expected @>
+        test
+            <@ prepareProjectWith launcher CancellationToken.None (request SitesOnly projectDir runDir) = Error expected @>
+
         test <@ not launched.Value @>
         test <@ not (Directory.Exists(Path.Combine(projectDir, "obj", "traced"))) @>
         test <@ not (Directory.Exists(Path.Combine(runDir, "traces"))) @>
@@ -338,7 +379,7 @@ let ``a host-launched preparation refuses an app that ships its own recorder bef
 
 [<Fact>]
 let ``preparation never throws`` () =
-    match prepareProject (request null (Path.GetTempPath())) with
+    match prepareProject (request SitesOnly null (Path.GetTempPath())) with
     | Error why -> test <@ why.StartsWith "trace preparation failed: " @>
     | Ok _ -> failwith "prepared a null project"
 

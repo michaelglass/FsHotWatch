@@ -19,6 +19,9 @@ let private row id kind typeName (doc: string option) : ManifestRow =
 /// Ids 0-1: `N.Config`, a module whose values initialize in a startup class declared in
 /// Config.fs. Ids 2-3: `N.Colour`, a type with its own initializer. Id 4: `N.Other`, in a
 /// file with no initializer. Id 5: `N.Late`'s initializer, in Late.fs; id 6: a member there.
+/// Id 7: the getter of a `N.Config` value, which has no sequence points and so no document.
+/// Ids 8-9: `N.Solo`, a module whose one member is a value: its startup class's initializer
+/// in Solo.fs, and the value's getter, with no document and no documented sibling.
 let private manifest =
     { Rows =
         [| row 0 StaticCtor "<StartupCode$A>.$N.Config" (Some "/r/Config.fs")
@@ -27,9 +30,12 @@ let private manifest =
            row 3 GeneratedMethod "N.Colour" None
            row 4 UserMethod "N.Other" (Some "/r/Other.fs")
            row 5 StaticCtor "N.Late" (Some "/r/Late.fs")
-           row 6 UserMethod "N.Late" (Some "/r/Late.fs") |]
+           row 6 UserMethod "N.Late" (Some "/r/Late.fs")
+           row 7 UserMethod "N.Config" None
+           row 8 StaticCtor "<StartupCode$A>.$N.Solo" (Some "/r/Solo.fs")
+           row 9 UserMethod "N.Solo" None |]
       Documents = Map.empty
-      IdCount = 7 }
+      IdCount = 10 }
 
 let private scope key (ids: int list) : RecordedScope =
     { Key = key
@@ -66,6 +72,24 @@ let ``a test inherits the initializer of a type it touched, and of a file it ran
     test <@ inherits scopes [ "T:other" ] = Set.empty @>
 
 [<Fact>]
+let ``a member with no document touches the files of its type's other members`` () =
+    // Config's startup class was initialized elsewhere: reading its value from another file
+    // runs only the getter, and the getter names no file.
+    let scopes =
+        [ testScope "T:1" "N.Tests" [ 7 ]; scope "S:<StartupCode$A>.$N.Config" [ 0 ] ]
+
+    test <@ inherits scopes [ "T:1" ] = set [ "S:<StartupCode$A>.$N.Config" ] @>
+
+[<Fact>]
+let ``a module member touches the initializer of the module's startup class`` () =
+    // In an executable a module has no type initializer of its own: reading a value runs its
+    // file's startup class initializer, which F# names `<StartupCode$…>.$` + the module.
+    let scopes =
+        [ testScope "T:1" "N.Tests" [ 9 ]; scope "S:<StartupCode$A>.$N.Solo" [ 8 ] ]
+
+    test <@ inherits scopes [ "T:1" ] = set [ "S:<StartupCode$A>.$N.Solo" ] @>
+
+[<Fact>]
 let ``a test inherits the initializer of its own class`` () =
     let scopes = [ testScope "T:1" "N.Colour" []; scope "S:N.Colour" [ 2 ] ]
     test <@ inherits scopes [ "T:1" ] = set [ "S:N.Colour" ] @>
@@ -96,10 +120,10 @@ let ``an initializer that cannot be placed is inherited by every test`` () =
 
 [<Fact>]
 let ``an id with no manifest row, or past the manifest, touches nothing`` () =
-    let unrowed = { manifest with IdCount = 8 }
+    let unrowed = { manifest with IdCount = 11 }
 
     let scopes =
-        [ testScope "T:1" "N.Tests" [ 7; 99; -1 ]; scope "S:N.Colour" [ 2 ] ]
+        [ testScope "T:1" "N.Tests" [ 10; 99; -1 ]; scope "S:N.Colour" [ 2 ] ]
         |> List.map (fun s -> s.Key, s)
         |> Map.ofList
 

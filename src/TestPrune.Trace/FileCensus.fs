@@ -134,11 +134,20 @@ let render (r: FileCensusReport) : string =
 
     sb.ToString()
 
+/// Copy every file under `source` to the same relative path under `destination`.
+let private copyTree (source: string) (destination: string) =
+    if Directory.Exists source then
+        for f in Directory.GetFiles(source, "*", SearchOption.AllDirectories) do
+            let dst = Path.Combine(destination, Path.GetRelativePath(source, f))
+            Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
+            File.Copy(f, dst, true)
+
 /// Prepare the project; run the woven app in the repository with CTRF; copy (never link)
 /// the woven app under the temp directory and run it there, traced into its own dump
 /// directory against the same repository root, so a read that still reaches the
-/// repository from outside it is recorded. `Error` when the project cannot be prepared or
-/// a run wrote no CTRF report.
+/// repository from outside it is recorded. The outside run's dumps and CTRF report are
+/// copied to `file-census/outside/` under the run directory before the temp directory is
+/// deleted. `Error` when the project cannot be prepared or a run wrote no CTRF report.
 let run
     (req: TraceSession.PrepareRequest)
     (appArgs: string list)
@@ -159,10 +168,7 @@ let run
                 let copy = Path.Combine(outside, tfm)
                 let outsideDumps = Path.Combine(outside, "traces")
 
-                for f in Directory.GetFiles(launch.Shadow.Dir, "*", SearchOption.AllDirectories) do
-                    let dst = Path.Combine(copy, Path.GetRelativePath(launch.Shadow.Dir, f))
-                    Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
-                    File.Copy(f, dst)
+                copyTree launch.Shadow.Dir copy
 
                 let env =
                     launch.Env
@@ -181,4 +187,9 @@ let run
 
                     summarize (failures inRepo) (failures outsideOutcomes) reached (readers manifest dumps))
             finally
+                let kept = Path.Combine(req.RunDir, "file-census", "outside")
+
+                for sub in [ "traces"; "results" ] do
+                    copyTree (Path.Combine(outside, sub)) (Path.Combine(kept, sub))
+
                 Directory.Delete(outside, true)))

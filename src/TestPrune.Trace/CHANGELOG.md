@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- file census: the outside-the-repository run's dumps and CTRF report are copied to
+  `file-census/outside/` under the run directory before its temp directory is deleted.
+
 ## 0.5.0 - 2026-09-29
 
 - fix: the shadow bin copies, never hard-links, an assembly with symbols (a sibling `.pdb` or

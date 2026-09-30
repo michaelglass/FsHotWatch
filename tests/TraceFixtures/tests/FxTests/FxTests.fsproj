@@ -10,7 +10,10 @@
 
     <ItemGroup>
         <Compile Include="SuiteFiles.fs" />
+        <Compile Include="SuiteRoot.fs" />
         <Compile Include="AttributionTests.fs" />
+        <Compile Include="RootedA.fs" />
+        <Compile Include="RootedB.fs" />
     </ItemGroup>
 
     <ItemGroup>
