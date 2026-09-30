@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.83 - 2026-10-01
+
 - feat: a reused verdict says what its freshness key covered. `confirm`'s "still applies" and
   `fshw verdict`'s green name the files in the key (everything under the source roots, the
   toolchain files, the declared inputs, and any declared path that matches nothing) and the

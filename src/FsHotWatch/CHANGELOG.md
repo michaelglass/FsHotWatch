@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.61 - 2026-10-01
+
+- cli: a reused verdict says what its freshness key covered
+
+
 ## 0.10.0-alpha.60 - 2026-09-29
 
 - fix: a check whose answer declared a type incompatible with ITSELF is no longer written
