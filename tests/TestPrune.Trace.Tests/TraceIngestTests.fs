@@ -451,6 +451,7 @@ let ``file inputs are stored repo-relative with their current state`` () =
     let data = Path.Combine(w.Root, "data")
     Directory.CreateDirectory(Path.Combine(data, "sub")) |> ignore
     File.WriteAllText(Path.Combine(data, "a.json"), "{}")
+    File.WriteAllText(Path.Combine(data, "sub", "b.json"), "{}")
     let traced = Path.Combine(w.Root, "bin", "Traced", "net10.0", "cfg.json")
     Directory.CreateDirectory(Path.GetDirectoryName traced) |> ignore
     let debug = Path.Combine(w.Root, "bin", "Debug", "net10.0", "cfg.json")
@@ -472,16 +473,20 @@ let ``file inputs are stored repo-relative with their current state`` () =
             note st "exists" (Path.Combine(data, "gone.json"))
             note st "list" data
             note st "list" (Path.Combine(data, "nowhere"))
+            note st "list-deep" data
+            note st "list-deep" (Path.Combine(data, "nowhere"))
             note st "read" (Path.Combine(Path.GetTempPath(), "outside.json"))
     )
 
     use store = TraceStore.Store.Open w.TraceDb
     let s = ingest store (w.Request [ passed "N.Tests.t" ])
 
-    let listing =
-        Convert
-            .ToHexString(Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes "a.json\nsub"))
-            .ToLowerInvariant()
+    let sha (s: string) =
+        Convert.ToHexString(Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes s)).ToLowerInvariant()
+
+    // A plain listing sees data/ only; a recursive one sees sub/b.json too.
+    let listing = sha "a.json\nsub"
+    let deepListing = sha "a.json\nsub\nsub/b.json"
 
     test
         <@
@@ -492,7 +497,9 @@ let ``file inputs are stored repo-relative with their current state`` () =
                   "exists", "data/sub", "present"
                   "exists", "data/gone.json", "absent"
                   "list", "data", listing
-                  "list", "data/nowhere", "absent" ]
+                  "list", "data/nowhere", "absent"
+                  "list-deep", "data", deepListing
+                  "list-deep", "data/nowhere", "absent" ]
         @>
 
 [<Fact>]

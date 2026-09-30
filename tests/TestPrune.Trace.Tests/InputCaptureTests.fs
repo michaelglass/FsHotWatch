@@ -304,6 +304,13 @@ let ``every file shim notes its input and does what the original does`` () =
                     )
                 @>
 
+            // A listing that recurses is its own kind: its input is the whole tree.
+            test
+                <@
+                    Io.Directory_GetFiles(scratch, "*", SearchOption.AllDirectories)
+                    |> Array.isEmpty
+                @>
+
             // A stream opened for writing is noted too: over-approximating is sound.
             do
                 use w = Io.FileStream_ctor(written, FileMode.Create)
@@ -319,6 +326,7 @@ let ``every file shim notes its input and does what the original does`` () =
                   "exists", file
                   "exists", root
                   "list", root
+                  "list-deep", scratch
                   "read", written ]
         @>
 

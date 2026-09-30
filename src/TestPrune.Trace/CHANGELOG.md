@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a recursive directory listing (`SearchOption.AllDirectories`) is stored as a
+  `list-deep` input hashed over every entry of the tree. It was stored as `list`, hashed
+  over the directory's own entries only, so a file added or removed in a subdirectory left
+  the trace valid. A `list` input keeps its meaning; traces recorded before this version
+  are not reused, since the recorder and weaver versions are part of the environment
+  fingerprint.
 - fix: the redirect pass rewrites the call sites of the new recorder shims (XML loaders
   by path, `Encoding` overloads, file-system-entry and `DirectoryInfo` listings).
 - fix: a test inherits the static init of a module it reads a value of. Reading an F# module

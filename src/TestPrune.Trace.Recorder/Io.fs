@@ -27,7 +27,14 @@ type Io =
         full.StartsWith(r, StringComparison.Ordinal)
         && (full.Length = r.Length || full.[r.Length] = Path.DirectorySeparatorChar)
 
-    /// Notes `path` as an input of `kind` (`read`, `exists` or `list`) on `state`'s note
+    /// `list-deep` for a listing that recurses into subdirectories, else `list`.
+    static member private ListKind(option: SearchOption) =
+        if option = SearchOption.AllDirectories then
+            "list-deep"
+        else
+            "list"
+
+    /// Notes `path` as an input of `kind` (`read`, `exists`, `list` or `list-deep`) on `state`'s note
     /// scope when it resolves under the repository root. Never throws.
     static member internal NoteWith(state: RecorderState, kind: string, path: string) : unit =
         if not (isNull state) && not (isNull path) && not (isNull state.RepoRoot) then
@@ -147,7 +154,7 @@ type Io =
 
     /// Shim for `Directory.GetFiles(string, string, SearchOption)`.
     static member Directory_GetFiles(path: string, pattern: string, option: SearchOption) : string[] =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.GetFiles(path, pattern, option)
 
     /// Shim for `Directory.EnumerateFiles(string)`.
@@ -162,7 +169,7 @@ type Io =
 
     /// Shim for `Directory.EnumerateFiles(string, string, SearchOption)`.
     static member Directory_EnumerateFiles(path: string, pattern: string, option: SearchOption) : IEnumerable<string> =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.EnumerateFiles(path, pattern, option)
 
     /// Shim for `Directory.GetDirectories(string)`.
@@ -177,7 +184,7 @@ type Io =
 
     /// Shim for `Directory.GetDirectories(string, string, SearchOption)`.
     static member Directory_GetDirectories(path: string, pattern: string, option: SearchOption) : string[] =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.GetDirectories(path, pattern, option)
 
     /// Shim for `Directory.EnumerateDirectories(string)`.
@@ -194,7 +201,7 @@ type Io =
     static member Directory_EnumerateDirectories
         (path: string, pattern: string, option: SearchOption)
         : IEnumerable<string> =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.EnumerateDirectories(path, pattern, option)
 
     /// Shim for `Directory.GetFileSystemEntries(string)`.
@@ -209,7 +216,7 @@ type Io =
 
     /// Shim for `Directory.GetFileSystemEntries(string, string, SearchOption)`.
     static member Directory_GetFileSystemEntries(path: string, pattern: string, option: SearchOption) : string[] =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.GetFileSystemEntries(path, pattern, option)
 
     /// Shim for `Directory.EnumerateFileSystemEntries(string)`.
@@ -226,7 +233,7 @@ type Io =
     static member Directory_EnumerateFileSystemEntries
         (path: string, pattern: string, option: SearchOption)
         : IEnumerable<string> =
-        Io.NoteWith(Runtime.state, "list", path)
+        Io.NoteWith(Runtime.state, Io.ListKind option, path)
         Directory.EnumerateFileSystemEntries(path, pattern, option)
 
     /// Shim for `new FileStream(string, FileMode)`.
@@ -321,7 +328,7 @@ type Io =
 
     /// Shim for `DirectoryInfo.GetFiles(string, SearchOption)`.
     static member DirectoryInfo_GetFiles(di: DirectoryInfo, pattern: string, option: SearchOption) : FileInfo[] =
-        Io.NoteWith(Runtime.state, "list", di.FullName)
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
         di.GetFiles(pattern, option)
 
     /// Shim for `DirectoryInfo.EnumerateFiles()`.
@@ -338,7 +345,7 @@ type Io =
     static member DirectoryInfo_EnumerateFiles
         (di: DirectoryInfo, pattern: string, option: SearchOption)
         : IEnumerable<FileInfo> =
-        Io.NoteWith(Runtime.state, "list", di.FullName)
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
         di.EnumerateFiles(pattern, option)
 
     /// Shim for `DirectoryInfo.Exists`.

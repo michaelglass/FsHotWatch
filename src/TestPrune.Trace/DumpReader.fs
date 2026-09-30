@@ -22,6 +22,7 @@ let private inputKind =
     | "read" -> FileRead
     | "exists" -> ExistenceProbe
     | "list" -> DirectoryListing
+    | "list-deep" -> DeepDirectoryListing
     | other -> failwith $"unknown input kind %s{other}"
 
 let private scopeOf (e: JsonElement) : RecordedScope =

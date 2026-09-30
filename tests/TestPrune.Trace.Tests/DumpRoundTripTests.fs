@@ -55,6 +55,7 @@ let ``every scope field and header field survives the round trip`` () =
     s.Inputs.TryAdd(struct ("read", "/r/x.json"), 0uy) |> ignore
     s.Inputs.TryAdd(struct ("exists", "/r/y"), 0uy) |> ignore
     s.Inputs.TryAdd(struct ("list", "/r/d"), 0uy) |> ignore
+    s.Inputs.TryAdd(struct ("list-deep", "/r/t"), 0uy) |> ignore
     s.Children.Enqueue(struct (456, "dotnet", true))
     s.Children.Enqueue(struct (457, "git", false))
     state.Hit 1
@@ -95,6 +96,8 @@ let ``every scope field and header field survives the round trip`` () =
                     [ { Kind = ExistenceProbe; Path = "/r/y" }
                       { Kind = DirectoryListing
                         Path = "/r/d" }
+                      { Kind = DeepDirectoryListing
+                        Path = "/r/t" }
                       { Kind = FileRead; Path = "/r/x.json" } ]
                   Children =
                     [ { Pid = 456

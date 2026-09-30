@@ -44,6 +44,8 @@ type InputKind =
     | FileRead
     | ExistenceProbe
     | DirectoryListing
+    /// A listing that recursed into every subdirectory.
+    | DeepDirectoryListing
 
 /// A file-system input a scope observed.
 type RecordedInput = { Kind: InputKind; Path: string }

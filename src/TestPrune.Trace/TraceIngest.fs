@@ -254,6 +254,18 @@ let private effectsOf (req: IngestRequest) : Effect list[] * bool[] =
 
     effects, unmapped
 
+/// The hash of a directory's entries (paths relative to it, '/'-separated, sorted), or
+/// "absent" when it does not exist.
+let private listingHash (dir: string) (option: SearchOption) =
+    if Directory.Exists dir then
+        Directory.GetFileSystemEntries(dir, "*", option)
+        |> Seq.map (fun e -> Path.GetRelativePath(dir, e).Replace('\\', '/'))
+        |> Seq.sort
+        |> String.concat "\n"
+        |> sha256Text
+    else
+        "absent"
+
 /// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
 /// outside the input root.
 let private inputOf (root: string) (i: RecordedInput) =
@@ -264,17 +276,10 @@ let private inputOf (root: string) (i: RecordedInput) =
         match i.Kind with
         | FileRead -> "read", rel, Fingerprint.hashFile root rel
         | ExistenceProbe -> "exists", rel, (if Path.Exists p then "present" else "absent")
-        | DirectoryListing ->
-            "list",
-            rel,
-            (if Directory.Exists p then
-                 Directory.GetFileSystemEntries p
-                 |> Seq.map Path.GetFileName
-                 |> Seq.sort
-                 |> String.concat "\n"
-                 |> sha256Text
-             else
-                 "absent"))
+        | DirectoryListing -> "list", rel, listingHash p SearchOption.TopDirectoryOnly
+        // Every entry of the tree, whatever pattern the listing used: an entry added or
+        // removed at any depth changes the hash.
+        | DeepDirectoryListing -> "list-deep", rel, listingHash p SearchOption.AllDirectories)
 
 let private summaryOf status reason (executed: string list) counters rejected cpu =
     { Status = status
