@@ -662,6 +662,53 @@ let ``coverage-ratchet reports honestly when there is no coverage XML to ratchet
         test <@ reply.Value.Contains "no coverage.cobertura.xml found" @>
         test <@ File.ReadAllText(configPath) = defaultThresholdsJson @>)
 
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet refuses to rewrite a floor file whose reader options cannot be read`` () =
+    withTempDir "coverage-ratchet-unreadable" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        let floors = """{ "includedExtensions": [] }"""
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, floors)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let reply = host.RunCommand("coverage-ratchet", [| "" |]) |> Async.RunSynchronously
+
+        test <@ reply.Value.StartsWith "coverage-ratchet failed:" @>
+        test <@ File.ReadAllText(configPath) = floors @>)
+
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet that throws replies with the failure instead of hanging the caller`` () =
+    withTempDir "coverage-ratchet-throws" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+        // A directory where the floor file should be: reading it throws.
+        let notAFile = Path.Combine(dir, "floors-dir")
+        Directory.CreateDirectory notAFile |> ignore
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let reply =
+            host.RunCommand("coverage-ratchet", [| notAFile |]) |> Async.RunSynchronously
+
+        test <@ reply.Value.StartsWith "coverage-ratchet failed:" @>
+        test <@ Directory.Exists notAFile @>)
+
+[<Fact(Timeout = 5000)>]
+let ``an event the plugin does not subscribe to leaves its state alone`` () =
+    let handler = CovPlugin.create "coverage-ratchet.json" "."
+
+    let after =
+        handler.Update Unchecked.defaultof<_> handler.Init (BuildCompleted BuildSucceeded)
+        |> Async.RunSynchronously
+
+    test <@ obj.ReferenceEquals(after, handler.Init) @>
+
 [<Fact(Timeout = 30000)>]
 let ``coverage-ratchet REFUSES to race a check that is reading the file it rewrites`` () =
     // With no XML on disk, the check holds the "coverage-check" slot for its
