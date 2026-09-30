@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-30
+
 - fix: a recursive directory listing (`SearchOption.AllDirectories`) is stored as a
   `list-deep` input hashed over every entry of the tree. It was stored as `list`, hashed
   over the directory's own entries only, so a file added or removed in a subdirectory left

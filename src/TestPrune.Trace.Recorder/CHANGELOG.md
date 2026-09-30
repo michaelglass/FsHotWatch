@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-30
+
 - fix: a listing with `SearchOption.AllDirectories` is noted as `list-deep`, not `list`.
 - fix: more file reads are recorded as inputs. `XDocument.Load`, `XElement.Load`,
   `XmlReader.Create` and `XmlDocument.Load` by path; the `Encoding` overloads of

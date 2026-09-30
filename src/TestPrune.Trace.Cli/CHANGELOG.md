@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-30
+
 - feat: `audit`, `overhead` and `file-census` take `--keep <dir>`: the verb runs in `<dir>`
   and leaves its dumps and CTRF reports there for inspection instead of deleting its scratch
   run directory.
