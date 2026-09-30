@@ -22,6 +22,10 @@ type CoverageVerdict =
     /// run (raise-only); instead we surface a loud notice naming the count so
     /// the shortfall is visible without a false red.
     | NotGatedFiltered of belowFloorCount: int
+    /// The floor file's reader options could not be read (e.g. an invalid
+    /// `includedExtensions` list), so no report was judged. Gates whatever the run's
+    /// scope: a check that cannot read its own configuration has verified nothing.
+    | Unreadable of reason: string
 
 [<NoComparison; NoEquality>]
 type CoverageMsg =
@@ -95,8 +99,18 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
         return result
     }
 
-let private runCheck (configPath: string) (xmlPaths: string list) : CheckResult =
-    check (loadConfig configPath) (parseFiles xmlPaths)
+/// Read the run's reports the way the `coverageratchet` CLI does: with the reader
+/// options the floor file asks for (`loadReaderOptions`), which root the directory
+/// rules at the floor file's directory. The parameterless `parseFiles` matches rules
+/// against the whole absolute path, so a checkout under a directory named `tests`,
+/// `test` or `obj` would read nothing, and an `includedExtensions` list in the floor
+/// file would be ignored; either way the daemon's verdict would disagree with the
+/// CLI's on the same reports.
+let private readCoverage (configPath: string) (xmlPaths: string list) : Result<FileCoverage list, string> =
+    loadReaderOptions configPath
+    |> Result.map (fun options ->
+        (readReports options (xmlPaths |> List.map System.IO.File.ReadAllText)).Lines
+        |> buildCoverage)
 
 /// One coverage check: find this run's Cobertura output, judge it, and gate the raw
 /// result by the scope the run PROVED.
@@ -105,16 +119,18 @@ let private checkWork (configPath: string) (searchDir: string) (scope: RunScope)
         let runStarted = System.DateTime.UtcNow
         let! xmlPaths = pollForFiles searchDir 50 100
 
-        let result =
+        let verdict =
             if List.isEmpty xmlPaths then
-                AllPassed
+                Passed
             else
-                runCheck configPath xmlPaths
+                match readCoverage configPath xmlPaths with
+                | Ok coverage -> gateVerdict scope (check (loadConfig configPath) coverage)
+                | Result.Error reason -> Unreadable reason
 
         // No baseline to refresh here: the TestPrune DB is the coverage
         // high-watermark, ingested (max-merged across projects) per run, and emits
         // the shared cobertura.
-        return CheckDone(gateVerdict scope result, System.DateTime.UtcNow - runStarted)
+        return CheckDone(verdict, System.DateTime.UtcNow - runStarted)
     }
 
 /// Launch a check for `scope`, returning what the launch leaves OWED.
@@ -245,11 +261,12 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                                     if List.isEmpty xmlPaths then
                                         "coverage-ratchet: no coverage.cobertura.xml found"
                                     else
-                                        let coverage = parseFiles xmlPaths
-                                        let raw = loadRawConfig cfgPath
-                                        let newRaw = ratchetRaw raw coverage
-                                        saveRawConfig cfgPath newRaw
-                                        $"coverage-ratchet: thresholds updated in %s{cfgPath}"
+                                        match readCoverage cfgPath xmlPaths with
+                                        | Result.Error reason -> $"coverage-ratchet failed: %s{reason}"
+                                        | Ok coverage ->
+                                            let raw = loadRawConfig cfgPath
+                                            saveRawConfig cfgPath (ratchetRaw raw coverage).Config
+                                            $"coverage-ratchet: thresholds updated in %s{cfgPath}"
 
                                 reply.TrySetResult(message) |> ignore
                                 return RatchetDone(message, System.DateTime.UtcNow - runStarted)
@@ -355,6 +372,21 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
 
                     let summary = $"%d{results.Length} file(s) below threshold"
                     ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
+
+                    return
+                        drainOwed
+                            ctx
+                            configPath
+                            searchDir
+                            { state with
+                                LastCheckPassed = Some false }
+                }
+
+            | Custom(CheckDone(Unreadable reason, elapsed)) ->
+                async {
+                    ctx.ReportErrors configPath [ ErrorEntry.error $"coverage: %s{reason}" ]
+                    let summary = "coverage floor file unreadable"
+                    ctx.ReportStatus(PluginStatus.failedNow reason summary elapsed)
 
                     return
                         drainOwed

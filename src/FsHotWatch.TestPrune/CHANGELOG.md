@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a test project can set its own trace weave mode. `TraceProject.TraceWeave` carries
+  it, and `TraceRun.decide` weaves the project's test assembly with it instead of
+  `TraceSettings.WeaveTests` (`TraceRun.effectiveWeave`). Woven output stays cached per
+  mode: the weave cache key includes each assembly's mode, so switching a project between
+  `sites` and `full` never reuses the other mode's woven copy.
+
+- **BREAKING (API): `createWithTraces` takes `weaveOverrides: Map<string, TraceWeaveTests>`
+  after `untracedProjects`, and `TraceProject` has a `TraceWeave: TraceWeaveTests option`
+  field.** Pass `Map.empty` and `None` for the previous behaviour.
+
 - fix: a run that ran every configured project in full but that `tests.traces.record:
   "full-runs"` does not record (one launched under impact selection, such as a cold
   daemon earning its baseline) is no longer skipped in silence. Each project that takes
@@ -70,7 +80,6 @@
   `kind`, the key the verdict file's `scope` object uses, instead of `scope`. A CLI
   from before this change reads a newer daemon's reply as an unreadable scope and
   refuses a verdict rather than guessing.
-
 
 ## 0.13.0-alpha.58 - 2026-09-28
 

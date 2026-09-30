@@ -252,6 +252,9 @@ type TestProjectConfig =
         /// Whether this project takes part in `tests.traces` recording. Default true;
         /// `"traces": false` opts it out.
         Traces: bool
+        /// This project's own `traces.weaveTests` (`"traces": { "weaveTests": ... }`);
+        /// `None` takes `tests.traces.weaveTests`.
+        TraceWeave: FsHotWatch.TestPrune.TraceWeaveTests option
     }
 
 /// Configuration for Falco route attribution.
@@ -481,6 +484,18 @@ let private refuseUnknown (key: string) (bad: string) (accepted: string list) : 
 
 /// JSON string literals, for `refuseUnknown`'s accepted list.
 let private jsonStrings (values: string list) = values |> List.map (sprintf "\"%s\"")
+
+/// A `weaveTests` value at `key`: `"sites"` or `"full"` (case-insensitive), else refused.
+let private parseWeaveTests (key: string) (v: JsonElement) =
+    let parsed =
+        if v.ValueKind = JsonValueKind.String then
+            FsHotWatch.TestPrune.TraceSettings.parseWeaveTests (v.GetString())
+        else
+            None
+
+    match parsed with
+    | Some weave -> weave
+    | None -> refuseUnknown key (describeValue v) (jsonStrings [ "sites"; "full" ])
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -846,11 +861,36 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | _ -> AutoDetect
 
                         // `traces`: every project takes part in `tests.traces`
-                        // recording unless it says `"traces": false`.
-                        let traces =
+                        // recording unless it says `"traces": false`. An object takes
+                        // part and may set the project's own `weaveTests`. Any other
+                        // value is refused: read as "take part", a typo'd object would
+                        // silently record with a weave the config never asked for.
+                        let traces, traceWeave =
+                            let key = $"tests.projects[%s{project}].traces"
+
                             match p.TryGetProperty("traces") with
-                            | true, t when t.ValueKind = JsonValueKind.False -> false
-                            | _ -> true
+                            | false, _ -> true, None
+                            | true, t when t.ValueKind = JsonValueKind.True -> true, None
+                            | true, t when t.ValueKind = JsonValueKind.False -> false, None
+                            | true, t when t.ValueKind = JsonValueKind.Object ->
+                                let weave =
+                                    t.EnumerateObject()
+                                    |> Seq.map (fun prop ->
+                                        match prop.Name with
+                                        | "weaveTests" -> parseWeaveTests $"%s{key}.weaveTests" prop.Value
+                                        | other ->
+                                            raise (
+                                                ConfigError
+                                                    $"%s{key}: unknown key '%s{other}' — expected only \"weaveTests\""
+                                            ))
+                                    |> Seq.tryLast
+
+                                true, weave
+                            | true, t ->
+                                refuseUnknown
+                                    key
+                                    (describeValue t)
+                                    [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
 
                         { Project = project
                           Command = command
@@ -864,7 +904,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           CoverageArgsTemplate = coverageArgsTemplate
                           TimeoutSec = timeoutSec
                           ReportVerificationFormat = reportVerificationFormat
-                          Traces = traces })
+                          Traces = traces
+                          TraceWeave = traceWeave })
                     |> Seq.toList
                 | _ -> []
 
@@ -927,10 +968,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                                         $"tests.traces.record has unknown value '%s{raw}' (expected off, full-runs or every-run)"
                                 )
 
+                    // An unknown `weaveTests` is refused like an unknown `record`: read as
+                    // the default, a typo'd "full" would record call sites only, unnoticed.
                     let weaveTests =
-                        match str "weaveTests" |> Option.map (fun w -> w.ToLowerInvariant()) with
-                        | Some "full" -> FsHotWatch.TestPrune.WeaveTestFull
-                        | _ -> FsHotWatch.TestPrune.WeaveTestSites
+                        match t.TryGetProperty("weaveTests") with
+                        | false, _ -> FsHotWatch.TestPrune.WeaveTestSites
+                        | true, w -> parseWeaveTests "tests.traces.weaveTests" w
 
                     let verifyTimeoutSec =
                         match t.TryGetProperty("verifyTimeoutSec") with
@@ -2265,10 +2308,16 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
+        let weaveOverrides =
+            t.Projects
+            |> List.choose (fun p -> p.TraceWeave |> Option.map (fun weave -> p.Project, weave))
+            |> Map.ofList
+
         let handler =
             createWithTraces
                 t.Traces
                 untracedProjects
+                weaveOverrides
                 excludedProjects
                 dbPath
                 repoRoot

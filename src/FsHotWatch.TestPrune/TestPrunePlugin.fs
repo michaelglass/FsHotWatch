@@ -5291,7 +5291,8 @@ let private executeTests
                                           Args = config.Args
                                           Environment = config.Environment
                                           Target = deriveProjectBin config.Args repoRoot
-                                          CtrfPath = ctrfPath }
+                                          CtrfPath = ctrfPath
+                                          TraceWeave = host.TraceWiring.WeaveOverrides.TryFind config.Project }
                                         runDir
                                         (List.ofSeq extraArgs)
 
@@ -10861,7 +10862,8 @@ let internal createWithLaunchDeadline
 ///
 /// `traces` is the parsed `tests.traces` block; `None` records nothing and launches every
 /// project exactly as `createWithScope` does. `untracedProjects` names the projects that
-/// opted out with `"traces": false`. A project tracing refuses (no build output, a refused
+/// opted out with `"traces": false`; `weaveOverrides` maps a project to its own
+/// `traces.weaveTests`, which it is woven with instead of `traces.WeaveTests`. A project tracing refuses (no build output, a refused
 /// weave, a failed JIT verification, an unknown `dotnet run` option) runs untraced, and
 /// the refusal is stored in the trace database and logged with its reason. No trace
 /// failure changes a test result or the verdict.
@@ -10870,6 +10872,7 @@ let internal createWithLaunchDeadline
 let createWithTraces
     (traces: TraceSettings option)
     (untracedProjects: Set<string>)
+    (weaveOverrides: Map<string, TraceWeaveTests>)
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (repoRoot: string)
@@ -10900,6 +10903,7 @@ let createWithTraces
          |> Option.map (fun settings ->
              { Policy = settings
                OptedOut = untracedProjects
+               WeaveOverrides = weaveOverrides
                Decide = TraceRun.decide }))
 
 /// Create a TestPrune handler that honors declared test-scope exclusions.
@@ -10930,6 +10934,7 @@ let createWithScope
     createWithTraces
         None
         Set.empty
+        Map.empty
         resolveExcludedProjects
         dbPath
         repoRoot
