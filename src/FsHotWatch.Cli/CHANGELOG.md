@@ -8,6 +8,20 @@
   for any project" when nothing at all was stored. The exit code is unchanged: tracing
   never decides a verdict.
 
+- feat: `tests.projects[].traces` accepts an object, `{ "weaveTests": "sites" | "full" }`,
+  which opts the project into `tests.traces` recording and weaves its test assembly in that
+  mode instead of `tests.traces.weaveTests`. `true` and `false` mean what they did.
+
+- **fix (BREAKING for configs that relied on it): a per-project `traces` value that is not
+  `true`, `false` or that object is now a `ConfigError`.** Every other value (a string,
+  a number, `null`, an object with a misspelt or unknown key) used to be read as "traced,
+  with the global weave", so a typo silently recorded with a weave the config never asked
+  for.
+
+- **fix (BREAKING for configs that relied on it): an unknown `tests.traces.weaveTests` is
+  now a `ConfigError`,** like an unknown `record`. It used to be read as `"sites"`, so a
+  misspelt `"full"` recorded call sites only, unnoticed.
+
 ## 0.14.0-alpha.80 - 2026-09-30
 
 - deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic
@@ -80,7 +94,6 @@
 - change: the CLI reads the scope label of the `test-scope` and `check-reach`
   replies from `kind`, the key the verdict file uses. It reads a reply from an older
   daemon, which sends `scope`, as an unreadable scope.
-
 
 ## 0.14.0-alpha.77 - 2026-09-28
 

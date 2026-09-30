@@ -55,6 +55,8 @@ type TraceProject =
         Target: ArtifactFreshness.RunnerTarget option
         /// Where the run's CTRF report for this project goes; `None` when none is requested.
         CtrfPath: string option
+        /// The project's own `traces.weaveTests`; `None` takes `TraceSettings.WeaveTests`.
+        TraceWeave: TraceWeaveTests option
     }
 
 /// Whether, and how, one project is traced.
@@ -110,12 +112,16 @@ type IndexFold =
     }
 
 /// How a plugin instance traces: its `tests.traces` settings, the projects that opted
-/// out, and the decision function (`TraceRun.decide`, or a test's stand-in), given the
-/// run's cancellation token.
+/// out, the projects' own weave modes, and the decision function (`TraceRun.decide`, or
+/// a test's stand-in), given the run's cancellation token.
 type internal TraceWiring =
-    { Policy: TraceSettings
-      OptedOut: Set<string>
-      Decide: CancellationToken -> TraceRuntime -> TraceProject -> string -> string list -> TraceDecision }
+    {
+        Policy: TraceSettings
+        OptedOut: Set<string>
+        /// Project -> its own `traces.weaveTests`, for the projects that set one.
+        WeaveOverrides: Map<string, TraceWeaveTests>
+        Decide: CancellationToken -> TraceRuntime -> TraceProject -> string -> string list -> TraceDecision
+    }
 
 /// Deciding which projects a run traces, and storing what they recorded.
 [<RequireQualifiedAccess>]
@@ -138,6 +144,11 @@ module TraceRun =
         match weave with
         | WeaveTestSites -> Model.SitesOnly
         | WeaveTestFull -> Model.Full
+
+    /// How `project`'s test assembly is woven: its own `traces.weaveTests`, else the
+    /// global `tests.traces.weaveTests`.
+    let effectiveWeave (rt: TraceRuntime) (project: TraceProject) =
+        project.TraceWeave |> Option.defaultValue rt.Settings.WeaveTests
 
     /// Why a run records no traces although the configuration reads as if it would, or
     /// `None` when not recording is what was asked for. `full-runs` records only runs
@@ -201,7 +212,7 @@ module TraceRun =
                           ProjectDir = target.ProjectDir
                           AssemblyName = target.AssemblyName
                           TestProject = project.Project
-                          WeaveTests = weaveMode rt.Settings.WeaveTests
+                          WeaveTests = weaveMode (effectiveWeave rt project)
                           RunDir = runDir
                           VerifyTimeout = TimeSpan.FromSeconds(float rt.Settings.VerifyTimeoutSec) }
 

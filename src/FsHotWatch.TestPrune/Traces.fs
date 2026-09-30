@@ -11,7 +11,8 @@ type TraceRecordPolicy =
     /// Record every run; an impact-selected run refreshes only the tests it ran.
     | RecordEveryRun
 
-/// How the test project's own assembly is woven (`tests.traces.weaveTests`).
+/// How the test project's own assembly is woven (`tests.traces.weaveTests`, or a
+/// project's own `traces.weaveTests`).
 type TraceWeaveTests =
     /// Call sites only (`"sites"`, the default).
     | WeaveTestSites
@@ -53,6 +54,14 @@ module TraceSettings =
         | "off" -> Some RecordOff
         | "full-runs" -> Some RecordFullRuns
         | "every-run" -> Some RecordEveryRun
+        | _ -> None
+
+    /// Parse a `weaveTests` value (case-insensitive). Unknown text is `None`: the caller
+    /// refuses the configuration.
+    let parseWeaveTests (s: string) : TraceWeaveTests option =
+        match s.ToLowerInvariant() with
+        | "sites" -> Some WeaveTestSites
+        | "full" -> Some WeaveTestFull
         | _ -> None
 
 /// How a traced project is launched: its woven apphost, run directly.
