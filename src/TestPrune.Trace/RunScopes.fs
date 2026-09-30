@@ -141,3 +141,26 @@ let staticInheritance (manifest: Manifest) (scopes: Map<string, RecordedScope>) 
 
         grow start (Set.toList start)
         |> Set.filter (fun k -> isStaticInit k && scopes.ContainsKey k)
+
+/// Every scope a test with scopes `keys` holds or inherits: those keys, the fixture,
+/// collection, assembly and pool scopes reachable through parents and links, and the
+/// static-init scopes `staticInheritance` gives them. Only recorded scopes are returned;
+/// ambient and static-init scopes are never reached through parents and links.
+let inheritedBy (manifest: Manifest) (scopes: Map<string, RecordedScope>) : string list -> Set<string> =
+    let statics = staticInheritance manifest scopes
+
+    let rec held (seen: Set<string>) (keys: string list) =
+        match keys with
+        | [] -> seen
+        | k :: rest when
+            seen.Contains k
+            || k = "A:ambient"
+            || isStaticInit k
+            || not (scopes.ContainsKey k)
+            ->
+            held seen rest
+        | k :: rest -> held (seen.Add k) (scopes.[k].Parents @ scopes.[k].Links @ rest)
+
+    fun keys ->
+        let own = held Set.empty keys
+        Set.union own (statics own)

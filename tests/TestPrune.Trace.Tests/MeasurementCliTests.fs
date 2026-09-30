@@ -25,6 +25,7 @@ let private auditReport extra : Audit.AuditReport =
             Extra = extra
             MissingByKind = Map.empty
             MissingUser = []
+            UncoveredInit = []
             IsolatedFound = true
             IsolationError = None } ]
         Map.empty

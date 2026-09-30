@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- audit: a type initializer a sampled test runs alone but not in parallel must be one it
+  inherits in parallel, or the audit fails (`UncoveredInit`, `uncovered init <type>` in the
+  table). Missing ids now compare everything a test holds or inherits, not only its own
+  scope's ids, so an initializer that ran inside another is compared too. Before, every
+  missing initializer counted as expected, so the audit could not see a test that lost a
+  static-init dependency. `Audit.ownIds` is replaced by `Audit.observe`; `compareTest`
+  takes each run's `Observed` and whether the parallel run recorded a scope.
 - file census: the outside-the-repository run's dumps and CTRF report are copied to
   `file-census/outside/` under the run directory before its temp directory is deleted.
 

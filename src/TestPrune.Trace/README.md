@@ -177,7 +177,7 @@ run that wrote no CTRF report).
 | Verb | Measures | Bar |
 |---|---|---|
 | `census [--db <path>] [--run <runId>] [--json]` | Each project's newest run in the trace store: traced / executed tests, unattributed (ambient) hits, tests per incomplete reason, pool scopes | traced ≥ 0.99; ambient < 0.1 % of hits, or every ambient symbol listed for review |
-| `audit … [--sample 0.01] [--seed 1]` | Runs the project once in parallel, then a seeded sample of its tests one at a time, and compares each test's own probe ids | no id attributed in parallel that the test never hits alone |
+| `audit … [--sample 0.01] [--seed 1]` | Runs the project once in parallel, then a seeded sample of its tests one at a time, and compares each test's own probe ids, and the ids of every scope it holds or inherits | no id attributed in parallel that the test never hits alone; every type initializer the test runs alone but not in parallel is one it inherits in parallel |
 | `overhead … [--reps 3]` | Interleaved untraced and traced launches, median CPU (user + system) of each | traced median ≤ 1.15 × untraced median, and every launch exits the same way |
 | `file-census …` | Tests whose trace holds a repository file input vs tests that depend on the repository: they fail when the woven build output runs outside it, or still read a file inside it from there | the two sets differ by ≤ 5 % of their union |
 

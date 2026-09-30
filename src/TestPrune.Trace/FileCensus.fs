@@ -49,29 +49,13 @@ let normalise (name: string) : string =
 /// recorded a file read, existence probe or directory listing.
 let readers (manifest: Manifest) (dumps: ProcessDump list) : Set<string> =
     let scopes = RunScopes.merged dumps
-    let statics = RunScopes.staticInheritance manifest scopes
-
-    let rec held (seen: Set<string>) (keys: string list) =
-        match keys with
-        | [] -> seen
-        | k :: rest when
-            seen.Contains k
-            || k = "A:ambient"
-            || RunScopes.isStaticInit k
-            || not (scopes.ContainsKey k)
-            ->
-            held seen rest
-        | k :: rest -> held (seen.Add k) (scopes.[k].Parents @ scopes.[k].Links @ rest)
+    let inherited = RunScopes.inheritedBy manifest scopes
 
     scopes
     |> Map.toList
     |> List.choose (fun (key, s) ->
         s.Test
-        |> Option.filter (fun _ ->
-            let own = held Set.empty [ key ]
-
-            Set.union own (statics own)
-            |> Set.exists (fun k -> not scopes.[k].Inputs.IsEmpty))
+        |> Option.filter (fun _ -> inherited [ key ] |> Set.exists (fun k -> not scopes.[k].Inputs.IsEmpty))
         |> Option.map (fun t -> normalise (t.Class + "." + t.Method)))
     |> Set.ofList
 

@@ -128,14 +128,40 @@ let ``the isolation audit finds no id attributed in parallel that the test does 
         test <@ Audit.passes report @>)
 
 [<Fact>]
+let ``under a full weave, every initializer a test misses in parallel is one it inherits there`` () =
+    // RootedA's and RootedB's initializers need SuiteRoot's. Alone, each runs it inside its
+    // own; in parallel at most one does, and the other must inherit it.
+    withScratch (fun req ->
+        let report = Audit.run { req with WeaveTests = Full } [] 1.0 7 timeout |> ok
+        test <@ report.Tests |> List.collect (fun t -> t.UncoveredInit) |> List.isEmpty @>
+        test <@ Audit.passes report @>)
+
+[<Fact>]
 let ``a sampled test the isolated run cannot select is an audit error`` () =
     withScratch (fun req ->
         let launch = TraceSession.prepareProject req |> ok
         let dir name = Path.Combine(req.RunDir, name)
-        let parallelIds = Map [ "No.Such.test", set [ 1 ] ]
+
+        let parallelIds =
+            Map
+                [ "No.Such.test",
+                  ({ Own = set [ 1 ]
+                     All = set [ 1 ]
+                     Scopes = Set.empty }
+                  : Audit.Observed) ]
 
         let alone args display =
-            Audit.auditAlone launch req.RepoRoot Map.empty parallelIds args timeout (dir display) display
+            Audit.auditAlone
+                launch
+                req.RepoRoot
+                launch.Shadow.Manifest
+                Map.empty
+                parallelIds
+                (fun _ -> false)
+                args
+                timeout
+                (dir display)
+                display
 
         let unmatched = alone [] "No.Such.test"
 

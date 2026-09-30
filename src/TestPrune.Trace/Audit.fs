@@ -1,9 +1,12 @@
 /// The isolated-vs-parallel audit: run a woven project once with its tests in parallel,
 /// then a seeded sample of its tests one at a time, and compare each sampled test's OWN
 /// probe ids. An id the parallel run attributed to a test that the test never hits alone
-/// is contamination from a concurrent test; the bar is none. Ids a test hits alone but
-/// not in parallel are expected for once-per-process code (static constructors, closure
-/// singletons), which another test ran first; the rest are listed for a human.
+/// is contamination from a concurrent test; the bar is none. Ids a test's own and inherited
+/// scopes hit alone but not in parallel are expected for once-per-process code (static
+/// constructors, closure singletons), which another test ran first; the rest are listed
+/// for a human. A missing type initializer is expected only when the test inherits that
+/// initializer's static-init scope in parallel: otherwise what the initializer recorded is
+/// in no scope the test depends on, and the audit fails.
 ///
 /// The audit compares ids, not symbols: a join could hide an attribution error.
 module TestPrune.Trace.Audit
@@ -26,6 +29,9 @@ type TestAudit =
         MissingByKind: Map<string, int>
         /// `type::member` of every missing id that is not `cctor` or `gen`, for review.
         MissingUser: string list
+        /// The type of every missing initializer whose static-init scope the parallel run
+        /// recorded but the test does not inherit there.
+        UncoveredInit: string list
         /// False when the isolated run recorded no scope for the test: the test hit no
         /// probe alone, or the test could not be run alone at all (`IsolationError`).
         IsolatedFound: bool
@@ -53,13 +59,33 @@ type AuditReport =
         ParallelOutput: string
     }
 
-/// Each test scope's own ids, by display name.
-let ownIds (dumps: ProcessDump list) : Map<string, Set<int>> =
-    RunScopes.merged dumps
+/// What one test recorded in one run: its own scopes' probe ids, and the ids and keys of
+/// every scope it holds or inherits (`RunScopes.inheritedBy`).
+type Observed =
+    { Own: Set<int>
+      All: Set<int>
+      Scopes: Set<string> }
+
+/// Each test's `Observed`, by display name.
+let observe (manifest: Manifest) (dumps: ProcessDump list) : Map<string, Observed> =
+    let scopes = RunScopes.merged dumps
+    let inherited = RunScopes.inheritedBy manifest scopes
+
+    let idsOf (keys: string seq) =
+        keys |> Seq.collect (fun k -> scopes.[k].Ids) |> Set.ofSeq
+
+    scopes
     |> Map.toList
-    |> List.choose (fun (_, s) -> s.Test |> Option.map (fun t -> t.Display, Set.ofArray s.Ids))
+    |> List.choose (fun (key, s) -> s.Test |> Option.map (fun t -> t.Display, key))
     |> List.groupBy fst
-    |> List.map (fun (display, group) -> display, group |> List.map snd |> Set.unionMany)
+    |> List.map (fun (display, group) ->
+        let own = group |> List.map snd
+        let all = inherited own
+
+        display,
+        { Own = idsOf own
+          All = idsOf all
+          Scopes = all })
     |> Map.ofList
 
 /// `max 1 (ceil (n × sample))` of `displays`, at most all of them, chosen by a
@@ -71,18 +97,24 @@ let choose (sample: float) (seed: int) (displays: string list) : string list =
     Random(seed).Shuffle sorted
     sorted |> Array.truncate k |> List.ofArray
 
-/// Compare one test's own ids in the parallel run with its isolated run (`None` when the
-/// isolated run recorded no scope for it). `rows` is the weave manifest by id.
+/// Compare one test in the parallel run with its isolated run (`None` when the isolated run
+/// recorded no scope for it): its own ids for extras, everything it holds or inherits for
+/// missing ids. `rows` is the weave manifest by id; `recordedInParallel` says whether the
+/// parallel run recorded a scope key.
 let compareTest
     (rows: Map<int, ManifestRow>)
     (display: string)
-    (parallelIds: Set<int>)
-    (isolatedIds: Set<int> option)
+    (inParallel: Observed)
+    (isolated: Observed option)
+    (recordedInParallel: string -> bool)
     : TestAudit =
-    let alone = isolatedIds |> Option.defaultValue Set.empty
+    let aloneOwn, aloneAll =
+        match isolated with
+        | Some o -> o.Own, o.All
+        | None -> Set.empty, Set.empty
 
     let missing =
-        Set.difference alone parallelIds
+        Set.difference aloneAll inParallel.All
         |> List.ofSeq
         |> List.map (fun id -> id, rows.TryFind id)
 
@@ -91,8 +123,13 @@ let compareTest
         |> Option.map (fun r -> Manifest.kindCode r.Kind)
         |> Option.defaultValue "unknown"
 
+    // An initializer that recorded nothing leaves no scope, and nothing to inherit.
+    let uncovered (r: ManifestRow) =
+        let key = RunScopes.StaticInitPrefix + r.TypeName
+        recordedInParallel key && not (inParallel.Scopes.Contains key)
+
     { Display = display
-      Extra = Set.difference parallelIds alone |> List.ofSeq
+      Extra = Set.difference inParallel.Own aloneOwn |> List.ofSeq
       MissingByKind = missing |> List.countBy (snd >> kindOf) |> Map.ofList
       MissingUser =
         missing
@@ -101,7 +138,12 @@ let compareTest
             match r with
             | Some r -> $"%s{r.TypeName}::%s{r.Member}"
             | None -> $"?::%d{id}")
-      IsolatedFound = isolatedIds.IsSome
+      UncoveredInit =
+        missing
+        |> List.choose (fun (_, r) -> r |> Option.filter (fun r -> r.Kind = StaticCtor && uncovered r))
+        |> List.map (fun r -> r.TypeName)
+        |> List.distinct
+      IsolatedFound = isolated.IsSome
       IsolationError = None }
 
 /// A sampled test its isolated run did not select: an audit error, compared with nothing.
@@ -110,6 +152,7 @@ let notIsolated (display: string) (why: string) : TestAudit =
       Extra = []
       MissingByKind = Map.empty
       MissingUser = []
+      UncoveredInit = []
       IsolatedFound = false
       IsolationError = Some $"could not isolate %s{display}: %s{why}" }
 
@@ -170,12 +213,13 @@ let withParallelRun (exitCode: int) (output: string) (r: AuditReport) : AuditRep
         ParallelExitCode = exitCode
         ParallelOutput = if exitCode = 0 then "" else output }
 
-/// The bar: something was sampled, no id is extra in parallel, and every sampled test was
-/// run and recorded alone. Missing ids are reported for review, never failed.
+/// The bar: something was sampled, no id is extra in parallel, every sampled test was run
+/// and recorded alone, and every initializer a test misses in parallel it inherits there.
+/// Other missing ids are reported for review, never failed.
 let passes (r: AuditReport) =
     r.Sampled > 0
     && r.ExtraTotal = 0
-    && r.Tests |> List.forall (fun t -> t.IsolatedFound)
+    && r.Tests |> List.forall (fun t -> t.IsolatedFound && t.UncoveredInit.IsEmpty)
 
 /// True when a sampled test could not be run alone: the audit measured nothing for it.
 let isError (r: AuditReport) =
@@ -213,6 +257,9 @@ let render (r: AuditReport) : string =
         for m in t.MissingUser do
             line $"    missing user %s{m}"
 
+        for i in t.UncoveredInit do
+            line $"    uncovered init %s{i}"
+
         match t.IsolationError with
         | Some why -> line $"    %s{why}"
         | None when not t.IsolatedFound -> line "    not recorded when run alone"
@@ -243,8 +290,10 @@ let private tracedRun (launch: TraceSession.TraceLaunch) workDir dumpDir args ti
 let internal auditAlone
     (launch: TraceSession.TraceLaunch)
     (workDir: string)
+    (manifest: Manifest)
     (rows: Map<int, ManifestRow>)
-    (inParallel: Map<string, Set<int>>)
+    (inParallel: Map<string, Observed>)
+    (recordedInParallel: string -> bool)
     (appArgs: string list)
     (timeout: TimeSpan)
     (dir: string)
@@ -267,7 +316,13 @@ let internal auditAlone
     | Ok [] -> notIsolated display "the filter selected nothing"
     | Ok _ ->
         let alone, _ = DumpReader.readDirectory dumpDir
-        compareTest rows display (Map.find display inParallel) ((ownIds alone).TryFind display)
+
+        compareTest
+            rows
+            display
+            (Map.find display inParallel)
+            ((observe manifest alone).TryFind display)
+            recordedInParallel
 
 /// Prepare the project, run it once in parallel, then each of a seeded `sample` of its
 /// traced tests alone (`auditAlone`), and compare. `appArgs` go to every
@@ -289,12 +344,25 @@ let run
         let (dumps, rejected), code, output =
             tracedRun launch req.RepoRoot launch.DumpDir appArgs timeout
 
-        let inParallel = ownIds dumps
+        let manifest = launch.Shadow.Manifest
+        let inParallel = observe manifest dumps
+        let recorded = RunScopes.merged dumps
 
         let tests =
             choose sample seed (inParallel |> Map.keys |> List.ofSeq)
             |> List.mapi (fun i display ->
                 let dir = Path.Combine(req.RunDir, "audit", string i)
-                auditAlone launch req.RepoRoot rows inParallel appArgs timeout dir display)
+
+                auditAlone
+                    launch
+                    req.RepoRoot
+                    manifest
+                    rows
+                    inParallel
+                    recorded.ContainsKey
+                    appArgs
+                    timeout
+                    dir
+                    display)
 
         summarize tests (incomplete dumps rejected) |> withParallelRun code output)

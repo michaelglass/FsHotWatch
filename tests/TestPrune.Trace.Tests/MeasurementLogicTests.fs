@@ -58,6 +58,16 @@ let private row id kind typeName memberName : ManifestRow =
 
 // ---------------------------------------------------------------- audit
 
+let private noManifest =
+    { Rows = [||]
+      Documents = Map.empty
+      IdCount = 0 }
+
+let private observed own all scopes : Audit.Observed =
+    { Own = set own
+      All = set all
+      Scopes = set scopes }
+
 [<Fact>]
 let ``own ids merge a test's scope across processes, re-keying a child's static init`` () =
     let parent =
@@ -65,14 +75,15 @@ let ``own ids merge a test's scope across processes, re-keying a child's static 
 
     let child = dump 2 (Some "T:1") [ scope "T:1" [ 3 ]; scope "S:static-init" [ 4 ] ]
 
-    test <@ Audit.ownIds [ parent; child ] = Map [ "N.C.m", set [ 1; 2; 3; 4 ] ] @>
+    test <@ (Audit.observe noManifest [ parent; child ]).["N.C.m"].Own = set [ 1; 2; 3; 4 ] @>
 
 [<Fact>]
-let ``own ids keep a parentless process's static init out of every test`` () =
+let ``a parentless process's static init is inherited, never a test's own`` () =
     let d =
         dump 1 None [ testScope "T:1" "N.C" "m" "N.C.m" [ 1 ]; scope "S:static-init" [ 4 ] ]
 
-    test <@ Audit.ownIds [ d ] = Map [ "N.C.m", set [ 1 ] ] @>
+    // An initializer the recorder could not name is inherited by every test.
+    test <@ (Audit.observe noManifest [ d ]).["N.C.m"] = observed [ 1 ] [ 1; 4 ] [ "T:1"; "S:static-init" ] @>
 
 [<Fact>]
 let ``the sample is seeded, sorted first, at least one test and never more than all`` () =
@@ -95,7 +106,12 @@ let ``a test's audit is its extra ids and its missing ids by kind`` () =
               5, row 5 TypeUse "N.R" "" ]
 
     let a =
-        Audit.compareTest rows "N.C.m" (set [ 1; 6 ]) (Some(set [ 1; 2; 3; 4; 5; 7 ]))
+        Audit.compareTest
+            rows
+            "N.C.m"
+            (observed [ 1; 6 ] [ 1; 6 ] [])
+            (Some(observed [ 1; 2; 3; 4; 5; 7 ] [ 1; 2; 3; 4; 5; 7 ] []))
+            (fun _ -> false)
 
     test <@ a.Display = "N.C.m" && a.IsolatedFound @>
     test <@ a.Extra = [ 6 ] @>
@@ -103,10 +119,43 @@ let ``a test's audit is its extra ids and its missing ids by kind`` () =
     test <@ a.MissingByKind = Map [ "case", 1; "cctor", 1; "gen", 1; "type", 1; "unknown", 1 ] @>
     // cctor and gen are the expected once-per-process kinds; the rest need a human.
     test <@ a.MissingUser = [ "N.U::A"; "N.R::"; "?::7" ] @>
+    test <@ List.isEmpty a.UncoveredInit @>
+
+[<Fact>]
+let ``extras compare own ids; missing ids compare everything the test holds or inherits`` () =
+    let rows = Map [ 1, row 1 UserMethod "N.M" "f"; 2, row 2 UserMethod "N.K" "g" ]
+    // Alone, id 2 ran in an initializer the test inherits; in parallel it is inherited too.
+    let a =
+        Audit.compareTest rows "N.C.m" (observed [ 1 ] [ 1; 2 ] []) (Some(observed [ 1 ] [ 1; 2 ] [])) (fun _ -> false)
+
+    test <@ List.isEmpty a.Extra && a.MissingByKind.IsEmpty @>
+
+[<Fact>]
+let ``a missing initializer fails the audit unless the test inherits its recorded scope in parallel`` () =
+    let rows =
+        Map
+            [ 2, row 2 StaticCtor "N.M" ".cctor"
+              8, row 8 StaticCtor "N.K" ".cctor"
+              9, row 9 StaticCtor "N.Q" ".cctor" ]
+
+    let recorded = set [ "S:N.M"; "S:N.K" ]
+    // N.K is inherited in parallel; N.Q recorded nothing, so there is nothing to inherit.
+    let a =
+        Audit.compareTest
+            rows
+            "N.C.m"
+            (observed [ 1 ] [ 1 ] [ "T:1"; "S:N.K" ])
+            (Some(observed [ 1; 2; 8; 9 ] [ 1; 2; 8; 9 ] []))
+            recorded.Contains
+
+    test <@ a.MissingByKind = Map [ "cctor", 3 ] && a.UncoveredInit = [ "N.M" ] @>
+    test <@ not (Audit.passes (Audit.summarize [ a ] Map.empty)) @>
 
 [<Fact>]
 let ``a test the isolated run never recorded is all extra and not found`` () =
-    let a = Audit.compareTest Map.empty "N.C.m" (set [ 1 ]) None
+    let a =
+        Audit.compareTest Map.empty "N.C.m" (observed [ 1 ] [ 1 ] []) None (fun _ -> false)
+
     test <@ not a.IsolatedFound && a.Extra = [ 1 ] && a.MissingByKind.IsEmpty @>
 
 [<Fact>]
@@ -156,6 +205,7 @@ let private audited display extra found : Audit.TestAudit =
       Extra = extra
       MissingByKind = Map.empty
       MissingUser = []
+      UncoveredInit = []
       IsolatedFound = found
       IsolationError = None }
 
@@ -176,7 +226,8 @@ let ``the audit table names every extra id, missing user id and incomplete reaso
     let t =
         { audited "N.C.m" [ 6 ] true with
             MissingByKind = Map [ "cctor", 2; "user", 1 ]
-            MissingUser = [ "N.M::f" ] }
+            MissingUser = [ "N.M::f" ]
+            UncoveredInit = [ "N.K" ] }
 
     let text =
         Audit.render (Audit.summarize [ t; audited "N.C.n" [] false ] (Map [ "child-process-untraced:git", 3 ]))
@@ -189,6 +240,7 @@ let ``the audit table names every extra id, missing user id and incomplete reaso
                   "  N.C.m  extra 1  missing cctor=2 user=1"
                   "    extra id 6"
                   "    missing user N.M::f"
+                  "    uncovered init N.K"
                   "  N.C.n  extra 0  missing -"
                   "    not recorded when run alone"
                   "  incomplete child-process-untraced:git  3"
