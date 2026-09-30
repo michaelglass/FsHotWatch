@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a test project can set its own trace weave mode. `TraceProject.TraceWeave` carries
+  it, and `TraceRun.decide` weaves the project's test assembly with it instead of
+  `TraceSettings.WeaveTests` (`TraceRun.effectiveWeave`). Woven output stays cached per
+  mode: the weave cache key includes each assembly's mode, so switching a project between
+  `sites` and `full` never reuses the other mode's woven copy.
+
+- **BREAKING (API): `createWithTraces` takes `weaveOverrides: Map<string, TraceWeaveTests>`
+  after `untracedProjects`, and `TraceProject` has a `TraceWeave: TraceWeaveTests option`
+  field.** Pass `Map.empty` and `None` for the previous behaviour.
+
 ## 0.13.0-alpha.60 - 2026-09-30
 
 - deps: TestPrune.Core 13.3.1 and TestPrune.Trace 0.5.0. An edit to the body of a generic

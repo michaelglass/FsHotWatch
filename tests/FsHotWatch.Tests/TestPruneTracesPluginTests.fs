@@ -173,6 +173,7 @@ let ``a traced project runs its woven copy, and its traces are stored and logged
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
 
         let json, activity =
@@ -194,6 +195,7 @@ let ``trace preparation is given the run's cancellation token`` () =
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide =
                 fun ct _ _ _ _ ->
                     tokens.Add ct
@@ -202,6 +204,27 @@ let ``trace preparation is given the run's cancellation token`` () =
         runTests root [ config "T" runner "" ] (Some wiring) |> ignore
 
         test <@ tokens.Count = 1 && tokens.[0].CanBeCanceled @>)
+
+[<Fact(Timeout = 60000)>]
+let ``each project is decided with its own weaveTests, and none where it set none`` () =
+    withTempDir "tp-weave" (fun root ->
+        let runner = Path.Combine(root, "runner.sh")
+        writeRunner runner (Path.Combine(root, "ran")) false
+        let weaves = ResizeArray<string * TraceWeaveTests option>()
+
+        let wiring =
+            { Policy = settings RecordEveryRun
+              OptedOut = Set.empty
+              WeaveOverrides = Map.ofList [ "A", WeaveTestFull ]
+              Decide =
+                fun _ _ project _ _ ->
+                    lock weaves (fun () -> weaves.Add((project.Project, project.TraceWeave)))
+                    Untraced None }
+
+        runTests root [ config "A" runner ""; config "B" runner "" ] (Some wiring)
+        |> ignore
+
+        test <@ weaves |> Seq.sort |> List.ofSeq = [ "A", Some WeaveTestFull; "B", None ] @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a refused project runs as configured with the same verdict, and the refusal is stored and logged`` () =
@@ -213,6 +236,7 @@ let ``a refused project runs as configured with the same verdict, and the refusa
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide = TraceRun.decide }
 
         let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
@@ -232,6 +256,7 @@ let ``a policy that does not record this mode leaves no trace store at all`` () 
         let wiring =
             { Policy = settings RecordFullRuns
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide = TraceRun.decide }
 
         // run-tests launches under `check`'s mode here, which full-runs does not record.
@@ -281,6 +306,7 @@ let ``a traced launch that verified nothing re-runs untraced, and the refusal sa
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide = decide }
 
         let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
@@ -351,6 +377,7 @@ let ``a traced run joins against the analysis admitted while it ran, however far
         let wiring =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
+              WeaveOverrides = Map.empty
               Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
 
         let host = createModelHost (Unchecked.defaultof<_>) root

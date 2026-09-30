@@ -2558,3 +2558,66 @@ let ``parseConfig a project opts out with traces false; the default is in`` () =
 
     let ps = (parseConfig json defaults).Tests.Value.Projects
     test <@ ps |> List.map (fun p -> p.Project, p.Traces) = [ "A", true; "B", false; "C", true ] @>
+
+/// The one project's (Traces, TraceWeave) under a per-project `traces` value.
+let private projectTracesOf (traces: string) =
+    let json =
+        """{"tests": {"projects": [{"project": "T", "traces": __T__}]}}""".Replace("__T__", traces)
+
+    let p = (parseConfig json defaults).Tests.Value.Projects |> List.exactlyOne
+    p.Traces, p.TraceWeave
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig a project's traces boolean overrides no weave`` () =
+    test <@ projectTracesOf "true" = (true, None) @>
+    test <@ projectTracesOf "false" = (false, None) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig a project's traces object opts in and overrides weaveTests`` () =
+    test <@ projectTracesOf """{"weaveTests": "sites"}""" = (true, Some FsHotWatch.TestPrune.WeaveTestSites) @>
+    test <@ projectTracesOf """{"weaveTests": "full"}""" = (true, Some FsHotWatch.TestPrune.WeaveTestFull) @>
+    test <@ projectTracesOf """{"weaveTests": "Full"}""" = (true, Some FsHotWatch.TestPrune.WeaveTestFull) @>
+    test <@ projectTracesOf "{}" = (true, None) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"everything\"", "'everything'")>]
+[<InlineData("5", "'5'")>]
+[<InlineData("null", "'null'")>]
+[<InlineData("[]", "'[]'")>]
+let ``parseConfig a project's traces of any other shape is a ConfigError`` (value: string, named: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> projectTracesOf value |> ignore)
+
+    test <@ ex.message.Contains "tests.projects[T].traces" && ex.message.Contains named @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"most\"", "'most'")>]
+[<InlineData("\"\"", "''")>]
+[<InlineData("true", "'true'")>]
+let ``parseConfig an unknown weaveTests in a project's traces is a ConfigError`` (value: string, named: string) =
+    let ex =
+        Assert.Throws<ConfigError>(fun () -> projectTracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
+
+    test
+        <@
+            ex.message.Contains "tests.projects[T].traces.weaveTests"
+            && ex.message.Contains named
+        @>
+
+    test <@ ex.message.Contains "\"sites\"" && ex.message.Contains "\"full\"" @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig an unknown key in a project's traces object is a ConfigError`` () =
+    let ex =
+        Assert.Throws<ConfigError>(fun () -> projectTracesOf """{"weave": "full"}""" |> ignore)
+
+    test <@ ex.message.Contains "tests.projects[T].traces" && ex.message.Contains "'weave'" @>
+    test <@ ex.message.Contains "weaveTests" @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"most\"", "'most'")>]
+[<InlineData("true", "'true'")>]
+let ``parseConfig an unknown tests.traces.weaveTests is a ConfigError`` (value: string, named: string) =
+    let ex =
+        Assert.Throws<ConfigError>(fun () -> tracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
+
+    test <@ ex.message.Contains "tests.traces.weaveTests" && ex.message.Contains named @>
