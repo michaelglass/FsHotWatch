@@ -109,8 +109,8 @@ let private mkFileResult (fileName: string) (linePct: float) (lineThreshold: flo
 let ``gateVerdict: full-suite shortfall gates (Failed)`` () =
     let below = [ mkFileResult "OutOfDiff.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict RunScope.FullSuite (SomeFailed below) with
-    | CovPlugin.Failed results -> test <@ results.Length = 1 @>
+    match CovPlugin.gateVerdict RunScope.FullSuite (Some { Files = below; Counts = [] }) with
+    | CovPlugin.Failed failures -> test <@ failures.Files.Length = 1 @>
     | other -> Assert.Fail $"Expected Failed, got {other}"
 
 [<Fact(Timeout = 5000)>]
@@ -119,22 +119,22 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
         [ mkFileResult "OutOfDiff1.fs" 0.0 100.0
           mkFileResult "OutOfDiff2.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict RunScope.Partial (SomeFailed below) with
+    match CovPlugin.gateVerdict RunScope.Partial (Some { Files = below; Counts = [] }) with
     | CovPlugin.NotGatedFiltered count -> test <@ count = 2 @>
     | other -> Assert.Fail $"Expected NotGatedFiltered, got {other}"
 
 [<Fact(Timeout = 5000)>]
-let ``gateVerdict: AllPassed is Passed regardless of full-suite flag`` () =
+let ``gateVerdict: no shortfall is Passed regardless of full-suite flag`` () =
     test
         <@
-            match CovPlugin.gateVerdict RunScope.Partial AllPassed with
+            match CovPlugin.gateVerdict RunScope.Partial None with
             | CovPlugin.Passed -> true
             | _ -> false
         @>
 
     test
         <@
-            match CovPlugin.gateVerdict RunScope.FullSuite AllPassed with
+            match CovPlugin.gateVerdict RunScope.FullSuite None with
             | CovPlugin.Passed -> true
             | _ -> false
         @>
@@ -194,7 +194,7 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
 
     let verdicts =
         [ for _ in 1..10 ->
-              match CovPlugin.gateVerdict RunScope.Partial (SomeFailed belowFloor) with
+              match CovPlugin.gateVerdict RunScope.Partial (Some { Files = belowFloor; Counts = [] }) with
               | CovPlugin.NotGatedFiltered n -> Some n
               | CovPlugin.Failed _
               | CovPlugin.Unreadable _ -> None
@@ -983,7 +983,7 @@ let ``a trigger refused while a finished check's fold holds the key is retained`
         handler.Update refused handler.Init (runCompleted RunScope.Partial)
         |> Async.RunSynchronously
 
-    test <@ owed.Owed = Some RunScope.Partial @>
+    test <@ owed.Owed |> Option.map fst = Some RunScope.Partial @>
 
     // Positive control on the same path: an accepted claim owes nothing, so the
     // retention above is the refusal's doing and not an unconditional write.
@@ -1010,7 +1010,7 @@ let ``the trigger retained behind a finished check is run by that check's result
             handler.Update (stubCoverageCtx (fun _ _ -> PF.SlotBusy)) handler.Init (runCompleted RunScope.Partial)
             |> Async.RunSynchronously
 
-        test <@ retained.Owed = Some RunScope.Partial @>
+        test <@ retained.Owed |> Option.map fst = Some RunScope.Partial @>
 
         let mutable scheduled: (string * Async<CovPlugin.CoverageMsg>) option = None
 
@@ -1022,7 +1022,10 @@ let ``the trigger retained behind a finished check is run by that check's result
         // The finished check's own result fold: it holds the key, so its claim is the
         // one that can start the retained trigger.
         let drained =
-            handler.Update holderFold retained (Custom(CovPlugin.CheckDone(CovPlugin.Passed, TimeSpan.Zero)))
+            handler.Update
+                holderFold
+                retained
+                (Custom(CovPlugin.CheckDone(CovPlugin.Judged CovPlugin.Passed, TimeSpan.Zero)))
             |> Async.RunSynchronously
 
         test <@ drained.Owed = None @>
@@ -1037,5 +1040,201 @@ let ``the trigger retained behind a finished check is run by that check's result
             // And it checks for the NEWER run: the shortfall is gated by the retained
             // `Partial` scope (a notice), not by the full-suite holder's (a red).
             match work |> Async.RunSynchronously with
-            | CovPlugin.CheckDone(CovPlugin.NotGatedFiltered count, _) -> test <@ count = 1 @>
+            | CovPlugin.CheckDone(CovPlugin.Judged(CovPlugin.NotGatedFiltered count), _) -> test <@ count = 1 @>
             | other -> Assert.Fail $"expected the retained Partial trigger's verdict, got {other}")
+
+// ---------------------------------------------------------------------------
+// Named reports, count floors and freshness: what a run's coverage is judged as.
+// A check over named reports judges exactly what `coverageratchet check` judges on the
+// same files (percentage floors AND count floors), only for a full-suite run, and only
+// on reports that run wrote.
+// ---------------------------------------------------------------------------
+
+/// Floors for `MyModule.fs`: percentage floors `line`/`branch`, and a count floor of
+/// `coveredLines` when given.
+let private floorsJson (line: int) (coveredLines: int option) =
+    let counts =
+        match coveredLines with
+        | Some n ->
+            $""", "countFloors": {{ "MyModule.fs": [ {{ "coveredLines": {n}, "coveredBranches": 0, "reason": "test" }} ] }}"""
+        | None -> ""
+
+    $"""{{ "overrides": {{ "MyModule.fs": {{ "line": {line}, "branch": 0 }} }}{counts} }}"""
+
+/// What `coverageratchet check` decides on `xmlPath` under `configPath`: the files below a
+/// percentage floor and the files below a count floor, by name.
+let private cliVerdict (configPath: string) (xmlPath: string) =
+    let options = loadReaderOptions configPath |> Result.defaultWith failwith
+
+    let coverage =
+        (CoverageRatchet.Cobertura.readReports options [ File.ReadAllText xmlPath ]).Lines
+        |> CoverageRatchet.Cobertura.buildCoverage
+
+    let config = loadConfig configPath
+
+    let files =
+        match check config coverage with
+        | AllPassed -> []
+        | SomeFailed results -> results |> List.map _.File.FileName
+
+    let counts =
+        match checkCounts config coverage with
+        | CountsAllPassed -> []
+        | CountsFailed results -> results |> List.map _.File.FileName
+
+    files, counts
+
+/// The plugin's decision on the same inputs, in the same shape.
+let private pluginVerdict (judgement: CovPlugin.CoverageJudgement) =
+    match judgement with
+    | CovPlugin.Judged CovPlugin.Passed -> Some([], [])
+    | CovPlugin.Judged(CovPlugin.Failed f) ->
+        Some(f.Files |> List.map _.File.FileName, f.Counts |> List.map _.File.FileName)
+    | other -> failwith $"expected Passed or Failed, got %A{other}"
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(0, -1)>] // every floor holds
+[<InlineData(100, -1)>] // below the line percentage floor only
+[<InlineData(0, 2)>] // below the covered-lines count floor only
+[<InlineData(100, 2)>] // below both
+let ``a full-suite run judges its named report exactly as coverageratchet check does`` (line: int, coveredLines: int) =
+    withTempDir "coverage-parity" (fun dir ->
+        let xmlPath = Path.Combine(dir, "report.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        let startedAt = DateTime.UtcNow.AddMinutes -1.0
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, floorsJson line (if coveredLines < 0 then None else Some coveredLines))
+
+        let judged =
+            CovPlugin.judge configPath (CovPlugin.CoverageReports.Named [ xmlPath ]) RunScope.FullSuite startedAt []
+
+        test <@ pluginVerdict judged = Some(cliVerdict configPath xmlPath) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a searched report is judged with count floors too`` () =
+    withTempDir "coverage-search-counts" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, floorsJson 0 (Some 2))
+
+        let judged =
+            CovPlugin.judge
+                configPath
+                (CovPlugin.CoverageReports.SearchUnder dir)
+                RunScope.FullSuite
+                DateTime.UtcNow
+                [ xmlPath ]
+
+        test <@ pluginVerdict judged = Some([], [ "MyModule.fs" ]) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a named report older than its full-suite run is unreadable, never a verdict`` () =
+    withTempDir "coverage-stale" (fun dir ->
+        let xmlPath = Path.Combine(dir, "report.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, floorsJson 0 None)
+        // Written before the run started: an earlier run's output.
+        File.SetLastWriteTimeUtc(xmlPath, DateTime.UtcNow.AddHours -1.0)
+
+        match
+            CovPlugin.judge
+                configPath
+                (CovPlugin.CoverageReports.Named [ xmlPath ])
+                RunScope.FullSuite
+                (DateTime.UtcNow.AddMinutes -1.0)
+                []
+        with
+        | CovPlugin.Judged(CovPlugin.Unreadable reason) -> test <@ reason.Contains xmlPath @>
+        | other -> failwith $"expected Unreadable, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``a missing named report is unreadable in a full-suite run`` () =
+    withTempDir "coverage-missing" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, floorsJson 0 None)
+        let missing = Path.Combine(dir, "absent.cobertura.xml")
+
+        match
+            CovPlugin.judge
+                configPath
+                (CovPlugin.CoverageReports.Named [ missing ])
+                RunScope.FullSuite
+                DateTime.UtcNow
+                []
+        with
+        | CovPlugin.Judged(CovPlugin.Unreadable reason) -> test <@ reason.Contains missing @>
+        | other -> failwith $"expected Unreadable, got %A{other}")
+
+[<Fact(Timeout = 5000)>]
+let ``an impact-filtered run is not judged by named reports`` () =
+    let reports = CovPlugin.CoverageReports.Named [ "/nowhere/report.cobertura.xml" ]
+
+    match CovPlugin.judge "/nowhere/floors.json" reports RunScope.Partial DateTime.UtcNow [] with
+    | CovPlugin.NotJudged reason -> test <@ reason.Contains "impact-filtered" @>
+    | other -> failwith $"expected NotJudged, got %A{other}"
+
+    test <@ (CovPlugin.notJudgedReason reports RunScope.FullSuite).IsNone @>
+    test <@ (CovPlugin.notJudgedReason (CovPlugin.CoverageReports.SearchUnder "/nowhere") RunScope.Partial).IsNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``a count-floor shortfall fails the plugin with the covered counts`` () =
+    withTempDir "coverage-count-gate" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, floorsJson 0 (Some 2))
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(CovPlugin.create configPath dir)
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        let errors = host.GetErrorsByPlugin("coverage")
+
+        test
+            <@
+                errors
+                |> Map.exists (fun _ entries ->
+                    entries |> List.exists (fun e -> e.Message.Contains "covered lines 1 < 2"))
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a full-suite run whose named report predates it fails the plugin`` () =
+    withTempDir "coverage-stale-plugin" (fun dir ->
+        let xmlPath = Path.Combine(dir, "report.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, floorsJson 0 None)
+        File.SetLastWriteTimeUtc(xmlPath, DateTime.UtcNow.AddHours -1.0)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(CovPlugin.createWith configPath (CovPlugin.CoverageReports.Named [ xmlPath ]))
+        let runId = Guid.NewGuid()
+
+        host.EmitTestRunStarted
+            { RunId = runId
+              StartedAt = DateTime.UtcNow.AddMinutes -1.0 }
+
+        host.EmitTestRunCompleted
+            { RunId = runId
+              TotalElapsed = TimeSpan.FromMinutes 1.0
+              Outcome = Normal
+              Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
+              Verification = Ran RunScope.FullSuite }
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>)

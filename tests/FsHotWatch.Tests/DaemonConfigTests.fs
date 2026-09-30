@@ -942,6 +942,38 @@ let ``parseConfig coverage section defaults configPath and searchDir when absent
     test <@ config.Coverage.Value.SearchDir = "." @>
 
 [<Fact(Timeout = 15000)>]
+let ``parseConfig coverage reports names the exact report files`` () =
+    let json =
+        """{"coverage": {"configPath": "floors.json", "reports": ["coverage/T/coverage.baseline.cobertura.xml"]}}"""
+
+    let config = parseConfig json defaults
+    test <@ config.Coverage.Value.Reports = Some [ "coverage/T/coverage.baseline.cobertura.xml" ] @>
+    test <@ config.Coverage.Value.ConfigPath = "floors.json" @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage without reports searches, as before`` () =
+    let config = parseConfig """{"coverage": {"searchDir": "artifacts"}}""" defaults
+    test <@ config.Coverage.Value.Reports = None @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("[]")>]
+[<InlineData("\"coverage/x.xml\"")>]
+[<InlineData("[1]")>]
+[<InlineData("null")>]
+let ``parseConfig coverage reports of any other shape is a ConfigError`` (reports: string) =
+    let json = """{"coverage": {"reports": __R__}}""".Replace("__R__", reports)
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "coverage.reports" @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage refuses both searchDir and reports`` () =
+    let json =
+        """{"coverage": {"searchDir": "coverage", "reports": ["coverage/x.cobertura.xml"]}}"""
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "searchDir" && ex.message.Contains "reports" @>
+
+[<Fact(Timeout = 15000)>]
 let ``parseConfig no coverage section yields None`` () =
     let config = parseConfig "{}" defaults
     test <@ config.Coverage.IsNone @>
