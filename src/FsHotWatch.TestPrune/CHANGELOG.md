@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.62 - 2026-09-30
+
 - fix: a test run no longer launches while the host is discovering its project model. A launch
   read the model's generation as none during a discovery, so a run completing under the new
   model was revoked whole ("the project model was replaced between launch and completion"). On
