@@ -109,7 +109,6 @@ let ``check reads the graded run's rows from the trace database`` () =
 
         test <@ warning.IsSome && warning.Value.Contains "A: not-recorded: full-runs" @>
     finally
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
         Directory.Delete(root, true)
 
 [<Fact>]
