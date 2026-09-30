@@ -130,6 +130,117 @@ let ``a host that never comes up is refused within the bound, naming its log`` (
             test <@ message.Contains "did not start" && message.Contains "host.log" @>
         | other -> failwith $"%A{other}")
 
+/// A resolvable jj primary at `dir`, and the reply a host serving it would send.
+let private attachedReplyFor (dir: string) =
+    Directory.CreateDirectory(Path.Combine(dir, ".jj", "repo")) |> ignore
+
+    match resolveWorktree dir with
+    | Error e -> failwith (IdentityError.describe e)
+    | Ok worktree ->
+        let id =
+            { Repository = worktree.Repository
+              Worktree = worktree.Worktree
+              Incarnation = SessionIncarnation.mint () }
+
+        let identity: AttachHandshake.HostIdentity =
+            { Protocol = AttachHandshake.ProtocolIdentity.current ()
+              Repository = worktree.Repository }
+
+        id,
+        AttachHandshake.encodeResponse (
+            AttachHandshake.Attached(id, AttachHandshake.AttachDisposition.NewSession, identity)
+        )
+
+[<Fact(Timeout = 30000)>]
+let ``a host that leaves between the probe and the reply is relaunched once`` () =
+    // The host answered the liveness probe, then idled out before it read the attach:
+    // the exchange ends with no reply. That is a host that has gone, not a failure.
+    withTempDir "mode-left" (fun dir ->
+        let id, reply = attachedReplyFor dir
+        let launches = ref 0
+        let exchanges = ref 0
+
+        let probe _ =
+            launches.Value > 0 || exchanges.Value = 0
+
+        let exchange _ _ =
+            async {
+                exchanges.Value <- exchanges.Value + 1
+
+                if exchanges.Value = 1 then
+                    raise (IOException "the repository host sent no reply (Truncated)")
+
+                return reply
+            }
+
+        let outcome =
+            RepositoryHostMode.attachWith
+                probe
+                exchange
+                (Path.Combine(dir, "state"))
+                (fun _ -> launches.Value <- launches.Value + 1)
+                (TimeSpan.FromSeconds 5.0)
+                dir
+                ""
+
+        match outcome with
+        | RepositoryHostMode.Attach.Serving(_, session) -> test <@ session = id @>
+        | other -> failwith $"%A{other}"
+
+        test <@ launches.Value = 1 && exchanges.Value = 2 @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a host that never answers the attach is refused once, naming its log`` () =
+    withTempDir "mode-silent" (fun dir ->
+        attachedReplyFor dir |> ignore
+        let launches = ref 0
+        let exchanges = ref 0
+
+        // Still answering the probe, so nothing is launched over it; one retry, then a
+        // refusal rather than an exception.
+        let outcome =
+            RepositoryHostMode.attachWith
+                (fun _ -> true)
+                (fun _ _ ->
+                    async {
+                        exchanges.Value <- exchanges.Value + 1
+                        return raise (TimeoutException "no connection")
+                    })
+                (Path.Combine(dir, "state"))
+                (fun _ -> launches.Value <- launches.Value + 1)
+                (TimeSpan.FromSeconds 5.0)
+                dir
+                ""
+
+        match outcome with
+        | RepositoryHostMode.Attach.Refused message ->
+            test <@ message.Contains "stopped answering" && message.Contains "host.log" @>
+        | other -> failwith $"%A{other}"
+
+        test <@ launches.Value = 0 && exchanges.Value = 2 @>
+
+        // Gone after the failed exchange, and a relaunch that does not come up: refused
+        // without asking again.
+        let gone =
+            RepositoryHostMode.attachWith
+                (fun _ -> exchanges.Value = 2)
+                (fun _ _ ->
+                    async {
+                        exchanges.Value <- exchanges.Value + 1
+                        return raise (IOException "the repository host sent no reply (Truncated)")
+                    })
+                (Path.Combine(dir, "state"))
+                (fun _ -> launches.Value <- launches.Value + 1)
+                (TimeSpan.FromMilliseconds 200.0)
+                dir
+                ""
+
+        match gone with
+        | RepositoryHostMode.Attach.Refused message -> test <@ message.Contains "stopped answering" @>
+        | other -> failwith $"%A{other}"
+
+        test <@ launches.Value = 1 && exchanges.Value = 3 @>)
+
 // ---------------------------------------------------------------------------
 // Real host processes
 // ---------------------------------------------------------------------------

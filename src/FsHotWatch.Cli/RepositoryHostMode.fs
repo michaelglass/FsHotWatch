@@ -90,10 +90,11 @@ type Attach =
     /// Stop: the host refused in a way no fallback may paper over.
     | Refused of message: string
 
-/// Attach `repoRoot`, launching the host (`launch`) when nothing serves the
-/// repository's endpoint yet, and waiting at most `startupBound` for it. `stateHome`
-/// is where repository hosts keep their control state (`FsHwPaths.stateHome`).
-let attach
+/// `attach`, with the endpoint's liveness probe and the attach exchange (endpoint,
+/// request JSON → response JSON) supplied.
+let internal attachWith
+    (probe: string -> bool)
+    (exchange: string -> string -> Async<string>)
     (stateHome: string)
     (launch: RepositoryControlPaths -> unit)
     (startupBound: TimeSpan)
@@ -105,17 +106,20 @@ let attach
     | Ok worktree ->
         let control = repositoryControlPaths stateHome worktree.Repository
 
-        let up () =
-            RepositoryIpc.isRunning control.Endpoint
+        let up () = probe control.Endpoint
 
-        if not (up ()) then
-            launch control
-            let deadline = DateTime.UtcNow + startupBound
+        /// Up, launching the host first when nothing answers.
+        let upOrLaunched () =
+            if not (up ()) then
+                launch control
+                let deadline = DateTime.UtcNow + startupBound
 
-            while not (up ()) && DateTime.UtcNow < deadline do
-                Thread.Sleep 100
+                while not (up ()) && DateTime.UtcNow < deadline do
+                    Thread.Sleep 100
 
-        if not (up ()) then
+            up ()
+
+        if not (upOrLaunched ()) then
             Attach.Refused
                 $"the repository host did not start within %.0f{startupBound.TotalSeconds}s; see %s{control.HostLog}"
         else
@@ -127,17 +131,35 @@ let attach
                       (ConfigDigest.ofText configText) with
                     Environment = SessionEnvironment.variables (SessionEnvironment.ofProcess repoRoot) }
 
-            let reply =
-                RepositoryIpc.attach control.Endpoint (encodeRequest request)
-                |> Async.RunSynchronously
-                |> decodeResponse
+            // No reply, or no connection, after the probe answered: the host exited in
+            // between (its idle grace ran out). Not a failure of this attach — relaunch
+            // if it is gone, and ask once more.
+            let exchangeOnce () =
+                try
+                    Ok(exchange control.Endpoint (encodeRequest request) |> Async.RunSynchronously)
+                with ex when (ex :? IOException) || (ex :? TimeoutException) ->
+                    Error ex.Message
 
-            match reply with
-            | Ok(AttachedReply(session, _, _)) -> Attach.Serving(control.Endpoint, session)
-            | Ok(RefusedReply(kind, message, _)) when AttachRefusal.fallsBackToOwnDaemon kind ->
+            let answered =
+                match exchangeOnce () with
+                | Error _ when upOrLaunched () -> exchangeOnce ()
+                | first -> first
+
+            match answered |> Result.map decodeResponse with
+            | Ok(Ok(AttachedReply(session, _, _))) -> Attach.Serving(control.Endpoint, session)
+            | Ok(Ok(RefusedReply(kind, message, _))) when AttachRefusal.fallsBackToOwnDaemon kind ->
                 Attach.OwnDaemon message
-            | Ok(RefusedReply(_, message, _)) -> Attach.Refused message
-            | Error e -> Attach.Refused $"the repository host's reply could not be read: %A{e}"
+            | Ok(Ok(RefusedReply(_, message, _))) -> Attach.Refused message
+            | Ok(Error e) -> Attach.Refused $"the repository host's reply could not be read: %A{e}"
+            | Error reason ->
+                Attach.Refused
+                    $"the repository host stopped answering during attach (%s{reason}); see %s{control.HostLog}"
+
+/// Attach `repoRoot`, launching the host (`launch`) when nothing serves the
+/// repository's endpoint yet, and waiting at most `startupBound` for it. `stateHome`
+/// is where repository hosts keep their control state (`FsHwPaths.stateHome`).
+let attach (stateHome: string) (launch: RepositoryControlPaths -> unit) (startupBound: TimeSpan) =
+    attachWith RepositoryIpc.isRunning RepositoryIpc.attach stateHome launch startupBound
 
 /// The shell line that backgrounds the repository host for the worktree at `root`,
 /// appending its output to the host log.
