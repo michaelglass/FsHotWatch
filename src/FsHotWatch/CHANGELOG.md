@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a repository-host connection that sends no preamble within the bound is logged ("a
+  connection sent no preamble within …; it is closed unanswered") instead of dropped silently.
+  The read's cancellation cancelled the whole opener, which no handler saw, so an attach whose
+  bytes arrived late on a loaded box left no trace in the host log.
+
 - fix: a child process fshw spawns no longer inherits the trace recorder's `TESTPRUNE_TRACE_*`
   variables. Run inside a traced test process, a test run or build it started would otherwise
   record into, or pose as part of, that test's trace. A traced launch's own variables, passed

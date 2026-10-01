@@ -256,9 +256,12 @@ type EndpointHandlers =
         Repository: InvocationId -> obj
     }
 
-/// The connection opener for the repository endpoint: read the preamble, answer it,
-/// and hand back what serves the rest of the connection.
-let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Watchdog) : IpcServer.ConnectionOpener =
+/// `opener`, with the bound on reading the preamble supplied.
+let internal openerWithin
+    (preambleBound: TimeSpan)
+    (handlers: EndpointHandlers)
+    (watchdog: OperationWatchdog.Watchdog)
+    : IpcServer.ConnectionOpener =
     fun pipe disconnected ->
         async {
             // Bounds reading the preamble only. Under it, a host's answer that took
@@ -266,7 +269,7 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
             // was cancelled after the session was registered, and the session outlived
             // the client that never learned of it.
             use bound = CancellationTokenSource.CreateLinkedTokenSource disconnected
-            bound.CancelAfter PreambleBound
+            bound.CancelAfter preambleBound
 
             let reply text =
                 writeFrame pipe text disconnected |> Async.AwaitTask
@@ -274,52 +277,73 @@ let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Wa
             let refuse kind message =
                 reply (encodeReply (PreambleReply.Refused(kind, message)))
 
-            let! frame = readFrame pipe bound.Token |> Async.AwaitTask
+            // Awaited through a continuation that never cancels: awaiting the read itself
+            // turns its cancellation into the whole opener's, which no `with` sees, and a
+            // connection whose preamble came late was dropped without a line in the log.
+            let! read =
+                (readFrame pipe bound.Token).ContinueWith(fun (t: Task<Result<string, FrameError>>) -> t)
+                |> Async.AwaitTask
 
-            match frame with
-            | Error FrameError.Truncated ->
-                // The client left without a preamble: a liveness probe (`isRunning`)
-                // connects and closes. Nobody is left to answer.
+            match read with
+            | read when read.IsCanceled ->
+                // Only the bound cancels this read: the connection's own token is not
+                // cancelled before its preamble is answered.
+                Logging.warn
+                    "host"
+                    $"a connection sent no preamble within %s{string preambleBound}; it is closed unanswered"
+
                 return None
-            | Error(FrameError.TooLarge bytes) ->
-                do! refuse "malformed-preamble" $"a %d{bytes}-byte preamble exceeds %d{MaxFrameBytes} bytes"
-                // The only refusal sent before the client's frame is read. Closing with
-                // its bytes unread resets the connection on Linux, discarding the refusal
-                // before the client reads it, so discard them first.
-                do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
-                return None
-            | Ok text ->
+            | read ->
 
-                match decodePreamble text with
-                | Error reason ->
-                    do! refuse "malformed-preamble" reason
+                match read.GetAwaiter().GetResult() with
+                | Error FrameError.Truncated ->
+                    // The client left without a preamble: a liveness probe (`isRunning`)
+                    // connects and closes. Nobody is left to answer.
                     return None
-                | Ok(Preamble.Attach json) ->
-                    let answer = handlers.Attach json
-
-                    match! reply answer |> Async.Catch with
-                    | Choice1Of2() -> ()
-                    | Choice2Of2 ex ->
-                        Logging.warn "host" $"an attach's answer could not be sent (%s{ex.Message}); undoing it"
-                        handlers.Undelivered answer
-
+                | Error(FrameError.TooLarge bytes) ->
+                    do! refuse "malformed-preamble" $"a %d{bytes}-byte preamble exceeds %d{MaxFrameBytes} bytes"
+                    // The only refusal sent before the client's frame is read. Closing with
+                    // its bytes unread resets the connection on Linux, discarding the refusal
+                    // before the client reads it, so discard them first.
+                    do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
                     return None
-                | Ok(Preamble.Repository invocation) ->
-                    do! reply (encodeReply PreambleReply.Accepted)
+                | Ok text ->
 
-                    return
-                        Some
-                            { IpcServer.Served.Target = handlers.Repository invocation
-                              IpcServer.Served.Context = None }
-                | Ok(Preamble.Session(session, invocation)) ->
-                    match! handlers.Session session invocation |> Async.AwaitTask with
-                    | Error(kind, message) ->
-                        do! refuse kind message
+                    match decodePreamble text with
+                    | Error reason ->
+                        do! refuse "malformed-preamble" reason
                         return None
-                    | Ok config ->
+                    | Ok(Preamble.Attach json) ->
+                        let answer = handlers.Attach json
+
+                        match! reply answer |> Async.Catch with
+                        | Choice1Of2() -> ()
+                        | Choice2Of2 ex ->
+                            Logging.warn "host" $"an attach's answer could not be sent (%s{ex.Message}); undoing it"
+                            handlers.Undelivered answer
+
+                        return None
+                    | Ok(Preamble.Repository invocation) ->
                         do! reply (encodeReply PreambleReply.Accepted)
-                        return Some(IpcServer.servedDaemon config watchdog disconnected)
+
+                        return
+                            Some
+                                { IpcServer.Served.Target = handlers.Repository invocation
+                                  IpcServer.Served.Context = None }
+                    | Ok(Preamble.Session(session, invocation)) ->
+                        match! handlers.Session session invocation |> Async.AwaitTask with
+                        | Error(kind, message) ->
+                            do! refuse kind message
+                            return None
+                        | Ok config ->
+                            do! reply (encodeReply PreambleReply.Accepted)
+                            return Some(IpcServer.servedDaemon config watchdog disconnected)
         }
+
+/// The connection opener for the repository endpoint: read the preamble, answer it,
+/// and hand back what serves the rest of the connection.
+let internal opener (handlers: EndpointHandlers) (watchdog: OperationWatchdog.Watchdog) : IpcServer.ConnectionOpener =
+    openerWithin PreambleBound handlers watchdog
 
 /// Serve the repository endpoint until `cts` is cancelled.
 let serve (endpoint: string) (handlers: EndpointHandlers) (cts: CancellationTokenSource) : Async<unit> =
