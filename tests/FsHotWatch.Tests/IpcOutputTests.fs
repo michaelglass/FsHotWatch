@@ -2917,6 +2917,12 @@ let ``a receipt refusal is a recorded cause, so the summary names it instead of 
             test <@ causes.Contains "receipt" @>
             test <@ not (summary.Contains "UNEXPLAINED") @>
             test <@ summary.Contains "receipt" @>
+
+            // A refusal is the graded run's own, as of that run, and it says what
+            // re-grades it rather than leaving the reader to rerun the same `check`.
+            if kind = "refusing-receipt" then
+                test <@ causes.Contains "(as of that run)" @>
+                test <@ causes.Contains "fshw confirm" @>
         | other -> failwithf "expected a published verdict, got %A" other)
 
 [<Fact(Timeout = 20000)>]

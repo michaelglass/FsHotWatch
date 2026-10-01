@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: a receipt refusal says it is the graded run's own ("as of that run") and what re-grades
+  it: fix and rerun what failed with `fshw check`, or `fshw confirm` for the whole suite.
+
 ## 0.14.0-alpha.84 - 2026-10-01
 
 - fix: "not in the key" no longer lists top-level directories the repository's `.gitignore`
