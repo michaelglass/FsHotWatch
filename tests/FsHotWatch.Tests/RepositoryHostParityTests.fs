@@ -89,7 +89,7 @@ let ``add adds`` () = Assert.Equal(3, Lib.add 1 2)
 
 let private config =
     """{
-  "build": { "command": "dotnet", "args": "build" },
+  "build": { "command": "dotnet", "args": "build --no-restore" },
   "format": false,
   "lint": true,
   "tests": {
@@ -105,9 +105,29 @@ let private config =
   }
 }"""
 
+/// The projects whose `obj/` holds the restore's output.
+let private restoredProjects = [ "src/Lib"; "tests/Lib.Tests" ]
+
+/// Copy a restore's output (the top-level files of each project's `obj/`: the assets
+/// file, the NuGet cache stamp, the generated props and targets) from `from` to `into`.
+/// Only valid at the SAME path: those files name their project by absolute path, which
+/// is why every mode reuses one worktree path. Build output under `obj/` is not copied,
+/// so each mode still builds from nothing.
+let private copyRestore (from: string) (into: string) =
+    for project in restoredProjects do
+        let source = Path.Combine(from, project, "obj")
+        let target = Path.Combine(into, project, "obj")
+        Directory.CreateDirectory target |> ignore
+
+        for file in Directory.GetFiles source do
+            File.Copy(file, Path.Combine(target, Path.GetFileName file), true)
+
 /// A worktree with a library, an xUnit test project covering it, and every plugin
-/// that runs, tests, and records coverage.
-let private writeWorktree (root: string) =
+/// that runs, tests, and records coverage. Restores it unless a restore's output is
+/// already in place (`copyRestore`), and says whether it did: a real restore is the
+/// fixture's slowest and least bounded step under load, so each worktree path pays for
+/// one. The configured build runs with `--no-restore`.
+let private writeWorktree (root: string) : bool =
     let write (relative: string) (text: string) =
         let path = Path.Combine(root, relative)
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -128,20 +148,24 @@ let private writeWorktree (root: string) =
 
     let fsproj = Path.Combine(root, "tests", "Lib.Tests", "Lib.Tests.fsproj")
 
-    // Normal verbosity: a restore that stalls says in its tail which step it stalled in.
-    match
-        ProcessHelper.runProcess
-            "dotnet"
-            $"restore \"%s{fsproj}\" --verbosity normal"
-            root
-            []
-            (ProcessHelper.ProcessBounds.silent (TimeSpan.FromMinutes 3.0))
-    with
-    | ProcessHelper.Succeeded _ -> ()
-    | ProcessHelper.TimedOut _ as timedOut ->
-        let evidence = HangEvidence.capture "restore" [ root ]
-        failwith $"restore failed: %A{timedOut} — evidence captured in %s{evidence}"
-    | other -> failwith $"restore failed: %A{other}"
+    if File.Exists(Path.Combine(root, "tests", "Lib.Tests", "obj", "project.assets.json")) then
+        false
+    else
+
+        // Normal verbosity: a restore that stalls says in its tail which step it stalled in.
+        match
+            ProcessHelper.runProcess
+                "dotnet"
+                $"restore \"%s{fsproj}\" --verbosity normal"
+                root
+                []
+                (ProcessHelper.ProcessBounds.silent (TimeSpan.FromMinutes 3.0))
+        with
+        | ProcessHelper.Succeeded _ -> true
+        | ProcessHelper.TimedOut _ as timedOut ->
+            let evidence = HangEvidence.capture "restore" [ root ]
+            failwith $"restore failed: %A{timedOut} — evidence captured in %s{evidence}"
+        | other -> failwith $"restore failed: %A{other}"
 
 /// Build the worktree's daemon as the CLI does: its configuration, its plugins.
 let private build
@@ -528,7 +552,9 @@ let private runHostedBesideASibling (root: string) =
         Path.GetRelativePath(siblingJj, Path.Combine(root, ".jj", "repo"))
     )
 
-    writeWorktree sibling
+    // Its own path, so its own restore: a restore's output names its project absolutely.
+    let siblingRestored = writeWorktree sibling
+    test <@ siblingRestored @>
 
     let partitions =
         CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
@@ -597,15 +623,23 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
 
         let root = Path.Combine(canonical, "w")
 
+        // The previous mode's finished worktree, and whether each mode restored.
+        let previous = ref None
+        let restored = ResizeArray<string * bool>()
+
         /// A fresh worktree at the same path, and a fresh shared cache, for each mode.
+        /// The restore's output carries over from the previous mode; nothing else does.
         let inFreshWorktree (mode: string) (run: string -> 'T) : 'T =
             Directory.CreateDirectory(Path.Combine(root, ".jj", "repo")) |> ignore
-            writeWorktree root
+            previous.Value |> Option.iter (fun finished -> copyRestore finished root)
+            restored.Add((mode, writeWorktree root))
             // Each mode builds and runs on a context of its own: a per-worktree daemon
             // installs its process registry into the context that constructs it, which
             // in the CLI is a process of its own.
             let observed = isolated (fun () -> run root)
-            Directory.Move(root, Path.Combine(canonical, $"done-%s{mode}"))
+            let finished = Path.Combine(canonical, $"done-%s{mode}")
+            Directory.Move(root, finished)
+            previous.Value <- Some finished
             observed
 
         let legacy =
@@ -619,6 +653,9 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         let besideASibling =
             withEnvValue "FSHW_CACHE_HOME" (Path.Combine(canonical, "cache-shared")) (fun () ->
                 inFreshWorktree "shared" runHostedBesideASibling)
+
+        // One restore for the worktree path, not one per mode.
+        test <@ List.ofSeq restored = [ "legacy", true; "hosted", false; "shared", false ] @>
 
         // A vacuous agreement is not parity: the scenario must have built, tested and
         // measured coverage.
