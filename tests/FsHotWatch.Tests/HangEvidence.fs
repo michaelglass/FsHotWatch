@@ -78,7 +78,16 @@ let private keptFiles (path: string) : (string * string) list =
 /// those children, and the `.log` files under each of `keep`. Returns the errors met,
 /// also written to `capture-errors.txt`; children that exited before their stacks were
 /// taken (`alive` says no) are listed in `capture-skips.txt` instead.
-let captureTo (run: Runner) (alive: int -> bool) (dir: string) (rootPid: int) (keep: string list) : string list =
+/// `captureTo` on a given platform: `onMac` takes native stacks with `sample`, which only
+/// macOS has; every platform dumps .NET processes with `createdump`.
+let captureToOn
+    (onMac: bool)
+    (run: Runner)
+    (alive: int -> bool)
+    (dir: string)
+    (rootPid: int)
+    (keep: string list)
+    : string list =
     Directory.CreateDirectory dir |> ignore
     let errors = ResizeArray<string>()
     let skips = ResizeArray<string>()
@@ -118,7 +127,7 @@ let captureTo (run: Runner) (alive: int -> bool) (dir: string) (rootPid: int) (k
         let sampleFile = Path.Combine(dir, $"sample-%d{pid}.txt")
         let dumpFile = Path.Combine(dir, $"dump-%d{pid}.dmp")
 
-        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+        if onMac then
             stackStep "sample" pid (run "sample" $"%d{pid} 2 -file %s{sampleFile}")
 
         if isDotnet line then
@@ -135,6 +144,10 @@ let captureTo (run: Runner) (alive: int -> bool) (dir: string) (rootPid: int) (k
         File.WriteAllLines(Path.Combine(dir, "capture-skips.txt"), skips)
 
     List.ofSeq errors
+
+/// `captureToOn` this platform.
+let captureTo (run: Runner) (alive: int -> bool) (dir: string) (rootPid: int) (keep: string list) : string list =
+    captureToOn (RuntimeInformation.IsOSPlatform OSPlatform.OSX) run alive dir rootPid keep
 
 /// The real runner: the command, bounded at 20 seconds.
 let private realRunner: Runner =
