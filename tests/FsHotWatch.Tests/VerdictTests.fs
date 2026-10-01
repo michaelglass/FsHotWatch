@@ -3541,6 +3541,31 @@ let ``the key's coverage is read off the walk that feeds the hash`` () =
             <@ lines[1].StartsWith("not in the key: docs/ (1 declared file(s) only), infra/", StringComparison.Ordinal) @>)
 
 [<Fact>]
+let ``the key's outside list skips what the repo's .gitignore ignores`` () =
+    // Test results, coverage and logs are tool output nobody edits: naming them as "not
+    // in the key" is noise. Read through the one gitignore matcher (`PathFilter`), in
+    // each of its pattern shapes; a directory the .gitignore does not name stays listed.
+    withTempDir "key-coverage-gitignore" (fun root ->
+        coverageRepo root false
+
+        for dir in [ "TestResults"; "logs"; "coverage" ] do
+            Directory.CreateDirectory(Path.Combine(root, dir)) |> ignore
+            File.WriteAllText(Path.Combine(root, dir, "out.txt"), "x")
+
+        File.WriteAllText(Path.Combine(root, ".gitignore"), "TestResults/\nlogs\n/coverage/\n")
+
+        let covered = TreeHash.coverage root (TreeHash.files root [])
+
+        test <@ covered.Outside = [ "docs"; "infra" ] @>
+
+        // Ignored or not, a directory holding declared inputs is named with its count.
+        coverageRepo root true
+        File.AppendAllText(Path.Combine(root, ".gitignore"), "docs/\n")
+        let declared = TreeHash.coverage root (TreeHash.files root [])
+
+        test <@ declared.DeclaredOnly = [ "docs", 1 ] && declared.Outside = [ "infra" ] @>)
+
+[<Fact>]
 let ``a declaration moves the hash and the coverage together, and removing it reverts both`` () =
     // Single-source control: the description is not a restatement that could drift from
     // what is hashed. Declaring the docs file moves docs/ into the key AND changes the
