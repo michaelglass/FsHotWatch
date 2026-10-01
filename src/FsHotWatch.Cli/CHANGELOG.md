@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: an attach that finds the repository host gone between its liveness probe and its reply
+  (the host's idle grace ran out in between) relaunches the host if it is not answering and
+  asks once more, instead of failing with "the repository host sent no reply". A second
+  failure is refused, naming the host log, rather than raised.
+
 ## 0.14.0-alpha.83 - 2026-10-01
 
 - feat: a reused verdict says what its freshness key covered. `confirm`'s "still applies" and
