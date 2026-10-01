@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a child process fshw spawns no longer inherits the trace recorder's `TESTPRUNE_TRACE_*`
+  variables. Run inside a traced test process, a test run or build it started would otherwise
+  record into, or pose as part of, that test's trace. A traced launch's own variables, passed
+  explicitly, still reach its child.
+
 ## 0.10.0-alpha.62 - 2026-10-01
 
 - fix: a repository host no longer idles out under an attach in flight. Its idle check counted
