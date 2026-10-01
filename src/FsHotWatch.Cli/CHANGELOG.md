@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.84 - 2026-10-01
+
 - fix: "not in the key" no longer lists top-level directories the repository's `.gitignore`
   names (`TestResults/`, `coverage/`, `logs/`, `paket-files/`, …): they hold tool output, not
   source anyone edits. Read through the same gitignore matcher fshw uses elsewhere

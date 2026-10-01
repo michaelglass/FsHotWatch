@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.62 - 2026-10-01
+
 - fix: a repository host no longer idles out under an attach in flight. Its idle check counted
   only registered sessions, and an attach registers its session only after building it (a
   `dotnet --version` probe of up to 30s), so a grace ending mid-attach exited under a client
