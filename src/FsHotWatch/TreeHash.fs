@@ -232,7 +232,8 @@ type Coverage =
         /// Top-level directories outside the roots that hold only declared inputs,
         /// with how many.
         DeclaredOnly: (string * int) list
-        /// Top-level directories no file in the key lives under.
+        /// Top-level directories no file in the key lives under, other than those the
+        /// repo's .gitignore names (tool output, not source).
         Outside: string list
     }
 
@@ -246,6 +247,15 @@ let coverage (repoRoot: string) (walked: Walked) : Coverage =
 
     let perDirectory =
         walked.Files |> List.choose (fst >> topLevel) |> List.countBy id |> Map.ofList
+
+    // Tool output (test results, coverage, logs) is not source anyone edits, so the
+    // directories the repo's .gitignore names are not reported as outside the key. The
+    // trailing slash lets a directory-only pattern (`TestResults/`) match.
+    let ignoredByGit =
+        PathFilter.loadIgnoreFile repoRoot (Path.Combine(repoRoot, ".gitignore"))
+
+    let gitignored (dir: string) =
+        ignoredByGit (Path.Combine(repoRoot, dir) + "/")
 
     // A root that cannot be listed names no neighbours: this is a description of the
     // key, and the hash itself already carries any hole the walk met.
@@ -268,7 +278,9 @@ let coverage (repoRoot: string) (walked: Walked) : Coverage =
       DeclaredOnly =
         others
         |> List.choose (fun d -> perDirectory |> Map.tryFind d |> Option.map (fun n -> d, n))
-      Outside = others |> List.filter (fun d -> not (Map.containsKey d perDirectory)) }
+      Outside =
+        others
+        |> List.filter (fun d -> not (Map.containsKey d perDirectory || gitignored d)) }
 
 /// The human lines for a `Coverage`: what the key holds, then what lies outside it.
 let describeCoverage (c: Coverage) : string list =

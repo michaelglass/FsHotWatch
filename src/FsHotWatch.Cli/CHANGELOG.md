@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: "not in the key" no longer lists top-level directories the repository's `.gitignore`
+  names (`TestResults/`, `coverage/`, `logs/`, `paket-files/`, …): they hold tool output, not
+  source anyone edits. Read through the same gitignore matcher fshw uses elsewhere
+  (`PathFilter.loadIgnoreFile`). A gitignored directory holding declared inputs is still
+  named, with its declared-file count.
+
 - fix: an attach that finds the repository host gone between its liveness probe and its reply
   (the host's idle grace ran out in between) relaunches the host if it is not answering and
   asks once more, instead of failing with "the repository host sent no reply". A second
