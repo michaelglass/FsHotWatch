@@ -171,24 +171,101 @@ let ``an attach that outlasts the preamble bound is still answered`` () =
     withEndpoint (refusingHandlers slowAttach) (fun endpoint ->
         test <@ attach endpoint attachPreamble |> Async.RunSynchronously = "attached" @>)
 
+/// The repository endpoint's opener for one connection, reading its preamble within
+/// `preambleBound`, with its log lines captured: no accept loop and no scheduling of it,
+/// so what the opener does with a connection is the only thing a test observes. `client`
+/// runs against the connected client end; the opener's answer and its log follow.
+let private openOnce
+    (preambleBound: TimeSpan)
+    (handlers: EndpointHandlers)
+    (client: IO.Pipes.NamedPipeClientStream -> unit)
+    : Threading.Tasks.Task<FsHotWatch.Ipc.IpcServer.Served option> * Collections.Concurrent.ConcurrentQueue<string> =
+    let endpoint = "fshw-test-" + Guid.NewGuid().ToString "N"
+    let logged = Collections.Concurrent.ConcurrentQueue<string>()
+
+    let server =
+        new IO.Pipes.NamedPipeServerStream(
+            endpoint,
+            IO.Pipes.PipeDirection.InOut,
+            1,
+            IO.Pipes.PipeTransmissionMode.Byte,
+            IO.Pipes.PipeOptions.Asynchronous
+        )
+
+    let opened =
+        Threading.Tasks.Task.Run(fun () ->
+            use _ =
+                FsHotWatch.Logging.installSink
+                    { Write = logged.Enqueue
+                      Level = FsHotWatch.Logging.LogLevel.Debug }
+
+            use watchdog =
+                new FsHotWatch.OperationWatchdog.Watchdog(
+                    FsHotWatch.OperationWatchdog.DefaultThreshold,
+                    heartbeatEvery = TimeSpan.FromSeconds 30.0,
+                    now = (fun () -> DateTime.UtcNow),
+                    log = ignore
+                )
+
+            server.WaitForConnection()
+
+            try
+                openerWithin preambleBound handlers watchdog server CancellationToken.None
+                |> Async.RunSynchronously
+            finally
+                server.Dispose())
+
+    let pipe =
+        new IO.Pipes.NamedPipeClientStream(".", endpoint, IO.Pipes.PipeDirection.InOut)
+
+    pipe.Connect 5000
+    client pipe
+
+    // The client end stays open until the opener is done with the connection: dropped
+    // early (collected, say), the host reads end-of-stream rather than the silence a test
+    // means to send.
+    opened.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+    pipe.Dispose()
+    opened, logged
+
 [<Fact(Timeout = 60000)>]
 let ``an attach whose client left before the answer is undone`` () =
+    // Driven through the opener directly, with no bound on the preamble for the test's
+    // own timing to race: the client sends its attach and closes, the host answers into
+    // the closed pipe, and the attach it started is undone.
     let clientGone = new ManualResetEventSlim(false)
     let undone = Threading.Tasks.TaskCompletionSource<string>()
 
     let handlers =
         { refusingHandlers (fun _ ->
-              clientGone.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+              clientGone.Wait() |> ignore
               "attached") with
             Undelivered = fun answer -> undone.TrySetResult answer |> ignore }
 
-    withEndpoint handlers (fun endpoint ->
-        do
-            use client =
-                new IO.Pipes.NamedPipeClientStream(".", endpoint, IO.Pipes.PipeDirection.InOut)
-
-            client.Connect 5000
+    let opened, logged =
+        openOnce (TimeSpan.FromMinutes 5.0) handlers (fun client ->
             (writeFrame client attachPreamble CancellationToken.None).Wait()
+            client.Dispose()
+            clientGone.Set())
 
-        clientGone.Set()
-        test <@ undone.Task.Wait(TimeSpan.FromSeconds 20.0) && undone.Task.Result = "attached" @>)
+    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
+    test <@ undone.Task.IsCompleted && undone.Task.Result = "attached" @>
+    test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>
+
+[<Fact(Timeout = 60000)>]
+let ``a connection that sends no preamble within the bound is closed, and says so`` () =
+    // It was closed silently: the read's cancellation cancelled the whole opener, which no
+    // `with` sees, so an attach whose bytes arrived late on a loaded box vanished from the
+    // log. The connection is still closed unanswered; the log now names why.
+    let attachSeen = ref false
+
+    let handlers =
+        refusingHandlers (fun _ ->
+            attachSeen.Value <- true
+            "attached")
+
+    let opened, logged = openOnce (TimeSpan.FromMilliseconds 200.0) handlers ignore
+
+    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
+    test <@ not attachSeen.Value @>
+    test <@ logged |> Seq.exists (fun line -> line.Contains "no preamble within") @>

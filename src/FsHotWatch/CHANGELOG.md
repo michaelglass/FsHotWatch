@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a repository-host connection that sends no preamble within the bound is logged ("a
+  connection sent no preamble within …; it is closed unanswered") instead of dropped silently.
+  The read's cancellation cancelled the whole opener, which no handler saw, so an attach whose
+  bytes arrived late on a loaded box left no trace in the host log.
+
 ## 0.10.0-alpha.63 - 2026-10-01
 
 - fix: a child process fshw spawns no longer inherits the trace recorder's `TESTPRUNE_TRACE_*`
