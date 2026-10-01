@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.85 - 2026-10-01
+
 - fix: a receipt refusal says it is the graded run's own ("as of that run") and what re-grades
   it: fix and rerun what failed with `fshw check`, or `fshw confirm` for the whole suite.
 
