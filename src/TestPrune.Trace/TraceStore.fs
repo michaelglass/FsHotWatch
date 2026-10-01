@@ -168,6 +168,7 @@ let reasonCode (reason: IncompleteReason) : string =
     | TreeMoved -> "tree-moved"
     | DumpRejected why -> $"dump-rejected:%s{why}"
     | UnmappedCode detail -> $"unmapped-code:%s{detail}"
+    | UnknownInput kind -> $"unknown-input-kind:%s{kind}"
 
 let private outcomeCode =
     function

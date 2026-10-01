@@ -162,10 +162,28 @@ let ``an empty dump, a foreign format and unparseable lines are rejected`` () =
     test <@ DumpReader.readFile (writeLines [| "not json" |]) |> Result.isError @>
     test <@ DumpReader.readFile (writeLines [| endLine |]) = Error "no header" @>
 
-    let badKind =
-        """{"key":"T:x","test":null,"parents":[],"links":[],"ids":[],"inputs":[{"kind":"write","path":"/x"}],"children":[]}"""
+[<Fact>]
+let ``an input of an unknown kind is kept as such, and the rest of the dump reads`` () =
+    let future =
+        """{"key":"T:x","test":null,"parents":[],"links":[],"ids":[7],"inputs":[{"kind":"future","path":"/r/x"},{"kind":"read","path":"/r/y"}],"children":[]}"""
 
-    test <@ DumpReader.readFile (writeLines [| header; badKind; endLine |]) = Error "unknown input kind write" @>
+    let other =
+        """{"key":"T:y","test":null,"parents":[],"links":[],"ids":[8],"inputs":[],"children":[]}"""
+
+    let dump =
+        DumpReader.readFile (writeLines [| header; future; other; endLine |])
+        |> Result.defaultWith failwith
+
+    let x = dump.Scopes |> List.find (fun s -> s.Key = "T:x")
+
+    test
+        <@
+            x.Inputs = [ { Kind = UnknownInputKind "future"
+                           Path = "/r/x" }
+                         { Kind = FileRead; Path = "/r/y" } ]
+        @>
+
+    test <@ dump.Scopes |> List.map (fun s -> s.Key) = [ "T:x"; "T:y" ] @>
 
 [<Fact>]
 let ``a header and end marker alone is a dump with no scopes`` () =

@@ -46,6 +46,9 @@ type InputKind =
     | DirectoryListing
     /// A listing that recursed into every subdirectory.
     | DeepDirectoryListing
+    /// A kind this reader does not know, written by a newer recorder. Its scope cannot be
+    /// trusted to replay, so it is marked incomplete rather than failing the whole dump.
+    | UnknownInputKind of kind: string
 
 /// A file-system input a scope observed.
 type RecordedInput = { Kind: InputKind; Path: string }
@@ -117,3 +120,5 @@ type IncompleteReason =
     | DumpRejected of reason: string
     /// Executed code the joiner could map to neither a symbol nor a source file.
     | UnmappedCode of detail: string
+    /// An input whose kind this reader does not know, so its current state cannot be compared.
+    | UnknownInput of kind: string

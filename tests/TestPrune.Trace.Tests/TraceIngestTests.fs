@@ -541,6 +541,36 @@ let ``file inputs are stored repo-relative with their current state`` () =
         @>
 
 [<Fact>]
+let ``an input of an unknown kind marks its test incomplete and keeps the others`` () =
+    let w = World()
+    let data = Path.Combine(w.Root, "data")
+    Directory.CreateDirectory data |> ignore
+    File.WriteAllText(Path.Combine(data, "a.json"), "{}")
+
+    let note (st: RecorderState) kind path =
+        st.CurrentScope().Inputs.TryAdd(struct (kind, path), 0uy) |> ignore
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            asTest st "T:1" "N.Tests" "t" "N.Tests.t"
+            note st "future" (Path.Combine(data, "a.json"))
+            note st "read" (Path.Combine(data, "a.json"))
+            asTest st "T:2" "N.Tests" "u" "N.Tests.u"
+            note st "read" (Path.Combine(data, "a.json"))
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+
+    let s = ingest store (w.Request [ passed "N.Tests.t"; passed "N.Tests.u" ])
+
+    let t = read store s "N.Tests" "t"
+    test <@ t.Reasons = [ "unknown-input-kind:future" ] @>
+    test <@ t.Inputs = set [ "read", "data/a.json", Fingerprint.hashFile w.Root "data/a.json" ] @>
+    test <@ List.isEmpty (read store s "N.Tests" "u").Reasons @>
+
+[<Fact>]
 let ``repoRelative maps under-root paths and the traced bin to the debug bin`` () =
     let root = Path.Combine(Path.GetTempPath(), "repo")
 

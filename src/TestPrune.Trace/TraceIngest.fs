@@ -267,19 +267,29 @@ let private listingHash (dir: string) (option: SearchOption) =
         "absent"
 
 /// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
-/// outside the input root.
+/// outside the input root or of a kind this reader does not know (`unknownInputs`).
 let private inputOf (root: string) (i: RecordedInput) =
     repoRelative root i.Path
-    |> Option.map (fun rel ->
+    |> Option.bind (fun rel ->
         let p = Path.Combine(root, rel)
 
         match i.Kind with
-        | FileRead -> "read", rel, Fingerprint.hashFile root rel
-        | ExistenceProbe -> "exists", rel, (if Path.Exists p then "present" else "absent")
-        | DirectoryListing -> "list", rel, listingHash p SearchOption.TopDirectoryOnly
+        | FileRead -> Some("read", rel, Fingerprint.hashFile root rel)
+        | ExistenceProbe -> Some("exists", rel, (if Path.Exists p then "present" else "absent"))
+        | DirectoryListing -> Some("list", rel, listingHash p SearchOption.TopDirectoryOnly)
         // Every entry of the tree, whatever pattern the listing used: an entry added or
         // removed at any depth changes the hash.
-        | DeepDirectoryListing -> "list-deep", rel, listingHash p SearchOption.AllDirectories)
+        | DeepDirectoryListing -> Some("list-deep", rel, listingHash p SearchOption.AllDirectories)
+        | UnknownInputKind _ -> None)
+
+/// An input of a kind this reader does not know cannot be compared on replay, so its scope
+/// is incomplete.
+let private unknownInputs (inputs: RecordedInput list) =
+    inputs
+    |> List.choose (fun i ->
+        match i.Kind with
+        | UnknownInputKind kind -> Some(UnknownInput kind)
+        | _ -> None)
 
 let private summaryOf status reason (executed: string list) counters rejected cpu =
     { Status = status
@@ -394,6 +404,7 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
                 m.Children
                 |> List.filter (fun c -> not (tracedChildren.Contains(m.Key, c.Pid)))
                 |> List.map (fun c -> ChildProcessUntraced c.FileName)
+                |> List.append (unknownInputs m.Inputs)
 
             { Key = m.Key
               Symbols =

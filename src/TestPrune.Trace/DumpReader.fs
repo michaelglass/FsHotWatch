@@ -17,13 +17,15 @@ let private str (e: JsonElement) (name: string) = e.GetProperty(name).GetString(
 let private items (e: JsonElement) (name: string) (f: JsonElement -> 'T) : 'T list =
     e.GetProperty(name).EnumerateArray() |> Seq.map f |> List.ofSeq
 
+/// A kind a newer recorder writes is kept, not rejected: ingest marks only its scope
+/// incomplete, and the rest of the dump stays usable.
 let private inputKind =
     function
     | "read" -> FileRead
     | "exists" -> ExistenceProbe
     | "list" -> DirectoryListing
     | "list-deep" -> DeepDirectoryListing
-    | other -> failwith $"unknown input kind %s{other}"
+    | other -> UnknownInputKind other
 
 let private scopeOf (e: JsonElement) : RecordedScope =
     let test =

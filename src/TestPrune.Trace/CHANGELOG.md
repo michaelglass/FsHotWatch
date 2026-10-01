@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a dump holding an input of a kind this version does not know (one a newer recorder
+  writes) is read, not rejected whole. The scope that recorded it is stored incomplete with
+  `unknown-input-kind:<kind>`, and every other scope in the dump stays usable.
+  `Model.InputKind` has an `UnknownInputKind` case and `Model.IncompleteReason` an
+  `UnknownInput` case.
+
 ## 0.6.1 - 2026-10-01
 
 - feat: the README documents `Scopes.NoteInput` as the way to record reads the weaver cannot
