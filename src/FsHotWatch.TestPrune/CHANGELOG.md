@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a later narrower run replaces a whole-suite receipt that REFUSED a green. A full suite
+  with a failed or timed-out project kept grading that frozen refusal over every later
+  impact-filtered `check`, even one that reran the failed project in full and passed it, so the
+  verdict stayed incomplete over a green tree until something ran the whole suite again. A
+  narrower run still keeps a CLEAN whole-suite receipt, as before; after a refusing one it earns
+  its own, graded from the failure ledger and the pending queue as they stand.
+
 - deps: TestPrune.Trace 0.6.1. Traced runs record reads through the remaining listing and open
   overloads (`EnumerationOptions` listings, `DirectoryInfo` directory listings,
   `File.OpenHandle`, the remaining `FileStream`/`StreamReader` constructors, `FileInfo.Open`,
