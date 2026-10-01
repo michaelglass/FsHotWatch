@@ -4554,6 +4554,49 @@ let ``a narrower run after a full suite on one tree and model keeps the full sui
         test <@ receiptGate report final 7L = None @>)
 
 [<Fact(Timeout = 20000)>]
+let ``a narrower run after a REFUSING full suite replaces its receipt, and its green stands`` () =
+    // The gate that stayed incomplete over a green tree: the full suite failed one project,
+    // so its receipt's evidence refused a green; later `check`s were narrower, ran that
+    // project again in full and passed it, and each was "kept over a narrower run" — so the
+    // verdict kept grading the failed run's frozen refusal, and no impact-filtered check
+    // could ever cover the whole suite to replace it. A narrower run says nothing the
+    // receipt does not only when the receipt's run earned a clean evidence.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx = ctxUnderModel (fun () -> 7L)
+
+        let failingFullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false
+                  "ProjB", TestsFailed("failed Ns.ProjBTests.boom (12ms)", false, TimeSpan.FromSeconds 1.0) ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        // The failed project again, in full, and only it.
+        let narrowRerun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let afterFailure =
+            handler.Update ctx handler.Init failingFullRun |> Async.RunSynchronously
+
+        // Control: the failed full suite refuses.
+        test <@ (receiptGate (receiptScopeUnder repoRoot handler afterFailure 7L) afterFailure 7L).IsSome @>
+
+        let final = handler.Update ctx afterFailure narrowRerun |> Async.RunSynchronously
+
+        let report = receiptScopeUnder repoRoot handler final 7L
+
+        test <@ report.RunId = Some(runIdOfFinished narrowRerun) @>
+        test <@ receiptGate report final 7L = None @>)
+
+[<Fact(Timeout = 20000)>]
 let ``a narrower run under a NEW model does not keep a full-suite receipt earned under the old one`` () =
     // A full suite under generation 6 says nothing about generation 7. A narrower run
     // under 7 must therefore not be read as "says nothing the receipt does not": that kept

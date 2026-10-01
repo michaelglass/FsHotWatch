@@ -2979,10 +2979,17 @@ type ReceiptTransition =
     /// mask them — `IpcOutputTests` proves retained coverage under a red plugin exits 1.
     | Noop
     /// A narrower executed run on the tree AND model the previous receipt already covers
-    /// in FULL: it says nothing the receipt does not, so the receipt stands — and so does
-    /// the model evidence that receipt's run earned. `test-scope` grades the receipt's
-    /// run, and the verdict refuses a green unless that same run holds evidence for the
-    /// current model, so the evidence must name the run the receipt names.
+    /// in FULL, where that receipt's run earned a CLEAN evidence: it says nothing the
+    /// receipt does not, so the receipt stands — and so does the model evidence that
+    /// receipt's run earned. `test-scope` grades the receipt's run, and the verdict refuses
+    /// a green unless that same run holds evidence for the current model, so the evidence
+    /// must name the run the receipt names.
+    ///
+    /// Not after a REFUSING receipt (a project failed or timed out, obligations pending):
+    /// a narrower run that reruns what failed says exactly what that receipt lacks, and
+    /// keeping it graded a frozen refusal no impact-filtered check could ever replace. Such
+    /// a run is `Earned`, its evidence taken from the failure ledger and the pending queue
+    /// as they stand, which still hold anything it did not rerun.
     | Narrower
     /// The stored receipt no longer describes the tree, or this run could not stand
     /// behind one: aborted, launched unbound, the tree or the project model changed
@@ -3205,6 +3212,7 @@ module ReceiptTransition =
     let internal classify
         (runnableProjects: string list)
         (previous: TestEvidenceReceipt option)
+        (previousRefused: bool)
         (currentInputTree: string option)
         (currentModelGeneration: int64 option)
         (currentInputs: Map<string, string> option)
@@ -3249,6 +3257,7 @@ module ReceiptTransition =
         | Normal ->
             let narrowerThanPrevious =
                 previousBoundToCurrent
+                && not previousRefused
                 && allResultsCompleted completed
                 && (previous
                     |> Option.exists (fun prior -> RunCoverage.coversWholeSuite runnableProjects prior.Coverage))
@@ -9936,10 +9945,19 @@ let internal createWithQueries
                             launch.InputTree
                             currentTree
 
+                    // Whether the standing receipt's own run earned an evidence that
+                    // refuses a green: a narrower run keeps only a clean one.
+                    let previousRefused =
+                        match state.EvidenceReceipt, state.Earned with
+                        | Some receipt, Some evidence when evidence.RunId = receipt.RunId ->
+                            not (List.isEmpty evidence.FailureReasons)
+                        | _ -> false
+
                     let receiptTransition =
                         ReceiptTransition.classify
                             (Set.toList runnableProjects)
                             state.EvidenceReceipt
+                            previousRefused
                             currentInputTree
                             currentModelGeneration
                             currentInputs

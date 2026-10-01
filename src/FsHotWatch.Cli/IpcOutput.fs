@@ -1080,9 +1080,14 @@ let private publishVerdictWithReason
                     if List.isEmpty refusals then
                         None
                     else
+                        // The refusals are what that run found when it completed. Say so,
+                        // and say what re-grades it: a narrower `check` replaces this
+                        // receipt only once it reruns what failed, and `confirm` re-grades
+                        // the whole suite in one run.
                         Some(
-                            $"the evidence receipt for %s{describe} refuses a green: "
+                            $"the evidence receipt for %s{describe} refuses a green (as of that run): "
                             + String.concat "; " (List.distinct refusals)
+                            + " — fix and rerun what failed with `fshw check`, or run `fshw confirm` to re-grade the whole suite"
                         )
 
         // A downgrade decided HERE is the whole reason for the exit code, and the WHAT
