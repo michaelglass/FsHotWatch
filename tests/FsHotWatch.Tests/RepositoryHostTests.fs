@@ -509,6 +509,68 @@ let ``a configuration change the host sees ends that session, and only that one`
         test <@ (host.Registry.TryGet b).IsSome @>)
 
 // ---------------------------------------------------------------------------
+// Retiring
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 120000)>]
+let ``an attach in flight keeps the host from retiring`` () =
+    // An attach builds its session before the registry holds it — on a real host that
+    // includes a `dotnet --version` probe of up to 30s. A host that read "no session"
+    // then would exit under a client it was about to answer `Attached`.
+    use entered = new ManualResetEventSlim(false)
+    use gate = new ManualResetEventSlim(false)
+
+    let blocking fx =
+        { settingsFor fx with
+            ToolchainOf =
+                fun _ _ ->
+                    entered.Set()
+                    gate.Wait() |> ignore
+                    "10.0.100" }
+
+    withHost blocking daemonFactory (fun fx host ->
+        let attaching = Task.Run(fun () -> attachVia host (requestFrom fx.Primary "a"))
+
+        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+        let retiredMidAttach = host.TryRetire()
+        gate.Set()
+        let id = attachedId (attaching.Result)
+
+        test <@ not retiredMidAttach @>
+        test <@ (host.Registry.TryGet id).IsSome @>
+
+        // Once nothing is attached it retires, and an attach after that starts nothing.
+        host.Registry.Detach id |> ignore
+        test <@ host.TryRetire() @>
+
+        Assert.ThrowsAny<exn>(fun () -> attachVia host (requestFrom fx.Secondary "b") |> ignore)
+        |> ignore
+
+        test <@ List.isEmpty host.Registry.Sessions @>)
+
+[<Fact>]
+let ``the idle watch exits only once the grace has passed and the host agrees to retire`` () =
+    let grace = TimeSpan.FromMinutes 5.0
+    let since = DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc)
+    let later = since + grace
+    let asked = ref 0
+
+    let retire (answer: bool) : unit -> bool =
+        fun () ->
+            asked.Value <- asked.Value + 1
+            answer
+
+    // A session attached: the idle time starts now, and nobody is asked to retire.
+    test <@ RepositoryHost.idleTick grace later since true (retire true) = Some later @>
+    // Inside the grace: nothing changes.
+    test <@ RepositoryHost.idleTick grace (later - TimeSpan.FromSeconds 1.0) since false (retire true) = Some since @>
+    test <@ asked.Value = 0 @>
+    // Past it: exit when the host retires; an attach in flight starts the grace over.
+    test <@ RepositoryHost.idleTick grace later since false (retire true) = None @>
+    test <@ RepositoryHost.idleTick grace later since false (retire false) = Some later @>
+    test <@ asked.Value = 2 @>
+
+// ---------------------------------------------------------------------------
 // The endpoint, end to end
 // ---------------------------------------------------------------------------
 
