@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-01
+
 - feat: `Scopes.NoteInput(kind, path)` notes a file input on the current scope, as a woven
   read would: the escape hatch for reads inside assemblies that are not woven (a library
   handed a path, a framework file provider). `kind` is `read`, `exists`, `list` or

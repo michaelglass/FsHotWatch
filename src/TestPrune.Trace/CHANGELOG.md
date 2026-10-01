@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-01
+
 - feat: the README documents `Scopes.NoteInput` as the way to record reads the weaver cannot
   see (the F# compiler service's `IFileSystem`, ASP.NET's static-file `IFileProvider`), and
   its reflection binding gains `noteInput`.

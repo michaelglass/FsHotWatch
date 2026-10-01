@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-01
+
+- trace: Scopes.NoteInput, an escape hatch for reads the weaver cannot see
+- trace: record the remaining listing and open overloads
+- deps: build tooling
+
+
 ## 0.6.0 - 2026-09-30
 
 - feat: `audit`, `overhead` and `file-census` take `--keep <dir>`: the verb runs in `<dir>`
