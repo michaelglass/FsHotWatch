@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: the remaining listing and open overloads are recorded as inputs: listings that take
+  `EnumerationOptions` (`list-deep` when it recurses), `DirectoryInfo`'s directory and
+  file-system-info listings, `File.OpenHandle` (which covers `RandomAccess`), the
+  `FileStream` and `StreamReader` constructors taking a buffer size, a `bool`, `FileOptions`
+  or `FileStreamOptions`, `FileInfo.Open`, and `File.ReadLinesAsync`.
+
 ## 0.6.0 - 2026-09-30
 
 - fix: a listing with `SearchOption.AllDirectories` is noted as `list-deep`, not `list`.

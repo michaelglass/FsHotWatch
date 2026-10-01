@@ -79,4 +79,11 @@ let main _ =
         let root = System.Environment.GetEnvironmentVariable "TESTPRUNE_TRACE_REPO_ROOT"
         box (Logic.readRepoFile (System.IO.Path.Combine(root, "global.json"))))
 
+    let repoRoot = System.Environment.GetEnvironmentVariable "TESTPRUNE_TRACE_REPO_ROOT"
+    run "dirInfoListing" (fun () -> box (InputReads.directoryInfoDirectories repoRoot))
+    run "optionsListing" (fun () -> box (InputReads.listingWithOptions repoRoot))
+
+    run "openOverload" (fun () ->
+        box (InputReads.readerWithDetection (System.IO.Path.Combine(repoRoot, "global.json"))))
+
     0

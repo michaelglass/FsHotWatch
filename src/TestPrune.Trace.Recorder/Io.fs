@@ -1,5 +1,6 @@
 namespace TestPrune.Trace.Recorder
 
+open Microsoft.Win32.SafeHandles
 open System
 open System.Collections.Generic
 open System.IO
@@ -34,6 +35,14 @@ type Io =
     [<MethodImpl(MethodImplOptions.NoInlining)>]
     static member private ListKind(option: SearchOption) =
         if option = SearchOption.AllDirectories then
+            "list-deep"
+        else
+            "list"
+
+    /// `list-deep` for a listing whose options recurse into subdirectories, else `list`.
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member private ListKind(options: EnumerationOptions) =
+        if not (isNull options) && options.RecurseSubdirectories then
             "list-deep"
         else
             "list"
@@ -356,3 +365,251 @@ type Io =
     static member DirectoryInfo_get_Exists(di: DirectoryInfo) : bool =
         Io.NoteWith(Runtime.state, "exists", di.FullName)
         di.Exists
+
+    /// Shim for `Directory.GetFiles(string, string, EnumerationOptions)`.
+    static member Directory_GetFiles(path: string, pattern: string, options: EnumerationOptions) : string[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.GetFiles(path, pattern, options)
+
+    /// Shim for `Directory.EnumerateFiles(string, string, EnumerationOptions)`.
+    static member Directory_EnumerateFiles
+        (path: string, pattern: string, options: EnumerationOptions)
+        : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.EnumerateFiles(path, pattern, options)
+
+    /// Shim for `Directory.GetDirectories(string, string, EnumerationOptions)`.
+    static member Directory_GetDirectories(path: string, pattern: string, options: EnumerationOptions) : string[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.GetDirectories(path, pattern, options)
+
+    /// Shim for `Directory.EnumerateDirectories(string, string, EnumerationOptions)`.
+    static member Directory_EnumerateDirectories
+        (path: string, pattern: string, options: EnumerationOptions)
+        : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.EnumerateDirectories(path, pattern, options)
+
+    /// Shim for `Directory.GetFileSystemEntries(string, string, EnumerationOptions)`.
+    static member Directory_GetFileSystemEntries
+        (path: string, pattern: string, options: EnumerationOptions)
+        : string[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.GetFileSystemEntries(path, pattern, options)
+
+    /// Shim for `Directory.EnumerateFileSystemEntries(string, string, EnumerationOptions)`.
+    static member Directory_EnumerateFileSystemEntries
+        (path: string, pattern: string, options: EnumerationOptions)
+        : IEnumerable<string> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, path)
+        Directory.EnumerateFileSystemEntries(path, pattern, options)
+
+    /// Shim for `DirectoryInfo.GetDirectories()`.
+    static member DirectoryInfo_GetDirectories(di: DirectoryInfo) : DirectoryInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetDirectories()
+
+    /// Shim for `DirectoryInfo.GetDirectories(string)`.
+    static member DirectoryInfo_GetDirectories(di: DirectoryInfo, pattern: string) : DirectoryInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetDirectories pattern
+
+    /// Shim for `DirectoryInfo.GetDirectories(string, SearchOption)`.
+    static member DirectoryInfo_GetDirectories
+        (di: DirectoryInfo, pattern: string, option: SearchOption)
+        : DirectoryInfo[] =
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
+        di.GetDirectories(pattern, option)
+
+    /// Shim for `DirectoryInfo.EnumerateDirectories()`.
+    static member DirectoryInfo_EnumerateDirectories(di: DirectoryInfo) : IEnumerable<DirectoryInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateDirectories()
+
+    /// Shim for `DirectoryInfo.EnumerateDirectories(string)`.
+    static member DirectoryInfo_EnumerateDirectories(di: DirectoryInfo, pattern: string) : IEnumerable<DirectoryInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateDirectories pattern
+
+    /// Shim for `DirectoryInfo.EnumerateDirectories(string, SearchOption)`.
+    static member DirectoryInfo_EnumerateDirectories
+        (di: DirectoryInfo, pattern: string, option: SearchOption)
+        : IEnumerable<DirectoryInfo> =
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
+        di.EnumerateDirectories(pattern, option)
+
+    /// Shim for `DirectoryInfo.GetFileSystemInfos()`.
+    static member DirectoryInfo_GetFileSystemInfos(di: DirectoryInfo) : FileSystemInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetFileSystemInfos()
+
+    /// Shim for `DirectoryInfo.GetFileSystemInfos(string)`.
+    static member DirectoryInfo_GetFileSystemInfos(di: DirectoryInfo, pattern: string) : FileSystemInfo[] =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.GetFileSystemInfos pattern
+
+    /// Shim for `DirectoryInfo.GetFileSystemInfos(string, SearchOption)`.
+    static member DirectoryInfo_GetFileSystemInfos
+        (di: DirectoryInfo, pattern: string, option: SearchOption)
+        : FileSystemInfo[] =
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
+        di.GetFileSystemInfos(pattern, option)
+
+    /// Shim for `DirectoryInfo.EnumerateFileSystemInfos()`.
+    static member DirectoryInfo_EnumerateFileSystemInfos(di: DirectoryInfo) : IEnumerable<FileSystemInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateFileSystemInfos()
+
+    /// Shim for `DirectoryInfo.EnumerateFileSystemInfos(string)`.
+    static member DirectoryInfo_EnumerateFileSystemInfos
+        (di: DirectoryInfo, pattern: string)
+        : IEnumerable<FileSystemInfo> =
+        Io.NoteWith(Runtime.state, "list", di.FullName)
+        di.EnumerateFileSystemInfos pattern
+
+    /// Shim for `DirectoryInfo.EnumerateFileSystemInfos(string, SearchOption)`.
+    static member DirectoryInfo_EnumerateFileSystemInfos
+        (di: DirectoryInfo, pattern: string, option: SearchOption)
+        : IEnumerable<FileSystemInfo> =
+        Io.NoteWith(Runtime.state, Io.ListKind option, di.FullName)
+        di.EnumerateFileSystemInfos(pattern, option)
+
+    /// Shim for `DirectoryInfo.GetFiles(string, EnumerationOptions)`.
+    static member DirectoryInfo_GetFiles(di: DirectoryInfo, pattern: string, options: EnumerationOptions) : FileInfo[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.GetFiles(pattern, options)
+
+    /// Shim for `DirectoryInfo.EnumerateFiles(string, EnumerationOptions)`.
+    static member DirectoryInfo_EnumerateFiles
+        (di: DirectoryInfo, pattern: string, options: EnumerationOptions)
+        : IEnumerable<FileInfo> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.EnumerateFiles(pattern, options)
+
+    /// Shim for `DirectoryInfo.GetDirectories(string, EnumerationOptions)`.
+    static member DirectoryInfo_GetDirectories
+        (di: DirectoryInfo, pattern: string, options: EnumerationOptions)
+        : DirectoryInfo[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.GetDirectories(pattern, options)
+
+    /// Shim for `DirectoryInfo.EnumerateDirectories(string, EnumerationOptions)`.
+    static member DirectoryInfo_EnumerateDirectories
+        (di: DirectoryInfo, pattern: string, options: EnumerationOptions)
+        : IEnumerable<DirectoryInfo> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.EnumerateDirectories(pattern, options)
+
+    /// Shim for `DirectoryInfo.GetFileSystemInfos(string, EnumerationOptions)`.
+    static member DirectoryInfo_GetFileSystemInfos
+        (di: DirectoryInfo, pattern: string, options: EnumerationOptions)
+        : FileSystemInfo[] =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.GetFileSystemInfos(pattern, options)
+
+    /// Shim for `DirectoryInfo.EnumerateFileSystemInfos(string, EnumerationOptions)`.
+    static member DirectoryInfo_EnumerateFileSystemInfos
+        (di: DirectoryInfo, pattern: string, options: EnumerationOptions)
+        : IEnumerable<FileSystemInfo> =
+        Io.NoteWith(Runtime.state, Io.ListKind options, di.FullName)
+        di.EnumerateFileSystemInfos(pattern, options)
+
+    /// Shim for `File.OpenHandle(string, FileMode, FileAccess, FileShare, FileOptions, long)`.
+    static member File_OpenHandle
+        (
+            path: string,
+            mode: FileMode,
+            access: FileAccess,
+            share: FileShare,
+            options: FileOptions,
+            preallocationSize: int64
+        ) : SafeFileHandle =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.OpenHandle(path, mode, access, share, options, preallocationSize)
+
+    /// Shim for `FileStream(string, FileMode, FileAccess, FileShare, int)`.
+    static member FileStream_ctor
+        (path: string, mode: FileMode, access: FileAccess, share: FileShare, bufferSize: int)
+        : FileStream =
+        Io.NoteWith(Runtime.state, "read", path)
+        new FileStream(path, mode, access, share, bufferSize)
+
+    /// Shim for `FileStream(string, FileMode, FileAccess, FileShare, int, bool)`.
+    static member FileStream_ctor
+        (path: string, mode: FileMode, access: FileAccess, share: FileShare, bufferSize: int, useAsync: bool)
+        : FileStream =
+        Io.NoteWith(Runtime.state, "read", path)
+        new FileStream(path, mode, access, share, bufferSize, useAsync)
+
+    /// Shim for `FileStream(string, FileMode, FileAccess, FileShare, int, FileOptions)`.
+    static member FileStream_ctor
+        (path: string, mode: FileMode, access: FileAccess, share: FileShare, bufferSize: int, options: FileOptions)
+        : FileStream =
+        Io.NoteWith(Runtime.state, "read", path)
+        new FileStream(path, mode, access, share, bufferSize, options)
+
+    /// Shim for `FileStream(string, FileStreamOptions)`.
+    static member FileStream_ctor(path: string, options: FileStreamOptions) : FileStream =
+        Io.NoteWith(Runtime.state, "read", path)
+        new FileStream(path, options)
+
+    /// Shim for `StreamReader(string, bool)`.
+    static member StreamReader_ctor(path: string, detectEncoding: bool) : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, detectEncoding)
+
+    /// Shim for `StreamReader(string, Encoding, bool)`.
+    static member StreamReader_ctor(path: string, encoding: Encoding, detectEncoding: bool) : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, encoding, detectEncoding)
+
+    /// Shim for `StreamReader(string, Encoding, bool, int)`.
+    static member StreamReader_ctor
+        (path: string, encoding: Encoding, detectEncoding: bool, bufferSize: int)
+        : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, encoding, detectEncoding, bufferSize)
+
+    /// Shim for `StreamReader(string, FileStreamOptions)`.
+    static member StreamReader_ctor(path: string, options: FileStreamOptions) : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, options)
+
+    /// Shim for `StreamReader(string, Encoding, bool, FileStreamOptions)`.
+    static member StreamReader_ctor
+        (path: string, encoding: Encoding, detectEncoding: bool, options: FileStreamOptions)
+        : StreamReader =
+        Io.NoteWith(Runtime.state, "read", path)
+        new StreamReader(path, encoding, detectEncoding, options)
+
+    /// Shim for `FileInfo.Open(FileMode)`.
+    static member FileInfo_Open(fi: FileInfo, mode: FileMode) : FileStream =
+        Io.NoteWith(Runtime.state, "read", fi.FullName)
+        fi.Open mode
+
+    /// Shim for `FileInfo.Open(FileMode, FileAccess)`.
+    static member FileInfo_Open(fi: FileInfo, mode: FileMode, access: FileAccess) : FileStream =
+        Io.NoteWith(Runtime.state, "read", fi.FullName)
+        fi.Open(mode, access)
+
+    /// Shim for `FileInfo.Open(FileMode, FileAccess, FileShare)`.
+    static member FileInfo_Open(fi: FileInfo, mode: FileMode, access: FileAccess, share: FileShare) : FileStream =
+        Io.NoteWith(Runtime.state, "read", fi.FullName)
+        fi.Open(mode, access, share)
+
+    /// Shim for `FileInfo.Open(FileStreamOptions)`.
+    static member FileInfo_Open(fi: FileInfo, options: FileStreamOptions) : FileStream =
+        Io.NoteWith(Runtime.state, "read", fi.FullName)
+        fi.Open options
+
+    /// Shim for `File.ReadLinesAsync(string, CancellationToken)`.
+    static member File_ReadLinesAsync(path: string, ct: CancellationToken) : IAsyncEnumerable<string> =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadLinesAsync(path, ct)
+
+    /// Shim for `File.ReadLinesAsync(string, Encoding, CancellationToken)`.
+    static member File_ReadLinesAsync
+        (path: string, encoding: Encoding, ct: CancellationToken)
+        : IAsyncEnumerable<string> =
+        Io.NoteWith(Runtime.state, "read", path)
+        File.ReadLinesAsync(path, encoding, ct)

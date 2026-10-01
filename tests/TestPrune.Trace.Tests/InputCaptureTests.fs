@@ -331,6 +331,181 @@ let ``every file shim notes its input and does what the original does`` () =
         @>
 
 [<Fact>]
+let ``every overload shim notes its input and does what the original does`` () =
+    let root = Fixtures.repoRoot
+    let file = Path.Combine(root, "global.json")
+    let text = File.ReadAllText file
+    let size = FileInfo(file).Length
+    let state = recorderWithRoot root
+    state.EnterScope "T:overloads"
+    let ct = CancellationToken.None
+    let options = EnumerationOptions()
+    let deep = EnumerationOptions(RecurseSubdirectories = true)
+    let srcDir = Path.Combine(root, "src")
+    let di = DirectoryInfo srcDir
+
+    withRecorder state (fun () ->
+        // Each listing shim against the original called with the same arguments.
+        let listings: (string * (unit -> Collections.IEnumerable) * (unit -> Collections.IEnumerable)) list =
+            [ "Directory.GetFiles",
+              (fun () -> Io.Directory_GetFiles(root, "*", options)),
+              (fun () -> Directory.GetFiles(root, "*", options))
+              "Directory.EnumerateFiles",
+              (fun () -> Io.Directory_EnumerateFiles(root, "*", options)),
+              (fun () -> Directory.EnumerateFiles(root, "*", options))
+              "Directory.GetDirectories",
+              (fun () -> Io.Directory_GetDirectories(root, "*", options)),
+              (fun () -> Directory.GetDirectories(root, "*", options))
+              "Directory.EnumerateDirectories",
+              (fun () -> Io.Directory_EnumerateDirectories(root, "*", options)),
+              (fun () -> Directory.EnumerateDirectories(root, "*", options))
+              "Directory.GetFileSystemEntries",
+              (fun () -> Io.Directory_GetFileSystemEntries(root, "*", options)),
+              (fun () -> Directory.GetFileSystemEntries(root, "*", options))
+              "Directory.EnumerateFileSystemEntries",
+              (fun () -> Io.Directory_EnumerateFileSystemEntries(srcDir, "*", deep)),
+              (fun () -> Directory.EnumerateFileSystemEntries(srcDir, "*", deep))
+              "DirectoryInfo.GetDirectories",
+              (fun () -> Io.DirectoryInfo_GetDirectories di),
+              (fun () -> di.GetDirectories())
+              "DirectoryInfo.GetDirectories(p)",
+              (fun () -> Io.DirectoryInfo_GetDirectories(di, "*")),
+              (fun () -> di.GetDirectories "*")
+              "DirectoryInfo.EnumerateDirectories(p, o)",
+              (fun () -> Io.DirectoryInfo_EnumerateDirectories(di, "*", SearchOption.TopDirectoryOnly)),
+              (fun () -> di.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+              "DirectoryInfo.GetFileSystemInfos",
+              (fun () -> Io.DirectoryInfo_GetFileSystemInfos di),
+              (fun () -> di.GetFileSystemInfos())
+              "DirectoryInfo.EnumerateFileSystemInfos(p)",
+              (fun () -> Io.DirectoryInfo_EnumerateFileSystemInfos(di, "*")),
+              (fun () -> di.EnumerateFileSystemInfos "*")
+              "DirectoryInfo.GetFiles(p, options)",
+              (fun () -> Io.DirectoryInfo_GetFiles(di, "*", options)),
+              (fun () -> di.GetFiles("*", options))
+              "DirectoryInfo.GetDirectories() [all]",
+              (fun () -> Io.DirectoryInfo_GetDirectories di),
+              (fun () -> di.GetDirectories())
+              "DirectoryInfo.GetDirectories(p) [all]",
+              (fun () -> Io.DirectoryInfo_GetDirectories(di, "*")),
+              (fun () -> di.GetDirectories "*")
+              "DirectoryInfo.GetDirectories(p, o) [all]",
+              (fun () -> Io.DirectoryInfo_GetDirectories(di, "*", SearchOption.TopDirectoryOnly)),
+              (fun () -> di.GetDirectories("*", SearchOption.TopDirectoryOnly))
+              "DirectoryInfo.EnumerateDirectories() [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateDirectories di),
+              (fun () -> di.EnumerateDirectories())
+              "DirectoryInfo.EnumerateDirectories(p) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateDirectories(di, "*")),
+              (fun () -> di.EnumerateDirectories "*")
+              "DirectoryInfo.EnumerateDirectories(p, o) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateDirectories(di, "*", SearchOption.TopDirectoryOnly)),
+              (fun () -> di.EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+              "DirectoryInfo.GetFileSystemInfos() [all]",
+              (fun () -> Io.DirectoryInfo_GetFileSystemInfos di),
+              (fun () -> di.GetFileSystemInfos())
+              "DirectoryInfo.GetFileSystemInfos(p) [all]",
+              (fun () -> Io.DirectoryInfo_GetFileSystemInfos(di, "*")),
+              (fun () -> di.GetFileSystemInfos "*")
+              "DirectoryInfo.GetFileSystemInfos(p, o) [all]",
+              (fun () -> Io.DirectoryInfo_GetFileSystemInfos(di, "*", SearchOption.TopDirectoryOnly)),
+              (fun () -> di.GetFileSystemInfos("*", SearchOption.TopDirectoryOnly))
+              "DirectoryInfo.EnumerateFileSystemInfos() [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateFileSystemInfos di),
+              (fun () -> di.EnumerateFileSystemInfos())
+              "DirectoryInfo.EnumerateFileSystemInfos(p) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateFileSystemInfos(di, "*")),
+              (fun () -> di.EnumerateFileSystemInfos "*")
+              "DirectoryInfo.EnumerateFileSystemInfos(p, o) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateFileSystemInfos(di, "*", SearchOption.TopDirectoryOnly)),
+              (fun () -> di.EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly))
+              "DirectoryInfo.GetFiles(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_GetFiles(di, "*", options)),
+              (fun () -> di.GetFiles("*", options))
+              "DirectoryInfo.EnumerateFiles(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateFiles(di, "*", options)),
+              (fun () -> di.EnumerateFiles("*", options))
+              "DirectoryInfo.GetDirectories(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_GetDirectories(di, "*", options)),
+              (fun () -> di.GetDirectories("*", options))
+              "DirectoryInfo.EnumerateDirectories(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateDirectories(di, "*", options)),
+              (fun () -> di.EnumerateDirectories("*", options))
+              "DirectoryInfo.GetFileSystemInfos(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_GetFileSystemInfos(di, "*", options)),
+              (fun () -> di.GetFileSystemInfos("*", options))
+              "DirectoryInfo.EnumerateFileSystemInfos(p, options) [all]",
+              (fun () -> Io.DirectoryInfo_EnumerateFileSystemInfos(di, "*", options)),
+              (fun () -> di.EnumerateFileSystemInfos("*", options))
+              "DirectoryInfo.GetDirectories(p, options)",
+              (fun () -> Io.DirectoryInfo_GetDirectories(di, "*", options)),
+              (fun () -> di.GetDirectories("*", options)) ]
+
+        let entries (xs: Collections.IEnumerable) =
+            xs
+            |> Seq.cast<obj>
+            |> Seq.map (fun x ->
+                match x with
+                | :? FileSystemInfo as i -> i.Name
+                | other -> Path.GetFileName(string other))
+            |> Seq.sort
+            |> List.ofSeq
+
+        for name, shim, original in listings do
+            let got = name, entries (shim ())
+            let expected = name, entries (original ())
+            test <@ got = expected @>
+
+        for opener in
+            [ fun () -> Io.FileStream_ctor(file, FileMode.Open, FileAccess.Read, FileShare.Read, 4096)
+              fun () -> Io.FileStream_ctor(file, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, false)
+              fun () ->
+                  Io.FileStream_ctor(file, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.None)
+              fun () -> Io.FileStream_ctor(file, FileStreamOptions(Mode = FileMode.Open, Access = FileAccess.Read))
+              fun () -> Io.FileInfo_Open(FileInfo file, FileMode.Open)
+              fun () -> Io.FileInfo_Open(FileInfo file, FileMode.Open, FileAccess.Read)
+              fun () -> Io.FileInfo_Open(FileInfo file, FileMode.Open, FileAccess.Read, FileShare.Read)
+              fun () ->
+                  Io.FileInfo_Open(FileInfo file, FileStreamOptions(Mode = FileMode.Open, Access = FileAccess.Read)) ] do
+            use s = opener ()
+            test <@ s.Length = size @>
+
+        for reader in
+            [ fun () -> Io.StreamReader_ctor(file, true)
+              fun () -> Io.StreamReader_ctor(file, Encoding.UTF8, true)
+              fun () -> Io.StreamReader_ctor(file, Encoding.UTF8, true, 1024)
+              fun () -> Io.StreamReader_ctor(file, FileStreamOptions(Mode = FileMode.Open, Access = FileAccess.Read))
+              fun () ->
+                  Io.StreamReader_ctor(
+                      file,
+                      Encoding.UTF8,
+                      true,
+                      FileStreamOptions(Mode = FileMode.Open, Access = FileAccess.Read)
+                  ) ] do
+            use r = reader ()
+            test <@ r.ReadToEnd() = text @>
+
+        do
+            use handle =
+                Io.File_OpenHandle(file, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.None, 0L)
+
+            test <@ RandomAccess.GetLength handle = size @>
+
+        let lines (xs: Collections.Generic.IAsyncEnumerable<string>) =
+            let e = xs.GetAsyncEnumerator ct
+            let acc = ResizeArray<string>()
+
+            while e.MoveNextAsync().AsTask().Result do
+                acc.Add e.Current
+
+            List.ofSeq acc
+
+        test <@ lines (Io.File_ReadLinesAsync(file, ct)) = List.ofArray (File.ReadAllLines file) @>
+        test <@ lines (Io.File_ReadLinesAsync(file, Encoding.UTF8, ct)) = List.ofArray (File.ReadAllLines file) @>)
+
+    test <@ inputsOf (state.CurrentScope()) = set [ "list", root; "list-deep", srcDir; "list", srcDir; "read", file ] @>
+
+[<Fact>]
 let ``file shims are inert with no recorder`` () =
     let file = Path.Combine(Fixtures.repoRoot, "global.json")
     withRecorder null (fun () -> test <@ Io.File_Exists file @>)

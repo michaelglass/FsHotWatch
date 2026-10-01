@@ -69,10 +69,49 @@ let private Enc = "System.Text.Encoding"
 let private LoadOpts = "System.Xml.Linq.LoadOptions"
 
 [<Literal>]
+let private EnumOpts = "System.IO.EnumerationOptions"
+
+[<Literal>]
+let private StreamOpts = "System.IO.FileStreamOptions"
+
+[<Literal>]
+let private FileOpts = "System.IO.FileOptions"
+
+[<Literal>]
+let private I32 = "System.Int32"
+
+[<Literal>]
+let private I64 = "System.Int64"
+
+[<Literal>]
+let private Bool = "System.Boolean"
+
+[<Literal>]
 let private F = "System.IO.File"
 
 [<Literal>]
 let private D = "System.IO.Directory"
+
+/// `DirectoryInfo`'s directory and file-system-info listings in each overload, and every
+/// `DirectoryInfo` listing that takes `EnumerationOptions`.
+let private directoryInfoListings: Redirect list =
+    let listing name ps =
+        ioInstance "System.IO.DirectoryInfo" name ps ("DirectoryInfo_" + name)
+
+    (List.allPairs
+        [ "GetDirectories"
+          "EnumerateDirectories"
+          "GetFileSystemInfos"
+          "EnumerateFileSystemInfos" ]
+        [ []; [ S ]; [ S; Opt ] ]
+     |> List.map (fun (name, ps) -> listing name ps))
+    @ ([ "GetFiles"
+         "EnumerateFiles"
+         "GetDirectories"
+         "EnumerateDirectories"
+         "GetFileSystemInfos"
+         "EnumerateFileSystemInfos" ]
+       |> List.map (fun name -> listing name [ S; EnumOpts ]))
 
 /// Every redirected BCL method.
 let table: Redirect list =
@@ -136,11 +175,38 @@ let table: Redirect list =
       ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [] "DirectoryInfo_EnumerateFiles"
       ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [ S ] "DirectoryInfo_EnumerateFiles"
       ioInstance "System.IO.DirectoryInfo" "EnumerateFiles" [ S; Opt ] "DirectoryInfo_EnumerateFiles"
+      // Listings taking `EnumerationOptions` (the `DirectoryInfo` ones are in
+      // `directoryInfoListings`).
+      io D "GetFiles" [ S; S; EnumOpts ] "Directory_GetFiles"
+      io D "EnumerateFiles" [ S; S; EnumOpts ] "Directory_EnumerateFiles"
+      io D "GetDirectories" [ S; S; EnumOpts ] "Directory_GetDirectories"
+      io D "EnumerateDirectories" [ S; S; EnumOpts ] "Directory_EnumerateDirectories"
+      io D "GetFileSystemEntries" [ S; S; EnumOpts ] "Directory_GetFileSystemEntries"
+      io D "EnumerateFileSystemEntries" [ S; S; EnumOpts ] "Directory_EnumerateFileSystemEntries"
+      // Opens by path through the remaining overloads. `RandomAccess` reads only through a
+      // handle, so recording `File.OpenHandle` covers it.
+      io F "OpenHandle" [ S; Mode; Access; Share; FileOpts; I64 ] "File_OpenHandle"
+      io "System.IO.FileStream" ".ctor" [ S; Mode; Access; Share; I32 ] "FileStream_ctor"
+      io "System.IO.FileStream" ".ctor" [ S; Mode; Access; Share; I32; Bool ] "FileStream_ctor"
+      io "System.IO.FileStream" ".ctor" [ S; Mode; Access; Share; I32; FileOpts ] "FileStream_ctor"
+      io "System.IO.FileStream" ".ctor" [ S; StreamOpts ] "FileStream_ctor"
+      io "System.IO.StreamReader" ".ctor" [ S; Bool ] "StreamReader_ctor"
+      io "System.IO.StreamReader" ".ctor" [ S; Enc; Bool ] "StreamReader_ctor"
+      io "System.IO.StreamReader" ".ctor" [ S; Enc; Bool; I32 ] "StreamReader_ctor"
+      io "System.IO.StreamReader" ".ctor" [ S; StreamOpts ] "StreamReader_ctor"
+      io "System.IO.StreamReader" ".ctor" [ S; Enc; Bool; StreamOpts ] "StreamReader_ctor"
+      ioInstance "System.IO.FileInfo" "Open" [ Mode ] "FileInfo_Open"
+      ioInstance "System.IO.FileInfo" "Open" [ Mode; Access ] "FileInfo_Open"
+      ioInstance "System.IO.FileInfo" "Open" [ Mode; Access; Share ] "FileInfo_Open"
+      ioInstance "System.IO.FileInfo" "Open" [ StreamOpts ] "FileInfo_Open"
+      io F "ReadLinesAsync" [ S; Ct ] "File_ReadLinesAsync"
+      io F "ReadLinesAsync" [ S; Enc; Ct ] "File_ReadLinesAsync"
       proc [ "System.Diagnostics.ProcessStartInfo" ]
       proc [ S ]
       proc [ S; S ]
       proc [ S; "System.Collections.Generic.IEnumerable`1<System.String>" ]
       { proc [] with IsInstance = true } ]
+    @ directoryInfoListings
 
 let private signature (t: string) (name: string) (ps: string seq) =
     t + "::" + name + "(" + String.concat "," ps + ")"

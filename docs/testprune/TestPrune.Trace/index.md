@@ -287,22 +287,19 @@ A refused project runs untraced, exactly as it would without TestPrune.Trace.
 
 ### Reads that are not recorded
 
-File inputs are recorded by rewriting call sites in the woven assemblies: `File` reads and
-`Exists`, `Directory` and `DirectoryInfo` listings and `Exists`, `FileStream` and
-`StreamReader` opened by path, and XML loaded by path (`XDocument.Load`, `XElement.Load`,
-`XmlReader.Create`, `XmlDocument.Load`). A test that depends on a file only through
-anything else has no input for it, and a change to that file does not invalidate its
-trace:
+File inputs are recorded by rewriting call sites in the woven assemblies: `File` reads,
+`File.OpenHandle` (and so `RandomAccess`, which reads only through a handle) and `Exists`,
+`Directory` and `DirectoryInfo` listings in every overload (`EnumerationOptions` included)
+and `Exists`, `FileStream`, `StreamReader` and `FileInfo.Open` opened by path in every
+overload, and XML loaded by path (`XDocument.Load`, `XElement.Load`, `XmlReader.Create`,
+`XmlDocument.Load`). A test that depends on a file only through anything else has no input
+for it, and a change to that file does not invalidate its trace:
 
 - **Reads inside an assembly that is not woven.** Only repository assemblies with a
   portable PDB are woven. A NuGet or framework library that opens a file itself (a
   configuration builder reading `appsettings.json`, MSBuild or a project loader, a JSON
   reader handed a path) is invisible. A stream the woven code opens and hands to such a
   library is recorded.
-- **Other overloads:** listings that take `EnumerationOptions`,
-  `DirectoryInfo.GetDirectories`, `EnumerateDirectories`, `GetFileSystemInfos` and
-  `EnumerateFileSystemInfos`, `File.OpenHandle` and `RandomAccess`, and `FileStream` or
-  `StreamReader` constructors that take `FileStreamOptions`, a `bool` or a buffer size.
 - **File metadata used as content:** `File.GetLastWriteTime`, `FileInfo.Length`,
   `File.GetAttributes` and the like.
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: the weaver redirects the remaining listing and open overloads to the recorder:
+  `EnumerationOptions` listings, `DirectoryInfo` directory and file-system-info listings,
+  `File.OpenHandle`, the remaining `FileStream` and `StreamReader` constructors,
+  `FileInfo.Open` and `File.ReadLinesAsync`. A test reading a file through one of them is
+  reselected when the file changes.
+
 ## 0.6.0 - 2026-09-30
 
 - fix: a recursive directory listing (`SearchOption.AllDirectories`) is stored as a
