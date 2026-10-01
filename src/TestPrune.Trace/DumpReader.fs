@@ -25,6 +25,7 @@ let private inputKind =
     | "exists" -> ExistenceProbe
     | "list" -> DirectoryListing
     | "list-deep" -> DeepDirectoryListing
+    | "meta" -> MetadataRead
     | other -> UnknownInputKind other
 
 let private scopeOf (e: JsonElement) : RecordedScope =

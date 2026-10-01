@@ -63,6 +63,7 @@ let ``every kind is noted under its recorded name`` () =
         Scopes.NoteInput("exists", file)
         Scopes.NoteInput("list", Fixtures.repoRoot)
         Scopes.NoteInput("list-deep", Fixtures.repoRoot)
+        Scopes.NoteInput("meta", file)
         // Outside the repository, unnamed, or of no known kind: nothing.
         Scopes.NoteInput("read", "/etc/hosts")
         Scopes.NoteInput("read", null)
@@ -78,7 +79,8 @@ let ``every kind is noted under its recorded name`` () =
                 [ "read", file
                   "exists", file
                   "list", Fixtures.repoRoot
-                  "list-deep", Fixtures.repoRoot ]
+                  "list-deep", Fixtures.repoRoot
+                  "meta", file ]
         @>
 
 [<Fact(Timeout = 30000)>]

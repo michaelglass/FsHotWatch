@@ -1,5 +1,5 @@
 /// The input-capture weave pass: rewrites call sites of the BCL's file readers, existence
-/// probes, directory listings and `Process.Start` into the recorder's `Io` and
+/// probes, directory listings, metadata readers and `Process.Start` into the recorder's `Io` and
 /// `ProcessShims` shims, which have the same stack shape. A call site is used rather than
 /// an interposer on `open`, because managed file reads reach the OS through
 /// `open$NOCANCEL`, which an interposer on plain `open` never sees.
@@ -201,6 +201,28 @@ let table: Redirect list =
       ioInstance "System.IO.FileInfo" "Open" [ StreamOpts ] "FileInfo_Open"
       io F "ReadLinesAsync" [ S; Ct ] "File_ReadLinesAsync"
       io F "ReadLinesAsync" [ S; Enc; Ct ] "File_ReadLinesAsync"
+      // Metadata reads. The `FileSystemInfo` getters are not virtual, so a call through a
+      // `FileInfo` or `DirectoryInfo` is spelled against `FileSystemInfo`.
+      io F "GetLastWriteTime" [ S ] "File_GetLastWriteTime"
+      io F "GetLastWriteTimeUtc" [ S ] "File_GetLastWriteTimeUtc"
+      io F "GetCreationTime" [ S ] "File_GetCreationTime"
+      io F "GetCreationTimeUtc" [ S ] "File_GetCreationTimeUtc"
+      io F "GetLastAccessTime" [ S ] "File_GetLastAccessTime"
+      io F "GetLastAccessTimeUtc" [ S ] "File_GetLastAccessTimeUtc"
+      io F "GetAttributes" [ S ] "File_GetAttributes"
+      io F "GetUnixFileMode" [ S ] "File_GetUnixFileMode"
+      io D "GetLastWriteTime" [ S ] "Directory_GetLastWriteTime"
+      io D "GetLastWriteTimeUtc" [ S ] "Directory_GetLastWriteTimeUtc"
+      io D "GetCreationTime" [ S ] "Directory_GetCreationTime"
+      io D "GetCreationTimeUtc" [ S ] "Directory_GetCreationTimeUtc"
+      ioInstance "System.IO.FileSystemInfo" "get_LastWriteTime" [] "FileSystemInfo_get_LastWriteTime"
+      ioInstance "System.IO.FileSystemInfo" "get_LastWriteTimeUtc" [] "FileSystemInfo_get_LastWriteTimeUtc"
+      ioInstance "System.IO.FileSystemInfo" "get_CreationTime" [] "FileSystemInfo_get_CreationTime"
+      ioInstance "System.IO.FileSystemInfo" "get_CreationTimeUtc" [] "FileSystemInfo_get_CreationTimeUtc"
+      ioInstance "System.IO.FileSystemInfo" "get_Attributes" [] "FileSystemInfo_get_Attributes"
+      ioInstance "System.IO.FileSystemInfo" "get_UnixFileMode" [] "FileSystemInfo_get_UnixFileMode"
+      ioInstance "System.IO.FileInfo" "get_Length" [] "FileInfo_get_Length"
+      ioInstance "System.IO.FileInfo" "get_IsReadOnly" [] "FileInfo_get_IsReadOnly"
       proc [ "System.Diagnostics.ProcessStartInfo" ]
       proc [ S ]
       proc [ S; S ]

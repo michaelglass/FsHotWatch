@@ -266,9 +266,37 @@ let private listingHash (dir: string) (option: SearchOption) =
     else
         "absent"
 
+/// A path's permissions as `metaHash` hashes them: the read-only and hidden attributes when
+/// `isWindows`, else the Unix file mode. The attributes read works on every OS, so both
+/// sources are testable anywhere; the mode read is Unix-only.
+let permissionsOf (isWindows: bool) (path: string) : string =
+    if isWindows then
+        string (int (File.GetAttributes path &&& (FileAttributes.ReadOnly ||| FileAttributes.Hidden)))
+    else
+        string (int (File.GetUnixFileMode path))
+
+/// The current hash of a path's metadata: its content (a file's bytes, a directory's own
+/// entries as `list` hashes them) and its permissions (the Unix file mode, or the read-only
+/// and hidden attributes on Windows), or "absent". Times are left out on purpose: a
+/// checkout does not preserve them, so hashing them would invalidate every trace in every
+/// fresh clone. A content edit therefore also invalidates a test that read only a time or
+/// a length, which over-approximates soundly.
+let metaHash (path: string) : string =
+    let permissions () =
+        permissionsOf (OperatingSystem.IsWindows()) path
+
+    if File.Exists path then
+        sha256Text (hex (SHA256.HashData(File.ReadAllBytes path)) + "|" + permissions ())
+    elif Directory.Exists path then
+        sha256Text (listingHash path SearchOption.TopDirectoryOnly + "|" + permissions ())
+    else
+        "absent"
+
 /// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
-/// outside the input root or of a kind this reader does not know (`unknownInputs`).
-let private inputOf (root: string) (i: RecordedInput) =
+/// outside the input root or of a kind this reader does not know (`unknownInputs`). The
+/// one definition of an input's current hash: whatever compares a stored input with the
+/// tree must compute it here.
+let inputOf (root: string) (i: RecordedInput) =
     repoRelative root i.Path
     |> Option.bind (fun rel ->
         let p = Path.Combine(root, rel)
@@ -280,6 +308,7 @@ let private inputOf (root: string) (i: RecordedInput) =
         // Every entry of the tree, whatever pattern the listing used: an entry added or
         // removed at any depth changes the hash.
         | DeepDirectoryListing -> Some("list-deep", rel, listingHash p SearchOption.AllDirectories)
+        | MetadataRead -> Some("meta", rel, metaHash p)
         | UnknownInputKind _ -> None)
 
 /// An input of a kind this reader does not know cannot be compared on replay, so its scope

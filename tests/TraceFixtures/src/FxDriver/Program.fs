@@ -86,6 +86,12 @@ let main _ =
     run "openOverload" (fun () ->
         box (InputReads.readerWithDetection (System.IO.Path.Combine(repoRoot, "global.json"))))
 
+    let globalJson = System.IO.Path.Combine(repoRoot, "global.json")
+    run "metaFile" (fun () -> box (InputReads.fileMetadata globalJson))
+    run "metaLength" (fun () -> box (InputReads.fileLength globalJson))
+    run "metaInfo" (fun () -> box (InputReads.fileInfoWriteTime globalJson))
+    run "metaDirectory" (fun () -> box (InputReads.directoryWriteTime repoRoot))
+
     run "noted" (fun () ->
         Scopes.NoteInput("read", System.IO.Path.Combine(repoRoot, "TestPrune.slnx"))
         box 0)

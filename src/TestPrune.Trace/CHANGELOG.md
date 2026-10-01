@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a test that reads a repository file's metadata is reselected when the file changes.
+  The weaver redirects the `File` and `Directory` time getters, `File.GetAttributes`,
+  `File.GetUnixFileMode`, the `FileSystemInfo` time, `Attributes` and `UnixFileMode`
+  getters, and `FileInfo.Length` and `IsReadOnly` to the recorder. Each read is stored as a
+  `meta` input hashed over the content and permissions, never the times, so a touch alone
+  leaves a trace valid and a content edit invalidates a metadata-only reader.
+  `TraceIngest.inputOf` and `TraceIngest.metaHash` are public: the one definition of a
+  recorded input's current hash. `TraceIngest.permissionsOf` names the permission source
+  (Windows attributes or the Unix mode) explicitly.
+
 - fix: a dump holding an input of a kind this version does not know (one a newer recorder
   writes) is read, not rejected whole. The scope that recorded it is stored incomplete with
   `unknown-input-kind:<kind>`, and every other scope in the dump stays usable.

@@ -12,7 +12,7 @@ open System.Xml
 open System.Xml.Linq
 
 /// Call-site replacements for the BCL's file readers (XML loaders by path among them),
-/// existence probes and directory listings. Each shim notes (kind, absolute path) on the scope doing the I/O, then does
+/// existence probes, directory listings and metadata readers. Each shim notes (kind, absolute path) on the scope doing the I/O, then does
 /// exactly what the original does. The weaver rewrites `call File::ReadAllText(string)`
 /// into `call Io::File_ReadAllText(string)`, `newobj FileStream(string, FileMode)` into
 /// `call Io::FileStream_ctor(string, FileMode)`, and an instance call into a static one
@@ -47,7 +47,7 @@ type Io =
         else
             "list"
 
-    /// Notes `path` as an input of `kind` (`read`, `exists`, `list` or `list-deep`) on `state`'s note
+    /// Notes `path` as an input of `kind` (`read`, `exists`, `list`, `list-deep` or `meta`) on `state`'s note
     /// scope when it resolves under the repository root. Never throws.
     static member internal NoteWith(state: RecorderState, kind: string, path: string) : unit =
         if not (isNull state) && not (isNull path) && not (isNull state.RepoRoot) then
@@ -613,3 +613,103 @@ type Io =
         : IAsyncEnumerable<string> =
         Io.NoteWith(Runtime.state, "read", path)
         File.ReadLinesAsync(path, encoding, ct)
+
+    /// Shim for `File.GetLastWriteTime(string)`.
+    static member File_GetLastWriteTime(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetLastWriteTime path
+
+    /// Shim for `File.GetLastWriteTimeUtc(string)`.
+    static member File_GetLastWriteTimeUtc(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetLastWriteTimeUtc path
+
+    /// Shim for `File.GetCreationTime(string)`.
+    static member File_GetCreationTime(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetCreationTime path
+
+    /// Shim for `File.GetCreationTimeUtc(string)`.
+    static member File_GetCreationTimeUtc(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetCreationTimeUtc path
+
+    /// Shim for `File.GetLastAccessTime(string)`.
+    static member File_GetLastAccessTime(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetLastAccessTime path
+
+    /// Shim for `File.GetLastAccessTimeUtc(string)`.
+    static member File_GetLastAccessTimeUtc(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetLastAccessTimeUtc path
+
+    /// Shim for `File.GetAttributes(string)`.
+    static member File_GetAttributes(path: string) : FileAttributes =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetAttributes path
+
+    /// Shim for `File.GetUnixFileMode(string)`.
+    static member File_GetUnixFileMode(path: string) : UnixFileMode =
+        Io.NoteWith(Runtime.state, "meta", path)
+        File.GetUnixFileMode path
+
+    /// Shim for `Directory.GetLastWriteTime(string)`.
+    static member Directory_GetLastWriteTime(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        Directory.GetLastWriteTime path
+
+    /// Shim for `Directory.GetLastWriteTimeUtc(string)`.
+    static member Directory_GetLastWriteTimeUtc(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        Directory.GetLastWriteTimeUtc path
+
+    /// Shim for `Directory.GetCreationTime(string)`.
+    static member Directory_GetCreationTime(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        Directory.GetCreationTime path
+
+    /// Shim for `Directory.GetCreationTimeUtc(string)`.
+    static member Directory_GetCreationTimeUtc(path: string) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", path)
+        Directory.GetCreationTimeUtc path
+
+    /// Shim for `FileSystemInfo.LastWriteTime`.
+    static member FileSystemInfo_get_LastWriteTime(info: FileSystemInfo) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.LastWriteTime
+
+    /// Shim for `FileSystemInfo.LastWriteTimeUtc`.
+    static member FileSystemInfo_get_LastWriteTimeUtc(info: FileSystemInfo) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.LastWriteTimeUtc
+
+    /// Shim for `FileSystemInfo.CreationTime`.
+    static member FileSystemInfo_get_CreationTime(info: FileSystemInfo) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.CreationTime
+
+    /// Shim for `FileSystemInfo.CreationTimeUtc`.
+    static member FileSystemInfo_get_CreationTimeUtc(info: FileSystemInfo) : DateTime =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.CreationTimeUtc
+
+    /// Shim for `FileSystemInfo.Attributes`.
+    static member FileSystemInfo_get_Attributes(info: FileSystemInfo) : FileAttributes =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.Attributes
+
+    /// Shim for `FileSystemInfo.UnixFileMode`.
+    static member FileSystemInfo_get_UnixFileMode(info: FileSystemInfo) : UnixFileMode =
+        Io.NoteWith(Runtime.state, "meta", info.FullName)
+        info.UnixFileMode
+
+    /// Shim for `FileInfo.Length`.
+    static member FileInfo_get_Length(fi: FileInfo) : int64 =
+        Io.NoteWith(Runtime.state, "meta", fi.FullName)
+        fi.Length
+
+    /// Shim for `FileInfo.IsReadOnly`.
+    static member FileInfo_get_IsReadOnly(fi: FileInfo) : bool =
+        Io.NoteWith(Runtime.state, "meta", fi.FullName)
+        fi.IsReadOnly

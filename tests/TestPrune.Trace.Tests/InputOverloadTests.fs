@@ -66,6 +66,20 @@ let ``a reader opened by path through another overload is recorded as a read`` (
             |> List.contains (FileRead, Path.Combine(Fixtures.repoRoot, "global.json"))
         @>
 
+[<Theory(Timeout = 180000)>]
+[<InlineData("T:metaFile", "global.json")>]
+[<InlineData("T:metaLength", "global.json")>]
+[<InlineData("T:metaInfo", "global.json")>]
+[<InlineData("T:metaDirectory", "")>]
+let ``a read of a path's metadata is recorded as a metadata read`` (scopeKey: string, rel: string) =
+    let path =
+        if rel = "" then
+            Fixtures.repoRoot
+        else
+            Path.Combine(Fixtures.repoRoot, rel)
+
+    test <@ recorded scopeKey |> List.contains (MetadataRead, path) @>
+
 [<Fact(Timeout = 180000)>]
 let ``an input noted through Scopes.NoteInput reaches the dump under its test only`` () =
     let noted = FileRead, Path.Combine(Fixtures.repoRoot, "TestPrune.slnx")

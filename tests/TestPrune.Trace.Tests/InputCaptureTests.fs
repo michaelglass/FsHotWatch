@@ -506,6 +506,85 @@ let ``every overload shim notes its input and does what the original does`` () =
     test <@ inputsOf (state.CurrentScope()) = set [ "list", root; "list-deep", srcDir; "list", srcDir; "read", file ] @>
 
 [<Fact>]
+let ``every metadata shim notes a metadata read and returns what the original returns`` () =
+    let root = Fixtures.repoRoot
+    let file = Path.Combine(root, "global.json")
+    let dir = Path.Combine(root, "src")
+    let fi = FileInfo file
+    let di = DirectoryInfo dir
+    let state = recorderWithRoot root
+    state.EnterScope "T:meta"
+
+    withRecorder state (fun () ->
+        let pairs: (string * (unit -> obj) * (unit -> obj)) list =
+            [ "File.GetLastWriteTime",
+              (fun () -> box (Io.File_GetLastWriteTime file)),
+              (fun () -> box (File.GetLastWriteTime file))
+              "File.GetLastWriteTimeUtc",
+              (fun () -> box (Io.File_GetLastWriteTimeUtc file)),
+              (fun () -> box (File.GetLastWriteTimeUtc file))
+              "File.GetCreationTime",
+              (fun () -> box (Io.File_GetCreationTime file)),
+              (fun () -> box (File.GetCreationTime file))
+              "File.GetCreationTimeUtc",
+              (fun () -> box (Io.File_GetCreationTimeUtc file)),
+              (fun () -> box (File.GetCreationTimeUtc file))
+              "File.GetLastAccessTime",
+              (fun () -> box (Io.File_GetLastAccessTime file)),
+              (fun () -> box (File.GetLastAccessTime file))
+              "File.GetLastAccessTimeUtc",
+              (fun () -> box (Io.File_GetLastAccessTimeUtc file)),
+              (fun () -> box (File.GetLastAccessTimeUtc file))
+              "File.GetAttributes",
+              (fun () -> box (Io.File_GetAttributes file)),
+              (fun () -> box (File.GetAttributes file))
+              "Directory.GetLastWriteTime",
+              (fun () -> box (Io.Directory_GetLastWriteTime dir)),
+              (fun () -> box (Directory.GetLastWriteTime dir))
+              "Directory.GetLastWriteTimeUtc",
+              (fun () -> box (Io.Directory_GetLastWriteTimeUtc dir)),
+              (fun () -> box (Directory.GetLastWriteTimeUtc dir))
+              "Directory.GetCreationTime",
+              (fun () -> box (Io.Directory_GetCreationTime dir)),
+              (fun () -> box (Directory.GetCreationTime dir))
+              "Directory.GetCreationTimeUtc",
+              (fun () -> box (Io.Directory_GetCreationTimeUtc dir)),
+              (fun () -> box (Directory.GetCreationTimeUtc dir))
+              "FileSystemInfo.LastWriteTime",
+              (fun () -> box (Io.FileSystemInfo_get_LastWriteTime di)),
+              (fun () -> box di.LastWriteTime)
+              "FileSystemInfo.LastWriteTimeUtc",
+              (fun () -> box (Io.FileSystemInfo_get_LastWriteTimeUtc fi)),
+              (fun () -> box fi.LastWriteTimeUtc)
+              "FileSystemInfo.CreationTime",
+              (fun () -> box (Io.FileSystemInfo_get_CreationTime fi)),
+              (fun () -> box fi.CreationTime)
+              "FileSystemInfo.CreationTimeUtc",
+              (fun () -> box (Io.FileSystemInfo_get_CreationTimeUtc di)),
+              (fun () -> box di.CreationTimeUtc)
+              "FileSystemInfo.Attributes",
+              (fun () -> box (Io.FileSystemInfo_get_Attributes fi)),
+              (fun () -> box fi.Attributes)
+              "FileInfo.Length", (fun () -> box (Io.FileInfo_get_Length fi)), (fun () -> box fi.Length)
+              "FileInfo.IsReadOnly", (fun () -> box (Io.FileInfo_get_IsReadOnly fi)), (fun () -> box fi.IsReadOnly) ]
+            @ (if OperatingSystem.IsWindows() then
+                   []
+               else
+                   [ "File.GetUnixFileMode",
+                     (fun () -> box (Io.File_GetUnixFileMode file)),
+                     (fun () -> box (File.GetUnixFileMode file))
+                     "FileSystemInfo.UnixFileMode",
+                     (fun () -> box (Io.FileSystemInfo_get_UnixFileMode fi)),
+                     (fun () -> box fi.UnixFileMode) ])
+
+        for name, shim, original in pairs do
+            let got = name, shim ()
+            let expected = name, original ()
+            test <@ got = expected @>)
+
+    test <@ inputsOf (state.CurrentScope()) = set [ "meta", file; "meta", dir ] @>
+
+[<Fact>]
 let ``file shims are inert with no recorder`` () =
     let file = Path.Combine(Fixtures.repoRoot, "global.json")
     withRecorder null (fun () -> test <@ Io.File_Exists file @>)

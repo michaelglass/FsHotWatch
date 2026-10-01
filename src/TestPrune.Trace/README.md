@@ -298,8 +298,10 @@ File inputs are recorded by rewriting call sites in the woven assemblies: `File`
 `File.OpenHandle` (and so `RandomAccess`, which reads only through a handle) and `Exists`,
 `Directory` and `DirectoryInfo` listings in every overload (`EnumerationOptions` included)
 and `Exists`, `FileStream`, `StreamReader` and `FileInfo.Open` opened by path in every
-overload, and XML loaded by path (`XDocument.Load`, `XElement.Load`, `XmlReader.Create`,
-`XmlDocument.Load`). A test that depends on a file only through anything else has no input
+overload, XML loaded by path (`XDocument.Load`, `XElement.Load`, `XmlReader.Create`,
+`XmlDocument.Load`), and metadata: the `File` and `Directory` time getters,
+`File.GetAttributes`, `File.GetUnixFileMode`, the `FileSystemInfo` time, `Attributes` and
+`UnixFileMode` getters, and `FileInfo.Length` and `IsReadOnly`. A test that depends on a file only through anything else has no input
 for it, and a change to that file does not invalidate its trace:
 
 - **Reads inside an assembly that is not woven.** Only repository assemblies with a
@@ -307,14 +309,21 @@ for it, and a change to that file does not invalidate its trace:
   configuration builder reading `appsettings.json`, MSBuild or a project loader, a JSON
   reader handed a path) is invisible. A stream the woven code opens and hands to such a
   library is recorded.
-- **File metadata used as content:** `File.GetLastWriteTime`, `FileInfo.Length`,
-  `File.GetAttributes` and the like.
+- **A change to a file's times alone.** A metadata read is recorded as a `meta` input,
+  hashed over the file's content (a directory's own entries) and its permissions (Unix
+  mode, or the read-only and hidden attributes on Windows), never its times: a checkout
+  does not preserve them, so a hash over them would invalidate every trace in every fresh
+  clone. A touch leaves the trace valid; a test that asserts on a repository file's
+  absolute time is not reproducible across clones anyway. The other side of the same
+  choice: an edit to the file's content invalidates a test that read only its time or
+  length. That over-approximates, and is sound.
 
 **Noting a read yourself.** Where a library reads files the weaver cannot see, wrap the
 boundary and note what it reads with `Scopes.NoteInput(kind, path)` (`noteInput` in the
 binding above). The note lands on the scope a woven read would use: the test running now,
 a static initializer, or ambient. `kind` is `read` (the file's content), `exists`, `list`
-(the directory's own entries) or `list-deep` (every entry of its tree); a path outside the
+(the directory's own entries), `list-deep` (every entry of its tree) or `meta` (its times,
+attributes, mode or length); a path outside the
 repository root notes nothing, and untraced the call does nothing. Two boundaries that
 cover common cases:
 

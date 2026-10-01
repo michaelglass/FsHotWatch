@@ -46,6 +46,8 @@ type InputKind =
     | DirectoryListing
     /// A listing that recursed into every subdirectory.
     | DeepDirectoryListing
+    /// A read of a path's metadata (times, attributes, mode, length), not its content.
+    | MetadataRead
     /// A kind this reader does not know, written by a newer recorder. Its scope cannot be
     /// trusted to replay, so it is marked incomplete rather than failing the whole dump.
     | UnknownInputKind of kind: string

@@ -41,13 +41,14 @@ type Scopes =
     /// would use: static init, then the current scope, then ambient. The escape hatch for
     /// a read the weaver cannot see because it happens inside an assembly that is not
     /// woven: wrap that boundary and note what it reads. `kind` is `read` (the file's
-    /// content), `exists`, `list` (the directory's own entries) or `list-deep` (every entry
-    /// of its tree); any other kind, a null path, or a path outside the repository root
+    /// content), `exists`, `list` (the directory's own entries), `list-deep` (every entry
+    /// of its tree) or `meta` (its times, attributes, mode or length); any other kind, a null path, or a path outside the repository root
     /// notes nothing. Never throws.
     static member NoteInput(kind: string, path: string) : unit =
         match kind with
         | "read"
         | "exists"
         | "list"
-        | "list-deep" -> Io.NoteWith(Runtime.state, kind, path)
+        | "list-deep"
+        | "meta" -> Io.NoteWith(Runtime.state, kind, path)
         | _ -> ()

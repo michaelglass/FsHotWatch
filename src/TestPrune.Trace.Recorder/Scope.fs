@@ -29,7 +29,7 @@ type Scope(key: string, idCount: int) =
     /// Keys of scopes this one inherits everything from.
     member val Links = ConcurrentDictionary<string, byte>()
 
-    /// Recorded file inputs as (kind, path): kind is `read`, `exists`, `list` or `list-deep`.
+    /// Recorded file inputs as (kind, path): kind is `read`, `exists`, `list`, `list-deep` or `meta`.
     member val Inputs = ConcurrentDictionary<struct (string * string), byte>()
 
     /// Child processes started under this scope as (pid, file name, recorder env injected).

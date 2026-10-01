@@ -513,6 +513,7 @@ let ``file inputs are stored repo-relative with their current state`` () =
             note st "list" (Path.Combine(data, "nowhere"))
             note st "list-deep" data
             note st "list-deep" (Path.Combine(data, "nowhere"))
+            note st "meta" (Path.Combine(data, "a.json"))
             note st "read" (Path.Combine(Path.GetTempPath(), "outside.json"))
     )
 
@@ -537,8 +538,73 @@ let ``file inputs are stored repo-relative with their current state`` () =
                   "list", "data", listing
                   "list", "data/nowhere", "absent"
                   "list-deep", "data", deepListing
-                  "list-deep", "data/nowhere", "absent" ]
+                  "list-deep", "data/nowhere", "absent"
+                  "meta", "data/a.json", metaHash (Path.Combine(data, "a.json")) ]
         @>
+
+/// Makes `path` read-only: the Unix mode on Unix, the attribute on Windows.
+let private makeReadOnly (path: string) =
+    if OperatingSystem.IsWindows() then
+        File.SetAttributes(path, File.GetAttributes path ||| FileAttributes.ReadOnly)
+    else
+        File.SetUnixFileMode(path, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+[<Fact>]
+let ``a file's metadata hash follows its content and permissions, never its times`` () =
+    let dir = Directory.CreateTempSubdirectory().FullName
+    let file = Path.Combine(dir, "a.txt")
+    File.WriteAllText(file, "one")
+    let original = metaHash file
+
+    // A touch, as a fresh checkout gives every file, changes nothing.
+    File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays -3.0)
+    File.SetLastAccessTimeUtc(file, DateTime.UtcNow.AddDays -2.0)
+    test <@ metaHash file = original @>
+
+    File.WriteAllText(file, "two")
+    let edited = metaHash file
+    test <@ edited <> original @>
+
+    makeReadOnly file
+    test <@ metaHash file <> edited @>
+
+[<Fact>]
+let ``each permission source sees a file made read-only`` () =
+    let dir = Directory.CreateTempSubdirectory().FullName
+    let file = Path.Combine(dir, "a.txt")
+    File.WriteAllText(file, "x")
+    // The attributes source reads on every OS; the Unix mode only off Windows.
+    let sources =
+        if OperatingSystem.IsWindows() then
+            [ true ]
+        else
+            [ true; false ]
+
+    let before = sources |> List.map (fun w -> permissionsOf w file)
+    makeReadOnly file
+    let after = sources |> List.map (fun w -> permissionsOf w file)
+    test <@ List.forall2 (<>) before after @>
+    // `FileAttributes.ReadOnly` is 1; the hidden bit stays clear.
+    test <@ permissionsOf true file = "1" @>
+
+[<Fact>]
+let ``a directory's metadata hash follows its entries and permissions; an absent path is absent`` () =
+    let dir = Directory.CreateTempSubdirectory().FullName
+    let sub = Path.Combine(dir, "sub")
+    Directory.CreateDirectory sub |> ignore
+    let empty = metaHash sub
+
+    Directory.SetLastWriteTimeUtc(sub, DateTime.UtcNow.AddDays -3.0)
+    test <@ metaHash sub = empty @>
+
+    File.WriteAllText(Path.Combine(sub, "b.txt"), "")
+    let withEntry = metaHash sub
+    test <@ withEntry <> empty @>
+
+    makeReadOnly sub
+    test <@ metaHash sub <> withEntry @>
+
+    test <@ metaHash (Path.Combine(dir, "gone")) = "absent" @>
 
 [<Fact>]
 let ``an input of an unknown kind marks its test incomplete and keeps the others`` () =

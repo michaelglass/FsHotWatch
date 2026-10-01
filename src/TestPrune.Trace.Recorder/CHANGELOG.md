@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: metadata shims (`Io.File_GetLastWriteTime` and the other time getters,
+  `File_GetAttributes`, `File_GetUnixFileMode`, the `FileSystemInfo` getters,
+  `FileInfo_get_Length` and `FileInfo_get_IsReadOnly`) note a `meta` input, and
+  `Scopes.NoteInput` accepts the `meta` kind.
+
 ## 0.6.1 - 2026-10-01
 
 - feat: `Scopes.NoteInput(kind, path)` notes a file input on the current scope, as a woven
