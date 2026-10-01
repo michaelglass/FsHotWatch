@@ -82,33 +82,48 @@ let ``a child that exits between the listing and its stacks is a skip, not an er
     // In a parallel suite the tree holds other tests' short-lived children: one listed by
     // `ps` can be gone by the time `sample` or `createdump` reaches it. That is a race the
     // capture expects, not a failure of it.
-    withTempDir "hang-evidence-gone" (fun dir ->
-        let gone = 4242
+    // Both platforms' stack steps, whichever this one is: `sample` runs only on macOS, so a
+    // test that leaned on it held there and failed on Linux.
+    for onMac in [ true; false ] do
+        withTempDir "hang-evidence-gone" (fun dir ->
+            let gone = 4242
 
-        let run: HangEvidence.Runner =
-            fun command _ ->
-                match command with
-                | "ps" -> Ok $"%d{gone} %d{Environment.ProcessId} 00:01 S dotnet Lib.Tests.dll\n"
-                | other -> Error $"%s{other}: no longer appears to be running"
+            let run: HangEvidence.Runner =
+                fun command _ ->
+                    match command with
+                    | "ps" -> Ok $"%d{gone} %d{Environment.ProcessId} 00:01 S dotnet Lib.Tests.dll\n"
+                    | other -> Error $"%s{other}: no longer appears to be running"
 
-        let out = Path.Combine(dir, "evidence")
+            let out = Path.Combine(dir, "evidence")
 
-        let errors =
-            HangEvidence.captureTo run (fun pid -> pid <> gone) out Environment.ProcessId []
+            let errors =
+                HangEvidence.captureToOn onMac run (fun pid -> pid <> gone) out Environment.ProcessId []
 
-        test <@ List.isEmpty errors @>
-        test <@ not (File.Exists(Path.Combine(out, "capture-errors.txt"))) @>
-        test <@ File.ReadAllText(Path.Combine(out, "capture-skips.txt")).Contains $"%d{gone} exited" @>
+            test <@ List.isEmpty errors @>
+            test <@ not (File.Exists(Path.Combine(out, "capture-errors.txt"))) @>
+            test <@ File.ReadAllText(Path.Combine(out, "capture-skips.txt")).Contains $"%d{gone} exited" @>
 
-        // A child still alive whose stacks could not be taken is a real failure.
-        let stillThere =
-            HangEvidence.captureTo run (fun _ -> true) (Path.Combine(dir, "again")) Environment.ProcessId []
+            // A child still alive whose stacks could not be taken is a real failure.
+            let stillThere =
+                HangEvidence.captureToOn
+                    onMac
+                    run
+                    (fun _ -> true)
+                    (Path.Combine(dir, "again"))
+                    Environment.ProcessId
+                    []
 
-        test
-            <@
-                stillThere
-                |> List.exists (fun e -> e.StartsWith($"sample %d{gone}", StringComparison.Ordinal))
-            @>)
+            // Every platform dumps the .NET child; only macOS also samples it.
+            let failedSteps =
+                stillThere |> List.map (fun e -> e.Substring(0, e.IndexOf ':')) |> List.sort
+
+            let expected =
+                if onMac then
+                    [ $"createdump %d{gone}"; $"sample %d{gone}" ]
+                else
+                    [ $"createdump %d{gone}" ]
+
+            test <@ failedSteps = expected @>)
 
 [<Fact(Timeout = 30000)>]
 let ``a capture whose process listing fails still returns, and records why`` () =
