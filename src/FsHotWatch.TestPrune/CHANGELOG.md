@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- deps: TestPrune.Trace 0.6.1. Traced runs record reads through the remaining listing and open
+  overloads (`EnumerationOptions` listings, `DirectoryInfo` directory listings,
+  `File.OpenHandle`, the remaining `FileStream`/`StreamReader` constructors, `FileInfo.Open`,
+  `File.ReadLinesAsync`), and a traced app can note a read the weaver cannot see with
+  `Scopes.NoteInput`.
+
 ## 0.13.0-alpha.62 - 2026-09-30
 
 - fix: a test run no longer launches while the host is discovering its project model. A launch
