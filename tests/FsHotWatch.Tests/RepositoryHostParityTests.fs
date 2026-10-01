@@ -329,9 +329,19 @@ let private observe (root: string) (config: DaemonRpcConfig) phases =
     let relative (f: string) =
         normalize (Path.GetRelativePath(state, f).Replace('\\', '/'))
 
+    // test-prune's whole-run task-cache entry is written only when its event reached a
+    // terminal status WITHOUT launching another run in the same window
+    // (`launchedRunInWindow`, PluginFramework). Whether a completion lands in such a
+    // window depends on how the scan's events interleave, which differs from run to run
+    // in either mode, so the entry's presence says nothing about the mode: it is left out,
+    // as run ids and clocks are. Its per-file entries are still compared.
+    let interleavingOwned (rel: string) =
+        rel.StartsWith("cache/tasks/test-prune@", StringComparison.Ordinal)
+
     let all =
         Directory.GetFiles(state, "*", SearchOption.AllDirectories)
         |> Array.filter (fun f -> not (modeOwned.Files.Contains(Path.GetFileName f)))
+        |> Array.filter (fun f -> not (interleavingOwned (relative f)))
 
     // Every file under .fshw, by kind: its meaning where a run leaves ids and clocks in
     // it, its bytes otherwise, its name only where the bytes are an engine's own
