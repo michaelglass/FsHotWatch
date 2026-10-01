@@ -22,12 +22,16 @@
   <ItemGroup>
     <!-- First: registers the xUnit pipeline startup that initialises FSharp.Core's
          quotation statics on one thread before tests run in parallel. See the file. -->
+    <!-- Before QuotationStaticInit: its pipeline startup installs the traced-run FCS
+         read recorder this defines. -->
+    <Compile Include="TraceFcsReads.fs" />
     <Compile Include="QuotationStaticInit.fs" />
     <Compile Include="TestHelpers.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
          that watches a directory. -->
     <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
+    <Compile Include="TraceFcsReadsTests.fs" />
     <Compile Include="HangEvidence.fs" />
     <Compile Include="HangEvidenceTests.fs" />
     <Compile Include="ImpactDbPoolTests.fs" />

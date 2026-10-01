@@ -46,6 +46,9 @@ type QuotationStaticInitStartup() =
         member _.StartAsync(_diagnosticMessageSink) =
             initialise () |> ignore
             ran <- true
+            // The one pipeline startup this assembly may have also installs, in a traced
+            // run only, the recorder for sources the compiler service reads itself.
+            TraceFcsReads.installIfTraced ()
             ValueTask.CompletedTask
 
         member _.StopAsync() = ValueTask.CompletedTask
