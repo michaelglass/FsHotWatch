@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.63 - 2026-10-01
+
 - fix: a later narrower run replaces a whole-suite receipt that REFUSED a green. A full suite
   with a failed or timed-out project kept grading that frozen refusal over every later
   impact-filtered `check`, even one that reran the failed project in full and passed it, so the

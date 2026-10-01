@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.63 - 2026-10-01
+
 - fix: a child process fshw spawns no longer inherits the trace recorder's `TESTPRUNE_TRACE_*`
   variables. Run inside a traced test process, a test run or build it started would otherwise
   record into, or pose as part of, that test's trace. A traced launch's own variables, passed
