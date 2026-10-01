@@ -128,15 +128,19 @@ let private writeWorktree (root: string) =
 
     let fsproj = Path.Combine(root, "tests", "Lib.Tests", "Lib.Tests.fsproj")
 
+    // Normal verbosity: a restore that stalls says in its tail which step it stalled in.
     match
         ProcessHelper.runProcess
             "dotnet"
-            $"restore \"%s{fsproj}\""
+            $"restore \"%s{fsproj}\" --verbosity normal"
             root
             []
             (ProcessHelper.ProcessBounds.silent (TimeSpan.FromMinutes 3.0))
     with
     | ProcessHelper.Succeeded _ -> ()
+    | ProcessHelper.TimedOut _ as timedOut ->
+        let evidence = HangEvidence.capture "restore" [ root ]
+        failwith $"restore failed: %A{timedOut} — evidence captured in %s{evidence}"
     | other -> failwith $"restore failed: %A{other}"
 
 /// Build the worktree's daemon as the CLI does: its configuration, its plugins.
@@ -180,7 +184,8 @@ let private drive
     (transitions: ConcurrentQueue<string * string>)
     =
     let settle () =
-        (config.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait()
+        HangEvidence.onExpiry "settle" (fun () -> [ root ]) (fun () ->
+            (config.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait())
 
     let mutable seen = 0
 
@@ -559,7 +564,9 @@ let private runHostedBesideASibling (root: string) =
     let siblingConfig = siblingSession.Serving.Result
 
     test <@ waitUntilTrue (fun () -> siblingSession.Daemon.GetScanGeneration() > 0L) 300000 @>
-    (siblingConfig.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait()
+
+    HangEvidence.onExpiry "sibling-settle" (fun () -> [ sibling; root ]) (fun () ->
+        (siblingConfig.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait())
 
     // Sharing is exercised, not merely configured: before the observed session starts,
     // the store it will read already holds the sibling's lint results. The parity
