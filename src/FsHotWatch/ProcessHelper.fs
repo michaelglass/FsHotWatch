@@ -914,6 +914,14 @@ let private sanitizedChildEnvKeys =
       "MSBuildExtensionsPath"
       "MSBuildSDKsPath" ]
 
+/// The prefix of the trace recorder's variables (TestPrune.Trace: where a traced process
+/// writes its dump, which scope a child records into). A child inherits none of them: a
+/// process fshw runs inside a traced test (a test run, a build) is not part of that test's
+/// trace, and one that wrote a dump into the parent's directory would pose as it. A traced
+/// launch passes its own explicitly, which the overlay keeps.
+[<Literal>]
+let TraceRecorderEnvPrefix = "TESTPRUNE_TRACE_"
+
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env of a child whose command line
 /// invokes `dotnet` (`invokesDotnet`), unless the caller already set the key. A shell
 /// wrapper that runs `dotnet` gets it, so its descendant `dotnet` inherits it; a
@@ -1128,6 +1136,12 @@ let private makeChildProcessStartInfo
 
     // Strip before overlay so a caller-supplied entry in `env` survives.
     for key in sanitizedChildEnvKeys do
+        psi.Environment.Remove(key) |> ignore
+
+    for key in
+        psi.Environment.Keys
+        |> Seq.filter (fun k -> k.StartsWith(TraceRecorderEnvPrefix, StringComparison.Ordinal))
+        |> List.ofSeq do
         psi.Environment.Remove(key) |> ignore
 
     for (key, value) in mergeDotnetEnv command args env do

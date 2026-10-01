@@ -1967,3 +1967,56 @@ let ``a start observer that throws does not stop the run it observes`` () =
         runProcessObserved (fun _ -> failwith "observer broke") "echo" "hi" "." [] quick
 
     outcome |> expectStdout "hi"
+
+[<Fact(Timeout = 30000)>]
+let ``a child never inherits the trace recorder's variables, and a caller's own still reach it`` () =
+    // A traced test process carries TESTPRUNE_TRACE_*: where its dumps go, which scope a
+    // child records into. A child fshw spawns from it (a test run, a build) must not record
+    // into that run: a child that wrote a dump there would pose as part of the test that
+    // started it. The variables come in through a session's environment here, so the test
+    // never mutates this process's own.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "trace-env" (fun dir ->
+            let script = System.IO.Path.Combine(dir, "print-trace-env")
+
+            System.IO.File.WriteAllText(
+                script,
+                "#!/bin/sh\nprintf '%s|%s|%s' \"$TESTPRUNE_TRACE_OUT\" \"$TESTPRUNE_TRACE_PARENT_SCOPE\" \"$KEPT\"\n"
+            )
+
+            System.IO.File.SetUnixFileMode(
+                script,
+                System.IO.UnixFileMode.UserRead
+                ||| System.IO.UnixFileMode.UserWrite
+                ||| System.IO.UnixFileMode.UserExecute
+            )
+
+            let outer =
+                FsHotWatch.SessionScope.SessionEnvironment.create
+                    dir
+                    (Map.ofList
+                        [ "PATH", "/usr/bin:/bin"
+                          "TESTPRUNE_TRACE_OUT", "/outer/traces"
+                          "TESTPRUNE_TRACE_PARENT_SCOPE", "T:outer"
+                          "KEPT", "kept" ])
+
+            let printed (explicitEnv: (string * string) list) =
+                FsHotWatch.SessionScope.isolated (fun () ->
+                    use _ = FsHotWatch.SessionScope.SessionEnvironment.install outer
+
+                    let outcome =
+                        FsHotWatch.ProcessHelper.runProcess
+                            script
+                            ""
+                            dir
+                            explicitEnv
+                            (ProcessBounds.silent (TimeSpan.FromSeconds 10.0))
+
+                    match outcome with
+                    | Succeeded output -> FsHotWatch.ProcessHelper.ProcessOutput.text output
+                    | other -> failwith $"%A{other}")
+
+            let inherited = printed []
+            let overlaid = printed [ "TESTPRUNE_TRACE_OUT", "/inner/traces" ]
+            Swensen.Unquote.Assertions.test <@ inherited = "||kept" @>
+            Swensen.Unquote.Assertions.test <@ overlaid = "/inner/traces||kept" @>)
