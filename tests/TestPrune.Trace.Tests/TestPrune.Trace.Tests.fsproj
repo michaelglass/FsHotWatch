@@ -36,6 +36,7 @@
     <Compile Include="SiteProbeShapeTests.fs" />
     <Compile Include="InputCaptureTests.fs" />
     <Compile Include="InputOverloadTests.fs" />
+    <Compile Include="NoteInputTests.fs" />
     <Compile Include="FixtureIndex.fs" />
     <Compile Include="JoinerTests.fs" />
     <Compile Include="ShadowBinTests.fs" />

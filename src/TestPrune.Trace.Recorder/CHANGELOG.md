@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `Scopes.NoteInput(kind, path)` notes a file input on the current scope, as a woven
+  read would: the escape hatch for reads inside assemblies that are not woven (a library
+  handed a path, a framework file provider). `kind` is `read`, `exists`, `list` or
+  `list-deep`; anything else, or a path outside the repository root, notes nothing.
+  `Scopes` now lives in its own file; its members are unchanged.
+
 - feat: the remaining listing and open overloads are recorded as inputs: listings that take
   `EnumerationOptions` (`list-deep` when it recurses), `DirectoryInfo`'s directory and
   file-system-info listings, `File.OpenHandle` (which covers `RandomAccess`), the

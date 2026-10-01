@@ -74,6 +74,7 @@ module TraceScope =
     let private exitMethod = methodOf "Exit"
     let private currentKeyMethod = methodOf "CurrentKey"
     let private linkMethod = methodOf "LinkCurrentTo"
+    let private noteInputMethod = methodOf "NoteInput"
 
     let enter (key: string) =
         if not (isNull enterMethod) then
@@ -92,6 +93,12 @@ module TraceScope =
     let linkCurrentTo (key: string) =
         if not (isNull linkMethod) then
             linkMethod.Invoke(null, [| box key |]) |> ignore
+
+    /// Notes a file the code running now read where the weaver cannot see it.
+    /// `kind` is "read", "exists", "list" or "list-deep".
+    let noteInput (kind: string) (path: string) =
+        if not (isNull noteInputMethod) then
+            noteInputMethod.Invoke(null, [| box kind; box path |]) |> ignore
 // sync:trace-scope:end
 
 [<Fact>]
@@ -101,7 +108,7 @@ let ``the README's reflection binding finds every Scopes method and is inert unt
 
     test <@ not (isNull scopes) @>
 
-    for name in [ "Enter"; "Exit"; "CurrentKey"; "LinkCurrentTo" ] do
+    for name in [ "Enter"; "Exit"; "CurrentKey"; "LinkCurrentTo"; "NoteInput" ] do
         test <@ not (isNull (scopes.GetMethod name)) @>
 
     // Loaded but inactive, as in an untraced process (even when this suite itself runs traced).
@@ -111,6 +118,7 @@ let ``the README's reflection binding finds every Scopes method and is inert unt
     try
         TraceScope.enter "T:readme"
         TraceScope.linkCurrentTo "P:readme"
+        TraceScope.noteInput "read" "README.md"
         TraceScope.exit ()
         test <@ isNull (TraceScope.currentKey ()) @>
     finally

@@ -138,6 +138,7 @@ module TraceScope =
     let private exitMethod = methodOf "Exit"
     let private currentKeyMethod = methodOf "CurrentKey"
     let private linkMethod = methodOf "LinkCurrentTo"
+    let private noteInputMethod = methodOf "NoteInput"
 
     let enter (key: string) =
         if not (isNull enterMethod) then
@@ -156,6 +157,12 @@ module TraceScope =
     let linkCurrentTo (key: string) =
         if not (isNull linkMethod) then
             linkMethod.Invoke(null, [| box key |]) |> ignore
+
+    /// Notes a file the code running now read where the weaver cannot see it.
+    /// `kind` is "read", "exists", "list" or "list-deep".
+    let noteInput (kind: string) (path: string) =
+        if not (isNull noteInputMethod) then
+            noteInputMethod.Invoke(null, [| box kind; box path |]) |> ignore
 ```
 <!-- sync:trace-scope:end -->
 
@@ -302,6 +309,22 @@ for it, and a change to that file does not invalidate its trace:
   library is recorded.
 - **File metadata used as content:** `File.GetLastWriteTime`, `FileInfo.Length`,
   `File.GetAttributes` and the like.
+
+**Noting a read yourself.** Where a library reads files the weaver cannot see, wrap the
+boundary and note what it reads with `Scopes.NoteInput(kind, path)` (`noteInput` in the
+binding above). The note lands on the scope a woven read would use: the test running now,
+a static initializer, or ambient. `kind` is `read` (the file's content), `exists`, `list`
+(the directory's own entries) or `list-deep` (every entry of its tree); a path outside the
+repository root notes nothing, and untraced the call does nothing. Two boundaries that
+cover common cases:
+
+- **The F# compiler service** reads sources and project files through
+  `FSharp.Compiler.IO.FileSystemAutoOpens.FileSystem`. Install an `IFileSystem` that notes
+  `read` in `OpenFileForReadShim` (and `exists` in `FileExistsShim`), then delegates to the
+  default one.
+- **ASP.NET static files** are served through an `IFileProvider`. Give the static-file
+  middleware a provider that notes `read` for each `GetFileInfo` it resolves to a physical
+  path, then delegates.
 
 The decisions behind these, and the options measured and deferred, are in the repository's
 decision records:

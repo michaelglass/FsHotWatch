@@ -86,4 +86,8 @@ let main _ =
     run "openOverload" (fun () ->
         box (InputReads.readerWithDetection (System.IO.Path.Combine(repoRoot, "global.json"))))
 
+    run "noted" (fun () ->
+        Scopes.NoteInput("read", System.IO.Path.Combine(repoRoot, "TestPrune.slnx"))
+        box 0)
+
     0

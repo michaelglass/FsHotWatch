@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: the README documents `Scopes.NoteInput` as the way to record reads the weaver cannot
+  see (the F# compiler service's `IFileSystem`, ASP.NET's static-file `IFileProvider`), and
+  its reflection binding gains `noteInput`.
+
 - feat: the weaver redirects the remaining listing and open overloads to the recorder:
   `EnumerationOptions` listings, `DirectoryInfo` directory and file-system-info listings,
   `File.OpenHandle`, the remaining `FileStream` and `StreamReader` constructors,

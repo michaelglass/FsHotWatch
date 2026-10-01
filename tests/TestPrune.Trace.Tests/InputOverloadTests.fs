@@ -65,3 +65,15 @@ let ``a reader opened by path through another overload is recorded as a read`` (
             recorded "T:openOverload"
             |> List.contains (FileRead, Path.Combine(Fixtures.repoRoot, "global.json"))
         @>
+
+[<Fact(Timeout = 180000)>]
+let ``an input noted through Scopes.NoteInput reaches the dump under its test only`` () =
+    let noted = FileRead, Path.Combine(Fixtures.repoRoot, "TestPrune.slnx")
+    test <@ recorded "T:noted" |> List.contains noted @>
+
+    let elsewhere =
+        wovenScopes.Value
+        |> List.filter (fun s -> s.Key <> "T:noted")
+        |> List.exists (fun s -> s.Inputs |> List.exists (fun i -> (i.Kind, i.Path) = noted))
+
+    test <@ not elsewhere @>
