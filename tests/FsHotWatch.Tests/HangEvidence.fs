@@ -76,10 +76,23 @@ let private keptFiles (path: string) : (string * string) list =
 
 /// Capture into `dir`: the child tree of `rootPid`, stacks for up to `MaxStacked` of
 /// those children, and the `.log` files under each of `keep`. Returns the errors met,
-/// also written to `capture-errors.txt`.
-let captureTo (run: Runner) (dir: string) (rootPid: int) (keep: string list) : string list =
+/// also written to `capture-errors.txt`; children that exited before their stacks were
+/// taken (`alive` says no) are listed in `capture-skips.txt` instead.
+let captureTo (run: Runner) (alive: int -> bool) (dir: string) (rootPid: int) (keep: string list) : string list =
     Directory.CreateDirectory dir |> ignore
     let errors = ResizeArray<string>()
+    let skips = ResizeArray<string>()
+
+    // A stack step that fails for a child no longer running lost a race the capture
+    // expects (the tree holds other tests' short-lived children too): a skip, not an
+    // error. One still running whose stacks could not be taken is a real failure.
+    let stackStep (what: string) (pid: int) (result: Result<string, string>) =
+        match result with
+        | Ok _ -> ()
+        | Error _ when not (alive pid) ->
+            if not (skips.Contains $"%d{pid} exited before its stacks were taken") then
+                skips.Add $"%d{pid} exited before its stacks were taken"
+        | Error reason -> errors.Add $"%s{what} %d{pid}: %s{reason}"
 
     let attempt (what: string) (step: unit -> unit) =
         try
@@ -106,14 +119,10 @@ let captureTo (run: Runner) (dir: string) (rootPid: int) (keep: string list) : s
         let dumpFile = Path.Combine(dir, $"dump-%d{pid}.dmp")
 
         if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-            match run "sample" $"%d{pid} 2 -file %s{sampleFile}" with
-            | Ok _ -> ()
-            | Error reason -> errors.Add $"sample %d{pid}: %s{reason}"
+            stackStep "sample" pid (run "sample" $"%d{pid} 2 -file %s{sampleFile}")
 
         if isDotnet line then
-            match run createdump $"--triage -f %s{dumpFile} %d{pid}" with
-            | Ok _ -> ()
-            | Error reason -> errors.Add $"createdump %d{pid}: %s{reason}"
+            stackStep "createdump" pid (run createdump $"--triage -f %s{dumpFile} %d{pid}")
 
     for source in keep do
         for file, name in keptFiles source do
@@ -121,6 +130,9 @@ let captureTo (run: Runner) (dir: string) (rootPid: int) (keep: string list) : s
 
     if errors.Count > 0 then
         File.WriteAllLines(Path.Combine(dir, "capture-errors.txt"), errors)
+
+    if skips.Count > 0 then
+        File.WriteAllLines(Path.Combine(dir, "capture-skips.txt"), skips)
 
     List.ofSeq errors
 
@@ -137,6 +149,14 @@ let private realRunner: Runner =
         with
         | ProcessHelper.Succeeded output -> Ok(ProcessHelper.ProcessOutput.text output)
         | other -> Error $"%A{other}"
+
+/// Whether process `pid` is still running.
+let private running (pid: int) =
+    try
+        use p = Diagnostics.Process.GetProcessById pid
+        not p.HasExited
+    with :? ArgumentException ->
+        false
 
 /// `.fshw/diagnostics/` of the repository the test binary was built from, or the temp
 /// directory when it cannot be found.
@@ -157,7 +177,7 @@ let capture (label: string) (keep: string list) : string =
     let dir =
         Path.Combine(diagnosticsHome (), $"""hang-%s{DateTime.UtcNow.ToString "yyyyMMddTHHmmss"}-%s{label}""")
 
-    captureTo realRunner dir Environment.ProcessId keep |> ignore
+    captureTo realRunner running dir Environment.ProcessId keep |> ignore
     dir
 
 let rec private isTimeout (ex: exn) =

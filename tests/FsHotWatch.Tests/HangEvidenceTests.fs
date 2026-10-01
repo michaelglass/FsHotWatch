@@ -21,6 +21,13 @@ let ``the child tree is every descendant of the root, and nothing beside it`` ()
     test <@ snd (List.head (HangEvidence.descendants 10 rows)) = "11    10  00:04 S  dotnet run" @>
     test <@ List.isEmpty (HangEvidence.descendants 13 rows) @>
 
+let private alive (pid: int) =
+    try
+        use p = Process.GetProcessById pid
+        not p.HasExited
+    with :? ArgumentException ->
+        false
+
 let private realRun: HangEvidence.Runner =
     fun command args ->
         match
@@ -47,7 +54,7 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
             let out = Path.Combine(dir, "evidence")
 
             let errors =
-                HangEvidence.captureTo realRun out Environment.ProcessId [ Path.Combine(dir, "w") ]
+                HangEvidence.captureTo realRun alive out Environment.ProcessId [ Path.Combine(dir, "w") ]
 
             let tree = File.ReadAllText(Path.Combine(out, "tree.txt"))
             let kept = Directory.GetFiles out |> Array.map Path.GetFileName
@@ -63,11 +70,45 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
             if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
                 test <@ File.Exists(Path.Combine(out, $"sample-%d{child.Id}.txt")) @>
 
-            // `sleep` is not a .NET process: no dump is attempted, so nothing failed.
-            test <@ List.isEmpty errors @>
+            // Only this test's own child is asserted on: in a parallel suite the tree also
+            // holds other tests' children, which come and go during the capture.
+            test <@ errors |> List.forall (fun e -> not (e.Contains $" %d{child.Id}:")) @>
         finally
             child.Kill()
             child.WaitForExit())
+
+[<Fact(Timeout = 30000)>]
+let ``a child that exits between the listing and its stacks is a skip, not an error`` () =
+    // In a parallel suite the tree holds other tests' short-lived children: one listed by
+    // `ps` can be gone by the time `sample` or `createdump` reaches it. That is a race the
+    // capture expects, not a failure of it.
+    withTempDir "hang-evidence-gone" (fun dir ->
+        let gone = 4242
+
+        let run: HangEvidence.Runner =
+            fun command _ ->
+                match command with
+                | "ps" -> Ok $"%d{gone} %d{Environment.ProcessId} 00:01 S dotnet Lib.Tests.dll\n"
+                | other -> Error $"%s{other}: no longer appears to be running"
+
+        let out = Path.Combine(dir, "evidence")
+
+        let errors =
+            HangEvidence.captureTo run (fun pid -> pid <> gone) out Environment.ProcessId []
+
+        test <@ List.isEmpty errors @>
+        test <@ not (File.Exists(Path.Combine(out, "capture-errors.txt"))) @>
+        test <@ File.ReadAllText(Path.Combine(out, "capture-skips.txt")).Contains $"%d{gone} exited" @>
+
+        // A child still alive whose stacks could not be taken is a real failure.
+        let stillThere =
+            HangEvidence.captureTo run (fun _ -> true) (Path.Combine(dir, "again")) Environment.ProcessId []
+
+        test
+            <@
+                stillThere
+                |> List.exists (fun e -> e.StartsWith($"sample %d{gone}", StringComparison.Ordinal))
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``a capture whose process listing fails still returns, and records why`` () =
@@ -78,7 +119,7 @@ let ``a capture whose process listing fails still returns, and records why`` () 
         let out = Path.Combine(dir, "evidence")
 
         let errors =
-            HangEvidence.captureTo failing out Environment.ProcessId [ Path.Combine(dir, "missing") ]
+            HangEvidence.captureTo failing (fun _ -> true) out Environment.ProcessId [ Path.Combine(dir, "missing") ]
 
         test <@ errors = [ "ps: ps is unavailable" ] @>
         test <@ File.ReadAllText(Path.Combine(out, "capture-errors.txt")).Contains "ps is unavailable" @>
