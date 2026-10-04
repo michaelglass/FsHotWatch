@@ -3,7 +3,7 @@
     <PropertyGroup>
         <TargetFramework>net8.0</TargetFramework>
         <PackageId>TestPrune.Trace.Recorder</PackageId>
-        <Version>0.6.1</Version>
+        <Version>0.7.0</Version>
         <Authors>Michael Glass</Authors>
         <Description>Runtime recorder loaded into a woven test process: attributes probe hits to the current xUnit v3 test.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>

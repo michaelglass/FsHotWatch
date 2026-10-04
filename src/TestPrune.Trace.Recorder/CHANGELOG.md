@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-04
+
 - feat: metadata shims (`Io.File_GetLastWriteTime` and the other time getters,
   `File_GetAttributes`, `File_GetUnixFileMode`, the `FileSystemInfo` getters,
   `FileInfo_get_Length` and `FileInfo_get_IsReadOnly`) note a `meta` input, and

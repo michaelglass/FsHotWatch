@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-04
+
 - feat: a test that reads a repository file's metadata is reselected when the file changes.
   The weaver redirects the `File` and `Directory` time getters, `File.GetAttributes`,
   `File.GetUnixFileMode`, the `FileSystemInfo` time, `Attributes` and `UnixFileMode`

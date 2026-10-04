@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-04
+
+- feat(trace): record metadata reads as a `meta` input
+- fix(trace): an unknown input kind marks its scope incomplete, not the dump rejected
+- docs(trace): declare the new Model union cases as a breaking change
+
+
 ## 0.6.1 - 2026-10-01
 
 - trace: Scopes.NoteInput, an escape hatch for reads the weaver cannot see
