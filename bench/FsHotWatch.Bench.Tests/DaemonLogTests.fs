@@ -123,6 +123,7 @@ let ``scan validity flags a truncated scan, a foreign window and log-metrics dis
           DurationMs = 1.0
           FilesRegistered = 207
           FilesChecked = checkedFiles
+          CheckStarts = 0L
           FilesUnchecked = unchecked
           FilesSkipped = 0
           FilesDepsGated = 0
@@ -215,6 +216,7 @@ let private scanOf checkedFiles : FsHotWatch.ScanMetrics.ScanSample =
       DurationMs = 1.0
       FilesRegistered = 207
       FilesChecked = checkedFiles
+      CheckStarts = 0L
       FilesUnchecked = 0
       FilesSkipped = 0
       FilesDepsGated = 0

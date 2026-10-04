@@ -84,14 +84,18 @@ type private SequencedWorkspaceLoader(resultsByAttempt: Types.ProjectOptions lis
 
 /// Counts how many times the daemon actually evaluated the workspace. Used where the
 /// question is "did a rediscovery happen at all", which no other seam answers.
-type private CountingWorkspaceLoader(results: Types.ProjectOptions list) =
+///
+/// `onLoad` runs inside each evaluation with its 1-based number: a write it makes lands
+/// after the discovery began, as a restore running alongside one does.
+type private CountingWorkspaceLoader(results: Types.ProjectOptions list, ?onLoad: int -> unit) =
     let notifications = Event<Types.WorkspaceProjectState>()
     let loads = ref 0
 
     member _.Loads = Threading.Volatile.Read(&loads.contents)
 
     member private _.Load() =
-        Threading.Interlocked.Increment(&loads.contents) |> ignore
+        let load = Threading.Interlocked.Increment(&loads.contents)
+        onLoad |> Option.iter (fun run -> run load)
         results :> seq<_>
 
     interface IWorkspaceLoader with
@@ -1652,7 +1656,8 @@ let ``observing project content answers the next echo of the same bytes as uncha
         test <@ unseeded.HasContentChanged kept @>
         test <@ unseeded.HasContentChanged assets @>
 
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        let observed = FsHotWatch.Daemon.observeProjectContent root [] tracker
+        test <@ List.sort observed = List.sort [ kept; edited ] @>
 
         test <@ not (tracker.HasContentChanged kept) @>
         test <@ not (tracker.HasContentChanged edited) @>
@@ -1672,7 +1677,8 @@ let ``observing project content answers the next echo of the same bytes as uncha
         // A project file an exclude pattern hides is not observed, so nothing about it
         // is claimed: it keeps the no-prior answer.
         let excluded = FsHotWatch.ContentDedup.Tracker()
-        FsHotWatch.Daemon.observeProjectContent root [ "src" ] excluded
+        // It names no project, either: none was observed.
+        test <@ List.isEmpty (FsHotWatch.Daemon.observeProjectContent root [ "src" ] excluded) @>
         test <@ excluded.HasContentChanged kept @>
 
         // The assets file is derived from the project that owns it, so an excluded
@@ -1827,7 +1833,7 @@ let ``a project input a re-discovery already loaded is not re-evaluated again`` 
         File.WriteAllText(source, "module App\nlet value = 1\n")
 
         let tracker = FsHotWatch.ContentDedup.Tracker()
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
 
         // A checkout: nothing has loaded the new bytes yet.
         File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
@@ -1836,7 +1842,7 @@ let ``a project input a re-discovery already loaded is not re-evaluated again`` 
 
         // A re-discovery loads them: the project change is applied. A source edit is never
         // absorbed by a discovery, which does not check files.
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
         test <@ FsHotWatch.Daemon.absorbedByDiscovery tracker project @>
         test <@ not (FsHotWatch.Daemon.absorbedByDiscovery tracker source) @>
 
@@ -1936,6 +1942,153 @@ let ``a scan converges on a project outside the discovery roots whose restore ne
         // No restore ran: one would have rewritten these bytes.
         test <@ File.ReadAllText insideAssets = assetsJson "Xunit" "inside" @>)
 
+/// A workspace like the one above: `src/Inside.fsproj`, and `packages/analyzers/Outside`
+/// outside the discovery roots, both restored. `onLoad` is the loader's.
+type private OutsideRootsWorkspace =
+    { Root: string
+      OutsideAssets: string
+      Loader: CountingWorkspaceLoader
+      MapOptions: Types.ProjectOptions list -> FSharp.Compiler.CodeAnalysis.FSharpProjectOptions list }
+
+let private outsideRootsWorkspace (tmpDir: string) (onLoad: string -> int -> unit) : OutsideRootsWorkspace =
+    let srcDir = Path.Combine(tmpDir, "src")
+    Directory.CreateDirectory(Path.Combine(srcDir, "obj")) |> ignore
+    let projectPath = Path.Combine(srcDir, "Inside.fsproj")
+    File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+    let sourcePath = Path.Combine(srcDir, "Inside.fs")
+    File.WriteAllText(sourcePath, "module Inside\nlet value = 1\n")
+    File.WriteAllText(Path.Combine(srcDir, "obj", "project.assets.json"), assetsJson "Xunit" "inside")
+
+    let outsideDir = Path.Combine(tmpDir, "packages", "analyzers", "Outside")
+    Directory.CreateDirectory(Path.Combine(outsideDir, "obj")) |> ignore
+    let outsidePath = Path.Combine(outsideDir, "Outside.fsproj")
+    File.WriteAllText(outsidePath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+    let outsideSource = Path.Combine(outsideDir, "Outside.fs")
+    File.WriteAllText(outsideSource, "module Outside\nlet value = 1\n")
+    let outsideAssets = Path.Combine(outsideDir, "obj", "project.assets.json")
+    File.WriteAllText(outsideAssets, assetsJson "Xunit" "first")
+    // Restored long before this daemon started, as a cold start finds a warm tree: after
+    // its project file was last written, so the deps-freshness gate reads it as current.
+    File.SetLastWriteTimeUtc(outsidePath, DateTime.UtcNow.AddHours -2.0)
+    File.SetLastWriteTimeUtc(outsideAssets, DateTime.UtcNow.AddHours -1.0)
+
+    let checker = sharedChecker.Value
+
+    let optionsFor (project: string) (source: string) =
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                source,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(source))
+            )
+            |> Async.RunSynchronously
+
+        { options with
+            ProjectFileName = project
+            SourceFiles = [| source |] }
+
+    let inside = optionsFor projectPath sourcePath
+    let outside = optionsFor outsidePath outsideSource
+
+    { Root = tmpDir
+      OutsideAssets = outsideAssets
+      Loader =
+        CountingWorkspaceLoader(
+            [ { minimalLoadedProject projectPath with
+                  SourceFiles = [ sourcePath ] }
+              { minimalLoadedProject outsidePath with
+                  SourceFiles = [ outsideSource ] } ],
+            onLoad outsideAssets
+        )
+      MapOptions =
+        fun projects ->
+            projects
+            |> List.map (fun p -> if p.ProjectFileName = outsidePath then outside else inside) }
+
+let private scanOnceCold (workspace: OutsideRootsWorkspace) =
+    use daemon =
+        Daemon.createWithWorkspaceLoaderAndWatcher
+            sharedChecker.Value
+            workspace.Root
+            { oneShotDaemonOptions with
+                RunMode = Daemon.RunMode.OneShot }
+            workspace.Loader
+            workspace.MapOptions
+            (fun _ _ _ _ _ -> failwith "no watcher runs here")
+
+    daemon.ScanAll() |> Async.RunSynchronously
+
+    test
+        <@
+            daemon.Host.WorkSnapshot.OperationFaults
+            |> List.forall (fun (name, _) -> name <> "scan")
+        @>
+
+// A COLD daemon has no previous model to name a project the loader reaches outside the
+// discovery roots, so nothing observed its assets file before the first scan asked about
+// it. Bytes restored long before the daemon started are the bytes the loader read: the
+// first scan must check the model it loaded, not replace it once and check the tree twice.
+[<Fact(Timeout = 60000)>]
+let ``a cold scan replaces no model for an outside-the-roots project whose restore predates it`` () =
+    withTempDir "daemon-cold-outside-roots" (fun tmpDir ->
+        let workspace = outsideRootsWorkspace tmpDir (fun _ _ -> ())
+
+        scanOnceCold workspace
+
+        test <@ workspace.Loader.Loads = 1 @>
+
+        // Each file started once: no replaced model's checks to cancel and start again.
+        let scans =
+            FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+        test <@ scans |> List.map (fun s -> s.FilesChecked, s.CheckStarts) = [ 2, 2L ] @>)
+
+[<Fact(Timeout = 10000)>]
+let ``after a discovery only assets written before it began are taken as read by it`` () =
+    withTempDir "daemon-observe-unread-assets" (fun root ->
+        let restored name =
+            let directory = Path.Combine(root, "packages", name)
+            Directory.CreateDirectory(Path.Combine(directory, "obj")) |> ignore
+            Path.Combine(directory, $"%s{name}.fsproj"), Path.Combine(directory, "obj", "project.assets.json")
+
+        let startedAt = DateTime.UtcNow
+        let old, oldAssets = restored "Old"
+        let fresh, freshAssets = restored "Fresh"
+        let preRead, preReadAssets = restored "PreRead"
+        let unrestored, _ = restored "Unrestored"
+
+        for assets in [ oldAssets; freshAssets; preReadAssets ] do
+            File.WriteAllText(assets, assetsJson "Xunit" "first")
+
+        File.SetLastWriteTimeUtc(oldAssets, startedAt.AddHours -1.0)
+        File.SetLastWriteTimeUtc(preReadAssets, startedAt.AddHours -1.0)
+        // `freshAssets` keeps a write time after `startedAt`: a restore during the discovery.
+
+        let tracker = FsHotWatch.ContentDedup.Tracker()
+        let registered = [ old; fresh; preRead; unrestored ]
+
+        FsHotWatch.Daemon.observeAssetsReadUnobserved tracker (Set.ofList [ preRead ]) startedAt registered
+
+        // Old is taken as read; Fresh may not have been, so it still reports a change;
+        // PreRead is the pre-load observation's to record, not this one's; Unrestored
+        // has nothing to read.
+        test <@ FsHotWatch.Daemon.restoredSinceDiscovery tracker registered = [ fresh; preRead ] @>
+        // And the watcher's echo of Old's bytes is answered "unchanged".
+        test <@ not (tracker.HasContentChanged oldAssets) @>)
+
+// The safety property the cold-start observation must keep: an assets file written after
+// the discovery began may hold bytes the loader never read, so it still replaces the model.
+[<Fact(Timeout = 60000)>]
+let ``a cold scan still replaces the model when an outside-the-roots restore lands during discovery`` () =
+    withTempDir "daemon-cold-outside-roots-restored" (fun tmpDir ->
+        let workspace =
+            outsideRootsWorkspace tmpDir (fun outsideAssets load ->
+                if load = 1 then
+                    File.WriteAllText(outsideAssets, assetsJson "Expecto" "first"))
+
+        scanOnceCold workspace
+
+        test <@ workspace.Loader.Loads = 2 @>)
+
 [<Fact(Timeout = 10000)>]
 let ``restore output is stale under a model when it appeared, changed or vanished since discovery read it`` () =
     withTempDir "daemon-restored-since-discovery" (fun root ->
@@ -1950,7 +2103,7 @@ let ``restore output is stale under a model when it appeared, changed or vanishe
             FsHotWatch.Daemon.restoredSinceDiscovery tracker [ project ]
 
         // Never restored, and still not: the model was loaded from what is there.
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
         test <@ List.isEmpty (stale ()) @>
 
         // The first restore, after the model was loaded without it.
@@ -1958,13 +2111,13 @@ let ``restore output is stale under a model when it appeared, changed or vanishe
         File.WriteAllText(assets, "{\"targets\":{}}")
         test <@ stale () = [ project ] @>
 
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
         test <@ List.isEmpty (stale ()) @>
 
         File.WriteAllText(assets, "{\"targets\":{\"net10.0\":{}}}")
         test <@ stale () = [ project ] @>
 
-        FsHotWatch.Daemon.observeProjectContent root [] tracker
+        FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
         File.Delete assets
         test <@ stale () = [ project ] @>)
 
@@ -3723,13 +3876,27 @@ let ``fsproj fingerprint applies user exclude patterns like discovery does`` () 
         test <@ fp |> Set.exists (fun (p, _) -> p.EndsWith("A.fsproj")) @>
         test <@ fp |> Set.forall (fun (p, _) -> not (p.Contains("Vendor"))) @>
 
-        // And the fingerprint must still react to edits of NON-excluded
-        // projects (mtime is part of the key).
-        let before = fp
-        System.Threading.Thread.Sleep(20)
-        File.SetLastWriteTimeUtc(Path.Combine(srcDir, "A.fsproj"), DateTime.UtcNow)
+        // And the fingerprint must still react to edits of NON-excluded projects.
+        File.WriteAllText(Path.Combine(srcDir, "A.fsproj"), "<Project><PropertyGroup /></Project>")
         let after = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir excludes
-        test <@ before <> after @>)
+        test <@ fp <> after @>)
+
+// A tool that rewrites a project file with the bytes it already held — a checkout, a
+// restore, a formatter — changes nothing MSBuild evaluates. Read as a change, it
+// re-discovered the workspace and replaced the model under a running scan.
+[<Fact(Timeout = 15000)>]
+let ``fsproj fingerprint ignores a rewrite of the same bytes and sees a content change`` () =
+    withTempDir "fingerprint-content" (fun tmpDir ->
+        let project = Path.Combine(tmpDir, "src", "A", "A.fsproj")
+        Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
+        File.WriteAllText(project, "<Project />")
+
+        let before = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir []
+        File.SetLastWriteTimeUtc(project, DateTime.UtcNow.AddMinutes 5.0)
+        test <@ FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir [] = before @>
+
+        File.WriteAllText(project, "<Project><PropertyGroup /></Project>")
+        test <@ FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir [] <> before @>)
 
 // ============================================================================
 // the rename pruning that stops a vanished path being analysed
@@ -5059,22 +5226,33 @@ let ``projectChangeLine says nothing when no project input changed`` () =
     test <@ Daemon.projectChangeLine "/repo" [] = None @>
 
 [<Fact(Timeout = 5000)>]
-let ``a scan re-discovery names each project file whose stamp moved`` () =
-    let before = Set.ofList [ "/repo/src/A/A.fsproj", 1L; "/repo/src/B/B.fsproj", 1L ]
+let ``a scan re-discovery names each project file whose fingerprint moved`` () =
+    withTempDir "fingerprint-change-line" (fun root ->
+        let project name =
+            let path = Path.Combine(root, "src", name, $"%s{name}.fsproj")
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+            path
 
-    let after = Set.ofList [ "/repo/src/A/A.fsproj", 2L; "/repo/src/C/C.fsproj", 1L ]
+        File.WriteAllText(project "A", "<Project />")
+        File.WriteAllText(project "B", "<Project />")
+        let before = Daemon.fingerprintFsprojFiles root []
 
-    let line = Daemon.fingerprintChangeLine "/repo" before after
-    test <@ line.Contains "3 project file(s) changed" @>
-    test <@ line.Contains "src/A/A.fsproj (rewritten)" @>
-    test <@ line.Contains "src/B/B.fsproj (removed)" @>
-    test <@ line.Contains "src/C/C.fsproj (added)" @>
+        File.WriteAllText(project "A", "<Project><PropertyGroup /></Project>")
+        File.Delete(project "B")
+        File.WriteAllText(project "C", "<Project />")
+        let after = Daemon.fingerprintFsprojFiles root []
 
-    test
-        <@
-            (Daemon.fingerprintChangeLine "/repo" Set.empty after).Contains
-                "no project model has been discovered in this daemon yet"
-        @>
+        let line = Daemon.fingerprintChangeLine root before after
+        test <@ line.Contains "3 project file(s) changed" @>
+        test <@ line.Contains "src/A/A.fsproj (rewritten)" @>
+        test <@ line.Contains "src/B/B.fsproj (removed)" @>
+        test <@ line.Contains "src/C/C.fsproj (added)" @>
+
+        test
+            <@
+                (Daemon.fingerprintChangeLine root Set.empty after).Contains
+                    "no project model has been discovered in this daemon yet"
+            @>)
 
 [<Fact(Timeout = 5000)>]
 let ``a re-evaluation says which projects' compile inputs it actually changed`` () =

@@ -43,6 +43,17 @@ let internal comparableHash (path: string) (content: byte[]) : byte[] =
 
     SHA256.HashData(bytes)
 
+/// `comparableHash` of the bytes `path` holds now; `None` when it is absent or unreadable.
+let internal currentHash (path: string) : byte[] option =
+    try
+        if File.Exists path then
+            Some(comparableHash path (File.ReadAllBytes path))
+        else
+            None
+    with
+    | :? IOException -> None
+    | :? UnauthorizedAccessException -> None
+
 /// Compute the change verdict for `path` against `store`, mutating `store`.
 /// Extracted so both the per-instance `Tracker` and the process-global default
 /// share one implementation. Returns true if the content actually changed since
@@ -75,15 +86,7 @@ type Tracker() =
     // The bytes each `Observe` caller (a discovery about to load its model) saw last.
     let observed = ConcurrentDictionary<string, byte[]>()
 
-    let currentHash (path: string) : byte[] option =
-        try
-            if File.Exists path then
-                Some(comparableHash path (File.ReadAllBytes path))
-            else
-                None
-        with
-        | :? IOException -> None
-        | :? UnauthorizedAccessException -> None
+    let currentHash = currentHash
 
     /// Returns true if the file content actually changed since this tracker last
     /// checked it. Updates the stored hash on change. Returns true for
@@ -104,6 +107,21 @@ type Tracker() =
         match currentHash path with
         | Some hash -> observed[path] <- hash
         | None -> observed.TryRemove(path) |> ignore
+
+    /// Record `path`'s current content as `Observe` does, but only when its last write
+    /// predates `cutoffUtc`; true when it was recorded.
+    ///
+    /// For a file a discovery may have read without observing it first: a write before
+    /// the discovery began is one the loader saw, so its bytes are the model's. The
+    /// bytes are read BEFORE the write time, so a write landing between the two moves
+    /// the time past the cutoff and is refused, never recorded as already loaded.
+    member _.ObserveIfWrittenBefore(path: string, cutoffUtc: DateTime) : bool =
+        match currentHash path with
+        | Some hash when File.GetLastWriteTimeUtc path < cutoffUtc ->
+            fileHashes[path] <- hash
+            observed[path] <- hash
+            true
+        | _ -> false
 
     /// Whether the last `Observe` of `path` saw the bytes it holds now: a discovery has
     /// loaded its model from this content. False when it was never observed, is gone, or
