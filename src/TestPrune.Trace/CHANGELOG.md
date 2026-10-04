@@ -12,11 +12,13 @@
   recorded input's current hash. `TraceIngest.permissionsOf` names the permission source
   (Windows attributes or the Unix mode) explicitly.
 
-- fix: a dump holding an input of a kind this version does not know (one a newer recorder
+- fix!: a dump holding an input of a kind this version does not know (one a newer recorder
   writes) is read, not rejected whole. The scope that recorded it is stored incomplete with
   `unknown-input-kind:<kind>`, and every other scope in the dump stays usable.
   `Model.InputKind` has an `UnknownInputKind` case and `Model.IncompleteReason` an
-  `UnknownInput` case.
+  `UnknownInput` case. BREAKING CHANGE: `Model.InputKind` gains the `MetadataRead` and
+  `UnknownInputKind` cases and `Model.IncompleteReason` the `UnknownInput` case, so an
+  exhaustive match over either must handle them.
 
 ## 0.6.1 - 2026-10-01
 
