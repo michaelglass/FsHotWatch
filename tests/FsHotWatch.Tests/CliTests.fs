@@ -523,6 +523,67 @@ let ``findRepoRoot preserves spaces at the end of a valid gitdir path`` () =
 
             test <@ findRepoRoot nested = Some checkout @>)
 
+/// The root `findRepoRoot` settles on decides the pipe name and every identity call that
+/// follows, so it must read a `.git` file exactly as `RepositoryIdentity` does. Two shapes
+/// split a reader that resolves the pointer lexically from one that asks the filesystem: a
+/// trailing space (part of the path to git), and `..` after a symlinked directory (the
+/// parent of the link's TARGET to the OS and to git, the checkout itself to `GetFullPath`).
+[<Fact(Timeout = 15000)>]
+let ``findRepoRoot and resolveWorktree agree on every gitdir pointer shape`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "cli-root-identity-parity" (fun tmpDir ->
+            let metadata (relative: string) =
+                let dir = Directory.CreateDirectory(Path.Combine(tmpDir, relative)).FullName
+                File.WriteAllText(Path.Combine(dir, "HEAD"), "ref: refs/heads/main\n")
+                dir
+
+            let absolute = metadata "absolute"
+            metadata "relative" |> ignore
+            metadata "spaced " |> ignore
+            metadata (Path.Combine("elsewhere", "via-link")) |> ignore
+
+            let linkTarget =
+                Directory.CreateDirectory(Path.Combine(tmpDir, "elsewhere", "inner")).FullName
+
+            let cases =
+                [ "absolute", $"gitdir: %s{absolute}", false
+                  "relative", "gitdir: ../relative", false
+                  "trailing-space", "gitdir: ../spaced ", false
+                  "symlinked-hop", "gitdir: hop/../via-link", true
+                  "dangling", "gitdir: ../missing", false
+                  "not-a-pointer", "not a gitdir pointer", false ]
+
+            for name, pointer, needsHop in cases do
+                let checkout =
+                    Directory.CreateDirectory(Path.Combine(tmpDir, $"checkout-%s{name}")).FullName
+
+                if needsHop then
+                    Directory.CreateSymbolicLink(Path.Combine(checkout, "hop"), linkTarget)
+                    |> ignore
+
+                File.WriteAllText(Path.Combine(checkout, ".git"), pointer + "\n")
+
+                let rootFound = findRepoRoot checkout = Some checkout
+
+                let identified =
+                    match FsHotWatch.RepositoryIdentity.resolveWorktree checkout with
+                    | Ok worktree -> worktree.Kind = FsHotWatch.RepositoryIdentity.CheckoutKind.GitWorktree
+                    | Error _ -> false
+
+                test <@ (name, rootFound) = (name, identified) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``findRepoRoot from a directory that does not exist yet finds the enclosing checkout`` () =
+    // A level that cannot be canonicalized (it is not there) is not a checkout root, and
+    // the walk carries on to its parent rather than giving up.
+    withTempDir "cli-missing-start" (fun tmpDir ->
+        let metadata = Directory.CreateDirectory(Path.Combine(tmpDir, ".git"))
+        File.WriteAllText(Path.Combine(metadata.FullName, "HEAD"), "ref: refs/heads/main\n")
+        let missing = Path.Combine(tmpDir, "not", "created")
+
+        test <@ not (FsHotWatch.RepositoryIdentity.isCheckoutRoot missing) @>
+        test <@ findRepoRoot missing = Some tmpDir @>)
+
 [<Fact(Timeout = 15000)>]
 let ``findRepoRoot finds jj repo`` () =
     withTempDir "cli-jj" (fun tmpDir ->
