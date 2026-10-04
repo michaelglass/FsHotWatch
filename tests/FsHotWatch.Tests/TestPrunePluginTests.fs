@@ -2479,7 +2479,8 @@ let ``formatFailureReport surfaces a plain failed-test line`` () =
         "Discovering: probe\nfailed FsHotWatch.Tests.Foo.bar (32ms)\nTest run summary: Failed!\n  total: 1\n  failed: 1\n  succeeded: 0"
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog output
+        |> String.concat "\n"
 
     test <@ report.Contains("FsHotWatch.Tests.Foo.bar") @>
     test <@ report.Contains("1 test(s) failed") @>
@@ -2492,7 +2493,8 @@ let ``formatFailureReport surfaces a timed-out (canceled) test — the daemon-lo
         "failed (canceled) FsHotWatch.Tests.Slow.thing (118ms)\n  Test execution timed out after 100 milliseconds\n  total: 1\n  failed: 1"
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog output
+        |> String.concat "\n"
 
     test <@ report.Contains("FsHotWatch.Tests.Slow.thing") @>
     test <@ report.Contains("(canceled)") @>
@@ -2506,7 +2508,8 @@ let ``formatFailureReport matches a failed line with leading whitespace`` () =
         "    failed FsHotWatch.Tests.Indented.case (5ms)\n  total: 1\n  failed: 1"
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog output
+        |> String.concat "\n"
 
     test <@ report.Contains("1 test(s) failed") @>
     test <@ report.Contains("FsHotWatch.Tests.Indented.case") @>
@@ -2519,7 +2522,8 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
         "Building...\nUnhandled exception: System.AccessViolationException\n  at Some.Native.Frame()\nProcess terminated."
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog output
+        |> String.concat "\n"
 
     test <@ report.Contains("0 test(s) failed") @>
     test <@ report.Contains("no per-test 'failed' line was parsed") @>
@@ -2585,7 +2589,7 @@ let ``parseFailedTests reads the coloured, cancelled and multi-unit-duration sha
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport names the test and the summary of a coloured MTP run`` () =
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog (ciRunOutput ())
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog (ciRunOutput ())
         |> String.concat "\n"
 
     test <@ report.Contains("1 test(s) failed") @>
@@ -2604,7 +2608,8 @@ let ``formatFailureReport does not dump the head of a run that completed with a 
         "Discovering...\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog output
+        |> String.concat "\n"
 
     test <@ report.Contains("ran to completion") @>
     test <@ report.Contains("failed: 1") @>
@@ -2624,7 +2629,12 @@ let ``formatFailureReport names the run log it was actually given`` () =
     let path = "/repo/.fshw/test-runs/abc123/Intelligence.Tests.Integration.output.log"
 
     let report =
-        formatFailureReport "Intelligence.Tests.Integration" (FsHotWatch.RunLog.Ref.Written path) output
+        formatFailureReport
+            RedRunEnding.Exited
+            []
+            "Intelligence.Tests.Integration"
+            (FsHotWatch.RunLog.Ref.Written path)
+            output
         |> String.concat "\n"
 
     test <@ report.Contains(path) @>
@@ -2637,7 +2647,12 @@ let ``formatFailureReport states WHY there is no log rather than naming one`` ()
     let output = "Building...\nProcess terminated."
 
     let report =
-        formatFailureReport "FsHotWatch.Tests" (FsHotWatch.RunLog.Ref.Unavailable "disk full") output
+        formatFailureReport
+            RedRunEnding.Exited
+            []
+            "FsHotWatch.Tests"
+            (FsHotWatch.RunLog.Ref.Unavailable "disk full")
+            output
         |> String.concat "\n"
 
     test <@ report.Contains("NO output log was saved") @>
@@ -2658,7 +2673,7 @@ let ``the console tail cannot reach the head — which is why the log exists`` (
         |> String.concat "\n"
 
     let report =
-        formatFailureReport "Intelligence.Tests.Integration" savedLog output
+        formatFailureReport RedRunEnding.Exited [] "Intelligence.Tests.Integration" savedLog output
         |> String.concat "\n"
 
     // The console summary used to print ONLY the tail, so this line
@@ -2687,7 +2702,7 @@ let private headTailOutput =
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport summarises from the HEAD (and the tail) when no failed line parses`` () =
     let report =
-        formatFailureReport "Intelligence.Tests.Integration" savedLog headTailOutput
+        formatFailureReport RedRunEnding.Exited [] "Intelligence.Tests.Integration" savedLog headTailOutput
         |> String.concat "\n"
 
     // The head is where a killed or wedged run states its cause — and it is what the
@@ -2790,7 +2805,7 @@ let ``FailureCause.ofOutput on a blank output falls back to the pointer sentence
     let path = "/repo/.fshw/test-runs/abc123/P.output.log"
 
     let cause =
-        FailureCause.ofOutput "P" (FsHotWatch.RunLog.Ref.Written path) "  \n\n  "
+        FailureCause.ofOutput RedRunEnding.Exited "P" (FsHotWatch.RunLog.Ref.Written path) "  \n\n  "
 
     test <@ (FailureCause.render cause).Contains("no cause captured") @>
     test <@ (FailureCause.render cause).Contains(path) @>
@@ -2863,6 +2878,116 @@ let ``failuresOf: a completed run nobody could name quotes the runner's summary,
     test <@ not (red.Entry.Message.Contains "output begins") @>
     test <@ not (red.Entry.Message.Contains "Discovering...") @>
     test <@ red.Entry.Message.Contains path @>
+
+// --- a host killed at its timeout did not run to completion ---
+//
+// MTP prints its summary as tests finish. A host killed at its timeout after the last
+// test printed "Passed!" left a complete-looking summary behind, and the message called
+// that run "ran to completion" and sent the reader to a CTRF report that named nothing.
+
+/// A full MTP summary for a run that printed "Passed!" and was then killed.
+let private passedThenKilledOutput =
+    "Discovering...\nTest run summary: Passed! - FsHotWatch.Tests.dll (net10.0|arm64)\n  total: 9301\n  failed: 0\n  succeeded: 9301"
+
+let private killedAt600s = TimeSpan.FromSeconds 600.0
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: a host killed at its timeout after a Passed! summary is reported as timed out`` () =
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsTimedOut(passedThenKilledOutput, killedAt600s, false, killedAt600s) ]
+          Elapsed = killedAt600s }
+
+    let red =
+        failuresOf (fun _ -> savedLog) (fun _ -> []) Map.empty failed |> List.exactlyOne
+
+    test <@ red.Entry.Message.Contains "timed out after 600s" @>
+    test <@ red.Entry.Message.Contains "total: 9301" @>
+    test <@ not (red.Entry.Message.Contains "ran to completion") @>
+    test <@ not (Text.RegularExpressions.Regex.IsMatch(red.Entry.Message, "CTRF report.*names")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport: a host killed at its timeout after a Passed! summary is reported as timed out`` () =
+    let report =
+        formatFailureReport (RedRunEnding.TimedOut killedAt600s) [] "P" savedLog passedThenKilledOutput
+        |> String.concat "\n"
+
+    test <@ report.Contains "timed out after 600s" @>
+    test <@ not (report.Contains "ran to completion") @>
+    test <@ not (Text.RegularExpressions.Regex.IsMatch(report, "CTRF report.*names")) @>
+    // The head is where a hung run may have said why: it is quoted, not skipped.
+    test <@ report.Contains "| Discovering..." @>
+
+[<Fact(Timeout = 15000)>]
+let ``FailureCause.ofOutput: a timed-out run with no summary quotes its head under the timeout`` () =
+    let cause =
+        FailureCause.ofOutput (RedRunEnding.TimedOut killedAt600s) "P" savedLog "Waiting for the test DB lock..."
+        |> FailureCause.render
+
+    test <@ cause.Contains "timed out after 600s" @>
+    test <@ cause.Contains "| Waiting for the test DB lock..." @>
+
+[<Fact(Timeout = 15000)>]
+let ``FailureCause.ofOutput: a timed-out run with no output still says it timed out`` () =
+    let cause =
+        FailureCause.ofOutput (RedRunEnding.TimedOut killedAt600s) "P" savedLog "  \n"
+        |> FailureCause.render
+
+    test <@ cause.Contains "timed out after 600s" @>
+    test <@ cause.Contains "no cause captured" @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport: a completed run says the CTRF report names the tests only when it does`` () =
+    let output = "Test run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+
+    let named =
+        formatFailureReport RedRunEnding.Exited [ "A.b" ] "P" savedLog output
+        |> String.concat "\n"
+
+    let unnamed =
+        formatFailureReport RedRunEnding.Exited [] "P" savedLog output
+        |> String.concat "\n"
+
+    test <@ named.Contains "ran to completion" @>
+    test <@ named.Contains "the CTRF report beside the output log names the 1 failing test(s)" @>
+    test <@ unnamed.Contains "ran to completion" @>
+    test <@ unnamed.Contains "no CTRF report row names a failing test either" @>
+    test <@ not (unnamed.Contains "CTRF report beside the output log names") @>
+
+[<Fact(Timeout = 30000)>]
+let ``a project killed at its timeout is logged TIMED OUT (infrastructure), never FAILED or ran to completion`` () =
+    withTempDir "tp-timeout-after-summary" (fun tmpDir ->
+        let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _sink =
+            FsHotWatch.Logging.installSink
+                { Write = lines.Enqueue
+                  Level = FsHotWatch.Logging.LogLevel.Info }
+
+        // Prints a complete "Passed!" summary, then hangs past its 1 s budget.
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = "-c \"printf 'Test run summary: Passed!\\n  total: 1\\n  failed: 0\\n'; sleep 30\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = Some 1
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            create (Path.Combine(tmpDir, "test.db")) tmpDir (Some configs) None None None None []
+
+        host.RegisterHandler(handler)
+        emitBuildAndWaitTerminal host
+
+        let logged = lines.ToArray() |> String.concat "\n"
+        test <@ logged.Contains "TestProject: TIMED OUT (infrastructure) after 1s" @>
+        test <@ logged.Contains "TestProject: run timed out after 1s and its host was killed" @>
+        test <@ not (logged.Contains "TestProject: FAILED") @>
+        test <@ not (logged.Contains "ran to completion") @>)
 
 // --- isZeroTestsUnderFilter ---
 //

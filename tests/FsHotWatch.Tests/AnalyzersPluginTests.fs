@@ -1224,12 +1224,12 @@ let ``typedTreeOf supplies the typed tree when the checker retained it`` () =
     let checkResults, _, _ =
         checkResultsWith true "typedtree-retained" "module Typed\nlet answer = 42\n"
 
-    test <@ typedTreeOf (TypedTreeLatch()) checkResults |> asTypedTree |> Option.isSome @>
+    test <@ typedTreeOf checkResults |> asTypedTree |> Option.isSome @>
 
 [<Fact(Timeout = 15000)>]
 let ``typedTreeOf yields None for a parse-only result`` () =
     // No type-check happened, so there is no typed tree to offer.
-    test <@ typedTreeOf (TypedTreeLatch()) ParseOnly |> asTypedTree = None @>
+    test <@ typedTreeOf ParseOnly |> asTypedTree = None @>
 
 [<Fact(Timeout = 60000)>]
 let ``typedTreeOf yields None rather than raising when the checker kept no contents`` () =
@@ -1240,21 +1240,7 @@ let ``typedTreeOf yields None rather than raising when the checker kept no conte
     let checkResults, _, _ =
         checkResultsWith false "typedtree-not-retained" "module Typed\nlet answer = 42\n"
 
-    test <@ typedTreeOf (TypedTreeLatch()) checkResults |> asTypedTree = None @>
-
-[<Fact(Timeout = 60000)>]
-let ``a withheld latch withholds the typed tree, and only for its own handler`` () =
-    // Two sessions in one host each load their own analyzer set, so one set proving it
-    // cannot take a typed tree must not quietly disarm the other's typed-tree rules.
-    let checkResults, _, _ =
-        checkResultsWith true "typedtree-latch" "module Typed\nlet answer = 42\n"
-
-    let sessionA = TypedTreeLatch()
-    let sessionB = TypedTreeLatch()
-    test <@ sessionA.Withhold() @>
-    test <@ not (sessionA.Withhold()) @>
-    test <@ typedTreeOf sessionA checkResults |> asTypedTree = None @>
-    test <@ typedTreeOf sessionB checkResults |> asTypedTree |> Option.isSome @>
+    test <@ typedTreeOf checkResults |> asTypedTree = None @>
 
 [<Fact(Timeout = 60000)>]
 let ``createCliContext carries a real typed tree through the reflection constructor`` () =
@@ -1278,7 +1264,7 @@ let ``createCliContext carries a real typed tree through the reflection construc
             (box (FSharp.Compiler.Text.SourceText.ofString "module Typed\nlet answer = 42\n"))
             (box (dummyParseResults ()))
             checkResultsObj
-            (typedTreeOf (TypedTreeLatch()) checkResults)
+            (typedTreeOf checkResults)
             (box options)
 
     test <@ context.TypedTree |> Option.isSome @>
@@ -1324,7 +1310,7 @@ let private gResearchPlants =
 let ``the configured analyzer set walks a typed tree from this FCS and fires every typed rule`` () =
     // g-research 0.25.0 is built against FSharp.Analyzers.SDK 0.39 and this FCS, so
     // handed a real typed tree its rules RUN instead of raising `MissingMethodException`
-    // on every file (the 0.23.0 state, which `isFcsBinaryMismatch` still classifies).
+    // on every file (the 0.23.0 state).
     // "No failures" alone would pass for an empty set or a tree nobody walked, so each
     // typed rule must also REPORT its planted violation.
     Assert.True(IO.Directory.Exists gResearchAnalyzerDir, $"analyzer package missing at {gResearchAnalyzerDir}")
@@ -1350,7 +1336,6 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
 
     test <@ List.isEmpty compileErrors @>
 
-    // NOT `typedTreeOf`: the real tree is wanted even if a latch would withhold it.
     let realTypedTree =
         match checkResults with
         | FullCheck cr -> box cr.ImplementationFile
@@ -1405,16 +1390,6 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
               "GRA-LOGTEMPLMISSVALS-001" ]
 
     test <@ Set.difference expected codes = Set.empty @>
-
-[<Fact>]
-let ``isFcsBinaryMismatch names the assembly mismatch and nothing else`` () =
-    // The predicate decides whether a failure is the HOST's problem (an analyzer built
-    // against another FCS) or the analyzer's own bug. Misclassifying the second as the
-    // first would silently withhold typed trees from a set that could use them.
-    test <@ isFcsBinaryMismatch (MissingMethodException "get_BasicQualifiedName") @>
-    test <@ isFcsBinaryMismatch (TypeLoadException "FSharpType") @>
-    test <@ not (isFcsBinaryMismatch (InvalidOperationException "analyzer bug")) @>
-    test <@ not (isFcsBinaryMismatch (exn "boom")) @>
 
 // A rediscovery that drops a file clears that file's findings in EVERY plugin ledger
 // (`rediscoverAndClearRemoved` -> `ClearFileEverywhere`), and it clears them while the
@@ -1958,6 +1933,56 @@ let ``an analyzer that crashes on every file is named once, with the count`` () 
     test <@ summary.Split("TypedRule").Length = 2 @>
     let errors = host.GetErrorsByPlugin "analyzers"
     test <@ files |> List.forall (fun f -> errors |> Map.containsKey f) @>
+
+// --- an FCS binary mismatch is a crash, not a silently disarmed rule ---
+//
+// An analyzer compiled against a different FCS raises only once it walks the typed
+// tree. Withholding the tree and re-running made it return [] — the gate went green
+// with every typed rule off. The runner below is that analyzer: it raises ONLY when
+// handed a typed tree, so a host that answers by withholding the tree sees no crash.
+
+[<Fact(Timeout = 60000)>]
+let ``an analyzer that raises only on a typed tree reddens the verdict on every file`` () =
+    let checkResults, _, _ =
+        checkResultsWith true "typedtree-mismatch" "module Typed\nlet answer = 42\n"
+
+    let files = [ "/my/repo/src/First.fs"; "/my/repo/src/Later.fs" ]
+    let host = createModelHost (Unchecked.defaultof<_>) "/my/repo"
+
+    let runner: AnalyzerRunner =
+        fun _client context ->
+            async {
+                return
+                    match context.TypedTree with
+                    | Some _ ->
+                        [ raising "TypedRule" (MissingMethodException "Method not found: get_BasicQualifiedName") ]
+                    | None -> [ clean "TypedRule" [] ]
+            }
+
+    host.RegisterHandler(createWithSeams (Some "/my/repo") [] None DiagnosticSeverity.Error None runner)
+
+    for file in files do
+        host.EmitFileChecked(
+            { analyzable file with
+                CheckResults = checkResults }
+        )
+
+    waitForQuiescent host 15000
+
+    let errors = host.GetErrorsByPlugin "analyzers"
+
+    for file in files do
+        let entries = errors |> Map.tryFind file |> Option.defaultValue []
+
+        test
+            <@
+                entries
+                |> List.exists (fun e ->
+                    e.Severity = DiagnosticSeverity.Error
+                    && e.Message.StartsWith "analyzer TypedRule crashed: MissingMethodException")
+            @>
+
+    test <@ (summaryOf host).Contains "2 analyzer crashes (TypedRule on 2 files: MissingMethodException" @>
 
 [<Fact(Timeout = 30000)>]
 let ``a file that stops crashing drops out of the crash tally`` () =
