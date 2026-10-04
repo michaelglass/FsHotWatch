@@ -232,8 +232,14 @@ let internal applyDepsGate
             host.ReportErrors(DepsFreshness.pluginName, projPath, [ entry ])
             false
 
-/// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
+/// Fingerprint fsproj files by path + content hash. Used by ScanAll to skip
 /// expensive MSBuild re-evaluation when no project files have changed.
+///
+/// Content, not last-write time: a tool that rewrites a project file with the same
+/// bytes (a checkout, a restore, a formatter) changes nothing MSBuild would evaluate,
+/// and a stamp read as a change re-discovered the workspace and replaced the model
+/// under a running scan. A file unreadable at the moment of the walk is left out, as a
+/// file that vanished between the walk and the read is.
 ///
 /// Shares both the discovery roots (`Discovery.findFsprojFiles`) and the exclude
 /// semantics (`PathFilter.isExcludedPath`) with `discoverAndRegisterProjects`, so
@@ -245,24 +251,26 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
 
     Discovery.findFsprojFiles repoRoot
     |> List.filter (fun f -> not (isExcluded f))
-    |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
+    |> List.choose (fun f ->
+        ContentDedup.currentHash f
+        |> Option.map (fun hash -> f, Convert.ToHexString hash))
     |> Set.ofList
 
-/// Why a scan re-discovers: the project files whose last-write time differs from the
-/// stamps the last successful re-discovery (on any path) read, each named with what happened to
+/// Why a scan re-discovers: the project files whose content differs from the
+/// hashes the last successful re-discovery (on any path) read, each named with what happened to
 /// it. A re-discovery replaces the project model, and every run launched under the old
 /// model has to account for that, so the log must say which write did it.
 let internal fingerprintChangeLine
     (repoRoot: string)
-    (previous: Set<string * int64>)
-    (current: Set<string * int64>)
+    (previous: Set<string * string>)
+    (current: Set<string * string>)
     : string =
     if Set.isEmpty previous then
         "Scan re-discovery: no project model has been discovered in this daemon yet"
     else
-        let stamps (fingerprint: Set<string * int64>) = fingerprint |> Seq.map fst |> Set.ofSeq
-        let before = stamps previous
-        let after = stamps current
+        let paths (fingerprint: Set<string * string>) = fingerprint |> Seq.map fst |> Set.ofSeq
+        let before = paths previous
+        let after = paths current
 
         let describe (path: string) =
             let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
@@ -344,11 +352,14 @@ let internal projectAssetsFileFor (fsproj: string) : string option =
 /// cost; a scoped invalidation of every project in the tree, arriving while the initial
 /// scan is still blocked on the build that provoked it, cancels that scan's in-flight
 /// checks and buys a second full pass over the workspace.
+///
+/// Returns the projects it observed, so a caller can tell which projects a discovery
+/// registered without this read (`observeAssetsReadUnobserved`).
 let internal observeProjectContent
     (repoRoot: string)
     (excludePatterns: string list)
     (tracker: ContentDedup.Tracker)
-    : unit =
+    : string list =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
     let projects =
@@ -362,6 +373,40 @@ let internal observeProjectContent
     // watcher admits these paths, so the tracker has to hold a prior for them or the
     // first echo of each is answered "changed" on its content-free default.
     projects |> List.choose projectAssetsFileFor |> List.iter tracker.Observe
+    projects
+
+/// How far before a discovery began an assets file's last write must lie for
+/// `observeAssetsReadUnobserved` to count it as read by that discovery. File times come
+/// from a coarser clock than `DateTime.UtcNow` (a kernel tick on Linux, whole seconds on
+/// some filesystems), so a write just after the start can be stamped just before it.
+let internal assetsWriteMargin = TimeSpan.FromSeconds 2.0
+
+/// After a discovery, record the assets file of every project it registered that
+/// no pre-load observation read (`preObserved`), when that file was last written before
+/// the discovery began (`discoveryStartedAt`, less `assetsWriteMargin`).
+///
+/// The loader follows references out of the discovery roots — a `.sln` naming
+/// `packages/analyzers/X.fsproj`, say — and `observeProjectContent` reads only inside
+/// them. On a COLD daemon there is no previous model to name such a project either, so
+/// its assets file had no prior and `restoredSinceDiscovery` answered "changed" for
+/// bytes nothing had touched: the first scan replaced its model once, cancelling the
+/// checks in flight and checking the tree twice.
+///
+/// Keeps the observe-before-read argument: a file written before the discovery began
+/// holds the bytes the loader read. A file written after it may not, and stays
+/// unobserved, so it still reports a change.
+let internal observeAssetsReadUnobserved
+    (tracker: ContentDedup.Tracker)
+    (preObserved: Set<string>)
+    (discoveryStartedAt: DateTime)
+    (registered: string list)
+    : unit =
+    let cutoff = discoveryStartedAt - assetsWriteMargin
+
+    registered
+    |> List.filter (fun project -> not (Set.contains project preObserved))
+    |> List.choose projectAssetsFileFor
+    |> List.iter (fun assets -> tracker.ObserveIfWrittenBefore(assets, cutoff) |> ignore)
 
 /// The projects whose `obj/project.assets.json` no longer holds the package graph the
 /// discovery that loaded their model read (`observeProjectContent`). Their options
@@ -1015,18 +1060,19 @@ let private rediscoverAndClearRemoved
     (logTag: string)
     (excludePatterns: string list)
     (contentTracker: ContentDedup.Tracker)
-    (discoveredFingerprint: Set<string * int64> option ref)
+    (discoveredFingerprint: Set<string * string> option ref)
     (clearCheckCache: bool)
     =
     discovery.Run(fun () ->
         async {
             let oldFiles = graph.GetAllFiles() |> Set.ofList
 
-            // Before the loader reads them — see `observeProjectContent`. Stamps taken
+            // Before the loader reads them — see `observeProjectContent`. Hashes taken
             // earlier than the read can only be older, which costs a redundant
             // re-discovery on the next scan, never a missed one.
+            let discoveryStartedAt = DateTime.UtcNow
             let fingerprint = fingerprintFsprojFiles repoRoot excludePatterns
-            observeProjectContent repoRoot excludePatterns contentTracker
+            let inRoots = observeProjectContent repoRoot excludePatterns contentTracker
 
             // And every project the model being replaced held. The loader follows
             // project references out of the discovery roots, and a project it reached
@@ -1035,7 +1081,9 @@ let private rediscoverAndClearRemoved
             // answers "changed" for good: each scan re-discovered, the re-discovery again
             // recorded nothing, and the scan ran out of attempts with the bytes
             // untouched. Recorded here, the same bytes re-discover at most once.
-            pipeline.GetRegisteredProjects()
+            let previousModel = pipeline.GetRegisteredProjects()
+
+            previousModel
             |> List.choose projectAssetsFileFor
             |> List.iter contentTracker.Observe
 
@@ -1049,6 +1097,13 @@ let private rediscoverAndClearRemoved
                     host.Phases
                     excludePatterns
                     clearCheckCache
+
+            // And what neither read: a project first reached outside the roots.
+            observeAssetsReadUnobserved
+                contentTracker
+                (Set.ofList (inRoots @ previousModel))
+                discoveryStartedAt
+                (pipeline.GetRegisteredProjects())
 
             // A total loader failure is retryable with unchanged bytes, so it records no
             // stamps a scan would then skip on.
@@ -1268,7 +1323,7 @@ type private ScanAgentState =
     {
         ScanState: ScanState
         Generation: int64
-        LastFingerprint: Set<string * int64>
+        LastFingerprint: Set<string * string>
         /// The last completed scan that checked every file it dispatched: the moment it
         /// began reading the tree (`Stopwatch` ticks) and its completed state. A request
         /// admitted before that moment is answered by that scan — see `scanAnswers`.
@@ -1376,10 +1431,10 @@ type internal BatchContext =
         /// paths, so a stale global entry would collide exactly). See
         /// `ContentDedup.Tracker`.
         ContentTracker: ContentDedup.Tracker
-        /// The project-file stamps (`fingerprintFsprojFiles`) the last successful
+        /// The project-file hashes (`fingerprintFsprojFiles`) the last successful
         /// re-discovery read, whichever path ran it. A scan compares against this, so a
         /// change a change batch already re-discovered is not re-discovered again.
-        DiscoveredFingerprint: Set<string * int64> option ref
+        DiscoveredFingerprint: Set<string * string> option ref
         /// Monotonic counter bumped per `InSessionBatch` `BatchChecked` emitted
         /// from `processBatch`. Per-trigger generation lets subscribers dedup
         /// "latest in-session cohort" without colliding with scan generations
@@ -3416,7 +3471,7 @@ let private performScan
     =
     // Survives a re-capture. An attempt that already re-discovered and memoized the
     // project fingerprint must not pay a second MSBuild evaluation on the next one:
-    // a supersession whose cause was a real `.fsproj` edit moves the timestamps too,
+    // a supersession whose cause was a real `.fsproj` edit changes the hashes too,
     // so the next attempt still re-discovers when — and only when — it must.
     let fingerprintMemo = ref state.LastFingerprint
 
@@ -3443,7 +3498,7 @@ let private performScan
             // when no project files have changed.
             let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
 
-            // The newest stamps any re-discovery read, not only this scan's: a change batch
+            // The newest hashes any re-discovery read, not only this scan's: a change batch
             // that re-discovered a checkout has already applied it.
             let mutable lastFingerprint =
                 ctx.DiscoveredFingerprint.Value |> Option.defaultValue fingerprintMemo.Value
