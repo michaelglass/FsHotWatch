@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat!: the `test-scope` reply names why a `full` scope covered every project, as `cause`
+  (`FullSuiteCause`, wire tokens in `FullSuiteCause.token`). The launch decides it
+  (`fullSuiteCauseOf`) and the evidence receipt carries it. **BREAKING** (F# API):
+  `TestRunLaunch` and `TestEvidenceReceipt` have a required `FullSuiteCause` field.
+
 - fix: a test host killed at its timeout is no longer reported as having "ran to completion".
   A host that printed a full runner summary ("Passed!", total, failed 0) before its timeout
   killed it took the completed-run branch, so the message said the run ran to completion and

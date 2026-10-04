@@ -74,6 +74,22 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune, cli: a full-suite scope says why the run took every project
+
+- **feat: `scope.cause` in `.fshw/verdict.json`, and `cause` in the `test-scope`
+  reply.** A run that covered every project used to record only
+  `{"kind":"full",...}`; why it widened was one `daemon.log` line. A `full` scope now
+  names its cause, one of `requested` (`confirm` turned impact filtering off),
+  `force-run`, `unreadable-ledger`, `no-full-suite-baseline`, `coarse-fallback` (an
+  unanalysable or unindexed file, or a failed extension), `evidence-gap`, or
+  `selection-reached-every-project`. Where several apply, the first in that order is
+  named.
+- **Additive.** The schema stays `fshw-verdict-v2`. `cause` is `null` where the
+  reading does not say (a verdict written before the field, a `check-reach`
+  projection), and such a scope reads back as a full suite exactly as before. A
+  `cause` this build does not know reads back as an `unreadable` scope, never as a
+  full one.
+
 ### cli: `confirm --fresh` runs the full suite again on an unchanged tree
 
 - **feat: `fshw confirm --fresh`.** A `confirm` on a tree that has not moved answers
