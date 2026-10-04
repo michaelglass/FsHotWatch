@@ -10,6 +10,25 @@
   its references' in-memory sources. It types against a reference's on-disk DLL whenever
   that DLL is at least as new as the sources (`ComputeAssemblyData`), which is why each
   entry guards the DLL's bytes (ADR-037).
+- fix: a cold daemon no longer replaces its project model in its first scan because of a
+  project the loader reached outside the discovery roots (a `.sln` naming
+  `packages/analyzers/X.fsproj`, say). Nothing had observed that project's
+  `obj/project.assets.json` before the scan asked about it, so bytes restored long before the
+  daemon started read as "a restore changed the package graph": the scan cancelled its
+  checks in flight, re-discovered, and checked the tree twice. After a discovery, the assets
+  file of each project it registered without a prior read is now recorded when its last write
+  predates the discovery (by more than a 2s file-clock margin). One written after the
+  discovery began still replaces the model.
+- fix: the project-file fingerprint that decides whether a scan re-discovers compares content,
+  not last-write time. A rewrite of the same bytes (a checkout, a restore, a formatter) no
+  longer re-evaluates MSBuild. `fingerprintFsprojFiles` now pairs each path with a hex SHA-256.
+  `observeProjectContent` returns the projects it observed.
+- feat!: `scan-metrics.jsonl` records gain `checkStarts`: the FCS checks started while the scan
+  ran, across its attempts and any change batch it overlapped. A file count hides a check
+  that was cancelled and started again; against `filesChecked` this shows it. Breaking:
+  `ScanMetrics.ScanSample` has a new field `CheckStarts`. A record written before it parses
+  with 0.
+
 - fix: a repository-host connection that sends no preamble within the bound is logged ("a
   connection sent no preamble within …; it is closed unanswered") instead of dropped silently.
   The read's cancellation cancelled the whole opener, which no handler saw, so an attach whose

@@ -47,6 +47,11 @@ type ScanSample =
         /// are checked by neither and were counted by nothing — which is how a scan
         /// reported `unchecked 0` while covering a fraction of what it registered.
         FilesUncovered: int
+        /// FCS checks started while this scan ran, across every attempt of it and
+        /// including the change batches it overlapped. Against `FilesChecked` it is the
+        /// amplification a file count hides: a scan whose model was replaced mid-way, or
+        /// whose checks a concurrent batch cancelled, starts files twice.
+        CheckStarts: int64
         /// Extra rounds `runChecksWithRetry` needed beyond the first pass,
         /// summed over tiers. 0 on a clean scan; the retry amplification
         /// bounds shows up here.
@@ -132,6 +137,7 @@ let toJsonLine (sample: ScanSample) : string =
            filesSkipped = sample.FilesSkipped
            filesDepsGated = sample.FilesDepsGated
            filesUncovered = sample.FilesUncovered
+           checkStarts = sample.CheckStarts
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -183,6 +189,7 @@ let tryParseLine (line: string) : ScanSample option =
                   FilesSkipped = optionalInt "filesSkipped"
                   FilesDepsGated = optionalInt "filesDepsGated"
                   FilesUncovered = optionalInt "filesUncovered"
+                  CheckStarts = optionalInt64 "checkStarts"
                   RetryRounds = (field "retryRounds").GetInt32()
                   RssBytes = (field "rssBytes").GetInt64()
                   ManagedBytes = (field "managedBytes").GetInt64()
