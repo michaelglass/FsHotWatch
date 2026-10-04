@@ -373,6 +373,33 @@ module TestScope =
         | ("full" | "filtered" | "none"), _, _ -> Some(contradicted ())
         | _ -> None
 
+/// Read a scope object's `notSelected` field: the changed files whose changes selected no
+/// tests. ONE reader for both places the field arrives — the `test-scope` reply and the
+/// verdict file's `scope` object.
+///
+/// `Ok None` where the field is absent or `null`: a reading from before the field says
+/// nothing, which is not "no file was withheld". `Error` for anything this build cannot
+/// read — a shape from another version, an entry with no file, a reason
+/// `NotSelectedReason` does not know — which each caller turns into an unreadable scope.
+let tryReadNotSelected (field: JsonElement option) : Result<NotSelectedFile list option, string> =
+    match field with
+    | None -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Null -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Array ->
+        let read (entry: JsonElement) =
+            match
+                Json.tryString entry "file", Json.tryString entry "reason" |> Option.bind NotSelectedReason.tryOfToken
+            with
+            | Some file, Some reason -> Some { File = file; Reason = reason }
+            | _ -> None
+
+        let entries = value.EnumerateArray() |> List.ofSeq
+
+        match entries |> List.tryFind (read >> Option.isNone) with
+        | Some unreadable -> Result.Error $"a not-selected entry this build cannot read (%s{unreadable.GetRawText()})"
+        | None -> Result.Ok(Some(List.choose read entries))
+    | Some value -> Result.Error $"a `notSelected` field that is not an array (%s{value.GetRawText()})"
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
@@ -713,6 +740,10 @@ type TestRunReport =
         /// `NotReported` from a daemon that predates the field — which `CheckVerdict`
         /// refuses to call green, exactly as it refuses a scope it could not read.
         Baseline: BaselineReading
+        /// The changed files whose changes selected no tests, and why. `None` where the
+        /// daemon did not say (one older than the field, or no reply at all); `Some []`
+        /// is its positive "none".
+        NotSelected: NotSelectedFile list option
     }
 
 module TestRunReport =
@@ -731,7 +762,8 @@ module TestRunReport =
           CheckRuns = []
           Seeds = []
           SeedCount = 0
-          Baseline = BaselineReading.NotReported }
+          Baseline = BaselineReading.NotReported
+          NotSelected = None }
 
     /// The report for a daemon/host with NO `test-scope` command: no
     /// test projects are configured, so there is no scope, no run, and nothing a
@@ -894,6 +926,14 @@ let parseTestRunReport (json: string) : TestRunReport =
                 BaselineReading.Absent(reason.GetString())
             | _ -> BaselineReading.NotReported
 
+        // A `notSelected` this build cannot read fails the scope closed: a reply that
+        // names files the selection withheld, in words this build does not know, has not
+        // told it what the run covered.
+        let scope, notSelected =
+            match tryReadNotSelected (Json.tryProp root "notSelected") with
+            | Result.Ok notSelected -> scope, notSelected
+            | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
+
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -903,7 +943,8 @@ let parseTestRunReport (json: string) : TestRunReport =
           CheckRuns = []
           Seeds = seeds
           SeedCount = seedCount
-          Baseline = baseline }
+          Baseline = baseline
+          NotSelected = notSelected }
     with ex ->
         TestRunReport.ofScopeOnly (
             ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"

@@ -110,6 +110,8 @@ type private Spec =
         /// `Some []` — a positive "nothing was excluded" — is the default, because
         /// that is what a governed repo records.
         Excluded: SolutionScope.Exclusion list option
+        /// The changed files that selected no tests. `Some []` by default.
+        NotSelected: FsHotWatch.TestPrune.NotSelectedFile list option
         Tree: TreeHash.Tree
         /// What the daemon said its greens are relative to. Defaults to
         /// the shared fixture, which is the baseline `greenVerdict`'s outcome names.
@@ -128,7 +130,8 @@ let private build (s: Spec) : Verdict.Verdict =
           CheckRuns = s.Runs |> List.choose (fun r -> r.RunId)
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds)
-          Baseline = s.Baseline }
+          Baseline = s.Baseline
+          NotSelected = s.NotSelected }
         s.Tree
         s.Excluded
         s.Outcome
@@ -162,6 +165,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Seeds = []
       SeedTotal = 0
       Excluded = Some []
+      NotSelected = Some []
       Tree =
         { Hash = treeHash
           FileCount = fileCount
@@ -1127,7 +1131,8 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
                   CheckRuns = [ first; second; graded ]
                   Seeds = []
                   SeedCount = 0
-                  Baseline = BaselineFixtures.reading }
+                  Baseline = BaselineFixtures.reading
+                  NotSelected = None }
 
         // The graded run leads — it is what the outcome was computed from — and every
         // other batch is there behind it.
@@ -1175,7 +1180,8 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                                   CheckRuns = [ early; graded ]
                                   Seeds = []
                                   SeedCount = 0
-                                  Baseline = BaselineFixtures.reading } }
+                                  Baseline = BaselineFixtures.reading
+                                  NotSelected = None } }
 
             v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
 
@@ -1206,7 +1212,8 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                               CheckRuns = [ first; second; graded ]
                               Seeds = []
                               SeedCount = 0
-                              Baseline = BaselineFixtures.reading } }
+                              Baseline = BaselineFixtures.reading
+                              NotSelected = None } }
 
         let onDisk =
             [ first; second; graded ]
@@ -6570,5 +6577,28 @@ let ``a verdict file whose scope names a cause this build does not know reads as
             readScopeOf
                 root
                 """{"kind":"full","ranProjects":6,"totalProjects":6,"cause":"a-cause-from-another-version"}"""
+
+        test <@ TestScope.isUnreadable v.Scope @>)
+
+[<Fact>]
+let ``the not-selected files survive a round trip through the verdict file`` () =
+    withTempDir "verdict-not-selected-roundtrip" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"full","ranProjects":6,"totalProjects":6,"notSelected":[{"file":"src/Lib/Broken.fs","reason":"fcs-errors"}]}"""
+
+        test <@ TestScope.isFullSuite v.Scope @>
+        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+        test <@ scope.["notSelected"].[0].["file"].GetValue<string>() = "src/Lib/Broken.fs" @>
+        test <@ scope.["notSelected"].[0].["reason"].GetValue<string>() = "fcs-errors" @>)
+
+[<Fact>]
+let ``a verdict file whose not-selected entry has a reason this build does not know reads as an unreadable scope`` () =
+    withTempDir "verdict-not-selected-unknown" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"full","ranProjects":6,"totalProjects":6,"notSelected":[{"file":"src/A.fs","reason":"a-reason-from-another-version"}]}"""
 
         test <@ TestScope.isUnreadable v.Scope @>)
