@@ -1232,7 +1232,8 @@ let ``an abort report never counts the killed run's transcript as failures`` () 
     // THE OTHER DIRECTION: the same lines through the FAILURE report still say "failed",
     // because for a run that finished they are findings.
     let failure =
-        formatFailureReport "FsHotWatch.Tests" savedLog transcript |> String.concat "\n"
+        formatFailureReport RedRunEnding.Exited [] "FsHotWatch.Tests" savedLog transcript
+        |> String.concat "\n"
 
     test <@ failure.Contains "2 test(s) failed" @>
 

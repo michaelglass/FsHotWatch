@@ -368,25 +368,6 @@ let internal createCliContext
 let internal noTypedTree: obj =
     box (None: FSharp.Compiler.Symbols.FSharpImplementationFileContents option)
 
-/// Whether an analyzer failure is the FCS BINARY MISMATCH rather than a fault in the
-/// analyzer or in the file it was given.
-///
-/// An analyzer package is compiled against one FCS and loaded here beside another.
-/// While `CliContext.TypedTree` is `None` an analyzer that walks the typed tree
-/// returns early and never touches the differing types, so the mismatch stays
-/// invisible; hand it a real typed tree and it calls a member that no longer exists
-/// and raises `MissingMethodException` — MEASURED with g-research 0.23.0 against FCS
-/// 43.12.x, where 11 of 13 analyzers raise
-/// `Method not found: FSharp.Compiler.Symbols.FSharpType.get_BasicQualifiedName()`.
-///
-/// `MissingMethodException` derives from `MissingMemberException`, and a type whose
-/// shape moved surfaces as `TypeLoadException`; both mean the same thing here.
-let internal isFcsBinaryMismatch (ex: exn) : bool =
-    match ex with
-    | :? MissingMemberException
-    | :? TypeLoadException -> true
-    | _ -> false
-
 /// The typed implementation contents an analyzer walks, boxed as the SDK's
 /// `CliContext.TypedTree` (an `FSharpImplementationFileContents option`).
 ///
@@ -399,34 +380,20 @@ let internal isFcsBinaryMismatch (ex: exn) : bool =
 /// `keepAssemblyContents`, so the access is guarded: such a host still analyzes,
 /// with typed-tree rules quiet and every other rule running, rather than losing the
 /// whole analyzer stage to an exception it cannot act on.
-/// Whether an analyzer set has proved it cannot take a typed tree (see
-/// `isFcsBinaryMismatch`). Once withheld, it stays withheld: the incompatibility is a
-/// property of the LOADED ASSEMBLIES, not of the file being analyzed, so re-testing it
-/// per file would re-break every file.
 ///
-/// One per handler, not one per process: sessions sharing a repository host each load
-/// their own analyzer set, and one set's incompatibility says nothing about another's.
-type internal TypedTreeLatch() =
-    let mutable withheld = 0
-
-    member _.IsWithheld = Volatile.Read(&withheld) = 1
-
-    /// Latch the withholding. Returns true the FIRST time, so the caller logs once
-    /// rather than once per file.
-    member _.Withhold() : bool =
-        Threading.Interlocked.Exchange(&withheld, 1) = 0
-
-let internal typedTreeOf (latch: TypedTreeLatch) (checkResults: FileCheckState) : obj =
-    if latch.IsWithheld then
-        noTypedTree
-    else
-        match checkResults with
-        | ParseOnly -> noTypedTree
-        | FullCheck results ->
-            try
-                box results.ImplementationFile
-            with :? InvalidOperationException ->
-                noTypedTree
+/// The tree is offered to every analyzer on every file. An analyzer compiled against a
+/// different FCS raises once it walks it (`MissingMethodException`, `TypeLoadException`);
+/// that raise is its result for the file, and `crashFinding` reports it as an Error. It
+/// is never answered by withholding the tree: an analyzer handed `None` returns no
+/// findings, and the gate would go green with its typed rules off.
+let internal typedTreeOf (checkResults: FileCheckState) : obj =
+    match checkResults with
+    | ParseOnly -> noTypedTree
+    | FullCheck results ->
+        try
+            box results.ImplementationFile
+        with :? InvalidOperationException ->
+            noTypedTree
 
 /// The generation of the model the host currently publishes, when it is available.
 /// `None` while no model is observable (never discovered, mid-rediscovery, or
@@ -471,7 +438,6 @@ let internal createWithSeams
     // FileChecked delivery is serialized already; this fence matters after a
     // timeout, when a token-ignoring callback can outlive its event handler.
     let executionFence = new SemaphoreSlim(1, 1)
-    let typedTreeLatch = TypedTreeLatch()
     let cts = new CancellationTokenSource()
 
 
@@ -657,7 +623,7 @@ let internal createWithSeams
                                 debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                                 null
 
-                        let typedTreeObj = typedTreeOf typedTreeLatch result.CheckResults
+                        let typedTreeObj = typedTreeOf result.CheckResults
 
                         // Run analysis inline (awaited) so the framework's per-event
                         // cache-write window sees the final terminal status. Semaphore
@@ -700,47 +666,19 @@ let internal createWithSeams
                                                         let analyzedFile =
                                                             FsHotWatch.PathFrame.nameIn result.Frame fileStr
 
-                                                        let runWith (typedTree: obj) =
-                                                            let context =
-                                                                createCliContext
-                                                                    (box analyzedFile)
-                                                                    (box sourceText)
-                                                                    (box result.ParseResults)
-                                                                    checkResultsObj
-                                                                    typedTree
-                                                                    (box result.ProjectOptions)
+                                                        let context =
+                                                            createCliContext
+                                                                (box analyzedFile)
+                                                                (box sourceText)
+                                                                (box result.ParseResults)
+                                                                checkResultsObj
+                                                                typedTreeObj
+                                                                (box result.ProjectOptions)
 
-                                                            Async.RunSynchronously(
-                                                                runAnalyzersOver activeClient context,
-                                                                cancellationToken = workCt
-                                                            )
-
-                                                        let results = runWith typedTreeObj
-
-                                                        // An analyzer compiled against a different FCS raises
-                                                        // only once it WALKS the typed tree. Withhold the tree
-                                                        // and re-run rather than report an assembly mismatch as
-                                                        // a finding about the file: the second run is what the
-                                                        // host did before it offered a typed tree at all, so
-                                                        // these analyzers keep the behaviour they already had
-                                                        // while the rest keep the typed tree. No re-check is
-                                                        // involved — the expensive half is already done.
-                                                        let mismatched =
-                                                            results
-                                                            |> List.exists (fun r ->
-                                                                match r.Output with
-                                                                | Result.Error ex -> isFcsBinaryMismatch ex
-                                                                | Result.Ok _ -> false)
-
-                                                        if not mismatched then
-                                                            results
-                                                        else
-                                                            if typedTreeLatch.Withhold() then
-                                                                warn
-                                                                    "analyzers"
-                                                                    "An analyzer could not walk the typed tree (compiled against a different FSharp.Compiler.Service). Withholding CliContext.TypedTree for the rest of this session; typed-tree rules will report nothing. Rebuild the analyzer package against this FCS to enable them."
-
-                                                            runWith noTypedTree
+                                                        Async.RunSynchronously(
+                                                            runAnalyzersOver activeClient context,
+                                                            cancellationToken = workCt
+                                                        )
 
                                                     let outcome, actualCompletion =
                                                         runWithCancellableTimeoutTracked analyzerTimeout runAnalyzers
