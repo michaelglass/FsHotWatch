@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a test host killed at its timeout is no longer reported as having "ran to completion".
+  A host that printed a full runner summary ("Passed!", total, failed 0) before its timeout
+  killed it took the completed-run branch, so the message said the run ran to completion and
+  that the CTRF report named the failing tests. Both failure messages now take how the run
+  ended: a timed-out run says "run timed out after Ns and its host was killed", quotes what it
+  printed before the kill, and never takes the completed-run branch. A completed run says the
+  CTRF report names the tests only when the report has failed rows. The daemon log line for a
+  timed-out project reads `TIMED OUT (infrastructure) after Ns`, not `FAILED`.
+
 ## 0.13.0-alpha.63 - 2026-10-01
 
 - fix: a later narrower run replaces a whole-suite receipt that REFUSED a green. A full suite
