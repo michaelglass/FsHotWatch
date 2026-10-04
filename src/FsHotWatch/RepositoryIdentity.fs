@@ -366,22 +366,25 @@ type ResolvedWorktree =
       Repository: RepositoryId
       Worktree: WorktreeId }
 
-/// Read a one-line pointer file (the first line, trimmed). Unreadable or empty is an
-/// error: an unreadable pointer is not evidence of anything.
-let private readPointer (file: string) : Result<string, IdentityError> =
+/// The first non-empty line of a pointer file, with only its line ending removed.
+/// Unreadable or blank is an error: an unreadable pointer is not evidence of anything.
+let private readFirstLine (file: string) : Result<string, IdentityError> =
     try
         let firstLine =
             File.ReadAllText(file).Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
             |> Array.tryHead
-            |> Option.map (fun l -> l.Trim())
             |> Option.defaultValue ""
 
-        if String.IsNullOrEmpty firstLine then
+        if String.IsNullOrWhiteSpace firstLine then
             Error(IdentityError.MalformedMetadata(file, "empty"))
         else
             Ok firstLine
     with ex ->
         Error(IdentityError.MalformedMetadata(file, $"unreadable: %s{ex.GetType().Name}: %s{ex.Message}"))
+
+/// Read a one-line pointer file (the first line, trimmed).
+let private readPointer (file: string) : Result<string, IdentityError> =
+    readFirstLine file |> Result.map _.Trim()
 
 /// Follow a pointer the way the tool that wrote it reads it back: relative targets are
 /// taken against `baseDir`. The target must be an existing directory.
@@ -426,12 +429,37 @@ let private colocatedJjRepo (gitCommon: CanonicalPath) : CanonicalPath option =
     else
         None
 
+/// The git directory named by the `.git` entry of the canonical directory `root`: the
+/// entry itself when it is a directory (a main checkout), the target of its `gitdir:`
+/// pointer when it is a file (a linked worktree). `None` when `root` has no `.git`.
+///
+/// A pointer is read the way git reads it back: only the line ending is stripped, so a
+/// space at the end of the path is part of the path.
+let private gitDirOf (root: CanonicalPath) : Result<CheckoutKind * CanonicalPath, IdentityError> option =
+    let dotGit = Path.Combine(root.Value, ".git")
+
+    if Directory.Exists dotGit then
+        Some(
+            canonicalize dotGit
+            |> Result.map (fun gitDir -> CheckoutKind.GitMainCheckout, gitDir)
+        )
+    elif File.Exists dotGit then
+        readFirstLine dotGit
+        |> Result.bind (fun line ->
+            if line.StartsWith("gitdir:", StringComparison.Ordinal) then
+                followPointer dotGit root.Value (line.Substring("gitdir:".Length).TrimStart())
+            else
+                Error(IdentityError.MalformedMetadata(dotGit, "a `.git` file must start with `gitdir:`")))
+        |> Result.map (fun gitDir -> CheckoutKind.GitWorktree, gitDir)
+        |> Some
+    else
+        None
+
 /// The kind of the checkout rooted at the canonical directory `root`, and its common
 /// store.
 let private checkoutOf (root: CanonicalPath) : Result<CheckoutKind * CommonStore, IdentityError> =
     let jjDir = Path.Combine(root.Value, ".jj")
     let jjRepo = Path.Combine(jjDir, "repo")
-    let dotGit = Path.Combine(root.Value, ".git")
 
     let jj path =
         { Provider = VcsProvider.Jujutsu
@@ -456,22 +484,30 @@ let private checkoutOf (root: CanonicalPath) : Result<CheckoutKind * CommonStore
         |> Result.map (fun path -> CheckoutKind.JjSecondaryWorkspace, jj path)
     elif Directory.Exists jjDir then
         Error(IdentityError.MalformedMetadata(jjDir, "has no `repo` entry"))
-    elif Directory.Exists dotGit then
-        canonicalize dotGit |> Result.bind (git CheckoutKind.GitMainCheckout)
-    elif File.Exists dotGit then
-        readPointer dotGit
-        |> Result.bind (fun line ->
-            if line.StartsWith("gitdir:", StringComparison.Ordinal) then
-                followPointer dotGit root.Value (line.Substring("gitdir:".Length).Trim())
-            else
-                Error(IdentityError.MalformedMetadata(dotGit, "a `.git` file must start with `gitdir:`")))
-        |> Result.bind (git CheckoutKind.GitWorktree)
     else
-        Ok(
-            CheckoutKind.PlainDirectory,
-            { Provider = VcsProvider.Standalone
-              Path = root }
-        )
+        match gitDirOf root with
+        | Some found -> found |> Result.bind (fun (kind, gitDir) -> git kind gitDir)
+        | None ->
+            Ok(
+                CheckoutKind.PlainDirectory,
+                { Provider = VcsProvider.Standalone
+                  Path = root }
+            )
+
+/// Whether `dir` is the root of a checkout: it holds a `.jj` directory, or a `.git` that
+/// names a git directory carrying `HEAD`. The `.git` entry is read by the same code as
+/// `resolveWorktree`, so a caller that walks up to a root and then resolves it cannot be
+/// told two different things about one `.git` file. An arbitrary `.git` directory, a
+/// `.git` file that is not a pointer, and a dangling pointer are not checkouts.
+let isCheckoutRoot (dir: string) : bool =
+    Directory.Exists(Path.Combine(dir, ".jj"))
+    || (match canonicalize dir with
+        | Error _ -> false
+        | Ok root ->
+            match gitDirOf root with
+            | Some(Ok(_, gitDir)) -> File.Exists(Path.Combine(gitDir.Value, "HEAD"))
+            | Some(Error _)
+            | None -> false)
 
 /// Resolve the worktree rooted at `root` (the directory holding `.jj` / `.git`; a
 /// directory with neither is a standalone repository of its own).

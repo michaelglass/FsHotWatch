@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: finding the repository root reads a `.git` file through `RepositoryIdentity`, the same
+  reader that then resolves the root's identity. The CLI had its own reader, which resolved a
+  `gitdir:` pointer lexically and so disagreed with the identity on a pointer ending in a
+  space or running `..` through a symlinked directory.
+
 ## 0.14.0-alpha.85 - 2026-10-01
 
 - fix: a receipt refusal says it is the graded run's own ("as of that run") and what re-grades

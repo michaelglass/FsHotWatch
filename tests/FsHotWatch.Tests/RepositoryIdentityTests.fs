@@ -482,6 +482,18 @@ let ``a gitdir pointer at a missing directory is a dangling pointer`` () =
             @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a gitdir pointer keeps a trailing space, as git reads it`` () =
+    // Git strips only the line ending from a `.git` file, so a space at the end of the
+    // path is part of the path.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "rid-spaced-gitdir" (fun dir ->
+            mkdir (Path.Combine(dir, "metadata ")) |> ignore
+            let checkout = mkdir (Path.Combine(dir, "checkout"))
+            File.WriteAllText(Path.Combine(checkout, ".git"), "gitdir: ../metadata \n")
+
+            test <@ (resolved checkout).Kind = CheckoutKind.GitWorktree @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a commondir pointing nowhere is a dangling pointer`` () =
     withTempDir "rid-bad-commondir" (fun dir ->
         let main = gitMain "o" (mkdir (Path.Combine(dir, "main")))

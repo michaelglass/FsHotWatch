@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `RepositoryIdentity.isCheckoutRoot` says whether a directory is a checkout root,
+  reading `.git` with the same code as `resolveWorktree`.
+- fix: `resolveWorktree` keeps a trailing space in a `.git` file's `gitdir:` path, as git does.
+  It trimmed the line, so such a worktree resolved as a dangling pointer.
 - docs: the check cache's fingerprint comment no longer claims FCS types a file against
   its references' in-memory sources. It types against a reference's on-disk DLL whenever
   that DLL is at least as new as the sources (`ComputeAssemblyData`), which is why each
