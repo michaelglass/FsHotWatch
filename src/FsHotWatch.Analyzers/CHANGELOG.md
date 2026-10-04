@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: an analyzer that cannot walk the typed tree is a crash, not a silent pass. On a
+  `MissingMethodException` or `TypeLoadException` (an analyzer package compiled against a
+  different FSharp.Compiler.Service) the host withheld `CliContext.TypedTree` for the rest of
+  the session and re-ran the file. The analyzer then returned no findings, and the verdict went
+  green with its typed rules off. The typed tree is now offered on every file; such an analyzer
+  raises on each one, and each raise is the `analyzer <name> crashed: …` Error finding, named once
+  in the summary with its file count. Rebuild the analyzer package against this FCS to clear it.
+
 ## 0.7.0-alpha.42 - 2026-09-29
 
 - Share JSON accessors, deadline parsing and run helpers; one scope-label key
