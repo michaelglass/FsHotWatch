@@ -3711,6 +3711,32 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 /// elsewhere" are different facts, and an empty string states neither.
 type FailureCause = private FailureCause of string
 
+/// How a red run ENDED, as far as its failure message is concerned. A host killed at
+/// its timeout may already have printed a complete runner summary ("Passed!", total,
+/// failed 0) — the summary is then a transcript of tests that finished before the kill,
+/// not proof the run did. Every message builder takes this, so none can infer
+/// "completed" from the text alone.
+[<RequireQualifiedAccess>]
+type RedRunEnding =
+    /// The host exited on its own, red.
+    | Exited
+    /// The host was killed at its timeout.
+    | TimedOut of after: System.TimeSpan
+
+module RedRunEnding =
+    /// The ending of a red `TestResult`: `TimedOut` for a timeout, `Exited` otherwise.
+    let ofResult (result: TestResult) : RedRunEnding =
+        match result with
+        | TestsTimedOut(_, after, _, _) -> RedRunEnding.TimedOut after
+        | _ -> RedRunEnding.Exited
+
+    /// What happened, as the subject of a sentence: "run failed" or "run timed out
+    /// after Ns and its host was killed".
+    let describe (ending: RedRunEnding) : string =
+        match ending with
+        | RedRunEnding.Exited -> "run failed"
+        | RedRunEnding.TimedOut after -> $"run timed out after %d{int after.TotalSeconds}s and its host was killed"
+
 /// The runner's console output as words. A terminal-aware runner (MTP colours `failed`
 /// red and a duration grey) prints a failing line whose BYTES start with an escape
 /// sequence, not with `failed`; every matcher below reads the line with the colour
@@ -3797,10 +3823,13 @@ module FailureCause =
 
     /// The message when the run produced NOTHING to quote. Says so explicitly, and
     /// points at the log (or at the reason there is none).
-    let unknownPointing (project: string) (runLog: RunLog.Ref) : FailureCause =
+    let private unknownEnded (ending: RedRunEnding) (project: string) (runLog: RunLog.Ref) : FailureCause =
         FailureCause
-            $"%s{project}: run failed, no per-test 'failed' line was parsed, and no cause captured — the runner \
-              produced no output to quote; %s{pointer runLog}"
+            $"%s{project}: %s{RedRunEnding.describe ending}, no per-test 'failed' line was parsed, and no cause \
+              captured — the runner produced no output to quote; %s{pointer runLog}"
+
+    let unknownPointing (project: string) (runLog: RunLog.Ref) : FailureCause =
+        unknownEnded RedRunEnding.Exited project runLog
 
     /// Where the full output is, for a message that has just quoted part of it.
     let private fullOutput (runLog: RunLog.Ref) : string =
@@ -3810,25 +3839,30 @@ module FailureCause =
             $"full output was NOT saved (%s{reason}); the lines above are all that was kept"
 
     /// The message for a run whose output named no failing test, and whose CTRF report
-    /// named none either. A run that printed its summary ran to completion, so the
-    /// summary is quoted: the head of such a run is the daemon's banner and says nothing
-    /// about the red. A run with no summary was killed, wedged or refused, and the head
-    /// is where it stated its cause. Routes a blank output to `unknownPointing`, so this
+    /// named none either. A run that EXITED after printing its summary ran to
+    /// completion, so the summary is quoted: the head of such a run is the daemon's
+    /// banner and says nothing about the red. A run that timed out did not complete
+    /// whatever it printed — its summary is quoted as what it printed before the kill.
+    /// A run with no summary was killed, wedged or refused, and the head is where it
+    /// stated its cause. Routes a blank output to `unknownPointing`'s sentence, so this
     /// is the only door from captured text and cannot yield an empty message.
-    let ofOutput (project: string) (runLog: RunLog.Ref) (output: string) : FailureCause =
+    let ofOutput (ending: RedRunEnding) (project: string) (runLog: RunLog.Ref) (output: string) : FailureCause =
         let quote (excerpt: string list) =
             excerpt |> List.map (fun l -> "  | " + l) |> String.concat "\n"
 
-        match ConsoleText.summaryOf output with
-        | _ :: _ as summary ->
+        match ConsoleText.summaryOf output, ending with
+        | (_ :: _ as summary), RedRunEnding.Exited ->
             FailureCause
                 $"%s{project}: run failed and ran to completion, but neither the runner's console nor its CTRF report named a failing test. The runner's summary:\n%s{quote summary}\n%s{fullOutput runLog}"
-        | [] ->
+        | (_ :: _ as summary), RedRunEnding.TimedOut _ ->
+            FailureCause
+                $"%s{project}: %s{RedRunEnding.describe ending}. It printed a runner summary before the kill, which does not make the run complete; the red is the timeout. The summary it printed:\n%s{quote summary}\n%s{fullOutput runLog}"
+        | [], _ ->
             match headOf output with
-            | [] -> unknownPointing project runLog
+            | [] -> unknownEnded ending project runLog
             | head ->
                 FailureCause
-                    $"%s{project}: run failed but no per-test 'failed' line was parsed. The run's output begins (first %d{head.Length} non-blank lines; the head is where a killed, wedged or refused run states its cause):\n%s{quote head}\n%s{fullOutput runLog}"
+                    $"%s{project}: %s{RedRunEnding.describe ending} but no per-test 'failed' line was parsed. The run's output begins (first %d{head.Length} non-blank lines; the head is where a killed, wedged or refused run states its cause):\n%s{quote head}\n%s{fullOutput runLog}"
 
     /// The sentence. Total; never empty by construction.
     let render (FailureCause s) : string = s
@@ -3866,7 +3900,17 @@ module FailureCause =
 /// (the shard-pool guard) says everything on line 1; a run killed mid-way says how far it
 /// got on the last line. The head is `FailureCause.headOf`, the same excerpt the ledger
 /// entry (and so `reddenedBy`) carries, so the daemon log and the verdict agree.
-let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (output: string) : string list =
+///
+/// `ending` says how the run ended: a host killed at its timeout is never called
+/// complete, whatever summary it printed first. `ctrfFailedRows` are the failed rows of
+/// the run's CTRF report; the report is said to name the tests only when it does.
+let internal formatFailureReport
+    (ending: RedRunEnding)
+    (ctrfFailedRows: string list)
+    (projectName: string)
+    (runLog: RunLog.Ref)
+    (output: string)
+    : string list =
     let lines = ConsoleText.lines output
 
     let isFailedLine (l: string) = l.TrimStart().StartsWith("failed ")
@@ -3886,19 +3930,33 @@ let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (out
             || t.StartsWith("succeeded:"))
         |> Array.toList
 
-    [ $"%s{projectName}: %d{failedTests.Length} test(s) failed:"
+    let ctrf =
+        match ctrfFailedRows with
+        | [] -> "no CTRF report row names a failing test either"
+        | rows -> $"the CTRF report beside the output log names the %d{rows.Length} failing test(s)"
+
+    [ match ending with
+      | RedRunEnding.Exited -> $"%s{projectName}: %d{failedTests.Length} test(s) failed:"
+      | RedRunEnding.TimedOut _ ->
+          $"%s{projectName}: %s{RedRunEnding.describe ending}; %d{failedTests.Length} test(s) printed 'failed' before the kill:"
       yield! failedTests |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       yield! summaryLines |> List.map (fun l -> $"  %s{l.TrimEnd()}")
-      if List.isEmpty failedTests && not (List.isEmpty (ConsoleText.summaryOf output)) then
-          // The summary above is the runner's own: the run ran to completion, so its
-          // head is a banner and its tail is the summary already printed.
+      if
+          List.isEmpty failedTests
+          && ending = RedRunEnding.Exited
+          && not (List.isEmpty (ConsoleText.summaryOf output))
+      then
+          // The summary above is the runner's own: the run EXITED after it, so its
+          // head is a banner and its tail is the summary already printed. A timed-out
+          // run never takes this arm: a summary printed before the kill is not a
+          // completed run, and its head is where it may have said why it hung.
           match runLog with
           | RunLog.Ref.Written path ->
               $"%s{projectName}: run failed and ran to completion, but no per-test 'failed' line was parsed from \
-                its console; the CTRF report beside the output log names the tests. Full output: %s{path}"
+                its console; %s{ctrf}. Full output: %s{path}"
           | RunLog.Ref.Unavailable reason ->
               $"%s{projectName}: run failed and ran to completion, but no per-test 'failed' line was parsed from \
-                its console, and NO output log was saved (%s{reason})"
+                its console; %s{ctrf}; and NO output log was saved (%s{reason})"
       elif List.isEmpty failedTests then
           let nonBlank =
               lines |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
@@ -4776,7 +4834,9 @@ let internal failuresOf
                 // reap daemons over a shard-pool refusal stated on line 1.
                 [ projectLevel (
                       ErrorLedger.ErrorEntry.errorWithDetail
-                          (FailureCause.render (FailureCause.ofOutput project (runLogOf project) output))
+                          (FailureCause.render (
+                              FailureCause.ofOutput (RedRunEnding.ofResult result) project (runLogOf project) output
+                          ))
                           output
                   ) ]
             else
@@ -5623,10 +5683,15 @@ let private executeTests
                                 Logging.error
                                     "test-prune"
                                     $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
-                            | TestsFailed _
-                            | TestsTimedOut _ ->
+                            | TestsFailed _ ->
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
+                            | TestsTimedOut(_, after, _, _) ->
+                                logToCtx $"{config.Project}: timed out (infrastructure)"
+
+                                Logging.error
+                                    "test-prune"
+                                    $"%s{config.Project}: TIMED OUT (infrastructure) after %d{int after.TotalSeconds}s"
 
                             // Report the outcome in full. The two reports are DIFFERENT
                             // documents on purpose: a failure report
@@ -5637,7 +5702,16 @@ let private executeTests
                             match result with
                             | TestsFailed _
                             | TestsTimedOut _ ->
-                                for line in formatFailureReport config.Project runLog.Ref output do
+                                let ctrfFailedRows =
+                                    reportJson |> Option.map failedRowsOfReport |> Option.defaultValue []
+
+                                for line in
+                                    formatFailureReport
+                                        (RedRunEnding.ofResult result)
+                                        ctrfFailedRows
+                                        config.Project
+                                        runLog.Ref
+                                        output do
                                     Logging.error "test-prune" line
                             | TestsErrored reason ->
                                 for line in formatAbortReport config.Project runLog.Ref reason output do
