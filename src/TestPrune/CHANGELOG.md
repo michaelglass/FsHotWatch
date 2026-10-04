@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.3.2 - 2026-10-04
+
+- deps: build tooling
+
+
 ## 13.3.1 - 2026-09-29
 
 - Name generic types by one canonical form in the index

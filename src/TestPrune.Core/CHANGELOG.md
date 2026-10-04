@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.3.2 - 2026-10-04
+
 - deps: build tooling fssemantictagger 0.14.0-alpha.22, fsprojlint 0.10.0-alpha.21,
   syncdocs 0.13.0-alpha.8 and RefStamp 0.1.0-alpha.4.
 
