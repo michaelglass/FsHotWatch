@@ -1608,7 +1608,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
             |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
         test <@ report.RunId = Some fullRunId @>
-        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
 
         match lastStatus statuses with
         | PluginStatus.Completed(_, verdict) -> test <@ verdict.Summary.Contains("2 projects") @>
@@ -3263,7 +3263,7 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
             if filtered then
                 FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2)
             else
-                FsHotWatch.Cli.IpcParsing.FullSuite 2
+                FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested)
 
         test <@ report.Scope = expectedScope @>)
 
@@ -3343,7 +3343,14 @@ let ``a suspect re-check of an unchanged file leaves the earned receipt and laun
 
         let settled = step launched (Custom completion)
         test <@ (receiptScope root handler settled).RunId = Some earnedRunId @>
-        test <@ (receiptScope root handler settled).Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>)
+
+        test
+            <@
+                (receiptScope root handler settled).Scope = FsHotWatch.Cli.IpcParsing.FullSuite(
+                    2,
+                    Some FullSuiteCause.Requested
+                )
+            @>)
 
 [<Theory(Timeout = 20000)>]
 [<InlineData(false)>]
@@ -4550,7 +4557,7 @@ let ``a narrower run after a full suite on one tree and model keeps the full sui
         let report = receiptScopeUnder repoRoot handler final 7L
 
         test <@ report.RunId = Some(runIdOfFinished fullRun) @>
-        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
         test <@ receiptGate report final 7L = None @>)
 
 [<Fact(Timeout = 20000)>]
@@ -4664,7 +4671,7 @@ let ``a receipt earned under a replaced model grades nothing, so confirm escalat
         // Positive control: under the model it was earned under, the receipt grades.
         let underSix = receiptScopeUnder repoRoot handler state 6L
         test <@ underSix.RunId = Some(runIdOfFinished fullRun) @>
-        test <@ underSix.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+        test <@ underSix.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
 
         let underSeven = receiptScopeUnder repoRoot handler state 7L
         test <@ underSeven.RunId = None @>
@@ -4688,7 +4695,8 @@ let ``the completion line names both generations, the graded run and the evidenc
           RunId = receiptRun
           Coverage = RunCoverage.none
           Seeds = []
-          ZeroSelection = ZeroSelection.NotAZero }
+          ZeroSelection = ZeroSelection.NotAZero
+          FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
 
     let completion =
         { RunId = receiptRun
@@ -4813,7 +4821,8 @@ let ``a receipt speaks for a later model only while every project it covered is 
           RunId = Guid.NewGuid()
           Coverage = Map.ofList [ "ProjA", CoveredWholeProject ]
           Seeds = []
-          ZeroSelection = ZeroSelection.NotAZero }
+          ZeroSelection = ZeroSelection.NotAZero
+          FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
 
     test <@ receiptSpeaksFor (Some 1L) None receipt @>
     // ProjB is not covered, so its move does not matter; ProjA's does.
