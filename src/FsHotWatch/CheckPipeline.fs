@@ -205,6 +205,7 @@ type CheckPipeline
     let checkSlots = new SemaphoreSlim(maxConcurrentChecks, maxConcurrentChecks)
     let mutable checksInSlots = 0
     let mutable checksInSlotsPeak = 0
+    let mutable checkStarts = 0L
 
     let enterSlot () =
         let now = Interlocked.Increment &checksInSlots
@@ -361,6 +362,10 @@ type CheckPipeline
 
     /// The most checks this pipeline has had building a snapshot or in FCS at once.
     member internal _.CheckConcurrencyPeak: int = Volatile.Read &checksInSlotsPeak
+
+    /// How many checks this pipeline has started in FCS, cumulative: one per
+    /// `check start` line, whether the check then completed or was cancelled.
+    member internal _.CheckStarts: int64 = Volatile.Read &checkStarts
 
     /// How many checks may run at once (see `maxConcurrentChecks`).
     member internal _.CheckConcurrencyBound: int = maxConcurrentChecks
@@ -596,6 +601,7 @@ type CheckPipeline
 
             try
                 activity.Log(checkStartLine fileName projectName startOrigin)
+                Interlocked.Increment &checkStarts |> ignore
                 inFlight[checkedFile] <- (project, startOrigin)
                 started.Value <- Some(project, startOrigin)
 

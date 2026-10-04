@@ -15,6 +15,12 @@
   not last-write time. A rewrite of the same bytes (a checkout, a restore, a formatter) no
   longer re-evaluates MSBuild. `fingerprintFsprojFiles` now pairs each path with a hex SHA-256.
   `observeProjectContent` returns the projects it observed.
+- feat!: `scan-metrics.jsonl` records gain `checkStarts`: the FCS checks started while the scan
+  ran, across its attempts and any change batch it overlapped. A file count hides a check
+  that was cancelled and started again; against `filesChecked` this shows it. Breaking:
+  `ScanMetrics.ScanSample` has a new field `CheckStarts`. A record written before it parses
+  with 0.
+
 - fix: a repository-host connection that sends no preamble within the bound is logged ("a
   connection sent no preamble within …; it is closed unanswered") instead of dropped silently.
   The read's cancellation cancelled the whole opener, which no handler saw, so an attach whose
