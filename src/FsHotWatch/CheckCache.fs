@@ -21,7 +21,8 @@ let hashCacheKey (key: CacheKey) : string =
 ///
 /// The key names sources and options, and cannot name a referenced project's output:
 /// whether FCS types against that output or the project's sources depends on the
-/// output's frame, decided only when the snapshot is built. So the entry records the
+/// output's frame, decided only when the snapshot is built (FCS `ComputeAssemblyData`,
+/// `TransparentCompiler.fs:1884-1925` @ dotnet/dotnet `e34a38d2`). So the entry records the
 /// bytes of every real-path project output its check referenced, and is served only
 /// while each still holds them.
 [<NoComparison>]
@@ -203,9 +204,14 @@ let internal isUnderRoot (repoRoot: string option) (path: string) =
 ///   path in the options hash already identifies them, and hashing hundreds of them
 ///   per lookup would spend the CPU the cache exists to save.
 ///
-/// SOURCE content, not referenced projects' outputs: the checker (TransparentCompiler)
-/// type-checks a file against its references' in-memory sources, so those are what
-/// its diagnostics depend on.
+/// Referenced F# projects contribute their SOURCE content here, but that alone does not
+/// decide a result: the checker (TransparentCompiler) types against a reference's
+/// on-disk output DLL whenever that DLL is at least as new as the reference's sources,
+/// and against its in-memory sources only otherwise (FCS 43.12.401,
+/// `TransparentCompiler.fs:1884-1925` `ComputeAssemblyData`, dotnet/dotnet `e34a38d2`).
+/// The DLL's bytes are therefore guarded per entry — `CachedCheck.ProjectOutputs`,
+/// re-hashed on every hit — rather than here, because which of the two FCS reads is
+/// decided only when the snapshot is built (ADR-037).
 ///
 /// The closure is hashed once, then a running hash walks the compile order, so a
 /// whole project costs one pass. Returns each source file's fingerprint and the

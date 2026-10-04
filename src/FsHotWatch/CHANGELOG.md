@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- docs: the check cache's fingerprint comment no longer claims FCS types a file against
+  its references' in-memory sources. It types against a reference's on-disk DLL whenever
+  that DLL is at least as new as the sources (`ComputeAssemblyData`), which is why each
+  entry guards the DLL's bytes (ADR-037).
 - fix: a repository-host connection that sends no preamble within the bound is logged ("a
   connection sent no preamble within …; it is closed unanswered") instead of dropped silently.
   The read's cancellation cancelled the whole opener, which no handler saw, so an attach whose
