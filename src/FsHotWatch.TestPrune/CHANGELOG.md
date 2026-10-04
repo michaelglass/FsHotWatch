@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: the `test-scope` reply lists the changed files whose changes selected no tests, as
+  `notSelected: [{file, reason}]` on every branch (`NotSelectedReason`, `NotSelectedFile`). A
+  file enters when FCS reports errors for it (`FileFreshness.FileUnverified`) and leaves when a
+  later check of it is diffed.
+
 - feat!: the `test-scope` reply names why a `full` scope covered every project, as `cause`
   (`FullSuiteCause`, wire tokens in `FullSuiteCause.token`). The launch decides it
   (`fullSuiteCauseOf`) and the evidence receipt carries it. **BREAKING** (F# API):

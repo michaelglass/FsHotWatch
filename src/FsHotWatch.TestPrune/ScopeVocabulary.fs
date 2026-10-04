@@ -70,3 +70,36 @@ module FullSuiteCause =
         | FullSuiteCause.CoarseFallback -> "the impact graph had a hole (an unanalysable or unindexed file)"
         | FullSuiteCause.EvidenceGap -> "no project had a whole-project run under the current project model"
         | FullSuiteCause.SelectionReachedEveryProject -> "the change selected every project"
+
+/// Why a changed file's changes selected no tests.
+[<RequireQualifiedAccess>]
+type NotSelectedReason =
+    /// FCS reported errors for the file on its last check, so its extracted symbols may be
+    /// partial and its changes were not diffed. The next FCS-clean check of the file
+    /// selects from it again.
+    | FcsErrors
+
+module NotSelectedReason =
+    /// Every reason.
+    let all: NotSelectedReason list = [ NotSelectedReason.FcsErrors ]
+
+    /// The wire token.
+    let token (reason: NotSelectedReason) : string =
+        match reason with
+        | NotSelectedReason.FcsErrors -> "fcs-errors"
+
+    /// The reason a wire token names; `None` for a token this build does not know.
+    let tryOfToken (wire: string) : NotSelectedReason option =
+        all |> List.tryFind (fun reason -> token reason = wire)
+
+/// A changed file whose changes selected no tests, and why. Repository-relative path.
+type NotSelectedFile =
+    { File: string
+      Reason: NotSelectedReason }
+
+module NotSelectedFile =
+    /// The entry on the wire, as both the `test-scope` reply and the verdict file write it.
+    let wire (entry: NotSelectedFile) : obj =
+        {| file = entry.File
+           reason = NotSelectedReason.token entry.Reason |}
+        :> obj
