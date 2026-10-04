@@ -154,6 +154,8 @@ let ``a host that has observed no discovery launches at once`` () =
         |> fun run -> Async.RunSynchronously(run, 15000)
 
         test <@ File.Exists(Path.Combine(repoRoot, "started")) @>
+        // Wall-clock bound, cannot flake on a slow box: the gate is pre-released, so the run is
+        // milliseconds; this only fails a launch that waited for a discovery that never comes.
         test <@ clock.Elapsed < TimeSpan.FromSeconds 10.0 @>)
 
 /// A project whose test command writes a numbered cobertura to the coverage output path

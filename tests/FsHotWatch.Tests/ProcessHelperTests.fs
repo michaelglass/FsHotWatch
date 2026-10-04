@@ -955,6 +955,8 @@ let ``callKillWithin: a BLOCKING kill is cut off at the budget`` () =
             $"gave up after %A{elapsed}, materially before the %A{shortBudget} budget"
         )
         // ...and then it STOPPED waiting. Without the bound this line is never reached.
+        // Wall-clock bound, cannot flake on a slow box: the kill blocks until `gate` is set in the
+        // `finally`, so without the budget this never returns; 3 s is 12x the 250 ms budget.
         Assert.True(elapsed < TimeSpan.FromSeconds 3.0, $"the budget did not cut the wait off: %A{elapsed}")
     finally
         gate.Set()
@@ -966,6 +968,8 @@ let ``callKillWithin: the budget is not spent on a kill that returns`` () =
     // five-project run into an extra minute of nothing.
     let clock = Diagnostics.Stopwatch.StartNew()
     Assert.Equal(KillCall.Returned, callKillWithin (TimeSpan.FromSeconds 30.0) id)
+    // Wall-clock bound, cannot flake on a slow box: `id` returns at once, and the bound only
+    // fails a call that sat out its 30 s budget, a 10x margin.
     Assert.True(clock.Elapsed < TimeSpan.FromSeconds 3.0, $"a kill that returned still waited %A{clock.Elapsed}")
 
 [<Fact(Timeout = 5000)>]
