@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.2 and TestPrune.Trace 0.7.0. Traced runs record metadata reads
+  (file and directory times, attributes, Unix mode, `FileInfo.Length`) as a `meta` input
+  hashed over content and permissions, and a trace dump holding an input kind this version
+  does not know marks only that test's scope incomplete instead of rejecting the dump.
+
 - fix: a test host killed at its timeout is no longer reported as having "ran to completion".
   A host that printed a full runner summary ("Passed!", total, failed 0) before its timeout
   killed it took the completed-run branch, so the message said the run ran to completion and
