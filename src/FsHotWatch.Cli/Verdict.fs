@@ -31,6 +31,7 @@ open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Json
+open FsHotWatch.TestPrune
 
 /// Identifies the on-disk contract. Consumers depend on this file now; a
 /// breaking change to its shape MUST bump this string.
@@ -1850,10 +1851,12 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
     let gaps = excludedJson excluded
 
     match scope with
-    | FullSuite n ->
+    | FullSuite(n, cause) ->
         {| kind = "full"
            ranProjects = n
            totalProjects = n
+           // `null` where the reading did not say why the run took every project.
+           cause = cause |> Option.map FullSuiteCause.token |> Option.toObj
            excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
@@ -2603,7 +2606,7 @@ let private parseScope (el: JsonElement) : TestScope =
     match tryString el "kind" with
     | Some "unknown" -> ScopeUnknown
     | Some kind ->
-        TestScope.tryOfCounts kind (tryInt el "ranProjects") (tryInt el "totalProjects") noTestsRan
+        TestScope.tryOfCounts kind (tryInt el "ranProjects") (tryInt el "totalProjects") (tryProp el "cause") noTestsRan
         |> Option.defaultWith unrecognized
     | None -> unrecognized ()
 
@@ -3370,8 +3373,8 @@ let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
     let evidence =
         let suite =
             match v.Scope with
-            | FullSuite n when n = 1 -> "full suite, 1 project"
-            | FullSuite n -> $"full suite, %d{n} projects"
+            | FullSuite(1, _) -> "full suite, 1 project"
+            | FullSuite(n, _) -> $"full suite, %d{n} projects"
             // Unreachable: `isFullSuiteGreen` is the only door in. Named, not
             // wildcarded, so a future scope cannot slip through as "full suite".
             | ImpactFiltered _

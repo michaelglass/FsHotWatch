@@ -292,7 +292,7 @@ let ``parseTaggedStatus ignores legacy verdict fields on a completed payload`` (
 
 [<Fact(Timeout = 10000)>]
 let ``TestScope.describe names every scope`` () =
-    test <@ (TestScope.describe (FullSuite 6)).Contains "full suite" @>
+    test <@ (TestScope.describe (FullSuite(6, None))).Contains "full suite" @>
     test <@ (TestScope.describe (ImpactFiltered(2, 6))).Contains "impact-filtered" @>
     test <@ TestScope.describe (NoTestsRun NoTestsReason.Unstated) = "no tests ran (the daemon did not say why)" @>
     test <@ (TestScope.describe ScopeUnknown).Contains "unknown" @>
@@ -440,7 +440,7 @@ let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
     test <@ reachOf (replyWith "unknown") = ReachUnknown "a project-level red" @>
 
     match replyWith "no-failures-to-reach" with
-    | ReachRecorded r -> test <@ r.Scope = FullSuite 6 @>
+    | ReachRecorded r -> test <@ r.Scope = FullSuite(6, None) @>
     | other -> failwithf "expected a recorded projection, got %A" other
 
 [<Fact(Timeout = 10000)>]
@@ -748,3 +748,49 @@ let ``model receipts accept explicit analysis identity and reject malformed run 
     match DaemonEvidence.parse """{"daemonPhases":[],"modelReceipts":[]}""" with
     | DaemonEvidence.Served(_, ReceiptLedger.Offered []) -> ()
     | other -> failwithf "an empty modelReceipts array must parse as Offered [], got %A" other
+
+// --- test-scope: why the suite ran in full ----------------------------------
+
+let private fullReply (extra: string) =
+    $"""{{"kind":"full","ranProjects":2,"totalProjects":2%s{extra}}}"""
+
+[<Fact(Timeout = 10000)>]
+let ``a full-suite cause reaches the verdict scope from the test-scope reply`` () =
+    let report = parseTestRunReport (fullReply ""","cause":"no-full-suite-baseline" """)
+    test <@ TestScope.isFullSuite report.Scope @>
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["kind"].GetValue<string>() = "full" @>
+    test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>
+
+[<Fact(Timeout = 10000)>]
+let ``a full suite whose reply states no cause says nothing about one, rather than inventing one`` () =
+    // An older daemon sends no cause. Its full suite stays a full suite, and the verdict
+    // records `null`: "this reading does not say".
+    for reply in [ fullReply ""; fullReply ""","cause":null""" ] do
+        let report = parseTestRunReport reply
+        test <@ report.Scope = FullSuite(2, None) @>
+        test <@ isNull (VerdictFixtures.scopeOnTheWire report).["cause"] @>
+
+[<Fact(Timeout = 10000)>]
+let ``every full-suite cause survives the test-scope reply and the verdict file under its own token`` () =
+    for cause in FsHotWatch.TestPrune.FullSuiteCause.all do
+        let token = FsHotWatch.TestPrune.FullSuiteCause.token cause
+        let report = parseTestRunReport (fullReply $""","cause":"%s{token}" """)
+        test <@ report.Scope = FullSuite(2, Some cause) @>
+        test <@ (VerdictFixtures.scopeOnTheWire report).["cause"].GetValue<string>() = token @>
+        // The describe line says why, in words rather than the token.
+        let described = TestScope.describe report.Scope
+        test <@ described.Contains(FsHotWatch.TestPrune.FullSuiteCause.describe cause) @>
+
+    let tokens =
+        FsHotWatch.TestPrune.FullSuiteCause.all
+        |> List.map FsHotWatch.TestPrune.FullSuiteCause.token
+
+    test <@ List.distinct tokens = tokens @>
+
+[<Theory(Timeout = 10000)>]
+[<InlineData(""","cause":"a-cause-from-another-version" """)>]
+[<InlineData(""","cause":42""")>]
+let ``a full-suite cause this build cannot read fails closed to an unreadable scope`` (extra: string) =
+    let report = parseTestRunReport (fullReply extra)
+    test <@ TestScope.isUnreadable report.Scope @>

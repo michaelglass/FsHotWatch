@@ -13,6 +13,7 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 open FsHotWatch.Cli.IpcParsing
+open FsHotWatch.TestPrune
 
 let private testSource comment =
     $"module P1Tests\n\n// %s{comment}\nlet ``adds`` () = 1 + 1\n"
@@ -56,7 +57,7 @@ let ``a comment-only edit to a test file after a green run is re-verified`` () =
             landBuild host
 
             match scopeOf host with
-            | FullSuite 1 -> ()
+            | FullSuite(1, _) -> ()
             | other -> Assert.Fail($"positive control: the first build runs P1 in full, got %A{other}")
 
             let runCount () = File.ReadAllLines(runs).Length
@@ -74,7 +75,7 @@ let ``a comment-only edit to a test file after a green run is re-verified`` () =
             landBuild host
 
             match scopeOf host with
-            | FullSuite 1 -> Assert.Equal(runsBefore + 1, runCount ())
+            | FullSuite(1, _) -> Assert.Equal(runsBefore + 1, runCount ())
             | other -> Assert.Fail($"a comment-only edit must be re-verified on the edited tree, got %A{other}")
 
             // The tree is verified now: another build over it runs nothing more.
@@ -82,7 +83,7 @@ let ``a comment-only edit to a test file after a green run is re-verified`` () =
             Assert.Equal(runsBefore + 1, runCount ())
 
             match scopeOf host with
-            | FullSuite 1 -> ()
+            | FullSuite(1, _) -> ()
             | other -> Assert.Fail($"the verified tree keeps its evidence, got %A{other}")
         finally
             host.Teardown())
@@ -110,7 +111,8 @@ let private receipt tree =
       RunId = Guid.NewGuid()
       Coverage = RunCoverage.none
       Seeds = []
-      ZeroSelection = ZeroSelection.NotAZero }
+      ZeroSelection = ZeroSelection.NotAZero
+      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
 
 [<Fact(Timeout = 10000)>]
 let ``every reading with no evidence for the tree names why`` () =

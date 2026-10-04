@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `.fshw/verdict.json` records why a `full` scope covered every project, as
+  `scope.cause`, and the `full suite` line in `check`/`confirm` output says why. `null` where
+  the reading does not say; a cause this build does not know reads back as an unreadable
+  scope. **BREAKING** (F# API): `TestScope.FullSuite` carries `cause: FullSuiteCause option`,
+  and `TestScope.tryOfCounts` takes the scope's `cause` field.
+
 ## 0.14.0-alpha.86 - 2026-10-05
 
 - fix: finding the repository root reads a `.git` file through `RepositoryIdentity`, the same

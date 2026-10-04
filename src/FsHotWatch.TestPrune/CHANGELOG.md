@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat!: the `test-scope` reply names why a `full` scope covered every project, as `cause`
+  (`FullSuiteCause`, wire tokens in `FullSuiteCause.token`). The launch decides it
+  (`fullSuiteCauseOf`) and the evidence receipt carries it. **BREAKING** (F# API):
+  `TestRunLaunch` and `TestEvidenceReceipt` have a required `FullSuiteCause` field.
+
 ## 0.13.0-alpha.64 - 2026-10-05
 
 - deps: TestPrune.Core 13.3.2 and TestPrune.Trace 0.7.0. Traced runs record metadata reads
