@@ -22,6 +22,7 @@ let private sample generation rss =
       FilesSkipped = 0
       FilesDepsGated = 0
       FilesUncovered = 0
+      CheckStarts = 1552L
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -252,6 +253,7 @@ let ``a record written before the skip fields still parses`` () =
         test <@ parsed.FilesUncovered = 0 @>
         test <@ parsed.DirectSpawns = 0L @>
         test <@ parsed.HelperSpawns = 0L @>
+        test <@ parsed.CheckStarts = 0L @>
 
 [<Fact>]
 let ``skipped and deps-gated counts round-trip`` () =
@@ -271,6 +273,20 @@ let ``skipped and deps-gated counts round-trip`` () =
         test <@ parsed.FilesSkipped = 900 @>
         test <@ parsed.FilesDepsGated = 512 @>
         test <@ parsed.FilesUncovered = 388 @>
+
+[<Fact>]
+let ``check starts are reported beside the files checked`` () =
+    // A file count cannot show a check that was started, cancelled and started again: a
+    // scan whose model was replaced mid-way checks the tree twice and still reports one
+    // pass of files. The starts are the cost.
+    let doubled =
+        { sample 1L 1_000L with
+            FilesChecked = 2243
+            CheckStarts = 4490L }
+
+    let line = toJsonLine doubled
+    test <@ line.Contains "\"checkStarts\":4490" @>
+    test <@ (tryParseLine line |> Option.map (fun s -> s.FilesChecked, s.CheckStarts)) = Some(2243, 4490L) @>
 
 [<Fact>]
 let ``a host-scoped sample says so on its line, and round-trips`` () =

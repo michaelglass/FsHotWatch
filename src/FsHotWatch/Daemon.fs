@@ -3474,6 +3474,9 @@ let private performScan
     // a supersession whose cause was a real `.fsproj` edit changes the hashes too,
     // so the next attempt still re-discovers when — and only when — it must.
     let fingerprintMemo = ref state.LastFingerprint
+    // The pipeline's check-start count when the scan began, set once by `scanBody` so it
+    // spans every attempt: a replaced model's cancelled checks are this scan's cost too.
+    let checkStartsAtScanStart = ref 0L
 
     let scanAttempt =
         async {
@@ -3850,6 +3853,7 @@ let private performScan
                   FilesSkipped = skippedTotal
                   FilesDepsGated = depsGatedTotal
                   FilesUncovered = uncoveredTotal
+                  CheckStarts = pipeline.CheckStarts - checkStartsAtScanStart.Value
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes
@@ -3897,6 +3901,8 @@ let private performScan
 
     let scanBody =
         async {
+            checkStartsAtScanStart.Value <- ctx.Pipeline.CheckStarts
+
             try
                 return! completeCurrent 1
             with :? ModelSupersededException ->

@@ -2034,7 +2034,13 @@ let ``a cold scan replaces no model for an outside-the-roots project whose resto
 
         scanOnceCold workspace
 
-        test <@ workspace.Loader.Loads = 1 @>)
+        test <@ workspace.Loader.Loads = 1 @>
+
+        // Each file started once: no replaced model's checks to cancel and start again.
+        let scans =
+            FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+        test <@ scans |> List.map (fun s -> s.FilesChecked, s.CheckStarts) = [ 2, 2L ] @>)
 
 [<Fact(Timeout = 10000)>]
 let ``after a discovery only assets written before it began are taken as read by it`` () =
