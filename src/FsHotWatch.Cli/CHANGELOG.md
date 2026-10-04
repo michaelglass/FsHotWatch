@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `.fshw/verdict.json` records why a `full` scope covered every project, as
+  `scope.cause`, and the `full suite` line in `check`/`confirm` output says why. `null` where
+  the reading does not say; a cause this build does not know reads back as an unreadable
+  scope. **BREAKING** (F# API): `TestScope.FullSuite` carries `cause: FullSuiteCause option`,
+  and `TestScope.tryOfCounts` takes the scope's `cause` field.
+
 - fix: finding the repository root reads a `.git` file through `RepositoryIdentity`, the same
   reader that then resolves the root's identity. The CLI had its own reader, which resolved a
   `gitdir:` pointer lexically and so disagreed with the identity on a pointer ending in a
