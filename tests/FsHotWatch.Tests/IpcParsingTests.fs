@@ -794,3 +794,38 @@ let ``every full-suite cause survives the test-scope reply and the verdict file 
 let ``a full-suite cause this build cannot read fails closed to an unreadable scope`` (extra: string) =
     let report = parseTestRunReport (fullReply extra)
     test <@ TestScope.isUnreadable report.Scope @>
+
+// --- test-scope: changed files whose changes selected no tests ----------------
+
+[<Fact(Timeout = 10000)>]
+let ``the not-selected files reach the verdict scope from the test-scope reply`` () =
+    let report =
+        parseTestRunReport (fullReply ""","notSelected":[{"file":"src/Lib/Broken.fs","reason":"fcs-errors"}]""")
+
+    test <@ TestScope.isFullSuite report.Scope @>
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["notSelected"].[0].["file"].GetValue<string>() = "src/Lib/Broken.fs" @>
+    test <@ scope.["notSelected"].[0].["reason"].GetValue<string>() = "fcs-errors" @>
+
+[<Fact(Timeout = 10000)>]
+let ``"no file was withheld" and "this reply does not say" are different bytes in the verdict scope`` () =
+    // An older daemon sends no `notSelected`; that is silence, never "none".
+    for reply in [ fullReply ""; fullReply ""","notSelected":null""" ] do
+        let report = parseTestRunReport reply
+        test <@ report.NotSelected = None @>
+        test <@ isNull (VerdictFixtures.scopeOnTheWire report).["notSelected"] @>
+
+    let none =
+        parseTestRunReport (fullReply ""","notSelected":[]""")
+        |> VerdictFixtures.scopeOnTheWire
+
+    test <@ none.["notSelected"].ToJsonString() = "[]" @>
+
+[<Theory(Timeout = 10000)>]
+[<InlineData(""","notSelected":[{"file":"src/A.fs","reason":"a-reason-from-another-version"}]""")>]
+[<InlineData(""","notSelected":[{"reason":"fcs-errors"}]""")>]
+[<InlineData(""","notSelected":["src/A.fs"]""")>]
+[<InlineData(""","notSelected":"src/A.fs" """)>]
+let ``a not-selected entry this build cannot read fails closed to an unreadable scope`` (extra: string) =
+    let report = parseTestRunReport (fullReply extra)
+    test <@ TestScope.isUnreadable report.Scope @>
