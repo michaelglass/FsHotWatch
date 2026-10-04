@@ -1969,6 +1969,12 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Repo-relative paths of changed files whose changes selected NO tests, and why
+        /// (`FileFreshness.FileUnverified`). Unlike `UnanalyzableFiles` these do not widen
+        /// the run: the file has symbols, but its latest ones could not be diffed. A file
+        /// leaves the map when a later check of it is diffed. `test-scope` reports the map
+        /// as `notSelected`. NOT persisted, for the same reason as `UnanalyzableFiles`.
+        NotSelected: Map<string, NotSelectedReason>
         /// The identity (`IndexedAnalysis.identity`) of each analysis in
         /// `PendingAnalysis`, by repo-relative path. The flush that writes them records
         /// them as what the index holds; a retirement drops them with the analyses.
@@ -7389,6 +7395,7 @@ let internal createWithQueries
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
+          NotSelected = Map.empty
           PendingIdentities = Map.empty
           Unindexed = Set.empty
           FailedExtensions = Map.empty
@@ -8378,10 +8385,19 @@ let internal createWithQueries
                             | None, _ -> null, null
                             | Some reason, _ -> null, box reason
 
+                        // The changed files whose changes selected no tests, on EVERY branch:
+                        // they are a fact about the current selection, whichever run the
+                        // scope is read from. Always an array, so an empty one says "none".
+                        let notSelected =
+                            state.NotSelected
+                            |> Map.toArray
+                            |> Array.map (fun (file, reason) -> NotSelectedFile.wire { File = file; Reason = reason })
+
                         if ctx.IsRunning "tests" then
                             return
                                 JsonSerializer.Serialize(
                                     {| kind = "running"
+                                       notSelected = notSelected
                                        runId = runId
                                        runIds = runIds
                                        baseline = baseline
@@ -8407,6 +8423,7 @@ let internal createWithQueries
                                     JsonSerializer.Serialize(
                                         {| kind = "full"
                                            cause = cause
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8420,6 +8437,7 @@ let internal createWithQueries
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "filtered"
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8451,6 +8469,7 @@ let internal createWithQueries
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "none"
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -9307,7 +9326,7 @@ let internal createWithQueries
                             // contributing nothing is the one that HIDES a file's changes,
                             // and it goes out at warn. It replaced a `(names, bool)` pair
                             // whose bool this call site computed and then `ignore`d.
-                            let changedNames =
+                            let changedNames, notSelected =
                                 match FileFreshness.planLook currentClean storedTrust with
                                 | FileFreshness.Diffable baseline ->
                                     // WHAT to diff against is the plan's decision, not
@@ -9336,7 +9355,7 @@ let internal createWithQueries
                                         "test-prune"
                                         $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, baseline=%A{baseline}): %d{changes.Length} changes, %d{priorSymbols.Length} diffed against, %d{normalizedSymbols.Length} current"
 
-                                    changedSymbolNames changes
+                                    changedSymbolNames changes, Map.remove relPath state.NotSelected
                                 | FileFreshness.FileUnverified ->
                                     // The one arm that DROPS a file's changes. At warn,
                                     // and stating the consequence rather than the
@@ -9346,7 +9365,7 @@ let internal createWithQueries
                                         "test-prune"
                                         $"NOT SELECTED: %s{relPath} changed but FCS reported errors for it on this check, so its symbols may be partial and no tests were selected from it (stored=%A{storedFreshness}, rows=%A{storedRows}, storedRowCount=%d{storedSymbols.Length}). The next FCS-clean check of this file widens it back in."
 
-                                    []
+                                    [], Map.add relPath NotSelectedReason.FcsErrors state.NotSelected
 
                             let newChangedSymbols, newDebt =
                                 if not changedNames.IsEmpty then
@@ -9390,6 +9409,7 @@ let internal createWithQueries
                             let newState =
                                 { state with
                                     Debt = newDebt
+                                    NotSelected = notSelected
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     PendingIdentities =

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat!: `.fshw/verdict.json` lists the changed files whose changes selected no tests, as
+  `scope.notSelected` (`TestRunReport.NotSelected`, `Verdict.NotSelected`). `null` where the
+  reading does not say; an entry this build cannot read makes the scope unreadable.
+  **BREAKING** (F# API): `TestRunReport` has a required `NotSelected` field.
+
 - feat!: `.fshw/verdict.json` records why a `full` scope covered every project, as
   `scope.cause`, and the `full suite` line in `check`/`confirm` output says why. `null` where
   the reading does not say; a cause this build does not know reads back as an unreadable

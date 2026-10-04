@@ -74,6 +74,19 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune, cli: a changed file that selected no tests is named in the verdict
+
+- **feat: `scope.notSelected` in `.fshw/verdict.json`, and `notSelected` in the
+  `test-scope` reply.** A changed file FCS reported errors for has its changes left
+  out of the impact selection until a clean check of it, because its symbols may be
+  partial. That used to reach only `daemon.log`, as a `NOT SELECTED` warning. The scope
+  now lists each such file as `{"file": "<repo-relative path>", "reason": "fcs-errors"}`
+  on every scope kind.
+- **Additive.** The schema stays `fshw-verdict-v2`. `notSelected` is `[]` when no file
+  was withheld and `null` where the reading does not say (a verdict written before the
+  field). An entry this build cannot read — an unknown `reason`, no `file` — makes the
+  scope read back as `unreadable`.
+
 ### test-prune, cli: a full-suite scope says why the run took every project
 
 - **feat: `scope.cause` in `.fshw/verdict.json`, and `cause` in the `test-scope`
