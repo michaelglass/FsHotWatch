@@ -1501,17 +1501,20 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
 
     host.RegisterHandler(handler)
 
-    let started = DateTime.UtcNow
-
     let waitTask =
         waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
-    let completed = waitTask.Wait(TimeSpan.FromSeconds(10.0))
-    let elapsed = DateTime.UtcNow - started
+    // How the wait ENDED, not how long it took: a wait that runs to its 5s timeout faults
+    // with a TimeoutException, so a successful completion is the settle on quiescence
+    // whatever the box's speed. No wall-clock bound is asserted.
+    let completed =
+        try
+            waitTask.Wait(TimeSpan.FromSeconds(10.0))
+        with :? AggregateException ->
+            false
+
     test <@ completed @>
-    // Well under the 5s wait timeout — the 4.9s bound leaves room for slow CI machines while
-    // still failing if the wait ran to its timeout instead of settling on quiescence.
-    test <@ elapsed < TimeSpan.FromSeconds(4.9) @>
+    test <@ waitTask.IsCompletedSuccessfully @>
 
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal faults with OperationCanceledException when shutdown token fires mid-wait`` () =

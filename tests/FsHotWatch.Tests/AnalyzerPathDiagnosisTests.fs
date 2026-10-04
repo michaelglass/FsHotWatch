@@ -301,6 +301,8 @@ let ``check whose daemon refused to start prints the reason, not only a log poin
         assertNoStackTrace stderr
         // It stopped waiting once the refusal was recorded instead of sitting out the
         // 20 s startup timeout for a pipe that would never open.
+        // Wall-clock bound, cannot flake on a slow box: the refusal is recorded synchronously by the
+        // fake launcher, and 10 s only fails a wait that sat out the 20 s startup timeout.
         test <@ stopwatch.Elapsed < TimeSpan.FromSeconds 10.0 @>)
 
 [<Fact(Timeout = 15000)>]

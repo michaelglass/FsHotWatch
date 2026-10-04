@@ -1905,6 +1905,8 @@ let ``runProcess kills child when exceeded`` () =
 
     sw.Stop()
     Assert.True(isTimedOut result)
+    // Wall-clock bound, cannot flake on a slow box: it separates a 200 ms timeout plus a kill
+    // (milliseconds) from a child left to finish its 10 s sleep, a 15x margin either way.
     Assert.True(sw.Elapsed < TimeSpan.FromSeconds 3.0, $"took {sw.Elapsed}")
 
 [<Fact(Timeout = 10000)>]
@@ -2003,6 +2005,8 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
         waitForTerminalStatus host "test-prune" 8000
         sw.Stop()
 
+        // Wall-clock bound, cannot flake on a slow box: the project's TimeoutSec is 1 s, and the
+        // bound only fails a run that ignored it; `waitForTerminalStatus` itself gives up at 8 s.
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds 8.0, $"took {sw.Elapsed}")
         let history = host.GetHistory("test-prune")
         test <@ not history.IsEmpty @>
@@ -2303,6 +2307,8 @@ let ``waitForPluginTerminalIfRunning returns immediately when plugin not registe
     |> Async.RunSynchronously
 
     sw.Stop()
+    // Wall-clock bound, cannot flake on a slow box: an unregistered plugin returns without
+    // waiting at all, so this only fails a wait that ran into its 5 s timeout.
     test <@ sw.Elapsed < TimeSpan.FromSeconds(3.0) @>
 
 let private makeControllablePlugin (name: string) =
@@ -2356,6 +2362,8 @@ let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
     sw.Stop()
 
     test <@ sw.Elapsed > TimeSpan.FromMilliseconds(200.0) @>
+    // Wall-clock bound, cannot flake on a slow box: release comes at 300 ms, so this only fails
+    // a wait that ignored it and ran into its 15 s timeout.
     test <@ sw.Elapsed < TimeSpan.FromSeconds(14.0) @>
 
     match host.GetStatus("build") with
@@ -2378,6 +2386,8 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
     sw.Stop()
 
     test <@ sw.Elapsed > TimeSpan.FromMilliseconds(450.0) @>
+    // Wall-clock bound, cannot flake on a slow box: the 500 ms timeout is the work; 10 s only
+    // fails a wait that never honoured it (the plugin is never released before the assert).
     test <@ sw.Elapsed < TimeSpan.FromSeconds(10.0) @>
 
     plugin.Release.TrySetResult() |> ignore
