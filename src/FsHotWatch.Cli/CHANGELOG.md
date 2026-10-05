@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.86 - 2026-10-05
+
 - fix: finding the repository root reads a `.git` file through `RepositoryIdentity`, the same
   reader that then resolves the root's identity. The CLI had its own reader, which resolved a
   `gitdir:` pointer lexically and so disagreed with the identity on a pointer ending in a
   space or running `..` through a symlinked directory.
+- build(deps): bump TestPrune.Core from 13.3.1 to 13.3.2
 
 ## 0.14.0-alpha.85 - 2026-10-01
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.64 - 2026-10-05
+
 - feat: `RepositoryIdentity.isCheckoutRoot` says whether a directory is a checkout root,
   reading `.git` with the same code as `resolveWorktree`.
 - fix: `resolveWorktree` keeps a trailing space in a `.git` file's `gitdir:` path, as git does.

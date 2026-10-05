@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.43 - 2026-10-05
+
 - fix: an analyzer that cannot walk the typed tree is a crash, not a silent pass. On a
   `MissingMethodException` or `TypeLoadException` (an analyzer package compiled against a
   different FSharp.Compiler.Service) the host withheld `CliContext.TypedTree` for the rest of
