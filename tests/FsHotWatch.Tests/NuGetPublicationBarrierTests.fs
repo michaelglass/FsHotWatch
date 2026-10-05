@@ -337,7 +337,7 @@ let ``restore failures retry to the bound then fail and clean up`` () =
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
-let ``the attempt budget defaults to the twenty minutes an index lag needs`` () =
+let ``the attempt budget defaults to the forty minutes an index lag needs`` () =
     scratch (fun _ project fakeDotnet probeParent _ countFile ->
         writeProject project [ "Example.Package" ] [ "1.0.0" ]
 
@@ -358,11 +358,12 @@ let ``the attempt budget defaults to the twenty minutes an index lag needs`` () 
                   "FSHW_NUGET_PROBE_ATTEMPTS", "" ]
 
         test <@ result.ExitCode = 1 @>
-        // 80 attempts at the 15s default is 20 minutes, which is what the observed index
-        // lag after a green Release run costs. The probe count is the claim; the give-up
-        // line is how a human reads it.
-        test <@ File.ReadAllText countFile = "80" @>
-        test <@ result.Stderr.Contains("after 80 attempts") @>
+        // 160 attempts at the 15s default is 40 minutes. Twenty minutes gave up on two of
+        // seven releases while nuget.org was still indexing a package that then resolved,
+        // so the budget is twice the longest lag seen. The probe count is the claim; the
+        // give-up line is how a human reads it.
+        test <@ File.ReadAllText countFile = "160" @>
+        test <@ result.Stderr.Contains("after 160 attempts") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
@@ -378,8 +379,8 @@ let ``the delay between attempts defaults to the fifteen seconds that make that 
                 project
                 "Example.Package"
                 // The budget is attempts TIMES delay. Pinning the attempts alone would
-                // leave half of the twenty minutes guarded by nothing: a delay quietly
-                // cut to a second keeps 80 attempts and buys 80 seconds. Two attempts is
+                // leave half of the forty minutes guarded by nothing: a delay quietly
+                // cut to a second keeps 160 attempts and buys 160 seconds. Two attempts is
                 // the fewest that announces a delay at all.
                 [ "FAKE_MODE", "failure"
                   "FAKE_COUNT_FILE", countFile
