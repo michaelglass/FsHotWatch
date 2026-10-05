@@ -358,6 +358,54 @@ let badTypeUse : int = "not-an-int"
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Broken.fsx" freshness) @>)
 
 [<Fact(Timeout = 30000)>]
+let ``a changed file FCS reported errors for is named in test-scope as not selected until it checks clean`` () =
+    // `FileFreshness.FileUnverified` drops the file's changes from the selection. That
+    // used to reach daemon.log only, as a NOT SELECTED warning; `test-scope` is what the
+    // verdict file is written from.
+    withTempDir "tp-not-selected" (fun tmpDir ->
+        let host = createModelHost FsHotWatch.Tests.TestHelpers.sharedChecker.Value tmpDir
+
+        let handler =
+            create (Path.Combine(tmpDir, "tp.db")) tmpDir (Some [ testConfigNamed "Broken" ]) None None None None []
+
+        host.RegisterHandler(handler)
+
+        let notSelected () =
+            let reply =
+                host.RunCommand("test-scope", [||])
+                |> Async.RunSynchronously
+                |> Option.defaultWith (fun () -> failwith "test-scope returned nothing")
+
+            use document = JsonDocument.Parse reply
+
+            match document.RootElement.TryGetProperty("notSelected") with
+            | true, entries ->
+                entries.EnumerateArray()
+                |> Seq.map (fun entry ->
+                    entry.GetProperty("file").GetString(), entry.GetProperty("reason").GetString())
+                |> List.ofSeq
+                |> Some
+            | false, _ -> None
+
+        let check source =
+            checkSourceForReal tmpDir "Broken.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        let dirty = check "module Broken\nlet badTypeUse : int = \"not-an-int\"\n"
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty dirty.Source dirty.CheckResults @>
+
+        // Nothing is withheld before the dirty check arrives, and the reply says so.
+        test <@ notSelected () = Some [] @>
+
+        emitFileAndQuiesce host dirty
+        test <@ notSelected () = Some [ "Broken.fsx", "fcs-errors" ] @>
+
+        // The next FCS-clean check of the file widens it back in, and the entry goes with it.
+        emitFileAndQuiesce host (check "module Broken\nlet fixedTypeUse : int = 42\n")
+        test <@ notSelected () = Some [] @>)
+
+[<Fact(Timeout = 30000)>]
 let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break clean path)`` () =
     withTempDir "tp-poisoning-cleanflush" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")

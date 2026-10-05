@@ -31,6 +31,7 @@ open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Json
+open FsHotWatch.TestPrune
 
 /// Identifies the on-disk contract. Consumers depend on this file now; a
 /// breaking change to its shape MUST bump this string.
@@ -1432,6 +1433,10 @@ type Verdict =
             /// silence this field exists to end: a gap that is absent from the
             /// record, and absent is indistinguishable from none.
             excluded: SolutionScope.Exclusion list option
+            /// The changed files whose changes selected no tests in this run's scope, and
+            /// why — the reading's `TestRunReport.NotSelected`. `None` is "this verdict does
+            /// not say", as for `excluded`, and is not `Some []`.
+            notSelected: NotSelectedFile list option
             outcome: Outcome
             exitCode: int
             plugins: PluginVerdict list
@@ -1506,6 +1511,9 @@ type Verdict =
     /// The declared, reasoned gaps in this run's scope — see the
     /// `excluded` field. `None` means the verdict does not say.
     member this.Excluded = this.excluded
+
+    /// The changed files that selected no tests — see the `notSelected` field.
+    member this.NotSelected = this.notSelected
 
     /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
     member this.Outcome = this.outcome
@@ -1782,6 +1790,7 @@ let create
           treeAbsentDeclarationCount = tree.AbsentDeclarationCount
           scope = runReport.Scope
           excluded = excluded
+          notSelected = runReport.NotSelected
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
@@ -1846,20 +1855,35 @@ let private excludedJson (excluded: SolutionScope.Exclusion list option) : obj =
 /// Scope on the wire. UNIFORMLY TAGGED (`kind` always present) rather than
 /// "sometimes a string, sometimes an object", so a consumer never has to
 /// discriminate a JSON string from a JSON object before it can read a field.
-let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: TestScope) : obj =
+let private scopeJson
+    (excluded: SolutionScope.Exclusion list option)
+    (notSelected: NotSelectedFile list option)
+    (scope: TestScope)
+    : obj =
     let gaps = excludedJson excluded
 
+    // On every kind, beside `excluded`: which changed files selected no tests is a fact
+    // about the selection whatever ran. `null` where the reading did not say.
+    let withheld =
+        notSelected
+        |> Option.map (List.map NotSelectedFile.wire >> Array.ofList)
+        |> Option.toObj
+
     match scope with
-    | FullSuite n ->
+    | FullSuite(n, cause) ->
         {| kind = "full"
            ranProjects = n
            totalProjects = n
+           // `null` where the reading did not say why the run took every project.
+           cause = cause |> Option.map FullSuiteCause.token |> Option.toObj
+           notSelected = withheld
            excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
         {| kind = "filtered"
            ranProjects = ran
            totalProjects = total
+           notSelected = withheld
            excluded = gaps |}
         :> obj
     | NoTestsRun reason ->
@@ -1901,15 +1925,21 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
              | NoTestsReason.ChangesUncovered(_, _, unrunnable) when unrunnable.SymbolCount > 0 ->
                  box (List.toArray unrunnable.Projects)
              | _ -> null)
+           notSelected = withheld
            excluded = gaps |}
         :> obj
-    | ScopeUnknown -> {| kind = "unknown"; excluded = gaps |} :> obj
+    | ScopeUnknown ->
+        {| kind = "unknown"
+           notSelected = withheld
+           excluded = gaps |}
+        :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
     // ordinary tests-less repo, while "the scope read faulted" is a check that could not
     // see what it was judging, and a consumer must be able to tell them apart.
     | ScopeUnreadable reason ->
         {| kind = "unreadable"
            reason = reason
+           notSelected = withheld
            excluded = gaps |}
         :> obj
 
@@ -2011,7 +2041,9 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
                      |> box
 
              box
-                 {| scope = scopeJson excluded r.Scope
+                 // The pre-escalation reading's scope. It records no not-selected files:
+                 // those are on the verdict's own scope, from the reading it was graded on.
+                 {| scope = scopeJson excluded None r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites
                     basis = SampleBasis.token r.Basis
@@ -2050,7 +2082,7 @@ let serialize (v: Verdict) : string =
            treeFileCount = v.TreeFileCount
            treeDeclaredCount = v.TreeDeclaredCount
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
-           scope = scopeJson v.Excluded v.Scope
+           scope = scopeJson v.Excluded v.NotSelected v.Scope
            outcome = outcomeJson v.Outcome
            projectModel = projectModelJson v.ProjectModel
            checkComparison = checkComparisonJson v.Excluded v.Comparison
@@ -2603,7 +2635,7 @@ let private parseScope (el: JsonElement) : TestScope =
     match tryString el "kind" with
     | Some "unknown" -> ScopeUnknown
     | Some kind ->
-        TestScope.tryOfCounts kind (tryInt el "ranProjects") (tryInt el "totalProjects") noTestsRan
+        TestScope.tryOfCounts kind (tryInt el "ranProjects") (tryInt el "totalProjects") (tryProp el "cause") noTestsRan
         |> Option.defaultWith unrecognized
     | None -> unrecognized ()
 
@@ -2971,6 +3003,17 @@ let read (repoRoot: string) : Reading =
 
                 let scope = scopeEl |> Option.map parseScope |> Option.defaultValue ScopeUnknown
 
+                // A `notSelected` this build cannot read makes the scope unreadable, as a
+                // cause it does not know does (`TestScope.tryOfCounts`).
+                let scope, notSelected =
+                    match
+                        scopeEl
+                        |> Option.bind (fun el -> tryProp el "notSelected")
+                        |> tryReadNotSelected
+                    with
+                    | Ok notSelected -> scope, notSelected
+                    | Error reason -> ScopeUnreadable $"the recorded scope has %s{reason}", None
+
                 let excluded = scopeEl |> Option.bind parseExcluded
 
                 let gradedRunId =
@@ -3034,6 +3077,7 @@ let read (repoRoot: string) : Reading =
                           treeAbsentDeclarationCount = tryInt root "treeAbsentDeclarationCount" |> Option.defaultValue 0
                           scope = scope
                           excluded = excluded
+                          notSelected = notSelected
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins
@@ -3370,8 +3414,8 @@ let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
     let evidence =
         let suite =
             match v.Scope with
-            | FullSuite n when n = 1 -> "full suite, 1 project"
-            | FullSuite n -> $"full suite, %d{n} projects"
+            | FullSuite(1, _) -> "full suite, 1 project"
+            | FullSuite(n, _) -> $"full suite, %d{n} projects"
             // Unreachable: `isFullSuiteGreen` is the only door in. Named, not
             // wildcarded, so a future scope cannot slip through as "full suite".
             | ImpactFiltered _
