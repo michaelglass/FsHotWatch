@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.88 - 2026-10-05
+
 - fix!: a daemon in a checkout that `cache.scope: "default-workspace"` leaves out logs one
   `check-result cache:` line, the scope's, instead of following it with the generic "OFF … enables
   it" line. **BREAKING** (F# API): `DaemonConfig.createCacheComponents` returns a
