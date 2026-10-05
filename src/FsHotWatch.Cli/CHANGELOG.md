@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: SIGHUP ends a `check`/`confirm` run like SIGINT and SIGTERM: the hook in flight is
+  reaped, the verdict says the run was signalled, and the exit code is 129. A closed
+  terminal used to leave the hook running and no verdict behind.
+
 ## 0.14.0-alpha.87 - 2026-10-05
 
 - fix!: `check` and `confirm` grade the run `test-scope` names by the evidence that same reply
