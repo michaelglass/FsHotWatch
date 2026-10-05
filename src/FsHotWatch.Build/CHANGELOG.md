@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: an overrunning build's report names the process tree it killed on a loaded box. The
+  teardown's `ps` read now has the 10 s teardown budget instead of 3 s, which a busy box
+  could miss, leaving the report with "tree termination UNKNOWN".
+
 ## 0.7.0-alpha.44 - 2026-09-29
 
 - An overrunning build names the MSBuild targets that were running, whatever console

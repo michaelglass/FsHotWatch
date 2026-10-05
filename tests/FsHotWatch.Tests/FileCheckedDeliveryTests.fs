@@ -175,7 +175,12 @@ let private withFixture (name: string) (body: Fixture -> unit) =
                 checker
                 root
                 { watchingDaemonOptions with
-                    CacheBackend = Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000)) }
+                    CheckCache =
+                        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+                            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
+                            None,
+                            None
+                        ) }
                 loader
                 (fun _ -> [ libOptions; appOptions ])
                 watcher

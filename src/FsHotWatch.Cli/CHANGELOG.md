@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix!: a daemon in a checkout that `cache.scope: "default-workspace"` leaves out logs one
+  `check-result cache:` line, the scope's, instead of following it with the generic "OFF … enables
+  it" line. **BREAKING** (F# API): `DaemonConfig.createCacheComponents` returns a
+  `CheckCacheSetup` and logs nothing; `resolveCacheScope` returns the scope and checkout the line
+  names, not the whole line. `DaemonConfig.startupCacheLines` returns the check-cache lines a daemon
+  logs at startup for a config.
+
 ## 0.14.0-alpha.87 - 2026-10-05
 
 - fix!: `check` and `confirm` grade the run `test-scope` names by the evidence that same reply

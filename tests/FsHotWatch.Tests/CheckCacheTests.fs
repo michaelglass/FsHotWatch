@@ -726,11 +726,12 @@ let ``Set drops the superseded entry for the same file and project`` () =
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache says OFF when there is no backend`` () =
     // Silence is what let an inert cache read as a working one.
-    Assert.Contains("OFF", describeCheckCache None)
+    Assert.Contains("OFF", describeCheckCache CheckCacheSetup.Off)
 
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache names a fixed bound`` () =
-    let text = describeCheckCache (Some(InMemoryCheckCache(500) :> ICheckCacheBackend))
+    let text =
+        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(500), None, None))
 
     Assert.Contains("in-memory", text)
     Assert.Contains("500", text)
@@ -738,7 +739,7 @@ let ``describeCheckCache names a fixed bound`` () =
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache says a working-set cache holds every admitted file`` () =
     let text =
-        describeCheckCache (Some(InMemoryCheckCache(CacheCapacity.WorkingSet) :> ICheckCacheBackend))
+        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(CacheCapacity.WorkingSet), None, None))
 
     Assert.Contains("working set", text)
 
@@ -751,9 +752,41 @@ type private ForeignBackend() =
 
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache names a backend it does not know by its type`` () =
-    let text = describeCheckCache (Some(ForeignBackend() :> ICheckCacheBackend))
+    let text = describeCheckCache (CheckCacheSetup.On(ForeignBackend(), None, None))
 
     Assert.Equal("check-result cache: ForeignBackend", text)
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache states a scope that left this checkout out, and no advice to enable the cache`` () =
+    let text =
+        describeCheckCache (CheckCacheSetup.OffInThisCheckout "cache.scope is \"default-workspace\" and this is X")
+
+    Assert.Equal("check-result cache: OFF in this checkout — cache.scope is \"default-workspace\" and this is X", text)
+
+[<Fact(Timeout = 15000)>]
+let ``describeCheckCache names the scope a running cache runs under`` () =
+    let text =
+        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(500), None, Some "cache.scope is \"all\""))
+
+    Assert.Equal("check-result cache: in-memory, at most 500 entries — cache.scope is \"all\"", text)
+
+[<Fact(Timeout = 15000)>]
+let ``a setup hands the daemon a backend and key provider only when the cache is on`` () =
+    let backend = InMemoryCheckCache(500) :> ICheckCacheBackend
+    let keyProvider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+    match CheckCacheSetup.components (CheckCacheSetup.On(backend, Some keyProvider, None)) with
+    | Some b, Some k ->
+        Assert.Same(backend, b)
+        Assert.Same(keyProvider, k)
+    | other -> failwith $"expected the configured backend and key provider, got %A{other}"
+
+    for off in
+        [ CheckCacheSetup.Off
+          CheckCacheSetup.OffInThisCheckout "cache.scope is \"default-workspace\"" ] do
+        match CheckCacheSetup.components off with
+        | None, None -> ()
+        | other -> failwith $"expected no cache components, got %A{other}"
 
 // --- Removal of keys the cache no longer holds ---
 

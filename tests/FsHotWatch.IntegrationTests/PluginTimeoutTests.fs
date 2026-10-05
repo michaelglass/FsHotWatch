@@ -81,7 +81,12 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
 /// the last project the build said it finished, every process the kill was aimed at,
 /// and — from re-reading the process table, not from the kill call returning — that
 /// none of them was left running.
-[<Fact(Timeout = 20000)>]
+///
+/// The tree is read by the product's teardown, with `TeardownBudget` (10 s) for `ps`: a
+/// trivial child that only a wedged box keeps past it. The wait sits above the product's
+/// whole teardown (1 s timeout, 10 s read, 10 s kill, ~2 s settle, 2 s drain), so the
+/// product reports first.
+[<Fact(Timeout = 60000)>]
 let ``an overrunning build names its command, budget, tree and what the kill left`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -98,7 +103,7 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitForTerminalStatus host "build" 15000
+    waitForTerminalStatus host "build" 45000
 
     let summary =
         match (List.last (host.GetHistory "build")).Outcome with
@@ -178,7 +183,15 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
 /// whose name is known. The report must name THAT target — read from the side binlog fshw
 /// attaches, not from the console, which at quiet verbosity names nothing — and must not
 /// name the target that finished before it.
-[<Fact(Timeout = 120000)>]
+///
+/// The build's 1 s timeout is armed when the build reaches `StallsHere` (its `Exec`
+/// touches a marker first), not at the spawn: a slow start cannot spend it in an
+/// earlier target. `FinishesFirst` takes 3 s, so a timeout armed at the spawn fires
+/// there, and the test is red if the arm is lost. Before the marker only the wait
+/// bounds the build: a `dotnet build` of a project with no references. After it, the
+/// product's own bounds (15 s interrupt grace, 10 s table read, 10 s kill, 60 s binlog
+/// replay) decide well inside the wait.
+[<Fact(Timeout = 300000)>]
 let ``an overrunning quiet dotnet build names the target it was stalled in`` () =
     let root =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fshw-stall-" + System.Guid.NewGuid().ToString("N"))
@@ -189,16 +202,20 @@ let ``an overrunning quiet dotnet build names the target it was stalled in`` () 
         System.IO.Path.Combine(root, "stall.proj"),
         """<Project>
   <Target Name="Build" DependsOnTargets="FinishesFirst;StallsHere" />
-  <Target Name="FinishesFirst"><Message Importance="high" Text="done early" /></Target>
-  <Target Name="StallsHere"><Exec Command="sleep 120" /></Target>
+  <Target Name="FinishesFirst"><Exec Command="sleep 3" /></Target>
+  <Target Name="StallsHere"><Exec Command="touch reached-stall &amp;&amp; sleep 120" /></Target>
 </Project>"""
     )
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) root
 
+        let reachedStall = System.IO.Path.Combine(root, "reached-stall")
+
         let handler =
-            FsHotWatch.Build.BuildPlugin.create
+            FsHotWatch.Build.BuildPlugin.createArmedWith
+                (fun _ -> System.IO.File.Exists reachedStall)
+                true
                 "sh"
                 "-c \"dotnet build stall.proj -v q -nologo 2> build-stderr.log; rc=$?; echo EXITCODE=$rc; exit $rc\""
                 []
@@ -206,11 +223,11 @@ let ``an overrunning quiet dotnet build names the target it was stalled in`` () 
                 []
                 None
                 []
-                (Some 20)
+                (Some 1)
 
         host.RegisterHandler(handler)
         host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-        waitForTerminalStatus host "build" 100000
+        waitForTerminalStatus host "build" 240000
 
         let summary =
             match (List.last (host.GetHistory "build")).Outcome with

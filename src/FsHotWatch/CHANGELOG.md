@@ -10,6 +10,19 @@
   (`cp -p`, `tar -x`) is missed by a rescan until its next write. The `MustScanSubDirs`
   log line is now `info` and names the event's flags.
 
+- fix!: the daemon logs ONE `check-result cache:` line at startup. A checkout that
+  `cache.scope: "default-workspace"` leaves out logged the scope's "OFF in this checkout" line
+  and then the generic "OFF — … (`"cache": "memory"` … enables it)", whose advice does not
+  apply there. A running cache's line now also names its scope. **BREAKING** (F# API):
+  `DaemonOptions.CacheBackend` and `CacheKeyProvider` are replaced by
+  `CheckCache: CheckCacheSetup` (`Off`, `OffInThisCheckout of scope`,
+  `On of backend * keyProvider * scope`; `CheckCacheSetup.components` gives the backend and key
+  provider a setup runs), and `describeCheckCache` takes a `CheckCacheSetup`.
+
+- fix: an accounted teardown (`runProcessAccounted`) reads the process table within the
+  10 s teardown budget, the bound its kill already has, instead of 3 s. On a loaded box `ps`
+  could miss 3 s, and the overrun report then said the tree it killed was unknown.
+
 ## 0.10.0-alpha.65 - 2026-10-05
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply
