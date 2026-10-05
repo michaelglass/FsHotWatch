@@ -1911,11 +1911,19 @@ let ``runProcess reports TimedOut on kill, carrying the child's pre-kill stdout`
     // starvation bug in the drain (pumps as `task {}` continuations that a saturated
     // pool never scheduled), which is fixed — the pumps own dedicated threads now.
     //
-    // The child prints `partial` and THEN sleeps 10s, so those bytes are on the pipe
-    // long before the 300ms timeout fires. A tail without them is a drain that failed
-    // to measure, and must be red.
+    // The timeout is armed on the child's first write, so `partial` is in the capture
+    // before the 300ms timeout can start counting, however late the shell is scheduled.
+    // A tail without it is a drain that failed to measure, and must be red. The child
+    // waits 1 s before writing, so a timeout armed at the spawn kills it first: red if
+    // the arm is lost.
     match
-        runProcess "sh" "-c \"echo partial; sleep 10\"" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 300.0))
+        runProcess
+            "sh"
+            "-c \"sleep 1; echo partial; sleep 10\""
+            "."
+            []
+            (ProcessBounds.silent (TimeSpan.FromMilliseconds 300.0)
+             |> ProcessBounds.armedWhen id)
     with
     | TimedOut(_, tail, _) ->
         // The kill tears the pipes down under the pumps, so whether they end at EOF

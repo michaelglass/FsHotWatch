@@ -1147,11 +1147,12 @@ let internal describeBuildOverrun
 
     summary, report
 
-/// Case 1 promotes the corrected detector. The boolean
-/// remains in this compatibility entry point so existing callers still compile, but
-/// there is no longer an unsafe report-only mode: attributable stale output always
-/// prevents both cache replay and a newly minted success.
-let createWith
+/// `createWith`, with the moment the build's timeout starts counting injected
+/// (`ProcessBounds.armedWhen`). The plugin arms it at the spawn; a test whose claim is
+/// where an overrunning build was stalled arms it once the build has reached the stall,
+/// so a slow start cannot spend the budget in an earlier target.
+let internal createArmedWith
+    (timeoutArmed: bool -> bool)
     (_artifactGateReddens: bool)
     (command: string)
     (args: string)
@@ -1177,7 +1178,8 @@ let createWith
     // real repos use) buffers everything to the very end. So its output proves
     // nothing about liveness and a launch deadline would false-kill a healthy slow
     // build — `buildTimeout` is the bound.
-    let buildBounds = ProcessBounds.silent buildTimeout
+    let buildBounds =
+        ProcessBounds.silent buildTimeout |> ProcessBounds.armedWhen timeoutArmed
 
     // Named in the overrun report.
     let nodeReuseOf command args = nodeReuseFor environment command args
@@ -2213,6 +2215,33 @@ let createWith
       // above is the only thing standing between a stored verdict and a `bin/` that
       // never earned it.
       Teardown = None }
+
+/// Case 1 promotes the corrected detector. The boolean
+/// remains in this compatibility entry point so existing callers still compile, but
+/// there is no longer an unsafe report-only mode: attributable stale output always
+/// prevents both cache replay and a newly minted success.
+let createWith
+    (artifactGateReddens: bool)
+    (command: string)
+    (args: string)
+    (environment: (string * string) list)
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
+    (testProjectNames: string list)
+    (buildTemplate: string option)
+    (dependsOn: string list)
+    (timeoutSec: int option)
+    =
+    createArmedWith
+        armedAtSpawn
+        artifactGateReddens
+        command
+        args
+        environment
+        graph
+        testProjectNames
+        buildTemplate
+        dependsOn
+        timeoutSec
 
 /// The ordinary enforcing constructor. `createWith` retains its former boolean only
 /// for source compatibility; promoting the corrected detector removed the unsafe report-only behavior.
