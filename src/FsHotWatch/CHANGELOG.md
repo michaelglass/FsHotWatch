@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: the daemon logs ONE `check-result cache:` line at startup. A checkout that
+  `cache.scope: "default-workspace"` leaves out logged the scope's "OFF in this checkout" line
+  and then the generic "OFF — … (`"cache": "memory"` … enables it)", whose advice does not
+  apply there. A running cache's line now also names its scope. **BREAKING** (F# API):
+  `DaemonOptions.CacheBackend` and `CacheKeyProvider` are replaced by
+  `CheckCache: CheckCacheSetup` (`Off`, `OffInThisCheckout of scope`,
+  `On of backend * keyProvider * scope`; `CheckCacheSetup.components` gives the backend and key
+  provider a setup runs), and `describeCheckCache` takes a `CheckCacheSetup`.
+
 ## 0.10.0-alpha.65 - 2026-10-05
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply

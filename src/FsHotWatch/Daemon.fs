@@ -3964,8 +3964,8 @@ module Daemon =
             /// `Watching` (the default) for a persistent daemon; `OneShot` for a
             /// `--run-once` host, which then constructs no file watcher at all.
             RunMode: RunMode
-            CacheBackend: ICheckCacheBackend option
-            CacheKeyProvider: ICacheKeyProvider option
+            /// The check-result cache, and what the startup log says about it.
+            CheckCache: FsHotWatch.InMemoryCheckCache.CheckCacheSetup
             /// FCS diagnostic codes to suppress globally. `None` means no
             /// daemon-level suppression — projects opt in via `<NoWarn>` in
             /// their fsproj or `#nowarn "code"` in source.
@@ -4015,8 +4015,7 @@ module Daemon =
     module DaemonOptions =
         let defaults: DaemonOptions =
             { RunMode = RunMode.Watching
-              CacheBackend = None
-              CacheKeyProvider = None
+              CheckCache = FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
               FcsSuppressedCodes = None
               ExcludePatterns = []
               ExtraWatchPatterns = []
@@ -4063,8 +4062,8 @@ module Daemon =
         let seams = DaemonHosting.seams opts.Hosting
         let watcherFactory = seams.Watcher watcherFactory
 
-        let cacheBackend = opts.CacheBackend
-        let cacheKeyProvider = opts.CacheKeyProvider
+        let cacheBackend, cacheKeyProvider =
+            FsHotWatch.InMemoryCheckCache.CheckCacheSetup.components opts.CheckCache
 
         let fcsSuppressedCodes = resolveFcsSuppressedCodes opts.FcsSuppressedCodes
 
@@ -4154,7 +4153,7 @@ module Daemon =
                     )
                 | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot, frames = seams.Frames)
 
-            Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache cacheBackend)
+            Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
 
             let graph = ProjectGraph()
 

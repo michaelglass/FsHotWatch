@@ -2385,7 +2385,7 @@ let internal daemonWith
     (root: string)
     : Daemon =
     let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-    let backend, keyProvider = DaemonConfig.createCacheComponents root cacheConfig
+    let checkCache = DaemonConfig.createCacheComponents root cacheConfig
 
     // Files the built-in filters ignore but a plugin or preprocessor is triggered by:
     // `fileCommands[].pattern`, and every `preprocessors[].triggers` pattern, so an
@@ -2417,8 +2417,7 @@ let internal daemonWith
         root
         { Daemon.DaemonOptions.defaults with
             RunMode = runMode
-            CacheBackend = backend
-            CacheKeyProvider = keyProvider
+            CheckCache = checkCache
             ExcludePatterns = config.Exclude
             ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
