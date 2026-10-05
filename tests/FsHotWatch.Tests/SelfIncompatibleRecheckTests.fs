@@ -205,7 +205,7 @@ let private verdictWith
           ProjectModel = ProjectModelFixtures.available }
 
     let inputs =
-        IpcOutput.checkInputs false (BaselineFixtures.reportOf (FullSuite 1)) response
+        IpcOutput.checkInputs false (BaselineFixtures.reportOf (FullSuite(1, None))) response
 
     let causes = IpcOutput.redCausesOf "logs/daemon.log" false response
     CheckVerdict.verdict CheckVerdict.InnerLoop inputs, causes

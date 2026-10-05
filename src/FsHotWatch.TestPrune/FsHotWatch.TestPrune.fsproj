@@ -45,6 +45,7 @@
     <Compile Include="StaleArtifactPreflight.fs" />
     <Compile Include="ImpactDbPool.fs" />
     <Compile Include="Traces.fs" />
+    <Compile Include="ScopeVocabulary.fs" />
     <Compile Include="TestMode.fs" />
     <Compile Include="TraceRun.fs" />
     <Compile Include="TestPrunePlugin.fs" />

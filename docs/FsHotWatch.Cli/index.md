@@ -475,6 +475,8 @@ field.
 | `projectModel.status` | `available` · `rediscovering` · `unavailable` (with `reasonCode`) · `unobserved` · `not-reported` (with `reason`, no `schema`) |
 | `outcome.baseline.kind` | `full-suite-run` (with `runId` / `earnedAt` / `projects`) · `no-test-suite` |
 | `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
+| `scope.cause` (on `full`) | why the run took every project: `requested` · `force-run` · `unreadable-ledger` · `no-full-suite-baseline` · `coarse-fallback` · `evidence-gap` · `selection-reached-every-project` · `null` (the reading does not say) |
+| `scope.notSelected` | changed files whose changes selected no tests, as `{file, reason}`; `reason` is `fcs-errors` (FCS reported errors for the file, so its symbols may be partial) · `[]` (none) · `null` (the reading does not say) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
 | `command` | `check` (impact-scoped) · `confirm` (unfiltered, evidence-required) |
 

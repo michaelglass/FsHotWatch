@@ -29,7 +29,7 @@ let private executedA =
     evidenceReport (ImpactFiltered(2, 4)) (Some(System.Guid.Parse "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
 
 let private executedB =
-    evidenceReport (FullSuite 4) (Some(System.Guid.Parse "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
+    evidenceReport (FullSuite(4, None)) (Some(System.Guid.Parse "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
 
 [<Fact>]
 let ``same-tree already-verified retains the executed report atomically`` () =
@@ -124,7 +124,11 @@ let ``positive bounded filtered project counts are retainable executed evidence`
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``an executed-looking scope without a run id is not retainable evidence`` (fullSuite: bool) =
-    let scope = if fullSuite then FullSuite 4 else ImpactFiltered(2, 4)
+    let scope =
+        if fullSuite then
+            FullSuite(4, None)
+        else
+            ImpactFiltered(2, 4)
 
     let scopeOnly = BaselineFixtures.reportOf scope
 
@@ -817,7 +821,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 waitForComplete
                 getStatus
                 getErrors
-                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -878,7 +882,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                     waitForComplete
                     getStatus
                     cleanDiagnostics
-                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                     // No projection on offer. `InnerLoop` never asks, and a
                     // `Confirmation` that gets this records "no sample", never an agreement.
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -991,7 +995,7 @@ let ``a check over a passing FULL-SUITE run is NOT green when the daemon's proje
     let exitCode, reading, file =
         driveWithModel
             CheckVerdict.InnerLoop
-            (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+            (BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
             (diagnosticsWithModel observation)
 
     test <@ exitCode = 2 @>
@@ -1045,7 +1049,7 @@ let ``a green verdict file records the available project model it was graded aga
     let exitCode, _, file =
         driveWithModel
             CheckVerdict.InnerLoop
-            (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+            (BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
             (diagnosticsWithModel (Some ProjectModelFixtures.observation))
 
     test <@ exitCode = 0 @>
@@ -1115,11 +1119,11 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
         readings <- readings + 1
 
         if readings = 1 then
-            { BaselineFixtures.reportOf (FullSuite 2) with
+            { BaselineFixtures.reportOf (FullSuite(2, None)) with
                 RunId = Some earlier
                 SessionRuns = [ earlier ] }
         else
-            { BaselineFixtures.reportOf (FullSuite 2) with
+            { BaselineFixtures.reportOf (FullSuite(2, None)) with
                 RunId = Some secondBatch
                 SessionRuns = [ secondBatch; firstBatch; earlier ] }
 
@@ -1179,7 +1183,7 @@ let ``run attribution takes every run the daemon completed after the baseline, o
     let c = System.Guid.NewGuid()
 
     let reading (runId: System.Guid) (session: System.Guid list) =
-        { BaselineFixtures.reportOf (FullSuite 1) with
+        { BaselineFixtures.reportOf (FullSuite(1, None)) with
             RunId = Some runId
             SessionRuns = session }
 
@@ -1256,7 +1260,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () -> "{}") // getStatus
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
-                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -1311,7 +1315,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () -> "{}") // getStatus
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""") // getErrors
-                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -1337,7 +1341,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
 
     let getTestRun () : TestRunReport =
         if forceCalls > 0 then
-            BaselineFixtures.reportOf (FullSuite 1)
+            BaselineFixtures.reportOf (FullSuite(1, None))
         else
             BaselineFixtures.reportOf (ImpactFiltered(1, 1))
 
@@ -1393,7 +1397,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> "{}")
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
-                (fun () -> BaselineFixtures.reportOf (FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -1417,7 +1421,7 @@ let private freshRun = System.Guid.Parse("33333333-3333-3333-3333-333333333333")
 
 /// A full-suite report naming `run`, with `session` as the daemon's completed runs.
 let private fullSuiteRun (run: System.Guid) (session: System.Guid list) : TestRunReport =
-    { BaselineFixtures.reportOf (FullSuite 1) with
+    { BaselineFixtures.reportOf (FullSuite(1, None)) with
         RunId = Some run
         SessionRuns = session }
 
@@ -1584,7 +1588,7 @@ let private driveConfirmForVerdict
     // only that refusal.
     let getTestRun () : TestRunReport =
         if forceCalls > 0 then
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some driveRunId }
         else
             { BaselineFixtures.reportOf firstScope with
@@ -1650,7 +1654,7 @@ let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "
     let projected =
         driveConfirmForVerdict
             CheckVerdict.Confirmation
-            (FullSuite 1)
+            (FullSuite(1, None))
             (offering IpcParsing.NoFailuresToReach (ImpactFiltered(1, 1)))
 
     test <@ projected.Divergence = Verdict.Divergence.Agreed @>
@@ -1668,7 +1672,7 @@ let ``a confirm with no projection on offer says nothing was compared, and a che
     // unconditionally, or one that recorded nothing ever, would still satisfy the two
     // tests above.
     let noSample =
-        driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite 1) offersNothing
+        driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite(1, None)) offersNothing
 
     // An unavailable projection is a REFUSAL, never an agreement: this is the whole
     // fail-closed direction, asserted end to end through the transport.
@@ -1971,7 +1975,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 (fun () -> "idle") // waitForComplete
                 (fun () -> "{}") // getStatus
                 getErrors
-                (fun () -> BaselineFixtures.reportOf (FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
                 (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
@@ -2083,7 +2087,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         let projects = writeSevenSuiteRun repoRoot runId
 
         let fullRun =
-            { BaselineFixtures.reportOf (FullSuite 7) with
+            { BaselineFixtures.reportOf (FullSuite(7, None)) with
                 RunId = Some runId
                 Seeds = [ "src/Changed.fs" ]
                 SeedCount = 1
@@ -2146,7 +2150,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
               RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
               Coverage = Incomplete 1
-              Scope = FullSuite 7
+              Scope = FullSuite(7, None)
               Baseline = BaselineFixtures.reading
               ProjectModel = ProjectModelFixtures.available }
 
@@ -2194,7 +2198,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         test <@ preserved.RunId = Some runId @>
         test <@ preserved.Suites = prior.Suites @>
         test <@ preserved.Suites |> List.map _.Project |> List.sort = projects @>
-        test <@ preserved.Scope = FullSuite 7 @>
+        test <@ preserved.Scope = FullSuite(7, None) @>
         test <@ BaselineFixtures.isGreen (preserved.Outcome) @>
         test <@ preserved.ExitCode = 0 @>
         test <@ preserved.Plugins = prior.Plugins @>
@@ -2223,7 +2227,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
             []
             CheckVerdict.Confirmation
             false
-            (BaselineFixtures.reportOf (FullSuite 1))
+            (BaselineFixtures.reportOf (FullSuite(1, None)))
             Verdict.NoReading
             Map.empty
             []
@@ -2291,10 +2295,10 @@ let private publishPrior (repoRoot: string) (kind: string) =
               LastRun = None
               Diagnostics = DiagnosticCounts.empty }
 
-        publish (FullSuite 1) CheckVerdict.CheckOutcome.FailuresFound (Map.ofList [ "build", failedStatus ])
-    | "incomplete" -> publish (FullSuite 1) (CheckVerdict.CheckOutcome.Incomplete 1) Map.empty
+        publish (FullSuite(1, None)) CheckVerdict.CheckOutcome.FailuresFound (Map.ofList [ "build", failedStatus ])
+    | "incomplete" -> publish (FullSuite(1, None)) (CheckVerdict.CheckOutcome.Incomplete 1) Map.empty
     | "different-producer" ->
-        publish (FullSuite 1) (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline) Map.empty
+        publish (FullSuite(1, None)) (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline) Map.empty
         let verdictPath = Verdict.path repoRoot
         let json = System.IO.File.ReadAllText verdictPath
 
@@ -2379,7 +2383,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             []
             mode
             false
-            (BaselineFixtures.reportOf (FullSuite 1))
+            (BaselineFixtures.reportOf (FullSuite(1, None)))
             Verdict.NoReading
             Map.empty
             []
@@ -2484,7 +2488,7 @@ let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after t
                     (fun () -> "{}") // waitForComplete SUCCEEDS: the run is done
                     (fun () -> "{}")
                     getErrors
-                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
 
@@ -2530,7 +2534,7 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
                     (fun () -> "{}")
                     (fun () ->
                         """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
-                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                    (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                     (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
             @>
@@ -2669,7 +2673,7 @@ let private currentGeneration = 7L
 let ``green publication requires the graded run's current model receipt`` (kind: string) (expectedExit: int) =
     withTempDir "ipcoutput-model-receipt" (fun repoRoot ->
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let receipts =
@@ -2701,7 +2705,7 @@ let ``a missing receipt names every receipt the daemon did hold`` () =
         // the two causes apart from it alone: evidence that names a different run at this
         // generation, or the graded run's evidence under a model that has since moved.
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let otherRun = System.Guid.Parse("c0000000-2200-4000-8000-000000000220")
@@ -2749,7 +2753,7 @@ let ``a missing receipt names every receipt the daemon did hold`` () =
 let ``analysis-only green requires its own completed model receipt`` (kind: string) (expectedExit: int) =
     withTempDir "ipcoutput-analysis-receipt" (fun repoRoot ->
         // No run is named: this daemon runs no tests, so only its own receipt can vouch.
-        let analysisOnly = BaselineFixtures.reportOf (FullSuite 1)
+        let analysisOnly = BaselineFixtures.reportOf (FullSuite(1, None))
 
         let receipts =
             if kind = "missing" then
@@ -2780,7 +2784,7 @@ let ``a daemon that serves no receipts keeps its verdict, so the analysis-only p
         // cannot speak about what it was never sent, so the reading keeps its outcome —
         // and this test is what stops that skew path from being widened by accident.
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let exitCode =
@@ -2809,7 +2813,7 @@ let ``a daemon that serves no receipts keeps its verdict, so the analysis-only p
 let ``a refused receipt says why at the terminal, not only in the verdict file`` () =
     withTempDir "ipcoutput-receipt-terminal" (fun repoRoot ->
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let stderr, exitCode =
@@ -2858,7 +2862,7 @@ let private writeStderrAsAnotherClass (started: System.Threading.ManualResetEven
 let ``a capture holds only its own sentences while another class writes to stderr mid-capture`` () =
     withTempDir "ipcoutput-capture-isolation" (fun repoRoot ->
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         use started = new System.Threading.ManualResetEventSlim()
@@ -2889,7 +2893,7 @@ let ``a receipt refusal is a recorded cause, so the summary names it instead of 
         // suite and no failing diagnostic — do NOT read this as a pass". The block
         // collects its causes from the verdict, and nothing put the refusal there.
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let receipts =
@@ -2931,7 +2935,7 @@ let ``a clean publication records no cause, so the refusal cause is not furnitur
         // Negative control for the theory above: without it, recording a cause on every
         // publication would satisfy it while telling every green run something failed.
         let gradedRun =
-            { BaselineFixtures.reportOf (FullSuite 1) with
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId }
 
         let exitCode =
@@ -2986,7 +2990,7 @@ let ``a verdict wait that RESOLVES on a no-model host still exits 2 with a named
         let exitCode, reading, file =
             driveWithModel
                 CheckVerdict.InnerLoop
-                (BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 (diagnosticsWithModel (Some FsHotWatch.ProjectModel.Observation.Unobserved))
 
         test <@ exitCode = 2 @>
@@ -3049,7 +3053,7 @@ let ``an incomplete read is the answer: one read, no re-scan, even where a later
                 (fun () -> "idle")
                 (fun () -> "{}")
                 getErrors
-                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite 1))
+                (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 (fun () -> IpcParsing.ReachUnavailable "not used")
                 (fun () -> failwith "an inner-loop check must not force a full run")
 

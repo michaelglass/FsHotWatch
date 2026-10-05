@@ -1701,6 +1701,9 @@ type TestEvidenceReceipt =
         Coverage: RunCoverage
         Seeds: string list
         ZeroSelection: ZeroSelection
+        /// Why the run covered every project, when it did — the launch's
+        /// `TestRunLaunch.FullSuiteCause`. `test-scope` sends it beside a `full` scope.
+        FullSuiteCause: FullSuiteCause
     }
 
 /// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
@@ -1966,6 +1969,12 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Repo-relative paths of changed files whose changes selected NO tests, and why
+        /// (`FileFreshness.FileUnverified`). Unlike `UnanalyzableFiles` these do not widen
+        /// the run: the file has symbols, but its latest ones could not be diffed. A file
+        /// leaves the map when a later check of it is diffed. `test-scope` reports the map
+        /// as `notSelected`. NOT persisted, for the same reason as `UnanalyzableFiles`.
+        NotSelected: Map<string, NotSelectedReason>
         /// The identity (`IndexedAnalysis.identity`) of each analysis in
         /// `PendingAnalysis`, by repo-relative path. The flush that writes them records
         /// them as what the index holds; a retirement drops them with the analyses.
@@ -2166,6 +2175,10 @@ type TestRunLaunch =
         /// The seeds that selected this run, captured atomically with its scope.
         Seeds: string list
         ZeroSelection: ZeroSelection
+        /// Why this run covers every project, should it do so (`fullSuiteCauseOf`).
+        /// Decided at launch, where the widenings are known; read only when the run's
+        /// coverage turns out to be the whole suite.
+        FullSuiteCause: FullSuiteCause
         /// The changed files this run launched against. Its completion clears only
         /// these; a file that changed during the run still selects the next one.
         ChangedFiles: string list
@@ -2807,6 +2820,26 @@ let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
 let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
     configs |> List.map (fun c -> c.Project) |> Set.ofList
 
+/// Why a launch will cover every configured project, if it does: the first widening, in
+/// `FullSuiteCause` precedence order, that applies to it.
+///
+/// `coarseGaps` and `evidenceGapIsWhole` are the two widenings that run every project only
+/// when they apply: a coarse gap always widens to every project
+/// (`coarseFallbackProjects`), while the evidence gap widens to the projects it names.
+let internal fullSuiteCauseOf
+    (requested: bool)
+    (ledgerUnreadable: bool)
+    (baselineInvalid: bool)
+    (coarseGaps: bool)
+    (evidenceGapIsWhole: bool)
+    : FullSuiteCause =
+    if requested then FullSuiteCause.Requested
+    elif ledgerUnreadable then FullSuiteCause.LedgerUnreadable
+    elif baselineInvalid then FullSuiteCause.NoFullSuiteBaseline
+    elif coarseGaps then FullSuiteCause.CoarseFallback
+    elif evidenceGapIsWhole then FullSuiteCause.EvidenceGap
+    else FullSuiteCause.SelectionReachedEveryProject
+
 /// The coarse fallback for files the symbol analyser could not read.
 ///
 /// A file whose analysis FAILED contributes no symbols, so the symbol diff finds nothing
@@ -3273,7 +3306,8 @@ module ReceiptTransition =
                       RunId = completed.RunId
                       Coverage = coverage
                       Seeds = launch.Seeds
-                      ZeroSelection = launch.ZeroSelection }
+                      ZeroSelection = launch.ZeroSelection
+                      FullSuiteCause = launch.FullSuiteCause }
 
     /// Fold one transition into the store. Total, and the only place the store changes
     /// on a completion.
@@ -7361,6 +7395,7 @@ let internal createWithQueries
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
+          NotSelected = Map.empty
           PendingIdentities = Map.empty
           Unindexed = Set.empty
           FailedExtensions = Map.empty
@@ -7498,6 +7533,14 @@ let internal createWithQueries
                     (ObservedModel.inputs ctx.ProjectGraph)
                     (fullSuiteProjects configs)
                     inputs.Earned
+
+            let fullSuiteCause =
+                fullSuiteCauseOf
+                    scopeIsFullSuite
+                    ledgerUnreadable
+                    (Option.isSome baselineInvalid)
+                    (not (Set.isEmpty coarseGaps))
+                    (Set.isSubset (fullSuiteProjects configs) evidenceGap)
 
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
@@ -7698,7 +7741,8 @@ let internal createWithQueries
                       Selection = selection
                       WouldHaveRun = wouldHaveRun
                       Seeds = inputs.Seeds
-                      ZeroSelection = ZeroSelection.NotAZero }
+                      ZeroSelection = ZeroSelection.NotAZero
+                      FullSuiteCause = fullSuiteCause }
 
                 logLaunch "impact" inputs.Mode launch
 
@@ -7943,7 +7987,8 @@ let internal createWithQueries
                       Selection = Map.empty
                       WouldHaveRun = None
                       Seeds = inputs.Seeds
-                      ZeroSelection = ZeroSelection.NotAZero }
+                      ZeroSelection = ZeroSelection.NotAZero
+                      FullSuiteCause = fullSuiteCause }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -7997,7 +8042,8 @@ let internal createWithQueries
               // impact-scoped reading taken before the escalation.
               WouldHaveRun = None
               Seeds = []
-              ZeroSelection = ZeroSelection.NotAZero }
+              ZeroSelection = ZeroSelection.NotAZero
+              FullSuiteCause = FullSuiteCause.ForceRun }
 
         async {
             do! awaitDiscoveryBeforeLaunch ctx
@@ -8339,10 +8385,19 @@ let internal createWithQueries
                             | None, _ -> null, null
                             | Some reason, _ -> null, box reason
 
+                        // The changed files whose changes selected no tests, on EVERY branch:
+                        // they are a fact about the current selection, whichever run the
+                        // scope is read from. Always an array, so an empty one says "none".
+                        let notSelected =
+                            state.NotSelected
+                            |> Map.toArray
+                            |> Array.map (fun (file, reason) -> NotSelectedFile.wire { File = file; Reason = reason })
+
                         if ctx.IsRunning "tests" then
                             return
                                 JsonSerializer.Serialize(
                                     {| kind = "running"
+                                       notSelected = notSelected
                                        runId = runId
                                        runIds = runIds
                                        baseline = baseline
@@ -8356,9 +8411,19 @@ let internal createWithQueries
 
                             match scopeOf projects evidenceCoverage with
                             | ScopeFull n ->
+                                // Why this run took every project. Always present here: a
+                                // `full` scope is read from a receipt, and the receipt
+                                // carries its launch's cause.
+                                let cause =
+                                    receipt
+                                    |> Option.map (fun receipt -> FullSuiteCause.token receipt.FullSuiteCause)
+                                    |> Option.toObj
+
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "full"
+                                           cause = cause
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8372,6 +8437,7 @@ let internal createWithQueries
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "filtered"
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -8403,6 +8469,7 @@ let internal createWithQueries
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "none"
+                                           notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
                                            baselineAbsent = baselineAbsent
@@ -9259,7 +9326,7 @@ let internal createWithQueries
                             // contributing nothing is the one that HIDES a file's changes,
                             // and it goes out at warn. It replaced a `(names, bool)` pair
                             // whose bool this call site computed and then `ignore`d.
-                            let changedNames =
+                            let changedNames, notSelected =
                                 match FileFreshness.planLook currentClean storedTrust with
                                 | FileFreshness.Diffable baseline ->
                                     // WHAT to diff against is the plan's decision, not
@@ -9288,7 +9355,7 @@ let internal createWithQueries
                                         "test-prune"
                                         $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, baseline=%A{baseline}): %d{changes.Length} changes, %d{priorSymbols.Length} diffed against, %d{normalizedSymbols.Length} current"
 
-                                    changedSymbolNames changes
+                                    changedSymbolNames changes, Map.remove relPath state.NotSelected
                                 | FileFreshness.FileUnverified ->
                                     // The one arm that DROPS a file's changes. At warn,
                                     // and stating the consequence rather than the
@@ -9298,7 +9365,7 @@ let internal createWithQueries
                                         "test-prune"
                                         $"NOT SELECTED: %s{relPath} changed but FCS reported errors for it on this check, so its symbols may be partial and no tests were selected from it (stored=%A{storedFreshness}, rows=%A{storedRows}, storedRowCount=%d{storedSymbols.Length}). The next FCS-clean check of this file widens it back in."
 
-                                    []
+                                    [], Map.add relPath NotSelectedReason.FcsErrors state.NotSelected
 
                             let newChangedSymbols, newDebt =
                                 if not changedNames.IsEmpty then
@@ -9342,6 +9409,7 @@ let internal createWithQueries
                             let newState =
                                 { state with
                                     Debt = newDebt
+                                    NotSelected = notSelected
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     PendingIdentities =
