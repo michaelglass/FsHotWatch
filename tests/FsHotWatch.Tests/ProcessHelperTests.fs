@@ -1341,6 +1341,53 @@ let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
 
     Assert.Equal(LaunchOutcome.TimedOut, step)
 
+[<Fact(Timeout = 5000)>]
+let ``armedWatchdogLoopWith: an unarmed timeout never fires, and an armed one counts from the arming poll`` () =
+    // The child writes on poll 9 (2 s in at 250 ms a poll), long past a 1 s timeout that
+    // counted from the spawn. Armed on the first write, the timeout counts from poll 9:
+    // polls 9-12 are inside it, poll 13 (1 s later) is past it.
+    let now, advance = fakeClock DateTime.UtcNow
+    let polls = ref 0
+
+    let observe () =
+        incr polls
+        false, polls.Value >= 9
+
+    let step =
+        armedWatchdogLoopWith
+            id
+            observe
+            now
+            advance
+            250
+            System.Threading.Timeout.InfiniteTimeSpan
+            (TimeSpan.FromSeconds 1.0)
+
+    Assert.Equal(LaunchOutcome.TimedOut, step)
+    Assert.Equal(13, polls.Value)
+
+[<Fact(Timeout = 5000)>]
+let ``armedWatchdogLoopWith: an armed infinite timeout still never fires`` () =
+    // Arming an infinite timeout leaves it infinite: only the exit on poll 5 ends the wait.
+    let now, advance = fakeClock DateTime.UtcNow
+    let polls = ref 0
+
+    let observe () =
+        incr polls
+        polls.Value >= 5, true
+
+    let step =
+        armedWatchdogLoopWith
+            armedAtSpawn
+            observe
+            now
+            advance
+            250
+            System.Threading.Timeout.InfiniteTimeSpan
+            System.Threading.Timeout.InfiniteTimeSpan
+
+    Assert.Equal(LaunchOutcome.Exited, step)
+
 // runProcess under `ProcessBounds.streaming`: fast real-process arms (no global state).
 
 [<Fact(Timeout = 20000)>]
@@ -1401,11 +1448,16 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
     // Progresses (emits "go") so the launch deadline never trips, but the per-config timeout
     // is a hard cap that still kills the tree — an alive run is bounded by the caller's
     // timeout, never by the launch deadline.
+    //
+    // The timeout is armed on the child's first write, so "go" is captured before it can
+    // fire. The child waits 1 s before writing: a timeout armed at the spawn fires first
+    // and the tail has no "go", so this stays red if the arm is lost.
     match
         runProcessBounded
             "sh"
-            "-c \"echo go; sleep 30\""
-            (ProcessBounds.streaming (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 10.0))
+            "-c \"sleep 1; echo go; sleep 30\""
+            (ProcessBounds.streaming (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 10.0)
+             |> ProcessBounds.armedWhen id)
     with
     // The kill-path tail is EXPLICITLY best-effort: the kill tears the pipes down under the
     // pumps, so whether they end at EOF or die mid-read is an OS race. `ProcessOutput.text`
@@ -1660,16 +1712,21 @@ let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
     // The child announces its cause and then hangs forever, so the timeout kills its tree
     // and nothing downstream of the process ever runs. A sink fed at the end leaves this
     // file empty — the production bug exactly.
+    //
+    // The timeout is armed on the child's first write, which the sink has received by
+    // then. The child waits 1 s before writing, so a timeout armed at the spawn kills it
+    // first and the file is empty: red if the arm is lost.
     withTempDir "sink-kill" (fun dir ->
         withFileSink dir (fun sink path ->
             let outcome =
                 runProcessTo
                     (Some sink)
                     "sh"
-                    "-c \"echo SHARD-POOL-IN-USE-BY-PID-18024; sleep 30\""
+                    "-c \"sleep 1; echo SHARD-POOL-IN-USE-BY-PID-18024; sleep 30\""
                     "."
                     []
-                    (ProcessBounds.streaming (TimeSpan.FromMilliseconds 600.0) (TimeSpan.FromSeconds 10.0))
+                    (ProcessBounds.streaming (TimeSpan.FromMilliseconds 600.0) (TimeSpan.FromSeconds 10.0)
+                     |> ProcessBounds.armedWhen id)
 
             match outcome with
             | TimedOut _ -> ()

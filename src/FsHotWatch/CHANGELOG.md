@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: an accounted teardown (`runProcessAccounted`) reads the process table within the
+  10 s teardown budget, the bound its kill already has, instead of 3 s. On a loaded box `ps`
+  could miss 3 s, and the overrun report then said the tree it killed was unknown.
+
 ## 0.10.0-alpha.65 - 2026-10-05
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply
