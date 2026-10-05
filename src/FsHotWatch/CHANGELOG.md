@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.66 - 2026-10-05
+
 - fix: a coalesced FSEvents rescan (MustScanSubDirs) no longer reports files last written
   more than 2 s before the native stream started. A build right after a cold scan could
   make FSEvents coalesce into a must-scan of the root, and the empty content ledger

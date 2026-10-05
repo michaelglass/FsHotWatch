@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.45 - 2026-10-05
+
 - fix: an overrunning build's report names the process tree it killed on a loaded box. The
   teardown's `ps` read now has the 10 s teardown budget instead of 3 s, which a busy box
   could miss, leaving the report with "tree termination UNKNOWN".
