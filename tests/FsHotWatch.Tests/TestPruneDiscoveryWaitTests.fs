@@ -132,6 +132,12 @@ let ``a host that has observed no discovery launches at once`` () =
     withRepo (fun repoRoot ->
         let release = Path.Combine(repoRoot, "released")
         File.WriteAllText(release, "")
+        let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _sink =
+            FsHotWatch.Logging.installSink
+                { Write = lines.Enqueue
+                  Level = FsHotWatch.Logging.LogLevel.Debug }
 
         let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
 
@@ -147,16 +153,15 @@ let ``a host that has observed no discovery launches at once`` () =
                 []
         )
 
-        let clock = Diagnostics.Stopwatch.StartNew()
-
         host.RunCommand("run-tests", [| "{}" |])
         |> Async.Ignore
         |> fun run -> Async.RunSynchronously(run, 15000)
 
         test <@ File.Exists(Path.Combine(repoRoot, "started")) @>
-        // Wall-clock bound, cannot flake on a slow box: the gate is pre-released, so the run is
-        // milliseconds; this only fails a launch that waited for a discovery that never comes.
-        test <@ clock.Elapsed < TimeSpan.FromSeconds 10.0 @>)
+        // The launch says nothing about a discovery wait, the line every wait leaves behind
+        // ("waited …" once it settled, "still running after …" at its bound). Read from the
+        // log, not a clock: a slow box delays the launch, it does not add that line.
+        test <@ lines |> Seq.forall (fun l -> not (l.Contains "project discovery")) @>)
 
 /// A project whose test command writes a numbered cobertura to the coverage output path
 /// it is handed (`$0` of the `sh -c` script), so each run's report is distinguishable.

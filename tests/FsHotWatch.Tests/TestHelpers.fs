@@ -740,6 +740,42 @@ let FileWatchCollectionName = "FileWatch"
 type FileWatchCollection() = class end
 
 // ----------------------------------------------------------------------------
+// Hang caps over real tool work.
+//
+// An xUnit `Timeout`, and a status wait in front of it, only report a hang. Over a run of
+// the real pinned fantomas they must sit ABOVE the product's own bound on that run: below
+// it, box load cancels the test before the product can decide, and the cap becomes an
+// assertion about how fast `dotnet tool run` starts. Above it, a slow tool is the
+// product's `TimedOut` outcome, which the test reports by name.
+//
+// docs/wall-clock-bounds.md lists every bound and the rule each one follows.
+// ----------------------------------------------------------------------------
+
+/// The product's bound on one real fantomas run (`FormatTimeoutDefaultSec`), in ms.
+/// `FormatCheckPluginTests` pins it to the product constant.
+[<Literal>]
+let FantomasRunBudgetMs = 60_000
+
+/// A wait for one real fantomas run to reach a terminal status: the run's own bound,
+/// then time for the plugin to publish what the bound decided.
+[<Literal>]
+let FantomasRunWaitMs = 75_000
+
+/// The xUnit cap for a test that runs the real fantomas: five runs at the product's
+/// bound (the most any one test makes) plus a minute for everything around them.
+[<Literal>]
+let RealFantomasTestCapMs = 360_000
+
+/// A wait whose event follows a real FCS type-check or lint pass. FCS has no product
+/// bound to sit above, so this is the margin for a check slowed by a saturated box.
+[<Literal>]
+let RealCheckWaitMs = 30_000
+
+/// The xUnit cap for a test that runs real FCS checks: above the waits it makes.
+[<Literal>]
+let RealCheckTestCapMs = 120_000
+
+// ----------------------------------------------------------------------------
 // Gated shell fixtures: a child that waits for the test, and stops waiting on its own.
 //
 // Shared between test projects because the defect is: an unbounded `while [ ! -f

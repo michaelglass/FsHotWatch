@@ -10,8 +10,7 @@ open FsHotWatch.Tests.TestHelpers
 type private BarrierResult =
     { ExitCode: int
       Stdout: string
-      Stderr: string
-      Elapsed: TimeSpan }
+      Stderr: string }
 
 let private repoRoot () =
     let rec up (directory: DirectoryInfo) =
@@ -170,17 +169,14 @@ let private barrierStart root fakeDotnet probeParent project packageId settings 
 
 let private runBarrier root fakeDotnet probeParent project packageId settings =
     let start = barrierStart root fakeDotnet probeParent project packageId settings
-    let clock = Stopwatch.StartNew()
     use child = Process.Start start
     let stdout = child.StandardOutput.ReadToEndAsync()
     let stderr = child.StandardError.ReadToEndAsync()
     child.WaitForExit()
-    clock.Stop()
 
     { ExitCode = child.ExitCode
       Stdout = stdout.GetAwaiter().GetResult()
-      Stderr = stderr.GetAwaiter().GetResult()
-      Elapsed = clock.Elapsed }
+      Stderr = stderr.GetAwaiter().GetResult() }
 
 /// Reads the barrier's output as it is produced and returns the first line matching
 /// `matching`, killing the child instead of waiting it out.
@@ -419,20 +415,6 @@ let ``a wedged restore is killed at the process timeout and cleanup still runs``
     scratch (fun _ project fakeDotnet probeParent _ countFile ->
         writeProject project [ "Example.Package" ] [ "1.0.0" ]
 
-        // The control: the same script, the same box, moments before. Its elapsed time is
-        // almost entirely `dotnet fsi` compiling the barrier, which is the cost the wedged
-        // run below shares and the one that moves with machine load.
-        let control =
-            runBarrier
-                (repoRoot ())
-                fakeDotnet
-                probeParent
-                project
-                "Example.Package"
-                [ "FAKE_MODE", "success"; "FAKE_COUNT_FILE", countFile ]
-
-        test <@ control.ExitCode = 0 @>
-
         let result =
             runBarrier
                 (repoRoot ())
@@ -446,13 +428,13 @@ let ``a wedged restore is killed at the process timeout and cleanup still runs``
 
         test <@ result.ExitCode = 1 @>
         // The claim is "the wedged child was killed at the timeout, not waited out" — the
-        // fake sleeps 120 s and the probe's own budget is 100 ms. Measured against the
-        // control rather than the clock: a waited-out child adds the full 120 s over the
-        // control whatever the box is doing, while the compile that dominates both runs
-        // cancels out. An absolute bound here is a bound on that compile, and goes red on
-        // machine load rather than on behaviour.
-        test <@ result.Elapsed < control.Elapsed + TimeSpan.FromSeconds 30. @>
+        // fake sleeps 120 s and the probe's own budget is 100 ms. Shown by what the run
+        // reports, not by its wall-clock: a waited-out child exits 0 and the probe succeeds,
+        // so "timed out" is the budget firing, and "process tree kill" is the kill issued
+        // after it (both of its reports name it; a kill that threw says "process-tree kill
+        // failed" instead).
         test <@ result.Stderr.Contains("restore timed out") @>
+        test <@ result.Stderr.Contains("process tree kill") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 // ---------------------------------------------------------------------------

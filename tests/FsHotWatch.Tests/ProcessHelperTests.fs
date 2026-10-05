@@ -944,20 +944,19 @@ let ``callKillWithin: a BLOCKING kill is cut off at the budget`` () =
         let call = callKillWithin shortBudget kill
         let elapsed = clock.Elapsed
 
+        // It STOPPED waiting: the kill blocks until `gate` is set in the `finally`, so
+        // without the budget this call never returns and the xUnit cap reports the hang.
+        // The outcome names the budget that cut it off.
         Assert.Equal(KillCall.DidNotReturn shortBudget, call)
-        // It waited for approximately the budget. `Task.Wait`'s timeout and this
-        // Stopwatch are separate clocks, so allow one scheduling quantum at the
-        // lower boundary (CI has observed a 250ms wait as 249.3ms here).
+        // It waited for approximately the budget. A lower bound only, which load can never
+        // break. `Task.Wait`'s timeout and this Stopwatch are separate clocks, so allow one
+        // scheduling quantum (CI has observed a 250ms wait as 249.3ms here).
         let schedulingTolerance = TimeSpan.FromMilliseconds 10.0
 
         Assert.True(
             elapsed >= shortBudget - schedulingTolerance,
             $"gave up after %A{elapsed}, materially before the %A{shortBudget} budget"
         )
-        // ...and then it STOPPED waiting. Without the bound this line is never reached.
-        // Wall-clock bound, cannot flake on a slow box: the kill blocks until `gate` is set in the
-        // `finally`, so without the budget this never returns; 3 s is 12x the 250 ms budget.
-        Assert.True(elapsed < TimeSpan.FromSeconds 3.0, $"the budget did not cut the wait off: %A{elapsed}")
     finally
         gate.Set()
 
@@ -966,11 +965,10 @@ let ``callKillWithin: the budget is not spent on a kill that returns`` () =
     // The other direction: a healthy teardown is untouched by the bound. A tree really dies
     // in milliseconds, and a bound that made every kill wait out its budget would turn a
     // five-project run into an extra minute of nothing.
-    let clock = Diagnostics.Stopwatch.StartNew()
-    Assert.Equal(KillCall.Returned, callKillWithin (TimeSpan.FromSeconds 30.0) id)
-    // Wall-clock bound, cannot flake on a slow box: `id` returns at once, and the bound only
-    // fails a call that sat out its 30 s budget, a 10x margin.
-    Assert.True(clock.Elapsed < TimeSpan.FromSeconds 3.0, $"a kill that returned still waited %A{clock.Elapsed}")
+    //
+    // The budget is far past this test's xUnit cap, so a call that sat it out is reported
+    // as a hang instead of being timed: returning `Returned` at all is the claim.
+    Assert.Equal(KillCall.Returned, callKillWithin (TimeSpan.FromMinutes 10.0) id)
 
 [<Fact(Timeout = 5000)>]
 let ``killTreeWith: a blocked teardown ends in KillTimedOut, not in a wedge`` () =
@@ -1436,26 +1434,21 @@ let private spawnWithPipeHoldingGrandchild () =
 
 [<Fact(Timeout = 15000)>]
 let ``runProcess does not wait for a grandchild that inherited the stdout pipe`` () =
-    let sw = System.Diagnostics.Stopwatch.StartNew()
     let outcome = spawnWithPipeHoldingGrandchild ()
-    sw.Stop()
 
     // Classified by the child's EXIT CODE, not by stream EOF — a grandchild holding the pipe
     // cannot turn a clean exit into a failure. The capture is still marked honestly: we
     // bailed on a stream that never reached EOF, so it is what we caught, not what the child
     // said.
+    //
+    // A drain that waited for EOF ends in a complete capture once the grandchild's 30 s
+    // sleep releases the pipe, never in `DrainTimedOut`: the outcome, not a clock, shows
+    // the 2 s window is what ended it.
     match outcome with
     | Succeeded(ProcessOutput.DrainTimedOut(captured, window)) ->
         Assert.Contains("done", captured)
         Assert.Equal(TimeSpan.FromSeconds 2.0, window)
     | other -> Assert.Fail $"expected Succeeded with a DrainTimedOut capture, got %A{other}"
-
-    // The grandchild holds the pipe for 30 s; we must be long gone by then.
-    Assert.True(
-        sw.Elapsed < TimeSpan.FromSeconds 10.0,
-        $"post-exit drain was not bounded: took %.1f{sw.Elapsed.TotalSeconds}s waiting on a \
-          grandchild-held pipe for a child that had already exited"
-    )
 
 // ---------------------------------------------------------------------------
 // The unfinished-drain regression test: a drain that could not finish must FAIL an output
@@ -1727,10 +1720,13 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
     //
     // The second also pins `AutoFlush`: without it the bytes sit in a StreamWriter buffer
     // and the on-disk read below comes back empty.
+    //
+    // WHEN is shown by a handshake, not a clock: the child prints, then waits for a release
+    // file that only the sink's first chunk creates. A sink that hears nothing until exit
+    // never releases it, the child never exits, and the xUnit cap reports the hang.
     withTempDir "sink-during" (fun dir ->
         withFileSink dir (fun sink path ->
-            let sw = Diagnostics.Stopwatch.StartNew()
-            let mutable firstChunkAt = TimeSpan.Zero
+            let release = IO.Path.Combine(dir, "release")
             let mutable onDiskAtFirstChunk = ""
             let mutable chunks = 0
 
@@ -1738,8 +1734,7 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
                 sink chunk
 
                 if chunks = 0 then
-                    firstChunkAt <- sw.Elapsed
-                    // A SEPARATE handle, read while the child is still sleeping —
+                    // A SEPARATE handle, read while the child is still waiting —
                     // FileShare.Read is what permits it.
                     onDiskAtFirstChunk <-
                         use fs =
@@ -1748,38 +1743,22 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
                         use reader = new IO.StreamReader(fs)
                         reader.ReadToEnd()
 
+                    IO.File.WriteAllText(release, "")
+
                 chunks <- chunks + 1
 
-            // Prints at once, then lives another 3 s doing nothing.
             let outcome =
-                runProcessTo (Some observing) "sh" "-c \"echo early; sleep 3\"" "." [] quick
-
-            let elapsedAtEnd = sw.Elapsed
+                runProcessTo
+                    (Some observing)
+                    "sh"
+                    $"-c \"echo early; while [ ! -f '%s{release}' ]; do sleep 0.05; done; echo released\""
+                    "."
+                    []
+                    quick
 
             match outcome with
-            | Succeeded _ -> ()
+            | Succeeded output -> Assert.Contains("released", ProcessOutput.text output)
             | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-
-            Assert.True(chunks > 0, "the sink was never called")
-
-            // Fixture control FIRST: if the child did not actually live ~3s, "the chunk
-            // arrived early" is a claim about nothing and everything below is vacuous.
-            Assert.True(
-                elapsedAtEnd > TimeSpan.FromSeconds 2.5,
-                $"fixture broken: the child was meant to live ~3s, ran %.1f{elapsedAtEnd.TotalSeconds}s"
-            )
-
-            // Arrived at the START of the run, not at its end. RELATIVE to the run's own
-            // end, not to the clock: buffer-then-write delivers the chunk at exit, so it
-            // trails the end by nothing; streaming delivers it before the child's 3 s
-            // sleep, so it leads the end by roughly that sleep. Box load slows the spawn
-            // and the exit alike and cancels out of the difference, where an absolute
-            // "within 1.5 s of start" goes red on a slow spawn rather than on buffering.
-            Assert.True(
-                firstChunkAt < elapsedAtEnd - TimeSpan.FromSeconds 1.5,
-                $"the first chunk reached the sink at %.1f{firstChunkAt.TotalSeconds}s of a \
-                  %.1f{elapsedAtEnd.TotalSeconds}s run — that is buffer-then-write, not streaming"
-            )
 
             // And it was on disk, readable, while the child was still alive.
             Assert.Contains("early", onDiskAtFirstChunk)))

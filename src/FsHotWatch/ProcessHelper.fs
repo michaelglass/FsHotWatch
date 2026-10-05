@@ -790,10 +790,10 @@ let private recordSpawn (throughHelper: bool) (command: string) (pid: int) =
 /// box that cannot answer in this long is reported as "tree unknown", not waited on.
 let internal ProcessTableBudget = TimeSpan.FromSeconds 3.0
 
-/// Read the process table with `ps`, bounded by `ProcessTableBudget`. Spawned directly
-/// rather than through `runProcess`: this runs INSIDE a teardown — possibly one the
-/// process registry is performing at shutdown, when it refuses new admissions.
-let internal readProcessTable () : Result<ProcessRow list, string> =
+/// Read the process table with `ps`, bounded by `budget`. Spawned directly rather than
+/// through `runProcess`: this runs INSIDE a teardown — possibly one the process registry
+/// is performing at shutdown, when it refuses new admissions.
+let internal readProcessTableWithin (budget: TimeSpan) : Result<ProcessRow list, string> =
     try
         let psi =
             ProcessStartInfo(
@@ -812,10 +812,7 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
             recordSpawn false "ps" ps.Id
             let text = ps.StandardOutput.ReadToEndAsync()
 
-            if
-                ps.WaitForExit(int ProcessTableBudget.TotalMilliseconds)
-                && text.Wait ProcessTableBudget
-            then
+            if ps.WaitForExit(int budget.TotalMilliseconds) && text.Wait budget then
                 if ps.ExitCode = 0 then
                     Ok(parseProcessTable text.Result)
                 else
@@ -826,11 +823,15 @@ let internal readProcessTable () : Result<ProcessRow list, string> =
                  with _ ->
                      ())
 
-                Error $"`ps` did not answer within %s{renderBudget ProcessTableBudget}"
+                Error $"`ps` did not answer within %s{renderBudget budget}"
         finally
             ps.Dispose()
     with ex ->
         Error $"`ps` could not run: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// `readProcessTableWithin ProcessTableBudget`: the read a teardown makes.
+let internal readProcessTable () : Result<ProcessRow list, string> =
+    readProcessTableWithin ProcessTableBudget
 
 /// Settle window after a tree kill: up to `SettleAttempts` liveness polls, `SettlePause`
 /// apart, ending early the moment the tree is gone. A SIGKILLed process is gone in
