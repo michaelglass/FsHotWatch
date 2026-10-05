@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: logging. Ignoring a `FileChecked` captured against a replaced project model is
+  logged at Info, up from Debug.
+
 ## 0.7.0-alpha.27 - 2026-09-29
 
 - Share JSON accessors, deadline parsing and run helpers; one scope-label key

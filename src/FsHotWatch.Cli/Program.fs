@@ -1789,13 +1789,13 @@ let internal onRunSignal (afterRun: unit -> unit) (exitWith: int -> unit) (code:
     afterRun ()
     exitWith code
 
-/// Install SIGINT (via `Console.CancelKeyPress`) and SIGTERM (via POSIX
+/// Install SIGINT (via `Console.CancelKeyPress`), SIGTERM and SIGHUP (via POSIX
 /// `PosixSignalRegistration`) handlers that run `onRunSignal afterRun exitWith` — a
 /// plain `finally` does NOT run when the process is signalled, so without this afterRun
 /// would be skipped on exactly the abort path a gate-lock release cannot afford to miss.
 /// Each handler cancels the default terminate (`e.Cancel`/`ctx.Cancel <- true`) so the
 /// process stays alive long enough to run afterRun. Returns a disposable that
-/// unregisters both.
+/// unregisters all three.
 ///
 /// `exitWith` is INJECTED so a test can signal itself and observe afterRun fire without
 /// the handler terminating the test process; production passes `exit`.
@@ -1815,10 +1815,21 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
                 onRunSignal afterRun exitWith 143 // 128 + SIGTERM(15)
         )
 
+    // A closing terminal sends SIGHUP, whose default action ends the process with no
+    // `afterRun`: the hook in flight outlives the run and no verdict is written.
+    let sighup =
+        PosixSignalRegistration.Create(
+            PosixSignal.SIGHUP,
+            fun (ctx: PosixSignalContext) ->
+                ctx.Cancel <- true
+                onRunSignal afterRun exitWith 129 // 128 + SIGHUP(1)
+        )
+
     { new IDisposable with
         member _.Dispose() =
             Console.CancelKeyPress.RemoveHandler onCancelKey
-            sigterm.Dispose() }
+            sigterm.Dispose()
+            sighup.Dispose() }
 
 /// The timed-hook plumbing BOTH run brackets share: run ONE hook, measure it against
 /// the invocation's clock, and accumulate the `HookVerdict` + `TimingSpan` pair a

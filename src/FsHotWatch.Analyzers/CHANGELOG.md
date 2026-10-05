@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: logging. Ignoring a `FileChecked` captured against a replaced project model is
+  logged at Info, up from Debug.
+
 ## 0.7.0-alpha.43 - 2026-10-05
 
 - fix: an analyzer that cannot walk the typed tree is a crash, not a silent pass. On a

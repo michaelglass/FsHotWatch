@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor: `Verdict.path` returns `FsHwPaths.verdictFile`.
+
+- fix: SIGHUP ends a `check`/`confirm` run like SIGINT and SIGTERM: the hook in flight is
+  reaped, the verdict says the run was signalled, and the exit code is 129. A closed
+  terminal used to leave the hook running and no verdict behind.
+
 ## 0.14.0-alpha.88 - 2026-10-05
 
 - fix!: a daemon in a checkout that `cache.scope: "default-workspace"` leaves out logs one

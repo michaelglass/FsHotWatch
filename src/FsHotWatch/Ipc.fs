@@ -381,12 +381,23 @@ type DaemonRpcTarget
     /// Get current scan progress without blocking. When the daemon is wedged on
     /// a stuck op, the scan line is prefixed with the `WEDGED: ...` report so a
     /// plain `fshw scan-status` poll surfaces the wedge inline.
+    ///
+    /// An answer that reports a scan in progress is logged at Info, so a cold scan's
+    /// progress is in the daemon log and not only in the polling client's terminal. An
+    /// idle or finished scan is not: a waiting client polls this repeatedly.
     member _.ScanStatus() : string =
+        let clock = Diagnostics.Stopwatch.StartNew()
         let scan = config.GetScanStatus()
 
-        match wedgeEntry () with
-        | Some(_, v) -> $"%s{unbox<string> v}\n%s{scan}"
-        | None -> scan
+        let answer =
+            match wedgeEntry () with
+            | Some(_, v) -> $"%s{unbox<string> v}\n%s{scan}"
+            | None -> scan
+
+        if scan.StartsWith("scanning:", StringComparison.Ordinal) then
+            Logging.info "rpc" $"scan status answered in %d{clock.ElapsedMilliseconds}ms: %s{answer}"
+
+        answer
 
     /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
     ///

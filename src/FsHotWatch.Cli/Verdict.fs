@@ -1813,8 +1813,7 @@ let create
 let withAttribution (attribution: Attribution) (v: Verdict) : Verdict = { v with attribution = attribution }
 
 /// Absolute path to the verdict file.
-let path (repoRoot: string) : string =
-    Path.Combine(FsHwPaths.root repoRoot, "verdict.json")
+let path (repoRoot: string) : string = FsHwPaths.verdictFile repoRoot
 
 /// Repo-relative path to the verdict file — what the CLI PRINTS, so a reader does not
 /// have to translate it before using it.

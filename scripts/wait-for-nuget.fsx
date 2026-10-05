@@ -66,9 +66,10 @@ let configuration () =
     // The budget has to outlast nuget.org's index lag, not just its upload. A package
     // whose Release run was green is routinely not restorable for ~15 minutes
     // afterwards, so a barrier that gives up sooner fails closed on ordinary
-    // releases. 80 × 15s = 20 minutes: the observed lag plus margin.
+    // releases. 160 × 15s = 40 minutes: twenty minutes gave up on two of seven
+    // releases while nuget.org was still indexing a package that then resolved.
     match
-        positiveSetting "FSHW_NUGET_PROBE_ATTEMPTS" 80,
+        positiveSetting "FSHW_NUGET_PROBE_ATTEMPTS" 160,
         positiveSetting "FSHW_NUGET_PROBE_DELAY_MS" 15000,
         positiveSetting "FSHW_NUGET_PROBE_PROCESS_TIMEOUT_MS" 120000
     with
