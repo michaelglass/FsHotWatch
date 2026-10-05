@@ -88,6 +88,13 @@ All notable changes to FsHotWatch packages are documented here.
   or an analysis that disappears after a rediscovery is now explained in `daemon.log`
   without turning on Debug.
 
+### core: a cold scan's progress is in the daemon log
+
+- **feat: logging. A scan-status answer that reports a scan in progress is logged at
+  Info** (`[rpc] scan status answered in 3ms: scanning: 5/10 files (50%)`). A cold scan's
+  progress used to reach only the polling client's terminal. An idle or finished scan
+  is not logged, since a waiting client polls repeatedly.
+
 ### release: the publication barrier waits forty minutes for nuget.org to index
 
 - **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s
