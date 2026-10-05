@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.65 - 2026-10-05
+
 - fix: a cold `check` could end red with "no evidence receipt for the graded run … — nothing
   vouches for this green" right after its full suite passed. A quiet completion (nothing
   to select) that folded while an obligation was owed — symbols the cold scan delivered

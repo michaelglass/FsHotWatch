@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.87 - 2026-10-05
+
 - fix!: `check` and `confirm` grade the run `test-scope` names by the evidence that same reply
   sends for it, instead of by the diagnostics reply's receipt ledger. The two replies are
   read one after the other, and a completion that landed between them paired the graded run
