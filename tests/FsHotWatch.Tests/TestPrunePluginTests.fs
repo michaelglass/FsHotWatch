@@ -5589,56 +5589,6 @@ let ``executeTests runs project on BuildSucceeded`` () =
 
         test <@ not staleWarning @>)
 
-[<Theory(Timeout = 5000)>]
-[<InlineData(true, true, true, true, true, "requested")>]
-[<InlineData(false, true, true, true, true, "unreadable-ledger")>]
-[<InlineData(false, false, true, true, true, "no-full-suite-baseline")>]
-[<InlineData(false, false, false, true, true, "coarse-fallback")>]
-[<InlineData(false, false, false, false, true, "evidence-gap")>]
-[<InlineData(false, false, false, false, false, "selection-reached-every-project")>]
-let ``a launch names the first widening that applies as its full-suite cause``
-    (
-        requested: bool,
-        ledgerUnreadable: bool,
-        baselineInvalid: bool,
-        coarseGaps: bool,
-        evidenceGap: bool,
-        expected: string
-    ) =
-    let cause =
-        fullSuiteCauseOf requested ledgerUnreadable baselineInvalid coarseGaps evidenceGap
-
-    test <@ FsHotWatch.TestPrune.FullSuiteCause.token cause = expected @>
-
-[<Fact(Timeout = 25000)>]
-let ``a full suite run for want of a baseline says so in test-scope and in the verdict scope`` () =
-    // The checkout has never earned a full-suite baseline, so the first run takes the whole
-    // suite. WHY it did used to be one daemon.log line ("Scope: FULL SUITE (no valid
-    // full-suite baseline)"); a reader of the verdict saw only `kind: full`.
-    withTempDir "tp-full-suite-cause" (fun tmpDir ->
-        let host, sentinel = withSingleProjectHarness tmpDir "TestProj"
-
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 12.0
-        waitForQuiescent host 10000
-        test <@ File.Exists sentinel @>
-
-        let reply =
-            host.RunCommand("test-scope", [||])
-            |> Async.RunSynchronously
-            |> Option.defaultWith (fun () -> failwith "test-scope returned nothing")
-
-        use document = JsonDocument.Parse reply
-        test <@ document.RootElement.GetProperty("kind").GetString() = "full" @>
-        test <@ document.RootElement.GetProperty("cause").GetString() = "no-full-suite-baseline" @>
-
-        let scope =
-            FsHotWatch.Cli.IpcParsing.parseTestRunReport reply
-            |> VerdictFixtures.scopeOnTheWire
-
-        test <@ scope.["kind"].GetValue<string>() = "full" @>
-        test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>)
-
 [<Fact(Timeout = 25000)>]
 let ``a cold-start BuildCompleted must NOT replay a test result from the task cache`` () =
     // Asserting the opposite here — that session 2 must NOT re-create the sentinel because

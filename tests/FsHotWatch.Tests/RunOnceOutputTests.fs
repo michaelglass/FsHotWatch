@@ -894,7 +894,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             []
             FsHotWatch.Cli.CheckVerdict.InnerLoop
             false
-            (BaselineFixtures.reportOf (FsHotWatch.Cli.IpcParsing.FullSuite(1, None)))
+            (BaselineFixtures.reportOf (FsHotWatch.Cli.IpcParsing.FullSuite 1))
             FsHotWatch.Cli.Verdict.NoReading
             Map.empty
             []
@@ -1294,7 +1294,7 @@ let ``readTestRun parses a full-suite reply from the in-process host`` () =
                   + "}" ]
 
     let report = FsHotWatch.Cli.RunOnceCheck.readTestRun host
-    test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(3, None) @>
+    test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``readTestRun reports an impact-filtered run as filtered, never as full`` () =

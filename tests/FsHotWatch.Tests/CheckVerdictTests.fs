@@ -13,7 +13,7 @@ open FsHotWatch.Tests.TestHelpers
 /// about COMPLETENESS (did every file get checked), not about what the tests
 /// covered — so these cases pin the InnerLoop mode, which ignores the scope
 /// entirely. Scope itself is pinned by the Confirmation tests below.
-let private anyScope = FullSuite(1, None)
+let private anyScope = FullSuite 1
 
 /// A plugin whose status is `status` and which has NOTHING else to say — no run
 /// record, no diagnostics. The shape of a plugin the framework's crash-net forced to
@@ -59,7 +59,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -78,7 +78,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -96,7 +96,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -122,7 +122,7 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -142,7 +142,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -152,7 +152,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: a clean full run is still Clean / exit 0 — no regression from the waiting-on-build term`` () =
-    let clean = inputs false Complete (FullSuite(4, None))
+    let clean = inputs false Complete (FullSuite 4)
     test <@ verdict Confirmation clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ exitCode (verdict Confirmation clean) = 0 @>
 
@@ -269,10 +269,7 @@ let ``Unknown coverage is Incomplete and never Clean, with no sentinel to rank i
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: a full-suite run with no failures is the ONLY route to Clean`` () =
     test
-        <@
-            verdict Confirmation (inputs false Complete (FullSuite(4, None))) = (CheckOutcome.Clean
-                BaselineFixtures.baseline)
-        @>
+        <@ verdict Confirmation (inputs false Complete (FullSuite 4)) = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: an impact-filtered run cannot yield Clean`` () =
@@ -310,7 +307,7 @@ let ``Confirmation: real failures still short-circuit ahead of scope`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: incomplete coverage still outranks scope`` () =
-    test <@ verdict Confirmation (inputs false (Incomplete 7) (FullSuite(4, None))) = CheckOutcome.Incomplete 7 @>
+    test <@ verdict Confirmation (inputs false (Incomplete 7) (FullSuite 4)) = CheckOutcome.Incomplete 7 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
@@ -377,7 +374,7 @@ let ``a Confirmation cannot scan its way out of an unearned scope`` () =
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a full-suite reply parses as FullSuite`` () =
     let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
-    test <@ (parseTestRunReport json).Scope = FullSuite(3, None) @>
+    test <@ (parseTestRunReport json).Scope = FullSuite 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a filtered reply parses as ImpactFiltered`` () =
@@ -442,7 +439,7 @@ let ``parseTestRunReport: a reply with no run ledger still parses its scope`` ()
     let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
     let r = parseTestRunReport json
 
-    test <@ r.Scope = FullSuite(3, None) @>
+    test <@ r.Scope = FullSuite 3 @>
     test <@ List.isEmpty r.SessionRuns @>
 
 /// THE compatibility guarantee for this field, and the reason it is safe to add to
@@ -455,7 +452,7 @@ let ``parseTestRunReport: a reply with no seeds still parses its scope`` () =
     let json = """{"kind":"full","ranProjects":3,"totalProjects":3}"""
     let r = parseTestRunReport json
 
-    test <@ r.Scope = FullSuite(3, None) @>
+    test <@ r.Scope = FullSuite 3 @>
     test <@ List.isEmpty r.Seeds @>
     test <@ r.SeedCount = 0 @>
 
@@ -590,7 +587,7 @@ let ``an all-unattributable ledger is NO VERDICT (exit 3), not a red`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(6, None)
+          Scope = FullSuite 6
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -612,7 +609,7 @@ let ``ONE attributable diagnostic among them keeps the red`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(6, None)
+          Scope = FullSuite 6
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -633,7 +630,7 @@ let ``a FAILING PLUGIN beside a stale ledger keeps the red`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(6, None)
+          Scope = FullSuite 6
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -653,7 +650,7 @@ let ``a CLEAN ledger is still Clean, never stale-daemon-state`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(6, None)
+          Scope = FullSuite 6
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -673,7 +670,7 @@ let ``stale daemon state is the answer, not something to re-scan`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(6, None)
+          Scope = FullSuite 6
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -848,7 +845,7 @@ let ``NoAbort changes nothing — a clean run is still Clean`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite(4, None)
+          Scope = FullSuite 4
           Baseline = BaselineFixtures.reading
           ProjectModel = ProjectModelFixtures.available }
 
@@ -951,7 +948,7 @@ let private withBaseline (baseline: BaselineReading) (i: CheckInputs) : CheckInp
 
 [<Fact>]
 let ``a clean check carries the baseline the daemon reported, in both modes`` () =
-    let clean = inputs false Complete (FullSuite(4, None))
+    let clean = inputs false Complete (FullSuite 4)
 
     test <@ verdict InnerLoop clean = CheckOutcome.Clean(Baseline.FullSuiteRun BaselineFixtures.ref) @>
     test <@ verdict Confirmation clean = CheckOutcome.Clean(Baseline.FullSuiteRun BaselineFixtures.ref) @>
@@ -970,7 +967,7 @@ let ``an ABSENT baseline is NO VERDICT (exit 3) carrying the daemon's reason, ne
     // baseline from its accounted full run, and a full run whose projects were not all
     // accounted for did not earn one.
     let fullButAbsent =
-        inputs false Complete (FullSuite(4, None))
+        inputs false Complete (FullSuite 4)
         |> withBaseline (BaselineReading.Absent "why")
 
     test <@ verdict Confirmation fullButAbsent = CheckOutcome.NoBaseline "why" @>
@@ -1171,7 +1168,7 @@ let ``the unavailable-model fixtures really are unavailable, and the healthy fix
 [<Fact(Timeout = 15000)>]
 let ``an unavailable project model can NEVER yield a green — in any mode, scope, coverage, baseline or build wait`` () =
     let scopes =
-        [ FullSuite(4, None)
+        [ FullSuite 4
           ImpactFiltered(1, 4)
           NoTestsRun NoTestsReason.AlreadyVerified
           NoTestsRun NoTestsReason.Unstated
@@ -1219,12 +1216,10 @@ let ``a real failure still reddens over an unavailable model, and a dead host is
     // the model is doing — the model check refines "nothing failed", it never launders a red.
     for model in unavailableModels do
         test
-            <@
-                verdict InnerLoop (inputs true Complete (FullSuite(4, None)) |> withModel model) = CheckOutcome.FailuresFound
-            @>
+            <@ verdict InnerLoop (inputs true Complete (FullSuite 4) |> withModel model) = CheckOutcome.FailuresFound @>
 
         let aborted =
-            { inputs false Complete (FullSuite(4, None)) with
+            { inputs false Complete (FullSuite 4) with
                 RunnerAborted = RunnerAbort.HostDied [ "killed" ] }
             |> withModel model
 
@@ -1236,7 +1231,7 @@ let ``an unavailable model is the answer — no re-scan could have made one avai
     // daemon side anyway; one that reads a FAILED model reads the same failure again.
     // Either way the honest answer is the one already in hand: nothing was verified.
     let reading =
-        inputs false Complete (FullSuite(4, None))
+        inputs false Complete (FullSuite 4)
         |> withModel (ProjectModelReading.Observed(FsHotWatch.ProjectModel.Observation.Rediscovering 9L))
 
     test <@ verdict Confirmation reading = CheckOutcome.ModelUnavailable reading.ProjectModel @>

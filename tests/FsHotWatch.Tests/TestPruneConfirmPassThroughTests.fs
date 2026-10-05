@@ -619,9 +619,7 @@ let ``set-scope impact ends pass-through before any run`` () =
 /// match. Each entry is a decision, made here in view.
 let private selectionOwned: (string * string) list =
     [ "test-scope:seeds", "the symbols whose impact selection launched the run; pass-through selects nothing"
-      "test-scope:seedCount", "the count of those symbols"
-      "test-scope:cause",
-      "why the run took the full suite: a confirm requests it, a cold check takes it for want of a baseline" ]
+      "test-scope:seedCount", "the count of those symbols" ]
 
 let private runAt (root: string) (setup: Setup) =
     Directory.CreateDirectory root |> ignore
