@@ -273,7 +273,7 @@ type AllPluginsCollection() = class end
 type AllPluginsTests(warm: AllPluginsWarmup) =
     interface IClassFixture<AllPluginsWarmup>
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = RealCheckTestCapMs)>]
     member _.``all plugins receive events when checking a file``() =
         let repoRoot = warm.RepoRoot
 
@@ -324,7 +324,7 @@ type AllPluginsTests(warm: AllPluginsWarmup) =
         host.EmitFileChanged(SourceChanged [ sourceFile ])
         test <@ host.GetStatus("format-check").IsSome @>
 
-        waitForQuiescent host 30000
+        waitForQuiescent host RealCheckWaitMs
 
         let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
         test <@ diagResult.IsSome @>
@@ -408,7 +408,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
                 assertResult host tmpFile
             | None -> Assert.Fail("FCS failed to check file")))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``lint plugin detects warnings on bad code`` () =
     let badCode =
         """module Temp
@@ -436,7 +436,7 @@ let x = 5
                         | Some(Completed _)
                         | Some(PluginStatus.Failed _) -> true
                         | _ -> false)
-                    5000
+                    RealCheckWaitMs
 
                 let status = host.GetStatus("lint")
                 test <@ status.IsSome @>
@@ -465,7 +465,7 @@ let private pinnedFantomasVersion =
     | Result.Ok pin -> pin.Version
     | Result.Error e -> failwith $"this checkout must pin fantomas: %A{e}"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check plugin detects unformatted code`` () =
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
@@ -484,7 +484,7 @@ let ``format check plugin detects unformatted code`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            25000
+            FantomasRunWaitMs
 
         match host.GetStatus("format-check") with
         | Some(Completed(_, verdict)) ->
@@ -494,7 +494,7 @@ let ``format check plugin detects unformatted code`` () =
                 @>
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check plugin passes on well-formatted code`` () =
     withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -511,7 +511,7 @@ let ``format check plugin passes on well-formatted code`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            25000
+            FantomasRunWaitMs
 
         match host.GetStatus("format-check") with
         | Some(Completed(_, verdict)) ->
@@ -521,7 +521,7 @@ let ``format check plugin passes on well-formatted code`` () =
                 @>
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``plugin status reflects running to completed lifecycle`` () =
     let content = "module Temp\n\nlet x = 5\n"
 
@@ -543,7 +543,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            25000
+            FantomasRunWaitMs
 
         let afterStatus = host.GetStatus("format-check")
         test <@ afterStatus.IsSome @>
@@ -552,7 +552,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-debounce-{Guid.NewGuid():N}")
     Directory.CreateDirectory(dir) |> ignore
@@ -585,7 +585,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            25000
+            FantomasRunWaitMs
 
         match host.GetStatus("format-check") with
         | Some(Completed(_, verdict)) -> test <@ verdict.Summary.StartsWith "2 of 5 files need formatting" @>
@@ -600,7 +600,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 // FormatPreprocessor — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor succeeds on well-formatted file`` () =
     withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
@@ -614,7 +614,7 @@ let ``FormatPreprocessor succeeds on well-formatted file`` () =
                 <@ result.Evidence = $"dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)" @>
         | Result.Error e -> Assert.Fail e)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor reformats badly formatted file`` () =
     let badCode = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
@@ -630,7 +630,7 @@ let ``FormatPreprocessor reformats badly formatted file`` () =
 // LintPlugin — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``LintPlugin reports no warnings on clean code`` () =
     let repoRoot = findRepoRoot ()
 
@@ -666,7 +666,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
                 | Some(Completed _)
                 | Some(PluginStatus.Failed _) -> true
                 | _ -> false)
-            5000
+            RealCheckWaitMs
 
         let status = host.GetStatus("lint")
         test <@ status.IsSome @>
@@ -679,7 +679,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
         | other -> Assert.Fail($"Unexpected lint status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``LintPlugin reports warnings on code with issues`` () =
     let repoRoot = findRepoRoot ()
 
@@ -708,9 +708,9 @@ let x = 5
                         | Some(Completed _)
                         | Some(PluginStatus.Failed _) -> true
                         | _ -> false)
-                    5000
+                    RealCheckWaitMs
 
-                waitForQuiescent host 30000
+                waitForQuiescent host RealCheckWaitMs
 
                 let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
                 test <@ cmdResult.IsSome @>
@@ -1630,7 +1630,7 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
 // Full pipeline integration
 // ===========================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``Full pipeline: format → build → test`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -1724,7 +1724,7 @@ let ``Full pipeline: format → build → test`` () =
 // Regression: concurrent build/test guards
 // ===========================================================================
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 30000)>]
 let ``BuildPlugin serializes changes that arrive during a build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCount = 0
@@ -1777,7 +1777,7 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
                 | Some(PluginStatus.Completed _)
                 | Some(PluginStatus.Failed _) -> true
                 | _ -> false))
-        5000
+        15000
 
     elapsed.Stop()
 
@@ -1898,16 +1898,12 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess kills child when exceeded`` () =
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
     let result =
         runProcess "sleep" "10" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 200.0))
 
-    sw.Stop()
+    // The outcome is the proof, not a clock: a child left to finish its sleep exits 0 and
+    // is `Succeeded`, so `TimedOut` means the 200 ms bound fired and the child was killed.
     Assert.True(isTimedOut result)
-    // Wall-clock bound, cannot flake on a slow box: it separates a 200 ms timeout plus a kill
-    // (milliseconds) from a child left to finish its 10 s sleep, a 15x margin either way.
-    Assert.True(sw.Elapsed < TimeSpan.FromSeconds 3.0, $"took {sw.Elapsed}")
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess reports TimedOut on kill, carrying the child's pre-kill stdout`` () =
@@ -2000,14 +1996,11 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
 
         host.RegisterHandler(handler)
 
-        let sw = System.Diagnostics.Stopwatch.StartNew()
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 8000
-        sw.Stop()
 
-        // Wall-clock bound, cannot flake on a slow box: the project's TimeoutSec is 1 s, and the
-        // bound only fails a run that ignored it; `waitForTerminalStatus` itself gives up at 8 s.
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds 8.0, $"took {sw.Elapsed}")
+        // The recorded outcome is the proof, not a clock: a run that ignored its 1 s
+        // TimeoutSec lets `sleep 10` exit 0, which is not `TimedOut`.
         let history = host.GetHistory("test-prune")
         test <@ not history.IsEmpty @>
         let last = List.last history
@@ -2294,22 +2287,18 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     | FsHotWatch.Cli.RunOnceOutput.StatusView.Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
 
-// The `waitForPluginTerminalIfRunning` tests below make Task.Delay-based timing
-// assertions that systematically bust under the unit suite's parallelism. This suite is
-// looser, so the windows hold.
+// The `waitForPluginTerminalIfRunning` tests below assert what ended each wait (no
+// plugin, a terminal status, or the wait's own timeout), never how long it took.
 
 [<Fact(Timeout = 30000)>]
 let ``waitForPluginTerminalIfRunning returns immediately when plugin not registered`` () =
     let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
-    let sw = System.Diagnostics.Stopwatch.StartNew()
 
-    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(5.0))
+    // Returning at all is the claim. The wait's own timeout is far past this test's
+    // xUnit cap, so a wait that did not return at once would be reported as a hang
+    // rather than measured against a clock.
+    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromMinutes 10.0)
     |> Async.RunSynchronously
-
-    sw.Stop()
-    // Wall-clock bound, cannot flake on a slow box: an unregistered plugin returns without
-    // waiting at all, so this only fails a wait that ran into its 5 s timeout.
-    test <@ sw.Elapsed < TimeSpan.FromSeconds(3.0) @>
 
 let private makeControllablePlugin (name: string) =
     let release = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -2346,25 +2335,28 @@ let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
 
     host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
 
-    let _ =
-        System.Threading.Tasks.Task.Run(fun () ->
-            task {
-                do! System.Threading.Tasks.Task.Delay(300)
-                plugin.Release.TrySetResult() |> ignore
-            }
-            :> System.Threading.Tasks.Task)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("build") with
+            | Some(Running _) -> true
+            | _ -> false)
+        10000
 
-    let sw = System.Diagnostics.Stopwatch.StartNew()
+    // The wait's own timeout is far past this test's xUnit cap: only the release can end
+    // it, so returning proves it observed the terminal status rather than its clock.
+    let wait =
+        waitForPluginTerminalIfRunning host "build" (TimeSpan.FromMinutes 10.0)
+        |> Async.StartAsTask
 
-    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(15.0))
-    |> Async.RunSynchronously
+    // Still waiting while the plugin is Running. A negative window: load can only delay a
+    // return, never cause one, so this cannot fail on a slow box.
+    let premature =
+        System.Threading.Tasks.Task.WhenAny(wait, System.Threading.Tasks.Task.Delay 300).Result
 
-    sw.Stop()
+    test <@ not (obj.ReferenceEquals(premature, wait)) @>
 
-    test <@ sw.Elapsed > TimeSpan.FromMilliseconds(200.0) @>
-    // Wall-clock bound, cannot flake on a slow box: release comes at 300 ms, so this only fails
-    // a wait that ignored it and ran into its 15 s timeout.
-    test <@ sw.Elapsed < TimeSpan.FromSeconds(14.0) @>
+    plugin.Release.TrySetResult() |> ignore
+    wait.Wait()
 
     match host.GetStatus("build") with
     | Some(Running _) -> failwith "build should be terminal after wait"
@@ -2385,10 +2377,17 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
 
     sw.Stop()
 
+    // A lower bound only: it waited out its 500 ms. Load lengthens a wait, never shortens it.
     test <@ sw.Elapsed > TimeSpan.FromMilliseconds(450.0) @>
-    // Wall-clock bound, cannot flake on a slow box: the 500 ms timeout is the work; 10 s only
-    // fails a wait that never honoured it (the plugin is never released before the assert).
-    test <@ sw.Elapsed < TimeSpan.FromSeconds(10.0) @>
+
+    // It returned with the plugin still Running, so its timeout ended it, not a terminal
+    // status. A wait that ignored its timeout never returns, and the xUnit cap reports it.
+    test
+        <@
+            match host.GetStatus("build") with
+            | Some(Running _) -> true
+            | _ -> false
+        @>
 
     plugin.Release.TrySetResult() |> ignore
 

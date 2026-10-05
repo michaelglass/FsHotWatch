@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### tests: no test asserts how long something took
+
+- [`docs/wall-clock-bounds.md`](docs/wall-clock-bounds.md) lists every upper wall-clock
+  bound in the suites, its kind, and why it cannot fail on a loaded machine. Sixteen
+  duration assertions became assertions on what happened (an outcome, a count, a log
+  line, or a handshake). That includes both relative bounds from the benchmark change
+  above: one of them still failed a gate under load. The rest carry a written reason.
+- xUnit caps and status waits over the real pinned fantomas now sit above the product's
+  60 s bound per run, and those over real FCS checks above the waits they make. A slow
+  tool is the product's `TimedOut`, named in the failure, not a cancelled test.
+- Five tests whose claim includes a product bound that load can reach first (the 3 s
+  `ps` read during an overrun teardown, a 20 s `dotnet build` budget, sub-second
+  timeouts that race a child's first write) are listed there as not yet fixable without
+  a product seam.
+
 ### test-prune, cli: the graded run and its evidence are one run, read from one reply
 
 - **fix: a cold `check` no longer ends red with "nothing vouches for this green" over a

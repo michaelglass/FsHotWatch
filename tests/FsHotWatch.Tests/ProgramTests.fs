@@ -316,15 +316,12 @@ let ``startFreshDaemonWith reports a failed launch without waiting for a daemon`
                         false
                 LaunchDaemon = fun _ _ _ -> invalidOp "helper exited 7 launching: start" }
 
-        let clock = Diagnostics.Stopwatch.StartNew()
-
         let stderr, result =
             captureStderr (fun () -> startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "logs" 10.0)
 
         test <@ not result @>
-        // Wall-clock bound, cannot flake on a slow box: the launch throws at once and is probed
-        // once, so this only fails a start that polled out its 10 s startup timeout.
-        test <@ clock.Elapsed < TimeSpan.FromSeconds 5.0 @>
+        // One probe and no more: a start that polled out its 10 s startup timeout probes the
+        // pipe every 100 ms, so the count, not a clock, shows it never waited.
         test <@ probes = 1 @>
         test <@ stderr.Contains "Could not launch the daemon: helper exited 7 launching: start" @>)
 

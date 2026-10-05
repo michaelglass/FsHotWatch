@@ -1501,15 +1501,16 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
 
     host.RegisterHandler(handler)
 
+    // How the wait ENDED, not how long it took. Its own timeout is far past this test's
+    // xUnit cap, so only quiescence can end it: a wait that never settles is reported as a
+    // hang, and no clock, the wait's or the test's, decides the outcome.
     let waitTask =
-        waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
+        waitForAllTerminal host (TimeSpan.FromMinutes(10.0)) System.Threading.CancellationToken.None
 
-    // How the wait ENDED, not how long it took: a wait that runs to its 5s timeout faults
-    // with a TimeoutException, so a successful completion is the settle on quiescence
-    // whatever the box's speed. No wall-clock bound is asserted.
     let completed =
         try
-            waitTask.Wait(TimeSpan.FromSeconds(10.0))
+            waitTask.Wait()
+            true
         with :? AggregateException ->
             false
 

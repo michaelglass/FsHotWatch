@@ -2026,22 +2026,15 @@ let ``shellInvocation escapes double quotes in the passed command`` () =
 [<Fact(Timeout = 20000)>]
 let ``a beforeRun hook that hangs TIMES OUT instead of wedging the tests slot`` () =
     // To see this go red, pass `None` for the timeout (the old InfiniteTimeSpan
-    // behaviour): it then blocks for 60s, past the xUnit budget.
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
+    // behaviour): it then blocks for 60s, past the xUnit budget. The outcome is the proof,
+    // not a clock: a hook left to finish `sleep 60` succeeds, and says nothing of a timeout.
     let hook =
         FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 1) "." "sleep 60"
 
     let (success, output) = hook ()
-    sw.Stop()
 
     test <@ not success @>
     test <@ output.Contains("timed out") @>
-
-    Assert.True(
-        sw.Elapsed < System.TimeSpan.FromSeconds 15.0,
-        $"hook was not bounded: took %.1f{sw.Elapsed.TotalSeconds}s"
-    )
 
 [<Fact(Timeout = 20000)>]
 let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` () =
@@ -2050,22 +2043,17 @@ let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` ()
     // Playwright driver — here a backgrounded `sleep`) inherited the stdout pipe and
     // holds it open. The old success-path `Task.WaitAll` waited on an EOF that never
     // came, so a hook that had already SUCCEEDED never returned.
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
+    //
+    // The grandchild outlives the hook's own 60 s timeout, so a hook that waits for its EOF
+    // can only end by timing out, which is `not success`. The outcome is the proof, not a
+    // clock; the xUnit cap reports the wait before that timeout would.
     let hook =
-        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 60) "." "( sleep 30 & ) ; echo ready"
+        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 60) "." "( sleep 90 & ) ; echo ready"
 
     let (success, output) = hook ()
-    sw.Stop()
 
     test <@ success @>
     test <@ output.Contains("ready") @>
-
-    Assert.True(
-        sw.Elapsed < System.TimeSpan.FromSeconds 15.0,
-        $"hook waited on a grandchild-held pipe for a child that had already exited: \
-          took %.1f{sw.Elapsed.TotalSeconds}s"
-    )
 
 // --- resolveExistingPathsWithRetry ---
 

@@ -141,6 +141,15 @@ let private reflowFixture =
 // Basics
 // ---------------------------------------------------------------------------
 
+/// The real-tool tests' caps are derived from the product's bound on one fantomas run. A
+/// bound raised in the product without them would put the caps back below it, where box
+/// load cancels a test before the product can say the run timed out.
+[<Fact(Timeout = 5000)>]
+let ``the real-tool hang caps sit above the product's bound on a fantomas run`` () =
+    test <@ FantomasRunBudgetMs = FormatTimeoutDefaultSec * 1000 @>
+    test <@ FantomasRunWaitMs > FantomasRunBudgetMs @>
+    test <@ RealFantomasTestCapMs >= 5 * FantomasRunBudgetMs + 60_000 @>
+
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler = createFormatCheck "/tmp" None
@@ -465,7 +474,7 @@ let ``FormatPreprocessor dispose is callable`` () =
 // the regression fixture: the plugin AGREES with the pinned tool
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format-check and the preprocessor agree with a direct pinned fantomas --check on a shape it reflows`` () =
     withPinnedRepo "fmt-oracle" (fun dir ->
         let file = Path.Combine(dir, "Fixture.fs")
@@ -481,8 +490,8 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         // `unformatted` reads committed state: each read below waits for the commit.
         let beforeFirst = committedBy host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
-        waitCompleted host 30000
-        test <@ waitForCommitted host "format-check" beforeFirst 1L 30000 @>
+        waitCompleted host FantomasRunWaitMs
+        test <@ waitForCommitted host "format-check" beforeFirst 1L FantomasRunWaitMs @>
 
         test <@ summaryOf host = $"1 of 1 files need formatting — %s{evidenceFor dir thisRepoPin.Version}" @>
         test <@ (unformattedCount host).Contains("\"count\": 1") @>
@@ -506,12 +515,12 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         let beforeSecond = committedBy host "format-check"
         let second = beginAwaitNextTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
-        test <@ second.Wait(TimeSpan.FromSeconds 30.0) @>
-        test <@ waitForCommitted host "format-check" beforeSecond 1L 30000 @>
+        test <@ second.Wait(FantomasRunWaitMs) @>
+        test <@ waitForCommitted host "format-check" beforeSecond 1L FantomasRunWaitMs @>
         test <@ summaryOf host = $"format OK (1 checked) — %s{evidenceFor dir thisRepoPin.Version}" @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``the pinned tool the plugin runs reports the version the manifest pins`` () =
     // `dotnet tool run` resolves the version from the manifest by construction; this
     // pins that construction against the binary's own answer, so a future resolver
@@ -527,7 +536,7 @@ let ``the pinned tool the plugin runs reports the version the manifest pins`` ()
 // Behaviour over the real pinned tool
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor formats unformatted file`` () =
     withPinnedRepo "fmt" (fun dir ->
         let file = Path.Combine(dir, "Bad.fs")
@@ -541,7 +550,7 @@ let ``FormatPreprocessor formats unformatted file`` () =
 
         test <@ File.ReadAllText(file) = "module Bad\n\nlet x = 1\nlet y = 2\n" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor skips already formatted file`` () =
     withPinnedRepo "fmt" (fun dir ->
         let file = Path.Combine(dir, "Good.fs")
@@ -555,7 +564,7 @@ let ``FormatPreprocessor skips already formatted file`` () =
             test <@ result.Considered = 1 @>
         | Error e -> failwith e)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor reports a file the tool cannot parse and leaves it alone`` () =
     withPinnedRepo "fmt-err" (fun dir ->
         let file = Path.Combine(dir, "Bad.fs")
@@ -570,7 +579,7 @@ let ``FormatPreprocessor reports a file the tool cannot parse and leaves it alon
 
         test <@ File.ReadAllText(file) = original @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check reports a file the tool cannot parse as a ledger error`` () =
     withPinnedRepo "fmtchk-err" (fun dir ->
         let file = Path.Combine(dir, "Bad.fs")
@@ -579,7 +588,7 @@ let ``format check reports a file the tool cannot parse as a ledger error`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(createFormatCheck dir None)
         host.EmitFileChanged(SourceChanged [ file ])
-        waitTerminal host 25000
+        waitTerminal host FantomasRunWaitMs
 
         test <@ (summaryOf host).StartsWith "1 of 1 files could not be formatted" @>
 
@@ -597,7 +606,7 @@ let ``format check reports a file the tool cannot parse as a ledger error`` () =
                     && e.Message.Contains "could not format")
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check detects formatting change even with same commit ID`` () =
     withPinnedRepo "fmtchk-cache" (fun dir ->
         let file = Path.Combine(dir, "Test.fs")
@@ -610,8 +619,8 @@ let ``format check detects formatting change even with same commit ID`` () =
         let beforeFirst = committedBy host "format-check"
         File.WriteAllText(file, "module Test\nlet   x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
-        waitCompleted host 25000
-        test <@ waitForCommitted host "format-check" beforeFirst 1L 25000 @>
+        waitCompleted host FantomasRunWaitMs
+        test <@ waitForCommitted host "format-check" beforeFirst 1L FantomasRunWaitMs @>
         test <@ (unformattedCount host).Contains("\"count\": 1") @>
 
         // Second: file is now formatted, but commit ID hasn't changed
@@ -619,11 +628,11 @@ let ``format check detects formatting change even with same commit ID`` () =
         let second = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Test\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
-        test <@ second.Wait(TimeSpan.FromSeconds 25.0) @>
-        test <@ waitForCommitted host "format-check" beforeSecond 1L 25000 @>
+        test <@ second.Wait(FantomasRunWaitMs) @>
+        test <@ waitForCommitted host "format-check" beforeSecond 1L FantomasRunWaitMs @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check reports unformatted files to error ledger`` () =
     withPinnedRepo "fmtchk-ledger" (fun dir ->
         let file = Path.Combine(dir, "Bad.fs")
@@ -632,7 +641,7 @@ let ``format check reports unformatted files to error ledger`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(createFormatCheck dir None)
         host.EmitFileChanged(SourceChanged [ file ])
-        waitCompleted host 25000
+        waitCompleted host FantomasRunWaitMs
 
         let formatErrors =
             host.GetErrors()
@@ -648,7 +657,7 @@ let ``format check reports unformatted files to error ledger`` () =
                 |> List.forall (fun (_, e) -> e.Message.Contains $"dotnet fantomas %s{thisRepoPin.Version}")
             @>)
 
-[<Fact(Timeout = 40000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check clears errors when file becomes formatted`` () =
     withPinnedRepo "fmtchk-clear" (fun dir ->
         let file = Path.Combine(dir, "Fix.fs")
@@ -659,7 +668,7 @@ let ``format check clears errors when file becomes formatted`` () =
 
         let firstTerminal = beginAwaitTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
-        test <@ firstTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
+        test <@ firstTerminal.Wait(FantomasRunWaitMs) @>
         test <@ not (host.GetErrors()).IsEmpty @>
 
         // Subscribe before emitting: this small clean-file run can otherwise pass
@@ -667,7 +676,7 @@ let ``format check clears errors when file becomes formatted`` () =
         let secondTerminal = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
-        test <@ secondTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
+        test <@ secondTerminal.Wait(FantomasRunWaitMs) @>
 
         let fileErrors = host.GetErrors() |> Map.tryFind file
 
@@ -797,7 +806,7 @@ let private runFormatCheckBatches
                 && (match host.GetStatus("format-check") with
                     | Some(Completed _) -> true
                     | _ -> false))
-            30000
+            FantomasRunWaitMs
 
     host
 
@@ -811,7 +820,7 @@ let private formatCheckLedgerCount (host: PluginHost) : int =
         |> List.filter (fun (plugin, _) -> plugin = "format-check")
         |> List.length)
 
-[<Fact(Timeout = 120000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``a replayed format-check verdict cannot claim files its cache key never covered`` () =
     withPinnedRepo "fmtchk-stale" (fun tmpDir ->
         let bad = Path.Combine(tmpDir, "Bad.fs")
@@ -841,7 +850,7 @@ let ``a replayed format-check verdict cannot claim files its cache key never cov
         test <@ formatCheckLedgerCount replayed = 0 @>
         test <@ replayedSummary = freshSummary + " (cached)" @>)
 
-[<Fact(Timeout = 120000)>]
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``a replayed format-check verdict still reports a finding that is genuinely current`` () =
     // The positive control for the test above. Same plugin, same replay path, same
     // comparison — but the cached entry's claim is TRUE at replay time, so it must

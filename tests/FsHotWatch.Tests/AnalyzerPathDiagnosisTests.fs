@@ -7,7 +7,6 @@
 module FsHotWatch.Tests.AnalyzerPathDiagnosisTests
 
 open System
-open System.Diagnostics
 open System.IO
 open Xunit
 open Swensen.Unquote
@@ -273,12 +272,23 @@ let ``check whose daemon refused to start prints the reason, not only a log poin
                     Problem = AnalyzerPathProblem.Missing
                     BootstrapHint = Some "mise run build-analyzers" } ]
 
-        // The detached daemon refuses: it records why and never opens the pipe.
+        // The detached daemon refuses: it records why and never opens the pipe. Every pipe
+        // probe after the launch is counted: the startup wait polls one every 100 ms.
+        let launched = ref false
+        let probesAfterLaunch = ref 0
+
         let ipc =
             { noIpc () with
-                LaunchDaemon = fun repoRoot _ _ -> DaemonStartupFailure.record repoRoot refusal }
+                IsRunning =
+                    fun _ ->
+                        if launched.Value then
+                            probesAfterLaunch.Value <- probesAfterLaunch.Value + 1
 
-        let stopwatch = Stopwatch.StartNew()
+                        false
+                LaunchDaemon =
+                    fun repoRoot _ _ ->
+                        launched.Value <- true
+                        DaemonStartupFailure.record repoRoot refusal }
 
         let stderr, exitCode =
             captureStderr (fun () ->
@@ -300,10 +310,9 @@ let ``check whose daemon refused to start prints the reason, not only a log poin
         test <@ stderr.Contains("to build it: mise run build-analyzers") @>
         assertNoStackTrace stderr
         // It stopped waiting once the refusal was recorded instead of sitting out the
-        // 20 s startup timeout for a pipe that would never open.
-        // Wall-clock bound, cannot flake on a slow box: the refusal is recorded synchronously by the
-        // fake launcher, and 10 s only fails a wait that sat out the 20 s startup timeout.
-        test <@ stopwatch.Elapsed < TimeSpan.FromSeconds 10.0 @>)
+        // 20 s startup timeout for a pipe that would never open: one probe after the
+        // launch, where a wait that ignored the refusal polls the pipe until its timeout.
+        test <@ probesAfterLaunch.Value = 1 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a launch clears a refusal recorded by an earlier launch`` () =

@@ -71,6 +71,10 @@ let private givesUpWithinBound (store: Store) (wait: unit -> unit) =
             $"expected a timeout, got %A{outcome}"
         )
 
+        // Wall-clock bound, cannot flake on a slow box: the wait is a kernel-timed wait on
+        // this test's own thread, not a pool callback, so going 2 s past the 5 s bound needs
+        // that one runnable thread to go unscheduled for 2 s. The defect it guards against
+        // waits for the starved pool to inject a thread for each held item ahead of the timer.
         Assert.True(
             elapsed < SupervisedWork.AdmissionBound + Slack,
             $"gave up after %O{elapsed}, bound %O{SupervisedWork.AdmissionBound}"

@@ -127,7 +127,7 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 /// A backgrounded descendant that outlives the shell that spawned it is NAMED as
 /// leaked. The kill is injected to take only the root — the shape of a tree kill that
 /// misses a descendant — and the real process table must then show the child alive.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = 60000)>]
 let ``a descendant that outlives the killed shell is named as a survivor`` () =
     let psi =
         System.Diagnostics.ProcessStartInfo("sh", "-c \"sleep 63 & wait\"", UseShellExecute = false)
@@ -135,16 +135,23 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
     use shell = System.Diagnostics.Process.Start psi
     let root = shell.Id
 
+    // The claim is what the table shows after the kill, not how fast `ps` answers: the
+    // product's 3 s read budget is a teardown's bound, and a loaded box can spend it, which
+    // would turn this into "`ps` did not answer". The test's reads get a budget that only
+    // a wedged `ps` reaches, inside the xUnit cap.
+    let readTable () =
+        FsHotWatch.ProcessHelper.readProcessTableWithin (System.TimeSpan.FromSeconds 15.0)
+
     let treeSize () =
-        match FsHotWatch.ProcessHelper.readProcessTable () with
+        match readTable () with
         | Ok rows -> FsHotWatch.ProcessHelper.treeOf root rows |> List.length
         | Error _ -> 0
 
-    waitUntil (fun () -> treeSize () = 2) 5000
+    test <@ waitUntilTrue (fun () -> treeSize () = 2) 15000 @>
 
     let teardown =
         FsHotWatch.ProcessHelper.accountTeardown
-            FsHotWatch.ProcessHelper.readProcessTable
+            readTable
             FsHotWatch.ProcessHelper.isProcessAlive
             5
             (fun () -> System.Threading.Thread.Sleep 100)
