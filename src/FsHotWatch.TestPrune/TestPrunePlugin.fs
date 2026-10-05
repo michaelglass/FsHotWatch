@@ -3240,12 +3240,19 @@ module ReceiptTransition =
             | _ -> false)
 
     /// Classify a completion. `previous` is consulted ONLY to decide whether a quiet
-    /// completion is a `Noop` (it must have something to keep, on the same tree) —
-    /// never to construct a receipt.
+    /// completion is a `Noop` or an executed one `Narrower` (it must have something to
+    /// keep, on the same tree) — never to construct a receipt.
+    ///
+    /// `previousEvidence` is the evidence the state holds for `previous`'s run under the
+    /// current model (`EarnedEvidence.retainedForRun`). A receipt stands only WITH it:
+    /// `Noop` and `Narrower` keep the receipt and publish that evidence, so a receipt
+    /// whose run's evidence is not held cannot be kept. Kept anyway, `test-scope` would
+    /// grade a run that no evidence the daemon publishes names, and the verdict would
+    /// refuse the green with "nothing vouches for this green".
     let internal classify
         (runnableProjects: string list)
         (previous: TestEvidenceReceipt option)
-        (previousRefused: bool)
+        (previousEvidence: EarnedEvidence option)
         (currentInputTree: string option)
         (currentModelGeneration: int64 option)
         (currentInputs: Map<string, string> option)
@@ -3255,13 +3262,24 @@ module ReceiptTransition =
         (coverage: RunCoverage)
         : ReceiptTransition =
         // Bound to the tree AND the model: a receipt earned under a replaced model says
-        // nothing about the current one, however still the tree held.
+        // nothing about the current one, however still the tree held. And, under a model,
+        // bound to the evidence its run earned, which is what the verdict grades it by.
+        // With no model there is no evidence for any run to hold, and no verdict grades
+        // one: the verdict refuses for want of the model first.
         let previousBoundToCurrent =
             match previous with
             | Some prior ->
                 ReceiptInputTree.matches prior.InputTreeHash currentInputTree
                 && receiptSpeaksFor currentModelGeneration currentInputs prior
+                && (currentModelGeneration.IsNone
+                    || previousEvidence |> Option.exists (fun evidence -> evidence.RunId = prior.RunId))
             | None -> false
+
+        // Whether the standing receipt's own run earned an evidence that refuses a green:
+        // a narrower run keeps only a clean one.
+        let previousRefused =
+            previousEvidence
+            |> Option.exists (fun evidence -> not (List.isEmpty evidence.FailureReasons))
 
         let executed =
             completed.Results
@@ -3281,7 +3299,7 @@ module ReceiptTransition =
                 ReceiptTransition.Noop
             else
                 ReceiptTransition.Revoked
-                    "already verified, but no receipt is bound to the current tree and project model"
+                    "already verified, but no receipt whose run's evidence is held is bound to the current tree and project model"
         | Normal when not executed -> ReceiptTransition.Revoked "the run executed no project to a verdict"
         | Normal when not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) ->
             ReceiptInputTree.classifyMismatch launch.InputTreeHash currentInputTree writtenByTestRun
@@ -3353,6 +3371,31 @@ let internal describeCompletionEvidence
         | None -> "none"
 
     $"Run %s{idOf runId} completed: launched under project model generation %s{ObservedModel.describe launchGeneration}, completed under %s{ObservedModel.describe currentGeneration}; receipt %s{receiptText}; model evidence: %s{evidenceText}"
+
+/// The warning for a completion that leaves the receipt and the model evidence naming
+/// different runs: `test-scope` would grade one run while the evidence the verdict looks
+/// it up by names another, and every check would refuse its green with "nothing vouches
+/// for this green". `None` when they name one run, when there is no receipt to grade, or
+/// when there is no model: then no run holds evidence, and no verdict grades one.
+let internal receiptEvidenceMismatch
+    (currentGeneration: int64 option)
+    (receipt: TestEvidenceReceipt option)
+    (earned: EarnedEvidence option)
+    : string option =
+    let idOf (id: Guid) = id.ToString("N")
+
+    match currentGeneration, receipt, earned with
+    | None, _, _
+    | _, None, _ -> None
+    | Some _, Some receipt, Some evidence when evidence.RunId = receipt.RunId -> None
+    | Some _, Some receipt, held ->
+        let heldText =
+            match held with
+            | Some evidence -> $"names run %s{idOf evidence.RunId}"
+            | None -> "names no run"
+
+        Some
+            $"the receipt grades run %s{idOf receipt.RunId} but the model evidence %s{heldText}; a check graded from this state refuses its green"
 
 /// The launch selection `executeTests` will actually honour, from the per-project class
 /// map. ONE derivation, so the run's real selection and the one projects
@@ -8330,6 +8373,28 @@ let internal createWithQueries
                             | Some receipt -> box (receipt.RunId.ToString("N"))
                             | None -> null
 
+                        // The evidence this state holds for the run it grades, read from the
+                        // SAME state as `runId`. The verdict grades that run by its evidence;
+                        // read here, the two come from one snapshot instead of from two
+                        // replies (this one and the diagnostics ledger) that a completion can
+                        // land between. `null` when no evidence for that run is held under
+                        // the current model, which refuses the green as surely as an absent
+                        // ledger entry does.
+                        let evidence =
+                            receipt
+                            |> Option.bind (fun receipt ->
+                                EarnedEvidence.retainedForRun
+                                    (ObservedModel.generation ctx.ProjectGraph)
+                                    (ObservedModel.inputs ctx.ProjectGraph)
+                                    receipt.RunId
+                                    state.Earned)
+                            |> Option.map (fun held ->
+                                box
+                                    {| runId = held.RunId.ToString("N")
+                                       modelGeneration = held.Generation
+                                       refusals = List.toArray held.FailureReasons |})
+                            |> Option.toObj
+
                         // The scope is a PROJECTION of `LastCoverage` — the very value the
                         // ledger uses to decide what a run is entitled to CLEAR.
                         // See `scopeOf`.
@@ -8430,6 +8495,7 @@ let internal createWithQueries
                                            ranProjects = n
                                            totalProjects = n
                                            runId = runId
+                                           evidence = evidence
                                            seeds = seeds
                                            seedCount = seedCount |}
                                     )
@@ -8444,6 +8510,7 @@ let internal createWithQueries
                                            ranProjects = ran
                                            totalProjects = total
                                            runId = runId
+                                           evidence = evidence
                                            seeds = seeds
                                            seedCount = seedCount |}
                                     )
@@ -8476,6 +8543,7 @@ let internal createWithQueries
                                            ranProjects = 0
                                            totalProjects = total
                                            runId = runId
+                                           evidence = evidence
                                            seeds = seeds
                                            seedCount = seedCount
                                            noTestsReason = reason
@@ -10087,19 +10155,24 @@ let internal createWithQueries
                             launch.InputTree
                             currentTree
 
-                    // Whether the standing receipt's own run earned an evidence that
-                    // refuses a green: a narrower run keeps only a clean one.
-                    let previousRefused =
-                        match state.EvidenceReceipt, state.Earned with
-                        | Some receipt, Some evidence when evidence.RunId = receipt.RunId ->
-                            not (List.isEmpty evidence.FailureReasons)
-                        | _ -> false
+                    // The evidence the standing receipt's own run earned, under the
+                    // current model. A completion that keeps the receipt (`Noop`,
+                    // `Narrower`) publishes exactly this, so the run `test-scope` grades
+                    // and the run the published evidence names are one run.
+                    let standingEvidence =
+                        state.EvidenceReceipt
+                        |> Option.bind (fun receipt ->
+                            EarnedEvidence.retainedForRun
+                                currentModelGeneration
+                                currentInputs
+                                receipt.RunId
+                                state.Earned)
 
                     let receiptTransition =
                         ReceiptTransition.classify
                             (Set.toList runnableProjects)
                             state.EvidenceReceipt
-                            previousRefused
+                            standingEvidence
                             currentInputTree
                             currentModelGeneration
                             currentInputs
@@ -10390,18 +10463,39 @@ let internal createWithQueries
                         + outstandingFailures.Length
                         + (if debt.RecoveryOutstanding then 1 else 0)
 
-                    // A narrower run leaves the full suite's receipt standing, so the
-                    // evidence stays the evidence THAT run earned: the verdict grades the
-                    // receipt's run and looks its evidence up by run id.
+                    // A completion that leaves the receipt standing — a narrower run, or a
+                    // quiet one that found the tree already verified — leaves the evidence
+                    // THAT receipt's run earned standing with it: the verdict grades the
+                    // receipt's run and looks its evidence up by run id. Under a model,
+                    // `classify` keeps a receipt only when this evidence is held.
+                    //
+                    // Including a quiet completion that folds while an obligation is owed
+                    // (symbols a scan delivered while it was in flight). It used to publish
+                    // an evidence of its own, refusing for the obligation, beside the
+                    // receipt it kept: the two named different runs, and the narrower run
+                    // that then discharged the obligation found no evidence for the
+                    // receipt's run to keep and published its own, so `check` graded the
+                    // full suite and found nothing vouching for it.
+                    //
+                    // A receipt that covers the whole suite on the tree it is bound to has
+                    // run every test that tree has, so an obligation owed on that same tree
+                    // is one it already verified, as it is after a narrower run. A
+                    // narrower receipt cannot say so: its evidence refuses for what is owed.
                     let keptWithReceipt =
                         match receiptTransition, evidenceReceipt with
-                        | ReceiptTransition.Narrower, Some receipt ->
-                            EarnedEvidence.retainedForRun
-                                currentModelGeneration
-                                currentInputs
-                                receipt.RunId
-                                state.Earned
-                        | _ -> None
+                        | ReceiptTransition.Noop, Some receipt when
+                            pendingObligations > 0
+                            && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) receipt.Coverage)
+                            ->
+                            standingEvidence
+                            |> Option.map (
+                                EarnedEvidence.withRefusals
+                                    [ $"%d{pendingObligations} verification obligation(s) remain pending" ]
+                            )
+                        | ReceiptTransition.Noop, _
+                        | ReceiptTransition.Narrower, _ -> standingEvidence
+                        | ReceiptTransition.Earned _, _
+                        | ReceiptTransition.Revoked _, _ -> None
 
                     let earned =
                         match keptWithReceipt, completed.Verification with
@@ -10440,6 +10534,10 @@ let internal createWithQueries
                             receiptTransition
                             evidenceReceipt
                             earned)
+
+                    match receiptEvidenceMismatch currentModelGeneration evidenceReceipt earned with
+                    | Some mismatch -> Logging.warn "test-prune" mismatch
+                    | None -> ()
 
                     let state =
                         { state with

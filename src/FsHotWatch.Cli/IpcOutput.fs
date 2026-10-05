@@ -969,6 +969,43 @@ module internal TestRunEvidence =
         | ReadKind.InFlight -> current, retained
         | ReadKind.Disqualifying _ -> current, None
 
+/// One line per verdict read: the run the `test-scope` reply graded and the evidence that
+/// reply held for it, beside the receipt ledger the diagnostics reply held. A receipt
+/// refusal names only what was missing; this line is what each of the two reads saw.
+let internal describeReceiptReads (run: TestRunReport) (evidence: IpcParsing.DaemonEvidence) : string =
+    let receiptText (receipt: IpcParsing.ModelReceipt) =
+        let runText =
+            match receipt.RunId with
+            | Some runId -> "run " + runId.ToString("N")
+            | None -> "analysis"
+
+        match receipt.Refusals with
+        | [] -> $"%s{runText} at generation %d{receipt.Generation}"
+        | refusals ->
+            let refusing = String.concat "; " refusals
+            $"%s{runText} at generation %d{receipt.Generation}, refusing: %s{refusing}"
+
+    let graded =
+        match run.RunId with
+        | Some runId -> "run " + runId.ToString("N")
+        | None -> "no run"
+
+    let gradedEvidence =
+        match run.GradedEvidence with
+        | IpcParsing.GradedEvidenceReading.NotReported -> "not sent"
+        | IpcParsing.GradedEvidenceReading.Reported None -> "none held"
+        | IpcParsing.GradedEvidenceReading.Reported(Some receipt) -> receiptText receipt
+
+    let ledger =
+        match evidence with
+        | IpcParsing.DaemonEvidence.NotServed -> "not served"
+        | IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.NotOffered) -> "not offered"
+        | IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.Offered []) -> "empty"
+        | IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.Offered receipts) ->
+            receipts |> List.map receiptText |> String.concat "; "
+
+    $"test-scope graded %s{graded} (evidence in that reply: %s{gradedEvidence}); diagnostics receipt ledger: %s{ledger}"
+
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
 /// (stdout not a TTY) — print the steering block that names it. The file and the exit
 /// code are two renderings of ONE `CheckOutcome`, never a second computation.
@@ -1039,7 +1076,17 @@ let private publishVerdictWithReason
             | None, _
             | _, IpcParsing.DaemonEvidence.NotServed
             | _, IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.NotOffered) -> None
-            | Some model, IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.Offered receipts) ->
+            | Some model, IpcParsing.DaemonEvidence.Served(_, IpcParsing.ReceiptLedger.Offered ledger) ->
+                // The graded run's evidence from the reply that named the run, when the
+                // daemon sends it: one snapshot of one plugin state. The diagnostics
+                // ledger is a second reply, and a completion that lands between the two
+                // left the verdict grading one run against evidence naming another.
+                let receipts, holder =
+                    match runReport.RunId, runReport.GradedEvidence with
+                    | Some _, IpcParsing.GradedEvidenceReading.Reported held ->
+                        Option.toList held, "the test-scope reply that graded it holds"
+                    | _ -> ledger, "the daemon holds"
+
                 let describe =
                     match runReport.RunId with
                     | Some graded ->
@@ -1057,7 +1104,7 @@ let private publishVerdictWithReason
                 // longer names apart from a model that moved after the run earned it.
                 let held =
                     match receipts with
-                    | [] -> "the daemon holds no receipt"
+                    | [] -> $"%s{holder} no receipt"
                     | receipts ->
                         receipts
                         |> List.map (fun receipt ->
@@ -1068,7 +1115,7 @@ let private publishVerdictWithReason
 
                             $"%s{run} at generation %d{receipt.Generation}")
                         |> String.concat "; "
-                        |> sprintf "the daemon holds: %s"
+                        |> sprintf "%s: %s" holder
 
                 match receipts |> List.filter forThisRun with
                 | [] ->
@@ -1637,11 +1684,13 @@ let pollAndRenderForInvocation
             let run = getTestRun () |> observeTestRun
             finalStatuses.Value <- resp.Statuses
             finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
+            FsHotWatch.Logging.info "receipt" (describeReceiptReads run finalEvidence.Value)
             finalCauses.Value <- redCausesOf daemonLog noWarnFail resp
             finalModel.Value <- resp.ProjectModel
             checkInputs noWarnFail run resp
 
         let firstRun = getTestRun () |> observeTestRun
+        FsHotWatch.Logging.info "receipt" (describeReceiptReads firstRun finalEvidence.Value)
 
         // CONFIRM EARNS ITS EVIDENCE.
         //

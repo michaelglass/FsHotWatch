@@ -829,3 +829,42 @@ let ``"no file was withheld" and "this reply does not say" are different bytes i
 let ``a not-selected entry this build cannot read fails closed to an unreadable scope`` (extra: string) =
     let report = parseTestRunReport (fullReply extra)
     test <@ TestScope.isUnreadable report.Scope @>
+
+// --- test-scope: the evidence for the graded run, from the same reply ----------
+
+[<Fact(Timeout = 10000)>]
+let ``the test-scope reply's evidence for the graded run is read beside the run`` () =
+    let runId = Guid.Parse("d0000000-2500-4000-8000-000000000250")
+
+    let report =
+        parseTestRunReport (
+            fullReply
+                $""","evidence":{{"runId":"%s{runId.ToString("N")}","modelGeneration":7,"refusals":["ProjA: tests failed or timed out"]}}"""
+        )
+
+    let expected: ModelReceipt =
+        { RunId = Some runId
+          Generation = 7L
+          Refusals = [ "ProjA: tests failed or timed out" ] }
+
+    test <@ report.GradedEvidence = GradedEvidenceReading.Reported(Some expected) @>
+
+[<Theory(Timeout = 10000)>]
+[<InlineData("", "not-reported")>]
+[<InlineData(""","evidence":null""", "none")>]
+[<InlineData(""","evidence":{"modelGeneration":7}""", "none")>]
+[<InlineData(""","evidence":{"runId":"not-a-guid","modelGeneration":7}""", "none")>]
+[<InlineData(""","evidence":{"runId":"d0000000250040008000000000000250"}""", "none")>]
+[<InlineData(""","evidence":"d0000000250040008000000000000250" """, "none")>]
+let ``a graded evidence the reply does not send, or that cannot be placed, is not evidence``
+    (extra: string)
+    (kind: string)
+    =
+    // Absent is an older daemon, which the verdict grades by the ledger as before. Anything
+    // sent that cannot be placed holds no evidence for the run, and refuses the green.
+    let expected =
+        match kind with
+        | "not-reported" -> GradedEvidenceReading.NotReported
+        | _ -> GradedEvidenceReading.Reported None
+
+    test <@ (parseTestRunReport (fullReply extra)).GradedEvidence = expected @>

@@ -696,6 +696,70 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
       Coverage = coverage
       ProjectModel = ProjectModelReading.ofReply root }
 
+/// One receipt the daemon publishes for a project model: which run earned it, which model
+/// generation it belongs to, and every reason it refuses a green.
+///
+/// `RunId = None` is the analysis-only daemon's own receipt: it runs no tests, so no run
+/// can name it. A receipt with refusals is still evidence — of what ran — so it is
+/// carried rather than dropped, and the refusals are what deny the green.
+type ModelReceipt =
+    { RunId: Guid option
+      Generation: int64
+      Refusals: string list }
+
+/// What a `test-scope` reply says about the evidence for the run it grades, read from the
+/// same plugin state as that run, so the run and its evidence are one snapshot.
+[<RequireQualifiedAccess>]
+type GradedEvidenceReading =
+    /// The reply carries no such field: a daemon older than it, or no reply at all. The
+    /// verdict then looks the graded run up in the diagnostics ledger.
+    | NotReported
+    /// The evidence the daemon holds for the graded run under its current model. `None`
+    /// when it holds none, or sent an entry this build cannot read: no evidence, which
+    /// refuses the green.
+    | Reported of ModelReceipt option
+
+/// Read a `test-scope` reply's `evidence` field (`{runId, modelGeneration, refusals}`).
+/// Absent is `NotReported`; `null`, or an entry without a parseable run id and
+/// generation, is `Reported None`: an entry that cannot be placed is not evidence.
+let tryReadGradedEvidence (field: JsonElement option) : GradedEvidenceReading =
+    match field with
+    | None -> GradedEvidenceReading.NotReported
+    | Some value when value.ValueKind = JsonValueKind.Object ->
+        let runId =
+            Json.tryString value "runId"
+            |> Option.bind (fun s ->
+                match Guid.TryParse s with
+                | true, parsed -> Some parsed
+                | _ -> None)
+
+        let generation =
+            match value.TryGetProperty("modelGeneration") with
+            | true, v when v.ValueKind = JsonValueKind.Number ->
+                match v.TryGetInt64() with
+                | true, n -> Some n
+                | _ -> None
+            | _ -> None
+
+        let refusals =
+            match value.TryGetProperty("refusals") with
+            | true, v when v.ValueKind = JsonValueKind.Array ->
+                [ for reason in v.EnumerateArray() do
+                      if reason.ValueKind = JsonValueKind.String then
+                          yield reason.GetString() ]
+            | _ -> []
+
+        match runId, generation with
+        | Some runId, Some generation ->
+            GradedEvidenceReading.Reported(
+                Some
+                    { RunId = Some runId
+                      Generation = generation
+                      Refusals = refusals }
+            )
+        | _ -> GradedEvidenceReading.Reported None
+    | Some _ -> GradedEvidenceReading.Reported None
+
 /// What the last completed test run covered, AND WHICH RUN IT WAS.
 ///
 /// The run id is what lets the verdict DECLARE which CTRF reports are this run's
@@ -744,6 +808,8 @@ type TestRunReport =
         /// daemon did not say (one older than the field, or no reply at all); `Some []`
         /// is its positive "none".
         NotSelected: NotSelectedFile list option
+        /// The evidence the daemon holds for `RunId`, from the same reply.
+        GradedEvidence: GradedEvidenceReading
     }
 
 module TestRunReport =
@@ -763,7 +829,8 @@ module TestRunReport =
           Seeds = []
           SeedCount = 0
           Baseline = BaselineReading.NotReported
-          NotSelected = None }
+          NotSelected = None
+          GradedEvidence = GradedEvidenceReading.NotReported }
 
     /// The report for a daemon/host with NO `test-scope` command: no
     /// test projects are configured, so there is no scope, no run, and nothing a
@@ -944,7 +1011,8 @@ let parseTestRunReport (json: string) : TestRunReport =
           Seeds = seeds
           SeedCount = seedCount
           Baseline = baseline
-          NotSelected = notSelected }
+          NotSelected = notSelected
+          GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence") }
     with ex ->
         TestRunReport.ofScopeOnly (
             ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
@@ -1166,17 +1234,6 @@ let parseCheckReach (json: string) : CheckReachReading =
 /// plugin's `Running` interval, superseded runs included. `NotServed` is an older
 /// daemon (or an embedder) that carries no ledger: the verdict then falls back to
 /// each plugin's `lastRun`, and says so through its coverage rather than pretending.
-/// One receipt the daemon publishes for a project model: which run earned it, which model
-/// generation it belongs to, and every reason it refuses a green.
-///
-/// `RunId = None` is the analysis-only daemon's own receipt: it runs no tests, so no run
-/// can name it. A receipt with refusals is still evidence — of what ran — so it is
-/// carried rather than dropped, and the refusals are what deny the green.
-type ModelReceipt =
-    { RunId: Guid option
-      Generation: int64
-      Refusals: string list }
-
 /// Whether this daemon offers evidence receipts at all, and the ones it holds.
 /// `NotOffered` is a daemon with no evidence-minting plugin registered (or one older than
 /// receipts): it owes none, so the receipt rule says nothing about it. `Offered []` is a

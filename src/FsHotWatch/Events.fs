@@ -889,6 +889,12 @@ module internal EarnedEvidence =
         | Some evidence, Some current when evidence.RunId = runId -> forModel current currentInputs evidence
         | _ -> None
 
+    /// `evidence`, refusing for `reasons` as well: what a completion that keeps the receipt
+    /// of `evidence`'s run publishes when that run cannot vouch for every obligation owed.
+    let withRefusals (reasons: string list) (evidence: EarnedEvidence) : EarnedEvidence =
+        { evidence with
+            Refusals = List.distinct (evidence.Refusals @ reasons) }
+
     /// A completion that selected nothing because everything was already verified keeps the
     /// evidence it was verified by, provided that evidence belongs to the current model.
     let retainedForZeroSelection
