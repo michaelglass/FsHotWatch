@@ -786,13 +786,13 @@ let private recordSpawn (throughHelper: bool) (command: string) (pid: int) =
 
     Logging.info "process" $"spawn via=%s{via} cmd=%s{IO.Path.GetFileName command} pid=%d{pid}"
 
-/// How long ONE read of the process table may take. `ps` returns in milliseconds; a
-/// box that cannot answer in this long is reported as "tree unknown", not waited on.
-let internal ProcessTableBudget = TimeSpan.FromSeconds 3.0
-
 /// Read the process table with `ps`, bounded by `budget`. Spawned directly rather than
 /// through `runProcess`: this runs INSIDE a teardown — possibly one the process registry
 /// is performing at shutdown, when it refuses new admissions.
+///
+/// A teardown reads with `TeardownBudget`, the bound the kill it brackets already has.
+/// `ps` answers in milliseconds, so a read that misses 10 s means a box too loaded to
+/// report the tree at all; a shorter budget turned a merely slow read into "tree unknown".
 let internal readProcessTableWithin (budget: TimeSpan) : Result<ProcessRow list, string> =
     try
         let psi =
@@ -828,10 +828,6 @@ let internal readProcessTableWithin (budget: TimeSpan) : Result<ProcessRow list,
             ps.Dispose()
     with ex ->
         Error $"`ps` could not run: %s{ex.GetType().Name}: %s{ex.Message}"
-
-/// `readProcessTableWithin ProcessTableBudget`: the read a teardown makes.
-let internal readProcessTable () : Result<ProcessRow list, string> =
-    readProcessTableWithin ProcessTableBudget
 
 /// Settle window after a tree kill: up to `SettleAttempts` liveness polls, `SettlePause`
 /// apart, ending early the moment the tree is gone. A SIGKILLed process is gone in
@@ -1235,6 +1231,10 @@ let decideLaunchStep
     elif launchDeadlineReached then LaunchStep.Stalled
     else LaunchStep.KeepWaiting
 
+/// The product's timeout arm: the overall timeout counts from the first poll, which is
+/// the spawn.
+let internal armedAtSpawn (_sawOutput: bool) = true
+
 /// Injectable launch-watchdog loop. Polls `observe` (returns `exited, sawOutput`)
 /// against the launch deadline and the optional overall timeout, sleeping between
 /// polls, until a terminal `LaunchOutcome` is reached. All effects (observe /
@@ -1250,8 +1250,62 @@ let decideLaunchStep
 ///    ask for this, and it demands a finite total timeout in exchange.
 ///
 /// The `Infinite` handling must be explicit: `InfiniteTimeSpan` is -1 ms, so
-/// `start.Add launchDeadline` would land in the PAST and stall every spawn on its
+/// `origin.Add launchDeadline` would land in the PAST and stall every spawn on its
 /// first poll.
+///
+/// The moment the overall timeout starts counting is injected. `armed sawOutput` is
+/// asked on every poll until it first answers true; the overall timeout then counts
+/// from that poll. Until then only an exit or the launch deadline (which always counts
+/// from the spawn) can end the wait.
+///
+/// The product arms at the spawn (`armedAtSpawn`). A test that asserts what a child said
+/// before its timeout arms on an event the child controls, so the timeout cannot fire
+/// before the child has spoken however late it is scheduled (`ProcessBounds.armedWhen`).
+let internal armedWatchdogLoopWith
+    (armed: bool -> bool)
+    (observe: unit -> bool * bool)
+    (now: unit -> DateTime)
+    (sleep: int -> unit)
+    (pollMs: int)
+    (launchDeadline: TimeSpan)
+    (overallTimeout: TimeSpan)
+    : LaunchOutcome =
+    let deadlineFrom (origin: DateTime) (span: TimeSpan) =
+        if span = Threading.Timeout.InfiniteTimeSpan then
+            None
+        else
+            Some(origin.Add span)
+
+    let launchDeadlineAt = deadlineFrom (now ()) launchDeadline
+
+    let reached (at: DateTime option) =
+        match at with
+        | Some t -> now () >= t
+        | None -> false
+
+    // `None` until armed; then the overall deadline, itself `None` when infinite.
+    let rec loop (overallTimeoutAt: DateTime option option) =
+        let exited, sawOutput = observe ()
+
+        let overallTimeoutAt =
+            match overallTimeoutAt with
+            | None when armed sawOutput -> Some(deadlineFrom (now ()) overallTimeout)
+            | unchanged -> unchanged
+
+        let launchReached = reached launchDeadlineAt
+        let overallReached = overallTimeoutAt |> Option.exists (fun at -> reached at)
+
+        match decideLaunchStep launchReached overallReached exited sawOutput with
+        | LaunchStep.Exited -> LaunchOutcome.Exited
+        | LaunchStep.TimedOut -> LaunchOutcome.TimedOut
+        | LaunchStep.Stalled -> LaunchOutcome.Stalled
+        | LaunchStep.KeepWaiting ->
+            sleep pollMs
+            loop overallTimeoutAt
+
+    loop None
+
+/// The launch watchdog with the overall timeout counting from the spawn.
 let launchWatchdogLoopWith
     (observe: unit -> bool * bool)
     (now: unit -> DateTime)
@@ -1260,37 +1314,7 @@ let launchWatchdogLoopWith
     (launchDeadline: TimeSpan)
     (overallTimeout: TimeSpan)
     : LaunchOutcome =
-    let start = now ()
-
-    let deadlineAt (span: TimeSpan) =
-        if span = Threading.Timeout.InfiniteTimeSpan then
-            None
-        else
-            Some(start.Add span)
-
-    let launchDeadlineAt = deadlineAt launchDeadline
-    let overallTimeoutAt = deadlineAt overallTimeout
-
-    let reached (at: DateTime option) =
-        match at with
-        | Some t -> now () >= t
-        | None -> false
-
-    let rec loop () =
-        let exited, sawOutput = observe ()
-
-        let launchReached = reached launchDeadlineAt
-        let overallReached = reached overallTimeoutAt
-
-        match decideLaunchStep launchReached overallReached exited sawOutput with
-        | LaunchStep.Exited -> LaunchOutcome.Exited
-        | LaunchStep.TimedOut -> LaunchOutcome.TimedOut
-        | LaunchStep.Stalled -> LaunchOutcome.Stalled
-        | LaunchStep.KeepWaiting ->
-            sleep pollMs
-            loop ()
-
-    loop ()
+    armedWatchdogLoopWith armedAtSpawn observe now sleep pollMs launchDeadline overallTimeout
 
 /// A deadline override from an optional string (an `FSHW_*_SEC` env value): a
 /// positive integer count of seconds, else `None` (absent, unparseable,
@@ -1350,6 +1374,9 @@ type ProcessBounds =
             /// `InfiniteTimeSpan` = output does not prove liveness for this child,
             /// so no launch bound applies.
             LaunchDeadline: TimeSpan
+            /// When `Timeout` starts counting, given whether the child has written yet
+            /// (`armedWatchdogLoopWith`). `armedAtSpawn` everywhere but a test's seam.
+            TimeoutArmed: bool -> bool
         }
 
 [<RequireQualifiedAccess>]
@@ -1365,7 +1392,8 @@ module ProcessBounds =
     /// end it.
     let streaming (timeout: TimeSpan) (launchDeadline: TimeSpan) : ProcessBounds =
         { Timeout = timeout
-          LaunchDeadline = launchDeadline }
+          LaunchDeadline = launchDeadline
+          TimeoutArmed = armedAtSpawn }
 
     /// A child that may be SILENT for its entire run — `dotnet build -v q`, or a
     /// `sh -c "cmd > /tmp/log; echo done"` wrapper that buffers everything until
@@ -1383,7 +1411,17 @@ module ProcessBounds =
                  restarted. Set `timeoutSec` in .fshw.json to bound it."
 
         { Timeout = timeout
-          LaunchDeadline = Threading.Timeout.InfiniteTimeSpan }
+          LaunchDeadline = Threading.Timeout.InfiniteTimeSpan
+          TimeoutArmed = armedAtSpawn }
+
+    /// `bounds` with its timeout counting from the first poll at which `armed sawOutput`
+    /// is true, rather than from the spawn. `armedWhen id` arms it on the child's first
+    /// write, which `runProcessCore` has captured (and handed to the sink) before the
+    /// watchdog can see it. A seam for tests whose claim is what a child said before it
+    /// was killed: armed at the spawn, a child not scheduled within the timeout says
+    /// nothing, and the claim fails on load instead of on behaviour.
+    let internal armedWhen (armed: bool -> bool) (bounds: ProcessBounds) : ProcessBounds =
+        { bounds with TimeoutArmed = armed }
 
 /// Everything between admitting a child and the watchdog's decision about it runs
 /// under this guard. A failure there (a pump that cannot start, an observation that
@@ -1620,13 +1658,15 @@ let internal runProcessCore
                       the sink was writing (a streamed run log) is now INCOMPLETE."
         | Some _ -> ()
 
-    // Each chunk marks the child alive, then joins the capture and the sink.
+    // Each chunk joins the capture and the sink, then marks the child alive. In that
+    // order, so a timeout armed on the first write (`ProcessBounds.armedWhen`) only
+    // starts once that write is in both.
     let onChunk (chunk: string) =
-        Volatile.Write(&sawOutput, 1)
-
         Locking.locked outputLock (fun () ->
             output.Append(chunk) |> ignore
             emit chunk)
+
+        Volatile.Write(&sawOutput, 1)
 
     let drainedOutput () =
         Locking.locked outputLock (fun () -> output.ToString().Trim())
@@ -1649,7 +1689,7 @@ let internal runProcessCore
         if accounted then
             let t =
                 accountTeardownWith
-                    readProcessTable
+                    (fun () -> readProcessTableWithin TeardownBudget)
                     isProcessAlive
                     SettleAttempts
                     settlePause
@@ -1692,7 +1732,14 @@ let internal runProcessCore
 
                     stdoutTask,
                     stderrTask,
-                    launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout)
+                    armedWatchdogLoopWith
+                        bounds.TimeoutArmed
+                        observe
+                        (fun () -> DateTime.UtcNow)
+                        sleep
+                        pollMs
+                        launchDeadline
+                        timeout)
 
             // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
             // instant it exits (returns in ms); only a grandchild holding the pipe makes
