@@ -306,9 +306,36 @@ let latestRunReports (repoRoot: string) : Report list =
         | :? IOException
         | :? UnauthorizedAccessException -> []
 
+/// The run directories the repo's verdict names: its `runId`, each `runs[].runId`, and
+/// its outcome's `baseline.runId`. Empty when there is no verdict or it cannot be read,
+/// which costs only those runs' protection from rotation.
+let private verdictRunIds (repoRoot: string) : Set<string> =
+    try
+        use doc = JsonDocument.Parse(File.ReadAllText(FsHwPaths.verdictFile repoRoot))
+        let verdict = doc.RootElement
+
+        let runs =
+            match Json.tryProp verdict "runs" with
+            | Some runs when runs.ValueKind = JsonValueKind.Array ->
+                runs.EnumerateArray()
+                |> Seq.choose (fun run -> Json.tryString run "runId")
+                |> List.ofSeq
+            | _ -> []
+
+        let baseline =
+            Json.tryProp verdict "outcome"
+            |> Option.bind (fun outcome -> Json.tryProp outcome "baseline")
+            |> Option.bind (fun baseline -> Json.tryString baseline "runId")
+
+        Option.toList (Json.tryString verdict "runId") @ runs @ Option.toList baseline
+        |> Set.ofList
+    with _ ->
+        Set.empty
+
 /// Bound what `.fshw/test-runs/` accumulates. Run after every test run:
 ///
-///   * keep the newest `keepRuns` run directories, delete the rest;
+///   * keep the newest `keepRuns` run directories, delete the rest — except a run the
+///     repo's verdict names, whose reports the verdict points its reader at;
 ///   * delete loose files at the top level — the old flat layout, which nothing could
 ///     attribute to a run;
 ///   * best-effort throughout, so the catch is widened to all exceptions: tidying must
@@ -329,9 +356,11 @@ let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
                     ()
 
             let dirs = runDirs repoRoot
+            let named = verdictRunIds repoRoot
 
             dirs
             |> List.skip (min keepRuns (List.length dirs))
+            |> List.filter (fun d -> not (Set.contains d.Name named))
             |> List.iter (fun d ->
                 try
                     d.Delete(true)

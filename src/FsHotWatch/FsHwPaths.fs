@@ -15,6 +15,11 @@ let ConfigFileName = ".fshw.json"
 /// second spelling of this path would let the two disagree.
 let configFile (repoRoot: string) = Path.Combine(repoRoot, ConfigFileName)
 
+/// Absolute path to the repo's verdict, `.fshw/verdict.json`. Named here, in core, because
+/// the CLI writes it and core reads it: `Ctrf.tidyRunsDir` keeps every run it names.
+let verdictFile (repoRoot: string) =
+    Path.Combine(root repoRoot, "verdict.json")
+
 /// Write contents atomically (temp file + rename). Used wherever we need a
 /// torn-write-safe persistence step — caches, history files, etc. — so a
 /// daemon crash mid-write can't leave a half-written file at `path`.

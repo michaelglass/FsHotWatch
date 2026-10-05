@@ -95,6 +95,15 @@ All notable changes to FsHotWatch packages are documented here.
   progress used to reach only the polling client's terminal. An idle or finished scan
   is not logged, since a waiting client polls repeatedly.
 
+### core, cli: rotating test runs keeps the runs the verdict points at
+
+- **fix: `Ctrf.tidyRunsDir` no longer deletes a run `.fshw/verdict.json` names** — its
+  `runId`, each `runs[].runId`, or its outcome's `baseline.runId` — however old. Rotation
+  kept only the newest ten run directories, so after enough runs the verdict pointed its
+  reader at reports that were gone.
+- `FsHwPaths.verdictFile` names the verdict's path in core, and the CLI's `Verdict.path`
+  returns it, so the writer and the tidy read one path.
+
 ### release: the publication barrier waits forty minutes for nuget.org to index
 
 - **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s
