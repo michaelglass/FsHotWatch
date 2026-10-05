@@ -261,6 +261,28 @@ module internal ContentChange =
         | Some _, None
         | None, Some _ -> true
 
+/// How far before a native stream started a file's last write must lie for a
+/// coalesced rescan to record its first sighting without reporting it. File times
+/// come from a coarser clock than `DateTime.UtcNow` (whole seconds on some
+/// filesystems), so a write just after the start can be stamped just before it.
+let internal coalescedFirstSightMargin = TimeSpan.FromSeconds 2.0
+
+/// Whether a coalesced rescan's FIRST sighting of a file last written at
+/// `lastWriteUtc` is one the stream started at `streamStartedAt` cannot owe anyone.
+///
+/// FSEvents coalesces or drops only events that happened after its stream started,
+/// and any write since then moves the file's time past that start (less
+/// `coalescedFirstSightMargin`). A file whose time lies before it was not written
+/// while the stream ran; it is part of the tree the daemon's cold scan reads. With no
+/// stream start recorded, nothing predates it.
+///
+/// Residual risk: a tool that writes a never-seen file with an OLD time (`cp -p`,
+/// `tar -x`, `touch -t`) is missed by a coalesced rescan until that file's next write.
+let internal predatesStream (streamStartedAt: DateTime option) (lastWriteUtc: DateTime) : bool =
+    match streamStartedAt with
+    | Some started -> lastWriteUtc < started - coalescedFirstSightMargin
+    | None -> false
+
 /// What a watcher last saw at each path it reported on.
 ///
 /// Starts empty: the first notification for a path finds nothing recorded, reads as
@@ -268,15 +290,21 @@ module internal ContentChange =
 /// lifetime and no startup tree walk, and it errs toward reporting rather than
 /// toward missing an edit made before the watcher existed.
 ///
+/// A coalesced rescan is the exception (`ObserveRescanned`): it names every file
+/// under a root, so a cold ledger would report the whole tree as created. There, a
+/// first sighting of a file last written before the stream started is recorded
+/// silently (`predatesStream`).
+///
 /// FSEvents callbacks arrive on their own thread, so read-hash-record is one step
 /// under the lock rather than three racing ones.
 type internal ContentLedger() =
     let syncRoot = obj ()
     let mutable known: Map<string, string> = Map.empty
+    let mutable streamStartedAt: DateTime option = None
 
-    /// Read `path`, record what is there now, and report whether it differs from
-    /// the last recorded observation.
-    member _.Observe(path: string) : bool =
+    // `silentFirstSight` sees a path the ledger has no record of, holding a readable
+    // file; true records its hash without reporting a change.
+    let observe (silentFirstSight: string -> bool) (path: string) : bool =
         lock syncRoot (fun () ->
             let previous = Map.tryFind path known
 
@@ -291,7 +319,26 @@ type internal ContentLedger() =
                 | Some hash -> Map.add path hash known
                 | None -> Map.remove path known
 
-            ContentChange.differs previous current)
+            match previous, current with
+            | None, Some hash when ContentHash.isReadable hash && silentFirstSight path -> false
+            | _ -> ContentChange.differs previous current)
+
+    /// Record that the native stream feeding this ledger is starting now. Called
+    /// before the stream is created, so the recorded time is never later than the
+    /// stream's real start.
+    member _.StreamStarting() =
+        lock syncRoot (fun () -> streamStartedAt <- Some DateTime.UtcNow)
+
+    /// Read `path`, record what is there now, and report whether it differs from
+    /// the last recorded observation.
+    member _.Observe(path: string) : bool = observe (fun _ -> false) path
+
+    /// `Observe` for a path a coalesced rescan found: a first sighting of a file last
+    /// written before the stream started is recorded without reporting a change. The
+    /// bytes are read BEFORE the write time, so a write landing between the two moves
+    /// the time past the start and is reported.
+    member _.ObserveRescanned(path: string) : bool =
+        observe (fun path -> predatesStream streamStartedAt (File.GetLastWriteTimeUtc path)) path
 
 /// One content-addressed view of the files a polling watcher is responsible for.
 type internal PollingSnapshot =
@@ -630,23 +677,22 @@ module FileWatcher =
         let roots = List.distinct [ repoRoot; watchRoot ]
         let accepts = roots |> List.map (fun root -> acceptsUnderRoot root extraPatterns)
 
-        let report path =
-            if ledger.Observe path then
-                onChange (classifyChange path)
-
         let handle path =
-            if accepts |> List.exists (fun accept -> accept path) then
-                report path
+            if accepts |> List.exists (fun accept -> accept path) && ledger.Observe path then
+                onChange (classifyChange path)
 
         // A coalesced native event means Apple requires a recursive scan of that subtree.
         let onCoalesced dirPath =
             for root in roots do
-                rescanUnderRoot root dirPath |> Seq.iter report
+                for path in rescanUnderRoot root dirPath do
+                    if ledger.ObserveRescanned path then
+                        onChange (classifyChange path)
 
         // Matched OUTSIDE any exception handler: the refusal is a value here, so
         // the polling fallback below cannot catch it (case 2).
         match
             startNativeWithRetry nativeStartRetry (fun () ->
+                ledger.StreamStarting()
                 nativeStreamFactory [ watchRoot ] (kernelExclusions watchRoot) handle onCoalesced latencySeconds)
         with
         | Started nativeStream ->

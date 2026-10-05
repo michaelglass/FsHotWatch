@@ -97,6 +97,49 @@ let isFileChangeEvent (flags: uint32) =
 let isMustScanEvent (flags: uint32) =
     classifyEvent flags = EventClassification.CoalescedScan
 
+/// Every `kFSEventStreamEventFlag*` bit, by name.
+let private flagNames =
+    [ 0x00000001u, "MustScanSubDirs"
+      0x00000002u, "UserDropped"
+      0x00000004u, "KernelDropped"
+      0x00000008u, "EventIdsWrapped"
+      0x00000010u, "HistoryDone"
+      0x00000020u, "RootChanged"
+      0x00000040u, "Mount"
+      0x00000080u, "Unmount"
+      0x00000100u, "ItemCreated"
+      0x00000200u, "ItemRemoved"
+      0x00000400u, "ItemInodeMetaMod"
+      0x00000800u, "ItemRenamed"
+      0x00001000u, "ItemModified"
+      0x00002000u, "ItemFinderInfoMod"
+      0x00004000u, "ItemChangeOwner"
+      0x00008000u, "ItemXattrMod"
+      0x00010000u, "ItemIsFile"
+      0x00020000u, "ItemIsDir"
+      0x00040000u, "ItemIsSymlink"
+      0x00080000u, "OwnEvent"
+      0x00100000u, "ItemIsHardlink"
+      0x00200000u, "ItemIsLastHardlink"
+      0x00400000u, "ItemCloned" ]
+
+/// The flag set as hex plus the names of its set bits, so a must-scan names its
+/// trigger (UserDropped, KernelDropped, RootChanged, ...).
+let internal describeFlags (flags: uint32) : string =
+    let names =
+        flagNames |> List.filter (fun (bit, _) -> flags &&& bit <> 0u) |> List.map snd
+
+    let unknown =
+        flags &&& ~~~(flagNames |> List.fold (fun all (bit, _) -> all ||| bit) 0u)
+
+    let named =
+        if unknown <> 0u then
+            names @ [ $"0x%08X{unknown}" ]
+        else
+            names
+
+    $"0x%08X{flags} [%s{String.Join(' ', named)}]"
+
 // ─── Callback delegate ──────────────────────────────────────────────
 [<UnmanagedFunctionPointer(CallingConvention.Cdecl)>]
 type private FSEventStreamCallback =
@@ -315,7 +358,7 @@ type FsEventStream
                     | EventClassification.CoalescedScan ->
                         let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
                         let path = Marshal.PtrToStringUTF8(pathPtr)
-                        debug "fsevents" $"MustScanSubDirs event for: %s{path}"
+                        info "fsevents" $"MustScanSubDirs event for %s{path}: flags %s{describeFlags flags}"
 
                         match onCoalescedEvent with
                         | Some handler ->

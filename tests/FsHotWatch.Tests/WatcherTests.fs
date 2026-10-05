@@ -1531,6 +1531,118 @@ let ``a coalesced native event on the repository root rescans every discovery ro
 
         test <@ changes |> Seq.toList = [ SourceChanged [ lib ]; SourceChanged [ libTests ] ] @>)
 
+/// Write `text` to `relative` under `root`, last written an hour ago.
+let private writeAged (root: string) (relative: string) (text: string) =
+    let path = Path.Combine(root, relative)
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, text)
+    File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddHours -1.0)
+    path
+
+/// Start the macOS watcher over `tmpDir` on a fake native stream; `body` gets the
+/// stream's per-file and must-scan callbacks and the changes emitted so far.
+let private withNativeCallbacks
+    (tmpDir: string)
+    (body: (string -> unit) -> (string -> unit) -> ResizeArray<FileChangeKind> -> unit)
+    =
+    let changes = ResizeArray<FileChangeKind>()
+    let mutable callbacks: ((string -> unit) * (string -> unit)) option = None
+
+    let native _dirs _exclusions onFile onCoalesced _latency : IDisposable =
+        callbacks <- Some(onFile, onCoalesced)
+        inert "native"
+
+    use _watcher =
+        FileWatcher.createWithFactories
+            tmpDir
+            changes.Add
+            []
+            0.05
+            FileWatcher.NativeStartRetry.none
+            native
+            (fun _repo _onChange _extras -> inert "polling")
+
+    match callbacks with
+    | Some(onFile, onCoalesced) -> body onFile onCoalesced changes
+    | None -> failwith "the macOS watcher never installed its native callbacks"
+
+[<Fact(Timeout = 15000)>]
+let ``a coalesced rescan right after start does not report files last written before the stream started`` () =
+    // Production: a build right after a cold scan wrote thousands of obj/bin files,
+    // FSEvents coalesced them into a must-scan of the root, and the empty ledger
+    // reported all 2238 untouched sources under src/ and tests/ as created.
+    withTempDir "watcher-coalesced-pre-stream" (fun tmpDir ->
+        let a = writeAged tmpDir "src/P/A.fs" "let a = 1"
+
+        withNativeCallbacks tmpDir (fun _ rescan changes ->
+            rescan tmpDir
+            test <@ changes |> Seq.toList |> List.isEmpty @>
+
+            // Positive control: new bytes in A.fs and a new B.fs, both written after
+            // the stream started, are reported, and only they.
+            File.WriteAllText(a, "let a = 2")
+            let b = Path.Combine(tmpDir, "src", "P", "B.fs")
+            File.WriteAllText(b, "let b = 1")
+            rescan tmpDir
+
+            test <@ changes |> Seq.toList |> List.sort = List.sort [ SourceChanged [ a ]; SourceChanged [ b ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a per-file event for a file last written before the stream started still reports it`` () =
+    // Only a coalesced rescan names files nobody wrote; a per-file event names one
+    // the kernel saw written, so its first sighting stays a change.
+    withTempDir "watcher-per-file-pre-stream" (fun tmpDir ->
+        let a = writeAged tmpDir "src/P/A.fs" "let a = 1"
+
+        withNativeCallbacks tmpDir (fun handle _ changes ->
+            handle a
+            test <@ changes |> Seq.toList = [ SourceChanged [ a ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a coalesced rescan reports a pre-stream file once it has been edited`` () =
+    // Recorded silently is still recorded: the next rescan compares against it.
+    withTempDir "watcher-coalesced-pre-stream-edited" (fun tmpDir ->
+        let a = writeAged tmpDir "src/P/A.fs" "let a = 1"
+
+        withNativeCallbacks tmpDir (fun _ rescan changes ->
+            rescan tmpDir
+            File.WriteAllText(a, "let a = 2")
+            File.SetLastWriteTimeUtc(a, DateTime.UtcNow.AddHours -1.0)
+            rescan tmpDir
+            test <@ changes |> Seq.toList = [ SourceChanged [ a ] ] @>))
+
+[<Fact(Timeout = 15000)>]
+let ``a coalesced rescan still reports an unreadable pre-stream file`` () =
+    // Fail closed: a file nobody could read is never evidence that nothing happened.
+    withTempDir "watcher-coalesced-pre-stream-unreadable" (fun tmpDir ->
+        let a = writeAged tmpDir "src/P/A.fs" "let a = 1"
+        File.SetUnixFileMode(a, UnixFileMode.None)
+
+        try
+            withNativeCallbacks tmpDir (fun _ rescan changes ->
+                rescan tmpDir
+                test <@ changes |> Seq.toList = [ SourceChanged [ a ] ] @>)
+        finally
+            File.SetUnixFileMode(a, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact(Timeout = 15000)>]
+let ``predatesStream needs a recorded start and a write before it, less the margin`` () =
+    let started = DateTime(2026, 10, 5, 9, 36, 40, DateTimeKind.Utc)
+    let hourBefore = started.AddHours -1.0
+
+    let justOutsideMargin =
+        started - coalescedFirstSightMargin - TimeSpan.FromMilliseconds 1.0
+
+    let atMargin = started - coalescedFirstSightMargin
+    let secondBefore = started.AddSeconds -1.0
+    let secondAfter = started.AddSeconds 1.0
+    test <@ not (predatesStream None hourBefore) @>
+    test <@ predatesStream (Some started) justOutsideMargin @>
+    // A write stamped inside the coarse-clock margin may have happened after the start.
+    test <@ not (predatesStream (Some started) atMargin) @>
+    test <@ not (predatesStream (Some started) secondBefore) @>
+    test <@ not (predatesStream (Some started) secondAfter) @>
+
 [<Fact(Timeout = 15000)>]
 let ``a native start fault falls back to the built-in content-polling watcher`` () =
     withTempDir "watcher-native-fault" (fun tmpDir ->

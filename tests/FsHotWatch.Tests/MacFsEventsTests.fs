@@ -154,6 +154,21 @@ module ``isMustScanEvent pure tests`` =
 
         test <@ isMustScanEvent flags = false @>
 
+module ``describeFlags pure tests`` =
+
+    [<Fact(Timeout = 15000)>]
+    let ``names a must-scan's trigger`` () =
+        test <@ describeFlags 0x00000007u = "0x00000007 [MustScanSubDirs UserDropped KernelDropped]" @>
+        test <@ describeFlags 0x00000021u = "0x00000021 [MustScanSubDirs RootChanged]" @>
+
+    [<Fact(Timeout = 15000)>]
+    let ``keeps bits it has no name for`` () =
+        test <@ describeFlags 0x80000001u = "0x80000001 [MustScanSubDirs 0x80000000]" @>
+
+    [<Fact(Timeout = 15000)>]
+    let ``an empty flag set names nothing`` () =
+        test <@ describeFlags 0u = "0x00000000 []" @>
+
 // ─── Integration tests (macOS only) ─────────────────────────��─────
 
 // Force sequential execution — FSEvents startup latency (4-10s for cold dirs) causes
