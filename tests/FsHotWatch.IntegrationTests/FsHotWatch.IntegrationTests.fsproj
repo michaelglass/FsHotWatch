@@ -32,6 +32,7 @@
     <Compile Include="ColdCheckCommandTests.fs" />
     <Compile Include="ConfirmFreshCommandTests.fs" />
     <Compile Include="LauncherGroupSurvivalTests.fs" />
+    <Compile Include="RunSignalTests.fs" />
     <Compile Include="TestPruneTracesIntegrationTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>

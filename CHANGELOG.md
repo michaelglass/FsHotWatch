@@ -74,6 +74,13 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: a closed terminal ends a run the way Ctrl-C does
+
+- **fix: SIGHUP ends `check`/`confirm` like SIGINT and SIGTERM.** The hook in flight is
+  reaped, `.fshw/verdict.json` says the run was signalled, and the exit code is 129
+  (128 + SIGHUP). SIGHUP's default action used to end the process without either, so a
+  closed terminal left the hook's processes running and no verdict behind.
+
 ### release: the publication barrier waits forty minutes for nuget.org to index
 
 - **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s
