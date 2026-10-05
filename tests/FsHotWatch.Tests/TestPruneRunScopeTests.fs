@@ -4978,3 +4978,227 @@ let ``a narrower run that keeps the receipt leaves no revocation reason behind``
 
         test <@ final.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished fullRun) @>
         test <@ final.ReceiptRevoked = None @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a quiet completion that folds while an obligation is owed keeps the receipt's evidence, so a later narrower run grades the full suite``
+    ()
+    =
+    // The cold `check` that ended red over a full suite that had just passed: the build's
+    // `BuildSucceeded` launched a quiet run (nothing to select), the cold scan's last
+    // cohort folded symbols into the queue while it was in flight, and the quiet
+    // completion kept the full suite's receipt but published an evidence of its own,
+    // refusing for those symbols. The narrower run that then verified them found no
+    // evidence naming the receipt's run, so it published its own beside the receipt it
+    // kept, and the verdict found "no evidence receipt for the graded run".
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx = ctxUnderModel (fun () -> 7L)
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let quietRun =
+            testsFinishedEvent
+                []
+                ({ emptyLaunch with
+                    ModelGeneration = Some 7L
+                    ZeroSelection = ZeroSelection.AlreadyVerified }
+                 |> bindReceiptTree repoRoot)
+
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                ({ filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let evidenceRun (state: TestPruneState) =
+            (state :> IEarnedEvidenceState).EarnedEvidence |> Option.map _.RunId
+
+        let afterFull = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+
+        // An obligation owed when the quiet completion folds. Any owed obligation takes
+        // the fold down the same arm; this one needs no symbol index.
+        let owing =
+            { afterFull with
+                Debt =
+                    { afterFull.Debt with
+                        RecoveryOutstanding = true } }
+
+        let afterQuiet = handler.Update ctx owing quietRun |> Async.RunSynchronously
+
+        // The receipt and the evidence name one run.
+        test <@ afterQuiet.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished fullRun) @>
+        test <@ evidenceRun afterQuiet = Some(runIdOfFinished fullRun) @>
+
+        let discharged =
+            { afterQuiet with
+                Debt =
+                    { afterQuiet.Debt with
+                        RecoveryOutstanding = false } }
+
+        let final = handler.Update ctx discharged narrowRun |> Async.RunSynchronously
+        let report = receiptScopeUnder repoRoot handler final 7L
+
+        test <@ report.RunId = Some(runIdOfFinished fullRun) @>
+        test <@ evidenceRun final = Some(runIdOfFinished fullRun) @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
+        test <@ receiptGate report final 7L = None @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a quiet completion that keeps a narrower receipt while an obligation is owed refuses with that receipt's run``
+    ()
+    =
+    // A receipt that did not run the whole suite cannot vouch for an obligation owed on its
+    // tree. Its evidence refuses for it — the evidence of the run the receipt names.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx = ctxUnderModel (fun () -> 7L)
+
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                ({ filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let quietRun =
+            testsFinishedEvent
+                []
+                ({ emptyLaunch with
+                    ModelGeneration = Some 7L
+                    ZeroSelection = ZeroSelection.AlreadyVerified }
+                 |> bindReceiptTree repoRoot)
+
+        let afterNarrow =
+            handler.Update ctx handler.Init narrowRun |> Async.RunSynchronously
+
+        test <@ afterNarrow.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished narrowRun) @>
+
+        let owing =
+            { afterNarrow with
+                Debt =
+                    { afterNarrow.Debt with
+                        RecoveryOutstanding = true } }
+
+        let afterQuiet = handler.Update ctx owing quietRun |> Async.RunSynchronously
+        let evidence = (afterQuiet :> IEarnedEvidenceState).EarnedEvidence
+
+        test <@ afterQuiet.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished narrowRun) @>
+        test <@ evidence |> Option.map _.RunId = Some(runIdOfFinished narrowRun) @>
+
+        test
+            <@
+                evidence
+                |> Option.exists (fun held ->
+                    held.FailureReasons
+                    |> List.contains "1 verification obligation(s) remain pending")
+            @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a receipt whose run's evidence is not held is not kept over a narrower run`` () =
+    // However the state came to hold a receipt with no evidence for its run, a narrower
+    // run must not keep it: it would publish its own evidence beside a receipt naming
+    // another run. It earns its own receipt instead, and the two name one run.
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let ctx = ctxUnderModel (fun () -> 7L)
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                ({ filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let afterFull = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+        let unvouched = { afterFull with Earned = None }
+
+        let final = handler.Update ctx unvouched narrowRun |> Async.RunSynchronously
+        let report = receiptScopeUnder repoRoot handler final 7L
+
+        test <@ final.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished narrowRun) @>
+        test <@ report.RunId = Some(runIdOfFinished narrowRun) @>
+        test <@ (final :> IEarnedEvidenceState).EarnedEvidence |> Option.map _.RunId = report.RunId @>
+
+        // What the gate says is about that run's own evidence (a filtered run with no
+        // baseline to lean on refuses), never that no evidence names the graded run.
+        test
+            <@
+                receiptGate report final 7L
+                |> Option.exists (fun refusal -> refusal.StartsWith "no evidence receipt")
+                |> not
+            @>)
+
+[<Fact(Timeout = 20000)>]
+let ``test-scope sends the evidence for the run it grades from the same state`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let state =
+            handler.Update (ctxUnderModel (fun () -> 7L)) handler.Init fullRun
+            |> Async.RunSynchronously
+
+        let report = receiptScopeUnder repoRoot handler state 7L
+
+        let expected: FsHotWatch.Cli.IpcParsing.ModelReceipt =
+            { RunId = Some(runIdOfFinished fullRun)
+              Generation = 7L
+              Refusals = [] }
+
+        test <@ report.GradedEvidence = FsHotWatch.Cli.IpcParsing.GradedEvidenceReading.Reported(Some expected) @>
+
+        // No evidence for the graded run in that state: the reply says so, never omits it.
+        let unvouched = receiptScopeUnder repoRoot handler { state with Earned = None } 7L
+
+        test <@ unvouched.RunId = Some(runIdOfFinished fullRun) @>
+        test <@ unvouched.GradedEvidence = FsHotWatch.Cli.IpcParsing.GradedEvidenceReading.Reported None @>)
+
+[<Fact>]
+let ``a completion warns when its receipt and its evidence name different runs`` () =
+    let receiptRun = Guid.Parse("a0000000-1200-4000-8000-000000000001")
+
+    let receipt: TestEvidenceReceipt =
+        { InputTreeHash = Some "tree"
+          ModelGeneration = Some 7L
+          ProjectInputs = None
+          RunId = receiptRun
+          Coverage = RunCoverage.none
+          Seeds = []
+          ZeroSelection = ZeroSelection.NotAZero
+          FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+
+    test <@ receiptEvidenceMismatch (Some 7L) None None = None @>
+    // No model: no run can hold evidence, so a receipt without any is not a mismatch.
+    test <@ receiptEvidenceMismatch None (Some receipt) None = None @>
+
+    test
+        <@
+            receiptEvidenceMismatch (Some 7L) (Some receipt) None = Some
+                "the receipt grades run a0000000120040008000000000000001 but the model evidence names no run; a check graded from this state refuses its green"
+        @>

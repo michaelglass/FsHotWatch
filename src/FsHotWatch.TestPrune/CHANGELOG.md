@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: a cold `check` could end red with "no evidence receipt for the graded run … — nothing
+  vouches for this green" right after its full suite passed. A quiet completion (nothing
+  to select) that folded while an obligation was owed — symbols the cold scan delivered
+  while it was in flight — kept the full suite's receipt but published an evidence of its
+  own, so the receipt and the evidence named different runs. The narrower run that then
+  verified those symbols found no evidence for the receipt's run to keep and published its
+  own, and `test-scope` graded the full suite while the evidence named the narrower run. A
+  completion that keeps the receipt now keeps the evidence that receipt's run earned, and,
+  under a model, a receipt is kept only while that evidence is held. A whole-suite receipt
+  bound to the tree has run every test that tree has, so its evidence stands for an
+  obligation owed on it; a narrower receipt's evidence refuses for what is owed.
+
+- feat: the `test-scope` reply sends `evidence: {runId, modelGeneration, refusals}` for the
+  run it grades, read from the same state as `runId` (`null` when none is held under the
+  current model), so the run and its evidence are one snapshot.
+
+- feat: logging. A completion that leaves the receipt and the model evidence naming
+  different runs logs a warning naming both.
+
 - feat: the `test-scope` reply lists the changed files whose changes selected no tests, as
   `notSelected: [{file, reason}]` on every branch (`NotSelectedReason`, `NotSelectedFile`). A
   file enters when FCS reports errors for it (`FileFreshness.FileUnverified`) and leaves when a

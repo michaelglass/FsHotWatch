@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune, cli: the graded run and its evidence are one run, read from one reply
+
+- **fix: a cold `check` no longer ends red with "nothing vouches for this green" over a
+  full suite that passed.** A quiet completion that folded while the cold scan's last
+  symbols were owed kept the full suite's receipt but published an evidence of its own;
+  the narrower run that verified those symbols then published its own evidence beside
+  the same receipt. A completion that keeps the receipt now keeps the evidence that
+  receipt's run earned.
+- **fix: the run a verdict grades is looked up in the evidence the same `test-scope`
+  reply sends for it** (`evidence: {runId, modelGeneration, refusals}`), not in the
+  diagnostics reply's ledger, which is read separately. A daemon that does not send the
+  field is graded by the ledger as before.
+- **Logging.** Each verdict read logs one `[receipt]` line naming the graded run, its
+  reply's evidence and the diagnostics ledger.
+
 ### test-prune, cli: a changed file that selected no tests is named in the verdict
 
 - **feat: `scope.notSelected` in `.fshw/verdict.json`, and `notSelected` in the

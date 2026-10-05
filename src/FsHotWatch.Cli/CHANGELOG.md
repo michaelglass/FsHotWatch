@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix!: `check` and `confirm` grade the run `test-scope` names by the evidence that same reply
+  sends for it, instead of by the diagnostics reply's receipt ledger. The two replies are
+  read one after the other, and a completion that landed between them paired the graded run
+  with another run's evidence. A daemon that does not send the field is graded by the ledger
+  as before. **BREAKING** (F# API): `TestRunReport` has a required `GradedEvidence` field
+  (`GradedEvidenceReading`).
+
+- feat: logging. Every verdict read logs one `[receipt]` line: the run `test-scope` graded,
+  the evidence that reply held for it, and the receipt ledger the diagnostics reply held.
+
 - feat!: `.fshw/verdict.json` lists the changed files whose changes selected no tests, as
   `scope.notSelected` (`TestRunReport.NotSelected`, `Verdict.NotSelected`). `null` where the
   reading does not say; an entry this build cannot read makes the scope unreadable.

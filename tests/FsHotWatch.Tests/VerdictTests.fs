@@ -131,7 +131,8 @@ let private build (s: Spec) : Verdict.Verdict =
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds)
           Baseline = s.Baseline
-          NotSelected = s.NotSelected }
+          NotSelected = s.NotSelected
+          GradedEvidence = GradedEvidenceReading.NotReported }
         s.Tree
         s.Excluded
         s.Outcome
@@ -1132,7 +1133,8 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
                   Seeds = []
                   SeedCount = 0
                   Baseline = BaselineFixtures.reading
-                  NotSelected = None }
+                  NotSelected = None
+                  GradedEvidence = GradedEvidenceReading.NotReported }
 
         // The graded run leads — it is what the outcome was computed from — and every
         // other batch is there behind it.
@@ -1181,7 +1183,8 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                                   Seeds = []
                                   SeedCount = 0
                                   Baseline = BaselineFixtures.reading
-                                  NotSelected = None } }
+                                  NotSelected = None
+                                  GradedEvidence = GradedEvidenceReading.NotReported } }
 
             v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
 
@@ -1213,7 +1216,8 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                               Seeds = []
                               SeedCount = 0
                               Baseline = BaselineFixtures.reading
-                              NotSelected = None } }
+                              NotSelected = None
+                              GradedEvidence = GradedEvidenceReading.NotReported } }
 
         let onDisk =
             [ first; second; graded ]

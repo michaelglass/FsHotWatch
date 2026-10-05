@@ -2744,6 +2744,116 @@ let ``a missing receipt names every receipt the daemon did hold`` () =
         test <@ otherNamed.Contains $"run %s{other} at generation %d{currentGeneration}" @>
         test <@ (reasonFor []).Contains "the daemon holds no receipt" @>)
 
+[<Fact(Timeout = 20000)>]
+let ``the graded run is looked up in the evidence its own test-scope reply sent`` () =
+    withTempDir "ipcoutput-graded-evidence" (fun repoRoot ->
+        // `check` reads the diagnostics ledger and then `test-scope`: two replies, and a
+        // completion can land between them. The reply that names the graded run also sends
+        // the evidence it holds for it, from the same state; grading from that, a ledger
+        // read a moment earlier or later cannot pair the run with another run's evidence.
+        let laterRun = System.Guid.Parse("c0000000-2300-4000-8000-000000000230")
+
+        let ledgerOfAnotherMoment: IpcParsing.ModelReceipt list =
+            [ { RunId = Some laterRun
+                Generation = currentGeneration
+                Refusals = [] } ]
+
+        let gradedWith evidence =
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
+                RunId = Some BaselineFixtures.runId
+                GradedEvidence = evidence }
+
+        let held: IpcParsing.ModelReceipt =
+            { RunId = Some BaselineFixtures.runId
+              Generation = currentGeneration
+              Refusals = [] }
+
+        // Positive control: a reply from a daemon older than the field is graded by the
+        // ledger, exactly as before — and that ledger names another run.
+        test
+            <@
+                publishWithReceipts
+                    repoRoot
+                    ledgerOfAnotherMoment
+                    (gradedWith IpcParsing.GradedEvidenceReading.NotReported) = 2
+            @>
+
+        test
+            <@
+                publishWithReceipts
+                    repoRoot
+                    ledgerOfAnotherMoment
+                    (gradedWith (IpcParsing.GradedEvidenceReading.Reported(Some held))) = 0
+            @>
+
+        // The reply's own evidence still refuses: none held, a refusing one, another model.
+        test
+            <@ publishWithReceipts repoRoot [ held ] (gradedWith (IpcParsing.GradedEvidenceReading.Reported None)) = 2 @>
+
+        test
+            <@
+                publishWithReceipts
+                    repoRoot
+                    [ held ]
+                    (gradedWith (
+                        IpcParsing.GradedEvidenceReading.Reported(
+                            Some
+                                { held with
+                                    Refusals = [ "ProjA: tests failed or timed out" ] }
+                        )
+                    )) = 2
+            @>
+
+        test
+            <@
+                publishWithReceipts
+                    repoRoot
+                    [ held ]
+                    (gradedWith (
+                        IpcParsing.GradedEvidenceReading.Reported(
+                            Some
+                                { held with
+                                    Generation = currentGeneration + 1L }
+                        )
+                    )) = 2
+            @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            match verdict.Outcome with
+            | Verdict.Incomplete reason -> test <@ reason.Contains "the test-scope reply that graded it holds: run" @>
+            | other -> failwithf "expected a refusal, got %A" other
+        | other -> failwithf "expected a published verdict, got %A" other)
+
+[<Fact>]
+let ``the receipt reads line names the graded run, its reply's evidence and the ledger`` () =
+    let graded = System.Guid.Parse("c0000000-2400-4000-8000-000000000240")
+    let other = System.Guid.Parse("c0000000-2400-4000-8000-000000000241")
+
+    let report =
+        { BaselineFixtures.reportOf (FullSuite(1, None)) with
+            RunId = Some graded
+            GradedEvidence = IpcParsing.GradedEvidenceReading.Reported None }
+
+    let ledger =
+        IpcParsing.DaemonEvidence.Served(
+            [],
+            IpcParsing.ReceiptLedger.Offered
+                [ { RunId = Some other
+                    Generation = 2L
+                    Refusals = [ "1 verification obligation(s) remain pending" ] } ]
+        )
+
+    test
+        <@
+            describeReceiptReads report ledger = "test-scope graded run c0000000240040008000000000000240 (evidence in that reply: none held); diagnostics receipt ledger: run c0000000240040008000000000000241 at generation 2, refusing: 1 verification obligation(s) remain pending"
+        @>
+
+    test
+        <@
+            describeReceiptReads (BaselineFixtures.reportOf ScopeUnknown) IpcParsing.DaemonEvidence.NotServed = "test-scope graded no run (evidence in that reply: not sent); diagnostics receipt ledger: not served"
+        @>
+
 [<Theory(Timeout = 20000)>]
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]

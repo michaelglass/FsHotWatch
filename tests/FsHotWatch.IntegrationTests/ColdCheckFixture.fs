@@ -175,26 +175,49 @@ let withDaemon clock root body =
     // never the detached launcher used by ensureDaemon.
     let daemon = start root "dotnet" [ cli; "start" ]
 
-    try
-        let listening =
-            waitUntilTrue (fun () -> daemon.Process.HasExited || IpcClient.isRunning pipe) (remaining clock 120000)
-
-        Assert.True(listening, "owned cold daemon did not open its IPC endpoint")
-
-        if daemon.Process.HasExited then
-            Assert.Fail(output clock daemon)
-
-        Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
-        body cli
-    finally
+    let outcome =
         try
-            if not daemon.Process.HasExited && IpcClient.isRunning pipe then
-                IpcClient.shutdown pipe
-                |> fun shutdown -> Async.RunSynchronously(shutdown, 10000) |> ignore
+            try
+                let listening =
+                    waitUntilTrue
+                        (fun () -> daemon.Process.HasExited || IpcClient.isRunning pipe)
+                        (remaining clock 120000)
 
-            daemon.Process.WaitForExit(10000) |> ignore
+                Assert.True(listening, "owned cold daemon did not open its IPC endpoint")
+
+                if daemon.Process.HasExited then
+                    Assert.Fail(output clock daemon)
+
+                Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
+                Ok(body cli)
+            with failure ->
+                Error failure
         finally
-            disposeChild daemon
+            try
+                if not daemon.Process.HasExited && IpcClient.isRunning pipe then
+                    IpcClient.shutdown pipe
+                    |> fun shutdown -> Async.RunSynchronously(shutdown, 10000) |> ignore
+
+                daemon.Process.WaitForExit(10000) |> ignore
+            finally
+                disposeChild daemon
+
+    match outcome with
+    | Ok result -> result
+    | Error failure ->
+        // The verdict says WHAT refused; only the daemon's own log says what its plugins
+        // did to get there, and the scenario's temporary directory is deleted with it.
+        // Reaped above, so its streams have closed and this read does not wait.
+        let daemonLog =
+            try
+                if daemon.Stdout.Wait(5000) && daemon.Stderr.Wait(5000) then
+                    daemon.Stdout.Result + "\n" + daemon.Stderr.Result
+                else
+                    "(the daemon's output streams did not close)"
+            with readFailure ->
+                $"(the daemon's output could not be read: %s{readFailure.Message})"
+
+        raise (Exception($"%s{failure.Message}\n\n--- owned daemon output ---\n%s{daemonLog}", failure))
 
 /// Run one verb against the owned daemon and read the verdict it left behind.
 let private verb clock root cli (name: string) (flags: string list) =
