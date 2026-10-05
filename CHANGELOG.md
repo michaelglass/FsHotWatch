@@ -81,6 +81,13 @@ All notable changes to FsHotWatch packages are documented here.
   (128 + SIGHUP). SIGHUP's default action used to end the process without either, so a
   closed terminal left the hook's processes running and no verdict behind.
 
+### lint, analyzers, test-prune: a result from a replaced project model is refused out loud
+
+- **feat: logging. The line saying a plugin ignored a `FileChecked` or `BatchChecked`
+  captured against a replaced project model is logged at Info, up from Debug.** A finding
+  or an analysis that disappears after a rediscovery is now explained in `daemon.log`
+  without turning on Debug.
+
 ### release: the publication barrier waits forty minutes for nuget.org to index
 
 - **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s

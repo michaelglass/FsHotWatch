@@ -594,7 +594,7 @@ let internal createWithSeams
                 // still has is re-checked against it and republishes, so refusing costs
                 // that file nothing.
                 | FileChecked result when notCurrent result.ModelGeneration ->
-                    debug
+                    info
                         "analyzers"
                         $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
 
