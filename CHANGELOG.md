@@ -74,6 +74,13 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### release: the publication barrier waits forty minutes for nuget.org to index
+
+- **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s
+  = 20 minutes.** Two of seven releases gave up while nuget.org was still indexing a
+  package that then resolved, and each had to be resumed by hand.
+  `FSHW_NUGET_PROBE_ATTEMPTS` and `FSHW_NUGET_PROBE_DELAY_MS` still override it.
+
 ### test-prune, cli: the graded run and its evidence are one run, read from one reply
 
 - **fix: a cold `check` no longer ends red with "nothing vouches for this green" over a
