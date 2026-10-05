@@ -7,6 +7,7 @@ open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
 open FsHotWatch.ErrorLedger
+open FsHotWatch.InMemoryCheckCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.WatchedDir
 
@@ -608,9 +609,14 @@ let ``scope default-workspace turns the cache OFF in a secondary checkout, and s
     for kind in
         [ FsHotWatch.RepositoryIdentity.CheckoutKind.JjSecondaryWorkspace
           FsHotWatch.RepositoryIdentity.CheckoutKind.GitWorktree ] do
-        let on, message = resolveCacheScope CacheScope.DefaultWorkspaceOnly (Ok kind)
+        let on, scope = resolveCacheScope CacheScope.DefaultWorkspaceOnly (Ok kind)
         test <@ not on @>
-        test <@ message.Contains "OFF" && message.Contains "default-workspace" @>
+
+        test
+            <@
+                scope.Contains "default-workspace"
+                && scope.Contains(FsHotWatch.RepositoryIdentity.CheckoutKind.describe kind)
+            @>
 
 [<Fact(Timeout = 15000)>]
 let ``scope default-workspace keeps the cache ON in the default checkout`` () =
@@ -633,7 +639,7 @@ let ``scope default-workspace turns the cache OFF in a checkout whose layout can
         resolveCacheScope CacheScope.DefaultWorkspaceOnly (Result.Error error)
 
     test <@ not on @>
-    test <@ message.Contains "OFF" && message.Contains "/r/.jj/repo" @>
+    test <@ message.Contains "default-workspace" && message.Contains "/r/.jj/repo" @>
 
     let onAll, _ = resolveCacheScope CacheScope.AllCheckouts (Result.Error error)
     test <@ onAll @>
@@ -661,46 +667,100 @@ let ``cacheAdmits exclude drops matching projects and wins over include`` () =
 [<Fact(Timeout = 15000)>]
 let ``createCacheComponents builds no cache in a secondary workspace under default-workspace scope`` () =
     withTempDir "cfg-cc-scope" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-        File.WriteAllText(Path.Combine(tmpDir, ".jj", "repo"), "../../.jj/repo")
+        let store =
+            Directory.CreateDirectory(Path.Combine(tmpDir, "default", ".jj", "repo"))
 
-        let backend, keyProvider =
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, ".jj", "repo"), store.FullName)
+
+        let setup =
             createCacheComponents
                 tmpDir
                 (InMemory
                     { defaultInMemoryCache with
                         Scope = CacheScope.DefaultWorkspaceOnly })
 
-        test <@ backend.IsNone @>
-        test <@ keyProvider.IsNone @>)
+        match setup with
+        | CheckCacheSetup.OffInThisCheckout scope -> test <@ scope.Contains "secondary jj workspace" @>
+        | other -> failwith $"expected the cache off in this checkout, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``a secondary workspace under default-workspace scope logs one check-cache line, the scope's`` () =
+    // The scope decision already says the cache is off and why; a second, generic
+    // "OFF ... enables it" line contradicted it with advice that does not apply.
+    withTempDir "cfg-cc-scope-line" (fun tmpDir ->
+        let store =
+            Directory.CreateDirectory(Path.Combine(tmpDir, "default", ".jj", "repo"))
+
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, ".jj", "repo"), store.FullName)
+
+        let lines =
+            startupCacheLines
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        Scope = CacheScope.DefaultWorkspaceOnly })
+
+        test <@ lines.Length = 1 @>
+
+        test
+            <@
+                lines.Head.Contains "OFF in this checkout"
+                && lines.Head.Contains "default-workspace"
+                && lines.Head.Contains "secondary jj workspace"
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``with no cache configured the daemon logs one check-cache line, the generic OFF`` () =
+    withTempDir "cfg-cc-off-line" (fun tmpDir ->
+        let lines = startupCacheLines tmpDir NoCache
+
+        test <@ lines.Length = 1 @>
+        test <@ lines.Head.Contains "OFF — every scan re-asks FCS" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a cache that runs is named by one check-cache line saying its size and its scope`` () =
+    withTempDir "cfg-cc-on-line" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj", "repo")) |> ignore
+
+        let lines =
+            startupCacheLines
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        Scope = CacheScope.DefaultWorkspaceOnly })
+
+        test <@ lines.Length = 1 @>
+        test <@ lines.Head.Contains "in-memory" && lines.Head.Contains "default-workspace" @>)
 
 [<Fact(Timeout = 15000)>]
 let ``createCacheComponents builds a cache in the default workspace under default-workspace scope`` () =
     withTempDir "cfg-cc-scope-default" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj", "repo")) |> ignore
 
-        let backend, _ =
+        match
             createCacheComponents
                 tmpDir
                 (InMemory
                     { defaultInMemoryCache with
                         Scope = CacheScope.DefaultWorkspaceOnly })
-
-        test <@ backend.IsSome @>)
+        with
+        | CheckCacheSetup.On(_, _, Some scope) -> test <@ scope.Contains "jj default workspace" @>
+        | other -> failwith $"expected a running cache, got %A{other}")
 
 [<Fact(Timeout = 15000)>]
 let ``createCacheComponents passes maxEntries and the project filter to the cache`` () =
     withTempDir "cfg-cc-settings" (fun tmpDir ->
-        let backend, _ =
+        match
             createCacheComponents
                 tmpDir
                 (InMemory
                     { defaultInMemoryCache with
                         MaxEntries = CacheSize.Entries 42
                         Exclude = [ "src/Libs/" ] })
-
-        match backend with
-        | Some(:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache) ->
+        with
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _) ->
             test <@ cache.Capacity = 42 @>
             let scoped = cache :> FsHotWatch.CheckCache.IScopedCheckCache
             test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
@@ -1173,20 +1233,18 @@ let ``parseConfig with full configuration`` () =
 // --- createCacheComponents ---
 
 [<Fact(Timeout = 15000)>]
-let ``createCacheComponents NoCache returns None None`` () =
+let ``createCacheComponents NoCache runs no cache`` () =
     withTempDir "cfg-cc" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir NoCache
-        test <@ backend = None @>
-        test <@ keyProvider = None @>)
+        match createCacheComponents tmpDir NoCache with
+        | CheckCacheSetup.Off -> ()
+        | other -> failwith $"expected no cache, got %A{other}")
 
 [<Fact(Timeout = 15000)>]
-let ``createCacheComponents InMemory returns Some backend and Some keyProvider`` () =
+let ``createCacheComponents InMemory runs a cache with a key provider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
-        let (backend, keyProvider) =
-            createCacheComponents tmpDir (InMemory defaultInMemoryCache)
-
-        test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>)
+        match createCacheComponents tmpDir (InMemory defaultInMemoryCache) with
+        | CheckCacheSetup.On(_, keyProvider, _) -> test <@ keyProvider.IsSome @>
+        | other -> failwith $"expected a running cache, got %A{other}")
 
 // --- defaultConfigFor ---
 

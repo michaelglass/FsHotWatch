@@ -179,14 +179,41 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                 lruNodes.Clear()
                 slots.Clear())
 
-/// One line for the daemon's startup log naming the check-result cache's state. An
-/// absent cache is stated, not implied: silence let an inert cache read as a working one.
-let describeCheckCache (backend: ICheckCacheBackend option) : string =
-    match backend with
-    | None ->
+/// The daemon's check-result cache, with what its one startup line says about it.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type CheckCacheSetup =
+    /// No cache configured: `"cache"` absent or `"none"`, or `--no-cache`.
+    | Off
+    /// A cache is configured but its scope leaves this checkout out; `scope` names the
+    /// scope and the checkout it was read from.
+    | OffInThisCheckout of scope: string
+    /// A running cache; `scope`, when the config set one, says why it runs here.
+    | On of backend: ICheckCacheBackend * keyProvider: ICacheKeyProvider option * scope: string option
+
+module CheckCacheSetup =
+    /// The backend and key provider the daemon runs with: both `None` unless the cache is `On`.
+    let components (setup: CheckCacheSetup) : ICheckCacheBackend option * ICacheKeyProvider option =
+        match setup with
+        | CheckCacheSetup.On(backend, keyProvider, _) -> Some backend, keyProvider
+        | CheckCacheSetup.Off
+        | CheckCacheSetup.OffInThisCheckout _ -> None, None
+
+/// The daemon's one startup line naming the check-result cache's state. An absent cache
+/// is stated, not implied: silence let an inert cache read as a working one.
+let describeCheckCache (setup: CheckCacheSetup) : string =
+    match setup with
+    | CheckCacheSetup.Off ->
         "check-result cache: OFF — every scan re-asks FCS for every file (\"cache\": \"memory\" in .fshw.json enables it)"
-    | Some(:? InMemoryCheckCache as cache) ->
-        match cache.CapacityMode with
-        | CacheCapacity.WorkingSet -> "check-result cache: in-memory, sized to the working set (every file it caches)"
-        | CacheCapacity.Entries n -> $"check-result cache: in-memory, at most %d{n} entries"
-    | Some other -> $"check-result cache: %s{other.GetType().Name}"
+    | CheckCacheSetup.OffInThisCheckout scope -> $"check-result cache: OFF in this checkout — %s{scope}"
+    | CheckCacheSetup.On(backend, _, scope) ->
+        let state =
+            match backend with
+            | :? InMemoryCheckCache as cache ->
+                match cache.CapacityMode with
+                | CacheCapacity.WorkingSet -> "in-memory, sized to the working set (every file it caches)"
+                | CacheCapacity.Entries n -> $"in-memory, at most %d{n} entries"
+            | other -> other.GetType().Name
+
+        match scope with
+        | Some scope -> $"check-result cache: %s{state} — %s{scope}"
+        | None -> $"check-result cache: %s{state}"

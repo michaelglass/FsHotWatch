@@ -63,9 +63,9 @@ let defaultInMemoryCache =
       Include = []
       Exclude = [] }
 
-/// Whether `scope` runs a cache in a checkout of `kind`, and the startup line saying
-/// what was detected and what follows from it. A checkout whose layout cannot be read
-/// is not provably the default workspace, so `"default-workspace"` leaves it off.
+/// Whether `scope` runs a cache in a checkout of `kind`, and the scope and detected
+/// checkout the startup line names. A checkout whose layout cannot be read is not
+/// provably the default workspace, so `"default-workspace"` leaves it off.
 let resolveCacheScope
     (scope: CacheScope)
     (kind: Result<FsHotWatch.RepositoryIdentity.CheckoutKind, FsHotWatch.RepositoryIdentity.IdentityError>)
@@ -82,12 +82,9 @@ let resolveCacheScope
         |> Result.defaultValue true
 
     match scope with
-    | CacheScope.AllCheckouts -> true, $"check-result cache: cache.scope is \"all\"; this checkout is %s{detected}"
-    | CacheScope.DefaultWorkspaceOnly when secondaryOrUnknown ->
-        false,
-        $"check-result cache: OFF in this checkout — cache.scope is \"default-workspace\" and this is %s{detected}"
+    | CacheScope.AllCheckouts -> true, $"cache.scope is \"all\"; this checkout is %s{detected}"
     | CacheScope.DefaultWorkspaceOnly ->
-        true, $"check-result cache: ON — cache.scope is \"default-workspace\" and this is %s{detected}"
+        not secondaryOrUnknown, $"cache.scope is \"default-workspace\" and this is %s{detected}"
 
 /// Which projects the cache holds: a project path (absolute) is admitted when it
 /// matches an `include` glob (or `include` is empty) and no `exclude` glob. Globs are
@@ -118,23 +115,22 @@ let cacheAdmits (repoRoot: string) (includes: string list) (excludes: string lis
         else
             included relative && not (excluded relative)
 
-/// Create cache backend and key provider from config. Logs the scope decision.
+/// The check-result cache `config` runs in `repoRoot`. Logs nothing: the daemon states
+/// the result in one startup line (`describeCheckCache`).
 let createCacheComponents
     (repoRoot: string)
     (config: CacheBackendConfig)
-    : (ICheckCacheBackend option * ICacheKeyProvider option) =
+    : FsHotWatch.InMemoryCheckCache.CheckCacheSetup =
     match config with
-    | NoCache -> (None, None)
+    | NoCache -> FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
     | InMemory settings ->
-        let on, message =
+        let on, scope =
             resolveCacheScope
                 settings.Scope
                 (FsHotWatch.RepositoryIdentity.resolveWorktree repoRoot |> Result.map _.Kind)
 
-        Logging.info "cache" message
-
         if not on then
-            (None, None)
+            FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout scope
         else
             let capacity =
                 match settings.MaxEntries with
@@ -147,7 +143,18 @@ let createCacheComponents
                     cacheAdmits repoRoot settings.Include settings.Exclude
                 )
 
-            (Some(cache :> ICheckCacheBackend), Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+            FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+                cache,
+                Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
+                Some scope
+            )
+
+/// Every `check-result cache:` line a daemon started on `config` in `repoRoot` logs:
+/// `createCacheComponents` logs nothing, and the daemon logs `describeCheckCache` of
+/// the setup it was given, once. A checkout the scope leaves out therefore gets the
+/// scope's line alone, not the scope's line followed by the generic "OFF … enables it".
+let startupCacheLines (repoRoot: string) (config: CacheBackendConfig) : string list =
+    [ FsHotWatch.InMemoryCheckCache.describeCheckCache (createCacheComponents repoRoot config) ]
 
 /// Resolves which paths from `paths` exist, retrying with short backoff for the case
 /// where the daemon starts immediately after `jj workspace add`: workspace population
