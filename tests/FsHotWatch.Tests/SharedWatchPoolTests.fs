@@ -340,6 +340,23 @@ let ``a must-scan rescans only the session whose stream reported it`` () =
         test <@ recB.Seen = [ SourceChanged [ fileB ] ] @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a must-scan does not report a file last written before the session's stream started`` () =
+    withTempDir "pool-pre-stream" (fun anchor ->
+        let aged = write (Path.Combine(anchor, "src", "Old.fs")) "a"
+        File.SetLastWriteTimeUtc(aged, DateTime.UtcNow.AddHours -1.0)
+        let native = FakeNative()
+        let pool = WatchPool(native.Factory, noFallback)
+        let recA = Recorder()
+        use _a = subscribe pool anchor anchor [] recA
+        (native.Over anchor).OnCoalesced anchor
+        test <@ recA.Seen.IsEmpty @>
+
+        // Positive control: a file written after the stream started is reported.
+        let fresh = write (Path.Combine(anchor, "src", "New.fs")) "b"
+        (native.Over anchor).OnCoalesced anchor
+        test <@ recA.Seen = [ SourceChanged [ fresh ] ] @>)
+
+[<Fact(Timeout = 15000)>]
 let ``a must-scan inside one discovery root rescans only that directory`` () =
     withTwoSessions (fun native _ anchor _ recA recB ->
         let inside = write (Path.Combine(anchor, "src", "Lib", "In.fs")) "a"
