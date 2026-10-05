@@ -89,6 +89,22 @@ All notable changes to FsHotWatch packages are documented here.
   timeouts that race a child's first write) are listed there as not yet fixable without
   a product seam.
 
+### core: a must-scan right after start no longer reports the whole tree as changed
+
+- **fix: a coalesced FSEvents rescan does not report files written before the stream
+  started.** A build seconds after a cold scan writes thousands of `obj/`/`bin/` files;
+  FSEvents can coalesce them into a must-scan of the root, and the watcher's empty
+  content ledger reported every source under the discovery roots as created ("Checking
+  2240 files after change — 2238 changed") though none had been written. A rescan's
+  first sighting of a file last written more than 2 s before the stream started is now
+  recorded without reporting it. FSEvents only coalesces events from after the start,
+  and any write since then moves the file's time past it. Per-file events, edited
+  files and new files are reported as before. A file copied in with an old time
+  (`cp -p`, `tar -x`) that the watcher never saw is missed by a rescan until its next
+  write. Applies to the standalone watcher and the repository host's watch pool.
+- **Logging.** The `MustScanSubDirs` line is now `info`, with the event's flags named
+  (`UserDropped`, `KernelDropped`, `RootChanged`, ...), so a rescan names its trigger.
+
 ### test-prune, cli: the graded run and its evidence are one run, read from one reply
 
 - **fix: a cold `check` no longer ends red with "nothing vouches for this green" over a
