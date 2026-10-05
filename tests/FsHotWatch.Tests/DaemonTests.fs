@@ -1085,6 +1085,66 @@ let ``FormatScanStatus returns progress for Scanning`` () =
         test <@ status.Contains("5/10") @>
         test <@ status.Contains("50%") @>)
 
+/// The scan-status RPC answering a poll mid-scan, with the daemon's own scan line, and
+/// what it logged at Info while doing so.
+let private scanStatusAnswered (state: ScanState) : string * string list =
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
+        daemon.SetScanState(state)
+        let logged = Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _sink =
+            Logging.installSink
+                { Write = logged.Enqueue
+                  Level = Logging.LogLevel.Info }
+
+        let target =
+            Ipc.DaemonRpcTarget(
+                { Host = daemon.Host
+                  RequestShutdown = ignore
+                  RequestScan = ignore
+                  GetScanStatus = daemon.FormatScanStatus
+                  GetScanGeneration = fun () -> 0L
+                  TriggerBuild = fun () -> async { return () }
+                  FormatAll = fun () -> async { return "formatted 0 files" }
+                  WaitForScanGeneration = fun _ -> Task.FromResult(())
+                  WaitForAllTerminal = fun _ -> Task.FromResult(())
+                  RerunPlugin = fun _ -> async { return Result.Ok() }
+                  InvalidateCache = fun () -> Task.FromResult(())
+                  GetUncheckedCount = fun () -> 0
+                  GetProjectModel = fun () -> Observation.Unobserved
+                  Context = None }
+            )
+
+        let answer = target.ScanStatus()
+        answer, List.ofSeq logged)
+
+// A cold scan is the longest wait a client sits through, and `daemon.log` said nothing
+// while it ran: the progress a client was told existed only in the client's terminal.
+[<Fact(Timeout = 15000)>]
+let ``ScanStatus logs the progress it answers mid-scan at info`` () =
+    let answer, logged = scanStatusAnswered (Scanning(10, 5, DateTime.UtcNow))
+
+    test <@ answer = "scanning: 5/10 files (50%)" @>
+
+    test
+        <@
+            logged
+            |> List.exists (fun l ->
+                l.Contains "scan status answered in "
+                && l.EndsWith "ms: scanning: 5/10 files (50%)")
+        @>
+
+// A waiting client polls it repeatedly, so an idle or finished scan is not logged:
+// only a scan in progress has something to say.
+[<Fact(Timeout = 15000)>]
+let ``ScanStatus logs nothing when no scan is running`` () =
+    let answer, logged = scanStatusAnswered ScanIdle
+
+    test <@ answer = "idle" @>
+    test <@ logged |> List.exists (fun l -> l.Contains "scan status answered") |> not @>
+
 // FormatScanStatus now reads completeness LIVE (registered minus currently-
 // checked) rather than from a frozen ScanComplete snapshot, so the count can no
 // longer be injected through ScanState. The pure render function is unit-tested

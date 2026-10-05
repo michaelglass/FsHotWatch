@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: logging. Ignoring a `FileChecked` or `BatchChecked` captured against a replaced
+  project model is logged at Info, up from Debug.
+
 ## 0.13.0-alpha.65 - 2026-10-05
 
 - fix: a cold `check` could end red with "no evidence receipt for the graded run … — nothing

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: `Ctrf.tidyRunsDir` keeps every run `.fshw/verdict.json` names (`runId`,
+  `runs[].runId`, `outcome.baseline.runId`), however old.
+- feat: `FsHwPaths.verdictFile`, the verdict's path.
+
+- feat: logging. `DaemonRpcTarget.ScanStatus` logs an answer that reports a scan in
+  progress at Info, with how long it took to answer. An idle or finished scan is not logged.
+
 ## 0.10.0-alpha.66 - 2026-10-05
 
 - fix: a coalesced FSEvents rescan (MustScanSubDirs) no longer reports files last written

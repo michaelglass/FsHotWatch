@@ -9172,13 +9172,13 @@ let internal createWithQueries
 
                 match event with
                 | PluginEvent.FileChecked result when notCurrent result.ModelGeneration ->
-                    Logging.debug
+                    Logging.info
                         "test-prune"
                         $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
 
                     return state
                 | PluginEvent.BatchChecked batch when notCurrent batch.ModelGeneration ->
-                    Logging.debug
+                    Logging.info
                         "test-prune"
                         $"ignoring BatchChecked from model %A{batch.ModelGeneration}; current %A{modelGeneration}"
 

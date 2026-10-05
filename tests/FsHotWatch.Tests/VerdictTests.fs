@@ -1303,6 +1303,84 @@ let ``tidyRunsDir rotates old RUNS and purges the pre flat layout`` () =
         // History is EVIDENCE: the newest runs survive, and nothing is wiped on start.
         test <@ survivors = List.skip (runs.Length - Ctrf.RetainedRuns) runs @>)
 
+// The verdict points its reader at `.fshw/test-runs/<runId>/`. A run that rotation
+// deleted leaves `fshw verdict` naming reports that are gone, so every run the verdict
+// names survives the tidy, however old: its top-level `runId`, each `runs[].runId`, and
+// the full-suite baseline it was graded against.
+[<Fact>]
+let ``tidyRunsDir keeps every run the verdict names`` () =
+    withTempDir "ctrf-tidy-verdict" (fun root ->
+        makeRepo root
+
+        let runs = [ for _ in 1..14 -> Guid.NewGuid() ]
+
+        for r in runs do
+            writeReport root r "Lib.Tests" 10 0 |> ignore
+            Directory.SetLastWriteTimeUtc(Ctrf.runDir root r, DateTime.UtcNow)
+            System.Threading.Thread.Sleep 5
+
+        // The three oldest, each named in one of the places a verdict names a run.
+        let named, unnamed = List.splitAt 3 runs
+        let top, batch, baseline = named[0], named[1], named[2]
+        let n (id: Guid) = id.ToString("N")
+
+        File.WriteAllText(
+            Verdict.path root,
+            $$"""{ "runId": "{{n top}}",
+                   "runs": [ { "runId": "{{n batch}}", "suites": [] }, { "runId": null, "suites": [] } ],
+                   "outcome": { "kind": "green",
+                                "baseline": { "kind": "full-suite-run", "runId": "{{n baseline}}",
+                                              "earnedAt": "2026-09-06T12:00:00Z", "projects": 1 } } }"""
+        )
+
+        Ctrf.tidyRunsDir root Ctrf.RetainedRuns
+
+        test <@ named |> List.forall (Ctrf.runExists root) @>
+        // Positive control: rotation still ran, over the runs the verdict does not name.
+        test
+            <@ unnamed |> List.filter (Ctrf.runExists root) = List.skip (unnamed.Length - Ctrf.RetainedRuns) unnamed @>)
+
+// A verdict that names no run (absent, without `runs`, `runs` not an array, unreadable)
+// protects nothing: the tidy is plain rotation, and a bad verdict never stops it.
+[<Theory>]
+[<InlineData("<absent>")>]
+[<InlineData("""{ "outcome": { "kind": "green" } }""")>]
+[<InlineData("""{ "runs": 5 }""")>]
+[<InlineData("{ not json")>]
+let ``tidyRunsDir rotates plainly when the verdict names no run`` (verdict: string) =
+    withTempDir "ctrf-tidy-noverdict" (fun root ->
+        makeRepo root
+
+        let runs = [ for _ in 1..14 -> Guid.NewGuid() ]
+
+        for r in runs do
+            writeReport root r "Lib.Tests" 10 0 |> ignore
+            Directory.SetLastWriteTimeUtc(Ctrf.runDir root r, DateTime.UtcNow)
+            System.Threading.Thread.Sleep 5
+
+        if verdict <> "<absent>" then
+            File.WriteAllText(Verdict.path root, verdict)
+
+        Ctrf.tidyRunsDir root Ctrf.RetainedRuns
+
+        test <@ runs |> List.filter (Ctrf.runExists root) = List.skip (runs.Length - Ctrf.RetainedRuns) runs @>)
+
+// Only a file named as a report is read as one: the same valid CTRF under another name
+// is not a report, so a stray copy in a run directory cannot be counted twice.
+[<Fact>]
+let ``tryReadReport reads only files named as reports`` () =
+    withTempDir "ctrf-read-name" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let report = writeReport root runId "Lib.Tests" 10 0
+        let copy = Path.Combine(Ctrf.runDir root runId, "Lib.Tests.json")
+        File.Copy(report, copy)
+        let id = runId.ToString("N")
+
+        // Positive control: the same bytes under the report name parse.
+        test <@ (Ctrf.tryReadReport id report).IsSome @>
+        test <@ Ctrf.tryReadReport id copy = None @>)
+
 [<Fact(Timeout = 60000)>]
 let ``tidyRunsDir cannot FAULT the run it is cleaning up after, however the directory moves`` () =
     // The tidy once enumerated the run directory TWICE and applied the second

@@ -1,3 +1,4 @@
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.LintPluginTests
 
 open Xunit
@@ -404,6 +405,16 @@ let ``lint refuses a FileChecked captured against a superseded model`` () =
         Lint.LintResult.Success [ warning ]
 
     let handler = create (Some repoRoot) None (Some runner) None
+    // Installed BEFORE RegisterHandler: the plugin's mailbox captures this context when
+    // it starts, so a sink installed later would never see the plugin's lines. At Info,
+    // so a refusal logged only at Debug is not visible to it.
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _sink =
+        FsHotWatch.Logging.installSink
+            { Write = logged.Enqueue
+              Level = FsHotWatch.Logging.LogLevel.Info }
+
     host.RegisterHandler(handler)
 
     // The rediscovery lands: generation 2 no longer has Removed.fs, and the host has
@@ -433,6 +444,14 @@ let ``lint refuses a FileChecked captured against a superseded model`` () =
     test <@ errors |> Map.containsKey removed |> not @>
     // ...and the current-generation result still reports its findings.
     test <@ (errors |> Map.tryFind present |> Option.map List.length) = Some 1 @>
+
+    // The refusal is logged at Info: a finding that vanishes after a rediscovery is
+    // explained in the daemon log without turning on Debug.
+    test
+        <@
+            logged
+            |> Seq.exists (fun l -> l.Contains "[lint]" && l.Contains $"ignoring FileChecked for %s{removed}")
+        @>
 
 // The refusal above lives in the plugin's `Update`, but a task-cache hit replays the
 // cached findings WITHOUT running `Update`, and the lint cache key names the file and

@@ -74,6 +74,43 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: a closed terminal ends a run the way Ctrl-C does
+
+- **fix: SIGHUP ends `check`/`confirm` like SIGINT and SIGTERM.** The hook in flight is
+  reaped, `.fshw/verdict.json` says the run was signalled, and the exit code is 129
+  (128 + SIGHUP). SIGHUP's default action used to end the process without either, so a
+  closed terminal left the hook's processes running and no verdict behind.
+
+### lint, analyzers, test-prune: a result from a replaced project model is refused out loud
+
+- **feat: logging. The line saying a plugin ignored a `FileChecked` or `BatchChecked`
+  captured against a replaced project model is logged at Info, up from Debug.** A finding
+  or an analysis that disappears after a rediscovery is now explained in `daemon.log`
+  without turning on Debug.
+
+### core: a cold scan's progress is in the daemon log
+
+- **feat: logging. A scan-status answer that reports a scan in progress is logged at
+  Info** (`[rpc] scan status answered in 3ms: scanning: 5/10 files (50%)`). A cold scan's
+  progress used to reach only the polling client's terminal. An idle or finished scan
+  is not logged, since a waiting client polls repeatedly.
+
+### core, cli: rotating test runs keeps the runs the verdict points at
+
+- **fix: `Ctrf.tidyRunsDir` no longer deletes a run `.fshw/verdict.json` names** — its
+  `runId`, each `runs[].runId`, or its outcome's `baseline.runId` — however old. Rotation
+  kept only the newest ten run directories, so after enough runs the verdict pointed its
+  reader at reports that were gone.
+- `FsHwPaths.verdictFile` names the verdict's path in core, and the CLI's `Verdict.path`
+  returns it, so the writer and the tidy read one path.
+
+### release: the publication barrier waits forty minutes for nuget.org to index
+
+- **fix: `scripts/wait-for-nuget.fsx` defaults to 160 × 15s = 40 minutes, up from 80 × 15s
+  = 20 minutes.** Two of seven releases gave up while nuget.org was still indexing a
+  package that then resolved, and each had to be resumed by hand.
+  `FSHW_NUGET_PROBE_ATTEMPTS` and `FSHW_NUGET_PROBE_DELAY_MS` still override it.
+
 ### tests: no test asserts how long something took
 
 - [`docs/wall-clock-bounds.md`](docs/wall-clock-bounds.md) lists every upper wall-clock
