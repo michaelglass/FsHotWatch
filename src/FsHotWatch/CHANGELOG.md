@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a coalesced FSEvents rescan (MustScanSubDirs) no longer reports files last written
+  more than 2 s before the native stream started. A build right after a cold scan could
+  make FSEvents coalesce into a must-scan of the root, and the empty content ledger
+  reported every source under the discovery roots as created. Per-file events and files
+  written since the start are reported as before; a never-seen file given an old time
+  (`cp -p`, `tar -x`) is missed by a rescan until its next write. The `MustScanSubDirs`
+  log line is now `info` and names the event's flags.
+
 ## 0.10.0-alpha.65 - 2026-10-05
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply

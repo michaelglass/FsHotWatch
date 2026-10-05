@@ -66,11 +66,10 @@ type private Subscriber
     let ledger = ContentLedger()
     let accepts = acceptsUnderRoot root extraPatterns
 
-    let report (path: string) =
-        if ledger.Observe path then
-            onChange (classifyChange path)
-
     member _.Root = root
+
+    /// Record that this session's native stream is starting now.
+    member _.StreamStarting() = ledger.StreamStarting()
 
     /// Run `work` under the context this session subscribed from.
     member _.InContext(work: unit -> unit) =
@@ -79,12 +78,15 @@ type private Subscriber
         | ctx -> ExecutionContext.Run(ctx.CreateCopy(), (fun _ -> work ()), null)
 
     member _.OnFile(path: string) =
-        if accepts path then
-            report path
+        if accepts path && ledger.Observe path then
+            onChange (classifyChange path)
 
     /// Rescan what `dir` covers of this session's discovery roots.
     member _.Rescan(dir: string) =
-        rescanUnderRoot root dir |> Seq.iter report
+        rescanUnderRoot root dir
+        |> Seq.iter (fun path ->
+            if ledger.ObserveRescanned path then
+                onChange (classifyChange path))
 
 /// The sessions under one anchor. Routes to the subscribers themselves; a subscriber
 /// is its own key.
@@ -206,6 +208,8 @@ type WatchPool internal (nativeFactory: NativeFactory, fallback: FallbackFactory
         let sub = Subscriber(root, extraPatterns, onChange, ExecutionContext.Capture())
 
         locked (fun () ->
+            sub.StreamStarting()
+
             let stream =
                 withoutFlow (fun () ->
                     nativeFactory [ root ] (kernelExclusions root) (onFile anchor sub) (onMustScan anchor sub) latency)

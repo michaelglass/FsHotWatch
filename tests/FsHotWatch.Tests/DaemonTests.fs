@@ -2180,6 +2180,72 @@ let ``a scan does not re-discover a project change a change batch already re-dis
         test <@ loader.Loads = 3 @>)
 
 [<Fact(Timeout = 60000)>]
+let ``a cold daemon admits no change from a must-scan of files written before its stream started`` () =
+    // Production: seconds after a cold scan, a build's obj/bin writes made FSEvents
+    // coalesce into a must-scan of the root, and the daemon logged "Checking 2240 files
+    // after change — 2238 changed" though no source had been written.
+    withTempDir "daemon-coalesced-cold" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Cold.fsproj")
+        let sourcePath = Path.Combine(srcDir, "Cold.fs")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(sourcePath, "module Cold")
+
+        for path in [ projectPath; sourcePath ] do
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddHours -1.0)
+
+        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let coalesced = ref None
+        let admitted = Collections.Concurrent.ConcurrentQueue<FileChangeKind>()
+
+        let native: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory =
+            fun _ _ _ onCoalesced _ ->
+                coalesced.Value <- Some onCoalesced
+
+                { new IDisposable with
+                    member _.Dispose() = () }
+
+        // The repository host's production factory, over a native stream driven by hand.
+        let pool =
+            SharedWatchPool.WatchPool(native, (fun _ _ _ _ -> failwith "the native stream was expected to start"))
+
+        let poolFactory = pool.WatcherFactoryFor(tmpDir, true)
+
+        let watcher: Daemon.WatcherFactory =
+            fun root onChange isMacOS patterns latency ->
+                poolFactory
+                    root
+                    (fun change ->
+                        admitted.Enqueue change
+                        onChange change)
+                    isMacOS
+                    patterns
+                    latency
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                watchingDaemonOptions
+                loader
+                (fun _ -> [])
+                watcher
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 1 @>
+
+        let rescan = coalesced.Value |> Option.get
+        rescan tmpDir
+        test <@ Seq.isEmpty admitted @>
+        test <@ loader.Loads = 1 @>
+
+        // Positive control: a source written after the stream started is admitted.
+        File.WriteAllText(sourcePath, "module Cold\nlet x = 1")
+        rescan tmpDir
+        test <@ List.ofSeq admitted = [ SourceChanged [ sourcePath ] ] @>)
+
+[<Fact(Timeout = 60000)>]
 let ``a project change whose admission outlives the watcher's bound is still applied`` () =
     // Production: under heavy GC pressure the daemon's store writer took longer than the
     // watcher's 5 s admission bound, and five restore writes logged "change not admitted
