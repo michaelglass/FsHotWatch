@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: logging. `DaemonRpcTarget.ScanStatus` logs an answer that reports a scan in
+  progress at Info, with how long it took to answer. An idle or finished scan is not logged.
+
 ## 0.10.0-alpha.65 - 2026-10-05
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply
