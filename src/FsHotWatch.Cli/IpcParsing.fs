@@ -7,7 +7,6 @@ open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
-open FsHotWatch.TestPrune
 
 /// A single diagnostic entry parsed from IPC JSON.
 type DiagnosticEntry =
@@ -240,10 +239,8 @@ type BaselineReading =
 /// tolerance of the first tolerate the second as well, so any fault on the read path
 /// becomes a pass. See `ScopeUnreadable`.
 type TestScope =
-    /// Every configured test project ran, none of them impact-filtered — and why the run
-    /// took every project. The cause is `None` where the reading does not say: a daemon
-    /// older than the field, or a reading (`check-reach`'s projection) that has none.
-    | FullSuite of projects: int * cause: FullSuiteCause option
+    /// Every configured test project ran, none of them impact-filtered.
+    | FullSuite of projects: int
     /// A subset ran: some project was filtered to selected classes, or did not run.
     | ImpactFiltered of ranProjects: int * totalProjects: int
     /// No test run has completed, or the run executed no tests at all.
@@ -279,9 +276,7 @@ type TestScope =
 module TestScope =
     let describe (scope: TestScope) : string =
         match scope with
-        | FullSuite(n, None) -> $"full suite (%d{n}/%d{n} projects, unfiltered)"
-        | FullSuite(n, Some cause) ->
-            $"full suite (%d{n}/%d{n} projects, unfiltered, because %s{FullSuiteCause.describe cause})"
+        | FullSuite n -> $"full suite (%d{n}/%d{n} projects, unfiltered)"
         | ImpactFiltered(ran, total) -> $"impact-filtered (%d{ran}/%d{total} projects)"
         | NoTestsRun reason -> NoTestsReason.describe reason
         | ScopeUnknown -> "unknown (the daemon did not report a test scope)"
@@ -325,11 +320,6 @@ module TestScope =
     /// `check-reach` replies and the verdict file's `scope` object. `None` for any other
     /// label, which each reader decodes by its own vocabulary.
     ///
-    /// `cause` is the scope object's `cause` field, read only for `full`. Absent, it is
-    /// `None` (the reading does not say); a token `FullSuiteCause` does not know is a reply
-    /// from another version, and the scope is unreadable rather than a full suite whose
-    /// reason was dropped.
-    ///
     /// "No tests ran" has ONE meaning: no configured project executed. `none` is its only
     /// spelling, and its run count, when one is sent, is zero — the plugin sends `0 of N`,
     /// the verdict file sends no counts. The counts are the evidence and the label is not,
@@ -340,7 +330,6 @@ module TestScope =
         (label: string)
         (ran: int option)
         (total: int option)
-        (cause: JsonElement option)
         (noTestsRan: unit -> NoTestsReason)
         : TestScope option =
         let contradicted () =
@@ -350,55 +339,12 @@ module TestScope =
             ScopeUnreadable
                 $"a `%s{label}` scope whose counts contradict it (%s{count ran} of %s{count total} projects ran)"
 
-        let fullSuite total =
-            match cause with
-            | None -> FullSuite(total, None)
-            | Some token when token.ValueKind = JsonValueKind.Null -> FullSuite(total, None)
-            | Some token ->
-                let read =
-                    if token.ValueKind = JsonValueKind.String then
-                        FullSuiteCause.tryOfToken (token.GetString())
-                    else
-                        None
-
-                match read with
-                | Some known -> FullSuite(total, Some known)
-                | None ->
-                    ScopeUnreadable $"a `full` scope whose cause (%s{token.GetRawText()}) this build does not know"
-
         match label, ran, total with
-        | "full", Some r, Some t when r > 0 && r = t -> Some(fullSuite t)
+        | "full", Some r, Some t when r > 0 && r = t -> Some(FullSuite t)
         | "filtered", Some r, Some t when r > 0 && r <= t -> Some(ImpactFiltered(r, t))
         | "none", (None | Some 0), _ -> Some(NoTestsRun(noTestsRan ()))
         | ("full" | "filtered" | "none"), _, _ -> Some(contradicted ())
         | _ -> None
-
-/// Read a scope object's `notSelected` field: the changed files whose changes selected no
-/// tests. ONE reader for both places the field arrives — the `test-scope` reply and the
-/// verdict file's `scope` object.
-///
-/// `Ok None` where the field is absent or `null`: a reading from before the field says
-/// nothing, which is not "no file was withheld". `Error` for anything this build cannot
-/// read — a shape from another version, an entry with no file, a reason
-/// `NotSelectedReason` does not know — which each caller turns into an unreadable scope.
-let tryReadNotSelected (field: JsonElement option) : Result<NotSelectedFile list option, string> =
-    match field with
-    | None -> Result.Ok None
-    | Some value when value.ValueKind = JsonValueKind.Null -> Result.Ok None
-    | Some value when value.ValueKind = JsonValueKind.Array ->
-        let read (entry: JsonElement) =
-            match
-                Json.tryString entry "file", Json.tryString entry "reason" |> Option.bind NotSelectedReason.tryOfToken
-            with
-            | Some file, Some reason -> Some { File = file; Reason = reason }
-            | _ -> None
-
-        let entries = value.EnumerateArray() |> List.ofSeq
-
-        match entries |> List.tryFind (read >> Option.isNone) with
-        | Some unreadable -> Result.Error $"a not-selected entry this build cannot read (%s{unreadable.GetRawText()})"
-        | None -> Result.Ok(Some(List.choose read entries))
-    | Some value -> Result.Error $"a `notSelected` field that is not an array (%s{value.GetRawText()})"
 
 /// The test-prune plugin commands `confirm` speaks.
 ///
@@ -740,10 +686,6 @@ type TestRunReport =
         /// `NotReported` from a daemon that predates the field — which `CheckVerdict`
         /// refuses to call green, exactly as it refuses a scope it could not read.
         Baseline: BaselineReading
-        /// The changed files whose changes selected no tests, and why. `None` where the
-        /// daemon did not say (one older than the field, or no reply at all); `Some []`
-        /// is its positive "none".
-        NotSelected: NotSelectedFile list option
     }
 
 module TestRunReport =
@@ -762,8 +704,7 @@ module TestRunReport =
           CheckRuns = []
           Seeds = []
           SeedCount = 0
-          Baseline = BaselineReading.NotReported
-          NotSelected = None }
+          Baseline = BaselineReading.NotReported }
 
     /// The report for a daemon/host with NO `test-scope` command: no
     /// test projects are configured, so there is no scope, no run, and nothing a
@@ -836,12 +777,7 @@ let parseTestRunReport (json: string) : TestRunReport =
             match Json.tryString root "kind" with
             | Some "running" -> ScopeUnknown
             | Some label ->
-                TestScope.tryOfCounts
-                    label
-                    (readInt "ranProjects")
-                    (readInt "totalProjects")
-                    (Json.tryProp root "cause")
-                    noTestsReason
+                TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") noTestsReason
                 |> Option.defaultValue unrecognized
             | None -> unrecognized
 
@@ -926,14 +862,6 @@ let parseTestRunReport (json: string) : TestRunReport =
                 BaselineReading.Absent(reason.GetString())
             | _ -> BaselineReading.NotReported
 
-        // A `notSelected` this build cannot read fails the scope closed: a reply that
-        // names files the selection withheld, in words this build does not know, has not
-        // told it what the run covered.
-        let scope, notSelected =
-            match tryReadNotSelected (Json.tryProp root "notSelected") with
-            | Result.Ok notSelected -> scope, notSelected
-            | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
-
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -943,8 +871,7 @@ let parseTestRunReport (json: string) : TestRunReport =
           CheckRuns = []
           Seeds = seeds
           SeedCount = seedCount
-          Baseline = baseline
-          NotSelected = notSelected }
+          Baseline = baseline }
     with ex ->
         TestRunReport.ofScopeOnly (
             ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
@@ -1093,9 +1020,7 @@ let parseCheckReach (json: string) : CheckReachReading =
             let scope =
                 Json.tryString root "kind"
                 |> Option.bind (fun label ->
-                    // The projection names no cause: it is what `check` WOULD have run, and
-                    // no run was launched to have one.
-                    TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") None (fun () ->
+                    TestScope.tryOfCounts label (readInt "ranProjects") (readInt "totalProjects") (fun () ->
                         NoTestsReason.Unstated))
                 |> Option.defaultValue (
                     ScopeUnreadable "the daemon reported no scope for the selection `check` would have used"

@@ -2874,7 +2874,7 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
     test <@ seen |> List.map fst = [ "test-scope" ] @>
     // ...and the daemon's answer is actually READ, rather than collapsing to ScopeUnknown
     // because the call never reached a handler.
-    test <@ run.Scope = IpcParsing.FullSuite(6, None) @>
+    test <@ run.Scope = IpcParsing.FullSuite 6 @>
 
 [<Fact(Timeout = 15000)>]
 let ``an unknown-command reply is ScopeUnknown — `confirm` never goes green on a scope it did not establish`` () =

@@ -26,7 +26,6 @@ open TestPrune.Database
 open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
-open FsHotWatch.TestPrune
 
 /// An empty launch: commits nothing and covers nothing, so it clears no outstanding red.
 /// For tests that build `TestsFinished` directly. Runs that must CLEAR something use
@@ -44,8 +43,7 @@ let emptyLaunch: TestRunLaunch =
       Selection = Map.empty
       WouldHaveRun = None
       Seeds = []
-      ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+      ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
@@ -62,8 +60,7 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
       WouldHaveRun = None
       Seeds = []
-      ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.Requested }
+      ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran only `classes` in each named project — an impact-filtered
 /// selection. Projects NOT named were skipped entirely.
@@ -83,8 +80,7 @@ let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
         |> Map.ofList
       WouldHaveRun = None
       Seeds = []
-      ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+      ZeroSelection = ZeroSelection.NotAZero }
 
 /// Register `handler` with an observing fixture command, returning a reader for the state
 /// the host's owner has committed. Cache keys and observations are functions of that

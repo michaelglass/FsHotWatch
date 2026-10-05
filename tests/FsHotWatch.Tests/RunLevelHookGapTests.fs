@@ -96,7 +96,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
 
     FsHotWatch.Cli.Verdict.create
         FsHotWatch.Cli.Verdict.Check
-        (BaselineFixtures.reportOf (FullSuite(1, None)))
+        (BaselineFixtures.reportOf (FullSuite 1))
         tree
         (Some [])
         (FsHotWatch.Cli.Verdict.Green BaselineFixtures.baseline)
@@ -864,7 +864,7 @@ let private seedStillApplyingGreen (root: string) =
     let verdict =
         FsHotWatch.Cli.Verdict.create
             FsHotWatch.Cli.Verdict.Confirm
-            (BaselineFixtures.reportOf (FullSuite(1, None)))
+            (BaselineFixtures.reportOf (FullSuite 1))
             ({ Hash = tree.Hash
                FileCount = tree.FileCount
                SkippedCount = tree.SkippedCount

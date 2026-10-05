@@ -110,8 +110,6 @@ type private Spec =
         /// `Some []` — a positive "nothing was excluded" — is the default, because
         /// that is what a governed repo records.
         Excluded: SolutionScope.Exclusion list option
-        /// The changed files that selected no tests. `Some []` by default.
-        NotSelected: FsHotWatch.TestPrune.NotSelectedFile list option
         Tree: TreeHash.Tree
         /// What the daemon said its greens are relative to. Defaults to
         /// the shared fixture, which is the baseline `greenVerdict`'s outcome names.
@@ -130,8 +128,7 @@ let private build (s: Spec) : Verdict.Verdict =
           CheckRuns = s.Runs |> List.choose (fun r -> r.RunId)
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds)
-          Baseline = s.Baseline
-          NotSelected = s.NotSelected }
+          Baseline = s.Baseline }
         s.Tree
         s.Excluded
         s.Outcome
@@ -148,7 +145,7 @@ let private build (s: Spec) : Verdict.Verdict =
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
       RunId = None
-      Scope = FullSuite(2, None)
+      Scope = FullSuite 2
       Outcome = Verdict.Green BaselineFixtures.baseline
       Baseline = BaselineFixtures.reading
       ProjectModel = ProjectModelFixtures.available
@@ -165,7 +162,6 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Seeds = []
       SeedTotal = 0
       Excluded = Some []
-      NotSelected = Some []
       Tree =
         { Hash = treeHash
           FileCount = fileCount
@@ -809,7 +805,7 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
 
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated)) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
-    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite(2, None))) @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
     // A killed test host is INCOMPLETE, never Red: nothing failed there.
     test <@ incomplete (CheckVerdict.CheckOutcome.RunnerAborted [ "x: aborted — killed" ]) @>
 
@@ -1125,14 +1121,13 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
         let runs =
             Verdict.runSuites
                 root
-                { Scope = FullSuite(3, None)
+                { Scope = FullSuite 3
                   RunId = Some graded
                   SessionRuns = []
                   CheckRuns = [ first; second; graded ]
                   Seeds = []
                   SeedCount = 0
-                  Baseline = BaselineFixtures.reading
-                  NotSelected = None }
+                  Baseline = BaselineFixtures.reading }
 
         // The graded run leads — it is what the outcome was computed from — and every
         // other batch is there behind it.
@@ -1174,14 +1169,13 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                         Runs =
                             Verdict.runSuites
                                 root
-                                { Scope = FullSuite(2, None)
+                                { Scope = FullSuite 2
                                   RunId = Some graded
                                   SessionRuns = []
                                   CheckRuns = [ early; graded ]
                                   Seeds = []
                                   SeedCount = 0
-                                  Baseline = BaselineFixtures.reading
-                                  NotSelected = None } }
+                                  Baseline = BaselineFixtures.reading } }
 
             v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
 
@@ -1206,14 +1200,13 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                     Runs =
                         Verdict.runSuites
                             root
-                            { Scope = FullSuite(3, None)
+                            { Scope = FullSuite 3
                               RunId = Some graded
                               SessionRuns = []
                               CheckRuns = [ first; second; graded ]
                               Seeds = []
                               SeedCount = 0
-                              Baseline = BaselineFixtures.reading
-                              NotSelected = None } }
+                              Baseline = BaselineFixtures.reading } }
 
         let onDisk =
             [ first; second; graded ]
@@ -1492,7 +1485,7 @@ let ``a full-suite check is not nagged, and a confirm never is`` () =
     let full =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
-            Scope = FullSuite(6, None)
+            Scope = FullSuite 6
             Baseline = BaselineFixtures.reading }
 
     // A confirm that did NOT reach full-suite scope — the escalation-failure shape, which
@@ -1783,7 +1776,7 @@ let ``every scope round-trips through the file`` () =
             | Verdict.Reading.Found v -> v.Scope
             | other -> failwith $"expected a readable verdict, got %A{other}"
 
-        test <@ roundTrip (FullSuite(6, None)) = FullSuite(6, None) @>
+        test <@ roundTrip (FullSuite 6) = FullSuite 6 @>
         test <@ roundTrip (ImpactFiltered(2, 6)) = ImpactFiltered(2, 6) @>
         test <@ roundTrip (NoTestsRun NoTestsReason.Unstated) = (NoTestsRun NoTestsReason.Unstated) @>
 
@@ -2039,7 +2032,7 @@ let ``Verdict.create refuses a CONFIRM carrying an impact-filtered scope`` () =
     // CONTROLS. Without these, a `create` that had simply started refusing everything would
     // pass both `raises` above. `confirm` + full suite is the verdict the verb exists to
     // produce...
-    test <@ (build { spec with Scope = FullSuite(6, None) }).Scope = FullSuite(6, None) @>
+    test <@ (build { spec with Scope = FullSuite 6 }).Scope = FullSuite 6 @>
 
     // ...and `check` + filtered is not merely tolerated, it is what the inner loop IS. The
     // rule must not over-fire onto the one command whose whole point is filtering.
@@ -2162,12 +2155,9 @@ let ``a confirm whose forced full run did not complete records no filtered scope
         // CONTROLS. The producer rewrites ONE pair, not every scope it is handed — without
         // these, a producer that blanked every scope would pass everything above.
         let earned =
-            publish
-                CheckVerdict.Confirmation
-                (FullSuite(6, None))
-                (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+            publish CheckVerdict.Confirmation (FullSuite 6) (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
-        test <@ earned.Scope = FullSuite(6, None) @>
+        test <@ earned.Scope = FullSuite 6 @>
         test <@ BaselineFixtures.isGreen (earned.Outcome) @>
 
         // ...and `check` KEEPS its filtered scope. Hiding it would be the same lie reversed.
@@ -2312,7 +2302,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
                 []
                 CheckVerdict.InnerLoop
                 false
-                (BaselineFixtures.reportOf (FullSuite(6, None)))
+                (BaselineFixtures.reportOf (FullSuite 6))
                 Verdict.NoReading
                 Map.empty
                 []
@@ -2339,12 +2329,12 @@ let ``an escalated confirm records what the impact-scoped run concluded, and tha
         let earned =
             publishConfirm
                 root
-                (FullSuite(6, None))
+                (FullSuite 6)
                 (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 Complete))
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
         test <@ BaselineFixtures.isGreen (earned.Outcome) @>
-        test <@ earned.Scope = FullSuite(6, None) @>
+        test <@ earned.Scope = FullSuite 6 @>
         test <@ earned.Divergence = Verdict.Divergence.Agreed @>
 
         // The sub-record is where being impact-filtered is CORRECT — the top-level scope
@@ -2366,7 +2356,7 @@ let ``check green + confirm red records CHECK MISSED FAILURES — the fshw defec
         let earned =
             publishConfirm
                 root
-                (FullSuite(6, None))
+                (FullSuite 6)
                 (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 Complete))
                 CheckVerdict.CheckOutcome.FailuresFound
 
@@ -2380,7 +2370,7 @@ let ``check green + confirm red records CHECK MISSED FAILURES — the fshw defec
         let reversed =
             publishConfirm
                 root
-                (FullSuite(6, None))
+                (FullSuite 6)
                 (Some(impactScopedReading root (ImpactFiltered(5, 6)) 3 Complete))
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
@@ -2397,7 +2387,7 @@ let ``a confirm that did NOT escalate records the fact POSITIVELY — absence is
         // the record, "the run was already full-suite" and "nobody recorded anything" would
         // be the same bytes, and an analysis counting samples could not tell them apart.
         let earned =
-            publishConfirm root (FullSuite(6, None)) None (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+            publishConfirm root (FullSuite 6) None (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
         // ASSERTED ON THE VALUE, not on the absence of one.
         test <@ earned.Divergence = Verdict.Divergence.NoImpactScopedRun @>
@@ -2451,7 +2441,7 @@ let ``an escalated run that never completed records COULD-NOT-COMPARE, never agr
         let preNeverSettled =
             publishConfirm
                 root
-                (FullSuite(6, None))
+                (FullSuite 6)
                 (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 (Incomplete 4)))
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
 
@@ -2952,7 +2942,7 @@ let ``a confirm that ran the full suite is told nothing extra — the hint is a 
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Confirm
-            Scope = FullSuite(6, None)
+            Scope = FullSuite 6
             Suites =
                 [ { Project = "A.Tests"
                     Ctrf = ".fshw/test-runs/A.Tests-0123456789abcdef0123456789abcdef.ctrf.json"
@@ -3462,7 +3452,7 @@ let ``a full-suite green over THIS tree, from THIS binary, still applies`` () =
             root
             { greenVerdict tree.Hash tree.FileCount with
                 RunId = Some runId
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Suites =
                     [ { Project = "Lib.Tests"
                         Ctrf = ".fshw/test-runs/x/Lib.Tests.ctrf.json"
@@ -3499,7 +3489,7 @@ let ``a green that still applies names what its key covered and what lies outsid
         writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Baseline = BaselineFixtures.reading }
 
         match Verdict.priorConfirmation root [] with
@@ -3608,7 +3598,7 @@ let ``fshw verdict's envelope carries the key it was judged against`` () =
         writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Baseline = BaselineFixtures.reading }
 
         let report, covered = Verdict.reportWithCoverage root []
@@ -3675,7 +3665,7 @@ let ``a CHANGED tree is never satisfied by the stale verdict`` () =
         writeSpec
             root
             { greenVerdict before.Hash before.FileCount with
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Baseline = BaselineFixtures.reading }
 
         // Applies — until the tree moves.
@@ -3696,7 +3686,7 @@ let ``a verdict from a DIFFERENT fshw binary is never satisfied`` () =
         writeVerdictClaimingAnotherBinary
             root
             { greenVerdict tree.Hash tree.FileCount with
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Baseline = BaselineFixtures.reading }
 
         test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
@@ -3752,7 +3742,7 @@ let ``a RED verdict does not short-circuit — confirm re-runs and reports it`` 
         writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
-                Scope = FullSuite(1, None)
+                Scope = FullSuite 1
                 Outcome = Verdict.Red
                 ExitCode = 1
                 RedCauses = [ structuralRedCause ] }
@@ -4548,7 +4538,7 @@ let ``the gaps are stated on every scope kind, because they are a fact about the
             .ToJsonString()
 
     for scope in
-        [ FullSuite(6, None)
+        [ FullSuite 6
           ImpactFiltered(2, 6)
           (NoTestsRun NoTestsReason.Unstated)
           ScopeUnknown
@@ -4632,7 +4622,7 @@ let ``named selection misses survive the verdict file and render as actionable e
 let private projectionRunId = Guid.Parse("22222222-2222-2222-2222-222222222222")
 
 let private gradedRun =
-    { BaselineFixtures.reportOf (FullSuite(6, None)) with
+    { BaselineFixtures.reportOf (FullSuite 6) with
         RunId = Some projectionRunId
         Baseline = BaselineFixtures.reading }
 
@@ -6124,7 +6114,7 @@ let ``a green that names NO baseline is not a verdict this build can read`` () =
 let ``create refuses a no-test-suite green beside a scope that says tests ran`` () =
     let spec =
         { greenVerdict "sha256:abc" 1 with
-            Scope = FullSuite(2, None)
+            Scope = FullSuite 2
             Outcome = Verdict.Green CheckVerdict.Baseline.NoTestSuite }
 
     let attempt () =
@@ -6542,63 +6532,3 @@ let ``durable suite verdicts refuse a partial clean report`` () =
         )
 
         test <@ List.isEmpty (Verdict.suiteVerdicts root (Some runId)) @>)
-
-// ---------------------------------------------------------------------------
-// The scope's full-suite cause: written by the check, read back by `verdict`.
-// ---------------------------------------------------------------------------
-
-let private verdictFileWithScope (scope: string) =
-    """{"schema":"fshw-verdict-v2","projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null},"treeHash":"sha256:x","command":"check","outcome":{"kind":"incomplete","reason":"fixture"},"scope":"""
-    + scope
-    + "}"
-
-let private readScopeOf (root: string) (scope: string) =
-    Directory.CreateDirectory(FsHwPaths.root root) |> ignore
-    File.WriteAllText(Verdict.path root, verdictFileWithScope scope)
-
-    match Verdict.read root with
-    | Verdict.Reading.Found v -> v
-    | other -> failwith $"expected a readable verdict, got %A{other}"
-
-[<Fact>]
-let ``the full-suite cause survives a round trip through the verdict file`` () =
-    withTempDir "verdict-scope-cause-roundtrip" (fun root ->
-        let v =
-            readScopeOf root """{"kind":"full","ranProjects":6,"totalProjects":6,"cause":"no-full-suite-baseline"}"""
-
-        test <@ TestScope.isFullSuite v.Scope @>
-        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
-        test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>)
-
-[<Fact>]
-let ``a verdict file whose scope names a cause this build does not know reads as an unreadable scope`` () =
-    withTempDir "verdict-scope-cause-unknown" (fun root ->
-        let v =
-            readScopeOf
-                root
-                """{"kind":"full","ranProjects":6,"totalProjects":6,"cause":"a-cause-from-another-version"}"""
-
-        test <@ TestScope.isUnreadable v.Scope @>)
-
-[<Fact>]
-let ``the not-selected files survive a round trip through the verdict file`` () =
-    withTempDir "verdict-not-selected-roundtrip" (fun root ->
-        let v =
-            readScopeOf
-                root
-                """{"kind":"full","ranProjects":6,"totalProjects":6,"notSelected":[{"file":"src/Lib/Broken.fs","reason":"fcs-errors"}]}"""
-
-        test <@ TestScope.isFullSuite v.Scope @>
-        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
-        test <@ scope.["notSelected"].[0].["file"].GetValue<string>() = "src/Lib/Broken.fs" @>
-        test <@ scope.["notSelected"].[0].["reason"].GetValue<string>() = "fcs-errors" @>)
-
-[<Fact>]
-let ``a verdict file whose not-selected entry has a reason this build does not know reads as an unreadable scope`` () =
-    withTempDir "verdict-not-selected-unknown" (fun root ->
-        let v =
-            readScopeOf
-                root
-                """{"kind":"full","ranProjects":6,"totalProjects":6,"notSelected":[{"file":"src/A.fs","reason":"a-reason-from-another-version"}]}"""
-
-        test <@ TestScope.isUnreadable v.Scope @>)
