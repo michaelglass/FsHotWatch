@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.65 - 2026-10-05
+
+- fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply
+
+
 ## 0.10.0-alpha.64 - 2026-10-05
 
 - feat: `RepositoryIdentity.isCheckoutRoot` says whether a directory is a checkout root,
