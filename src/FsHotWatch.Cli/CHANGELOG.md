@@ -8,6 +8,12 @@
   reaped, the verdict says the run was signalled, and the exit code is 129. A closed
   terminal used to leave the hook running and no verdict behind.
 
+- fix: a `check`/`confirm` run signalled (SIGINT, SIGTERM, SIGHUP) while its `beforeRun`
+  hook runs exits 128 + N and keeps the signalled verdict. Reaping the hook made the run
+  see it fail, and on Linux the run could exit 2 and write a hook-failure verdict before
+  the handler exited. The handler now records its code before it reaps, and the run exits
+  with that code once the handler's teardown is done.
+
 ## 0.14.0-alpha.88 - 2026-10-05
 
 - fix!: a daemon in a checkout that `cache.scope: "default-workspace"` leaves out logs one
