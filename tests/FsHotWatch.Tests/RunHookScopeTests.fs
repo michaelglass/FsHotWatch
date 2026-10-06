@@ -7,6 +7,7 @@ open System
 open System.Collections.Concurrent
 open System.Diagnostics
 open System.IO
+open System.Text.Json
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
@@ -121,7 +122,8 @@ let ``an interrupted confirm fast path leaves no hook process behind`` () =
 /// end the test host). The handler's teardown kills the hook, so the run's thread sees
 /// the hook fail: the run must still exit with the signal's code, not the hook-failure
 /// code. Returns the run's exit code.
-let private signalledMidHook
+let private signalledMidHookWith
+    (afterRun: string option)
     (bracket: (RunSignal -> (unit -> unit) -> (int -> unit) -> IDisposable) -> DaemonConfiguration -> string -> int)
     (root: string)
     =
@@ -135,7 +137,7 @@ let private signalledMidHook
             member _.Dispose() = () }
 
     let run =
-        Task.Run(fun () -> bracket signals (hooks (Some $"echo $$ > '%s{hookPid}'; sleep 30 & wait") None) root)
+        Task.Run(fun () -> bracket signals (hooks (Some $"echo $$ > '%s{hookPid}'; sleep 30 & wait") afterRun) root)
 
     test <@ waitUntilTrue (fun () -> File.Exists hookPid && (readPid hookPid).IsSome) 20000 @>
 
@@ -145,6 +147,8 @@ let private signalledMidHook
 
     test <@ run.Wait(TimeSpan.FromSeconds 30.0) @>
     run.Result
+
+let private signalledMidHook bracket root = signalledMidHookWith None bracket root
 
 [<Fact(Timeout = 60000)>]
 let ``a run signalled mid-hook exits with the signal's code and a signalled verdict`` () =
@@ -160,6 +164,105 @@ let ``a run signalled mid-hook exits with the signal's code and a signalled verd
 
             let verdict = File.ReadAllText(Path.Combine(root, ".fshw", "verdict.json"))
             test <@ verdict.Contains "the run was signalled before the check could finish" @>)
+
+/// The record a run signalled mid-hook leaves: its exit code, its outcome, and how its
+/// beforeRun ended.
+let private signalledRecord (root: string) =
+    use verdict =
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ".fshw", "verdict.json")))
+
+    let r = verdict.RootElement
+
+    let hooks =
+        [ for h in r.GetProperty("hooks").EnumerateArray() ->
+              h.GetProperty("scope").GetString(), h.GetProperty("outcome").GetString() ]
+
+    r.GetProperty("exitCode").GetInt32(), r.GetProperty("outcome").GetProperty("kind").GetString(), hooks
+
+[<Fact(Timeout = 60000)>]
+let ``a run signalled mid-hook records the signal's code and does not blame the hook`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-signalled-record" (fun root ->
+            signalledMidHook
+                (fun signals config root ->
+                    withRunHooksCommandUsingSignals signals FsHotWatch.Cli.Verdict.Check root config (fun _ -> 0))
+                root
+            |> ignore
+
+            test <@ signalledRecord root = (129, "incomplete", [ "run.beforeRun", "signalled" ]) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a confirm fast path signalled mid-hook records the signal's code and does not blame the hook`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-signalled-record-unclaimed" (fun root ->
+            signalledMidHook
+                (fun signals config root ->
+                    withRunHooksUnclaimedUsingSignals signals FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))
+                root
+            |> ignore
+
+            let verdict = File.ReadAllText(Path.Combine(root, ".fshw", "verdict.json"))
+            test <@ verdict.Contains signalledReason @>
+            test <@ signalledRecord root = (129, "incomplete", [ "run.beforeRun", "signalled" ]) @>)
+
+/// The signal's teardown runs afterRun after the signal arrived: a failure there is the
+/// hook's own, and is recorded as one.
+[<Fact(Timeout = 60000)>]
+let ``an afterRun the signal's teardown runs keeps its own failure`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-signalled-after-run" (fun root ->
+            signalledMidHookWith
+                (Some "false")
+                (fun signals config root ->
+                    withRunHooksCommandUsingSignals signals FsHotWatch.Cli.Verdict.Check root config (fun _ -> 0))
+                root
+            |> ignore
+
+            // The teardown files afterRun while the run's thread files beforeRun.
+            let code, kind, hookOutcomes = signalledRecord root
+            test <@ (code, kind) = (129, "incomplete") @>
+            test <@ List.sort hookOutcomes = [ "run.afterRun", "fail"; "run.beforeRun", "signalled" ] @>)
+
+/// A confirm fast path signalled after its beforeRun passed has no refusal to record:
+/// it leaves the verdict on disk as it was.
+[<Fact(Timeout = 30000)>]
+let ``a confirm fast path signalled after beforeRun writes no record`` () =
+    withTempDir "run-hook-signalled-after-before" (fun root ->
+        let finalize = ref None
+
+        let code =
+            withRunHooksUnclaimedUsingSignals
+                (capturingSignals finalize)
+                FsHotWatch.Cli.Verdict.Confirm
+                root
+                (hooks (Some "true") None)
+                (fun () ->
+                    finalize.Value |> Option.iter (fun f -> f ())
+                    0)
+
+        test <@ code = 0 @>
+        test <@ not (File.Exists(Path.Combine(root, ".fshw", "verdict.json"))) @>)
+
+/// A signal's teardown waits for the hook in flight to be recorded, but only so long.
+[<Fact(Timeout = 30000)>]
+let ``a hook runner waits for its hook in flight, up to the timeout`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-await-idle" (fun root ->
+            let hookPid = Path.Combine(root, "hook.pid")
+
+            let runner =
+                makeRunHookRunner root (hooks None None) (FsHotWatch.Cli.Verdict.Invocation.start ()) (RunSignal())
+
+            test <@ runner.AwaitIdle TimeSpan.Zero @>
+
+            let run =
+                Task.Run(fun () -> runner.RunTimed "run.beforeRun" "beforeRun" $"echo $$ > '%s{hookPid}'; sleep 2")
+
+            test <@ waitUntilTrue (fun () -> File.Exists hookPid) 20000 @>
+            test <@ not (runner.AwaitIdle(TimeSpan.FromMilliseconds 50.0)) @>
+            test <@ runner.AwaitIdle(TimeSpan.FromSeconds 20.0) @>
+            test <@ fst run.Result @>
+            test <@ fst (runner.Collected()) |> List.map _.Outcome = [ "ok" ] @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a confirm fast path signalled mid-hook exits with the signal's code`` () =

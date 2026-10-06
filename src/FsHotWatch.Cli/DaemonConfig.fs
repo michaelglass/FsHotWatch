@@ -1961,10 +1961,14 @@ let internal runShellSteps
         | HookOk timings -> HookOk(List.rev timings)
         | failed -> failed
 
+/// Run one shell hook, returning whether it succeeded and what it wrote.
+/// `stopped` says whether the hook was ended by its run's signal rather than by its own
+/// failure: a stopped hook is logged as stopped, not blamed.
 let internal makeShellHookWithResult
     (label: string)
     (timeoutSec: int option)
     (repoRoot: string)
+    (stopped: unit -> bool)
     (cmd: string)
     : unit -> bool * string =
     let bound = timeoutSec |> Option.map (fun s -> TimeSpan.FromSeconds(float s))
@@ -1993,7 +1997,9 @@ let internal makeShellHookWithResult
         let success = isSucceeded result
         let output = outputOf result
 
-        if not success then
+        if not success && stopped () then
+            Logging.info label $"%s{label} was stopped by the run's signal: %s{cmd}"
+        elif not success then
             // the RUN-level hook had the same empty-reason bug as
             // `tests.beforeRun` — it interpolated the output, so a step that wrote
             // nothing logged `<label> failed:` and stopped. Same fix, same renderer.
@@ -2017,7 +2023,7 @@ let private makeShellHook
     (repoRoot: string)
     (cmd: string)
     : unit -> unit =
-    let hook = makeShellHookWithResult label timeoutSec repoRoot cmd
+    let hook = makeShellHookWithResult label timeoutSec repoRoot (fun () -> false) cmd
 
     fun () ->
         let (success, output) = hook ()
