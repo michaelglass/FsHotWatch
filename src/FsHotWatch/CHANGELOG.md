@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `ProcessRegistry.Registry.KillAll` waits, bounded by the teardown budget, for a
+  launch between its spawn and its admission to be refused and reaped before it returns.
+  It used to return first, so a caller that exited next (a signalled `check`) could end
+  the process while that child still ran, and the child outlived it.
+
 ## 0.10.0-alpha.67 - 2026-10-06
 
 - fix: `Ctrf.tidyRunsDir` keeps every run `.fshw/verdict.json` names (`runId`,
