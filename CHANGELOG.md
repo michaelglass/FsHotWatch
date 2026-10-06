@@ -85,6 +85,11 @@ All notable changes to FsHotWatch packages are documented here.
   before the signal handler exited. The handler now records its code before it reaps, and
   the run exits with that code once the handler's teardown is done. Applies to SIGINT,
   SIGTERM and SIGHUP.
+- **fix: a run signalled just after its hook started leaves no hook process behind.** A
+  process scope shutting down while a child was between its spawn and its admission
+  returned before the launching thread had reaped that child, so a signalled run could
+  exit with the hook and its children still running. Shutdown now waits for such a
+  launch to be refused and reaped.
 
 ### lint, analyzers, test-prune: a result from a replaced project model is refused out loud
 

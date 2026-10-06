@@ -1592,18 +1592,26 @@ let internal runProcessCore
 
     // A process scope that has shut down refuses the launch BEFORE the target can have
     // any side effect. Admission re-checks after the spawn, for a shutdown in between.
-    ProcessRegistry.ensureAdmitting $"`%s{command} %s{args}`"
-
-    let psi = makeChildProcessStartInfo command args workDir env
+    //
+    // The reservation is held until the child is admitted or refused and reaped, so a
+    // scope shutting down meanwhile waits for this launch instead of returning while
+    // its child runs unseen.
+    let launch = ProcessRegistry.beginLaunch $"`%s{command} %s{args}`"
 
     let helper =
         SpawnHelper.current ()
         |> Option.filter (fun connection -> viaHelper && not connection.IsLost)
 
     let child =
-        match helper with
-        | Some connection -> launchViaHelper connection psi
-        | None -> launchDirect psi
+        try
+            let psi = makeChildProcessStartInfo command args workDir env
+
+            match helper with
+            | Some connection -> launchViaHelper connection psi
+            | None -> launchDirect psi
+        with _ ->
+            launch.Dispose()
+            reraise ()
 
     use _release =
         { new IDisposable with
@@ -1613,11 +1621,16 @@ let internal runProcessCore
     // to hunt down a tree we failed to kill, and it must still be reportable on the
     // path where everything else about the child has gone wrong.
     let pid = child.Pid
-    recordSpawn helper.IsSome command pid
 
-    // Register so shutdown can tear down in-flight children. A scope that shut down
-    // while this child was starting has already reaped it, and refuses it here.
-    ProcessRegistry.admitChildOrRefuse child.Key child.Owned $"`%s{command} %s{args}` (pid %d{pid})"
+    try
+        recordSpawn helper.IsSome command pid
+
+        // Register so shutdown can tear down in-flight children. A scope that shut down
+        // while this child was starting refuses it here, and reaps it before the
+        // reservation is released.
+        ProcessRegistry.admitChildOrRefuse child.Key child.Owned $"`%s{command} %s{args}` (pid %d{pid})"
+    finally
+        launch.Dispose()
 
     try
         onStarted pid

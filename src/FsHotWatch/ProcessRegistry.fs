@@ -180,6 +180,11 @@ type Registry internal (parent: Registry option) =
     // process started, the helper's child object for one a spawn helper started.
     let live = Dictionary<obj, IOwnedChild>(HashIdentity.Reference)
     let mutable closed = false
+    // Launches between their spawn and their admission. Shutdown cannot see such a
+    // child: it is in no snapshot yet. It is refused at admission and reaped by the
+    // launching thread, so shutdown waits for that before it returns.
+    let mutable launching = 0
+    let noLaunchInFlight = new ManualResetEventSlim(true)
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
 
@@ -225,6 +230,39 @@ type Registry internal (parent: Registry option) =
             admitted
 
     member internal this.Admit(p: Process) : bool = this.AdmitChild(p, ownedProcess p)
+
+    /// Reserve a launch: from before the spawn until the child is admitted, or refused
+    /// and reaped. Raises `OperationCanceledException` when this registry, or one it
+    /// forwards to, has shut down. Shutdown waits for every reservation it did not
+    /// refuse to be released (see `KillAll`). The parent is reserved too, so a daemon's
+    /// shutdown waits for a launch in an operation's scope.
+    member internal _.BeginLaunch(what: string) : IDisposable =
+        let parentLaunch = parent |> Option.map (fun owner -> owner.BeginLaunch what)
+
+        let reserved =
+            Locking.locked gate (fun () ->
+                if not closed then
+                    launching <- launching + 1
+                    noLaunchInFlight.Reset()
+
+                not closed)
+
+        if not reserved then
+            parentLaunch |> Option.iter _.Dispose()
+            raise (OperationCanceledException($"refusing to launch %s{what}: its process scope has shut down"))
+
+        let released = ref 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(released, 1) = 0 then
+                    Locking.locked gate (fun () ->
+                        launching <- launching - 1
+
+                        if launching = 0 then
+                            noLaunchInFlight.Set())
+
+                    parentLaunch |> Option.iter _.Dispose() }
 
     member this.Track(p: Process) = this.Admit p |> ignore
 
@@ -275,6 +313,11 @@ type Registry internal (parent: Registry option) =
     /// its owner untracked it while the teardown ran: accounting for it is then the
     /// owner's job, and `ProcessHelper` reports its own failed kills.
     member this.KillAll() : unit =
+        this.ShutDown(TerminationBudget + TeardownGrace)
+
+    /// `KillAll`, waiting at most `launchBudget` for launches in flight (see
+    /// `BeginLaunch`). Separate so the give-up arm is testable without its full budget.
+    member internal this.ShutDown(launchBudget: TimeSpan) : unit =
         let children =
             Locking.locked gate (fun () ->
                 closed <- true
@@ -289,6 +332,16 @@ type Registry internal (parent: Registry option) =
             match outcome with
             | Termination.Uncertain reason when stillOwned -> this.ReportLeak(uncertain child.Pid reason)
             | _ -> ()
+
+        // A child spawned before the close but not yet admitted was in no snapshot. Its
+        // launching thread is refused at admission and reaps it; returning before that
+        // lets a caller that exits next (a signalled run) end the process first, and
+        // the child outlives it. Bounded, like the teardown itself.
+        if not (noLaunchInFlight.Wait launchBudget) then
+            Logging.error
+                "process-registry"
+                $"shutdown went ahead with %d{Locking.locked gate (fun () -> launching)} launch(es) still between \
+                  spawn and admission after %s{string launchBudget}: whatever they started may outlive this scope."
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
@@ -367,6 +420,16 @@ let internal ensureAdmitting (what: string) =
     | Some r when r.IsClosed ->
         raise (OperationCanceledException($"refusing to launch %s{what}: its process scope has shut down"))
     | _ -> ()
+
+/// Reserve a launch in the current scope (`Registry.BeginLaunch`): raises
+/// `OperationCanceledException` when the scope has shut down. With no registry in
+/// scope there is nothing to reserve.
+let internal beginLaunch (what: string) : IDisposable =
+    match currentOpt () with
+    | Some r -> r.BeginLaunch what
+    | None ->
+        { new IDisposable with
+            member _.Dispose() = () }
 
 /// Register `p` with the current scope's registry so shutdown can tear it down.
 /// Returns false when the scope refused it, in which case it has already been reaped.

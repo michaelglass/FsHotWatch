@@ -116,6 +116,103 @@ let ``a child that launches while its scope shuts down is refused, not reported`
         Assert.True(child.HasExited, "the refusing scope must have reaped the child")
         Assert.Empty(registry.Snapshot()))
 
+/// A shutdown that lands between a child's spawn and its admission has no snapshot entry
+/// for it: the launching thread is refused at admission and reaps it. Shutdown must not
+/// return before that, or a caller that exits right after it (a signalled run) ends the
+/// process while the child is still running, and the child outlives the run.
+[<Fact(Timeout = 30000)>]
+let ``shutdown waits for a launch between spawn and admission to be reaped`` () =
+    let registry = ProcessRegistry.Registry()
+    use _ = ProcessRegistry.install registry
+
+    withTrackedSleep 30 (fun child ->
+        let launch = ProcessRegistry.beginLaunch "the fixture child"
+        let shutdown = Task.Run(fun () -> registry.KillAll())
+
+        Assert.False(shutdown.Wait 500, "shutdown must wait for the launch it cannot see")
+        Assert.False(child.HasExited, "positive control: nothing has reaped the child yet")
+
+        Assert.Throws<OperationCanceledException>(fun () -> ProcessRegistry.admitOrRefuse child "the fixture child")
+        |> ignore
+
+        Assert.True(child.HasExited, "the refusing scope must have reaped the child")
+        launch.Dispose()
+        // Released twice, as a `finally` after an explicit release would: counted once.
+        launch.Dispose()
+
+        Assert.True(shutdown.Wait 10000, "shutdown returns once the launch is resolved")
+        Assert.Empty(registry.Leaks))
+
+[<Fact(Timeout = 30000)>]
+let ``a launch reserved in an operation's scope holds its parent's shutdown too`` () =
+    let parent = ProcessRegistry.Registry()
+    let scope = ProcessRegistry.Registry(Some parent)
+    let first = scope.BeginLaunch "the first fixture child"
+    let second = scope.BeginLaunch "the second fixture child"
+    let shutdown = Task.Run(fun () -> parent.KillAll())
+
+    Assert.False(shutdown.Wait 500, "the parent's shutdown must wait for its child scope's launches")
+    first.Dispose()
+    Assert.False(shutdown.Wait 300, "one launch is still in flight")
+    second.Dispose()
+    Assert.True(shutdown.Wait 10000, "the parent's shutdown returns once every launch is released")
+
+/// A launch whose spawn fails releases its reservation: shutdown does not wait on it.
+[<Fact(Timeout = 30000)>]
+let ``a launch that fails to start does not hold shutdown`` () =
+    withTempDir "failed-launch" (fun directory ->
+        let registry = ProcessRegistry.Registry()
+        use _ = ProcessRegistry.install registry
+
+        Assert.ThrowsAny<Exception>(fun () ->
+            runProcess
+                (Path.Combine(directory, "no-such-executable"))
+                ""
+                directory
+                []
+                (ProcessBounds.silent (TimeSpan.FromSeconds 5.0))
+            |> ignore)
+        |> ignore
+
+        Assert.True(Task.Run(fun () -> registry.KillAll()).Wait 2000, "a failed launch must not hold shutdown"))
+
+/// A launch that never resolves does not hold shutdown for good: it gives up after its
+/// budget and says what it left behind.
+[<Fact(Timeout = 30000)>]
+let ``shutdown gives up on a launch that never resolves, and says so`` () =
+    let registry = ProcessRegistry.Registry()
+    let launch = registry.BeginLaunch "the fixture child"
+    let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _ =
+        Logging.installSink
+            { Write = lines.Enqueue
+              Level = Logging.LogLevel.Debug }
+
+    registry.ShutDown(TimeSpan.FromMilliseconds 100.0)
+    launch.Dispose()
+
+    Assert.Contains(lines, fun line -> line.Contains "1 launch(es) still between spawn and admission")
+
+[<Fact(Timeout = 30000)>]
+let ``a shut scope refuses a launch reservation and leaves its parent unreserved`` () =
+    let parent = ProcessRegistry.Registry()
+    let scope = ProcessRegistry.Registry(Some parent)
+    scope.KillAll()
+
+    let refusal =
+        Assert.Throws<OperationCanceledException>(fun () -> scope.BeginLaunch "the fixture child" |> ignore)
+
+    Assert.Contains("has shut down", refusal.Message)
+    // The parent's reservation was released: its shutdown does not wait for it.
+    Assert.True(Task.Run(fun () -> parent.KillAll()).Wait 2000, "the refused launch must not hold the parent")
+
+[<Fact(Timeout = 30000)>]
+let ``a launch with no scope installed reserves nothing`` () =
+    use _ = ProcessRegistry.install (Unchecked.defaultof<ProcessRegistry.Registry>)
+    use launch = ProcessRegistry.beginLaunch "the fixture child"
+    Assert.NotNull launch
+
 // ---------------------------------------------------------------------------
 // A disposed handle is not evidence of exit
 // ---------------------------------------------------------------------------
