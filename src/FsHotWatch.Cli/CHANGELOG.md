@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.90 - 2026-10-06
+
 - fix: a `check`/`confirm` run signalled just after its `beforeRun` hook started no longer
   leaves the hook running. The hook was not yet admitted to the run's process scope, so
   the signal's reap missed it and the run exited before the hook was killed.

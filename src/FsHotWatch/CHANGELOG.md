@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.68 - 2026-10-06
+
 - fix: `ProcessRegistry.Registry.KillAll` waits, bounded by the teardown budget, for a
   launch between its spawn and its admission to be refused and reaped before it returns.
   It used to return first, so a caller that exited next (a signalled `check`) could end
