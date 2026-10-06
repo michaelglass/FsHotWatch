@@ -1066,6 +1066,97 @@ let ``a check with one empty and one absent run directory names each for what it
         test <@ text.Contains $"tests: .fshw/test-runs/%s{absentDir}/" @>
         test <@ text.Contains $"no tests ran there: .fshw/test-runs/%s{emptyDir}/" @>)
 
+/// A check verdict whose batches recorded each of `projects`' reports in their run.
+let private reportedVerdict (runs: (Guid option * string list) list) =
+    build
+        { greenVerdict "sha256:abc" 1 with
+            Command = Verdict.Check
+            RunId = runs |> List.tryPick fst
+            Runs =
+                runs
+                |> List.map (fun (id, projects) ->
+                    let dir =
+                        id |> Option.map (fun g -> g.ToString("N") + "/") |> Option.defaultValue ""
+
+                    { RunId = id
+                      Suites =
+                        projects
+                        |> List.map (fun project ->
+                            { Project = project
+                              Ctrf = $".fshw/test-runs/%s{dir}%s{project}%s{Ctrf.ReportSuffix}"
+                              Total = 3
+                              Passed = 3
+                              Failed = 0
+                              Skipped = 0 }) }) }
+
+[<Fact>]
+let ``a verdict naming reports in an ABSENT run directory says they are missing, not where they are`` () =
+    // The verdict outlives its evidence when the run directory is pruned or deleted. The
+    // report path must not be printed as a pointer to a file that is gone.
+    withTempDir "hint-absent-reports" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = runId.ToString("N")
+
+        let text = noSuiteReport root (reportedVerdict [ Some runId, [ "Lib.Tests" ] ])
+
+        test <@ not (text.Contains $".fshw/test-runs/%s{dir}/Lib.Tests%s{Ctrf.ReportSuffix}") @>
+
+        test
+            <@
+                text.Contains
+                    $"UNREAD — run directory ABSENT (pruned, or never written), so its report(s) cannot be read: \
+                      .fshw/test-runs/%s{dir}/ (Lib.Tests)"
+            @>)
+
+[<Fact>]
+let ``reports in a present run directory are printed beside an absent one's missing notice`` () =
+    // The control: the same rendering, with one run on disk and one gone. A batch that
+    // reported nothing adds no line here, and a batch read from a verdict that never named
+    // its run prints its reports unchecked.
+    withTempDir "hint-mixed-reports" (fun root ->
+        makeRepo root
+        let present = Guid.NewGuid()
+        let absent = Guid.NewGuid()
+        let empty = Guid.NewGuid()
+        emptyRun root empty
+        writeReport root present "Lib.Tests" 3 0 |> ignore
+        let presentDir = present.ToString("N")
+        let absentDir = absent.ToString("N")
+        let emptyDir = empty.ToString("N")
+
+        let lines =
+            ProgressRenderer.AgentHints.forVerdict
+                (Ctrf.runExists root)
+                None
+                (reportedVerdict
+                    [ Some empty, []
+                      Some present, [ "Lib.Tests" ]
+                      Some absent, [ "App.Tests"; "Web.Tests" ]
+                      None, [ "Old.Tests" ] ])
+
+        test
+            <@
+                lines
+                |> List.contains $"    suites   .fshw/test-runs/%s{presentDir}/Lib.Tests%s{Ctrf.ReportSuffix}"
+            @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l ->
+                    l.StartsWith "             UNREAD — run directory ABSENT"
+                    && l.EndsWith $".fshw/test-runs/%s{absentDir}/ (App.Tests, Web.Tests)")
+            @>
+
+        test
+            <@
+                lines
+                |> List.contains $"             .fshw/test-runs/Old.Tests%s{Ctrf.ReportSuffix}"
+            @>
+
+        test <@ not (lines |> List.exists (fun l -> l.Contains emptyDir)) @>)
+
 [<Fact>]
 let ``failing counts survive into the suites — the verdict answers "how many failed" INLINE`` () =
     // The number must not depend on the CTRF file still being readable — a count that

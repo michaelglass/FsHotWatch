@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the verdict summary no longer prints a report path whose run directory is gone.
+  A run with reports whose directory is absent is printed as `UNREAD — run directory
+  ABSENT (pruned, or never written)`, naming the directory and its projects, in place of
+  its report paths, as the empty-suites summary already did.
+
 ## 0.14.0-alpha.90 - 2026-10-06
 
 - fix: a `check`/`confirm` run signalled just after its `beforeRun` hook started no longer

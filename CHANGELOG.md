@@ -113,6 +113,10 @@ All notable changes to FsHotWatch packages are documented here.
   reader at reports that were gone.
 - `FsHwPaths.verdictFile` names the verdict's path in core, and the CLI's `Verdict.path`
   returns it, so the writer and the tidy read one path.
+- **fix: the verdict summary no longer prints a report path whose run directory is gone.**
+  A run the verdict names with reports but whose directory is absent is printed as
+  `UNREAD — run directory ABSENT (pruned, or never written)`, with its directory and
+  projects, in place of its report paths. The empty-suites summary already said this.
 
 ### release: the publication barrier waits forty minutes for nuget.org to index
 
