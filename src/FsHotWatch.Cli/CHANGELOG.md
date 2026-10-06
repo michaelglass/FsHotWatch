@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.91 - 2026-10-06
+
 - fix: the verdict summary no longer prints a report path whose run directory is gone.
   A run with reports whose directory is absent is printed as `UNREAD — run directory
   ABSENT (pruned, or never written)`, naming the directory and its projects, in place of
