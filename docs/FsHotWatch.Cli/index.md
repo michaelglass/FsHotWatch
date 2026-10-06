@@ -478,6 +478,7 @@ field.
 | `scope.cause` (on `full`) | why the run took every project: `requested` · `force-run` · `unreadable-ledger` · `no-full-suite-baseline` · `coarse-fallback` · `evidence-gap` · `selection-reached-every-project` · `null` (the reading does not say) |
 | `scope.notSelected` | changed files whose changes selected no tests, as `{file, reason}`; `reason` is `fcs-errors` (FCS reported errors for the file, so its symbols may be partial) · `[]` (none) · `null` (the reading does not say) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
+| `hooks[].outcome` | `ok` · `fail` · `signalled` (the run was signalled while the hook ran, and the signal's teardown stopped it) |
 | `command` | `check` (impact-scoped) · `confirm` (unfiltered, evidence-required) |
 
 A `green` always names its **baseline**: the last run that executed every configured
@@ -530,6 +531,7 @@ you, reads no socket and starts nothing:
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
 # 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict · 6 IN FLIGHT
+#   128 + N — the run that wrote the verdict was ended by signal N (129 HUP, 130 INT, 143 TERM)
 #   (`check` adds 7 — the run finished and its result never reached the CLI)
 ```
 

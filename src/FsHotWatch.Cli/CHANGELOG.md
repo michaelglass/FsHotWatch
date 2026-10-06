@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a run signalled while its `beforeRun` hook runs is recorded as signalled.
+  `.fshw/verdict.json` records the run's exit code (128 + N) in place of 2, the hook's
+  `outcome` is `signalled` in place of `fail`, and the CLI no longer prints "beforeRun hook
+  failed".
+- **BREAKING:** `Verdict.tryPublishTerminal` takes the exit code to record as its last
+  argument; pass `Verdict.incompleteExitCode` for the previous behaviour. New:
+  `Verdict.writeTerminal`, which writes a pre-daemon record with a given exit code.
+
 ## 0.14.0-alpha.91 - 2026-10-06
 
 - fix: the verdict summary no longer prints a report path whose run directory is gone.
