@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.67 - 2026-10-06
+
 - fix: a file deleted together with its `<Compile>` entry loses its key in
   `file-freshness.json` when the project model moves, instead of keeping it until the
   daemon restarts. The drop is logged at Info.
