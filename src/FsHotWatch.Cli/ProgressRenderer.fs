@@ -762,11 +762,25 @@ module AgentHints =
                            cannot be read and is not a report of zero tests: %s{absentListed}%s{emptyPart}"
 
                 [], fact :: priorEvidenceLines prior v
-            | suites, _ ->
-                suites
-                |> List.mapi (fun i s ->
+            | _ ->
+                // A report path is printed only while its run directory is on disk. The
+                // verdict outlives its evidence when that directory is pruned or deleted,
+                // and then the run is named as ABSENT instead. A batch read from a verdict
+                // that never named its run cannot be checked, so its paths print as recorded.
+                v.Runs
+                |> List.filter (fun r -> not (List.isEmpty r.Suites))
+                |> List.collect (fun r ->
+                    match r.RunId with
+                    | Some id when not (runExists id) ->
+                        let projects = r.Suites |> List.map _.Project |> String.concat ", "
+                        let dir = id.ToString("N")
+
+                        [ $"UNREAD — run directory ABSENT (pruned, or never written), so its report(s) cannot be \
+                            read: .fshw/test-runs/%s{dir}/ (%s{projects})" ]
+                    | _ -> r.Suites |> List.map _.Ctrf)
+                |> List.mapi (fun i line ->
                     let label = if i = 0 then "suites  " else "        "
-                    $"    %s{label} %s{s.Ctrf}"),
+                    $"    %s{label} %s{line}"),
                 []
 
         let suitePathLines = batchFactLines @ suitePathLines
