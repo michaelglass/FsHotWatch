@@ -141,7 +141,7 @@ let private isIncomplete (outcome: FsHotWatch.Cli.Verdict.Outcome) =
 
 /// A signal installer that hands the finalizer to the test instead of the OS.
 let private captureSignalFinalizer (slot: (unit -> unit) option ref) =
-    fun (finalize: unit -> unit) (_exitWith: int -> unit) ->
+    fun (_signal: RunSignal) (finalize: unit -> unit) (_exitWith: int -> unit) ->
         slot.Value <- Some finalize
 
         { new IDisposable with
@@ -344,14 +344,65 @@ let ``onRunSignal fires afterRun once and shares the latch with the finally`` ()
     let exits = ResizeArray<int>()
     let afterRun = makeRunOnce (fun () -> incr ran)
 
-    onRunSignal afterRun exits.Add 143
+    let signal = RunSignal()
+
+    onRunSignal signal afterRun exits.Add 143
     // The finally's later call to the SAME latched closure is a no-op for afterRun.
     afterRun ()
-    // A second signal is likewise a no-op for afterRun, though it still records its code.
-    onRunSignal afterRun exits.Add 130
+    // A second signal is likewise a no-op for afterRun, though it still exits with its code.
+    onRunSignal signal afterRun exits.Add 130
 
     test <@ ran.Value = 1 @>
     test <@ List.ofSeq exits = [ 143; 130 ] @>
+    // The first signal is the one the run's own exit path reports.
+    test <@ signal.Code = Some 143 @>
+
+/// A run that has not been signalled exits with its own code, without waiting.
+[<Fact(Timeout = 20000)>]
+let ``an unsignalled run settles on its own exit code`` () =
+    let signal = RunSignal()
+
+    test <@ signal.Code = None @>
+    test <@ signal.Settle 2 = 2 @>
+
+/// The race a run interrupted in its beforeRun hook loses on Linux: the handler's
+/// teardown kills the hook, the run's thread sees the hook fail and heads for exit 2
+/// while the handler is still tearing down. The handler records its code before the
+/// teardown, so the run's thread exits with 128 + N, and only once the teardown is done.
+[<Theory(Timeout = 20000)>]
+[<InlineData(130)>]
+[<InlineData(143)>]
+[<InlineData(129)>]
+let ``a signal during the hook-failure exit makes the run exit with the signal's code`` (code: int) =
+    let signal = RunSignal()
+    let exits = ResizeArray<int>()
+    use hookKilled = new ManualResetEventSlim(false)
+    use releaseTeardown = new ManualResetEventSlim(false)
+    let teardownDone = ref false
+
+    // The teardown kills the hook (the run's thread sees it fail), then keeps going.
+    let afterRun () =
+        hookKilled.Set()
+        releaseTeardown.Wait()
+        teardownDone.Value <- true
+
+    let handler =
+        Threading.Tasks.Task.Run(fun () ->
+            onRunSignal signal afterRun (fun c -> lock exits (fun () -> exits.Add c)) code)
+
+    // The run's thread: the hook it waited on has died, so it would exit 2.
+    hookKilled.Wait()
+
+    let settling = Threading.Tasks.Task.Run(fun () -> signal.Settle 2)
+    // It does not exit while the handler's teardown is still running ...
+    test <@ not (settling.Wait 200) @>
+
+    releaseTeardown.Set()
+    // ... and when it does, it exits with the signal's code, not the hook-failure code.
+    test <@ settling.Result = code @>
+    test <@ teardownDone.Value @>
+    handler.Wait()
+    test <@ List.ofSeq exits = [ code ] @>
 
 // ---------------------------------------------------------------------------
 // Timeout resolution
@@ -1078,7 +1129,7 @@ let ``installRunSignalHandlers registers and disposes without firing afterRun`` 
     let ran = ref 0
     let afterRun = makeRunOnce (fun () -> incr ran)
 
-    let handlers = installRunSignalHandlers afterRun ignore
+    let handlers = installRunSignalHandlers (RunSignal()) afterRun ignore
     // Merely installing the handlers must not run the teardown.
     test <@ ran.Value = 0 @>
 

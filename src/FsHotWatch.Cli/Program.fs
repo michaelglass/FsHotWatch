@@ -1780,17 +1780,57 @@ let internal makeRunOnce (run: unit -> unit) : unit -> unit =
         if Interlocked.Exchange(latch, 1) = 0 then
             run ()
 
-/// What a run-level signal handler does: run `afterRun` (once, via the shared latch the
-/// caller wove into it) then `exitWith code`. Extracted from the registration lambdas so
-/// the contract is unit-testable WITHOUT delivering a real OS signal, which in a test
-/// host could trip the runner's own signal handling. `128 + signum` is the shell
-/// convention for "killed by signal N".
-let internal onRunSignal (afterRun: unit -> unit) (exitWith: int -> unit) (code: int) : unit =
-    afterRun ()
+/// The signal a run received, shared between the signal handler and the run's own
+/// thread. The handler records its exit code BEFORE it tears the run down, and the
+/// teardown is what ends a hook the run's thread is waiting on, so that thread sees
+/// the record by the time it sees the hook end: a run interrupted in a hook exits
+/// with the signal's code, never with the hook-failure code it would otherwise race
+/// the handler to `exit` with.
+[<Sealed>]
+type internal RunSignal() =
+    let mutable code = 0
+    let finalized = new ManualResetEventSlim(false)
+
+    /// Record `signalCode`; the first signal wins, a later one changes nothing.
+    member _.Record(signalCode: int) : unit =
+        Interlocked.CompareExchange(&code, signalCode, 0) |> ignore
+
+    /// The recorded exit code, if the run has been signalled.
+    member _.Code: int option =
+        match Volatile.Read(&code) with
+        | 0 -> None
+        | recorded -> Some recorded
+
+    /// The handler's teardown has finished, whatever it managed to do.
+    member _.MarkFinalized() : unit = finalized.Set()
+
+    /// The code the run exits with: `runCode`, unless the run was signalled. Then it is
+    /// the signal's code, returned only once the handler's teardown has finished, so the
+    /// run's thread cannot end the process under a teardown still in flight.
+    member this.Settle(runCode: int) : int =
+        match this.Code with
+        | None -> runCode
+        | Some signalCode ->
+            finalized.Wait()
+            signalCode
+
+/// What a run-level signal handler does: record `code` on `signal`, run `afterRun`
+/// (once, via the shared latch the caller wove into it), then `exitWith code`.
+/// Extracted from the registration lambdas so the contract is unit-testable WITHOUT
+/// delivering a real OS signal, which in a test host could trip the runner's own
+/// signal handling. `128 + signum` is the shell convention for "killed by signal N".
+let internal onRunSignal (signal: RunSignal) (afterRun: unit -> unit) (exitWith: int -> unit) (code: int) : unit =
+    signal.Record code
+
+    try
+        afterRun ()
+    finally
+        signal.MarkFinalized()
+
     exitWith code
 
 /// Install SIGINT (via `Console.CancelKeyPress`), SIGTERM and SIGHUP (via POSIX
-/// `PosixSignalRegistration`) handlers that run `onRunSignal afterRun exitWith` — a
+/// `PosixSignalRegistration`) handlers that run `onRunSignal signal afterRun exitWith` — a
 /// plain `finally` does NOT run when the process is signalled, so without this afterRun
 /// would be skipped on exactly the abort path a gate-lock release cannot afford to miss.
 /// Each handler cancels the default terminate (`e.Cancel`/`ctx.Cancel <- true`) so the
@@ -1799,11 +1839,15 @@ let internal onRunSignal (afterRun: unit -> unit) (exitWith: int -> unit) (code:
 ///
 /// `exitWith` is INJECTED so a test can signal itself and observe afterRun fire without
 /// the handler terminating the test process; production passes `exit`.
-let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int -> unit) : IDisposable =
+let internal installRunSignalHandlers
+    (signal: RunSignal)
+    (afterRun: unit -> unit)
+    (exitWith: int -> unit)
+    : IDisposable =
     let onCancelKey =
         ConsoleCancelEventHandler(fun _ (e: ConsoleCancelEventArgs) ->
             e.Cancel <- true
-            onRunSignal afterRun exitWith 130) // 128 + SIGINT(2)
+            onRunSignal signal afterRun exitWith 130) // 128 + SIGINT(2)
 
     Console.CancelKeyPress.AddHandler onCancelKey
 
@@ -1812,7 +1856,7 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
             PosixSignal.SIGTERM,
             fun (ctx: PosixSignalContext) ->
                 ctx.Cancel <- true
-                onRunSignal afterRun exitWith 143 // 128 + SIGTERM(15)
+                onRunSignal signal afterRun exitWith 143 // 128 + SIGTERM(15)
         )
 
     // A closing terminal sends SIGHUP, whose default action ends the process with no
@@ -1822,7 +1866,7 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
             PosixSignal.SIGHUP,
             fun (ctx: PosixSignalContext) ->
                 ctx.Cancel <- true
-                onRunSignal afterRun exitWith 129 // 128 + SIGHUP(1)
+                onRunSignal signal afterRun exitWith 129 // 128 + SIGHUP(1)
         )
 
     { new IDisposable with
@@ -1975,7 +2019,7 @@ type internal RunProcessScope() =
 /// delivering a real OS signal to the test host; production passes
 /// `installRunSignalHandlers`.
 let internal withRunHooksCommandUsingSignals
-    (installSignals: (unit -> unit) -> (int -> unit) -> IDisposable)
+    (installSignals: RunSignal -> (unit -> unit) -> (int -> unit) -> IDisposable)
     (command: Verdict.Command)
     (repoRoot: string)
     (config: DaemonConfiguration)
@@ -2073,14 +2117,21 @@ let internal withRunHooksCommandUsingSignals
     // Installed for EVERY invocation, not only those with an afterRun: a signalled run
     // has no verdict of its own unless this writes one, and a prior green left on disk
     // would read as the answer.
+    let signal = RunSignal()
+
     use _signals =
-        installSignals (fun () -> finalize "the run was signalled before the check could finish" true) exit
+        installSignals signal (fun () -> finalize "the run was signalled before the check could finish" true) exit
 
     // beforeRun FIRST — before `action`, hence before the daemon is contacted —
     // and FAIL-CLOSED.
     let proceed = runBeforeRunHook config runner
 
-    if not proceed then
+    if not proceed && signal.Code.IsSome then
+        // The hook failed because the signal's teardown killed it. The handler published
+        // the signalled verdict; a hook-failure record here would overwrite it with the
+        // wrong cause.
+        signal.Settle 2
+    elif not proceed then
         // Fail-closed: exit 2, NOT 1. afterRun does NOT fire here — beforeRun is
         // the acquire, and a failed acquire has nothing for afterRun to release
         // (afterRun brackets the ACTION, which never began). Nothing else will
@@ -2096,7 +2147,7 @@ let internal withRunHooksCommandUsingSignals
             spans
             "the top-level beforeRun hook failed before the daemon was contacted"
 
-        2
+        signal.Settle 2
     else
         let mutable captured: Runtime.ExceptionServices.ExceptionDispatchInfo option = None
 
@@ -2117,7 +2168,7 @@ let internal withRunHooksCommandUsingSignals
             exitCode
         | None ->
             finalize "the check ended without publishing a verdict for this invocation" false
-            exitCode
+            signal.Settle exitCode
 
 let internal withRunHooksCommand
     (command: Verdict.Command)
@@ -2206,7 +2257,7 @@ let withRunHooksFor
 ///
 /// `installSignals` is INJECTED for the same reason as in `withRunHooksCommandUsingSignals`.
 let internal withRunHooksUnclaimedUsingSignals
-    (installSignals: (unit -> unit) -> (int -> unit) -> IDisposable)
+    (installSignals: RunSignal -> (unit -> unit) -> (int -> unit) -> IDisposable)
     (command: Verdict.Command)
     (repoRoot: string)
     (config: DaemonConfiguration)
@@ -2225,7 +2276,8 @@ let internal withRunHooksUnclaimedUsingSignals
         processes.Reap()
         processes.Teardown afterRun
 
-    use _signals = installSignals finish exit
+    let signal = RunSignal()
+    use _signals = installSignals signal finish exit
 
     if not (runBeforeRunHook config runner) then
         // Fail-closed, exit 2 and NOT 1, exactly as the bracketing path fails: afterRun
@@ -2244,12 +2296,15 @@ let internal withRunHooksUnclaimedUsingSignals
             spans
             "the top-level beforeRun hook failed before the daemon was contacted"
 
-        2
+        signal.Settle 2
     else
-        try
-            action ()
-        finally
-            finish ()
+        let exitCode =
+            try
+                action ()
+            finally
+                finish ()
+
+        signal.Settle exitCode
 
 /// `withRunHooksUnclaimedUsingSignals` under the SAME verb policy the bracketing path
 /// obeys: a verb the config does not select is a straight `action ()`.

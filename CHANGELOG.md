@@ -80,6 +80,11 @@ All notable changes to FsHotWatch packages are documented here.
   reaped, `.fshw/verdict.json` says the run was signalled, and the exit code is 129
   (128 + SIGHUP). SIGHUP's default action used to end the process without either, so a
   closed terminal left the hook's processes running and no verdict behind.
+- **fix: a run signalled while its `beforeRun` hook runs exits 128 + N, not 2.** Reaping
+  the hook made the run see it fail, and the run could exit 2 with a hook-failure verdict
+  before the signal handler exited. The handler now records its code before it reaps, and
+  the run exits with that code once the handler's teardown is done. Applies to SIGINT,
+  SIGTERM and SIGHUP.
 
 ### lint, analyzers, test-prune: a result from a replaced project model is refused out loud
 

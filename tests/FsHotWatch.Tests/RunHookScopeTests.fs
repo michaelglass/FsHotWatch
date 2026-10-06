@@ -25,7 +25,7 @@ let private hooks (before: string option) (after: string option) : DaemonConfigu
 /// Signal handlers that capture the finalizer instead of listening for a real signal,
 /// so a test can deliver the "signal" itself.
 let private capturingSignals (slot: (unit -> unit) option ref) =
-    fun (finalize: unit -> unit) (_exitWith: int -> unit) ->
+    fun (_signal: RunSignal) (finalize: unit -> unit) (_exitWith: int -> unit) ->
         slot.Value <- Some finalize
 
         { new IDisposable with
@@ -69,7 +69,7 @@ let ``a run-level hook runs inside a process scope`` () =
 /// Start a run through `bracket` whose beforeRun is still running when the run is
 /// interrupted, with a child of its own, then interrupt it: neither may outlive the run.
 let private interruptedMidHook
-    (bracket: ((unit -> unit) -> (int -> unit) -> IDisposable) -> DaemonConfiguration -> string -> int)
+    (bracket: (RunSignal -> (unit -> unit) -> (int -> unit) -> IDisposable) -> DaemonConfiguration -> string -> int)
     =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "run-hook-interrupted" (fun root ->
@@ -116,11 +116,73 @@ let ``an interrupted confirm fast path leaves no hook process behind`` () =
     interruptedMidHook (fun signals config root ->
         withRunHooksUnclaimedUsingSignals signals FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))
 
+/// Start a run through `bracket` whose beforeRun is still running, then deliver SIGHUP
+/// through the handler's own contract (`onRunSignal`, with an `exitWith` that does not
+/// end the test host). The handler's teardown kills the hook, so the run's thread sees
+/// the hook fail: the run must still exit with the signal's code, not the hook-failure
+/// code. Returns the run's exit code.
+let private signalledMidHook
+    (bracket: (RunSignal -> (unit -> unit) -> (int -> unit) -> IDisposable) -> DaemonConfiguration -> string -> int)
+    (root: string)
+    =
+    let hookPid = Path.Combine(root, "hook.pid")
+    let installed = ref None
+
+    let signals (signal: RunSignal) (finalize: unit -> unit) (_exitWith: int -> unit) =
+        installed.Value <- Some(signal, finalize)
+
+        { new IDisposable with
+            member _.Dispose() = () }
+
+    let run =
+        Task.Run(fun () -> bracket signals (hooks (Some $"echo $$ > '%s{hookPid}'; sleep 30 & wait") None) root)
+
+    test <@ waitUntilTrue (fun () -> File.Exists hookPid && (readPid hookPid).IsSome) 20000 @>
+
+    match installed.Value with
+    | Some(signal, finalize) -> onRunSignal signal finalize ignore 129
+    | None -> failwith "the signal handlers were not installed"
+
+    test <@ run.Wait(TimeSpan.FromSeconds 30.0) @>
+    run.Result
+
+[<Fact(Timeout = 60000)>]
+let ``a run signalled mid-hook exits with the signal's code and a signalled verdict`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-signalled-code" (fun root ->
+            let code =
+                signalledMidHook
+                    (fun signals config root ->
+                        withRunHooksCommandUsingSignals signals FsHotWatch.Cli.Verdict.Check root config (fun _ -> 0))
+                    root
+
+            test <@ code = 129 @>
+
+            let verdict = File.ReadAllText(Path.Combine(root, ".fshw", "verdict.json"))
+            test <@ verdict.Contains "the run was signalled before the check could finish" @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a confirm fast path signalled mid-hook exits with the signal's code`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "run-hook-signalled-code-unclaimed" (fun root ->
+            let code =
+                signalledMidHook
+                    (fun signals config root ->
+                        withRunHooksUnclaimedUsingSignals
+                            signals
+                            FsHotWatch.Cli.Verdict.Confirm
+                            root
+                            config
+                            (fun () -> 0))
+                    root
+
+            test <@ code = 129 @>)
+
 /// Signal handlers that deliver the "signal" the moment they are installed: the run is
 /// interrupted, and its process scope shut, before its beforeRun can launch. The same
 /// ordering as a signal landing between the hook's spawn and its admission, without
 /// having to win that race.
-let private signalledOnInstall (finalize: unit -> unit) (_exitWith: int -> unit) =
+let private signalledOnInstall (_signal: RunSignal) (finalize: unit -> unit) (_exitWith: int -> unit) =
     finalize ()
 
     { new IDisposable with
