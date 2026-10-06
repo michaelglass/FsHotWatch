@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a file deleted together with its `<Compile>` entry loses its key in
+  `file-freshness.json` when the project model moves, instead of keeping it until the
+  daemon restarts. The drop is logged at Info.
+
 ## 0.13.0-alpha.66 - 2026-10-06
 
 - feat: logging. Ignoring a `FileChecked` or `BatchChecked` captured against a replaced

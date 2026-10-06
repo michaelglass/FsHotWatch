@@ -7404,6 +7404,27 @@ let internal createWithQueries
                 "test-prune"
                 $"failed to persist file-freshness sidecar: %s{ex.Message}; in-memory state still updated"
 
+    // The project model generation the sidecar was last reconciled against. A file
+    // deleted together with its compile entry is unregistered by the re-evaluation that
+    // publishes the next model, so it gets no FileChecked and no `stamp` forgets it; the
+    // model moving is the event that says such a file may be gone.
+    let mutable freshnessReconciledAt: int64 option = None
+
+    let reconcileFreshness (modelGeneration: int64 option) =
+        match modelGeneration with
+        | Some generation when modelGeneration <> Volatile.Read(&freshnessReconciledAt) ->
+            Volatile.Write(&freshnessReconciledAt, modelGeneration)
+            let kept, dropped = FileFreshness.dropGone repoRoot (Volatile.Read(&freshnessRef))
+
+            if not dropped.IsEmpty then
+                for relPath in dropped do
+                    Logging.info
+                        "test-prune"
+                        $"%s{relPath} no longer exists; dropping its freshness record (project model generation %d{generation})"
+
+                updateFreshness kept
+        | _ -> ()
+
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
@@ -9110,6 +9131,7 @@ let internal createWithQueries
                 // resolved when its state was published.
                 let state = { state with Replies = [] }
                 let modelGeneration = observeModelGeneration ctx
+                reconcileFreshness modelGeneration
 
                 let state =
                     if

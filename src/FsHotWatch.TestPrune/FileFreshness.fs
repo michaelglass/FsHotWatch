@@ -113,8 +113,21 @@ let resolvePresence (repoRoot: string) (relPath: string) : EntryPresence =
 /// sidecar would be a worse trade than over-marking files dirty for one
 /// cycle.
 ///
-/// An entry whose file is `Gone` is dropped, silently: there is nothing to warn about
-/// and nothing to fix, and the next `save` writes the store without it.
+/// `store` without the entries whose file is `Gone`, and the keys it dropped. The one
+/// rule for forgetting a file: `load` applies it to what was persisted, and the plugin
+/// applies it when the project model moves, because a file deleted together with its
+/// compile entry is unregistered and never checked again, so no `stamp` would forget it.
+let dropGone (repoRoot: string) (store: Store) : Store * string list =
+    let gone =
+        store
+        |> Map.keys
+        |> Seq.filter (fun relPath -> resolvePresence repoRoot relPath = Gone)
+        |> List.ofSeq
+
+    List.fold (fun kept relPath -> Map.remove relPath kept) store gone, gone
+
+/// An entry whose file is `Gone` is dropped (`dropGone`), silently: there is nothing to
+/// warn about and nothing to fix, and the next `save` writes the store without it.
 let load (repoRoot: string) : Store =
     let path = sidecarPath repoRoot
 
@@ -136,15 +149,16 @@ let load (repoRoot: string) : Store =
 
                     obj
                     |> Seq.choose (fun kv ->
-                        match kv.Value, resolvePresence repoRoot kv.Key with
-                        | null, _
-                        | _, Gone -> None
-                        | value, Present ->
+                        match kv.Value with
+                        | null -> None
+                        | value ->
                             try
                                 Some(kv.Key, deserializeState value)
                             with _ ->
                                 None)
                     |> Map.ofSeq
+                    |> dropGone repoRoot
+                    |> fst
         with _ ->
             Map.empty
 

@@ -74,6 +74,14 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: a file deleted with its compile entry leaves the freshness sidecar
+
+- **fix: `.fshw/test-prune/file-freshness.json` forgets a file deleted together with its
+  `<Compile>` entry, under a live daemon.** The re-evaluation unregisters such a file, so
+  it is never checked again, and the sidecar kept its key until the daemon restarted.
+  test-prune now drops every key whose file is gone when the project model moves, and
+  logs `<path> no longer exists; dropping its freshness record` at Info.
+
 ### cli: a closed terminal ends a run the way Ctrl-C does
 
 - **fix: SIGHUP ends `check`/`confirm` like SIGINT and SIGTERM.** The hook in flight is

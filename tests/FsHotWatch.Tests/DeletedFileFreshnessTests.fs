@@ -173,6 +173,40 @@ let ``PositiveControl: a file that exists and genuinely fails analysis still rep
 
         test <@ warned @>)
 
+// ─── the project model moving ───────────────────────────────────────────────────
+
+[<Fact(Timeout = 60000)>]
+let ``a file deleted with its compile entry loses its freshness record when the model moves`` () =
+    withTempDir "model-gone" (fun tmpDir ->
+        let kept = checkForReal tmpDir "Kept.fsx" "module Kept\nlet n = 1\n"
+        let removed = checkForReal tmpDir "Removed.fsx" "module Removed\nlet n = 1\n"
+        let host = newHost tmpDir
+        emitBuildAndWaitTerminal host
+        emitFileAndQuiesce host kept
+        emitFileAndQuiesce host removed
+
+        // Guard: both were stamped, so the absence below is the model moving.
+        test <@ (File.ReadAllText(FileFreshness.sidecarPath tmpDir)).Contains "Removed.fsx" @>
+
+        // The daemon's re-evaluation: the file and its compile entry are gone, and the
+        // next model no longer lists it. Nothing checks `Removed.fsx` again.
+        File.Delete(AbsFilePath.value removed.File)
+        let nextGeneration = fixtureModelGeneration + 1L
+
+        host.WorkStore.PublishProjectModelWithFiles(fixtureModelOf nextGeneration, Set.ofList [ kept.File ])
+
+        host.EmitFileChecked(
+            { kept with
+                ModelGeneration = Some nextGeneration }
+        )
+
+        waitForQuiescent host 10000
+
+        let persisted = File.ReadAllText(FileFreshness.sidecarPath tmpDir)
+        test <@ not (persisted.Contains "Removed.fsx") @>
+        // PositiveControl: the file that is still there keeps its record.
+        test <@ persisted.Contains "Kept.fsx" @>)
+
 // ─── the project snapshot ───────────────────────────────────────────────────────
 
 let private nullChecker =
