@@ -2,10 +2,22 @@
 
 ## Unreleased
 
+- fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
+  file commands, hooks) count the host's awake time, not the wall clock, so a host that
+  sleeps through a check no longer has those processes killed on wake. The daemon log
+  says `host was suspended ~Ns` after a suspension of 5 s or more.
+
+- fix: a run signalled while its `beforeRun` hook runs is recorded as signalled.
+  `.fshw/verdict.json` records the run's exit code (128 + N) in place of 2, the hook's
+  `outcome` is `signalled` in place of `fail`, and the CLI no longer prints "beforeRun hook
+  failed".
+- **BREAKING:** `Verdict.tryPublishTerminal` takes the exit code to record as its last
+  argument; pass `Verdict.incompleteExitCode` for the previous behaviour. New:
+  `Verdict.writeTerminal`, which writes a pre-daemon record with a given exit code.
+
 ## 0.14.0-alpha.92 - 2026-10-06
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.91 - 2026-10-06
 

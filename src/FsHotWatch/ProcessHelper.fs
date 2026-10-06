@@ -1241,6 +1241,10 @@ let internal armedAtSpawn (_sawOutput: bool) = true
 /// clock / sleep) are injected so the loop is deterministically testable without
 /// spawning a real process.
 ///
+/// Both deadlines count the host's AWAKE time (`HostClock.Clock.AwakeNow`), not the
+/// wall clock: time the host spent suspended counts against neither, so a run that a
+/// sleep interrupted is not killed on wake for time it never had.
+///
 /// Either deadline may be `InfiniteTimeSpan`, which DISABLES that one:
 ///  * `overallTimeout = Infinite` — no total cap (the common TestPrune case),
 ///    leaving the launch deadline as the sole escape from an infinite wait.
@@ -1250,7 +1254,7 @@ let internal armedAtSpawn (_sawOutput: bool) = true
 ///    ask for this, and it demands a finite total timeout in exchange.
 ///
 /// The `Infinite` handling must be explicit: `InfiniteTimeSpan` is -1 ms, so
-/// `origin.Add launchDeadline` would land in the PAST and stall every spawn on its
+/// `origin + launchDeadline` would land in the PAST and stall every spawn on its
 /// first poll.
 ///
 /// The moment the overall timeout starts counting is injected. `armed sawOutput` is
@@ -1264,27 +1268,31 @@ let internal armedAtSpawn (_sawOutput: bool) = true
 let internal armedWatchdogLoopWith
     (armed: bool -> bool)
     (observe: unit -> bool * bool)
-    (now: unit -> DateTime)
+    (clock: HostClock.Clock)
     (sleep: int -> unit)
     (pollMs: int)
     (launchDeadline: TimeSpan)
     (overallTimeout: TimeSpan)
     : LaunchOutcome =
-    let deadlineFrom (origin: DateTime) (span: TimeSpan) =
+    // Both deadlines count awake time: a suspension must not use up a child's budget
+    // and then kill it in bulk on wake.
+    let now () = clock.AwakeNow()
+
+    let deadlineFrom (origin: TimeSpan) (span: TimeSpan) =
         if span = Threading.Timeout.InfiniteTimeSpan then
             None
         else
-            Some(origin.Add span)
+            Some(origin + span)
 
     let launchDeadlineAt = deadlineFrom (now ()) launchDeadline
 
-    let reached (at: DateTime option) =
+    let reached (at: TimeSpan option) =
         match at with
         | Some t -> now () >= t
         | None -> false
 
     // `None` until armed; then the overall deadline, itself `None` when infinite.
-    let rec loop (overallTimeoutAt: DateTime option option) =
+    let rec loop (overallTimeoutAt: TimeSpan option option) =
         let exited, sawOutput = observe ()
 
         let overallTimeoutAt =
@@ -1308,13 +1316,13 @@ let internal armedWatchdogLoopWith
 /// The launch watchdog with the overall timeout counting from the spawn.
 let launchWatchdogLoopWith
     (observe: unit -> bool * bool)
-    (now: unit -> DateTime)
+    (clock: HostClock.Clock)
     (sleep: int -> unit)
     (pollMs: int)
     (launchDeadline: TimeSpan)
     (overallTimeout: TimeSpan)
     : LaunchOutcome =
-    armedWatchdogLoopWith armedAtSpawn observe now sleep pollMs launchDeadline overallTimeout
+    armedWatchdogLoopWith armedAtSpawn observe clock sleep pollMs launchDeadline overallTimeout
 
 /// A deadline override from an optional string (an `FSHW_*_SEC` env value): a
 /// positive integer count of seconds, else `None` (absent, unparseable,
@@ -1743,16 +1751,24 @@ let internal runProcessCore
 
                     let sleep ms = child.WaitForExit ms
 
-                    stdoutTask,
-                    stderrTask,
-                    armedWatchdogLoopWith
-                        bounds.TimeoutArmed
-                        observe
-                        (fun () -> DateTime.UtcNow)
-                        sleep
-                        pollMs
-                        launchDeadline
-                        timeout)
+                    let started = HostClock.read HostClock.system
+
+                    let outcome =
+                        armedWatchdogLoopWith
+                            bounds.TimeoutArmed
+                            observe
+                            HostClock.system
+                            sleep
+                            pollMs
+                            launchDeadline
+                            timeout
+
+                    // The bounds above did not count a suspension; say there was one,
+                    // so a slow run is not misread as a slow child.
+                    HostClock.suspensionLine $"while %s{describe ()} ran" started (HostClock.read HostClock.system)
+                    |> Option.iter (Logging.info "process")
+
+                    stdoutTask, stderrTask, outcome)
 
             // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
             // instant it exits (returns in ms); only a grandchild holding the pipe makes

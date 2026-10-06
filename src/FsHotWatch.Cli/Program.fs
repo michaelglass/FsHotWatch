@@ -1886,51 +1886,86 @@ type internal RunHookRunner =
         RunTimed: string -> string -> string -> bool * string
         /// Everything measured so far, in the order it ran.
         Collected: unit -> Verdict.HookVerdict list * Verdict.TimingSpan list
+        /// Wait, up to the timeout, until no hook is running; true when none is. A
+        /// signal's teardown kills the hook the run's thread is waiting on, and that
+        /// thread records it: the teardown waits for the record before it publishes.
+        AwaitIdle: TimeSpan -> bool
     }
+
+/// How long a signal's teardown waits for the hooks in flight to be recorded.
+let internal runHookSettleTimeout = TimeSpan.FromSeconds 5.0
 
 let internal makeRunHookRunner
     (repoRoot: string)
     (config: DaemonConfiguration)
     (invocation: Verdict.Invocation)
+    (signal: RunSignal)
     : RunHookRunner =
     let timeoutSec = Some(resolveRunHookTimeoutSec config)
     let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
+    let inFlight = ref 0
 
     { RunTimed =
         fun scope label cmd ->
-            let startOffsetMs = Verdict.Invocation.elapsedMs invocation
-            let stopwatch = Diagnostics.Stopwatch.StartNew()
-            // A run-level hook takes no cancellation token: the only cancellation that
-            // reaches it is the run's process scope refusing the launch, because the run
-            // was interrupted before the hook started, or while it was starting (after
-            // the spawn, before its admission). That refusal is how the hook ended, not
-            // an escape from the run, so it is the hook's failed outcome like any hook
-            // the interruption killed after admitting it.
-            let success, output =
-                try
-                    makeShellHookWithResult label timeoutSec repoRoot cmd ()
-                with :? OperationCanceledException as refused ->
-                    FsHotWatch.Logging.error label $"%s{label} did not run: %s{refused.Message}"
-                    false, refused.Message
+            lock hookEvidence (fun () -> inFlight.Value <- inFlight.Value + 1)
 
-            stopwatch.Stop()
+            try
+                // The signal is recorded before its teardown kills anything, so a hook
+                // that fails once a signal arrived after its start was ended by it. A hook
+                // the teardown itself runs (afterRun) starts signalled, and its failure is
+                // its own.
+                let signalledAtStart = signal.Code.IsSome
 
+                let stopped () =
+                    not signalledAtStart && signal.Code.IsSome
+
+                let startOffsetMs = Verdict.Invocation.elapsedMs invocation
+                let stopwatch = Diagnostics.Stopwatch.StartNew()
+                // A run-level hook takes no cancellation token: the only cancellation that
+                // reaches it is the run's process scope refusing the launch, because the run
+                // was interrupted before the hook started, or while it was starting (after
+                // the spawn, before its admission). That refusal is how the hook ended, not
+                // an escape from the run, so it is the hook's failed outcome like any hook
+                // the interruption killed after admitting it.
+                let success, output =
+                    try
+                        makeShellHookWithResult label timeoutSec repoRoot stopped cmd ()
+                    with :? OperationCanceledException as refused ->
+                        FsHotWatch.Logging.error label $"%s{label} did not run: %s{refused.Message}"
+                        false, refused.Message
+
+                stopwatch.Stop()
+
+                lock hookEvidence (fun () ->
+                    hookEvidence.Add(
+                        { Scope = scope
+                          StepIndex = 1
+                          StepCount = 1
+                          Command = cmd
+                          ElapsedMs = stopwatch.ElapsedMilliseconds
+                          Outcome =
+                            if success then "ok"
+                            elif stopped () then "signalled"
+                            else "fail" },
+                        { Scope = scope
+                          StartOffsetMs = startOffsetMs
+                          ElapsedMs = stopwatch.ElapsedMilliseconds
+                          Detail = Some cmd }
+                    ))
+
+                success, output
+            finally
+                lock hookEvidence (fun () ->
+                    inFlight.Value <- inFlight.Value - 1
+                    Monitor.PulseAll hookEvidence)
+      Collected = fun () -> lock hookEvidence (fun () -> hookEvidence |> Seq.toList |> List.unzip)
+      AwaitIdle =
+        fun timeout ->
             lock hookEvidence (fun () ->
-                hookEvidence.Add(
-                    { Scope = scope
-                      StepIndex = 1
-                      StepCount = 1
-                      Command = cmd
-                      ElapsedMs = stopwatch.ElapsedMilliseconds
-                      Outcome = if success then "ok" else "fail" },
-                    { Scope = scope
-                      StartOffsetMs = startOffsetMs
-                      ElapsedMs = stopwatch.ElapsedMilliseconds
-                      Detail = Some cmd }
-                ))
+                while inFlight.Value > 0 && Monitor.Wait(hookEvidence, timeout) do
+                    ()
 
-            success, output
-      Collected = fun () -> lock hookEvidence (fun () -> hookEvidence |> Seq.toList |> List.unzip) }
+                inFlight.Value = 0) }
 
 /// afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
 /// already logs a failure (and its output) at error; the extra line here says
@@ -1951,13 +1986,17 @@ let internal makeAfterRunHook (config: DaemonConfiguration) (runner: RunHookRunn
 /// The `beforeRun` preflight both brackets run: timed, its output surfaced on failure
 /// like `tests.beforeRun` does, so a refused preflight shows WHY and not merely that it
 /// refused. `true` means "proceed".
-let internal runBeforeRunHook (config: DaemonConfiguration) (runner: RunHookRunner) : bool =
+let internal runBeforeRunHook (config: DaemonConfiguration) (runner: RunHookRunner) (signal: RunSignal) : bool =
     match config.BeforeRun with
     | None -> true
     | Some cmd ->
         let (success, output) = runner.RunTimed "run.beforeRun" "beforeRun" cmd
 
-        if not success then
+        match success, signal.Code with
+        | true, _ -> ()
+        | false, Some code ->
+            eprintfn "fshw: the run was signalled while beforeRun ran — the hook was stopped, not failed (exit %d)" code
+        | false, None ->
             eprintfn
                 "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
 
@@ -1999,6 +2038,9 @@ type internal RunProcessScope() =
         member _.Dispose() =
             reap ()
             installed.Dispose()
+
+/// Why a signalled run's record is incomplete.
+let internal signalledReason = "the run was signalled before the check could finish"
 
 /// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun` hooks.
 /// See the section header above for the full contract.
@@ -2055,7 +2097,12 @@ let internal withRunHooksCommandUsingSignals
     // daemon. A run that ends, or is interrupted in one of them, reaps them.
     use processes = new RunProcessScope()
 
-    let runner = makeRunHookRunner repoRoot config invocation
+    // Installed for EVERY invocation, not only those with an afterRun: a signalled run
+    // has no verdict of its own unless this writes one, and a prior green left on disk
+    // would read as the answer.
+    let signal = RunSignal()
+
+    let runner = makeRunHookRunner repoRoot config invocation signal
     let evidence = runner.Collected
     let afterRun = makeAfterRunHook config runner
 
@@ -2066,6 +2113,9 @@ let internal withRunHooksCommandUsingSignals
     // newer invocation already owns the file.
     let attach =
         makeRunOnce (fun () ->
+            // A signal's teardown has just killed the hook the run's thread waits on;
+            // that hook belongs in this record, so wait for the thread to file it.
+            runner.AwaitIdle runHookSettleTimeout |> ignore
             let hooks, spans = evidence ()
 
             if
@@ -2097,7 +2147,10 @@ let internal withRunHooksCommandUsingSignals
         processes.Teardown afterRun
 
         try
-            Verdict.tryPublishTerminal repoRoot config.Exclude command invocation reason downgrade
+            // A signalled run's record carries the signal's code, as the process does.
+            let exitCode = signal.Code |> Option.defaultValue Verdict.incompleteExitCode
+
+            Verdict.tryPublishTerminal repoRoot config.Exclude command invocation reason downgrade exitCode
             |> ignore
 
             attach ()
@@ -2114,17 +2167,11 @@ let internal withRunHooksCommandUsingSignals
         // write.
         releaseClaim ()
 
-    // Installed for EVERY invocation, not only those with an afterRun: a signalled run
-    // has no verdict of its own unless this writes one, and a prior green left on disk
-    // would read as the answer.
-    let signal = RunSignal()
-
-    use _signals =
-        installSignals signal (fun () -> finalize "the run was signalled before the check could finish" true) exit
+    use _signals = installSignals signal (fun () -> finalize signalledReason true) exit
 
     // beforeRun FIRST — before `action`, hence before the daemon is contacted —
     // and FAIL-CLOSED.
-    let proceed = runBeforeRunHook config runner
+    let proceed = runBeforeRunHook config runner signal
 
     if not proceed && signal.Code.IsSome then
         // The hook failed because the signal's teardown killed it. The handler published
@@ -2269,17 +2316,44 @@ let internal withRunHooksUnclaimedUsingSignals
     // that must leave a record.
     let invocation = Verdict.Invocation.start ()
     use processes = new RunProcessScope()
-    let runner = makeRunHookRunner repoRoot config invocation
+    let signal = RunSignal()
+    let runner = makeRunHookRunner repoRoot config invocation signal
     let afterRun = makeAfterRunHook config runner
+    let beforeRunPassed = ref false
 
     let finish () =
         processes.Reap()
         processes.Teardown afterRun
 
-    let signal = RunSignal()
-    use _signals = installSignals signal finish exit
+    // A signal before beforeRun passed ends the run where the refusal below would have,
+    // so it leaves the same kind of record, with the signal's code, written here
+    // because the process exits as soon as the handler returns.
+    let onSignal () =
+        finish ()
 
-    if not (runBeforeRunHook config runner) then
+        if not (Volatile.Read &beforeRunPassed.contents) then
+            runner.AwaitIdle runHookSettleTimeout |> ignore
+            let hooks, spans = runner.Collected()
+
+            Verdict.writeTerminal
+                repoRoot
+                config.Exclude
+                command
+                invocation
+                hooks
+                spans
+                signalledReason
+                (signal.Code |> Option.defaultValue Verdict.incompleteExitCode)
+
+    use _signals = installSignals signal onSignal exit
+
+    let proceed = runBeforeRunHook config runner signal
+    Volatile.Write(&beforeRunPassed.contents, proceed)
+
+    if not proceed && signal.Code.IsSome then
+        // The signal's handler wrote the record; the hook did not refuse anything.
+        signal.Settle 2
+    elif not proceed then
         // Fail-closed, exit 2 and NOT 1, exactly as the bracketing path fails: afterRun
         // does not fire (beforeRun is the acquire, and a failed acquire has nothing to
         // release), and the refusal REPLACES the verdict it declined to certify. Leaving

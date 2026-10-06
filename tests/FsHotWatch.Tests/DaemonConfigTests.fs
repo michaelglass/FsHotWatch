@@ -2087,7 +2087,7 @@ let ``a beforeRun hook that hangs TIMES OUT instead of wedging the tests slot`` 
     // behaviour): it then blocks for 60s, past the xUnit budget. The outcome is the proof,
     // not a clock: a hook left to finish `sleep 60` succeeds, and says nothing of a timeout.
     let hook =
-        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 1) "." "sleep 60"
+        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 1) "." (fun () -> false) "sleep 60"
 
     let (success, output) = hook ()
 
@@ -2106,7 +2106,12 @@ let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` ()
     // can only end by timing out, which is `not success`. The outcome is the proof, not a
     // clock; the xUnit cap reports the wait before that timeout would.
     let hook =
-        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 60) "." "( sleep 90 & ) ; echo ready"
+        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult
+            "beforeRun"
+            (Some 60)
+            "."
+            (fun () -> false)
+            "( sleep 90 & ) ; echo ready"
 
     let (success, output) = hook ()
 

@@ -258,9 +258,14 @@ let compactingCollect () : unit =
 ///
 /// Each heartbeat carries `gcPauseSuffix` for the time since the previous one.
 ///
-/// Injected deps keep it testable: `now` (clock), `log` (sink) and `gcPauseTotal`
-/// (the process's cumulative GC pause). Production passes `DateTime.UtcNow`,
-/// `Logging.info "watchdog"` and the default, `GC.GetTotalPauseDuration`.
+/// Every tick compares the wall clock (`now`) with the awake clock (`awake`) since the
+/// previous tick and logs `host was suspended ~Ns` when the host slept in between
+/// (`HostClock.suspensionLine`), so a log gap or an overrun that spans a sleep says so.
+///
+/// Injected deps keep it testable: `now` (clock), `log` (sink), `gcPauseTotal`
+/// (the process's cumulative GC pause) and `awake` (time the host has been awake).
+/// Production passes `DateTime.UtcNow`, `Logging.info "watchdog"` and the defaults,
+/// `GC.GetTotalPauseDuration` and `HostClock.system.AwakeNow`.
 type Watchdog
     (
         threshold: TimeSpan,
@@ -271,12 +276,14 @@ type Watchdog
         ?gcPauseTotal: unit -> TimeSpan,
         ?resources: unit -> ResourceReading,
         ?heapValve: HeapValvePolicy,
-        ?collect: unit -> unit
+        ?collect: unit -> unit,
+        ?awake: unit -> TimeSpan
     ) =
     let gcPauseTotal = defaultArg gcPauseTotal GC.GetTotalPauseDuration
     let resources = defaultArg resources readResources
     let heapValve = defaultArg heapValve (defaultHeapValvePolicy ())
     let collect = defaultArg collect compactingCollect
+    let awake = defaultArg awake HostClock.system.AwakeNow
     let gate = Lock()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
@@ -286,6 +293,7 @@ type Watchdog
     let mutable lastHeartbeat = now ()
     let mutable lastGcPause = gcPauseTotal ()
     let mutable lastResources = resources ()
+    let mutable lastTick: HostClock.Reading = { Wall = now (); Awake = awake () }
 
     let mutable valveState =
         { Gen2 = lastResources.Gen2
@@ -303,12 +311,20 @@ type Watchdog
 
     let onTick () =
         let n = now ()
+        let clocks: HostClock.Reading = { Wall = n; Awake = awake () }
         // Read + decide under the lock so Begin/End can't mutate mid-read.
         let valve = ref None
 
         let toLog =
             Locking.locked gate (fun () ->
                 let logs = List<string>()
+
+                // The timer counts awake time, so the first tick after the host wakes
+                // sees the whole suspension as wall time the awake clock did not see.
+                HostClock.suspensionLine "since the previous watchdog tick" lastTick clocks
+                |> Option.iter logs.Add
+
+                lastTick <- clocks
 
                 for KeyValue(id, op) in inFlight do
                     if isWedgedAt n threshold op && overrunLogged.Add id then
