@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
+  file commands, hooks) count the host's awake time, not the wall clock, so a host that
+  sleeps through a check no longer has those processes killed on wake. The daemon log
+  says `host was suspended ~Ns` after a suspension of 5 s or more.
+
 ## 0.14.0-alpha.91 - 2026-10-06
 
 - fix: the verdict summary no longer prints a report path whose run directory is gone.
