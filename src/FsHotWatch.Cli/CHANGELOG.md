@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.93 - 2026-10-06
+
 - fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
   file commands, hooks) count the host's awake time, not the wall clock, so a host that
   sleeps through a check no longer has those processes killed on wake. The daemon log

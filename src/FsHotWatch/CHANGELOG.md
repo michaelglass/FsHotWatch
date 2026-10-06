@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.69 - 2026-10-06
+
 - fix: a spawned child's launch deadline and overall timeout count the host's awake time.
   They counted the wall clock, so a host that slept through a run (a closed laptop lid)
   killed the child on wake: a 900 s test-host timeout fired after about 339 s awake.
