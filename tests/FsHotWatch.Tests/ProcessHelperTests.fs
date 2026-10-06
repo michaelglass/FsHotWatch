@@ -1255,14 +1255,65 @@ let ``resolveLaunchDeadline: junk / non-positive override falls back to the defa
 // fake clock advances by the slept ms on each poll, so the deadline is reached after a
 // bounded number of iterations.
 
-let private fakeClock (start: DateTime) =
-    let current = ref start
-    let now () = current.Value
+let private fakeClock (start: DateTime) : FsHotWatch.HostClock.Clock * (int -> unit) =
+    let wall = ref start
+    let awake = ref TimeSpan.Zero
 
     let advance (ms: int) =
-        current.Value <- current.Value.AddMilliseconds(float ms)
+        wall.Value <- wall.Value.AddMilliseconds(float ms)
+        awake.Value <- awake.Value + TimeSpan.FromMilliseconds(float ms)
 
-    now, advance
+    { WallNow = (fun () -> wall.Value)
+      AwakeNow = (fun () -> awake.Value) },
+    advance
+
+/// A host that sleeps through every poll: each poll is `awakeMs` of awake time and
+/// `sleptMs` more of wall clock.
+let private sleepingHostClock (awakeMs: int) (sleptMs: int) : FsHotWatch.HostClock.Clock * (int -> unit) =
+    let wall = ref (DateTime(2026, 10, 5, 15, 30, 0, DateTimeKind.Utc))
+    let awake = ref TimeSpan.Zero
+
+    let advance (_: int) =
+        wall.Value <- wall.Value.AddMilliseconds(float (awakeMs + sleptMs))
+        awake.Value <- awake.Value + TimeSpan.FromMilliseconds(float awakeMs)
+
+    { WallNow = (fun () -> wall.Value)
+      AwakeNow = (fun () -> awake.Value) },
+    advance
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: time the host spent suspended counts against neither deadline`` () =
+    // b491: a 900 s test-host timeout fired after ~339 s awake, because ~561 s of
+    // clamshell sleep counted against it. Here each 250 ms poll also sleeps 10 s: the
+    // wall clock passes both deadlines on the first poll, the awake clock never does
+    // before the child exits on poll 20 (5 s awake, ~205 s wall).
+    let clock, advance = sleepingHostClock 250 10_000
+    let polls = ref 0
+
+    let observe () =
+        incr polls
+        polls.Value >= 20, false
+
+    let step =
+        launchWatchdogLoopWith observe clock advance 250 (TimeSpan.FromSeconds 6.0) (TimeSpan.FromSeconds 6.0)
+
+    Assert.Equal(LaunchOutcome.Exited, step)
+    Assert.Equal(20, polls.Value)
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: the deadlines still fire on awake time`` () =
+    let clock, advance = sleepingHostClock 250 10_000
+
+    let step =
+        launchWatchdogLoopWith
+            (fun () -> false, true)
+            clock
+            advance
+            250
+            System.Threading.Timeout.InfiniteTimeSpan
+            (TimeSpan.FromSeconds 1.0)
+
+    Assert.Equal(LaunchOutcome.TimedOut, step)
 
 [<Fact(Timeout = 5000)>]
 let ``launchWatchdogLoopWith: a child that never appears stalls at the launch deadline`` () =
