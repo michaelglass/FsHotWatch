@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.66 - 2026-10-06
+
 - feat: logging. Ignoring a `FileChecked` or `BatchChecked` captured against a replaced
   project model is logged at Info, up from Debug.
 

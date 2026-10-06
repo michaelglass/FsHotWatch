@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.89 - 2026-10-06
+
 - refactor: `Verdict.path` returns `FsHwPaths.verdictFile`.
 
 - fix: SIGHUP ends a `check`/`confirm` run like SIGINT and SIGTERM: the hook in flight is

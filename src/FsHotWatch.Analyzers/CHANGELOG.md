@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.44 - 2026-10-06
+
 - feat: logging. Ignoring a `FileChecked` captured against a replaced project model is
   logged at Info, up from Debug.
 

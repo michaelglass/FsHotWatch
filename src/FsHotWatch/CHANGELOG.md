@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.67 - 2026-10-06
+
 - fix: `Ctrf.tidyRunsDir` keeps every run `.fshw/verdict.json` names (`runId`,
   `runs[].runId`, `outcome.baseline.runId`), however old.
 - feat: `FsHwPaths.verdictFile`, the verdict's path.
