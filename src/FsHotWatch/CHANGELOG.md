@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a spawned child's launch deadline and overall timeout count the host's awake time.
+  They counted the wall clock, so a host that slept through a run (a closed laptop lid)
+  killed the child on wake: a 900 s test-host timeout fired after about 339 s awake.
+  `ProcessHelper.launchWatchdogLoopWith` takes a `HostClock.Clock` in place of
+  `now: unit -> DateTime`. **BREAKING** (F# API).
+- feat: logging. A spawned child during whose run the host was suspended for 5 s or more
+  logs `host was suspended ~Ns while <command> ran`, with the wall and awake times.
+- feat: logging. `OperationWatchdog.Watchdog` logs `host was suspended ~Ns since the
+  previous watchdog tick` on the first tick after the host wakes. It takes an optional
+  `awake` clock, `HostClock.system.AwakeNow` by default.
+- feat: `HostClock`: wall and awake time read together (`Clock`, `Reading`, `system`),
+  how long the host was suspended between two readings (`suspendedBetween`), and the log
+  line for it (`suspensionLine`). Awake time is `Stopwatch`'s timestamp, which stops
+  while the host is suspended on macOS and Linux.
+
 ## 0.10.0-alpha.68 - 2026-10-06
 
 - fix: `ProcessRegistry.Registry.KillAll` waits, bounded by the teardown budget, for a

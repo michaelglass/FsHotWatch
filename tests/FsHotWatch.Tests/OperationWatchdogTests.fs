@@ -548,3 +548,43 @@ let ``compactingCollect runs a full blocking collection`` () =
     let before = GC.CollectionCount 2
     compactingCollect ()
     test <@ GC.CollectionCount 2 > before @>
+
+// --- Host suspension: the wall clock runs through a sleep, the awake clock does not ---
+
+[<Fact(Timeout = 10000)>]
+let ``Watchdog logs a host suspension once, when the wall clock outruns the awake clock`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+    let wall = ref t0
+    let awake = ref (TimeSpan.FromSeconds 1000.0)
+
+    use _w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now = (fun () -> wall.Value),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            awake = (fun () -> awake.Value)
+        )
+
+    let suspensions () =
+        logged
+        |> Seq.filter (fun line -> line.StartsWith "host was suspended")
+        |> List.ofSeq
+
+    // Awake time keeping pace with the wall clock is not a suspension.
+    wall.Value <- t0.AddSeconds 30.0
+    awake.Value <- TimeSpan.FromSeconds 1030.0
+    Thread.Sleep 200
+    test <@ List.isEmpty (suspensions ()) @>
+
+    // The lid closes: 394s of wall clock pass, 2s of them awake.
+    wall.Value <- t0.AddSeconds 424.0
+    awake.Value <- TimeSpan.FromSeconds 1032.0
+    waitUntil (fun () -> not (List.isEmpty (suspensions ()))) 5000
+    Thread.Sleep 200
+
+    test
+        <@
+            suspensions () = [ "host was suspended ~392s since the previous watchdog tick (wall clock advanced 394s, awake 2s)" ]
+        @>

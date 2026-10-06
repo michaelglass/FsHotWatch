@@ -74,6 +74,14 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: a run signalled in its `beforeRun` hook is recorded as signalled, not as a hook failure
+
+- **fix: `.fshw/verdict.json` for a run signalled while its `beforeRun` hook runs records
+  `"exitCode"` 128 + N (129 SIGHUP, 130 SIGINT, 143 SIGTERM), the code the process exits
+  with, in place of 2, and the hook's `outcome` is `signalled`, not `fail`.** The CLI no
+  longer prints "beforeRun hook failed" for it either. `fshw verdict` on such a record
+  exits 128 + N. Applies to `check`, `confirm` and the `confirm` fast path.
+
 ### test-prune: a file deleted with its compile entry leaves the freshness sidecar
 
 - **fix: `.fshw/test-prune/file-freshness.json` forgets a file deleted together with its

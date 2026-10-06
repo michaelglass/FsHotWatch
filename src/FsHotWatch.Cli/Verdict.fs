@@ -213,7 +213,8 @@ type HookVerdict =
         /// The exact command, as configured — one atomic shell command.
         Command: string
         ElapsedMs: int64
-        /// `"ok"` or `"fail"`.
+        /// `"ok"`, `"fail"`, or `"signalled"`: the run was signalled while the hook ran,
+        /// and the signal's teardown ended it, so it did not fail.
         Outcome: string
     }
 
@@ -2379,6 +2380,7 @@ let private terminalVerdict
     (excludePatterns: string list)
     (command: Command)
     (reason: string)
+    (exitCode: int)
     : Verdict =
     create
         command
@@ -2386,16 +2388,41 @@ let private terminalVerdict
         (TreeHash.compute repoRoot excludePatterns)
         (SolutionScope.readExclusions repoRoot)
         (Incomplete reason)
-        (CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
+        exitCode
         []
         []
         CheckComparison.notRecorded
         []
         (IpcParsing.ProjectModelReading.NotReported "the invocation ended before the project model could be read")
 
+/// The exit code of a verdict that records an invocation which did not finish.
+let incompleteExitCode =
+    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+
+/// The run ended before the daemon was contacted — its top-level `beforeRun` refused it,
+/// or a signal stopped it there — with `exitCode` as the run's own exit. Nothing else
+/// will publish, so this is the ONLY record of the invocation, and the hooks that ran
+/// are timed and named like any other.
+let writeTerminal
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (command: Command)
+    (invocation: Invocation)
+    (hooks: HookVerdict list)
+    (spans: TimingSpan list)
+    (reason: string)
+    (exitCode: int)
+    : unit =
+    terminalVerdict repoRoot excludePatterns command reason exitCode
+    |> withAttribution
+        { Hooks = hooks
+          TimingSpans = spans
+          RefusedEvidence = [ reason ]
+          ObservedElapsedMs = Some(Invocation.elapsedMs invocation)
+          InvocationId = Some invocation.Id }
+    |> write repoRoot
+
 /// The top-level `beforeRun` hook refused the run before the daemon was contacted.
-/// Nothing else will publish, so this is the ONLY record of the invocation — and the
-/// hook that refused it is timed and named like any other.
 let writeHookFailure
     (repoRoot: string)
     (excludePatterns: string list)
@@ -2405,14 +2432,7 @@ let writeHookFailure
     (spans: TimingSpan list)
     (reason: string)
     : unit =
-    terminalVerdict repoRoot excludePatterns command reason
-    |> withAttribution
-        { Hooks = hooks
-          TimingSpans = spans
-          RefusedEvidence = [ reason ]
-          ObservedElapsedMs = Some(Invocation.elapsedMs invocation)
-          InvocationId = Some invocation.Id }
-    |> write repoRoot
+    writeTerminal repoRoot excludePatterns command invocation hooks spans reason incompleteExitCode
 
 /// The invocation ended abnormally — an exception out of the transport, a signal, or
 /// an action that returned without ever publishing. Leave behind an invocation-owned
@@ -2427,6 +2447,9 @@ let writeHookFailure
 ///   plugin, hook, interval and wall-time evidence; left alone otherwise (the action
 ///   published and returned normally — nothing abnormal happened);
 /// - owned by a DIFFERENT invocation → untouched, `false`.
+///
+/// `exitCode` is the run's own exit: `incompleteExitCode`, or 128 + N for a run that
+/// signal N ended, so a reader can tell an interrupt from a failure.
 let tryPublishTerminal
     (repoRoot: string)
     (excludePatterns: string list)
@@ -2434,11 +2457,12 @@ let tryPublishTerminal
     (invocation: Invocation)
     (reason: string)
     (downgradeSameOwner: bool)
+    (exitCode: int)
     : bool =
     let observed = Invocation.elapsedMs invocation
 
     let fallback () =
-        terminalVerdict repoRoot excludePatterns command reason
+        terminalVerdict repoRoot excludePatterns command reason exitCode
         |> withAttribution
             { Attribution.none with
                 RefusedEvidence = [ reason ]
@@ -2466,8 +2490,7 @@ let tryPublishTerminal
                     outcome["reason"] <- JsonValue.Create reason
                     root["outcome"] <- outcome
 
-                    root["exitCode"] <-
-                        JsonValue.Create(CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
+                    root["exitCode"] <- JsonValue.Create exitCode
 
                     addReason root reason
                     root["observedElapsedMs"] <- JsonValue.Create observed)
@@ -3276,6 +3299,8 @@ type Report =
 /// never a silent fall-through to 0.
 ///
 ///   0/1/2/3 — the verdict applies, and these are `check`'s own codes.
+///   128 + N — the run that wrote it was ended by signal N (129 SIGHUP, 130 SIGINT,
+///             143 SIGTERM); its outcome is `incomplete`.
 ///   4       — STALE: a verdict exists but describes a different tree.
 ///   5       — no usable verdict on disk.
 ///   6       — IN FLIGHT: a run is verifying this tree right now, and the verdict on

@@ -48,6 +48,7 @@
     <Compile Include="SpawnHelperTests.fs" />
     <Compile Include="SpawnHelperModeTests.fs" />
     <Compile Include="RunLogTests.fs" />
+    <Compile Include="HostClockTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="WaitWedgeTests.fs" />
     <Compile Include="RunStatusHandoffTests.fs" />

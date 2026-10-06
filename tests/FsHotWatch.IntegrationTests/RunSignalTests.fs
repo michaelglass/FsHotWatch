@@ -133,6 +133,17 @@ let ``SIGHUP during a beforeRun hook reaps the hook and exits 129`` () =
 
             let verdict = File.ReadAllText(Path.Combine(root, ".fshw", "verdict.json"))
             Assert.Contains("the run was signalled before the check could finish", verdict)
+
+            // The signal stopped the hook; the hook did not fail, and the record says so.
+            Assert.DoesNotContain("beforeRun hook failed", output)
+            use record = System.Text.Json.JsonDocument.Parse verdict
+            Assert.Equal(129, record.RootElement.GetProperty("exitCode").GetInt32())
+
+            let hookOutcomes =
+                [ for h in record.RootElement.GetProperty("hooks").EnumerateArray() ->
+                      h.GetProperty("outcome").GetString() ]
+
+            Assert.Equal<string list>([ "signalled" ], hookOutcomes)
         finally
             if not cli.HasExited then
                 cli.Kill true
