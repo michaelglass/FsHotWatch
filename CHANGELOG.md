@@ -94,6 +94,18 @@ The daemon now kills every process tree its process registry owns, logs
 lock) and exits with 128 + the signal. An unwind that takes longer than 30 seconds is cut
 short with the same exit code.
 
+### core: a DLL restored with its old last-write time is hashed again
+
+- **fix: the check cache no longer serves a result recorded against a referenced DLL
+  that was since replaced by different bytes of the same length with the old last-write
+  time put back** (`rsync -a`, `tar -x`, `cp -p`, `touch -r`). A running daemon
+  remembered each file's hash by last-write time and length, both of which such a
+  restore keeps, so it could replay a stale check: a possible false green. The hash is
+  now remembered by the file's id on its volume and its status-change time, which every
+  write, time change and rename moves; a file changed less than two seconds before it
+  was read is not remembered at all, since a filesystem's change time is only as fine as
+  its granularity.
+
 ### cli: a run signalled in its `beforeRun` hook is recorded as signalled, not as a hook failure
 
 - **fix: `.fshw/verdict.json` for a run signalled while its `beforeRun` hook runs records

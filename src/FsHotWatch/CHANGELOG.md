@@ -15,6 +15,13 @@
   body, a position or a path. Symbols from outside the repository contribute their name and
   their assembly's qualified name. It returns `None` when FCS cannot describe them.
   `CacheInputs.usedShapes` returns the text it hashes.
+- fix: `CheckCache.FileContentHasher` remembers a hash by `FileStamp.Stamp` (the file's
+  id on its volume and its status-change time) in place of (last-write time, length), so
+  a same-length replacement with its last-write time restored is hashed again. A file
+  changed within `FileContentHasher.RacyWindow` (2 s) of the read is not remembered.
+  `FileContentHasher` takes an optional clock (`unit -> DateTime`).
+- feat: `FileStamp`: a file's id and status-change time, from `getattrlist(2)` on macOS
+  and `statx(2)` on Linux (`read`, `ValueNone` elsewhere or where the call fails).
 
 ## 0.10.0-alpha.70 - 2026-10-08
 

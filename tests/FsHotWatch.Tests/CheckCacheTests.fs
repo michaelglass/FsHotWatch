@@ -3,6 +3,7 @@ module FsHotWatch.Tests.CheckCacheTests
 open System
 open System.IO
 open Xunit
+open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.CheckCache
 open FsHotWatch.InMemoryCheckCache
@@ -115,6 +116,84 @@ let ``TimestampCacheKeyProvider returns different hash after file modification``
         Assert.NotEqual<string option>(hash1, hash2)
     finally
         File.Delete(tempFile)
+
+/// A hasher whose clock reads every file as older than the racy window, so it remembers
+/// every hash it computes: the memo is what these tests exercise.
+let private rememberingHasher () =
+    FileContentHasher(fun () -> DateTime.UtcNow + FileContentHasher.RacyWindow + TimeSpan.FromHours 1.0)
+
+/// Replaces `path` with `content` (the same length as before) through `replace`, then
+/// puts back the last-write time it had: what a restore of an older DLL does.
+let private restoreSameLengthPreservingMtime (replace: string -> string -> unit) (path: string) (content: string) =
+    // Past the change-time granularity (a kernel tick on Linux), so the replacement's
+    // status change is a different time from the original's; the racy window covers
+    // this outside the tests.
+    Threading.Thread.Sleep 50
+    let mtime = File.GetLastWriteTimeUtc path
+    let length = FileInfo(path).Length
+    replace path content
+    File.SetLastWriteTimeUtc(path, mtime)
+    test <@ FileInfo(path).Length = length && File.GetLastWriteTimeUtc path = mtime @>
+
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher re-reads a file overwritten in place with its mtime restored`` () =
+    withTempDir "hasher-inplace" (fun dir ->
+        let path = Path.Combine(dir, "Lib.dll")
+        File.WriteAllText(path, "original")
+        let hasher = rememberingHasher ()
+        let before = hasher.Hash path
+
+        restoreSameLengthPreservingMtime (fun p c -> File.WriteAllText(p, c)) path "restored"
+
+        test <@ hasher.Hash path <> before @>
+        test <@ hasher.Hash path = FileContentHasher().Hash path @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher re-reads a file renamed over with its mtime restored`` () =
+    withTempDir "hasher-rename" (fun dir ->
+        let path = Path.Combine(dir, "Lib.dll")
+        File.WriteAllText(path, "original")
+        let hasher = rememberingHasher ()
+        let before = hasher.Hash path
+
+        let renameOver (p: string) (c: string) =
+            let staged = p + ".tmp"
+            File.WriteAllText(staged, c)
+            File.SetLastWriteTimeUtc(staged, File.GetLastWriteTimeUtc p)
+            File.Move(staged, p, true)
+
+        restoreSameLengthPreservingMtime renameOver path "restored"
+
+        test <@ hasher.Hash path <> before @>
+        test <@ hasher.Hash path = FileContentHasher().Hash path @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher serves an untouched file from its memo`` () =
+    withTempDir "hasher-memo" (fun dir ->
+        let path = Path.Combine(dir, "Lib.dll")
+        File.WriteAllText(path, "original")
+        let hasher = rememberingHasher ()
+        let before = hasher.Hash path
+        // Locked against reading, and unchanged in every stamp field (a lock moves no
+        // timestamp): only the memo can answer.
+        use _lock =
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+
+        test <@ hasher.Hash path = before @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileContentHasher does not remember a file changed within the racy window`` () =
+    withTempDir "hasher-racy" (fun dir ->
+        let path = Path.Combine(dir, "Lib.dll")
+        File.WriteAllText(path, "original")
+        let hasher = FileContentHasher(fun () -> DateTime.UtcNow)
+        hasher.Hash path |> ignore
+        // A second write in the same change-time tick would leave the stamp as it was;
+        // with nothing remembered, the next look reads the file again.
+        use _lock =
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+
+        test <@ hasher.Hash path = "unreadable" @>)
 
 [<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns Some lowercase hex hash for readable file`` () =

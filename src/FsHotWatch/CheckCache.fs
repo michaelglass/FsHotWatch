@@ -153,34 +153,50 @@ let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpPr
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     getProjectOptionsHashRelativeTo None options
 
-/// Content hash of a file, re-read only when its (last-write time, length) stamp moves.
+/// Content hash of a file, re-read only when its `FileStamp` moves.
 ///
 /// `upstreamFingerprint` hashes every file a check result depends on, for every
 /// lookup; re-reading them each time would turn one scan into O(files²) reads. The
-/// stamp check is one `stat` per file. A missing or unreadable file hashes to a fixed
-/// marker, which is what FCS sees too (it reports the file as missing).
-type FileContentHasher() =
+/// stamp check is one `stat`-like call per file. A missing or unreadable file hashes to
+/// a fixed marker, which is what FCS sees too (it reports the file as missing).
+///
+/// A hash is remembered only for a file whose last change is more than
+/// `FileContentHasher.RacyWindow` older than the look that read it: a filesystem
+/// records a change time to its own granularity, so a second write that soon after
+/// the first can leave the stamp as it was. Such a file is re-read until it ages past
+/// the window. Where no stamp can be read, every call re-reads the file. `now` is the
+/// clock the window is measured on.
+type FileContentHasher(now: unit -> DateTime) =
     let memo =
-        System.Collections.Concurrent.ConcurrentDictionary<string, struct (int64 * int64 * string)>()
+        System.Collections.Concurrent.ConcurrentDictionary<string, struct (FileStamp.Stamp * string)>()
+
+    let read (path: string) =
+        System.Convert.ToHexString(SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+
+    /// How long after its last change a file's stamp is trusted to move on the next
+    /// change: the coarsest change-time granularity in use (one second on HFS+ and
+    /// ext3), doubled.
+    static member RacyWindow = TimeSpan.FromSeconds 2.0
+
+    new() = FileContentHasher(fun () -> DateTime.UtcNow)
 
     member _.Hash(path: string) : string =
         try
-            let info = FileInfo(path)
+            let lookedAt = now ()
 
-            if not info.Exists then
-                "missing"
-            else
-                let ticks = info.LastWriteTimeUtc.Ticks
-                let length = info.Length
-
+            match FileStamp.read path with
+            | ValueSome stamp ->
                 match memo.TryGetValue path with
-                | true, struct (t, l, hash) when t = ticks && l = length -> hash
+                | true, struct (memoStamp, hash) when memoStamp = stamp -> hash
                 | _ ->
-                    let hash =
-                        System.Convert.ToHexString(SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+                    let hash = read path
 
-                    memo[path] <- struct (ticks, length, hash)
+                    if lookedAt - stamp.ChangedAt > FileContentHasher.RacyWindow then
+                        memo[path] <- struct (stamp, hash)
+
                     hash
+            | ValueNone when not (File.Exists path) -> "missing"
+            | ValueNone -> read path
         with ex ->
             Logging.debug "cache" $"Could not hash %s{path}: %s{ex.Message}"
             "unreadable"
