@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-08
+
 - fix: a query's `where`, `select`, `set` and other custom operations now count as
   SqlHydra reads (select builders) or writes (insert, update and delete builders).
   The compiler names each operation after the builder member it resolves to, which
