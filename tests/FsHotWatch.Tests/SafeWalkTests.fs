@@ -62,6 +62,22 @@ let ``enumerateFiles never descends into symlinked directories`` () =
             finally
                 Directory.Delete(outside, true))
 
+// The same regression, decided by an ASSERTION rather than by the Timeout. One self-loop
+// is a linear chain (`loop/loop/…`), so a walker that follows it reaches `SafeWalk.MaxDepth`
+// and reports a capped subtree instead of hanging. A walker that never enters a
+// symlinked directory sees one directory, one file and nothing skipped.
+[<Fact(Timeout = 15000)>]
+let ``walk never enters a self-loop symlink, so nothing is depth-capped`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-one-loop" (fun tmpDir ->
+            File.WriteAllText(Path.Combine(tmpDir, "real.fs"), "")
+            Directory.CreateSymbolicLink(Path.Combine(tmpDir, "loop"), ".") |> ignore
+
+            let result = SafeWalk.walk Set.empty "*" tmpDir
+
+            test <@ names result.Files = [ "real.fs" ] @>
+            test <@ List.isEmpty result.Skipped @>)
+
 // Best-effort enumeration: an unreadable subtree must not fault the whole walk
 // (a freshness scan that throws on one permission hole would fail the gate for
 // an unrelated reason). Both IO-error arms — GetFiles and GetDirectories on the

@@ -1798,6 +1798,101 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
 
     openAndDrain gate reg
 
+[<Fact(Timeout = 20000)>]
+let ``cache path: a cached Completed replayed while a run is in flight does not stomp its Running`` () =
+    // On a warm scan every `FileChecked` is a task-cache hit. A hit that reported its
+    // cached `Completed` over the `Running` of an in-flight run would let
+    // `WaitForComplete` resolve mid-run and `check` exit 0 before the run finished. The
+    // handler never runs on a hit, so no guard inside a handler can prevent this: the
+    // replay itself has to pass through the funnel that drops a terminal while a run owes
+    // its verdict.
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let hitKey = ContentHash.create "replayed"
+    let pluginNameStr = "replay-stomper"
+
+    cache.Set
+        { Plugin = pluginNameStr; File = None }
+        hitKey
+        { CacheKey = hitKey
+          Errors = []
+          Status = cachedRunDone
+          EmittedEvents = [] }
+
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let gate = Gate()
+    let markers = ref 0
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create pluginNameStr
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "/start" ]) ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | FileChanged(SourceChanged [ "/marker" ]) ->
+                        System.Threading.Interlocked.Increment markers |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey =
+            Some(fun _ event ->
+                match event with
+                | FileChanged(SourceChanged [ "/hit" ]) -> Some hitKey
+                | _ -> None)
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s
+                TaskCache = Some cache }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false))
+        10000
+
+    // The hit, then a marker the handler counts. Events are handled in dispatch order, so
+    // once the marker is counted the replay has been decided: no sleep stands in for it.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/hit" ]))
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/marker" ]))
+    waitUntil (fun () -> markers.Value = 1) 10000
+    test <@ markers.Value = 1 @>
+
+    test
+        <@
+            statuses
+            |> Seq.forall (function
+                | Completed _
+                | Failed _ -> false
+                | Idle
+                | Running _ -> true)
+        @>
+
+    test <@ reg.IsBusy() @>
+
+    openAndDrain gate reg
+
 /// A check result captured on a host that publishes no model. The task cache serves a
 /// `FileChecked` only when its generation is the host's current one, so a caching test
 /// on an unmodelled host dispatches results stamped with none.
