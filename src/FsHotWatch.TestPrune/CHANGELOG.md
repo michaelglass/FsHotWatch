@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- deps: TestPrune.Core 13.3.3 (index schema 21) and TestPrune.Trace 0.7.1, built against
+  it. Each dependency edge stores its owner file as an integer id into `source_files`,
+  which shrinks `test-impact.db`. The first run after upgrading recreates the index and
+  re-indexes the whole repository, and recorded traces are not read until the next full
+  run re-records them.
+
 ## 0.13.0-alpha.68 - 2026-10-08
 
 - **feat!: `TestMode` gains a third case, `RequestedOnly`** (`TestMode.startingWith false`):

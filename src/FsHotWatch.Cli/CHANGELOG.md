@@ -9,6 +9,8 @@
   Before, it handled only Ctrl-C, and SIGTERM or SIGHUP orphaned every session's test
   hosts. `onDaemonSignal` and `installDaemonSignalHandlers` take a
   `unit -> ProcessRegistry.Registry list` in place of one registry.
+- build(deps): bump TestPrune.Core from 13.3.2 to 13.3.3 (index schema 21). `fshw dead-code`
+  expects schema 21 and refuses a schema-20 index until the daemon has re-scanned it.
 
 ## 0.14.0-alpha.94 - 2026-10-08
 
