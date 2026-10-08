@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.94 - 2026-10-08
+
 - feat: a narrowed `test-rerun` (`--filter-class`, `--filter-trait`, `--project`) in a
   workspace with no daemon and no valid full-suite baseline runs instead of refusing with
   exit 2. It starts no daemon: it builds and runs only what was asked in a one-shot
