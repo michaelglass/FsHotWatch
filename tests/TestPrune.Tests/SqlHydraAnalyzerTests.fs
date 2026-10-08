@@ -308,6 +308,54 @@ let private usesType (source: string) (dest: string) : Dependency =
       Kind = UsesType
       Source = "core" }
 
+module ``typed builder classification`` =
+
+    /// Facts for one query symbol that calls `dslSymbol` and the generated `articles` table.
+    let private factsForCall (dslSymbol: string) =
+        let result =
+            AnalysisResult.Create(
+                [ fn "Queries.getArticles" "src/Queries.fs"
+                  dsl dslSymbol
+                  table "Generated.public.articles" ],
+                [ calls "Queries.getArticles" dslSymbol
+                  calls "Queries.getArticles" "Generated.public.articles" ],
+                []
+            )
+
+        InMemoryStore.fromAnalysisResults [ result ]
+        |> SqlHydraExtension.extractFacts "Generated"
+        |> List.map (fun fact -> fact.Table, fact.Access)
+
+    [<Theory>]
+    [<InlineData("SqlHydra.Query.SelectBuilders.SelectBuilder`2.Where")>]
+    [<InlineData("SqlHydra.Query.SelectBuilders.SelectBuilder`2.Select")>]
+    [<InlineData("SqlHydra.Query.SelectBuilders.SelectBuilder`2.LeftJoin'")>]
+    let ``select builder custom operation is a read`` (dslSymbol: string) =
+        test <@ factsForCall dslSymbol = [ "public.articles", Read ] @>
+
+    [<Theory>]
+    [<InlineData("SqlHydra.Query.InsertBuilders.InsertBuilder`3.Entity")>]
+    [<InlineData("SqlHydra.Query.UpdateBuilders.UpdateBuilder`2.Set")>]
+    [<InlineData("SqlHydra.Query.DeleteBuilders.DeleteBuilder`1.Where")>]
+    let ``mutation builder custom operation is a write`` (dslSymbol: string) =
+        test <@ factsForCall dslSymbol = [ "public.articles", Write ] @>
+
+    [<Fact>]
+    let ``terminal helper with a generic-arity suffix is classified`` () =
+        test <@ factsForCall "SqlHydra.Query.InsertBuilders.insertTask``3" = [ "public.articles", Write ] @>
+
+    [<Theory>]
+    [<InlineData("Other.Query.SelectBuilder.Where")>]
+    [<InlineData("FakeSqlHydra.Query.SelectBuilders.SelectBuilder`2.Where")>]
+    [<InlineData("SqlHydra.Query.SelectBuilders.SelectBuilderFake`2.Where")>]
+    [<InlineData("Prefix.SqlHydra.Query.InsertBuilders.InsertBuilder`3.Entity")>]
+    [<InlineData("SqlHydra.Query.UpdateBuilders.FakeUpdateBuilder`2.Set")>]
+    [<InlineData("SqlHydra.Query.DeleteBuilders.DeleteBuilderFake`1.Where")>]
+    [<InlineData("SqlHydra.Query.SelectBuilders.SelectBuilder`2.Where.Nested")>]
+    [<InlineData("Fake.SqlHydra.Query.selectTask")>]
+    let ``similarly named operation outside SqlHydra's builders is ignored`` (dslSymbol: string) =
+        test <@ factsForCall dslSymbol |> List.isEmpty @>
+
 module ``SqlHydra edge scoping`` =
 
     [<Fact>]
@@ -702,3 +750,98 @@ module ``SqlHydra test writers`` =
 
             let affected = db.QueryAffectedTests([ "Commands.createUser" ])
             test <@ affected |> List.map (fun t -> t.TestMethod) = [ "testReadsUsers" ] @>)
+
+/// FCS names a computation-expression custom operation after the builder member it
+/// resolves to (`SelectBuilder`2.Where`), not after the source keyword `where`. These
+/// tests analyze source shaped like SqlHydra.Query's builders, so the classifier is
+/// pinned to the symbol names the compiler actually emits.
+[<Collection("FCS-AstAnalyzer")>]
+module ``real FCS custom-operation shape`` =
+
+    let private builders =
+        """
+namespace SqlHydra.Query
+
+[<AutoOpen>]
+module SelectBuilders =
+    type SelectBuilder<'Selected, 'Mapped>() =
+        member _.For(source: 'T list, body: 'T -> 'T list) = List.collect body source
+        member _.Yield(value: 'T) = [ value ]
+
+        [<CustomOperation("where", MaintainsVariableSpace = true)>]
+        member _.Where(source: 'T list, [<ProjectionParameter>] predicate: 'T -> bool) = List.filter predicate source
+
+        [<CustomOperation("select")>]
+        member _.Select(source: 'T list, [<ProjectionParameter>] projection: 'T -> 'U) = List.map projection source
+
+    type SelectQueryBuilder<'Selected, 'Mapped>() =
+        inherit SelectBuilder<'Selected, 'Mapped>()
+
+    let select<'Selected, 'Mapped> = SelectQueryBuilder<'Selected, 'Mapped>()
+    let subquery<'Selected, 'Mapped> = SelectQueryBuilder<'Selected, 'Mapped>()
+
+namespace Generated
+
+module dbo =
+    type articles = { id: int }
+    let articles: articles list = [ { id = 1 } ]
+
+namespace App
+
+open SqlHydra.Query
+"""
+
+    let private factsFor (body: string) =
+        let result = TestPrune.Tests.AstAnalyzerTests.analyze (builders + body)
+        let store = InMemoryStore.fromAnalysisResults [ result ]
+
+        SqlHydraExtension.extractFacts "Generated" store
+        |> List.map (fun fact -> fact.Symbol, fact.Table, fact.Access)
+
+    /// `subquery` is SqlHydra's alias for `select` inside `whereExists`; a helper that
+    /// only builds one has no terminal helper call, only the typed builder members.
+    let private subqueryHelper =
+        """
+module Queries =
+    let ids () =
+        subquery<Generated.dbo.articles, unit> {
+            for row in Generated.dbo.articles do
+            where (row.id > 0)
+            select row.id
+        }
+"""
+
+    [<Fact>]
+    let ``custom operations resolve to the typed builder member`` () =
+        let result = TestPrune.Tests.AstAnalyzerTests.analyze (builders + subqueryHelper)
+
+        let called =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol = "App.Queries.ids" && d.Kind = Calls)
+            |> List.map (fun d -> d.ToSymbol)
+            |> Set.ofList
+
+        test <@ called.Contains "SqlHydra.Query.SelectBuilders.SelectBuilder`2.Where" @>
+        test <@ called.Contains "SqlHydra.Query.SelectBuilders.SelectBuilder`2.Select" @>
+
+    [<Fact>]
+    let ``select query reads the table it iterates`` () =
+        let facts =
+            factsFor
+                """
+module Queries =
+    let query () =
+        select<Generated.dbo.articles, unit> {
+            for row in Generated.dbo.articles do
+            where (row.id = 1)
+            select row
+        }
+"""
+
+        test <@ facts = [ "App.Queries.query", "dbo.articles", Read ] @>
+
+    [<Fact>]
+    let ``subquery helper reads the table it iterates`` () =
+        let facts = factsFor subqueryHelper
+
+        test <@ facts = [ "App.Queries.ids", "dbo.articles", Read ] @>

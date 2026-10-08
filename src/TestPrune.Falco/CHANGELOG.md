@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a generic test class (`type UsersTests<'T>() =`) is recognised as a
+  declaration, so a route it requests selects it and links its tests to the route's
+  handler instead of falling back to the file's other declarations.
+
+- fix: a route named only in a comment (`// GET "/users/1"`, `(* ... *)`) no longer
+  selects the test class it sits in or links it to the route's handler. String
+  literals still count, including triple-quoted request bodies, but a `{param}`
+  segment no longer matches across a line break, so a route split over two lines of
+  a multiline string attributes nothing.
+
 ## 4.0.0 - 2026-09-25
 
 - fix!: `AnalyzeEdges` returns edges for every route in the route table on every call,

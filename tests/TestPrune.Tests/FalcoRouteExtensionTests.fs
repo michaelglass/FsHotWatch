@@ -1530,6 +1530,75 @@ let private usersTestFile =
 let private ordersTestFile =
     "type OrdersTests() =\n    [<Fact>]\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
 
+module ``route text outside code`` =
+
+    let private route =
+        { UrlPattern = "/intervention/{id}"
+          HttpMethod = "GET"
+          HandlerSourceFile = "src/Handlers/Intervention.fs"
+          HandlerFunction = Some "App.Handlers.Intervention.handle" }
+
+    let private symbols =
+        [ fn "App.Tests.InterventionTests.Exercises" "tests/IntTests/InterventionTests.fs"
+          fn "App.Handlers.Intervention.handle" route.HandlerSourceFile ]
+
+    let private assertAttribution (content: string) (expected: bool) =
+        let testFiles = [ "InterventionTests.fs", content ]
+
+        let expectedClasses, expectedSources =
+            if expected then
+                [ "InterventionTests" ], [ "App.Tests.InterventionTests.Exercises" ]
+            else
+                [], []
+
+        withTestSetup [ route ] testFiles "IntTests" "tests/IntTests" [ route.HandlerSourceFile ] (fun selected ->
+            test <@ (selected |> List.map _.TestClass) = expectedClasses @>)
+
+        withAnalyzeEdges [ route ] symbols testFiles (fun edges ->
+            test <@ (edges |> List.map _.FromSymbol) = expectedSources @>)
+
+    let private testClass (body: string) =
+        "type InterventionTests() =\n"
+        + body
+        + "    [<Fact>]\n    member _.Exercises() = ()\n"
+
+    [<Fact>]
+    let ``route in a line comment attributes nothing`` () =
+        assertAttribution (testClass "    // Example: GET \"/intervention/1\"\n") false
+
+    [<Fact>]
+    let ``route in a nested block comment attributes nothing`` () =
+        assertAttribution
+            (testClass "    (* outer (* GET /intervention/1 *) still comment \"/intervention/2\" *)\n")
+            false
+
+    [<Fact>]
+    let ``route fragment split across lines of a multiline string attributes nothing`` () =
+        assertAttribution (testClass "    let docs = \"\"\"/intervention/\n2\"\"\"\n") false
+
+    [<Fact>]
+    let ``comment markers inside strings do not hide a route`` () =
+        assertAttribution (testClass "    let urls = [ \"(*\"; \"/intervention/1\"; \"//\" ]\n") true
+
+    [<Fact>]
+    let ``quoted route inside a multiline string still attributes`` () =
+        assertAttribution (testClass "    let body = \"\"\"\n{ \"href\": \"/intervention/1\" }\n\"\"\"\n") true
+
+    [<Fact>]
+    let ``a concatenated param url still attributes`` () =
+        assertAttribution (testClass "    let url = \"/intervention/\" + string 1 // see docs\n") true
+
+    [<Fact>]
+    let ``char literals and the multiplication operator do not hide a route`` () =
+        assertAttribution
+            (testClass
+                "    let q = '\"'\n    let e = '\\''\n    let p = List.reduce (*) [ 1 ]\n    let url = \"http://host\" + \"/intervention/1\"\n")
+            true
+
+    [<Fact>]
+    let ``a verbatim string ending in a backslash closes before a comment`` () =
+        assertAttribution (testClass "    let path = @\"C:\\\" // GET \"/intervention/1\"\n") false
+
 module ``AnalyzeEdges function-scoped routes`` =
 
     let private declarationChecker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
@@ -1539,6 +1608,7 @@ module ``AnalyzeEdges function-scoped routes`` =
     [<InlineData("type public UsersTests() =", "UsersTests", true)>]
     [<InlineData("type private UsersTests() =", "UsersTests", true)>]
     [<InlineData("type internal ``Users contract``() =", "Users contract", true)>]
+    [<InlineData("type UsersTests<'T>() =", "UsersTests", true)>]
     [<InlineData("module Company.Product.UsersTests", "UsersTests", false)>]
     [<InlineData("module internal ``Users contract`` =", "Users contract", false)>]
     let ``declaration spellings preserve selection and handler edges`` (declaration: string) name isClass =

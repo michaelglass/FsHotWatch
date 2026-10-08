@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a query's `where`, `select`, `set` and other custom operations now count as
+  SqlHydra reads (select builders) or writes (insert, update and delete builders).
+  The compiler names each operation after the builder member it resolves to, which
+  was not recognised, so a function that builds a query only through those operations,
+  such as a `subquery { ... }` helper, recorded no table access and its tests could be
+  skipped. Terminal helpers carrying a generic-arity suffix are recognised too.
+
 ## 0.2.0 - 2026-09-25
 
 - chore!: `SqlHydraExtension` implements TestPrune.Core's

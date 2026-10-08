@@ -100,7 +100,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         let placeholder = "__PARAM__"
         let withPlaceholders = routeParamPattern.Replace(urlPattern, placeholder)
         let escaped = Regex.Escape(withPlaceholders)
-        let pattern = escaped.Replace(placeholder, "[^/]+")
+        // A path segment never spans a line break: without that bound a fragment such as
+        // `"""/users/` could close its match on the next line of a multiline string.
+        let pattern = escaped.Replace(placeholder, "[^/\r\n]+")
 
         // The opening boundary normally admits a `/` so a doubled separator still reads as a
         // path start. For a pattern with no literal text of its own that `/` pairs with the
@@ -132,7 +134,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
 
     let classPattern =
         Regex(
-            @"^type[ \t]+(?:(?:private|internal|public)[ \t]+)?(?<name>``[^`]+``|[\w']+)\s*\(",
+            @"^type[ \t]+(?:(?:private|internal|public)[ \t]+)?(?<name>``[^`]+``|[\w']+)\s*(?:<[^>\r\n]*>\s*)?\(",
             RegexOptions.Multiline
         )
 
@@ -165,10 +167,47 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // writes naturally, which is what makes leaving it unfixed a bet rather than
     // a judgement.
     //
-    // Handles all three F# string forms, whose escaping rules differ:
-    //   "…\"…"      regular, backslash escapes
-    //   @"…""…"      verbatim, doubled quote escapes, backslash is literal
-    //   """…"""      triple-quoted, no escapes at all
+    /// True when `token` occurs in `text` at index `i`.
+    let startsAt (text: string) (i: int) (token: string) =
+        i + token.Length <= text.Length
+        && System.String.CompareOrdinal(text, i, token, 0, token.Length) = 0
+
+    /// The index just past the string literal opening at `start` in `text`, or `None`
+    /// when no string literal opens there. Handles all three F# string forms, whose
+    /// escaping rules differ:
+    ///   "…\"…"      regular, backslash escapes
+    ///   @"…""…"      verbatim, doubled quote escapes, backslash is literal
+    ///   """…"""      triple-quoted, no escapes at all
+    /// An unterminated literal runs to the end of the text.
+    let stringLiteralEnd (text: string) (start: int) : int option =
+        let at = startsAt text
+
+        let closeQuote verbatim bodyStart =
+            let mutable i = bodyStart
+            let mutable closed = false
+
+            while i < text.Length && not closed do
+                if verbatim && at i "\"\"" then
+                    i <- i + 2
+                elif not verbatim && text[i] = '\\' then
+                    i <- i + 2
+                else
+                    closed <- text[i] = '"'
+                    i <- i + 1
+
+            min i text.Length
+
+        if at start "\"\"\"" then
+            match text.IndexOf("\"\"\"", start + 3, System.StringComparison.Ordinal) with
+            | -1 -> Some text.Length
+            | close -> Some(close + 3)
+        elif at start "@\"" then
+            Some(closeQuote true (start + 2))
+        elif at start "\"" then
+            Some(closeQuote false (start + 1))
+        else
+            None
+
     let attributeBlocks (text: string) : string list =
         let blocks = ResizeArray<string>()
         let mutable i = 0
@@ -180,53 +219,13 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 let mutable closed = false
 
                 while not closed && j < text.Length do
-                    // Triple-quoted: no escapes, ends at the next """.
-                    if
-                        j + 2 < text.Length
-                        && text.[j] = '"'
-                        && text.[j + 1] = '"'
-                        && text.[j + 2] = '"'
-                    then
-                        let close = text.IndexOf("\"\"\"", j + 3)
-                        j <- if close < 0 then text.Length else close + 3
-                    // Verbatim: `""` is an escaped quote, backslash is literal.
-                    elif j + 1 < text.Length && text.[j] = '@' && text.[j + 1] = '"' then
-                        let mutable k = j + 2
-                        let mutable ended = false
-
-                        while not ended && k < text.Length do
-                            if text.[k] = '"' then
-                                if k + 1 < text.Length && text.[k + 1] = '"' then
-                                    k <- k + 2
-                                else
-                                    ended <- true
-                                    k <- k + 1
-                            else
-                                k <- k + 1
-
-                        j <- k
-                    // Regular: backslash escapes the next character.
-                    elif text.[j] = '"' then
-                        let mutable k = j + 1
-                        let mutable ended = false
-
-                        while not ended && k < text.Length do
-                            if text.[k] = '\\' && k + 1 < text.Length then
-                                k <- k + 2
-                            elif text.[k] = '"' then
-                                ended <- true
-                                k <- k + 1
-                            else
-                                k <- k + 1
-
-                        j <- k
-                    elif j + 1 < text.Length && text.[j] = '>' && text.[j + 1] = ']' then
+                    match stringLiteralEnd text j with
+                    | Some literalEnd -> j <- literalEnd
+                    | None when j + 1 < text.Length && text.[j] = '>' && text.[j + 1] = ']' ->
                         blocks.Add(text.Substring(contentStart, j - contentStart))
                         closed <- true
                         j <- j + 2
-                    else
-                        j <- j + 1
-
+                    | None -> j <- j + 1
                 // An unterminated block consumes the rest of the text; resume
                 // after the opener so a stray `[<` cannot swallow the file.
                 i <- if closed then j else contentStart
@@ -389,7 +388,70 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         { TestClasses = perFile |> List.collect fst |> List.distinct
           EdgeParticipants = perFile |> List.collect snd |> List.distinct }
 
-    /// Every integration test source file, with its text.
+    /// `text` with every comment blanked to spaces. Line breaks stay, so offsets and line
+    /// structure are unchanged. String and character literals are kept whole, including
+    /// triple-quoted ones: a test may send a request body that names a route.
+    let withoutComments (text: string) : string =
+        let chars = text.ToCharArray()
+
+        let at = startsAt text
+
+        // Index just past the `*)` closing a block comment whose body starts at `start`.
+        // F# block comments nest.
+        let closeBlockComment start =
+            let mutable i = start
+            let mutable depth = 1
+
+            while i < text.Length && depth > 0 do
+                if at i "(*" then
+                    depth <- depth + 1
+                    i <- i + 2
+                elif at i "*)" then
+                    depth <- depth - 1
+                    i <- i + 2
+                else
+                    i <- i + 1
+
+            min i text.Length
+
+        let blank start finish =
+            for j in start .. finish - 1 do
+                if chars[j] <> '\n' && chars[j] <> '\r' then
+                    chars[j] <- ' '
+
+        let mutable i = 0
+
+        while i < text.Length do
+            match stringLiteralEnd text i with
+            | Some literalEnd -> i <- literalEnd
+            | None ->
+                // Character literals `'"'` and `'\''` must not open or close a string.
+                if text[i] = '\'' && at (i + 1) "\\" && at (i + 3) "'" then
+                    i <- i + 4
+                elif text[i] = '\'' && at (i + 2) "'" then
+                    i <- i + 3
+                // `(*)` is the multiplication operator, not a comment.
+                elif at i "(*)" then
+                    i <- i + 3
+                elif at i "(*" then
+                    let finish = closeBlockComment (i + 2)
+                    blank i finish
+                    i <- finish
+                elif at i "//" then
+                    let finish =
+                        match text.IndexOf('\n', i) with
+                        | -1 -> text.Length
+                        | newline -> newline
+
+                    blank i finish
+                    i <- finish
+                else
+                    i <- i + 1
+
+        System.String chars
+
+    /// Every integration test source file, with its comments blanked (see `withoutComments`):
+    /// a route named only in a comment is documentation, not a request the test makes.
     let readTestFiles (repoRoot: string) : (string * string) list =
         let testDir = Path.Combine(repoRoot, integrationTestDir)
 
@@ -404,7 +466,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             // prunes bin/ and obj/ during traversal rather than filtering them
             // out afterwards, so their subtrees are never entered at all.
             SafeWalk.enumerateFiles "*.fs" testDir
-            |> Seq.map (fun path -> path, File.ReadAllText path)
+            |> Seq.map (fun path -> path, File.ReadAllText path |> withoutComments)
             |> List.ofSeq
 
     /// Find affected test classes using route-based matching.
@@ -482,8 +544,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 let constantSources = constantParseCache.Sources repoFiles
                 let allSymbols = symbolStore.GetAllSymbols()
 
-                // Resolve the symbols belonging to a single declaration by the same
-                // suffix/contains idiom the file-level path uses. Memoised: a declaration
+                // Resolve the symbols belonging to a single declaration: those whose full
+                // name has the declaration as a whole dotted segment. A generic class's
+                // segment carries its arity (`UsersTests`1`). Memoised: a declaration
                 // carrying several routes is resolved once per call, not once per route.
                 let declarationSymbols =
                     System.Collections.Generic.Dictionary<string, SymbolInfo list>()
@@ -492,11 +555,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     match declarationSymbols.TryGetValue declaration with
                     | true, symbols -> symbols
                     | false, _ ->
-                        let symbols =
-                            allSymbols
-                            |> List.filter (fun s ->
-                                s.FullName.Contains($".%s{declaration}.")
-                                || s.FullName.EndsWith($".%s{declaration}"))
+                        let segment = Regex($@"\.%s{Regex.Escape declaration}(?:`\d+)?(?:\.|$)")
+
+                        let symbols = allSymbols |> List.filter (fun s -> segment.IsMatch s.FullName)
 
                         declarationSymbols[declaration] <- symbols
                         symbols

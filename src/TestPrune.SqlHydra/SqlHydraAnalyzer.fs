@@ -1,5 +1,6 @@
 namespace TestPrune.SqlHydra
 
+open System.Text.RegularExpressions
 open TestPrune.AstAnalyzer
 open TestPrune.Extensions
 open TestPrune.Ports
@@ -28,36 +29,39 @@ module SqlHydraAnalyzer =
         | "delete" -> Some Write
         | _ -> None
 
+    // A terminal helper (`selectTask`, `insert`, ...) declared in SqlHydra.Query or one of
+    // its builder modules, optionally carrying a generic-arity suffix (``` ``3 ```).
+    let private terminalHelper =
+        Regex(
+            @"^SqlHydra\.Query\.(?:(?:SelectBuilders|InsertBuilders|UpdateBuilders|DeleteBuilders)\.)?(?<name>\w+)(?:``\d+)?$",
+            RegexOptions.Compiled
+        )
+
+    // FCS names a computation-expression custom operation (`where`, `select`, `set`, ...)
+    // after the builder member it resolves to, e.g. `SelectBuilder`2.Where`, not after the
+    // source keyword. The builder type the member belongs to decides the access, as the
+    // terminal helper of the same name (`select`, `insert`, ...) does.
+    let private builderMember =
+        Regex(
+            @"^SqlHydra\.Query\.(?<kind>Select|Insert|Update|Delete)Builders\.\k<kind>Builder(?:`\d+)?\.[A-Za-z_][\w']*(?:``\d+)?$",
+            RegexOptions.Compiled
+        )
+
     /// Classify only calls owned by SqlHydra's query DSL. Matching a terminal
     /// method name alone would turn an unrelated `Other.updateTask` call into a
     /// database write whenever the same function also mentions a generated table.
     let internal classifyDslSymbol (fullName: string) : AccessKind option =
-        match fullName with
-        | "SqlHydra.Query.selectTask"
-        | "SqlHydra.Query.selectAsync"
-        | "SqlHydra.Query.select"
-        | "SqlHydra.Query.SelectBuilders.selectTask"
-        | "SqlHydra.Query.SelectBuilders.selectAsync"
-        | "SqlHydra.Query.SelectBuilders.select" -> Some Read
-        | "SqlHydra.Query.insertTask"
-        | "SqlHydra.Query.insertAsync"
-        | "SqlHydra.Query.insert"
-        | "SqlHydra.Query.InsertBuilders.insertTask"
-        | "SqlHydra.Query.InsertBuilders.insertAsync"
-        | "SqlHydra.Query.InsertBuilders.insert"
-        | "SqlHydra.Query.updateTask"
-        | "SqlHydra.Query.updateAsync"
-        | "SqlHydra.Query.update"
-        | "SqlHydra.Query.UpdateBuilders.updateTask"
-        | "SqlHydra.Query.UpdateBuilders.updateAsync"
-        | "SqlHydra.Query.UpdateBuilders.update"
-        | "SqlHydra.Query.deleteTask"
-        | "SqlHydra.Query.deleteAsync"
-        | "SqlHydra.Query.delete"
-        | "SqlHydra.Query.DeleteBuilders.deleteTask"
-        | "SqlHydra.Query.DeleteBuilders.deleteAsync"
-        | "SqlHydra.Query.DeleteBuilders.delete" -> Some Write
-        | _ -> None
+        let terminal = terminalHelper.Match fullName
+
+        if terminal.Success then
+            classifyDslContext terminal.Groups["name"].Value
+        else
+            let builder = builderMember.Match fullName
+
+            if builder.Success then
+                classifyDslContext (builder.Groups["kind"].Value.ToLowerInvariant())
+            else
+                None
 
     /// Parse a fully-qualified SqlHydra generated type name to extract schema and table.
     /// SqlHydra generates types like "Generated.public.briefs" or "MyDb.Generated.public.articles".
