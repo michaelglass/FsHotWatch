@@ -1875,6 +1875,106 @@ let internal installRunSignalHandlers
             sigterm.Dispose()
             sighup.Dispose() }
 
+// ----------------------------------------------------------------------------
+// Daemon signals.
+//
+// A foreground daemon is ended by a signal from whatever supervises it: `timeout`
+// and service managers send SIGTERM, a closing terminal SIGHUP, Ctrl-C SIGINT. The
+// trees the daemon spawned (test hosts, their browsers) may run outside its process
+// group, so a signal sent to the group does not reach them. The daemon takes them
+// down itself, through its process registry, before it unwinds, and logs one line
+// naming the signal and what it reaped.
+// ----------------------------------------------------------------------------
+
+/// How long a signalled daemon may take to unwind once its children are reaped,
+/// before it exits without finishing.
+let internal DaemonSignalExitBound = TimeSpan.FromSeconds 30.0
+
+/// The log line a signalled daemon writes once it has reaped its children: the
+/// signal, the pids whose termination was established, and any it could not
+/// establish (the registry names those itself, in a LEAKED line each).
+let internal daemonShutdownLine (signalName: string) (owned: int list) (leaked: int list) : string =
+    let render pids =
+        match pids with
+        | [] -> "none"
+        | _ -> pids |> List.map string |> String.concat ","
+
+    let reaped = owned |> List.filter (fun pid -> not (List.contains pid leaked))
+    let line = $"shutdown: signal=%s{signalName} reaped=%s{render reaped}"
+
+    if List.isEmpty leaked then
+        line
+    else
+        $"%s{line} unconfirmed=%s{render leaked}"
+
+/// What a daemon does on a signal: record it, reap every child its registry owns,
+/// log the shutdown line, and ask the daemon to stop. The reap comes first and does
+/// not wait for the daemon's own unwind, so the children are gone even when that
+/// unwind is slow. `stop` is what an IPC shutdown request does (cancel the run).
+let internal onDaemonSignal
+    (signal: RunSignal)
+    (registry: ProcessRegistry.Registry)
+    (stop: unit -> unit)
+    (signalName: string)
+    (code: int)
+    : unit =
+    signal.Record code
+
+    try
+        let owned = registry.LivePids()
+        let leakedBefore = registry.Leaks |> List.map _.Pid |> Set.ofList
+        registry.KillAll()
+
+        let leaked =
+            registry.Leaks
+            |> List.map _.Pid
+            |> List.filter (fun pid -> not (leakedBefore.Contains pid) && List.contains pid owned)
+
+        FsHotWatch.Logging.warn "daemon" (daemonShutdownLine signalName owned leaked)
+    finally
+        signal.MarkFinalized()
+        stop ()
+
+/// Install SIGINT, SIGTERM and SIGHUP handlers for a daemon: each runs `onDaemonSignal`
+/// and cancels the default terminate, so the daemon unwinds (pidfile, lock, pipe) as an
+/// IPC shutdown would. `exitWith` ends the process if that unwind has not finished
+/// within `DaemonSignalExitBound`; a signal must still end the daemon.
+let internal installDaemonSignalHandlers
+    (signal: RunSignal)
+    (registry: ProcessRegistry.Registry)
+    (stop: unit -> unit)
+    (exitWith: int -> unit)
+    : IDisposable =
+    let register posixSignal signalName code =
+        PosixSignalRegistration.Create(
+            posixSignal,
+            fun (ctx: PosixSignalContext) ->
+                ctx.Cancel <- true
+
+                if signal.Code.IsNone then
+                    onDaemonSignal signal registry stop signalName code
+
+                    Threading.Tasks.Task
+                        .Delay(DaemonSignalExitBound)
+                        .ContinueWith(fun (_: Threading.Tasks.Task) ->
+                            FsHotWatch.Logging.error
+                                "daemon"
+                                $"shutdown: still unwinding %s{string DaemonSignalExitBound} after %s{signalName}; exiting without finishing"
+
+                            exitWith code)
+                    |> ignore
+        )
+
+    let registrations =
+        [ register PosixSignal.SIGINT "SIGINT" 130 // 128 + SIGINT(2)
+          register PosixSignal.SIGTERM "SIGTERM" 143 // 128 + SIGTERM(15)
+          register PosixSignal.SIGHUP "SIGHUP" 129 ] // 128 + SIGHUP(1)
+
+    { new IDisposable with
+        member _.Dispose() =
+            for registration in registrations do
+                registration.Dispose() }
+
 /// The timed-hook plumbing BOTH run brackets share: run ONE hook, measure it against
 /// the invocation's clock, and accumulate the `HookVerdict` + `TimingSpan` pair a
 /// verdict records as its evidence. Locked, because the ordinary path and a signal
@@ -3097,10 +3197,14 @@ let internal executeCommandWatchingConfig
                                 // describes this daemon.
                                 DaemonStartupFailure.clear repoRoot
                                 let cts = new CancellationTokenSource()
+                                let signalled = RunSignal()
 
-                                Console.CancelKeyPress.Add(fun e ->
-                                    e.Cancel <- true
-                                    cts.Cancel())
+                                use _signals =
+                                    installDaemonSignalHandlers
+                                        signalled
+                                        daemon.ProcessRegistry
+                                        (fun () -> cts.Cancel())
+                                        exit
 
                                 // Stop the daemon cleanly if `.fshw.json` is edited. The
                                 // user then runs the daemon again to pick up the new config (or
@@ -3121,7 +3225,9 @@ let internal executeCommandWatchingConfig
                                     ()
 
                                 eprintfn "Daemon stopped."
-                                0
+                                // A signalled daemon exits 128 + the signal, as it did when
+                                // the signal ended it by default.
+                                signalled.Settle 0
                             with
                             | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
                                 // The persistent-refusal case: macOS refused the native FSEvents
