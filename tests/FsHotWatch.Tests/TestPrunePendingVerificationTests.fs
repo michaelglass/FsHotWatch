@@ -317,6 +317,7 @@ let ``incident: a test child that never becomes a live process drives the run to
                 None
                 []
                 None
+                FsHotWatch.TestPrune.TestMode.initial
 
         host.RegisterHandler(handler)
 

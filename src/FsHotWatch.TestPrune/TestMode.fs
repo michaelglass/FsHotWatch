@@ -18,6 +18,12 @@ type TestMode =
     | ImpactSelection
     /// `confirm`: every launch runs every configured project in full.
     | PassThrough
+    /// `test-rerun` with no daemon and no valid full-suite baseline: only the runs a
+    /// command requests launch. What a build leaves owed stays owed and is not launched,
+    /// so a narrowed rerun is not widened into the full suite the missing baseline would
+    /// otherwise demand. A run requested here is filtered, so it never earns the baseline,
+    /// and this mode backs no verdict. Set only at construction, never by `set-scope`.
+    | RequestedOnly
 
 /// Work `PassThrough` removes from the shared lifecycle, because a run that executes
 /// every project in full has no use for it.
@@ -52,7 +58,8 @@ module TestMode =
     /// Every skip, in one place.
     let skipped (mode: TestMode) : Set<PassThroughSkip> =
         match mode with
-        | ImpactSelection -> Set.empty
+        | ImpactSelection
+        | RequestedOnly -> Set.empty
         | PassThrough -> Set.ofList [ FlushSelection; LaunchCoveringCapture; SeedAgeing; RerunIntents ]
 
     /// Whether `mode` removes `work` from the lifecycle.
@@ -70,13 +77,28 @@ module TestMode =
         match launchedUnder with
         | PassThrough when executedAny -> ImpactSelection
         | PassThrough
-        | ImpactSelection -> current
+        | ImpactSelection
+        | RequestedOnly -> current
 
     /// Whether every launch runs every configured project in full, unfiltered.
     let requestsFullSuite (mode: TestMode) =
         match mode with
         | PassThrough -> true
-        | ImpactSelection -> false
+        | ImpactSelection
+        | RequestedOnly -> false
+
+    /// Whether the plugin launches the runs a build or an edit leaves owed. `false` only
+    /// under `RequestedOnly`, where a command's request is the only thing that launches.
+    let launchesOwedRuns (mode: TestMode) =
+        match mode with
+        | ImpactSelection
+        | PassThrough -> true
+        | RequestedOnly -> false
+
+    /// The mode a session starts in: `initial` when it launches the runs a build leaves
+    /// owed (a daemon), `RequestedOnly` when only a command's request launches one.
+    let startingWith (launchesOwedRuns: bool) =
+        if launchesOwedRuns then initial else RequestedOnly
 
     /// Whether a run launched under `mode` records per-test traces. `full-runs` records only
     /// where every project runs in full (confirm/nightly); `every-run` also records the

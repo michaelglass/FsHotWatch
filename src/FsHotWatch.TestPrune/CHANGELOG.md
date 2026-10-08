@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `TestMode.RequestedOnly` (`TestMode.startingWith false`), a session that launches only
+  the runs a command requests. A build or an edit leaves its debt owed and launches
+  nothing, and the plugin reports that no owed run was launched. `set-scope` cannot select
+  it. `TestMode.launchesOwedRuns` asks the question; `createWithTracesIn` takes the
+  starting mode.
+
 ## 0.13.0-alpha.67 - 2026-10-06
 
 - fix: a file deleted together with its `<Compile>` entry loses its key in
