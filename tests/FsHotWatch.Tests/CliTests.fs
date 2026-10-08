@@ -58,10 +58,12 @@ let ``parse check --run-once returns Check RunOnce`` () =
     test <@ CommandTree.parse tree [| "check"; "--run-once" |] = Ok(Check [ RunOnce ]) @>
 
 [<Fact(Timeout = 15000)>]
-let ``only --run-once commands get a OneShot host`` () =
+let ``only --run-once commands and test-rerun get a OneShot host`` () =
     test <@ runModeFor (Check [ RunOnce ]) = Daemon.RunMode.OneShot @>
     test <@ runModeFor (Confirm [ ConfirmFlag.RunOnce ]) = Daemon.RunMode.OneShot @>
     test <@ runModeFor (Format [ RunOnce ]) = Daemon.RunMode.OneShot @>
+    // `test-rerun` builds a host only for an in-process requested-only run.
+    test <@ runModeFor (TestRerun [ FilterClass "*Foo*" ]) = Daemon.RunMode.OneShot @>
     // Every persistent command keeps watching — including the daemon itself.
     test <@ runModeFor Start = Daemon.RunMode.Watching @>
     test <@ runModeFor (Check []) = Daemon.RunMode.Watching @>
@@ -1800,30 +1802,71 @@ let private captureRerunStderr (f: unit -> 'a) : string * 'a =
     finally
         Console.SetError(original)
 
-let private rerunConfig: DaemonConfiguration =
+/// The marker each fake test runner appends its argv to, one line per invocation.
+let private rerunMarker (repoRoot: string) = Path.Combine(repoRoot, "runs.log")
+
+/// Two configured test projects whose runner is a shell script recording what it was
+/// asked to run: an in-process rerun is observed by what it EXECUTED. The build is a
+/// no-op that succeeds, so a host that launched the runs a build leaves owed would run
+/// the unfiltered full suite here too.
+let private rerunConfig (repoRoot: string) : DaemonConfiguration =
+    let runner = Path.Combine(repoRoot, "runner.sh")
+    File.WriteAllText(runner, $"echo \"$*\" >> '%s{rerunMarker repoRoot}'\n")
+
+    let project name =
+        $"""{{"project": "%s{name}", "command": "sh", "args": "%s{runner} %s{name}"}}"""
+
     { fakeConfig with
+        Build =
+            Some
+                [ {| Command = "true"
+                     Args = ""
+                     BuildTemplate = None
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         Tests =
             (parseConfig
-                """{"tests": {"projects": [{"project": "Acme.Tests"}, {"project": "Other.Tests"}]}}"""
+                $"""{{"tests": {{"projects": [%s{project "Acme.Tests"}, %s{project "Other.Tests"}]}}}}"""
                 fakeConfig)
                 .Tests }
 
 /// What a `test-rerun` did: its exit code, its stderr, whether it LAUNCHED a daemon (whose
-/// warm-up is the full-suite run), and the `run-tests` payload it sent, if any.
+/// warm-up is the full-suite run), the `run-tests` payload it sent one, if any, and the
+/// test runs it executed in-process without one.
 type private RerunObservation =
-    { Exit: int
-      Stderr: string
-      Launched: bool
-      RunTestsArgs: string option }
+    {
+        Exit: int
+        Stderr: string
+        Launched: bool
+        RunTestsArgs: string option
+        /// What the command asked of the daemon, in order: `launch`, `run-tests`,
+        /// `wait-for-complete`, `shutdown`.
+        DaemonCalls: string list
+        /// Whether a daemon is still answering when the command returns.
+        DaemonLeftRunning: bool
+        InProcessRuns: string list
+        Baseline: FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline
+        VerdictWritten: bool
+    }
 
 /// Run `test-rerun` against a per-call temp repo holding one project and — unless
 /// `seed` writes one — no full-suite baseline. `daemonRunning` is whether a daemon is
-/// already answering; when it is not, the fake `LaunchDaemon` brings one up.
+/// already answering; when it is not, the fake `LaunchDaemon` brings one up. A host the
+/// command builds in-process is the CLI's own one-shot host, minus the FCS checker.
 let private runRerun (daemonRunning: bool) (seed: string -> unit) (flags: RerunFlag list) : RerunObservation =
     withTempDir "cli-rerun-scope" (fun repoRoot ->
         let projDir = Path.Combine(repoRoot, "src", "Acme")
         Directory.CreateDirectory(projDir) |> ignore
-        File.WriteAllText(Path.Combine(projDir, "Acme.fsproj"), "<Project />")
+
+        File.WriteAllText(
+            Path.Combine(projDir, "Acme.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>"""
+        )
+
         Directory.CreateDirectory(Path.Combine(repoRoot, ".fshw")) |> ignore
         FsHotWatch.DaemonIdentity.recordCurrent repoRoot
 
@@ -1835,38 +1878,76 @@ let private runRerun (daemonRunning: bool) (seed: string -> unit) (flags: RerunF
         seed repoRoot
 
         let mutable launched = false
+        let mutable running = daemonRunning
         let mutable runTestsArgs = None
+        let calls = ResizeArray<string>()
 
         let ipc =
             { fakeIpc () with
-                IsRunning = fun _ -> daemonRunning || launched
-                LaunchDaemon = fun _ _ _ -> launched <- true
+                IsRunning = fun _ -> running
+                LaunchDaemon =
+                    fun _ _ _ ->
+                        calls.Add "launch"
+                        launched <- true
+                        running <- true
+                Shutdown =
+                    fun _ ->
+                        async {
+                            calls.Add "shutdown"
+                            running <- false
+                            return "shutting down"
+                        }
+                WaitForComplete =
+                    fun _ _ ->
+                        async {
+                            calls.Add "wait-for-complete"
+                            return "{}"
+                        }
                 RunCommand =
                     fun _ name args ->
                         async {
                             if name = "run-tests" then
+                                calls.Add "run-tests"
                                 runTestsArgs <- Some args
 
                             return """{"status": "passed"}"""
                         } }
 
+        let createDaemon (root: string) =
+            Daemon.createWith
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                { oneShotDaemonOptions with
+                    RunMode = runModeFor (TestRerun flags) }
+
         let stderr, exit =
             captureRerunStderr (fun () ->
                 executeCommand
                     ""
-                    (fun _ -> Unchecked.defaultof<_>)
+                    createDaemon
                     ipc
                     repoRoot
                     "pipe"
                     (TestRerun flags)
                     defaultGlobalOptions
-                    rerunConfig
+                    (rerunConfig repoRoot)
                     30.0)
+
+        let marker = rerunMarker repoRoot
 
         { Exit = exit
           Stderr = stderr
           Launched = launched
-          RunTestsArgs = runTestsArgs })
+          RunTestsArgs = runTestsArgs
+          DaemonCalls = List.ofSeq calls
+          DaemonLeftRunning = running
+          InProcessRuns =
+            if File.Exists marker then
+                File.ReadAllLines marker |> List.ofArray
+            else
+                []
+          Baseline = FsHotWatch.TestPrune.FullSuiteBaseline.load repoRoot
+          VerdictWritten = File.Exists(Path.Combine(repoRoot, FsHotWatch.Cli.Verdict.RelativePath)) })
 
 let private noBaseline (_: string) = ()
 
@@ -1891,38 +1972,64 @@ let ``RerunFilter.render omits AllowFullSuite (it is not an xUnit filter)`` () =
     test <@ RerunFilter.render [ AllowFullSuite; FilterClass "*Foo*" ] = "--filter-class *Foo*" @>
 
 [<Fact(Timeout = 60000)>]
-let ``test-rerun --filter-class in a fresh workspace with no baseline refuses instead of starting a full-suite daemon``
-    ()
-    =
+let ``test-rerun --filter-class in a fresh workspace with no baseline runs that class in-process`` () =
     let o = runRerun false noBaseline [ FilterClass "*CryptoTests*" ]
 
-    // No daemon was started, so no warm-up full suite ran, and nothing was sent.
+    // No daemon was started, so no warm-up full suite ran, and nothing went over a socket.
     test <@ not o.Launched @>
+    test <@ List.isEmpty o.DaemonCalls @>
     test <@ o.RunTestsArgs = None @>
-    test <@ o.Exit = 2 @>
-    // ...and the user is TOLD why, what they asked for, and how to get either run.
+    // The class ran — in every configured project, as a daemon's rerun would fan it out —
+    // and nothing else did: every execution carried the filter.
+    test <@ o.InProcessRuns.Length = 2 @>
+
+    test
+        <@
+            o.InProcessRuns
+            |> List.forall (fun run -> run.Contains "--filter-class" && run.Contains "CryptoTests")
+        @>
+
+    test <@ o.InProcessRuns |> List.exists (fun run -> run.StartsWith "Acme.Tests") @>
+    test <@ o.InProcessRuns |> List.exists (fun run -> run.StartsWith "Other.Tests") @>
+    // A partial run: it earns no baseline and writes no verdict...
+    test <@ o.Baseline = FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline.Loaded None @>
+    test <@ not o.VerdictWritten @>
+    // ...and the user is TOLD so, with why, what ran, and how to earn the baseline.
     test <@ o.Stderr.Contains("no valid full-suite baseline") @>
     test <@ o.Stderr.Contains(FsHotWatch.TestPrune.FullSuiteBaseline.absentReason) @>
     test <@ o.Stderr.Contains("--filter-class *CryptoTests*") @>
-    test <@ o.Stderr.Contains("FULL SUITE") @>
+    test <@ o.Stderr.Contains("PARTIAL run") @>
     test <@ o.Stderr.Contains("fshw confirm") @>
-    // The suggested command is pasteable: the glob is shell-quoted, so zsh does not expand it.
+    // The daemon route stays one pasteable command away: the glob is shell-quoted.
     test <@ o.Stderr.Contains("fshw test-rerun --filter-class '*CryptoTests*' --allow-full-suite") @>
 
 [<Fact(Timeout = 60000)>]
-let ``test-rerun --project in a fresh workspace with no baseline refuses too`` () =
+let ``test-rerun --project in a fresh workspace with no baseline runs only that project in-process`` () =
     let o = runRerun false noBaseline [ Project "Acme.Tests" ]
 
     test <@ not o.Launched @>
-    test <@ o.Exit = 2 @>
-    test <@ o.Stderr.Contains("Acme.Tests") @>
+    test <@ o.InProcessRuns.Length = 1 @>
+    test <@ o.InProcessRuns.Head.StartsWith "Acme.Tests" @>
+    test <@ o.Baseline = FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline.Loaded None @>
+    test <@ o.Stderr.Contains("PARTIAL run") @>
 
 [<Fact(Timeout = 60000)>]
-let ``test-rerun with a baseline that never ran a configured project refuses and names it`` () =
+let ``test-rerun --filter-trait in a fresh workspace with no baseline runs the trait in-process`` () =
+    let o =
+        runRerun false noBaseline [ FilterTrait "Category=Browser"; Project "Other.Tests" ]
+
+    test <@ not o.Launched @>
+    test <@ o.InProcessRuns.Length = 1 @>
+    test <@ o.InProcessRuns.Head.StartsWith "Other.Tests" @>
+    test <@ o.InProcessRuns.Head.Contains "--filter-trait" @>
+    test <@ not o.VerdictWritten @>
+
+[<Fact(Timeout = 60000)>]
+let ``test-rerun with a baseline that never ran a configured project runs in-process and names it`` () =
     let o = runRerun false (seedBaseline [ "Acme.Tests" ]) [ FilterClass "*Foo*" ]
 
     test <@ not o.Launched @>
-    test <@ o.Exit = 2 @>
+    test <@ o.InProcessRuns.Length = 2 @>
     test <@ o.Stderr.Contains("Other.Tests") @>
 
 [<Fact(Timeout = 60000)>]
@@ -1933,6 +2040,10 @@ let ``test-rerun --allow-full-suite starts the daemon, still sends the filter, a
 
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
+    // The daemon it started does not outlive it: the full-suite warm-up it allowed is
+    // waited for, then the daemon is stopped, so a later edit triggers no run.
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "wait-for-complete"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> a.Contains("*CryptoTests*")) @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> not (a.Contains("allow"))) @>
     test <@ o.Stderr.Contains("FULL SUITE") @>
@@ -1943,6 +2054,9 @@ let ``test-rerun against a running daemon with no baseline runs the filter and s
     let o = runRerun true noBaseline [ FilterClass "*CryptoTests*" ]
 
     test <@ o.Exit = 0 @>
+    // A daemon it found running is someone's warm daemon: never waited on, never stopped.
+    test <@ o.DaemonCalls = [ "run-tests" ] @>
+    test <@ o.DaemonLeftRunning @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> a.Contains("*CryptoTests*")) @>
     test <@ o.Stderr.Contains("no valid full-suite baseline") @>
     test <@ o.Stderr.Contains("no verdict") @>
@@ -1955,6 +2069,17 @@ let ``test-rerun with a valid baseline starts the daemon without a baseline noti
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
     test <@ not (o.Stderr.Contains("baseline")) @>
+    // ...and stops it once the rerun has answered: it does not outlive the command.
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
+
+[<Fact(Timeout = 60000)>]
+let ``unfiltered test-rerun with a valid baseline stops the daemon it started`` () =
+    let o = runRerun false (seedBaseline [ "Acme.Tests"; "Other.Tests" ]) []
+
+    test <@ o.Exit = 0 @>
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
 
 [<Fact(Timeout = 60000)>]
 let ``unfiltered test-rerun with no baseline proceeds — it asked for every project`` () =
@@ -1963,6 +2088,8 @@ let ``unfiltered test-rerun with no baseline proceeds — it asked for every pro
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
     test <@ not (o.Stderr.Contains("baseline")) @>
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format calls formatAll`` () =

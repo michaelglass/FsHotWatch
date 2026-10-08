@@ -38,7 +38,7 @@ type RerunFlag =
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.")>] WaitSec of
         int
     | [<CmdFlag(Description =
-                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun refuses rather than silently buying that run.",
+                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; the rerun waits for that pass, then stops the daemon it started. Without this flag a filtered rerun starts no daemon and runs only its slice in-process, as a partial run.",
                 Name = "allow-full-suite",
                 Short = "F")>] AllowFullSuite
 
@@ -99,16 +99,15 @@ module RerunFilter =
             | _ -> None)
         |> Option.defaultValue DefaultTestRerunWaitSec
 
-/// Whether a NARROWED `test-rerun` may start a daemon in a workspace with no valid
-/// full-suite baseline.
+/// How a NARROWED `test-rerun` runs in a workspace with no valid full-suite baseline.
 ///
 /// A daemon's startup scan ends in an impact run, and with no valid baseline the
 /// test-prune plugin widens that run to EVERY configured test project — correctly, for
 /// the verdict it serves. The rerun's own filter is still honoured, but a user who asked
-/// for one class would also be buying the full suite, with nothing on the command's
-/// output to say so. So the rerun decides BEFORE it starts anything, and never widens
-/// silently: it refuses (naming the reason and the two ways forward), or it proceeds and
-/// says what else is running.
+/// for one class would also be buying the full suite. So with no daemon running, the
+/// rerun starts none: it builds and runs only what was asked in-process, under
+/// `TestMode.startingWith false` (`RequestedOnly`), which launches no owed run. That run is filtered, so it
+/// cannot earn the baseline, and no verdict is written. Every path says so out loud.
 module RerunBaseline =
     open FsHotWatch.TestPrune
 
@@ -117,8 +116,21 @@ module RerunBaseline =
         | Proceed
         /// Run, after printing these lines.
         | ProceedWithNotice of lines: string list
-        /// Do not start or send anything; print these lines.
-        | Refuse of lines: string list
+        /// Start no daemon: print these lines, then run the request in-process in a host
+        /// that launches only requested runs.
+        | RunRequestedOnly of lines: string list
+
+    /// The configuration of the in-process host a `RunRequestedOnly` rerun builds: the
+    /// build, the preprocessors that produce the tree it compiles, and the tests. The
+    /// report plugins (format check, lint, analyzers, coverage, file commands) judge a
+    /// whole tree, and a partial run has none of that to say.
+    let requestedOnlyConfig (config: DaemonConfiguration) : DaemonConfiguration =
+        { config with
+            Format = FormatMode.Off
+            Lint = false
+            Analyzers = None
+            Coverage = None
+            FileCommands = [] }
 
     /// Why the workspace's full-suite baseline cannot vouch for `runnable` — `None` when
     /// it can, or when no test project is configured (then no baseline is owed). The same
@@ -187,16 +199,18 @@ module RerunBaseline =
                 Decision.ProceedWithNotice
                     [ header
                       $"  --allow-full-suite: starting the daemon anyway. Its warm-up test pass runs the FULL SUITE \
-                        (every configured test project); your rerun (%s{asked}) runs alongside it."
+                        (every configured test project); your rerun (%s{asked}) runs alongside it, and the daemon \
+                        is stopped once that pass finishes."
                       noVerdict ]
             else
-                Decision.Refuse
-                    [ $"fshw test-rerun: refusing — no valid full-suite baseline in this workspace: %s{reason}."
-                      $"  You asked for %s{asked}. No daemon is running here, and starting one runs a warm-up \
-                        test pass that, with no baseline, is widened to the FULL SUITE (every configured test \
-                        project) — far more than you asked for. Nothing was started."
-                      "  To earn the baseline (runs the full suite):              fshw confirm"
-                      $"  To start the daemon anyway and run your filter too:     fshw test-rerun %s{render shellQuote pairs} --allow-full-suite" ]
+                Decision.RunRequestedOnly
+                    [ header
+                      $"  No daemon is running here, and starting one would widen its warm-up test pass to the FULL \
+                        SUITE. So none is started: this rerun builds and runs only what you asked for (%s{asked}) \
+                        in-process."
+                      "  It is a PARTIAL run: it cannot earn or satisfy the full-suite baseline, and it writes no \
+                       verdict. To earn the baseline (runs the full suite):  fshw confirm"
+                      $"  To start the daemon instead (its warm-up runs the full suite):  fshw test-rerun %s{render shellQuote pairs} --allow-full-suite" ]
 
 type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
@@ -347,13 +361,15 @@ module EnsureOutcome =
     let ofStart (up: bool) =
         if up then EnsureOutcome.Started else EnsureOutcome.Failed
 
-/// Whether `command` ends the daemon it came by as `outcome`. Only `confirm` does, and
-/// only a daemon it started: left running, that daemon keeps watching the tree and
-/// rebuilds the workspace when files change after the verdict. A daemon that was
-/// already running is someone's warm daemon, and `check` is the warm inner loop.
+/// Whether `command` ends the daemon it came by as `outcome`. The one-shot verbs
+/// `confirm` and `test-rerun` do, and only a daemon they started: left running, that
+/// daemon keeps watching the tree and rebuilds and re-tests the workspace whenever files
+/// change after the command returned. A daemon that was already running is someone's warm
+/// daemon, and `check` is the warm inner loop.
 let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
     match command, outcome with
     | Confirm flags, EnsureOutcome.Started -> not (List.contains ConfirmFlag.KeepDaemon flags)
+    | TestRerun _, EnsureOutcome.Started -> true
     | _ -> false
 
 /// The run mode a command's in-process host is constructed with. `--run-once`
@@ -364,6 +380,9 @@ let internal runModeFor (command: Command) : Daemon.RunMode =
     | Check flags
     | Format flags when isRunOnce flags -> Daemon.RunMode.OneShot
     | Confirm flags when confirmsRunOnce flags -> Daemon.RunMode.OneShot
+    // The only host `test-rerun` builds in-process is a one-shot one (`RunRequestedOnly`);
+    // otherwise it talks to a daemon started by its own `start`.
+    | TestRerun _ -> Daemon.RunMode.OneShot
     | _ -> Daemon.RunMode.Watching
 
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
@@ -1875,6 +1894,106 @@ let internal installRunSignalHandlers
             sigterm.Dispose()
             sighup.Dispose() }
 
+// ----------------------------------------------------------------------------
+// Daemon signals.
+//
+// A foreground daemon is ended by a signal from whatever supervises it: `timeout`
+// and service managers send SIGTERM, a closing terminal SIGHUP, Ctrl-C SIGINT. The
+// trees the daemon spawned (test hosts, their browsers) may run outside its process
+// group, so a signal sent to the group does not reach them. The daemon takes them
+// down itself, through its process registry, before it unwinds, and logs one line
+// naming the signal and what it reaped.
+// ----------------------------------------------------------------------------
+
+/// How long a signalled daemon may take to unwind once its children are reaped,
+/// before it exits without finishing.
+let internal DaemonSignalExitBound = TimeSpan.FromSeconds 30.0
+
+/// The log line a signalled daemon writes once it has reaped its children: the
+/// signal, the pids whose termination was established, and any it could not
+/// establish (the registry names those itself, in a LEAKED line each).
+let internal daemonShutdownLine (signalName: string) (owned: int list) (leaked: int list) : string =
+    let render pids =
+        match pids with
+        | [] -> "none"
+        | _ -> pids |> List.map string |> String.concat ","
+
+    let reaped = owned |> List.filter (fun pid -> not (List.contains pid leaked))
+    let line = $"shutdown: signal=%s{signalName} reaped=%s{render reaped}"
+
+    if List.isEmpty leaked then
+        line
+    else
+        $"%s{line} unconfirmed=%s{render leaked}"
+
+/// What a daemon does on a signal: record it, reap every child its registry owns,
+/// log the shutdown line, and ask the daemon to stop. The reap comes first and does
+/// not wait for the daemon's own unwind, so the children are gone even when that
+/// unwind is slow. `stop` is what an IPC shutdown request does (cancel the run).
+let internal onDaemonSignal
+    (signal: RunSignal)
+    (registry: ProcessRegistry.Registry)
+    (stop: unit -> unit)
+    (signalName: string)
+    (code: int)
+    : unit =
+    signal.Record code
+
+    try
+        let owned = registry.LivePids()
+        let leakedBefore = registry.Leaks |> List.map _.Pid |> Set.ofList
+        registry.KillAll()
+
+        let leaked =
+            registry.Leaks
+            |> List.map _.Pid
+            |> List.filter (fun pid -> not (leakedBefore.Contains pid) && List.contains pid owned)
+
+        FsHotWatch.Logging.warn "daemon" (daemonShutdownLine signalName owned leaked)
+    finally
+        signal.MarkFinalized()
+        stop ()
+
+/// Install SIGINT, SIGTERM and SIGHUP handlers for a daemon: each runs `onDaemonSignal`
+/// and cancels the default terminate, so the daemon unwinds (pidfile, lock, pipe) as an
+/// IPC shutdown would. `exitWith` ends the process if that unwind has not finished
+/// within `DaemonSignalExitBound`; a signal must still end the daemon.
+let internal installDaemonSignalHandlers
+    (signal: RunSignal)
+    (registry: ProcessRegistry.Registry)
+    (stop: unit -> unit)
+    (exitWith: int -> unit)
+    : IDisposable =
+    let register posixSignal signalName code =
+        PosixSignalRegistration.Create(
+            posixSignal,
+            fun (ctx: PosixSignalContext) ->
+                ctx.Cancel <- true
+
+                if signal.Code.IsNone then
+                    onDaemonSignal signal registry stop signalName code
+
+                    Threading.Tasks.Task
+                        .Delay(DaemonSignalExitBound)
+                        .ContinueWith(fun (_: Threading.Tasks.Task) ->
+                            FsHotWatch.Logging.error
+                                "daemon"
+                                $"shutdown: still unwinding %s{string DaemonSignalExitBound} after %s{signalName}; exiting without finishing"
+
+                            exitWith code)
+                    |> ignore
+        )
+
+    let registrations =
+        [ register PosixSignal.SIGINT "SIGINT" 130 // 128 + SIGINT(2)
+          register PosixSignal.SIGTERM "SIGTERM" 143 // 128 + SIGTERM(15)
+          register PosixSignal.SIGHUP "SIGHUP" 129 ] // 128 + SIGHUP(1)
+
+    { new IDisposable with
+        member _.Dispose() =
+            for registration in registrations do
+                registration.Dispose() }
+
 /// The timed-hook plumbing BOTH run brackets share: run ONE hook, measure it against
 /// the invocation's clock, and accumulate the `HookVerdict` + `TimingSpan` pair a
 /// verdict records as its evidence. Locked, because the ordinary path and a signal
@@ -3097,10 +3216,14 @@ let internal executeCommandWatchingConfig
                                 // describes this daemon.
                                 DaemonStartupFailure.clear repoRoot
                                 let cts = new CancellationTokenSource()
+                                let signalled = RunSignal()
 
-                                Console.CancelKeyPress.Add(fun e ->
-                                    e.Cancel <- true
-                                    cts.Cancel())
+                                use _signals =
+                                    installDaemonSignalHandlers
+                                        signalled
+                                        daemon.ProcessRegistry
+                                        (fun () -> cts.Cancel())
+                                        exit
 
                                 // Stop the daemon cleanly if `.fshw.json` is edited. The
                                 // user then runs the daemon again to pick up the new config (or
@@ -3121,7 +3244,9 @@ let internal executeCommandWatchingConfig
                                     ()
 
                                 eprintfn "Daemon stopped."
-                                0
+                                // A signalled daemon exits 128 + the signal, as it did when
+                                // the signal ended it by default.
+                                signalled.Settle 0
                             with
                             | :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
                                 // The persistent-refusal case: macOS refused the native FSEvents
@@ -3247,17 +3372,66 @@ let internal executeCommandWatchingConfig
                            waitSec = waitSec
                            projects = ps |}
 
-            let rerun () =
-                withDaemon (fun () ->
-                    let result =
-                        if UI.isInteractive then
-                            UI.withSpinner "Rerunning tests" (fun () ->
-                                ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
-                        else
-                            eprintfn "  Rerunning tests..."
-                            ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
+            // A daemon this rerun started is stopped before it returns. `--allow-full-suite`
+            // started it for its full-suite warm-up, so that run is waited for first:
+            // stopping mid-run would discard the run the flag paid for.
+            let releaseStarted () =
+                if releasesDaemon command cameBy.Value then
+                    try
+                        if List.contains AllowFullSuite flags then
+                            eprintfn "  Waiting for the daemon's full-suite warm-up before stopping it..."
+                            ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
+                    finally
+                        link.Release()
 
-                    IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+            let rerun () =
+                try
+                    withDaemon (fun () ->
+                        let result =
+                            if UI.isInteractive then
+                                UI.withSpinner "Rerunning tests" (fun () ->
+                                    ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
+                            else
+                                eprintfn "  Rerunning tests..."
+                                ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
+
+                        IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+                finally
+                    releaseStarted ()
+
+            // No daemon: an in-process host whose test-prune launches only the run this
+            // command requests. The scan builds the tree; the request then runs against it.
+            let rerunRequestedOnly () =
+                match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
+                | Some exitCode -> exitCode
+                | None ->
+                    let daemon = createDaemon repoRoot
+
+                    DaemonConfig.registerPluginsIn
+                        (FsHotWatch.TestPrune.TestMode.startingWith false)
+                        daemon
+                        repoRoot
+                        (RerunBaseline.requestedOnlyConfig config)
+
+                    let statuses = RunOnceOutput.runOnceWithProgress daemon
+
+                    // Tests run against what the build left in place, so a failed build
+                    // runs none.
+                    match Map.tryFind "build" statuses with
+                    | Some(FsHotWatch.Events.PluginStatus.Failed(error, _, _)) ->
+                        eprintfn "fshw test-rerun: the build failed, so no tests were run:\n%s" error
+                        1
+                    | _ ->
+                        let result =
+                            daemon.Host.RunCommand(IpcParsing.RunTestsCommand, [| runArgsJson |])
+                            |> Async.RunSynchronously
+
+                        match result with
+                        | Some json ->
+                            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail json
+                        | None ->
+                            eprintfn "fshw test-rerun: no test projects are configured, so there is nothing to run."
+                            1
 
             match baselineDecision with
             | RerunBaseline.Decision.Proceed -> rerun ()
@@ -3266,11 +3440,11 @@ let internal executeCommandWatchingConfig
                     eprintfn "%s" line
 
                 rerun ()
-            | RerunBaseline.Decision.Refuse lines ->
+            | RerunBaseline.Decision.RunRequestedOnly lines ->
                 for line in lines do
                     eprintfn "%s" line
 
-                2
+                rerunRequestedOnly ()
         | Format flags when isRunOnce flags ->
             let formatConfig =
                 { stripConfig config with

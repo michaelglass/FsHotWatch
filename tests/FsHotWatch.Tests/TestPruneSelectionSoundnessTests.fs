@@ -226,6 +226,104 @@ let ``an UNREADABLE outstanding-failures ledger widens to the full suite rather 
         // The recovering full suite passed everything, so the ledger is rewritten clean.
         test <@ List.isEmpty (outstandingProjects tmpDir) @>)
 
+/// A runner that honours a `--filter-class` the way MTP does: a filter naming a class the
+/// project does not hold runs zero tests and exits 8; otherwise, while `failFlag` exists,
+/// every test it ran is a per-test `[<Fact(Timeout = …)>]` cancellation, printed in MTP's
+/// own `failed (canceled) <name> (<duration>)` wording.
+let private filteringRunner (tmpDir: string) (project: string) (testClass: string) (testMethod: string) =
+    let runs = Path.Combine(tmpDir, $"%s{project}-runs")
+    let failFlag = Path.Combine(tmpDir, $"%s{project}-fail")
+
+    let script =
+        $"echo run >> %s{runs}; "
+        + $"if [ $# -gt 0 ] && ! ( [ $# -eq 2 ] && [ x$2 = x%s{testClass} ] ); then echo 'Zero tests ran'; exit 8; fi; "
+        + $"if [ -f %s{failFlag} ]; then echo 'failed (canceled) %s{testClass}.%s{testMethod} (60s 8ms)'; exit 1; fi; exit 0"
+
+    { runner tmpDir project $"%s{testClass}.%s{testMethod}" with
+        Args = $"-c \"%s{script}\" sh"
+        FilterTemplate = Some "--filter-class {classes}" }
+
+[<Fact(Timeout = 60000)>]
+let ``a red full suite of per-test cancellations cannot become green through an unrelated filtered run`` () =
+    // The incident's shape: a full suite whose only reds are per-test timeouts in one
+    // project (P2), then an unchanged tree whose impact filter reaches only an unrelated
+    // project (P1). Whatever the filter reaches, the next check must re-run P2's red and
+    // must not report green until that red has run again and passed.
+    withTempDir "canceled-red-baseline" (fun tmpDir ->
+        let dbPath = twoProjectDb tmpDir
+
+        let configs =
+            [ filteringRunner tmpDir "P1" "P1Tests" "fooTest"
+              filteringRunner tmpDir "P2" "P2Tests" "barTest" ]
+
+        setFailing tmpDir "P2" true
+        let host = session tmpDir dbPath configs
+
+        // The red full suite. It earns the baseline (its reds are carried) and files the
+        // cancellation under the class the CTRF and the filter both name.
+        test <@ isFailed (buildAndSettle host) @>
+        test <@ runsOf tmpDir "P1" = 1 && runsOf tmpDir "P2" = 1 @>
+        test <@ (baselineOf tmpDir).IsSome @>
+
+        match OutstandingFailure.load tmpDir with
+        | OutstandingFailure.LoadedFailures.Loaded failures ->
+            test
+                <@
+                    failures |> List.map (fun f -> f.Project, f.Class, f.Method) = [ "P2",
+                                                                                     Some "P2Tests",
+                                                                                     Some "barTest" ]
+                @>
+        | OutstandingFailure.LoadedFailures.Unreadable reason -> failwith $"ledger unreadable: %s{reason}"
+
+        // A restarted daemon over an unchanged P2, with a queued change that reaches P1
+        // alone: the impact filter collapses to the unrelated project, as in the incident.
+        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+        let restarted = session tmpDir dbPath configs
+        let status = buildAndSettle restarted
+
+        // P1 ran for the change; P2 rode along by quarantine, with a filter that matched
+        // its red; the red is still red, so nothing here may read as merge-ready.
+        test <@ runsOf tmpDir "P1" = 2 @>
+        test <@ runsOf tmpDir "P2" = 2 @>
+        test <@ isFailed status @>
+        test <@ outstandingProjects tmpDir = [ "P2" ] @>
+
+        // A filtered pass that leaves no per-test receipt does not prove the exact red
+        // method passed, so it cannot retire the red either.
+        setFailing tmpDir "P2" false
+        test <@ isFailed (buildAndSettle restarted) @>
+        test <@ runsOf tmpDir "P2" = 3 @>
+        test <@ outstandingProjects tmpDir = [ "P2" ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a red filed under a class no test holds stays red when its quarantine filter matches zero tests`` () =
+    // The cancelled-test misparse once filed reds under `(canceled) Ns.Class`. Its
+    // quarantine filter then matches nothing, the runner exits "zero tests", and that
+    // filtered no-match is a skip, not a pass. Whatever the key, the red must stay owed.
+    withTempDir "unmatchable-red" (fun tmpDir ->
+        let dbPath = twoProjectDb tmpDir
+        seedBaseline tmpDir [ "P1"; "P2" ]
+
+        OutstandingFailure.save
+            tmpDir
+            [ { Project = "P2"
+                Class = Some "(canceled) P2Tests"
+                Method = Some "barTest"
+                File = "<tests/P2>"
+                Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "failed (canceled) P2Tests.barTest (60s 8ms)" } ]
+
+        let configs =
+            [ filteringRunner tmpDir "P1" "P1Tests" "fooTest"
+              filteringRunner tmpDir "P2" "P2Tests" "barTest" ]
+
+        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+        let host = session tmpDir dbPath configs
+
+        // P2 was launched under the unmatchable filter and ran zero tests.
+        test <@ isFailed (buildAndSettle host) @>
+        test <@ runsOf tmpDir "P1" = 1 && runsOf tmpDir "P2" = 1 @>
+        test <@ outstandingProjects tmpDir = [ "P2" ] @>)
+
 // ---------------------------------------------------------------------------
 // 2. The full-suite baseline
 // ---------------------------------------------------------------------------

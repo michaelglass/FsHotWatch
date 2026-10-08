@@ -154,3 +154,144 @@ let ``SIGHUP during a beforeRun hook reaps the hook and exits 129`` () =
             |> List.choose id
             |> List.filter alive
             |> List.iter (fun pid -> signal (pid, SIGKILL) |> ignore))
+
+[<Literal>]
+let private SIGTERM = 15
+
+/// A daemon run in the foreground under a supervisor (`timeout`, a service manager) is
+/// ended with SIGTERM. The test host it spawned may sit outside the daemon's process
+/// group, so a group signal does not reach it: the daemon itself must take its spawned
+/// trees down through its process registry, and say so in its log.
+[<Fact(Timeout = 180000)>]
+let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` () =
+    withTempDir "daemon-sigterm" (fun root ->
+        use init = Process.Start(ProcessStartInfo("git", [ "init"; "--quiet"; root ]))
+        Assert.True(init.WaitForExit 30000 && init.ExitCode = 0, "git init must make the fixture a checkout")
+
+        let hostPid = Path.Combine(root, "host.pid")
+        let childPid = Path.Combine(root, "child.pid")
+        let project = Path.Combine(root, "tests", "Probe")
+        Directory.CreateDirectory project |> ignore
+
+        File.WriteAllText(
+            Path.Combine(project, "Probe.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="Probe.fs" /></ItemGroup>
+</Project>
+"""
+        )
+
+        File.WriteAllText(Path.Combine(project, "Probe.fs"), "module Probe\nlet answer = 2\n")
+
+        // fshw splits `args` on whitespace without a shell's quoting, so both fakes
+        // are scripts. The build writes the output fshw verifies after a build; the
+        // test host is two deep, the shell fshw runs and the `sleep` it backgrounds,
+        // and never finishes on its own inside the test's budget.
+        File.WriteAllText(
+            Path.Combine(root, "build.sh"),
+            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net10.0 && touch tests/Probe/bin/Debug/net10.0/Probe.dll\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(root, "host.sh"),
+            "#!/bin/sh\necho $$ > host.pid\nsleep 300 &\necho $! > child.pid\nwait\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(root, ".fshw.json"),
+            """{
+  "build": { "command": "sh", "args": "build.sh" },
+  "format": false,
+  "lint": false,
+  "tests": { "projects": [{ "project": "Probe", "command": "sh", "args": "host.sh" }] }
+}
+"""
+        )
+
+        let start (args: string list) =
+            let info = ProcessStartInfo(dotnetHost ())
+            info.WorkingDirectory <- root
+            info.UseShellExecute <- false
+            info.RedirectStandardOutput <- true
+            info.RedirectStandardError <- true
+            info.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
+            info.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] <- "0"
+
+            for arg in cliAssembly () :: args do
+                info.ArgumentList.Add arg
+
+            Process.Start info
+
+        // The daemon this test owns, in the foreground: its stderr is its log.
+        use daemon = start [ "start" ]
+        let daemonOut = daemon.StandardOutput.ReadToEndAsync()
+        let daemonErr = daemon.StandardError.ReadToEndAsync()
+        let daemonPidFile = Path.Combine(root, ".fshw", "daemon.pid")
+        let mutable client: Process option = None
+
+        try
+            Assert.True(
+                waitUntilTrue (fun () -> daemon.HasExited || readPid daemonPidFile = Some daemon.Id) 60000,
+                "positive control: the daemon must start and record its pid"
+            )
+
+            Assert.False(daemon.HasExited, "positive control: the daemon must still be running")
+
+            // A check makes the daemon run its test host. The client is only the trigger:
+            // it is ended before the signal, so nothing but the daemon owns the host.
+            let checkClient = start [ "check"; "--agent" ]
+            client <- Some checkClient
+
+            Assert.True(
+                waitUntilTrue (fun () -> (readPid hostPid).IsSome && (readPid childPid).IsSome) 120000,
+                "positive control: the daemon must start the fake test host"
+            )
+
+            let host = (readPid hostPid).Value
+            let child = (readPid childPid).Value
+            Assert.True(alive host && alive child, "positive control: the test host tree is alive before the signal")
+
+            checkClient.Kill true
+            checkClient.WaitForExit 10000 |> ignore
+            Assert.True(alive host && alive child, "the test host must outlive the check client that triggered it")
+
+            Assert.Equal(0, signal (daemon.Id, SIGTERM))
+            Assert.True(daemon.WaitForExit 60000, "the daemon must exit after SIGTERM")
+            daemon.WaitForExit()
+
+            let log = daemonOut.Result + "\n" + daemonErr.Result
+
+            let reaped = waitUntilTrue (fun () -> not (alive host) && not (alive child)) 10000
+
+            let states = describePids [ ("test host", host); ("test host child", child) ]
+            Assert.True(reaped, $"the daemon's test host tree must not outlive the daemon (%s{states}):\n%s{log}")
+
+            let shutdownLine =
+                log.Split '\n'
+                |> Array.tryFind (fun line -> line.Contains "shutdown: signal=SIGTERM")
+
+            Assert.True(shutdownLine.IsSome, $"the daemon must log its shutdown and the signal:\n%s{log}")
+            Assert.Contains(string host, shutdownLine.Value)
+
+            Assert.True(
+                (daemon.ExitCode = 143),
+                $"expected exit 143 (128 + SIGTERM), got %d{daemon.ExitCode}:\n%s{log}"
+            )
+        finally
+            client
+            |> Option.iter (fun c ->
+                if not c.HasExited then
+                    c.Kill true
+
+                c.Dispose())
+
+            if not daemon.HasExited then
+                daemon.Kill true
+                daemon.WaitForExit 10000 |> ignore
+
+            // Only the processes this test's own fake host announced.
+            [ readPid childPid; readPid hostPid ]
+            |> List.choose id
+            |> List.filter alive
+            |> List.iter (fun pid -> signal (pid, SIGKILL) |> ignore))

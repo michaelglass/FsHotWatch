@@ -2058,12 +2058,18 @@ let internal buildTestExtensions
         | NamedDispatchExtension ->
             TestPrune.NamedDispatch.NamedDispatchExtension() :> TestPrune.Extensions.ITestPruneExtension)
 
-/// Register plugins on the daemon based on the loaded configuration.
 /// Where TestPrune keeps a worktree's test-impact index.
 let testImpactDbPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
 
-let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
+/// Register plugins on the daemon based on the loaded configuration, with the test-prune
+/// session starting in `testMode`.
+let registerPluginsIn
+    (testMode: FsHotWatch.TestPrune.TestMode)
+    (daemon: Daemon)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    =
     // Configured preprocessors, in config order, BEFORE the built-in formatter: what a
     // generator writes is then formatted by the pinned formatter in the same pass.
     let absoluteUnder (p: string) =
@@ -2354,7 +2360,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> Map.ofList
 
         let handler =
-            createWithTraces
+            createWithTracesIn
+                testMode
                 t.Traces
                 untracedProjects
                 weaveOverrides
@@ -2444,3 +2451,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} %s{source}"
         daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createWith absConfigPath reports)
     | None -> ()
+
+/// Register plugins on the daemon based on the loaded configuration, for a daemon session.
+let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
+    registerPluginsIn FsHotWatch.TestPrune.TestMode.initial daemon repoRoot config

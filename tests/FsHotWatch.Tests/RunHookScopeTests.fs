@@ -312,3 +312,29 @@ let ``a run interrupted before its beforeRun launches refuses the hook and exits
 let ``a confirm fast path interrupted before its beforeRun launches refuses the hook and exits 2`` () =
     refusedAtLaunch (fun config root ->
         withRunHooksUnclaimedUsingSignals signalledOnInstall FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))
+
+[<Fact>]
+let ``the daemon shutdown line names the signal and the reaped pids`` () =
+    test <@ daemonShutdownLine "SIGTERM" [ 11; 12 ] [] = "shutdown: signal=SIGTERM reaped=11,12" @>
+    test <@ daemonShutdownLine "SIGHUP" [] [] = "shutdown: signal=SIGHUP reaped=none" @>
+
+    test <@ daemonShutdownLine "SIGINT" [ 11; 12 ] [ 12 ] = "shutdown: signal=SIGINT reaped=11 unconfirmed=12" @>
+
+/// The handler's contract, without delivering a real signal: the children the daemon's
+/// registry owns are gone before it asks the daemon to stop, and the exit code is the
+/// signal's.
+[<Fact(Timeout = 60000)>]
+let ``a signalled daemon reaps its registry's children before it stops`` () =
+    if not (OperatingSystem.IsWindows()) then
+        let registry = ProcessRegistry.Registry()
+        let info = ProcessStartInfo("sleep", [ "30" ])
+        info.UseShellExecute <- false
+        use child = Process.Start info
+        registry.Track child
+        let signal = RunSignal()
+        let mutable aliveWhenStopped = None
+
+        onDaemonSignal signal registry (fun () -> aliveWhenStopped <- Some(alive child.Id)) "SIGTERM" 143
+
+        test <@ aliveWhenStopped = Some false @>
+        test <@ signal.Settle 0 = 143 @>

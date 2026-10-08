@@ -26,7 +26,7 @@ let private codeOf (line: string) =
 
 /// Naming a mode case, or comparing or matching on a `.Mode`.
 let private modeBranch =
-    Regex(@"\b(PassThrough|ImpactSelection)\b|\.Mode\s*(=|<>)(?!=)|\bmatch\b.*\.Mode\s+with\b")
+    Regex(@"\b(PassThrough|ImpactSelection|RequestedOnly)\b|\.Mode\s*(=|<>)(?!=)|\bmatch\b.*\.Mode\s+with\b")
 
 /// Every line outside the seam that branches on the mode, as `file:line: code`.
 let private strayBranches (root: string) =
@@ -45,7 +45,13 @@ let ``the seam exists and names every mode case`` () =
     // PRESENT, not merely absent: a guard over a renamed or deleted seam would pass by
     // finding nothing to refuse.
     let source = File.ReadAllText(Path.Combine(repoRoot (), seam))
-    test <@ source.Contains "| PassThrough" && source.Contains "| ImpactSelection" @>
+
+    test
+        <@
+            source.Contains "| PassThrough"
+            && source.Contains "| ImpactSelection"
+            && source.Contains "| RequestedOnly"
+        @>
 
 [<Fact>]
 let ``no code outside the seam branches on TestMode`` () =
@@ -64,6 +70,7 @@ let ``no code outside the seam branches on TestMode`` () =
 [<InlineData("        if state.Mode = PassThrough then")>]
 [<InlineData("        match inputs.Mode with")>]
 [<InlineData("        | ImpactSelection -> ()")>]
+[<InlineData("        | RequestedOnly -> ()")>]
 [<InlineData("        && flushedState.Mode <> mode")>]
 let ``the scan recognises a branch on the mode`` (line: string) =
     test <@ modeBranch.IsMatch(codeOf line) @>
@@ -132,3 +139,27 @@ let ``a run launched under impact selection leaves the current mode alone`` () =
     // `set-scope full` arrived while a check's run was in flight: that run does not spend it.
     test <@ afterRun impact true passThrough = passThrough @>
     test <@ afterRun impact false impact = impact @>
+
+// --- RequestedOnly: a session that launches only what a command requests ---
+
+[<Theory>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a session starts in a mode that launches owed runs exactly when asked to`` (launches: bool) =
+    let mode = FsHotWatch.TestPrune.TestMode.startingWith launches
+    test <@ FsHotWatch.TestPrune.TestMode.launchesOwedRuns mode = launches @>
+
+[<Fact>]
+let ``a daemon session starts in check's mode, which launches owed runs`` () =
+    test <@ FsHotWatch.TestPrune.TestMode.startingWith true = FsHotWatch.TestPrune.TestMode.initial @>
+    test <@ FsHotWatch.TestPrune.TestMode.launchesOwedRuns FsHotWatch.TestPrune.PassThrough @>
+
+[<Fact>]
+let ``a requested-only session skips nothing, records no full-run traces, and outlives its runs`` () =
+    let requestedOnly = FsHotWatch.TestPrune.TestMode.startingWith false
+    test <@ FsHotWatch.TestPrune.TestMode.skipped requestedOnly = Set.empty @>
+    test <@ not (FsHotWatch.TestPrune.TestMode.requestsFullSuite requestedOnly) @>
+    test <@ not (FsHotWatch.TestPrune.TestMode.recordsTraces FsHotWatch.TestPrune.RecordFullRuns requestedOnly) @>
+    test <@ FsHotWatch.TestPrune.TestMode.afterRun requestedOnly true requestedOnly = requestedOnly @>
+    // `set-scope` names only `check`'s and `confirm`'s modes: no request reaches this one.
+    test <@ FsHotWatch.TestPrune.TestMode.launchesOwedRuns (FsHotWatch.TestPrune.TestMode.ofScope "requested-only") @>

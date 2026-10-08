@@ -6431,6 +6431,9 @@ let internal createWithQueries
     (dependsOn: string list)
     // `tests.traces`: `None` records nothing and launches every project as configured.
     (traces: TraceWiring option)
+    // The mode the session starts in: `TestMode.initial` for a daemon,
+    // `TestMode.startingWith false` for a host that runs only what a command requests.
+    (initialMode: TestMode)
     =
     /// Which repo-relative paths a build consumed, under the model the host publishes when
     /// asked — so `executeTests` observes it after `beforeRun`, not at launch.
@@ -7434,7 +7437,7 @@ let internal createWithQueries
     // green.
     let initialState =
         { Debt = loadedDebt
-          Mode = TestMode.initial
+          Mode = initialMode
           InFlight = None
           SealedTree = None
           AwaitingDiff = None
@@ -8833,6 +8836,11 @@ let internal createWithQueries
 
     /// Claim the "tests" key for an impact launch from `launchState`. `Some` carries the
     /// state recording what the claimed run will execute; `None` means the key is held.
+    ///
+    /// A session that launches only requested runs (`TestMode.launchesOwedRuns`) claims
+    /// nothing: the debt stays owed, the fanout is kept, and the status says no run was
+    /// launched, so a settle does not wait on a run that will never start. A requested run
+    /// holding the key keeps its own status.
     let launchImpactRun
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
@@ -8842,17 +8850,33 @@ let internal createWithQueries
         =
         let inputs = TestRunInputs.ofState launchState
 
-        match runTestHostExclusive ctx fanout None (runTestsWithImpact ctx configs inputs hasCachedResults fanout) with
-        | Claimed ->
+        if not (TestMode.launchesOwedRuns inputs.Mode) then
+            let detail =
+                "no owed test run launched: this session runs only the tests a command requests"
+
+            Logging.info "test-prune" detail
+
+            if ctx.SlotHolder "tests" = SlotHolder.Free then
+                ctx.ReportStatus(PluginStatus.verifiedNothingNow detail TimeSpan.Zero)
+
             Some
                 { launchState with
                     AwaitingDiff = None
-                    InFlight =
-                        Some
-                            { Scope = launchScopeOf inputs
-                              Mode = inputs.Mode
-                              WatcherReported = Set.empty } }
-        | SlotBusy -> None
+                    PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
+        else
+            match
+                runTestHostExclusive ctx fanout None (runTestsWithImpact ctx configs inputs hasCachedResults fanout)
+            with
+            | Claimed ->
+                Some
+                    { launchState with
+                        AwaitingDiff = None
+                        InFlight =
+                            Some
+                                { Scope = launchScopeOf inputs
+                                  Mode = inputs.Mode
+                                  WatcherReported = Set.empty } }
+            | SlotBusy -> None
 
     /// Whether debt found while the key is held joins the run holding it instead of
     /// queueing another. Only a full-suite run can take it. Under pass-through it takes
@@ -11163,6 +11187,8 @@ let internal createWithQueries
             // A full-suite request earns its evidence from a real run, never a replay. The
             // run's own entry is still written, from its `TestsFinished` window.
             | BuildCompleted _ when TestMode.requestsFullSuite state.Mode -> None
+            // A session that launches no owed run has no build outcome to replay or record.
+            | BuildCompleted _ when not (TestMode.launchesOwedRuns state.Mode) -> None
             // No receipt binds the tree as it is now. The key names the changed symbols
             // and the project files, not the bytes, so an edit that changes neither (a
             // comment) computes the key of the green it follows. A replay would skip the
@@ -11204,6 +11230,7 @@ let internal createWithLaunchDeadline
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)
     (traces: TraceWiring option)
+    (initialMode: TestMode)
     =
     createWithQueries
         ImpactQueries.ofDatabase
@@ -11218,6 +11245,7 @@ let internal createWithLaunchDeadline
         coveragePaths
         dependsOn
         traces
+        initialMode
 
 /// Create a TestPrune handler that honors declared test-scope exclusions and records
 /// per-test traces as `tests.traces` asks.
@@ -11230,8 +11258,10 @@ let internal createWithLaunchDeadline
 /// the refusal is stored in the trace database and logged with its reason. No trace
 /// failure changes a test result or the verdict.
 ///
-/// See `createWithScope` for `resolveExcludedProjects` and the launch policy.
-let createWithTraces
+/// `initialMode` is the mode the session starts in (`TestMode.initial` for a daemon). See
+/// `createWithScope` for `resolveExcludedProjects` and the launch policy.
+let createWithTracesIn
+    (initialMode: TestMode)
     (traces: TraceSettings option)
     (untracedProjects: Set<string>)
     (weaveOverrides: Map<string, TraceWeaveTests>)
@@ -11267,6 +11297,37 @@ let createWithTraces
                OptedOut = untracedProjects
                WeaveOverrides = weaveOverrides
                Decide = TraceRun.decide }))
+        initialMode
+
+/// `createWithTracesIn` for a daemon session, which starts in `TestMode.initial`.
+let createWithTraces
+    (traces: TraceSettings option)
+    (untracedProjects: Set<string>)
+    (weaveOverrides: Map<string, TraceWeaveTests>)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    createWithTracesIn
+        TestMode.initial
+        traces
+        untracedProjects
+        weaveOverrides
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
 
 /// Create a TestPrune handler that honors declared test-scope exclusions.
 ///

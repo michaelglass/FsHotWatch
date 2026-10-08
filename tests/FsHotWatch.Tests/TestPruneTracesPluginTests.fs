@@ -142,6 +142,7 @@ let private runTests (root: string) (configs: TestConfig list) (traces: TraceWir
             None
             []
             traces
+            FsHotWatch.TestPrune.TestMode.initial
     )
 
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -308,6 +309,7 @@ let ``a filtered run that full-runs does not record stays silent and stores noth
                 None
                 []
                 (Some wiring)
+                FsHotWatch.TestPrune.TestMode.initial
         )
 
         // A raw filter: the run is a selection, which full-runs skips by definition.
@@ -452,6 +454,7 @@ let ``a traced run joins against the analysis admitted while it ran, however far
                 None
                 []
                 (Some wiring)
+                FsHotWatch.TestPrune.TestMode.initial
         )
 
         try
