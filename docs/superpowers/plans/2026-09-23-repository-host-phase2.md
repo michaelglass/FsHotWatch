@@ -65,7 +65,7 @@ before the spike that depends on it.
 
 - **In-repo F# project references.**
   - `FSharpReference` is served from the referenced project's in-memory `GetAssemblyData` (`TransparentCompiler.fs:743-773`). That is its typed result, and it is excluded from shared imports (`CompilerImports.fs:2613`).
-  - Sharing it means sharing typed results, which AUTOMATION-927 ruled out.
+  - Sharing it means sharing typed results, which the copy-on-write spike ("927") ruled out.
   - d677's count bound: at most about 13 of each project's roughly 63 imports.
 - **Ranges.** File names are interned in a process-global, append-only table (`src/Compiler/Utilities/range.fs:247-259`). Each worktree's absolute paths get their own indices, so diagnostics carry the session's real paths.
 

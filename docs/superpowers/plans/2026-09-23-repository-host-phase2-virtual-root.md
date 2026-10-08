@@ -12,9 +12,8 @@ here:
 FCS anchors are `path:line` in dotnet/fsharp at `7ad874a23`. AsyncMemoize is read at
 that commit, since the local checkout carries an extra commit on it. fshw pins 43.12.401,
 and every anchor is re-read against the pinned version before the step that relies on it.
-AUTOMATION-927's spike (FsHotWatch workspace `d-cow-spike`, `spikes/cow-fcs/`,
-`5d040456`/`b5988bc8`) measured most of the mechanics below on 43.12.401, and is cited as
-"927".
+An unpublished copy-on-write FCS spike (`spikes/cow-fcs/`, commits `5d040456`/`b5988bc8`)
+measured most of the mechanics below on 43.12.401, and is cited as "927".
 
 ## The target
 
