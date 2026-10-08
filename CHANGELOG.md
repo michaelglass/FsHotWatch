@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: a signalled daemon reaps the processes it spawned and logs its shutdown
+
+A daemon started in the foreground (`fshw start`) and ended by SIGTERM, SIGHUP or SIGINT
+used to leave the test hosts it had spawned running: a host outside the daemon's process
+group was missed by a signal sent to the group, and nothing in the daemon took it down.
+The daemon now kills every process tree its process registry owns, logs
+`shutdown: signal=<NAME> reaped=<pids>`, then unwinds as an IPC stop does (pipe, pidfile,
+lock) and exits with 128 + the signal. An unwind that takes longer than 30 seconds is cut
+short with the same exit code.
+
 ### cli: a run signalled in its `beforeRun` hook is recorded as signalled, not as a hook failure
 
 - **fix: `.fshw/verdict.json` for a run signalled while its `beforeRun` hook runs records

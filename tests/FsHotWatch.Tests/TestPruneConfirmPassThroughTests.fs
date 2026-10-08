@@ -378,6 +378,7 @@ let private runScenario (root: string) (setup: Setup) =
                 (Some coveragePaths)
                 []
                 None
+                FsHotWatch.TestPrune.TestMode.initial
         )
 
         match setup.Scope with

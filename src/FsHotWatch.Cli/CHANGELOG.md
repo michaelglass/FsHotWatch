@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- feat: a narrowed `test-rerun` (`--filter-class`, `--filter-trait`, `--project`) in a
+  workspace with no daemon and no valid full-suite baseline runs instead of refusing with
+  exit 2. It starts no daemon: it builds and runs only what was asked in a one-shot
+  in-process host whose test-prune launches no owed run, so nothing widens to the full
+  suite. The run is partial: it cannot earn or satisfy the full-suite baseline, it writes no
+  verdict, and its output says so. `--allow-full-suite` still starts the daemon.
+- **feat!: `RerunBaseline.Decision.Refuse` is replaced by `RunRequestedOnly`.** New:
+  `DaemonConfig.registerPluginsIn` registers the plugins with the test-prune session
+  starting in a given `TestMode`.
+- fix: `test-rerun` stops a daemon it started before it returns, as `confirm` does. Left
+  running, that daemon kept watching the tree and rebuilt and re-ran tests on every later
+  edit. This covers the routes that still start one: a valid full-suite baseline, an
+  unfiltered rerun, and `--allow-full-suite`, which first waits for the daemon's full-suite
+  warm-up so the run it paid for is not discarded. A daemon that was already running is left
+  running. `releasesDaemon` now releases for `TestRerun` as well as `Confirm`.
+- fix: a daemon ended by SIGTERM, SIGHUP or SIGINT kills the process trees it spawned
+  (test hosts and their children) through its process registry, logs
+  `shutdown: signal=<NAME> reaped=<pids>`, and exits with 128 + the signal. Before, a
+  test host outside the daemon's process group outlived it.
+
 ## 0.14.0-alpha.93 - 2026-10-06
 
 - fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
