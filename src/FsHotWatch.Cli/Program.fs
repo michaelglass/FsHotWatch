@@ -38,7 +38,7 @@ type RerunFlag =
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.")>] WaitSec of
         int
     | [<CmdFlag(Description =
-                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun starts no daemon and runs only its slice in-process, as a partial run.",
+                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; the rerun waits for that pass, then stops the daemon it started. Without this flag a filtered rerun starts no daemon and runs only its slice in-process, as a partial run.",
                 Name = "allow-full-suite",
                 Short = "F")>] AllowFullSuite
 
@@ -199,7 +199,8 @@ module RerunBaseline =
                 Decision.ProceedWithNotice
                     [ header
                       $"  --allow-full-suite: starting the daemon anyway. Its warm-up test pass runs the FULL SUITE \
-                        (every configured test project); your rerun (%s{asked}) runs alongside it."
+                        (every configured test project); your rerun (%s{asked}) runs alongside it, and the daemon \
+                        is stopped once that pass finishes."
                       noVerdict ]
             else
                 Decision.RunRequestedOnly
@@ -360,13 +361,15 @@ module EnsureOutcome =
     let ofStart (up: bool) =
         if up then EnsureOutcome.Started else EnsureOutcome.Failed
 
-/// Whether `command` ends the daemon it came by as `outcome`. Only `confirm` does, and
-/// only a daemon it started: left running, that daemon keeps watching the tree and
-/// rebuilds the workspace when files change after the verdict. A daemon that was
-/// already running is someone's warm daemon, and `check` is the warm inner loop.
+/// Whether `command` ends the daemon it came by as `outcome`. The one-shot verbs
+/// `confirm` and `test-rerun` do, and only a daemon they started: left running, that
+/// daemon keeps watching the tree and rebuilds and re-tests the workspace whenever files
+/// change after the command returned. A daemon that was already running is someone's warm
+/// daemon, and `check` is the warm inner loop.
 let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
     match command, outcome with
     | Confirm flags, EnsureOutcome.Started -> not (List.contains ConfirmFlag.KeepDaemon flags)
+    | TestRerun _, EnsureOutcome.Started -> true
     | _ -> false
 
 /// The run mode a command's in-process host is constructed with. `--run-once`
@@ -3263,17 +3266,32 @@ let internal executeCommandWatchingConfig
                            waitSec = waitSec
                            projects = ps |}
 
-            let rerun () =
-                withDaemon (fun () ->
-                    let result =
-                        if UI.isInteractive then
-                            UI.withSpinner "Rerunning tests" (fun () ->
-                                ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
-                        else
-                            eprintfn "  Rerunning tests..."
-                            ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
+            // A daemon this rerun started is stopped before it returns. `--allow-full-suite`
+            // started it for its full-suite warm-up, so that run is waited for first:
+            // stopping mid-run would discard the run the flag paid for.
+            let releaseStarted () =
+                if releasesDaemon command cameBy.Value then
+                    try
+                        if List.contains AllowFullSuite flags then
+                            eprintfn "  Waiting for the daemon's full-suite warm-up before stopping it..."
+                            ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
+                    finally
+                        link.Release()
 
-                    IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+            let rerun () =
+                try
+                    withDaemon (fun () ->
+                        let result =
+                            if UI.isInteractive then
+                                UI.withSpinner "Rerunning tests" (fun () ->
+                                    ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
+                            else
+                                eprintfn "  Rerunning tests..."
+                                ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
+
+                        IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+                finally
+                    releaseStarted ()
 
             // No daemon: an in-process host whose test-prune launches only the run this
             // command requests. The scan builds the tree; the request then runs against it.

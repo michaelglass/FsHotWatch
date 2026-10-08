@@ -11,6 +11,12 @@
 - feat: `DaemonConfig.registerPluginsIn` registers the plugins with the test-prune session
   starting in a given `TestMode`. `RerunBaseline.Decision.Refuse` is replaced by
   `RunRequestedOnly`.
+- fix: `test-rerun` stops a daemon it started before it returns, as `confirm` does. Left
+  running, that daemon kept watching the tree and rebuilt and re-ran tests on every later
+  edit. This covers the routes that still start one: a valid full-suite baseline, an
+  unfiltered rerun, and `--allow-full-suite`, which first waits for the daemon's full-suite
+  warm-up so the run it paid for is not discarded. A daemon that was already running is left
+  running. `releasesDaemon` now releases for `TestRerun` as well as `Confirm`.
 
 ## 0.14.0-alpha.93 - 2026-10-06
 

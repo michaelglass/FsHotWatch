@@ -1834,13 +1834,20 @@ let private rerunConfig (repoRoot: string) : DaemonConfiguration =
 /// warm-up is the full-suite run), the `run-tests` payload it sent one, if any, and the
 /// test runs it executed in-process without one.
 type private RerunObservation =
-    { Exit: int
-      Stderr: string
-      Launched: bool
-      RunTestsArgs: string option
-      InProcessRuns: string list
-      Baseline: FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline
-      VerdictWritten: bool }
+    {
+        Exit: int
+        Stderr: string
+        Launched: bool
+        RunTestsArgs: string option
+        /// What the command asked of the daemon, in order: `launch`, `run-tests`,
+        /// `wait-for-complete`, `shutdown`.
+        DaemonCalls: string list
+        /// Whether a daemon is still answering when the command returns.
+        DaemonLeftRunning: bool
+        InProcessRuns: string list
+        Baseline: FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline
+        VerdictWritten: bool
+    }
 
 /// Run `test-rerun` against a per-call temp repo holding one project and — unless
 /// `seed` writes one — no full-suite baseline. `daemonRunning` is whether a daemon is
@@ -1871,16 +1878,36 @@ let private runRerun (daemonRunning: bool) (seed: string -> unit) (flags: RerunF
         seed repoRoot
 
         let mutable launched = false
+        let mutable running = daemonRunning
         let mutable runTestsArgs = None
+        let calls = ResizeArray<string>()
 
         let ipc =
             { fakeIpc () with
-                IsRunning = fun _ -> daemonRunning || launched
-                LaunchDaemon = fun _ _ _ -> launched <- true
+                IsRunning = fun _ -> running
+                LaunchDaemon =
+                    fun _ _ _ ->
+                        calls.Add "launch"
+                        launched <- true
+                        running <- true
+                Shutdown =
+                    fun _ ->
+                        async {
+                            calls.Add "shutdown"
+                            running <- false
+                            return "shutting down"
+                        }
+                WaitForComplete =
+                    fun _ _ ->
+                        async {
+                            calls.Add "wait-for-complete"
+                            return "{}"
+                        }
                 RunCommand =
                     fun _ name args ->
                         async {
                             if name = "run-tests" then
+                                calls.Add "run-tests"
                                 runTestsArgs <- Some args
 
                             return """{"status": "passed"}"""
@@ -1912,6 +1939,8 @@ let private runRerun (daemonRunning: bool) (seed: string -> unit) (flags: RerunF
           Stderr = stderr
           Launched = launched
           RunTestsArgs = runTestsArgs
+          DaemonCalls = List.ofSeq calls
+          DaemonLeftRunning = running
           InProcessRuns =
             if File.Exists marker then
                 File.ReadAllLines marker |> List.ofArray
@@ -1948,6 +1977,7 @@ let ``test-rerun --filter-class in a fresh workspace with no baseline runs that 
 
     // No daemon was started, so no warm-up full suite ran, and nothing went over a socket.
     test <@ not o.Launched @>
+    test <@ List.isEmpty o.DaemonCalls @>
     test <@ o.RunTestsArgs = None @>
     // The class ran — in every configured project, as a daemon's rerun would fan it out —
     // and nothing else did: every execution carried the filter.
@@ -2010,6 +2040,10 @@ let ``test-rerun --allow-full-suite starts the daemon, still sends the filter, a
 
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
+    // The daemon it started does not outlive it: the full-suite warm-up it allowed is
+    // waited for, then the daemon is stopped, so a later edit triggers no run.
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "wait-for-complete"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> a.Contains("*CryptoTests*")) @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> not (a.Contains("allow"))) @>
     test <@ o.Stderr.Contains("FULL SUITE") @>
@@ -2020,6 +2054,9 @@ let ``test-rerun against a running daemon with no baseline runs the filter and s
     let o = runRerun true noBaseline [ FilterClass "*CryptoTests*" ]
 
     test <@ o.Exit = 0 @>
+    // A daemon it found running is someone's warm daemon: never waited on, never stopped.
+    test <@ o.DaemonCalls = [ "run-tests" ] @>
+    test <@ o.DaemonLeftRunning @>
     test <@ o.RunTestsArgs |> Option.exists (fun a -> a.Contains("*CryptoTests*")) @>
     test <@ o.Stderr.Contains("no valid full-suite baseline") @>
     test <@ o.Stderr.Contains("no verdict") @>
@@ -2032,6 +2069,17 @@ let ``test-rerun with a valid baseline starts the daemon without a baseline noti
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
     test <@ not (o.Stderr.Contains("baseline")) @>
+    // ...and stops it once the rerun has answered: it does not outlive the command.
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
+
+[<Fact(Timeout = 60000)>]
+let ``unfiltered test-rerun with a valid baseline stops the daemon it started`` () =
+    let o = runRerun false (seedBaseline [ "Acme.Tests"; "Other.Tests" ]) []
+
+    test <@ o.Exit = 0 @>
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
 
 [<Fact(Timeout = 60000)>]
 let ``unfiltered test-rerun with no baseline proceeds — it asked for every project`` () =
@@ -2040,6 +2088,8 @@ let ``unfiltered test-rerun with no baseline proceeds — it asked for every pro
     test <@ o.Launched @>
     test <@ o.Exit = 0 @>
     test <@ not (o.Stderr.Contains("baseline")) @>
+    test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
+    test <@ not o.DaemonLeftRunning @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format calls formatAll`` () =

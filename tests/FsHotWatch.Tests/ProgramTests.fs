@@ -1644,6 +1644,25 @@ let ``check leaves the daemon it started`` () =
     test <@ daemon.Shutdowns = 0 @>
     test <@ daemon.Running @>
 
+/// No test project configured: `test-rerun` takes the daemon route, and still stops what
+/// it started.
+[<Fact(Timeout = 30000)>]
+let ``test-rerun stops the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (TestRerun [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 1 @>
+    test <@ not daemon.Running @>
+
+[<Fact(Timeout = 30000)>]
+let ``test-rerun leaves a daemon it found running`` () =
+    let daemon = FakeDaemon(true)
+    runAgainst daemon (TestRerun [])
+
+    test <@ daemon.Launches = 0 @>
+    test <@ daemon.Shutdowns = 0 @>
+
 [<Fact(Timeout = 30000)>]
 let ``confirm --keep-daemon leaves the daemon it started`` () =
     let daemon = FakeDaemon(false)
@@ -1653,9 +1672,10 @@ let ``confirm --keep-daemon leaves the daemon it started`` () =
     test <@ daemon.Shutdowns = 0 @>
     test <@ daemon.Running @>
 
-/// The whole policy: only `confirm`, only a daemon it started, and not when told to keep it.
+/// The whole policy: only the one-shot verbs `confirm` and `test-rerun`, only a daemon they
+/// started, and not when `confirm` is told to keep it.
 [<Fact>]
-let ``only confirm releases, and only a daemon it started`` () =
+let ``only confirm and test-rerun release, and only a daemon they started`` () =
     let outcomes = [ EnsureOutcome.Reused; EnsureOutcome.Started; EnsureOutcome.Failed ]
 
     let releasing command =
@@ -1666,6 +1686,8 @@ let ``only confirm releases, and only a daemon it started`` () =
     test <@ List.isEmpty (releasing (Confirm [ ConfirmFlag.KeepDaemon ])) @>
     test <@ List.isEmpty (releasing (Command.Check [])) @>
     test <@ List.isEmpty (releasing (Format [])) @>
+    test <@ releasing (TestRerun []) = [ EnsureOutcome.Started ] @>
+    test <@ releasing (TestRerun [ AllowFullSuite ]) = [ EnsureOutcome.Started ] @>
 
 /// A host session this command attached is one it started; one the worktree already had
 /// is reused; a failed attach serves nothing.
