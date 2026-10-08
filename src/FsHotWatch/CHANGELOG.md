@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `RepositoryHost.runObserved` is `run` that hands the caller the host's
+  `SessionRegistry` once it exists, so a signal handler can reach every live session.
+
 ## 0.10.0-alpha.69 - 2026-10-06
 
 - fix: a spawned child's launch deadline and overall timeout count the host's awake time.

@@ -295,3 +295,201 @@ let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` ()
             |> List.choose id
             |> List.filter alive
             |> List.iter (fun pid -> signal (pid, SIGKILL) |> ignore))
+
+/// A repository host serves several worktrees, each session with its own process
+/// registry. A host ended by SIGTERM must reap every session's spawned trees, not only
+/// one, log the shutdown naming them, release its control state, and exit 128 + SIGTERM.
+[<Fact(Timeout = 240000)>]
+let ``SIGTERM to a repository host reaps every session's test host and logs the shutdown`` () =
+    withTempDir "host-sigterm" (fun dir ->
+        let git (cwd: string) (args: string list) =
+            let info = ProcessStartInfo("git", args)
+            info.WorkingDirectory <- cwd
+            info.UseShellExecute <- false
+            info.RedirectStandardOutput <- true
+            info.RedirectStandardError <- true
+            use p = Process.Start info
+            let err = p.StandardError.ReadToEndAsync()
+            p.StandardOutput.ReadToEnd() |> ignore
+
+            let command = String.concat " " args
+
+            Assert.True(p.WaitForExit 30000 && p.ExitCode = 0, $"git %s{command} must succeed: %s{err.Result}")
+
+        let main = Path.Combine(dir, "main")
+        let second = Path.Combine(dir, "second")
+        let stateHome = Path.Combine(dir, "state")
+        Directory.CreateDirectory main |> ignore
+        git main [ "init"; "--quiet" ]
+
+        let project = Path.Combine(main, "tests", "Probe")
+        Directory.CreateDirectory project |> ignore
+
+        File.WriteAllText(
+            Path.Combine(project, "Probe.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="Probe.fs" /></ItemGroup>
+</Project>
+"""
+        )
+
+        File.WriteAllText(Path.Combine(project, "Probe.fs"), "module Probe\nlet answer = 2\n")
+
+        // As in the daemon test: the build writes the output fshw verifies, and the
+        // fake test host is two deep and never finishes inside the test's budget. Each
+        // worktree's host announces its pids in that worktree.
+        File.WriteAllText(
+            Path.Combine(main, "build.sh"),
+            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net10.0 && touch tests/Probe/bin/Debug/net10.0/Probe.dll\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(main, "host.sh"),
+            "#!/bin/sh\necho $$ > host.pid\nsleep 300 &\necho $! > child.pid\nwait\n"
+        )
+
+        File.WriteAllText(Path.Combine(main, ".gitignore"), "*.pid\nbin/\nobj/\n.fshw/\n")
+
+        File.WriteAllText(
+            Path.Combine(main, ".fshw.json"),
+            """{
+  "build": { "command": "sh", "args": "build.sh" },
+  "format": false,
+  "lint": false,
+  "tests": { "projects": [{ "project": "Probe", "command": "sh", "args": "host.sh" }] }
+}
+"""
+        )
+
+        git main [ "add"; "-A" ]
+
+        git
+            main
+            [ "-c"
+              "user.email=t@example.com"
+              "-c"
+              "user.name=t"
+              "commit"
+              "--quiet"
+              "-m"
+              "fixture" ]
+
+        git main [ "worktree"; "add"; "--quiet"; second ]
+
+        let start (cwd: string) (args: string list) =
+            let info = ProcessStartInfo(dotnetHost ())
+            info.WorkingDirectory <- cwd
+            info.UseShellExecute <- false
+            info.RedirectStandardOutput <- true
+            info.RedirectStandardError <- true
+            info.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
+            info.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] <- "0"
+            // This test's own host: its control state lives under the test's directory,
+            // never beside a real host's.
+            info.Environment["FSHW_STATE_HOME"] <- stateHome
+            info.Environment["FSHW_REPOSITORY_HOST"] <- "1"
+
+            for arg in cliAssembly () :: args do
+                info.ArgumentList.Add arg
+
+            Process.Start info
+
+        let hostPidFile () =
+            if Directory.Exists stateHome then
+                Directory.EnumerateFiles(stateHome, "host.pid", SearchOption.AllDirectories)
+                |> Seq.tryHead
+            else
+                None
+
+        // The host this test owns, in the foreground: its stderr is its log.
+        use host = start main [ "host"; main ]
+        let hostOut = host.StandardOutput.ReadToEndAsync()
+        let hostErr = host.StandardError.ReadToEndAsync()
+        let worktrees = [ main; second ]
+        let clients = ResizeArray<Process>()
+
+        let announced name =
+            worktrees |> List.choose (fun w -> readPid (Path.Combine(w, name)))
+
+        try
+            Assert.True(
+                waitUntilTrue
+                    (fun () -> host.HasExited || (hostPidFile () |> Option.bind readPid) = Some host.Id)
+                    60000,
+                "positive control: the host must start and record its pid"
+            )
+
+            Assert.False(host.HasExited, "positive control: the host must still be running")
+            let pidFile = (hostPidFile ()).Value
+
+            // One check per worktree attaches a session to this host, and each session
+            // runs its own test host. The clients are only triggers: they are ended
+            // before the signal, so nothing but the host's sessions owns the test hosts.
+            for worktree in worktrees do
+                clients.Add(start worktree [ "check"; "--agent" ])
+
+            Assert.True(
+                waitUntilTrue
+                    (fun () ->
+                        announced "host.pid" |> List.length = 2
+                        && announced "child.pid" |> List.length = 2)
+                    150000,
+                "positive control: both sessions must start their fake test host"
+            )
+
+            let testHosts = announced "host.pid"
+            let children = announced "child.pid"
+            let all = testHosts @ children
+
+            Assert.True(all |> List.forall alive, "positive control: both test host trees are alive before the signal")
+
+            for client in clients do
+                client.Kill true
+                client.WaitForExit 10000 |> ignore
+
+            Assert.True(all |> List.forall alive, "the test hosts must outlive the check clients that triggered them")
+
+            Assert.Equal(0, signal (host.Id, SIGTERM))
+            Assert.True(host.WaitForExit 60000, "the repository host must exit after SIGTERM")
+            host.WaitForExit()
+
+            let log = hostOut.Result + "\n" + hostErr.Result
+
+            let reaped = waitUntilTrue (fun () -> all |> List.forall (alive >> not)) 10000
+
+            let states =
+                describePids (
+                    (testHosts |> List.map (fun pid -> ("test host", pid)))
+                    @ (children |> List.map (fun pid -> ("test host child", pid)))
+                )
+
+            Assert.True(reaped, $"no session's test host tree may outlive the repository host (%s{states}):\n%s{log}")
+
+            let shutdownLine =
+                log.Split '\n'
+                |> Array.tryFind (fun line -> line.Contains "shutdown: signal=SIGTERM")
+
+            Assert.True(shutdownLine.IsSome, $"the host must log its shutdown and the signal:\n%s{log}")
+
+            for pid in testHosts do
+                Assert.Contains(string pid, shutdownLine.Value)
+
+            Assert.False(File.Exists pidFile, $"the host must remove its pidfile:\n%s{log}")
+
+            Assert.True((host.ExitCode = 143), $"expected exit 143 (128 + SIGTERM), got %d{host.ExitCode}:\n%s{log}")
+        finally
+            for client in clients do
+                if not client.HasExited then
+                    client.Kill true
+
+                client.Dispose()
+
+            if not host.HasExited then
+                host.Kill true
+                host.WaitForExit 10000 |> ignore
+
+            // Only the processes this test's own fake hosts announced.
+            announced "child.pid" @ announced "host.pid"
+            |> List.filter alive
+            |> List.iter (fun pid -> signal (pid, SIGKILL) |> ignore))

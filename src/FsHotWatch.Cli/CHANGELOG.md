@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: `fshw host` ended by SIGTERM, SIGHUP or SIGINT kills the process trees EVERY
+  session spawned (test hosts and their children), through each session's process
+  registry and concurrently, logs one `shutdown: signal=<NAME> reaped=<pids>` line naming
+  them all, removes its pidfile and releases its lock, and exits with 128 + the signal.
+  Before, it handled only Ctrl-C, and SIGTERM or SIGHUP orphaned every session's test
+  hosts. `onDaemonSignal` and `installDaemonSignalHandlers` take a
+  `unit -> ProcessRegistry.Registry list` in place of one registry.
+
 ## 0.14.0-alpha.94 - 2026-10-08
 
 - feat: a narrowed `test-rerun` (`--filter-class`, `--filter-trait`, `--project`) in a

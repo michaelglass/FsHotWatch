@@ -334,7 +334,42 @@ let ``a signalled daemon reaps its registry's children before it stops`` () =
         let signal = RunSignal()
         let mutable aliveWhenStopped = None
 
-        onDaemonSignal signal registry (fun () -> aliveWhenStopped <- Some(alive child.Id)) "SIGTERM" 143
+        onDaemonSignal
+            signal
+            (fun () -> [ registry ])
+            (fun () -> aliveWhenStopped <- Some(alive child.Id))
+            "SIGTERM"
+            143
+
+        test <@ aliveWhenStopped = Some false @>
+        test <@ signal.Settle 0 = 143 @>
+
+/// A repository host has one registry per session: a signal reaps all of them before
+/// the host is asked to stop.
+[<Fact(Timeout = 60000)>]
+let ``a signalled host reaps every session's registry before it stops`` () =
+    if not (OperatingSystem.IsWindows()) then
+        let start () =
+            let registry = ProcessRegistry.Registry()
+            let info = ProcessStartInfo("sleep", [ "30" ])
+            info.UseShellExecute <- false
+            let child = Process.Start info
+            registry.Track child
+            registry, child
+
+        let first, firstChild = start ()
+        let second, secondChild = start ()
+        use _ = firstChild
+        use _ = secondChild
+        let signal = RunSignal()
+        let mutable aliveWhenStopped = None
+
+        onDaemonSignal
+            signal
+            (fun () -> [ first; second ])
+            (fun () -> aliveWhenStopped <- Some(alive firstChild.Id || alive secondChild.Id))
+            "SIGTERM"
+            143
 
         test <@ aliveWhenStopped = Some false @>
         test <@ signal.Settle 0 = 143 @>
