@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.3.3 - 2026-10-08
+
 - perf: each dependency edge names the file that owns it by an integer id into a new
   `source_files` table, instead of repeating the path as TEXT in the edge row, the primary
   key and `idx_deps_by_file`. The redundant `idx_deps_from` is dropped; the primary key

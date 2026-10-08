@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.3.3 - 2026-10-08
+
+- perf(core): store each edge's owner file as an integer id (schema 21)
+
+
 ## 13.3.2 - 2026-10-04
 
 - deps: build tooling
