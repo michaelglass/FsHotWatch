@@ -1608,6 +1608,7 @@ module ``AnalyzeEdges function-scoped routes`` =
     [<InlineData("type public UsersTests() =", "UsersTests", true)>]
     [<InlineData("type private UsersTests() =", "UsersTests", true)>]
     [<InlineData("type internal ``Users contract``() =", "Users contract", true)>]
+    [<InlineData("type UsersTests<'T>() =", "UsersTests", true)>]
     [<InlineData("module Company.Product.UsersTests", "UsersTests", false)>]
     [<InlineData("module internal ``Users contract`` =", "Users contract", false)>]
     let ``declaration spellings preserve selection and handler edges`` (declaration: string) name isClass =

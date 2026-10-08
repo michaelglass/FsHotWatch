@@ -134,7 +134,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
 
     let classPattern =
         Regex(
-            @"^type[ \t]+(?:(?:private|internal|public)[ \t]+)?(?<name>``[^`]+``|[\w']+)\s*\(",
+            @"^type[ \t]+(?:(?:private|internal|public)[ \t]+)?(?<name>``[^`]+``|[\w']+)\s*(?:<[^>\r\n]*>\s*)?\(",
             RegexOptions.Multiline
         )
 
@@ -572,8 +572,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 let constantSources = constantParseCache.Sources repoFiles
                 let allSymbols = symbolStore.GetAllSymbols()
 
-                // Resolve the symbols belonging to a single declaration by the same
-                // suffix/contains idiom the file-level path uses. Memoised: a declaration
+                // Resolve the symbols belonging to a single declaration: those whose full
+                // name has the declaration as a whole dotted segment. A generic class's
+                // segment carries its arity (`UsersTests`1`). Memoised: a declaration
                 // carrying several routes is resolved once per call, not once per route.
                 let declarationSymbols =
                     System.Collections.Generic.Dictionary<string, SymbolInfo list>()
@@ -582,11 +583,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     match declarationSymbols.TryGetValue declaration with
                     | true, symbols -> symbols
                     | false, _ ->
-                        let symbols =
-                            allSymbols
-                            |> List.filter (fun s ->
-                                s.FullName.Contains($".%s{declaration}.")
-                                || s.FullName.EndsWith($".%s{declaration}"))
+                        let segment = Regex($@"\.%s{Regex.Escape declaration}(?:`\d+)?(?:\.|$)")
+
+                        let symbols = allSymbols |> List.filter (fun s -> segment.IsMatch s.FullName)
 
                         declarationSymbols[declaration] <- symbols
                         symbols
