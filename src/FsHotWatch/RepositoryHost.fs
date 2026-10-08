@@ -399,10 +399,11 @@ type HostRun =
     /// Something exists at the repository's virtual root, which must never exist.
     | VirtualRootExists of path: string
 
-/// Take the repository's host lock, serve the endpoint until `cts` is cancelled or no
-/// session has been attached for `idleGrace`, then end every session and release the
-/// control state.
-let run
+/// `run`, handing `observe` the host's session registry once it exists; what `observe`
+/// returns is disposed before the registry ends its sessions. A signal handler reads the
+/// live sessions through it, to reap what every session spawned.
+let runObserved
+    (observe: SessionRegistry -> IDisposable)
     (settings: HostSettings)
     (factory: SessionFactory)
     (idleGrace: TimeSpan)
@@ -429,40 +430,64 @@ let run
             File.WriteAllText(settings.Control.IdentityFile, BinaryIdentity.render settings.Identity.Protocol.Binary)
 
             using (new SessionRegistry(factory)) (fun registry ->
-                let host =
-                    RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound)
+                // Not `use`: its null check is a branch no caller can take.
+                let observed = observe registry
 
-                Logging.info
-                    "host"
-                    $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
+                try
+                    let host =
+                        RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound)
 
-                // Started on this thread, so the endpoint accepts attaches before the host
-                // goes on (see `Daemon.RunWith`).
-                let serving =
-                    Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
+                    Logging.info
+                        "host"
+                        $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
 
-                // Idle exit: no session attached for the whole grace period.
-                let mutable idleSince = DateTime.UtcNow
+                    // Started on this thread, so the endpoint accepts attaches before the host
+                    // goes on (see `Daemon.RunWith`).
+                    let serving =
+                        Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
-                while not cts.IsCancellationRequested do
-                    cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
+                    // Idle exit: no session attached for the whole grace period.
+                    let mutable idleSince = DateTime.UtcNow
 
-                    let busy = not (List.isEmpty registry.Sessions)
+                    while not cts.IsCancellationRequested do
+                        cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
-                    match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
-                    | Some since -> idleSince <- since
-                    | None ->
-                        Logging.info "host" $"no session for %s{string idleGrace}; exiting"
-                        cts.Cancel()
+                        let busy = not (List.isEmpty registry.Sessions)
 
-                serving.Wait(
-                    Ipc.IpcServer.ConnectionDrainBound
-                    + Ipc.IpcServer.ReleaseBound
-                    + TimeSpan.FromSeconds 1.0
-                )
-                |> ignore
+                        match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
+                        | Some since -> idleSince <- since
+                        | None ->
+                            Logging.info "host" $"no session for %s{string idleGrace}; exiting"
+                            cts.Cancel()
 
-                File.Delete settings.Control.PidFile
-                HostRun.Stopped)
+                    serving.Wait(
+                        Ipc.IpcServer.ConnectionDrainBound
+                        + Ipc.IpcServer.ReleaseBound
+                        + TimeSpan.FromSeconds 1.0
+                    )
+                    |> ignore
+
+                    File.Delete settings.Control.PidFile
+                    HostRun.Stopped
+                finally
+                    observed.Dispose())
         finally
             lock.Dispose()
+
+/// Take the repository's host lock, serve the endpoint until `cts` is cancelled or no
+/// session has been attached for `idleGrace`, then end every session and release the
+/// control state.
+let run
+    (settings: HostSettings)
+    (factory: SessionFactory)
+    (idleGrace: TimeSpan)
+    (cts: CancellationTokenSource)
+    : HostRun =
+    runObserved
+        (fun _ ->
+            { new IDisposable with
+                member _.Dispose() = () })
+        settings
+        factory
+        idleGrace
+        cts

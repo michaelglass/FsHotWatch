@@ -1926,13 +1926,17 @@ let internal daemonShutdownLine (signalName: string) (owned: int list) (leaked: 
     else
         $"%s{line} unconfirmed=%s{render leaked}"
 
-/// What a daemon does on a signal: record it, reap every child its registry owns,
-/// log the shutdown line, and ask the daemon to stop. The reap comes first and does
-/// not wait for the daemon's own unwind, so the children are gone even when that
-/// unwind is slow. `stop` is what an IPC shutdown request does (cancel the run).
+/// What a daemon does on a signal: record it, reap every child its registries own, log
+/// the shutdown line, and ask the daemon to stop. The reap comes first and does not wait
+/// for the daemon's own unwind, so the children are gone even when that unwind is slow.
+/// `stop` is what an IPC shutdown request does (cancel the run).
+///
+/// `registries` is read when the signal arrives: a per-worktree daemon has one, a
+/// repository host one per live session. They are reaped concurrently, so the bounded
+/// wait is paid once, not once per session, and the one line names every pid.
 let internal onDaemonSignal
     (signal: RunSignal)
-    (registry: ProcessRegistry.Registry)
+    (registries: unit -> ProcessRegistry.Registry list)
     (stop: unit -> unit)
     (signalName: string)
     (code: int)
@@ -1940,13 +1944,21 @@ let internal onDaemonSignal
     signal.Record code
 
     try
-        let owned = registry.LivePids()
-        let leakedBefore = registry.Leaks |> List.map _.Pid |> Set.ofList
-        registry.KillAll()
+        let registries = registries ()
+        let owned = registries |> List.collect _.LivePids()
+
+        let leakedPids () =
+            registries |> List.collect (fun r -> r.Leaks |> List.map _.Pid)
+
+        let leakedBefore = leakedPids () |> Set.ofList
+
+        registries
+        |> List.map (fun r -> Threading.Tasks.Task.Run(fun () -> r.KillAll()))
+        |> Array.ofList
+        |> Threading.Tasks.Task.WaitAll
 
         let leaked =
-            registry.Leaks
-            |> List.map _.Pid
+            leakedPids ()
             |> List.filter (fun pid -> not (leakedBefore.Contains pid) && List.contains pid owned)
 
         FsHotWatch.Logging.warn "daemon" (daemonShutdownLine signalName owned leaked)
@@ -1960,7 +1972,7 @@ let internal onDaemonSignal
 /// within `DaemonSignalExitBound`; a signal must still end the daemon.
 let internal installDaemonSignalHandlers
     (signal: RunSignal)
-    (registry: ProcessRegistry.Registry)
+    (registries: unit -> ProcessRegistry.Registry list)
     (stop: unit -> unit)
     (exitWith: int -> unit)
     : IDisposable =
@@ -1971,7 +1983,7 @@ let internal installDaemonSignalHandlers
                 ctx.Cancel <- true
 
                 if signal.Code.IsNone then
-                    onDaemonSignal signal registry stop signalName code
+                    onDaemonSignal signal registries stop signalName code
 
                     Threading.Tasks.Task
                         .Delay(DaemonSignalExitBound)
@@ -2807,17 +2819,46 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         Directory.SetCurrentDirectory settings.Control.Directory
         use cts = new CancellationTokenSource()
 
-        Console.CancelKeyPress.Add(fun e ->
-            e.Cancel <- true
-            cts.Cancel())
+        // The live sessions, while the host has them. A signal reaps every session's
+        // spawned trees (a test host may sit outside the host's process group, where the
+        // signal does not reach it), then stops the host, which ends the sessions and
+        // releases its pidfile and lock.
+        let sessions: FsHotWatch.SessionRegistry.SessionRegistry option ref = ref None
 
-        match FsHotWatch.RepositoryHost.run settings factory FsHotWatch.RepositoryHost.DefaultIdleGrace cts with
+        let observe registry =
+            Volatile.Write(&sessions.contents, Some registry)
+
+            { new IDisposable with
+                member _.Dispose() =
+                    Volatile.Write(&sessions.contents, None) }
+
+        let registries () =
+            match Volatile.Read(&sessions.contents) with
+            | Some registry -> registry.Sessions |> List.map _.Daemon.ProcessRegistry
+            | None -> []
+
+        let signalled = RunSignal()
+
+        use _signals =
+            installDaemonSignalHandlers signalled registries (fun () -> cts.Cancel()) exit
+
+        let run =
+            FsHotWatch.RepositoryHost.runObserved
+                observe
+                settings
+                factory
+                FsHotWatch.RepositoryHost.DefaultIdleGrace
+                cts
+
+        match run with
         | FsHotWatch.RepositoryHost.HostRun.AlreadyRunning pid ->
             let who = pid |> Option.map (sprintf " (pid %d)") |> Option.defaultValue ""
 
             eprintfn $"repository host already running%s{who}"
             0
-        | FsHotWatch.RepositoryHost.HostRun.Stopped -> 0
+        // A signalled host exits 128 + the signal, as it did when the signal ended it
+        // by default.
+        | FsHotWatch.RepositoryHost.HostRun.Stopped -> signalled.Settle 0
         | FsHotWatch.RepositoryHost.HostRun.VirtualRootExists path ->
             eprintfn
                 $"fshw host: %s{path} exists. Every worktree is checked under that path, and it must never exist: FCS would read project outputs from it. Remove it and start again."
@@ -3221,7 +3262,7 @@ let internal executeCommandWatchingConfig
                                 use _signals =
                                     installDaemonSignalHandlers
                                         signalled
-                                        daemon.ProcessRegistry
+                                        (fun () -> [ daemon.ProcessRegistry ])
                                         (fun () -> cts.Cancel())
                                         exit
 
