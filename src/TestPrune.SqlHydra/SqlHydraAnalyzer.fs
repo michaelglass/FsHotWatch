@@ -39,8 +39,8 @@ module SqlHydraAnalyzer =
 
     // FCS names a computation-expression custom operation (`where`, `select`, `set`, ...)
     // after the builder member it resolves to, e.g. `SelectBuilder`2.Where`, not after the
-    // source keyword. Such a member belongs to exactly one builder type, which decides
-    // the access.
+    // source keyword. The builder type the member belongs to decides the access, as the
+    // terminal helper of the same name (`select`, `insert`, ...) does.
     let private builderMember =
         Regex(
             @"^SqlHydra\.Query\.(?<kind>Select|Insert|Update|Delete)Builders\.\k<kind>Builder(?:`\d+)?\.[A-Za-z_][\w']*(?:``\d+)?$",
@@ -58,9 +58,10 @@ module SqlHydraAnalyzer =
         else
             let builder = builderMember.Match fullName
 
-            if not builder.Success then None
-            elif builder.Groups["kind"].Value = "Select" then Some Read
-            else Some Write
+            if builder.Success then
+                classifyDslContext (builder.Groups["kind"].Value.ToLowerInvariant())
+            else
+                None
 
     /// Parse a fully-qualified SqlHydra generated type name to extract schema and table.
     /// SqlHydra generates types like "Generated.public.briefs" or "MyDb.Generated.public.articles".

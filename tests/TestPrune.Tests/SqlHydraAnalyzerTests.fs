@@ -798,12 +798,10 @@ open SqlHydra.Query
         SqlHydraExtension.extractFacts "Generated" store
         |> List.map (fun fact -> fact.Symbol, fact.Table, fact.Access)
 
-    [<Fact>]
-    let ``custom operations resolve to the typed builder member`` () =
-        let result =
-            TestPrune.Tests.AstAnalyzerTests.analyze (
-                builders
-                + """
+    /// `subquery` is SqlHydra's alias for `select` inside `whereExists`; a helper that
+    /// only builds one has no terminal helper call, only the typed builder members.
+    let private subqueryHelper =
+        """
 module Queries =
     let ids () =
         subquery<Generated.dbo.articles, unit> {
@@ -812,7 +810,10 @@ module Queries =
             select row.id
         }
 """
-            )
+
+    [<Fact>]
+    let ``custom operations resolve to the typed builder member`` () =
+        let result = TestPrune.Tests.AstAnalyzerTests.analyze (builders + subqueryHelper)
 
         let called =
             result.Dependencies
@@ -839,20 +840,8 @@ module Queries =
 
         test <@ facts = [ "App.Queries.query", "dbo.articles", Read ] @>
 
-    /// `subquery` is SqlHydra's alias for `select` inside `whereExists`; a helper that
-    /// only builds one has no terminal helper call, only the typed builder members.
     [<Fact>]
     let ``subquery helper reads the table it iterates`` () =
-        let facts =
-            factsFor
-                """
-module Queries =
-    let ids () =
-        subquery<Generated.dbo.articles, unit> {
-            for row in Generated.dbo.articles do
-            where (row.id > 0)
-            select row.id
-        }
-"""
+        let facts = factsFor subqueryHelper
 
         test <@ facts = [ "App.Queries.ids", "dbo.articles", Read ] @>

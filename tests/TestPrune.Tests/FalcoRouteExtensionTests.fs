@@ -1545,17 +1545,17 @@ module ``route text outside code`` =
     let private assertAttribution (content: string) (expected: bool) =
         let testFiles = [ "InterventionTests.fs", content ]
 
+        let expectedClasses, expectedSources =
+            if expected then
+                [ "InterventionTests" ], [ "App.Tests.InterventionTests.Exercises" ]
+            else
+                [], []
+
         withTestSetup [ route ] testFiles "IntTests" "tests/IntTests" [ route.HandlerSourceFile ] (fun selected ->
-            test <@ (selected |> List.map _.TestClass) = (if expected then [ "InterventionTests" ] else []) @>)
+            test <@ (selected |> List.map _.TestClass) = expectedClasses @>)
 
         withAnalyzeEdges [ route ] symbols testFiles (fun edges ->
-            test
-                <@
-                    (edges |> List.map _.FromSymbol) = (if expected then
-                                                            [ "App.Tests.InterventionTests.Exercises" ]
-                                                        else
-                                                            [])
-                @>)
+            test <@ (edges |> List.map _.FromSymbol) = expectedSources @>)
 
     let private testClass (body: string) =
         "type InterventionTests() =\n"
