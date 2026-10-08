@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.69 - 2026-10-08
+
 - deps: TestPrune.Core 13.3.3 (index schema 21) and TestPrune.Trace 0.7.1, built against
   it. Each dependency edge stores its owner file as an integer id into `source_files`,
   which shrinks `test-impact.db`. The first run after upgrading recreates the index and

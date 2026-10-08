@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.70 - 2026-10-08
+
 - feat: `RepositoryHost.runObserved` is `run` that hands the caller the host's
   `SessionRegistry` once it exists, so a signal handler can reach every live session.
 
