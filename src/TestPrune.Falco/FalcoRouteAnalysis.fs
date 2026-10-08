@@ -100,7 +100,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         let placeholder = "__PARAM__"
         let withPlaceholders = routeParamPattern.Replace(urlPattern, placeholder)
         let escaped = Regex.Escape(withPlaceholders)
-        let pattern = escaped.Replace(placeholder, "[^/]+")
+        // A path segment never spans a line break: without that bound a fragment such as
+        // `"""/users/` could close its match on the next line of a multiline string.
+        let pattern = escaped.Replace(placeholder, "[^/\r\n]+")
 
         // The opening boundary normally admits a `/` so a doubled separator still reads as a
         // path start. For a pattern with no literal text of its own that `/` pairs with the
@@ -389,7 +391,95 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         { TestClasses = perFile |> List.collect fst |> List.distinct
           EdgeParticipants = perFile |> List.collect snd |> List.distinct }
 
-    /// Every integration test source file, with its text.
+    /// `text` with every comment blanked to spaces. Line breaks stay, so offsets and line
+    /// structure are unchanged. String and character literals are kept whole, including
+    /// triple-quoted ones: a test may send a request body that names a route.
+    let withoutComments (text: string) : string =
+        let chars = text.ToCharArray()
+
+        let at (i: int) (token: string) =
+            i + token.Length <= text.Length
+            && System.String.CompareOrdinal(text, i, token, 0, token.Length) = 0
+
+        // Index just past the quote closing a string whose body starts at `start`. A
+        // verbatim string escapes a quote by doubling it; a regular one with a backslash.
+        let closeString verbatim start =
+            let mutable i = start
+            let mutable closed = false
+
+            while i < text.Length && not closed do
+                if verbatim && at i "\"\"" then
+                    i <- i + 2
+                elif not verbatim && text[i] = '\\' then
+                    i <- i + 2
+                else
+                    closed <- text[i] = '"'
+                    i <- i + 1
+
+            min i text.Length
+
+        // Index just past the `*)` closing a block comment whose body starts at `start`.
+        // F# block comments nest.
+        let closeBlockComment start =
+            let mutable i = start
+            let mutable depth = 1
+
+            while i < text.Length && depth > 0 do
+                if at i "(*" then
+                    depth <- depth + 1
+                    i <- i + 2
+                elif at i "*)" then
+                    depth <- depth - 1
+                    i <- i + 2
+                else
+                    i <- i + 1
+
+            min i text.Length
+
+        let blank start finish =
+            for j in start .. finish - 1 do
+                if chars[j] <> '\n' && chars[j] <> '\r' then
+                    chars[j] <- ' '
+
+        let mutable i = 0
+
+        while i < text.Length do
+            if at i "\"\"\"" then
+                i <-
+                    match text.IndexOf("\"\"\"", i + 3, System.StringComparison.Ordinal) with
+                    | -1 -> text.Length
+                    | close -> close + 3
+            elif at i "@\"" then
+                i <- closeString true (i + 2)
+            elif text[i] = '"' then
+                i <- closeString false (i + 1)
+            // Character literals `'"'` and `'\''` must not open or close a string.
+            elif text[i] = '\'' && at (i + 1) "\\" && at (i + 3) "'" then
+                i <- i + 4
+            elif text[i] = '\'' && at (i + 2) "'" then
+                i <- i + 3
+            // `(*)` is the multiplication operator, not a comment.
+            elif at i "(*)" then
+                i <- i + 3
+            elif at i "(*" then
+                let finish = closeBlockComment (i + 2)
+                blank i finish
+                i <- finish
+            elif at i "//" then
+                let finish =
+                    match text.IndexOf('\n', i) with
+                    | -1 -> text.Length
+                    | newline -> newline
+
+                blank i finish
+                i <- finish
+            else
+                i <- i + 1
+
+        System.String chars
+
+    /// Every integration test source file, with its comments blanked (see `withoutComments`):
+    /// a route named only in a comment is documentation, not a request the test makes.
     let readTestFiles (repoRoot: string) : (string * string) list =
         let testDir = Path.Combine(repoRoot, integrationTestDir)
 
@@ -404,7 +494,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             // prunes bin/ and obj/ during traversal rather than filtering them
             // out afterwards, so their subtrees are never entered at all.
             SafeWalk.enumerateFiles "*.fs" testDir
-            |> Seq.map (fun path -> path, File.ReadAllText path)
+            |> Seq.map (fun path -> path, File.ReadAllText path |> withoutComments)
             |> List.ofSeq
 
     /// Find affected test classes using route-based matching.
