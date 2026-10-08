@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-10-08
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0 - 2026-10-04
 
 - feat: a test that reads a repository file's metadata is reselected when the file changes.

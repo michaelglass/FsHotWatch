@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.1 - 2026-10-08
+
 - fix: a generic test class (`type UsersTests<'T>() =`) is recognised as a
   declaration, so a route it requests selects it and links its tests to the route's
   handler instead of falling back to the file's other declarations.
