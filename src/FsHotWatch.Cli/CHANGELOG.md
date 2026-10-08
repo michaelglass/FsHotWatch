@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.95 - 2026-10-08
+
 - fix: `fshw host` ended by SIGTERM, SIGHUP or SIGINT kills the process trees EVERY
   session spawned (test hosts and their children), through each session's process
   registry and concurrently, logs one `shutdown: signal=<NAME> reaped=<pids>` line naming
