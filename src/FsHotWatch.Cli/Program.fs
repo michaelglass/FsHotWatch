@@ -38,7 +38,7 @@ type RerunFlag =
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.")>] WaitSec of
         int
     | [<CmdFlag(Description =
-                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun refuses rather than silently buying that run.",
+                    "Start the daemon for a filtered rerun even though this workspace has no valid full-suite baseline. Without one, the daemon's warm-up test pass runs EVERY configured test project; without this flag a filtered rerun starts no daemon and runs only its slice in-process, as a partial run.",
                 Name = "allow-full-suite",
                 Short = "F")>] AllowFullSuite
 
@@ -99,16 +99,15 @@ module RerunFilter =
             | _ -> None)
         |> Option.defaultValue DefaultTestRerunWaitSec
 
-/// Whether a NARROWED `test-rerun` may start a daemon in a workspace with no valid
-/// full-suite baseline.
+/// How a NARROWED `test-rerun` runs in a workspace with no valid full-suite baseline.
 ///
 /// A daemon's startup scan ends in an impact run, and with no valid baseline the
 /// test-prune plugin widens that run to EVERY configured test project — correctly, for
 /// the verdict it serves. The rerun's own filter is still honoured, but a user who asked
-/// for one class would also be buying the full suite, with nothing on the command's
-/// output to say so. So the rerun decides BEFORE it starts anything, and never widens
-/// silently: it refuses (naming the reason and the two ways forward), or it proceeds and
-/// says what else is running.
+/// for one class would also be buying the full suite. So with no daemon running, the
+/// rerun starts none: it builds and runs only what was asked in-process, under
+/// `TestMode.startingWith false` (`RequestedOnly`), which launches no owed run. That run is filtered, so it
+/// cannot earn the baseline, and no verdict is written. Every path says so out loud.
 module RerunBaseline =
     open FsHotWatch.TestPrune
 
@@ -117,8 +116,21 @@ module RerunBaseline =
         | Proceed
         /// Run, after printing these lines.
         | ProceedWithNotice of lines: string list
-        /// Do not start or send anything; print these lines.
-        | Refuse of lines: string list
+        /// Start no daemon: print these lines, then run the request in-process in a host
+        /// that launches only requested runs.
+        | RunRequestedOnly of lines: string list
+
+    /// The configuration of the in-process host a `RunRequestedOnly` rerun builds: the
+    /// build, the preprocessors that produce the tree it compiles, and the tests. The
+    /// report plugins (format check, lint, analyzers, coverage, file commands) judge a
+    /// whole tree, and a partial run has none of that to say.
+    let requestedOnlyConfig (config: DaemonConfiguration) : DaemonConfiguration =
+        { config with
+            Format = FormatMode.Off
+            Lint = false
+            Analyzers = None
+            Coverage = None
+            FileCommands = [] }
 
     /// Why the workspace's full-suite baseline cannot vouch for `runnable` — `None` when
     /// it can, or when no test project is configured (then no baseline is owed). The same
@@ -190,13 +202,14 @@ module RerunBaseline =
                         (every configured test project); your rerun (%s{asked}) runs alongside it."
                       noVerdict ]
             else
-                Decision.Refuse
-                    [ $"fshw test-rerun: refusing — no valid full-suite baseline in this workspace: %s{reason}."
-                      $"  You asked for %s{asked}. No daemon is running here, and starting one runs a warm-up \
-                        test pass that, with no baseline, is widened to the FULL SUITE (every configured test \
-                        project) — far more than you asked for. Nothing was started."
-                      "  To earn the baseline (runs the full suite):              fshw confirm"
-                      $"  To start the daemon anyway and run your filter too:     fshw test-rerun %s{render shellQuote pairs} --allow-full-suite" ]
+                Decision.RunRequestedOnly
+                    [ header
+                      $"  No daemon is running here, and starting one would widen its warm-up test pass to the FULL \
+                        SUITE. So none is started: this rerun builds and runs only what you asked for (%s{asked}) \
+                        in-process."
+                      "  It is a PARTIAL run: it cannot earn or satisfy the full-suite baseline, and it writes no \
+                       verdict. To earn the baseline (runs the full suite):  fshw confirm"
+                      $"  To start the daemon instead (its warm-up runs the full suite):  fshw test-rerun %s{render shellQuote pairs} --allow-full-suite" ]
 
 type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
@@ -364,6 +377,9 @@ let internal runModeFor (command: Command) : Daemon.RunMode =
     | Check flags
     | Format flags when isRunOnce flags -> Daemon.RunMode.OneShot
     | Confirm flags when confirmsRunOnce flags -> Daemon.RunMode.OneShot
+    // The only host `test-rerun` builds in-process is a one-shot one (`RunRequestedOnly`);
+    // otherwise it talks to a daemon started by its own `start`.
+    | TestRerun _ -> Daemon.RunMode.OneShot
     | _ -> Daemon.RunMode.Watching
 
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
@@ -3259,6 +3275,40 @@ let internal executeCommandWatchingConfig
 
                     IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
 
+            // No daemon: an in-process host whose test-prune launches only the run this
+            // command requests. The scan builds the tree; the request then runs against it.
+            let rerunRequestedOnly () =
+                match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
+                | Some exitCode -> exitCode
+                | None ->
+                    let daemon = createDaemon repoRoot
+
+                    DaemonConfig.registerPluginsIn
+                        (FsHotWatch.TestPrune.TestMode.startingWith false)
+                        daemon
+                        repoRoot
+                        (RerunBaseline.requestedOnlyConfig config)
+
+                    let statuses = RunOnceOutput.runOnceWithProgress daemon
+
+                    // Tests run against what the build left in place, so a failed build
+                    // runs none.
+                    match Map.tryFind "build" statuses with
+                    | Some(FsHotWatch.Events.PluginStatus.Failed(error, _, _)) ->
+                        eprintfn "fshw test-rerun: the build failed, so no tests were run:\n%s" error
+                        1
+                    | _ ->
+                        let result =
+                            daemon.Host.RunCommand(IpcParsing.RunTestsCommand, [| runArgsJson |])
+                            |> Async.RunSynchronously
+
+                        match result with
+                        | Some json ->
+                            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail json
+                        | None ->
+                            eprintfn "fshw test-rerun: no test projects are configured, so there is nothing to run."
+                            1
+
             match baselineDecision with
             | RerunBaseline.Decision.Proceed -> rerun ()
             | RerunBaseline.Decision.ProceedWithNotice lines ->
@@ -3266,11 +3316,11 @@ let internal executeCommandWatchingConfig
                     eprintfn "%s" line
 
                 rerun ()
-            | RerunBaseline.Decision.Refuse lines ->
+            | RerunBaseline.Decision.RunRequestedOnly lines ->
                 for line in lines do
                     eprintfn "%s" line
 
-                2
+                rerunRequestedOnly ()
         | Format flags when isRunOnce flags ->
             let formatConfig =
                 { stripConfig config with

@@ -123,6 +123,7 @@ let ``a flush classifies its whole queue with one grouped query`` () =
                 None
                 []
                 None
+                FsHotWatch.TestPrune.TestMode.initial
         )
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -180,6 +181,7 @@ let ``a seed that alone selects more than its whole queue is named as a non-mono
                 None
                 []
                 None
+                FsHotWatch.TestPrune.TestMode.initial
         )
 
         host.EmitBuildCompleted(BuildSucceeded)

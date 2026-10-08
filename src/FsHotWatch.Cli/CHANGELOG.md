@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a narrowed `test-rerun` (`--filter-class`, `--filter-trait`, `--project`) in a
+  workspace with no daemon and no valid full-suite baseline runs instead of refusing with
+  exit 2. It starts no daemon: it builds and runs only what was asked in a one-shot
+  in-process host whose test-prune launches no owed run, so nothing widens to the full
+  suite. The run is partial: it cannot earn or satisfy the full-suite baseline, it writes no
+  verdict, and its output says so. `--allow-full-suite` still starts the daemon.
+- feat: `DaemonConfig.registerPluginsIn` registers the plugins with the test-prune session
+  starting in a given `TestMode`. `RerunBaseline.Decision.Refuse` is replaced by
+  `RunRequestedOnly`.
+
 ## 0.14.0-alpha.93 - 2026-10-06
 
 - fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
