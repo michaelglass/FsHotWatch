@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a daemon ended by SIGTERM, SIGHUP or SIGINT kills the process trees it spawned
+  (test hosts and their children) through its process registry, logs
+  `shutdown: signal=<NAME> reaped=<pids>`, and exits with 128 + the signal. Before, a
+  test host outside the daemon's process group outlived it.
+
 ## 0.14.0-alpha.93 - 2026-10-06
 
 - fix: the timeouts of the processes the daemon spawns (test hosts, the build, Fantomas,
