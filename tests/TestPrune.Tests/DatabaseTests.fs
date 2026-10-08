@@ -1067,6 +1067,163 @@ module ``GetDependenciesFromFile`` =
             let deps = db.GetDependenciesFromFile "src/Lib.fs"
             test <@ deps |> List.isEmpty @>)
 
+module ``Edge ownership is stored as a file id`` =
+
+    let private sym name file =
+        { FullName = name
+          Kind = Function
+          SourceFile = file
+          LineStart = 1
+          LineEnd = 5
+          ContentHash = ""
+          IsExtern = false }
+
+    let private edge from target =
+        { FromSymbol = from
+          ToSymbol = target
+          Kind = Calls
+          Source = "core" }
+
+    let private testMethod name cls =
+        { SymbolFullName = name
+          TestProject = "Tests"
+          TestClass = cls
+          TestMethod = name.Substring(name.LastIndexOf '.' + 1) }
+
+    let private fileResult symbols deps tests =
+        AnalysisResult.Create(symbols, deps, tests)
+
+    let private scalarRows (path: string) (sql: string) =
+        use conn = openRawConnection path
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        use reader = cmd.ExecuteReader()
+
+        [ while reader.Read() do
+              yield List.init reader.FieldCount (fun i -> string (reader.GetValue i)) ]
+
+    [<Fact>]
+    let ``a stored edge carries an integer file id that resolves to its owner path`` () =
+        withDbPath (fun path db ->
+            db.RebuildProjects(
+                [ fileResult [ sym "Tests.testA" "tests/Tests.fs" ] [ edge "Tests.testA" "Lib.funcB" ] []
+                  fileResult [ sym "Lib.funcB" "src/Lib.fs" ] [ edge "Lib.funcB" "Lib.funcC" ] []
+                  fileResult [ sym "Lib.funcC" "src/Lib2.fs" ] [] [] ]
+            )
+
+            let rows =
+                scalarRows
+                    path
+                    """
+                    SELECT typeof(d.source_file_id), f.path
+                    FROM dependencies d
+                    JOIN source_files f ON f.id = d.source_file_id
+                    ORDER BY f.path
+                    """
+
+            test <@ rows = [ [ "integer"; "src/Lib.fs" ]; [ "integer"; "tests/Tests.fs" ] ] @>)
+
+    [<Fact>]
+    let ``the edge table, its key and its by-file index hold no path text`` () =
+        withDbPath (fun path _ ->
+            let columns =
+                scalarRows path "SELECT name FROM pragma_table_info('dependencies') ORDER BY cid"
+                |> List.map List.head
+
+            test <@ columns = [ "from_symbol_id"; "to_symbol_id"; "dep_kind"; "source"; "source_file_id" ] @>
+
+            let byFile =
+                scalarRows path "SELECT name FROM pragma_index_info('idx_deps_by_file')"
+                |> List.map List.head
+
+            test <@ byFile = [ "source_file_id" ] @>
+
+            let primaryKey =
+                scalarRows path "SELECT name FROM pragma_table_info('dependencies') WHERE pk > 0 ORDER BY pk"
+                |> List.map List.head
+
+            test <@ primaryKey = [ "from_symbol_id"; "to_symbol_id"; "dep_kind"; "source_file_id" ] @>)
+
+    [<Fact>]
+    let ``a path is stored once however many edges it owns and however often it is re-indexed`` () =
+        withDbPath (fun path db ->
+            let lib =
+                fileResult
+                    [ sym "Lib.a" "src/Lib.fs"; sym "Lib.b" "src/Lib.fs"; sym "Lib.c" "src/Lib.fs" ]
+                    [ edge "Lib.a" "Lib.b"; edge "Lib.a" "Lib.c"; edge "Lib.b" "Lib.c" ]
+                    []
+
+            db.RebuildProjects([ lib ])
+            db.RebuildProjects([ lib ])
+            db.ReplaceExtensionEdges("ext", [ edge "Lib.c" "Lib.a" ])
+            db.ReplaceExtensionEdges("ext", [ edge "Lib.c" "Lib.b" ])
+
+            let paths = scalarRows path "SELECT path FROM source_files ORDER BY path"
+            test <@ paths = [ [ extensionEdgeOwner "ext" ]; [ "src/Lib.fs" ] ] @>)
+
+    /// Pins the selection a multi-file graph produces through a full index, an
+    /// incremental re-index of one file and an extension refresh. It held before edge
+    /// ownership moved to a file id and must hold, unchanged, after it.
+    [<Fact>]
+    let ``selection and per-file edges are unchanged through incremental re-indexing`` () =
+        withDb (fun db ->
+            let tests =
+                fileResult
+                    [ sym "Tests.T.testA" "tests/T.fs"; sym "Tests.T.testB" "tests/T.fs" ]
+                    [ edge "Tests.T.testA" "Lib.L.f"; edge "Tests.T.testB" "Lib.M.g" ]
+                    [ testMethod "Tests.T.testA" "T"; testMethod "Tests.T.testB" "T" ]
+
+            let otherTests =
+                fileResult
+                    [ sym "Tests.U.testC" "tests/U.fs" ]
+                    [ edge "Tests.U.testC" "Lib.L.h" ]
+                    [ testMethod "Tests.U.testC" "U" ]
+
+            let libV1 =
+                fileResult
+                    [ sym "Lib.L.f" "src/L.fs"; sym "Lib.L.h" "src/L.fs" ]
+                    [ edge "Lib.L.f" "Lib.M.g"; edge "Lib.L.h" "Lib.M.k" ]
+                    []
+
+            let m =
+                fileResult [ sym "Lib.M.g" "src/M.fs"; sym "Lib.M.k" "src/M.fs" ] [] []
+
+            db.RebuildProjects([ tests; otherTests; libV1; m ])
+
+            let selected seeds =
+                db.QueryAffectedTests seeds |> List.map (fun t -> t.SymbolFullName) |> List.sort
+
+            test <@ selected [ "Lib.M.g" ] = [ "Tests.T.testA"; "Tests.T.testB" ] @>
+            test <@ selected [ "Lib.M.k" ] = [ "Tests.U.testC" ] @>
+
+            // Re-index only src/L.fs: `h` now calls `g` instead of `k`. Edges owned by
+            // the test files survive; L.fs's old edges are replaced.
+            let libV2 =
+                fileResult
+                    [ sym "Lib.L.f" "src/L.fs"; sym "Lib.L.h" "src/L.fs" ]
+                    [ edge "Lib.L.f" "Lib.M.g"; edge "Lib.L.h" "Lib.M.g" ]
+                    []
+
+            db.RebuildProjects([ libV2 ])
+
+            test <@ selected [ "Lib.M.g" ] = [ "Tests.T.testA"; "Tests.T.testB"; "Tests.U.testC" ] @>
+            test <@ selected [ "Lib.M.k" ] |> List.isEmpty @>
+
+            let libEdges =
+                db.GetDependenciesFromFile "src/L.fs"
+                |> List.map (fun d -> d.FromSymbol, d.ToSymbol)
+                |> List.sort
+
+            test <@ libEdges = [ "Lib.L.f", "Lib.M.g"; "Lib.L.h", "Lib.M.g" ] @>
+            test <@ db.GetDependenciesFromFile "tests/U.fs" |> List.map (fun d -> d.ToSymbol) = [ "Lib.L.h" ] @>
+
+            // An extension edge is owned by its extension, not by any file.
+            db.ReplaceExtensionEdges("ext", [ edge "Tests.T.testA" "Lib.M.k" ])
+            test <@ selected [ "Lib.M.k" ] = [ "Tests.T.testA" ] @>
+            db.ReplaceExtensionEdges("ext", [])
+            test <@ selected [ "Lib.M.k" ] |> List.isEmpty @>
+            test <@ db.GetDependenciesFromFile "src/L.fs" |> List.length = 2 @>)
+
 module ``GetTestMethodsInFile`` =
 
     [<Fact>]
