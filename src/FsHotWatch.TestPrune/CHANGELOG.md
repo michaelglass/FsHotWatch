@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.68 - 2026-10-08
+
 - **feat!: `TestMode` gains a third case, `RequestedOnly`** (`TestMode.startingWith false`):
   a match over `TestMode` must handle it. It is a session that launches only
   the runs a command requests. A build or an edit leaves its debt owed and launches
