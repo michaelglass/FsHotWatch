@@ -39,13 +39,18 @@ let private schema =
         UNIQUE (symbol_id, source_file)
     );
 
+    CREATE TABLE IF NOT EXISTS source_files (
+        id INTEGER PRIMARY KEY,
+        path TEXT NOT NULL UNIQUE
+    );
+
     CREATE TABLE IF NOT EXISTS dependencies (
         from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         dep_kind TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'core',
-        source_file TEXT NOT NULL,
-        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind, source_file)
+        source_file_id INTEGER NOT NULL REFERENCES source_files(id),
+        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind, source_file_id)
     );
 
     CREATE TABLE IF NOT EXISTS test_methods (
@@ -109,12 +114,11 @@ let private schema =
 
     CREATE INDEX IF NOT EXISTS idx_occurrences_by_file ON symbol_occurrences (source_file, line_start);
     CREATE INDEX IF NOT EXISTS idx_occurrences_by_symbol ON symbol_occurrences (symbol_id);
-    CREATE INDEX IF NOT EXISTS idx_deps_by_file ON dependencies (source_file);
+    CREATE INDEX IF NOT EXISTS idx_deps_by_file ON dependencies (source_file_id);
     CREATE INDEX IF NOT EXISTS idx_test_methods_by_file ON test_methods (source_file);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_file ON symbol_attributes (source_file);
     CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id, from_symbol_id);
-    CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
@@ -215,6 +219,39 @@ let private bindNameSetNamed (prefix: string) (cmd: SqliteCommand) (names: strin
 let private nameSet = nameSetNamed "p"
 
 let private bindNameSet (cmd: SqliteCommand) (names: string list) = bindNameSetNamed "p" cmd names
+
+/// The `source_files` id of each of `paths`, storing the paths not yet stored. An edge
+/// names its owner file by this id; the path text lives once, here. A path's row is never
+/// deleted, so its id is stable for the life of the index: a file that loses all its edges
+/// keeps one small row, and a schema rebuild starts the table afresh.
+let private internSourceFiles
+    (conn: SqliteConnection)
+    (txn: SqliteTransaction)
+    (paths: string list)
+    : IReadOnlyDictionary<string, int64> =
+    let paths = List.distinct paths
+
+    use insert = conn.CreateCommand()
+    insert.Transaction <- txn
+    insert.CommandText <- $"INSERT OR IGNORE INTO source_files (path) %s{nameSet}"
+    bindNameSet insert paths
+    insert.ExecuteNonQuery() |> ignore
+
+    use select = conn.CreateCommand()
+    select.Transaction <- txn
+    select.CommandText <- $"SELECT path, id FROM source_files WHERE path IN (%s{nameSet})"
+    bindNameSet select paths
+    use reader = select.ExecuteReader()
+    let ids = Dictionary<string, int64>()
+
+    while reader.Read() do
+        ids[reader.GetString 0] <- reader.GetInt64 1
+
+    ids
+
+/// `WHERE` text matching the edges owned by any file in the bound name set.
+let private ownedByAnyOf =
+    $"source_file_id IN (SELECT id FROM source_files WHERE path IN (%s{nameSet}))"
 
 /// Run `sql` on `conn` for its effect.
 let private execute (conn: SqliteConnection) (sql: string) =
@@ -358,6 +395,12 @@ let private openConnection (dbPath: string) =
 ///          before, its arity-suffixed name matched no declaration in the syntax tree, so
 ///          the hash covered only the line naming the type. A file not re-indexed would
 ///          keep the old case names, the edges to them, and header hashes that miss edits.
+/// v21    — `dependencies.source_file` (TEXT) became `source_file_id`, an integer into the
+///          new `source_files` table, which holds each owner path once. The path was
+///          stored three times per edge (the row, the primary-key index and
+///          `idx_deps_by_file`), which made the edge tables most of the file. The
+///          redundant `idx_deps_from` is gone: the primary key starts with
+///          `from_symbol_id` and serves the same lookups.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -373,9 +416,9 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 20
+let SchemaVersion = 21
 
-/// The `dependencies.source_file` value that owns the edges an extension contributes
+/// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
 /// space of repo-relative paths, like `AstAnalyzer.ExternSourceFile`.
 let extensionEdgeOwner (extensionName: string) = $"_extension:%s{extensionName}"
@@ -594,11 +637,14 @@ type Database(dbPath: string) =
             // symbols (row ids are preserved by the UPSERT below) and a signature file's
             // edges when only its implementation is re-indexed, or vice versa.
             if not sourceFiles.IsEmpty then
-                for table in [ "dependencies"; "test_methods"; "symbol_attributes" ] do
+                for table, ownedBy in
+                    [ "dependencies", ownedByAnyOf
+                      "test_methods", $"source_file IN (%s{nameSet})"
+                      "symbol_attributes", $"source_file IN (%s{nameSet})" ] do
                     use delCmd = conn.CreateCommand()
                     delCmd.Transaction <- txn
 
-                    delCmd.CommandText <- $"DELETE FROM %s{table} WHERE source_file IN (%s{nameSet})"
+                    delCmd.CommandText <- $"DELETE FROM %s{table} WHERE %s{ownedBy}"
 
                     bindNameSet delCmd sourceFiles
                     delCmd.ExecuteNonQuery() |> ignore
@@ -827,8 +873,8 @@ type Database(dbPath: string) =
 
             depCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file)
-                SELECT f.id, t.id, @depKind, @source, @sourceFile
+                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
+                SELECT f.id, t.id, @depKind, @source, @sourceFileId
                 FROM symbols f, symbols t
                 WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
                 """
@@ -837,18 +883,23 @@ type Database(dbPath: string) =
             let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
             let pSource = depCmd.Parameters.Add("@source", SqliteType.Text)
-            let pDepFile = depCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+            let pDepFile = depCmd.Parameters.Add("@sourceFileId", SqliteType.Integer)
 
-            for result in results do
-                let owner = factOwner result
+            let ownedDeps =
+                results
+                |> List.collect (fun result ->
+                    let owner = factOwner result
+                    result.Dependencies |> List.map (fun dep -> dep, owner (dependencyAnchor dep)))
 
-                for dep in result.Dependencies do
-                    pFromSymbol.Value <- dep.FromSymbol
-                    pToSymbol.Value <- dep.ToSymbol
-                    pDepKind.Value <- depKindToString dep.Kind
-                    pSource.Value <- dep.Source
-                    pDepFile.Value <- owner (dependencyAnchor dep)
-                    depCmd.ExecuteNonQuery() |> ignore
+            let fileIds = internSourceFiles conn txn (ownedDeps |> List.map snd)
+
+            for dep, ownerFile in ownedDeps do
+                pFromSymbol.Value <- dep.FromSymbol
+                pToSymbol.Value <- dep.ToSymbol
+                pDepKind.Value <- depKindToString dep.Kind
+                pSource.Value <- dep.Source
+                pDepFile.Value <- fileIds[ownerFile]
+                depCmd.ExecuteNonQuery() |> ignore
 
             // A literal node is shared by every test/producer that contains its decoded
             // value, so no one file owns its row. Collect it only after every fresh edge
@@ -989,6 +1040,8 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
+            let ownerId = (internSourceFiles conn txn [ owner ])[owner]
+
             let stored =
                 use readCmd = conn.CreateCommand()
                 readCmd.Transaction <- txn
@@ -999,10 +1052,10 @@ type Database(dbPath: string) =
                     FROM dependencies d
                     JOIN symbols f ON f.id = d.from_symbol_id
                     JOIN symbols t ON t.id = d.to_symbol_id
-                    WHERE d.source_file = @owner
+                    WHERE d.source_file_id = @ownerId
                     """
 
-                readCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+                readCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
                 use reader = readCmd.ExecuteReader()
 
                 [ while reader.Read() do
@@ -1017,13 +1070,13 @@ type Database(dbPath: string) =
                 """
                 DELETE FROM dependencies
                 WHERE from_symbol_id = @fromId AND to_symbol_id = @toId
-                  AND dep_kind = @depKind AND source_file = @owner
+                  AND dep_kind = @depKind AND source_file_id = @ownerId
                 """
 
             let pFromId = delCmd.Parameters.Add("@fromId", SqliteType.Integer)
             let pToId = delCmd.Parameters.Add("@toId", SqliteType.Integer)
             let pDelKind = delCmd.Parameters.Add("@depKind", SqliteType.Text)
-            delCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+            delCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
 
             let kept = HashSet()
 
@@ -1041,8 +1094,8 @@ type Database(dbPath: string) =
 
             insCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file)
-                SELECT f.id, t.id, @depKind, @source, @owner
+                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
+                SELECT f.id, t.id, @depKind, @source, @ownerId
                 FROM symbols f, symbols t
                 WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
                 """
@@ -1051,7 +1104,7 @@ type Database(dbPath: string) =
             let pToSymbol = insCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pInsKind = insCmd.Parameters.Add("@depKind", SqliteType.Text)
             let pSource = insCmd.Parameters.Add("@source", SqliteType.Text)
-            insCmd.Parameters.AddWithValue("@owner", owner) |> ignore
+            insCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
 
             for (fromSymbol, toSymbol, depKind, source) as key in wanted do
                 if not (kept.Contains key) then
@@ -1574,9 +1627,10 @@ type Database(dbPath: string) =
             """
             SELECT f.full_name, t.full_name, d.dep_kind, d.source
             FROM dependencies d
+            JOIN source_files sf ON sf.id = d.source_file_id
             JOIN symbols f ON f.id = d.from_symbol_id
             JOIN symbols t ON t.id = d.to_symbol_id
-            WHERE d.source_file = @sourceFile
+            WHERE sf.path = @sourceFile
             """
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore

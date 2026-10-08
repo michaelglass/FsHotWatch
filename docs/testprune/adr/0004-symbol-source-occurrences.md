@@ -45,7 +45,10 @@ migration". The index is a cache: a `SchemaVersion` bump (v14) deletes and
 rebuilds it. The real cost was code, meaning source lookup, orphan removal and
 fact ownership in both stores, and that code is the change recorded here.
 
-Fact ownership widens each edge row with its `source_file`. That would slow the
+Fact ownership widens each edge row with its owner file. (Schema v21 stores that
+owner as `source_file_id`, an integer into `source_files`, because the path text,
+repeated in the row, the primary key and the by-file index, made the edge tables
+most of the index.) That would slow the
 reverse walk in `QueryAffectedTests`, so `idx_deps_to` now covers
 `(to_symbol_id, from_symbol_id)` and the walk reads no table rows. On a synthetic
 graph (50,000 symbols, about 200,000 edges, 5,000 tests), measured in process CPU

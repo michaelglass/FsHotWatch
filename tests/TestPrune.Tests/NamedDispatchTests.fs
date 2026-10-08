@@ -127,9 +127,10 @@ module ``named dispatch edges`` =
             """
             SELECT f.full_name, t.full_name
             FROM dependencies d
+            JOIN source_files sf ON sf.id = d.source_file_id
             JOIN symbols f ON f.id = d.from_symbol_id
             JOIN symbols t ON t.id = d.to_symbol_id
-            WHERE d.source_file = @owner
+            WHERE sf.path = @owner
             """
 
         cmd.Parameters.AddWithValue("@owner", extensionEdgeOwner "Named Dispatch")

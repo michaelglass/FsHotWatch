@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- perf: each dependency edge names the file that owns it by an integer id into a new
+  `source_files` table, instead of repeating the path as TEXT in the edge row, the primary
+  key and `idx_deps_by_file`. The redundant `idx_deps_from` is dropped; the primary key
+  starts with `from_symbol_id` and serves the same lookups. On a 695,195-edge index of a
+  2,315-file repository the edge tables and their indexes shrink from 171 MiB to 56 MiB and
+  the file from 282 MB to 162 MB (both vacuumed). Re-indexing one file and the
+  affected-test walk get faster; reading one file's edges (`GetDependenciesFromFile`) costs
+  one more join. The public API is unchanged; code that queried `dependencies.source_file`
+  directly joins `source_files` on `source_file_id` instead.
+- Index schema 21 (`SchemaVersion` 20 -> 21): every existing index is recreated on first
+  open, so the first run re-indexes the whole repository, and recorded traces are not read
+  under the new schema until the next full run re-records them.
+
 ## 13.3.2 - 2026-10-04
 
 - deps: build tooling fssemantictagger 0.14.0-alpha.22, fsprojlint 0.10.0-alpha.21,

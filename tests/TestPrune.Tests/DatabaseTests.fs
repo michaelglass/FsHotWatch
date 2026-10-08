@@ -769,8 +769,9 @@ module ``stringToDepKind fallback`` =
 
             cmd.CommandText <-
                 """
-                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file)
-                SELECT f.id, t.id, 'unknown_dep_kind', 'tests/Tests.fs'
+                INSERT OR IGNORE INTO source_files (path) VALUES ('tests/Tests.fs');
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file_id)
+                SELECT f.id, t.id, 'unknown_dep_kind', (SELECT id FROM source_files WHERE path = 'tests/Tests.fs')
                 FROM symbols f, symbols t
                 WHERE f.full_name = 'Tests.testA' AND t.full_name = 'Lib.funcB'
                 """
@@ -1185,8 +1186,7 @@ module ``Edge ownership is stored as a file id`` =
                     [ edge "Lib.L.f" "Lib.M.g"; edge "Lib.L.h" "Lib.M.k" ]
                     []
 
-            let m =
-                fileResult [ sym "Lib.M.g" "src/M.fs"; sym "Lib.M.k" "src/M.fs" ] [] []
+            let m = fileResult [ sym "Lib.M.g" "src/M.fs"; sym "Lib.M.k" "src/M.fs" ] [] []
 
             db.RebuildProjects([ tests; otherTests; libV1; m ])
 
@@ -1613,8 +1613,9 @@ module ``Unknown enum deduplication`` =
 
             cmd2.CommandText <-
                 """
-                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file)
-                SELECT f.id, t.id, 'future_dep_kind', 'src/Lib.fs'
+                INSERT OR IGNORE INTO source_files (path) VALUES ('src/Lib.fs');
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file_id)
+                SELECT f.id, t.id, 'future_dep_kind', (SELECT id FROM source_files WHERE path = 'src/Lib.fs')
                 FROM symbols f, symbols t
                 WHERE f.full_name = 'Lib.funcB' AND t.full_name = 'Tests.testA'
                 """
