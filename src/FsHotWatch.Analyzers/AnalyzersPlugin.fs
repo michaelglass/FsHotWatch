@@ -888,7 +888,10 @@ let internal createWithSeams
                     let file = AbsFilePath.value result.File
                     Volatile.Write(&replayPending, true)
 
-                    Some(
+                    // A shape that cannot be described leaves no key: the analyzers
+                    // run and nothing is read from or written to the cache.
+                    FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
+                    |> Option.map (fun usedSignatures ->
                         FsHotWatch.TaskCache.merkleCacheKey
                             // v7 orphans every entry keyed without the shape of what the
                             // file resolved upstream.
@@ -904,14 +907,9 @@ let internal createWithSeams
                               // A typed analyzer sees the types this file resolved in
                               // other files; its own diagnostics do not move when one
                               // changes shape and the file still compiles.
-                              "used-signatures",
-                              FsHotWatch.CacheInputs.usedSignaturesHash
-                                  repoRoot
-                                  result.ProjectOptions
-                                  result.CheckResults
+                              "used-signatures", usedSignatures
                               // Typed analyzers can read the file's own diagnostics.
-                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
-                    )
+                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ])
             | _ -> None
 
         Some(fun _state event -> cacheKey event)

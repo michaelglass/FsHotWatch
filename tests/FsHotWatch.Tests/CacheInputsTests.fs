@@ -6,6 +6,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
 open FsHotWatch.CacheInputs
 open FsHotWatch.Tests.TestHelpers
@@ -137,8 +138,22 @@ let ``an unreadable config throws rather than being keyed as absent`` () =
 
 [<Fact>]
 let ``a file without typed results has a fixed used-signatures marker`` () =
-    test <@ usedSignaturesHash None Unchecked.defaultof<_> ParseOnly = "parse-only" @>
-    test <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck Unchecked.defaultof<_>) = "full-check-null" @>
+    test <@ usedSignaturesHash None Unchecked.defaultof<_> ParseOnly = Some "parse-only" @>
+
+    test
+        <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck Unchecked.defaultof<_>) = Some "full-check-null" @>
+
+[<Fact>]
+let ``a check whose symbol uses cannot be read has no used signatures`` () =
+    // An FSharpCheckFileResults with no state throws from every query, as FCS can from a
+    // symbol property on partially-checked code.
+    let broken =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+            typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+        )
+        :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
+
+    test <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck broken) = None @>
 
 /// An upstream file exercising every kind of declaration the shape renders.
 let private upstream =
@@ -156,9 +171,13 @@ let private upstream =
           "type Colour = Red = 1 | Green = 2"
           "exception Boom of string"
           "[<Measure>] type m"
+          "[<Measure>] type s"
+          "type internal Hidden = { H: int }"
+          "let internal hidden : Hidden = { H = 0 }"
           "type IGreeter = abstract Greet: string -> string"
           "type Greeter(prefix: string) ="
           "    member _.Prefix = prefix"
+          "    member _.Hello(name: string) = prefix + name"
           "    interface IGreeter with"
           "        member _.Greet name = prefix + name"
           "[<Literal>]"
@@ -169,6 +188,7 @@ let private upstream =
           "let (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None"
           "let combine (a: int) (b: string) : {| A: int; B: string |} * struct (int * string) = {| A = a; B = b |}, struct (a, b)"
           "let distance : float<m> = 1.0<m>"
+          "let speed : float<m/s> = 1.0<m/s>"
           "" ]
 
 /// Uses each declaration in `upstream` once.
@@ -194,6 +214,10 @@ let private downstream =
           "let even = match 4 with Up.Even _ -> 1 | _ -> 0"
           "let combined = Up.combine 1 \"one\""
           "let d = Up.distance"
+          "let v = Up.speed"
+          "let h = Up.hidden.H"
+          "let hello = (Up.Greeter \"hi \").Hello(name = \"you\")"
+          "let o : obj = null"
           "" ]
 
 let private shapesOf (root: string) (layout: UpstreamLayout) (up: string) =
@@ -258,3 +282,40 @@ let ``upstream edits a downstream file cannot observe leave its used shapes alon
         edited |> List.filter (fun (_, shapes) -> shapes <> baseline) |> List.map fst
 
     test <@ changed = [] @>
+
+[<Fact(Timeout = 120000)>]
+let ``an assembly is described in full when it is a referenced project or under the root`` () =
+    withTempDir "shapes-assemblies" (fun root ->
+        let result, check = checkDownstream root EarlierFile upstream downstream
+        let isExt (line: string) = line.StartsWith "ext FSharp.Core"
+        let lines (text: string) = text.Split '\n'
+
+        let external = usedShapes (Some root) result.ProjectOptions check
+        test <@ lines external |> Array.exists isExt @>
+
+        // A referenced project named like the assembly, of any kind, claims it. A
+        // project reached twice (a diamond) is walked once.
+        let lib =
+            FSharpReferencedProject.FSharpReference(Path.Combine(root, "Lib.dll"), result.ProjectOptions)
+
+        let claimed =
+            { result.ProjectOptions with
+                ReferencedProjects =
+                    [| lib
+                       lib
+                       FSharpReferencedProject.ILModuleReference(
+                           Path.Combine(root, "FSharp.Core.dll"),
+                           (fun () -> DateTime.MinValue),
+                           (fun () -> failwith "never read")
+                       ) |] }
+
+        test <@ not (lines (usedShapes (Some root) claimed check) |> Array.exists isExt) @>
+
+        // An assembly under the root is the repository's: here every one is.
+        let everything =
+            usedShapes (Some(Path.GetPathRoot root)) result.ProjectOptions check
+
+        test <@ not (lines everything |> Array.exists (fun l -> l.StartsWith "ext ")) @>
+        test <@ everything.Contains "private" @>
+        // Without a root only the project and its references are.
+        test <@ usedShapes None result.ProjectOptions check = external @>)
