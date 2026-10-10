@@ -125,10 +125,16 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
             |> Seq.sort
             |> String.concat ", "
 
+    // A type with arguments FCS will enumerate. A generic function's type (an active
+    // pattern's, say: `'K 'V. KeyValuePair<'K,'V> -> 'K * 'V`) is none of these, and
+    // `GenericArguments` throws on it.
+    let hasArguments (t: FSharpType) =
+        t.HasTypeDefinition || t.IsFunctionType || t.IsTupleType || t.IsAnonRecordType
+
     // Queue every type `t` names, so a type reached only through it (an inferred value's
     // record, a field's union) is rendered too.
     let rec follow (t: FSharpType) =
-        if not t.IsGenericParameter then
+        if hasArguments t then
             if t.HasTypeDefinition then
                 visit t.TypeDefinition
 
@@ -149,10 +155,11 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
             |> Seq.map (fun (name, arg) -> $"%s{name}: %s{typeText arg}")
             |> String.concat "; "
             |> sprintf "{| %s |}"
-        else
-            // Every other type is a named type: measures included (`m/s` is
-            // `MeasureProduct<m, MeasureInverse<s>>`).
+        elif t.HasTypeDefinition then
+            // Measures included: `m/s` is `MeasureProduct<m, MeasureInverse<s>>`.
             entityName t.TypeDefinition + "<" + args ", " + ">"
+        else
+            t.Format FSharpDisplayContext.Empty
 
     let literalText (value: obj option) =
         value |> Option.map (sprintf " = %A") |> Option.defaultValue ""

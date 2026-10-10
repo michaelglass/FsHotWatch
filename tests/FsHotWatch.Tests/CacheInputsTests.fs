@@ -218,6 +218,7 @@ let private downstream =
           "let h = Up.hidden.H"
           "let hello = (Up.Greeter \"hi \").Hello(name = \"you\")"
           "let o : obj = null"
+          "let key = match System.Collections.Generic.KeyValuePair(1, 2) with KeyValue(k, _) -> k"
           "" ]
 
 let private shapesOf (root: string) (layout: UpstreamLayout) (up: string) =
