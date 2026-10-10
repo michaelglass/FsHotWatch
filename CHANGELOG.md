@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: two `check` clients on a cold daemon run one full scan
+
+- **fix: a scan request that arrives while a scan is already checking the tree is
+  answered by that scan when the tree is still exactly what it checked.** The project
+  files and model, every registered source's text and every in-repository reference's
+  bytes are re-read from disk and compared; any difference runs a real scan, as does a
+  request that arrives after the scan finished. The daemon log says which way it went
+  (`Scan request queued during the last scan answered by it: …` or `…: <what changed> —
+  scanning`).
+
 ### cli: a signalled daemon reaps the processes it spawned and logs its shutdown
 
 A daemon started in the foreground (`fshw start`) and ended by SIGTERM, SIGHUP or SIGINT

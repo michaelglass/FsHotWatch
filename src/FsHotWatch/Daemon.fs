@@ -1143,10 +1143,10 @@ type private ScanSignalMsg =
     /// programming bugs instead of swallowing them.
     | RaiseFaultForTest of exn
 
-/// Wakes `WaitForScan` callers. A waiter resolves when the scan generation passes the one
-/// it asked about, and only once the scan request it is bound to has settled. A waiter
-/// bound to a request that fails receives that failure instead of hanging on a
-/// generation that request will never produce.
+/// Wakes `WaitForScan` callers. A waiter bound to a scan request resolves when that
+/// request settles, and receives its failure if it fails, instead of hanging on a
+/// generation that request will never produce. An unbound waiter resolves when the scan
+/// generation passes the one it asked about.
 type ScanSignal(?cancellationToken: CancellationToken) =
     let satisfied afterGeneration generation =
         if afterGeneration >= 0L then
@@ -1225,22 +1225,17 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
                             return! loop latestGeneration latestReceipt remaining
 
-                        | ScanSettled(_, Ok newGeneration)
+                        | ScanSettled(receipt, Ok newGeneration) ->
+                            // A waiter bound to a request resolves when that request
+                            // settles, whatever generation it asked about: a request can
+                            // be answered by a scan that already completed, without a new
+                            // generation.
+                            return!
+                                resolve latestGeneration latestReceipt waiters newGeneration (fun bound ->
+                                    obj.ReferenceEquals(bound, receipt))
+
                         | Signal newGeneration ->
-                            let toSignal, remaining =
-                                waiters
-                                |> List.partition (fun (afterGen, bound, _) ->
-                                    satisfied afterGen newGeneration
-                                    && (bound |> Option.forall (fun receipt -> receipt.IsCompletedSuccessfully)))
-
-                            Logging.debug
-                                "scan-signal"
-                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
-
-                            for _, _, tcs in toSignal do
-                                tcs.TrySetResult(()) |> ignore
-
-                            return! loop (max latestGeneration newGeneration) latestReceipt remaining
+                            return! resolve latestGeneration latestReceipt waiters newGeneration (fun _ -> false)
 
                         | Drained tcs ->
                             tcs.TrySetResult(()) |> ignore
@@ -1248,6 +1243,25 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
                         | RaiseFaultForTest ex -> raise ex
                     }
+
+                // Resolves the unbound waiters `newGeneration` satisfies and the bound
+                // ones whose request `settled` names.
+                and resolve latestGeneration latestReceipt waiters newGeneration settled =
+                    let toSignal, remaining =
+                        waiters
+                        |> List.partition (fun (afterGen, bound, _) ->
+                            match bound with
+                            | Some receipt -> settled receipt
+                            | None -> satisfied afterGen newGeneration)
+
+                    Logging.debug
+                        "scan-signal"
+                        $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+
+                    for _, _, tcs in toSignal do
+                        tcs.TrySetResult(()) |> ignore
+
+                    loop (max latestGeneration newGeneration) latestReceipt remaining
 
                 loop 0L None []),
             ?cancellationToken = cancellationToken
@@ -1318,16 +1332,103 @@ type ScanSignal(?cancellationToken: CancellationToken) =
         agent.Post(Drained tcs)
         tcs.Task
 
+/// What a completed scan read, so a request queued while it ran can tell whether the
+/// tree is still exactly that: the project model it was captured under, the
+/// `ContentHash` of the text of every source it emitted a result for, and of the bytes of
+/// every in-repository reference its checks typed against.
+type internal TreeStamp =
+    { ModelEpoch: int64
+      Sources: Map<string, string>
+      References: Map<string, string> }
+
+module internal TreeStamp =
+    /// Stands for a reference that did not exist, as distinct from one that could not be
+    /// read: only the second fails closed.
+    [<Literal>]
+    let AbsentFile = "absent"
+
+    /// `path`'s text hash now, as a check reads it.
+    let readTextHash (path: string) : string =
+        try
+            ContentHash.ofText (File.ReadAllText path)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> ContentHash.UnhashableContent
+
+    /// `path`'s bytes hash now, or `AbsentFile`.
+    let readBytesHash (path: string) : string =
+        if File.Exists path then
+            ContentHash.ofFile path
+        else
+            AbsentFile
+
+    /// The `-r:` references of `options` inside `repoRoot`: the project outputs a
+    /// build rewrites. Package and framework references outside the repository move
+    /// only with a restore, which the scan's restore check sees instead.
+    let inRepoReferences (repoRoot: string) (options: FSharpProjectOptions list) : string list =
+        options
+        |> List.collect (fun o ->
+            o.OtherOptions
+            |> Array.toList
+            |> List.choose (fun arg ->
+                if arg.StartsWith("-r:", StringComparison.Ordinal) then
+                    Some(arg.Substring 3)
+                else
+                    None))
+        |> List.filter (fun path -> not (PathFilter.isOutsideRepo repoRoot path))
+        |> List.distinct
+
+    /// The first way the tree differs from `stamp`, or `None` when it is the same tree:
+    /// the same model epoch, the same registered files, each with the text the scan
+    /// checked, and each in-repository reference with the bytes it typed against. A file
+    /// that cannot be read is a difference.
+    let firstDifference
+        (readText: string -> string)
+        (readBytes: string -> string)
+        (epoch: int64)
+        (registered: string list)
+        (stamp: TreeStamp)
+        : string option =
+        let firstChanged read prefix (hashes: Map<string, string>) =
+            hashes
+            |> Map.toSeq
+            |> Seq.tryPick (fun (path, hash) ->
+                let now = read path
+
+                if now = hash && ContentHash.isReadable now then
+                    None
+                else
+                    Some $"%s{prefix}%s{Path.GetFileName path} changed since the last scan")
+
+        if epoch <> stamp.ModelEpoch then
+            Some $"the project model was re-discovered (epoch %d{stamp.ModelEpoch} -> %d{epoch})"
+        elif Set.ofList registered <> (stamp.Sources |> Map.keys |> Set.ofSeq) then
+            Some "the registered files are not the ones the last scan checked"
+        else
+            firstChanged readText "" stamp.Sources
+            |> Option.orElse (firstChanged readBytes "reference " stamp.References)
+
+/// The last completed scan that checked every file it dispatched.
+type private LastScan =
+    {
+        /// When it began reading the tree (`Stopwatch` ticks).
+        ReadFrom: int64
+        /// When it completed (`Stopwatch` ticks).
+        CompletedAt: int64
+        /// Its completed state.
+        State: ScanState
+        /// What it read, when it attempted every registered file.
+        Stamp: TreeStamp option
+    }
+
 /// The scan's published state. Discovery and checks never run in its writer.
 type private ScanAgentState =
     {
         ScanState: ScanState
         Generation: int64
         LastFingerprint: Set<string * string>
-        /// The last completed scan that checked every file it dispatched: the moment it
-        /// began reading the tree (`Stopwatch` ticks) and its completed state. A request
-        /// admitted before that moment is answered by that scan — see `scanAnswers`.
-        Covered: (int64 * ScanState) option
+        /// Answers the requests admitted while it ran — see `answeredByLastScan`.
+        LastScan: LastScan option
     }
 
 [<NoComparison; NoEquality>]
@@ -3410,19 +3511,69 @@ let internal runChecksWithRetry
 let internal partitionVanished (exists: string -> bool) (registered: string list) : string list * string list =
     registered |> List.partition exists
 
-/// Whether a scan request admitted at `admittedAt` is already answered by the last
-/// completed scan, `covered` = the moment that scan began reading the tree.
+/// Whether the last completed scan answers a scan request admitted at `admittedAt`: the
+/// line saying so and that scan's completed state, or `None` for a real scan.
 ///
 /// A scan request asks for every registered file to be checked as it is on disk NOW.
-/// A scan that began reading after the request was admitted did exactly that, so a
-/// second full pass would re-ask FCS the same questions about the same bytes. `fshw
-/// check` against a daemon still in its cold scan sends exactly such a request, and
-/// each one used to cost another full scan. A request admitted after that moment is
-/// a real scan: files read before it may have changed unseen.
-let internal scanAnswers (covered: (int64 * ScanState) option) (admittedAt: int64) : bool =
-    match covered with
-    | Some(readFrom, _) -> admittedAt < readFrom
-    | None -> false
+/// `fshw check` against a daemon still in its cold scan sends such a request, and
+/// running it as a second full scan re-asks FCS the questions that scan just answered.
+///
+/// - Admitted before the scan began reading the tree: every file it checked was read
+///   after the request arrived, so it answers the request.
+/// - Admitted while it was reading: it answers the request when the tree is still
+///   exactly the one it checked — the same project fingerprint, no restore since
+///   discovery, the same model, every registered source with the text it checked, and
+///   every in-repository reference with the bytes it typed against, all read from disk
+///   NOW. Any difference is logged and runs a real scan.
+/// - Admitted after it completed: a real scan, so a forced scan on an idle daemon still
+///   re-checks the tree.
+let private answeredByLastScan
+    (ctx: BatchContext)
+    (state: ScanAgentState)
+    (admittedAt: int64)
+    : Async<(string * ScanState) option> =
+    async {
+        match state.LastScan with
+        | Some last when admittedAt < last.ReadFrom ->
+            return
+                Some(
+                    "Scan request answered by the scan that read the tree after it was admitted — not scanning again",
+                    last.State
+                )
+        | Some({ Stamp = Some stamp } as last) when admittedAt < last.CompletedAt ->
+            let! difference =
+                if fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns <> state.LastFingerprint then
+                    async.Return(Some "project files changed since the last scan")
+                elif not (restoredSinceDiscovery ctx.ContentTracker (ctx.Pipeline.GetRegisteredProjects())).IsEmpty then
+                    async.Return(Some "a restore changed the package graph since the last scan")
+                else
+                    async {
+                        // `Capture` only copies; the files are read after it releases.
+                        let! epoch, registered =
+                            ctx.Discovery.Capture(fun (epoch, _) ->
+                                epoch, ctx.Pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value)
+
+                        return
+                            TreeStamp.firstDifference
+                                TreeStamp.readTextHash
+                                TreeStamp.readBytesHash
+                                epoch
+                                registered
+                                stamp
+                    }
+
+            match difference with
+            | Some difference ->
+                Logging.info "scan" $"Scan request queued during the last scan: %s{difference} — scanning"
+                return None
+            | None ->
+                return
+                    Some(
+                        $"Scan request queued during the last scan answered by it: %d{stamp.Sources.Count} source(s) and %d{stamp.References.Count} in-repository reference(s) verified unchanged on disk — not scanning again",
+                        last.State
+                    )
+        | _ -> return None
+    }
 
 /// Which kind of scan this is, for the activity lease and the metrics record.
 /// Generation 0 means nothing has completed yet, so this is the daemon's cold
@@ -3505,8 +3656,13 @@ let private performScan
             // that re-discovered a checkout has already applied it.
             let mutable lastFingerprint =
                 ctx.DiscoveredFingerprint.Value |> Option.defaultValue fingerprintMemo.Value
-            // See `scanAnswers`; set once this attempt starts reading the tree.
+            // See `answeredByLastScan`; set once this attempt starts reading the tree.
             let mutable readFrom: int64 option = None
+            // See `TreeStamp`: what this attempt's checks read.
+            let mutable referenceHashes: Map<string, string> = Map.empty
+
+            let checkedSources =
+                Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal)
 
             let restored =
                 restoredSinceDiscovery ctx.ContentTracker (pipeline.GetRegisteredProjects())
@@ -3658,6 +3814,16 @@ let private performScan
                 // `waitForPluginTerminalIfRunningWith` for the race this closes.
                 do! waitForPluginTerminalIfRunning host "build" (System.TimeSpan.FromMinutes(10.0))
 
+                // After the build settled, before any check: the reference bytes the
+                // checks below type against.
+                referenceHashes <-
+                    scanTiers
+                    |> List.collect (List.choose (fun (_, _, options) -> options))
+                    |> TreeStamp.inRepoReferences ctx.RepoRoot
+                    |> List.toArray
+                    |> Array.Parallel.map (fun path -> path, TreeStamp.readBytesHash path)
+                    |> Map.ofArray
+
                 let mutable completed = 0
 
                 let mutable checkedCount = 0
@@ -3730,6 +3896,8 @@ let private performScan
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
                     let emitChecked (checkResult: FileCheckResult) =
+                        let sourceHash = ContentHash.ofText checkResult.Source
+
                         publishCurrent (fun () ->
                             let checkResult =
                                 { checkResult with
@@ -3737,6 +3905,7 @@ let private performScan
 
                             checkedCount <- checkedCount + 1
                             dispatchedFiles.Add(checkResult.File)
+                            checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
                             host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                             completed <- completed + 1
@@ -3872,9 +4041,21 @@ let private performScan
                 { ScanState = finalScanState
                   Generation = newGeneration
                   LastFingerprint = lastFingerprint
-                  Covered =
+                  LastScan =
                     match readFrom with
-                    | Some started when uncheckedCount = 0 -> Some(started, finalScanState)
+                    | Some started when uncheckedCount = 0 ->
+                        Some
+                            { ReadFrom = started
+                              CompletedAt = Diagnostics.Stopwatch.GetTimestamp()
+                              State = finalScanState
+                              Stamp =
+                                if skippedTotal = 0 then
+                                    Some
+                                        { ModelEpoch = fst capturedModel
+                                          Sources = checkedSources |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+                                          References = referenceHashes }
+                                else
+                                    None }
                     | _ -> None }
         }
 
@@ -4385,7 +4566,7 @@ module Daemon =
                     { ScanState = ScanIdle
                       Generation = 0L
                       LastFingerprint = Set.empty
-                      Covered = None },
+                      LastScan = None },
                     Ipc.ambientRpcDeadline (),
                     (fun state request ->
                         match request with
@@ -4400,23 +4581,21 @@ module Daemon =
                         async {
                             match request with
                             | SetScanState value -> return { state with ScanState = value }
-                            | RunScan admittedAt when scanAnswers state.Covered admittedAt ->
-                                let _, completedState = state.Covered.Value
+                            | RunScan admittedAt ->
+                                match! answeredByLastScan batchCtx state admittedAt with
+                                | Some(line, completedState) ->
+                                    Logging.info "scan" line
 
-                                Logging.info
-                                    "scan"
-                                    "Scan request answered by the scan that read the tree after it was admitted — not scanning again"
-
-                                return
-                                    { state with
-                                        ScanState = completedState }
-                            | RunScan _ ->
-                                // Failure policy lives in `runDaemonStep`.
-                                match!
-                                    runDaemonStep "performScan" (performScan batchCtx scanLeases state ct publish)
-                                with
-                                | Ok next -> return next
-                                | Result.Error failure -> return raise failure
+                                    return
+                                        { state with
+                                            ScanState = completedState }
+                                | None ->
+                                    // Failure policy lives in `runDaemonStep`.
+                                    match!
+                                        runDaemonStep "performScan" (performScan batchCtx scanLeases state ct publish)
+                                    with
+                                    | Ok next -> return next
+                                    | Result.Error failure -> return raise failure
                         })
                 )
 
