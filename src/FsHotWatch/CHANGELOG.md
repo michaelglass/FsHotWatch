@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: two `check` clients on one cold daemon run one full scan, not two. A scan request
+  that arrives while a scan is already checking the tree is answered by that scan when
+  the tree is still exactly what it checked: the same project files and model, every
+  registered source with the text it checked, and every in-repository reference with the
+  bytes it typed against, all re-read from disk. Any difference runs a real scan, as
+  does every request that arrives after the scan finished. A `WaitForScan` waiter bound
+  to a request answered by an earlier scan resolves when the request settles.
+
 ## 0.10.0-alpha.70 - 2026-10-08
 
 - feat: `RepositoryHost.runObserved` is `run` that hands the caller the host's
