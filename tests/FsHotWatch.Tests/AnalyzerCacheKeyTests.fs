@@ -198,15 +198,14 @@ let private crossCheck layout downSource (upA: string) (upB: string) =
             let keyA = keyFor (Some rootA) DiagnosticSeverity.Hint resultA
             let keyB = keyFor (Some rootB) DiagnosticSeverity.Hint resultB
             test <@ keyA.IsSome && keyB.IsSome @>
+            // Every pair compiles cleanly: the diagnostics cannot tell them apart.
+            test <@ Array.isEmpty diagsA && Array.isEmpty diagsB @>
 
-            (diagsA, unionA), (diagsB, unionB), lookupAcross rootA keyA.Value rootB keyB.Value "Down.fs"))
+            (unionA, unionB), lookupAcross rootA keyA.Value rootB keyB.Value "Down.fs"))
 
-/// Same file bytes, same (empty) diagnostics, different typed answer — and a miss.
+/// Same file bytes, different typed answer — and a miss naming only `used-signatures`.
 let private assertShapeChangeMisses layout downSource =
-    let (diagsA, unionA), (diagsB, unionB), outcome =
-        crossCheck layout downSource record union
-
-    test <@ Array.isEmpty diagsA && Array.isEmpty diagsB @>
+    let (unionA, unionB), outcome = crossCheck layout downSource record union
     test <@ unionA <> unionB @>
 
     match outcome with
@@ -214,10 +213,7 @@ let private assertShapeChangeMisses layout downSource =
     | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "used-signatures" ] @>
 
 let private assertHits layout downSource upA upB =
-    let (diagsA, _), (diagsB, _), outcome = crossCheck layout downSource upA upB
-    test <@ Array.isEmpty diagsA && Array.isEmpty diagsB @>
-
-    match outcome with
+    match snd (crossCheck layout downSource upA upB) with
     | CacheHit _ -> ()
     | CacheMiss reason -> failwith $"expected a hit, got %A{reason}"
 
