@@ -552,6 +552,83 @@ let withTempDir (prefix: string) (body: string -> 'a) =
     finally
         deleteTempDirResilient tmpDir
 
+/// The daemon's own checker, shared: its options decide which symbol data a check keeps.
+let daemonChecker = lazy (FsHotWatch.Daemon.Daemon.createChecker ())
+
+/// SDK references for a project-shaped check, resolved once from a throwaway script.
+let private sdkProjectOptions =
+    lazy
+        (withTempDir "sdk-options" (fun dir ->
+            let script = Path.Combine(dir, "Base.fsx")
+            File.WriteAllText(script, "let placeholder = 0\n")
+
+            let options, _ =
+                daemonChecker.Value.GetProjectOptionsFromScript(
+                    script,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText script),
+                    assumeDotNetFramework = false
+                )
+                |> Async.RunSynchronously
+
+            options, options.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))))
+
+/// Where `Up.fs` sits relative to `Down.fs` in `checkDownstream`.
+type UpstreamLayout =
+    /// Both in one project, `Up.fs` first in compile order.
+    | EarlierFile
+    /// `Up.fs` in a referenced F# project.
+    | ReferencedProject
+
+/// Check `root/Down.fs` (`downSource`) against `root/Up.fs` (`upSource`) through the
+/// daemon's checker, as the analyzers plugin receives it.
+let checkDownstream (root: string) (layout: UpstreamLayout) (upSource: string) (downSource: string) =
+    let up = Path.Combine(root, "Up.fs")
+    let down = Path.Combine(root, "Down.fs")
+    File.WriteAllText(up, upSource)
+    File.WriteAllText(down, downSource)
+    let baseOptions, sdk = sdkProjectOptions.Value
+
+    let project name (files: string list) (refs: (string * FSharpProjectOptions) list) =
+        { baseOptions with
+            ProjectFileName = Path.Combine(root, $"%s{name}.fsproj")
+            SourceFiles = [| for f in files -> Path.Combine(root, f) |]
+            OtherOptions = Array.append sdk [| for out, _ in refs -> $"-r:%s{out}" |]
+            ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
+            UseScriptResolutionRules = false
+            ProjectId = None
+            Stamp = None }
+
+    let options =
+        match layout with
+        | EarlierFile -> project "App" [ "Up.fs"; "Down.fs" ] []
+        | ReferencedProject ->
+            let lib = project "Lib" [ "Up.fs" ] []
+            project "App" [ "Down.fs" ] [ Path.Combine(root, "Lib", "bin", "Lib.dll"), lib ]
+
+    let parse, answer =
+        daemonChecker.Value.ParseAndCheckFileInProject(
+            down,
+            0,
+            FSharp.Compiler.Text.SourceText.ofString downSource,
+            options
+        )
+        |> Async.RunSynchronously
+
+    let check =
+        match answer with
+        | FSharpCheckFileAnswer.Succeeded r -> r
+        | FSharpCheckFileAnswer.Aborted -> failwith "check aborted"
+
+    { File = AbsFilePath.create down
+      Source = downSource
+      ParseResults = parse
+      CheckResults = FullCheck check
+      ProjectOptions = options
+      Version = 0L
+      ModelGeneration = None
+      Frame = None },
+    check
+
 /// Write a minimal `.fsproj` with a `<TargetFramework>` and the given `<Compile Include="…">`
 /// items, for tests that need `RegisterFromFsproj` to record both TFM and source files
 /// (e.g. anything exercising canonical-DLL path lookup).

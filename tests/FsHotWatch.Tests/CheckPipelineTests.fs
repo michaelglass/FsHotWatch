@@ -790,8 +790,15 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
           "GetAllUsesOfAllSymbolsInProject"
           "GetSemanticClassification" ]
 
+    // A foreground check result answers `GetAllUsesOfAllSymbolsInFile` for its own file
+    // with the flag off: the analyzers key reads it there (`CacheInputs.usedShapes`),
+    // and AnalyzerCacheKeyTests' used-signatures MISS tests run on the daemon's checker
+    // and would hit if those uses came back empty.
+    let foregroundReaders = set [ "CacheInputs.fs" ]
+
     let callers =
         sources
+        |> List.filter (fun path -> not (foregroundReaders.Contains(Path.GetFileName path)))
         |> List.choose (fun path ->
             let text = File.ReadAllText path
 

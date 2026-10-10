@@ -9,6 +9,7 @@ module FsHotWatch.Tests.AnalyzerCacheKeyTests
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.Symbols
 open FsHotWatch
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
@@ -132,3 +133,133 @@ let ``identical analyzer config in a second checkout still hits`` () =
             match lookupAcross a keyA.Value b keyB.Value "src/A.fs" with
             | CacheHit _ -> ()
             | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))
+
+// ---------------------------------------------------------------------------
+// used-signatures: the shape of what this file resolved upstream (real FCS)
+// ---------------------------------------------------------------------------
+
+/// Check `Down.fs` against `Up.fs` laid out as `layout`. Returns the result the analyzers
+/// plugin receives, the check's diagnostics, and what a typed analyzer reads about `Up.T`:
+/// is it a union?
+let private checkDown (root: string) (layout: UpstreamLayout) (upSource: string) (downSource: string) =
+    let result, check = checkDownstream root layout upSource downSource
+
+    // What a typed analyzer asks (cf. a wildcard-match rule's union lookup): is the type
+    // this file's values have a union? Read off the typed tree, the way analyzers do.
+    let rec exprTypes (e: FSharpExpr) =
+        seq {
+            yield e.Type
+
+            for child in e.ImmediateSubExpressions do
+                yield! exprTypes child
+        }
+
+    let rec declTypes (d: FSharpImplementationFileDeclaration) =
+        match d with
+        | FSharpImplementationFileDeclaration.Entity(_, ds) -> Seq.collect declTypes ds
+        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(v, _, body) ->
+            Seq.append [ v.FullType ] (exprTypes body)
+        | FSharpImplementationFileDeclaration.InitAction e -> exprTypes e
+
+    let rec named (t: FSharpType) =
+        seq {
+            if t.HasTypeDefinition then
+                yield t.TypeDefinition
+
+            for a in t.GenericArguments do
+                yield! named a
+        }
+
+    let tIsUnion =
+        check.ImplementationFile.Value.Declarations
+        |> Seq.collect declTypes
+        |> Seq.collect named
+        |> Seq.pick (fun e -> if e.DisplayName = "T" then Some e.IsFSharpUnion else None)
+
+    result, check.Diagnostics, tIsUnion
+
+let private record = "module Up\ntype T = { X: int }\nlet make () = { X = 1 }\n"
+let private union = "module Up\ntype T = | X of int\nlet make () = X 1\n"
+
+/// Names `Up.T` in an annotation.
+let private naming = "module Down\nlet describe (t: Up.T) = string t\n"
+
+/// Never names `Up.T`: it reaches the file only as the inferred type of `v`.
+let private inferring =
+    "module Down\nlet v = Up.make ()\nlet describe () = string v\n"
+
+/// Key `Down.fs` checked in `rootA` against `upA` and in `rootB` against `upB`, and
+/// look B's key up in a store holding A's entry.
+let private crossCheck layout downSource (upA: string) (upB: string) =
+    withTempDir "xfile-a" (fun rootA ->
+        withTempDir "xfile-b" (fun rootB ->
+            let resultA, diagsA, unionA = checkDown rootA layout upA downSource
+            let resultB, diagsB, unionB = checkDown rootB layout upB downSource
+            let keyA = keyFor (Some rootA) DiagnosticSeverity.Hint resultA
+            let keyB = keyFor (Some rootB) DiagnosticSeverity.Hint resultB
+            test <@ keyA.IsSome && keyB.IsSome @>
+            // Every pair compiles cleanly: the diagnostics cannot tell them apart.
+            test <@ Array.isEmpty diagsA && Array.isEmpty diagsB @>
+
+            (unionA, unionB), lookupAcross rootA keyA.Value rootB keyB.Value "Down.fs"))
+
+/// Same file bytes, different typed answer — and a miss naming only `used-signatures`.
+let private assertShapeChangeMisses layout downSource =
+    let (unionA, unionB), outcome = crossCheck layout downSource record union
+    test <@ unionA <> unionB @>
+
+    match outcome with
+    | CacheHit _ -> failwith "an upstream type that changed shape must never hit"
+    | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "used-signatures" ] @>
+
+let private assertHits layout downSource upA upB =
+    match snd (crossCheck layout downSource upA upB) with
+    | CacheHit _ -> ()
+    | CacheMiss reason -> failwith $"expected a hit, got %A{reason}"
+
+[<Fact(Timeout = 120000)>]
+let ``the analyzers key differs when an earlier file changes the shape of a type this file names`` () =
+    assertShapeChangeMisses EarlierFile naming
+
+[<Fact(Timeout = 120000)>]
+let ``the analyzers key differs when an earlier file changes the shape of a type this file only infers`` () =
+    assertShapeChangeMisses EarlierFile inferring
+
+[<Fact(Timeout = 120000)>]
+let ``the analyzers key differs when a referenced project changes the shape of a type this file uses`` () =
+    assertShapeChangeMisses ReferencedProject naming
+
+[<Fact(Timeout = 120000)>]
+let ``an unchanged upstream in a second checkout still hits`` () =
+    assertHits EarlierFile inferring record record
+
+[<Fact(Timeout = 120000)>]
+let ``an upstream body-only edit still hits`` () =
+    // A different body, a comment and shifted lines: nothing a caller can see.
+    let edited =
+        "module Up\n// moved down a line\ntype T = { X: int }\nlet make () = { X = 1 + 1 }\n"
+
+    assertHits EarlierFile inferring record edited
+    assertHits ReferencedProject inferring record edited
+
+[<Fact(Timeout = 120000)>]
+let ``an upstream shape change this file cannot see still hits`` () =
+    let withUnusedType = record + "type Unused = { Y: string }\n"
+    let changedUnusedType = record + "type Unused = | Y of string\n"
+    assertHits EarlierFile inferring withUnusedType changedUnusedType
+
+[<Fact(Timeout = 15000)>]
+let ``a file whose used signatures cannot be described has no analyzers key`` () =
+    withTempDir "undescribable" (fun root ->
+        // A check result with no state throws from every query.
+        let broken =
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+                typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+            )
+            :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
+
+        let result =
+            { resultIn root with
+                CheckResults = FullCheck broken }
+
+        test <@ keyFor (Some root) DiagnosticSeverity.Hint result = None @>)

@@ -22,6 +22,7 @@
     <Compile Include="SleepTests.fs" />
     <Compile Include="ConfigOverrideTests.fs" />
     <Compile Include="HashCostTests.fs" />
+    <Compile Include="KeyCostTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
