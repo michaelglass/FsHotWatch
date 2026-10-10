@@ -1204,14 +1204,19 @@ let ``an unavailable project model can NEVER yield a green — in any mode, scop
                                           WaitingOnBuild = wait }
                                       |> withModel model
 
-                                  model, verdict mode reading ]
+                                  (model, mode, scope, coverage, baseline, wait), verdict mode reading ]
 
     // 8 models x 2 modes x 6 scopes x 3 coverages x 4 baselines x 3 waits.
     test <@ List.length outcomes = 3456 @>
 
-    for model, outcome in outcomes do
-        test <@ outcome = CheckOutcome.ModelUnavailable model @>
-        test <@ exitCode outcome = 2 @>
+    // One assertion over every case: an Unquote `test` per case costs a quotation
+    // evaluation each, which put 6912 of them over the Timeout on a loaded machine.
+    let wrong =
+        outcomes
+        |> List.filter (fun ((model, _, _, _, _, _), outcome) ->
+            outcome <> CheckOutcome.ModelUnavailable model || exitCode outcome <> 2)
+
+    test <@ List.isEmpty wrong @>
 
 [<Fact(Timeout = 15000)>]
 let ``a real failure still reddens over an unavailable model, and a dead host is still named`` () =
