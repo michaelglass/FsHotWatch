@@ -8,8 +8,9 @@
   and the file still compiles; a typed analyzer then answers differently, and the cache
   served the old answer. The key now names the public shape of every symbol the file's
   check resolved outside the file (`used-signatures`). An upstream edit that changes only
-  bodies, comments or line positions still hits. Salt bumped to `analyzers-merkle-v7`, so
-  every existing entry is re-run once.
+  bodies, comments or line positions still hits. A file whose used signatures cannot be read
+  has no key: its analyzers run and nothing is cached. Salt bumped to `analyzers-merkle-v7`,
+  so every existing entry is re-run once.
 
 ## 0.7.0-alpha.44 - 2026-10-06
 
