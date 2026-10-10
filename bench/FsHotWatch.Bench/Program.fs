@@ -251,18 +251,25 @@ let main argv =
             eprintf "%s" usage
             2
         | Some project ->
-            let edits =
+            let replacements =
                 [ for label in [ "body"; "shape" ] do
-                      match one opts label, one opts "edit-file" with
-                      | Some replacement, Some file ->
+                      match one opts label with
+                      | Some replacement -> label, replacement
+                      | None -> () ]
+
+            let edits =
+                match one opts "edit-file", replacements with
+                | _, [] -> []
+                | None, _ -> failwith "--body and --shape need --edit-file <repo-relative path>"
+                | Some file, _ ->
+                    [ for label, replacement in replacements ->
                           match KeyCost.parseReplacement replacement with
                           | Ok(before, after) ->
                               { KeyCost.Label = $"%s{label} edit"
                                 KeyCost.File = file
                                 KeyCost.Before = before
                                 KeyCost.After = after }
-                          | Error message -> failwith message
-                      | _ -> () ]
+                          | Error message -> failwith message ]
 
             KeyCost.measure (one opts "repo" |> Option.defaultValue ".") project edits
             |> List.iter (printfn "%s")

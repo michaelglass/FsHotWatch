@@ -909,6 +909,7 @@ let internal createWithSeams
                                   repoRoot
                                   result.ProjectOptions
                                   result.CheckResults
+                              // Typed analyzers can read the file's own diagnostics.
                               "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
                     )
             | _ -> None

@@ -78,19 +78,12 @@ let private inRepository (repoRoot: string option) (options: FSharpProjectOption
     if not (isNull (box options)) then
         addReferences options
 
-    let rootPrefix =
-        repoRoot
-        |> Option.map (fun root ->
-            Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar)
-            + string Path.DirectorySeparatorChar)
-
     fun assembly ->
         match assembly.FileName with
         | None -> true
         | Some file ->
             projectNames.Contains assembly.SimpleName
-            || rootPrefix
-               |> Option.exists (fun prefix -> file.StartsWith(prefix, StringComparison.Ordinal))
+            || (repoRoot.IsSome && CheckCache.isUnderRoot repoRoot file)
 
 let private accessText (access: FSharpAccessibility) =
     if access.IsPublic then "public"
@@ -121,24 +114,36 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 
     let visit (entity: FSharpEntity) =
         let name = entityName entity
+        let assembly = entity.Assembly
 
-        if visited.Add $"%s{entity.Assembly.SimpleName}/%s{name}" then
-            if inRepo entity.Assembly then
+        if visited.Add $"%s{assembly.SimpleName}/%s{name}" then
+            if inRepo assembly then
                 pending.Enqueue entity
             else
-                add $"ext %s{entity.Assembly.QualifiedName} %s{name}"
+                add $"ext %s{assembly.QualifiedName} %s{name}"
 
-    let attributesText (attributes: FSharpAttribute seq) =
-        attributes
-        |> Seq.map (fun a -> a.Format FSharpDisplayContext.Empty)
-        |> Seq.sort
-        |> String.concat ", "
+    let attributesText (attributes: IList<FSharpAttribute>) =
+        if attributes.Count = 0 then
+            ""
+        else
+            attributes
+            |> Seq.map (fun a -> a.Format FSharpDisplayContext.Empty)
+            |> Seq.sort
+            |> String.concat ", "
 
-    // `follow`: queue the repository types this type names, so a type reached only
-    // through it (an inferred value's record, a field's union) is rendered too.
-    let rec typeText (follow: bool) (t: FSharpType) : string =
+    // Queue every type `t` names, so a type reached only through it (an inferred value's
+    // record, a field's union) is rendered too.
+    let rec follow (t: FSharpType) =
+        if not t.IsGenericParameter then
+            if t.HasTypeDefinition then
+                visit t.TypeDefinition
+
+            for arg in t.GenericArguments do
+                follow arg
+
+    let rec typeText (t: FSharpType) : string =
         let args (separator: string) =
-            t.GenericArguments |> Seq.map (typeText follow) |> String.concat separator
+            t.GenericArguments |> Seq.map typeText |> String.concat separator
 
         if t.IsGenericParameter then
             "'" + t.GenericParameter.Name
@@ -148,13 +153,10 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
             (if t.IsStructTupleType then "struct (" else "(") + args " * " + ")"
         elif t.IsAnonRecordType then
             Seq.zip t.AnonRecordTypeDetails.SortedFieldNames t.GenericArguments
-            |> Seq.map (fun (name, arg) -> $"%s{name}: %s{typeText follow arg}")
+            |> Seq.map (fun (name, arg) -> $"%s{name}: %s{typeText arg}")
             |> String.concat "; "
             |> sprintf "{| %s |}"
         elif t.HasTypeDefinition then
-            if follow then
-                visit t.TypeDefinition
-
             entityName t.TypeDefinition + "<" + args ", " + ">"
         else
             t.Format FSharpDisplayContext.Empty
@@ -162,49 +164,43 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
     let literalText (value: obj option) =
         value |> Option.map (sprintf " = %A") |> Option.defaultValue ""
 
+    /// The names whose condition holds, space-separated.
+    let named (conditions: (bool * string) list) =
+        conditions
+        |> List.choose (fun (holds, name) -> if holds then Some name else None)
+        |> String.concat " "
+
     let memberText (m: FSharpMemberOrFunctionOrValue) =
         let parameters =
             m.CurriedParameterGroups
             |> Seq.map (Seq.map (fun p -> defaultArg p.Name "_") >> String.concat ", ")
             |> String.concat " | "
 
-        let scope = if m.IsInstanceMember then "instance" else "static"
-        let mutability = if m.IsMutable then " mutable" else ""
+        let flags = named [ m.IsInstanceMember, "instance"; m.IsMutable, "mutable" ]
+        follow m.FullType
 
-        $"%s{m.CompiledName}/%s{m.DisplayName} %s{scope}%s{mutability} %s{accessText m.Accessibility} (%s{parameters}) : %s{typeText true m.FullType}%s{literalText m.LiteralValue} [%s{attributesText m.Attributes}]"
+        $"%s{m.CompiledName}/%s{m.DisplayName} [%s{flags}] %s{accessText m.Accessibility} (%s{parameters}) : %s{typeText m.FullType}%s{literalText m.LiteralValue} [%s{attributesText m.Attributes}]"
 
     let fieldText (f: FSharpField) =
-        let mutability = if f.IsMutable then " mutable" else ""
-        let scope = if f.IsStatic then " static" else ""
+        let flags = named [ f.IsStatic, "static"; f.IsMutable, "mutable" ]
 
-        $"%s{f.Name}%s{scope}%s{mutability} %s{accessText f.Accessibility} : %s{typeText false f.FieldType}%s{literalText f.LiteralValue} [%s{attributesText f.PropertyAttributes}]"
+        $"%s{f.Name} [%s{flags}] %s{accessText f.Accessibility} : %s{typeText f.FieldType}%s{literalText f.LiteralValue} [%s{attributesText f.PropertyAttributes}]"
 
     let entityShape (entity: FSharpEntity) =
         guarded entity.DisplayName (fun () ->
             let kinds =
-                [ if entity.IsFSharpModule then
-                      "module"
-                  if entity.IsFSharpRecord then
-                      "record"
-                  if entity.IsFSharpUnion then
-                      "union"
-                  if entity.IsFSharpAbbreviation then
-                      "abbreviation"
-                  if entity.IsFSharpExceptionDeclaration then
-                      "exception"
-                  if entity.IsEnum then
-                      "enum"
-                  if entity.IsDelegate then
-                      "delegate"
-                  if entity.IsInterface then
-                      "interface"
-                  if entity.IsClass then
-                      "class"
-                  if entity.IsValueType then
-                      "struct"
-                  if entity.IsMeasure then
-                      "measure" ]
-                |> String.concat " "
+                named
+                    [ entity.IsFSharpModule, "module"
+                      entity.IsFSharpRecord, "record"
+                      entity.IsFSharpUnion, "union"
+                      entity.IsFSharpAbbreviation, "abbreviation"
+                      entity.IsFSharpExceptionDeclaration, "exception"
+                      entity.IsEnum, "enum"
+                      entity.IsDelegate, "delegate"
+                      entity.IsInterface, "interface"
+                      entity.IsClass, "class"
+                      entity.IsValueType, "struct"
+                      entity.IsMeasure, "measure" ]
 
             let generics =
                 entity.GenericParameters |> Seq.map (fun g -> g.Name) |> String.concat ", "
@@ -215,14 +211,15 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
                 // and members are not rendered here: a file reaches any of them through a
                 // symbol use of its own, which renders it.
                 [ if entity.IsFSharpAbbreviation then
-                      "= " + typeText true entity.AbbreviatedType
+                      follow entity.AbbreviatedType
+                      "= " + typeText entity.AbbreviatedType
                   elif not entity.IsFSharpModule && not entity.IsNamespace then
                       match entity.BaseType with
-                      | Some baseType -> "inherit " + typeText false baseType
+                      | Some baseType -> "inherit " + typeText baseType
                       | None -> ()
 
                       for i in entity.DeclaredInterfaces do
-                          "interface " + typeText false i
+                          "interface " + typeText i
 
                       for f in entity.FSharpFields do
                           "field " + fieldText f
@@ -252,22 +249,27 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
                 // used symbol's type, which is followed below, so locals need no walk.
                 match symbol with
                 | _ when isLocal -> ()
-                | :? FSharpMemberOrFunctionOrValue as m when inRepo m.Assembly ->
-                    m.DeclaringEntity |> Option.iter visit
-                    add ("val " + memberText m)
-                | :? FSharpMemberOrFunctionOrValue as m -> add $"ext %s{m.Assembly.QualifiedName} %s{m.FullName}"
+                | :? FSharpMemberOrFunctionOrValue as m ->
+                    let assembly = m.Assembly
+
+                    if inRepo assembly then
+                        m.DeclaringEntity |> Option.iter visit
+                        add ("val " + memberText m)
+                    else
+                        add $"ext %s{assembly.QualifiedName} %s{m.FullName}"
                 | :? FSharpEntity as entity -> visit entity
                 | :? FSharpField as field ->
                     field.DeclaringEntity |> Option.iter visit
-                    typeText true field.FieldType |> ignore
+                    follow field.FieldType
                 | :? FSharpUnionCase as case ->
                     visit case.DeclaringEntity
 
                     for field in case.Fields do
-                        typeText true field.FieldType |> ignore
+                        follow field.FieldType
                 | :? FSharpActivePatternCase as case ->
                     let group = String.concat "|" case.Group.Names
-                    add $"pattern %s{case.Name} %s{group} : %s{typeText true case.Group.OverallType}"
+                    follow case.Group.OverallType
+                    add $"pattern %s{case.Name} %s{group} : %s{typeText case.Group.OverallType}"
                 // Generic and ordinary parameters are part of a signature rendered above.
                 | _ -> ())
 

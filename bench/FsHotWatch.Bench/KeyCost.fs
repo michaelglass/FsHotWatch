@@ -99,9 +99,7 @@ type private Pass =
       CheckTime: TimeSpan }
 
 let private percentile (p: float) (values: float list) =
-    match List.sort values with
-    | [] -> 0.0
-    | sorted -> sorted[min (sorted.Length - 1) (int (ceil (p * float sorted.Length)) - 1 |> max 0)]
+    Summary.percentile p values |> Option.defaultValue 0.0
 
 let private ms (ticks: int64) =
     float ticks * 1000.0 / float Stopwatch.Frequency
@@ -128,13 +126,7 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
         | true, text -> text
         | false, _ -> File.ReadAllText path
 
-    let checker =
-        FSharpChecker.Create(
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = false,
-            parallelReferenceResolution = true,
-            useTransparentCompiler = true
-        )
+    let checker = Daemon.Daemon.createChecker ()
 
     // Each file is versioned by its content, so an in-memory edit is a new version.
     let snapshots = Dictionary<string, FSharpProjectSnapshot>()
@@ -231,7 +223,7 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
         let slots = p.Keys |> Seq.map (fun kv -> ms kv.Value.SlotTicks) |> Seq.toList
 
         [ $"%s{label}: checks %.1f{p.CheckTime.TotalSeconds} s; key pass without used-signatures %.0f{baseMs} ms, with %.0f{baseMs + List.sum slots} ms"
-          $"  used-signatures per file: mean %.2f{List.average slots} ms, p50 %.2f{percentile 0.5 slots} ms, p95 %.2f{percentile 0.95 slots} ms, max %.2f{List.max slots} ms" ]
+          $"  used-signatures per file: mean %.2f{List.average slots} ms, p50 %.2f{percentile 50.0 slots} ms, p95 %.2f{percentile 95.0 slots} ms, max %.2f{List.max slots} ms" ]
 
     let lines = List<string>()
     lines.Add $"%s{relative project}: %d{projects.Length} projects, %d{files.Length} files"
