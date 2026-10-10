@@ -202,7 +202,11 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
 
                 let without = TaskCache.merkleCacheKey slots
                 let slotStarted = Stopwatch.GetTimestamp()
-                let used = CacheInputs.usedSignaturesHash (Some repo) options state
+
+                let used =
+                    CacheInputs.usedSignaturesHash (Some repo) options state
+                    |> Option.defaultValue "unavailable"
+
                 let slotEnded = Stopwatch.GetTimestamp()
                 let withSlot = TaskCache.merkleCacheKey (slots @ [ "used-signatures", used ])
 

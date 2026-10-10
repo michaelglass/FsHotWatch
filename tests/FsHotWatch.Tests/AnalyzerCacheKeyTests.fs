@@ -247,3 +247,19 @@ let ``an upstream shape change this file cannot see still hits`` () =
     let withUnusedType = record + "type Unused = { Y: string }\n"
     let changedUnusedType = record + "type Unused = | Y of string\n"
     assertHits EarlierFile inferring withUnusedType changedUnusedType
+
+[<Fact(Timeout = 15000)>]
+let ``a file whose used signatures cannot be described has no analyzers key`` () =
+    withTempDir "undescribable" (fun root ->
+        // A check result with no state throws from every query.
+        let broken =
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+                typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+            )
+            :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
+
+        let result =
+            { resultIn root with
+                CheckResults = FullCheck broken }
+
+        test <@ keyFor (Some root) DiagnosticSeverity.Hint result = None @>)
