@@ -35,6 +35,19 @@ $B summarize results.jsonl
 $B hash-cost [--iterations 1000] [--warmup 100]     # or: mise run bench-hash-cost
 ```
 
+```bash
+# The analyzers key's cross-file slot on a real project: per-file cost of
+# `used-signatures`, and how many OTHER files' keys an upstream edit moves with and
+# without it. Edits are served from memory; nothing on disk is written.
+$B key-cost --project src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj \
+    --edit-file src/FsHotWatch/Events.fs \
+    --body "must state what the run did=>must say what the run did" \
+    --shape $'Frame: PathFrame.PathFrame option\n    }=>Frame: PathFrame.PathFrame option\n    }\n\n    member this.IsFramed = this.Frame.IsSome'
+```
+
+`key-cost` checks every file twice before any edit: the first pass compiles and warms the
+JIT, the second is the baseline the edits are compared with.
+
 `hash-cost` is a number, not a gate. A throughput bound measured on a shared box fails on
 load rather than on code, which is why this is a harness command and not a unit test.
 Take the reading on a quiet box and compare it with the last one you took; nothing

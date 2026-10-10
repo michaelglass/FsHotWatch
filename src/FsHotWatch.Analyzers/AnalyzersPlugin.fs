@@ -841,7 +841,8 @@ let internal createWithSeams
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key: the analyzer set's identity and failure threshold, the
-        // config files the analyzers discover, the file, its source and its fcs-signature.
+        // config files the analyzers discover, the file, its source, the shape of what its
+        // check resolved in other files, and its fcs-signature.
         // REPO-RELATIVE, like every other path in this key: an analyzer directory
         // inside the repository (`analyzers/`, the usual layout) named absolutely made
         // the key workspace-specific for no analytical reason. The CONTENT of the
@@ -887,11 +888,14 @@ let internal createWithSeams
                     let file = AbsFilePath.value result.File
                     Volatile.Write(&replayPending, true)
 
-                    Some(
+                    // A shape that cannot be described leaves no key: the analyzers
+                    // run and nothing is read from or written to the cache.
+                    FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
+                    |> Option.map (fun usedSignatures ->
                         FsHotWatch.TaskCache.merkleCacheKey
-                            // v6 orphans every entry keyed without the failure threshold
-                            // and the analyzers' config files.
-                            [ "plugin-version", "analyzers-merkle-v6"
+                            // v7 orphans every entry keyed without the shape of what the
+                            // file resolved upstream.
+                            [ "plugin-version", "analyzers-merkle-v7"
                               "analyzer-paths", analyzerPathsHash
                               "analyzer-inputs", analyzerInputs
                               // Entries are stored AFTER promotion, so the same finding is
@@ -900,10 +904,12 @@ let internal createWithSeams
                               "analyzer-config", analyzerConfigHash file
                               "file", FsHotWatch.CachePathIdentity.keyOf repoRoot file
                               "source", result.Source
-                              // fcs-signature captures cross-file FCS state changes so
-                              // upstream symbol changes invalidate this file's cache.
-                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
-                    )
+                              // A typed analyzer sees the types this file resolved in
+                              // other files; its own diagnostics do not move when one
+                              // changes shape and the file still compiles.
+                              "used-signatures", usedSignatures
+                              // Typed analyzers can read the file's own diagnostics.
+                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ])
             | _ -> None
 
         Some(fun _state event -> cacheKey event)

@@ -9,6 +9,12 @@
   bytes it typed against, all re-read from disk. Any difference runs a real scan, as
   does every request that arrives after the scan finished. A `WaitForScan` waiter bound
   to a request answered by an earlier scan resolves when the request settles.
+- feat: `CacheInputs.usedSignaturesHash` hashes the public shape of every symbol a file's
+  type check resolved outside the file: upstream signatures and the declarations of the
+  repository types they name (kind, fields, union cases, base types, attributes), never a
+  body, a position or a path. Symbols from outside the repository contribute their name and
+  their assembly's qualified name. It returns `None` when FCS cannot describe them.
+  `CacheInputs.usedShapes` returns the text it hashes.
 
 ## 0.10.0-alpha.70 - 2026-10-08
 
