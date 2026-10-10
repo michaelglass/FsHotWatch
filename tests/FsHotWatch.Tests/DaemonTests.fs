@@ -5442,6 +5442,204 @@ let ``a scan requested before the running scan read the tree is answered by it``
         daemon.ScanAll() |> Async.RunSynchronously
         test <@ daemon.GetScanGeneration() = 2L @>)
 
+/// A daemon over one real source file whose FIRST scan is held after it began reading
+/// the tree (preprocessors run after that point). `body` receives the daemon, the
+/// project path, a task that completes once the first scan is held, and the action
+/// that releases it.
+let private withHeldFirstScan
+    (name: string)
+    (body: Daemon -> string -> Task<unit> -> (unit -> unit) -> Task<unit> -> unit)
+    =
+    withTempDir name (fun tmpDir ->
+        let sourceDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(sourceDir) |> ignore
+        let projectPath = Path.Combine(sourceDir, "Probe.fsproj")
+        File.WriteAllText(projectPath, "<Project />")
+        let source = Path.Combine(sourceDir, "A.fs")
+        File.WriteAllText(source, "module A\nlet x = 1\n")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ source ] }
+
+        let loader = CountingWorkspaceLoader([ loaded ])
+        // The deps guard's fresh-assets marker, so the minimal project is not restored.
+        let assets = FsHotWatch.DepsFreshness.assetsPath projectPath
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+        let checker = sharedChecker.Value
+
+        let scriptOptions, _ =
+            checker.GetProjectOptionsFromScript(
+                source,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source)
+            )
+            |> Async.RunSynchronously
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader checker tmpDir oneShotDaemonOptions loader (fun projects ->
+                projects
+                |> List.map (fun project ->
+                    { scriptOptions with
+                        ProjectFileName = project.ProjectFileName }))
+
+        let entered =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+        use resume = new ManualResetEventSlim(false)
+        let calls = ref 0
+
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "mid-scan-barrier"
+
+                member _.Process files _ =
+                    if Interlocked.Increment calls = 1 then
+                        entered.TrySetResult(()) |> ignore
+                        resume.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "barrier" }
+
+                member _.Dispose() = () }
+        )
+
+        let first = Async.StartAsTask(daemon.ScanAll())
+
+        try
+            body daemon projectPath entered.Task resume.Set first
+        finally
+            resume.Set())
+
+/// Two `check` clients on one cold daemon each force a scan; the second request arrives
+/// after the cold scan began reading the tree. When the tree is still exactly what that
+/// scan checked, the scan answers it: one full scan, not two. A request admitted after
+/// the scan completed is still a real scan.
+[<Fact(Timeout = 120000)>]
+let ``a scan requested mid-scan over the tree that scan checked is answered by it`` () =
+    withHeldFirstScan "scan-mid-unchanged" (fun daemon _ entered release first ->
+        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+
+        let second =
+            daemon.AdmitScan().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+        release ()
+        first.WaitAsync(TimeSpan.FromSeconds 60.0).GetAwaiter().GetResult()
+        second.WaitAsync(TimeSpan.FromSeconds 60.0).GetAwaiter().GetResult()
+        test <@ daemon.GetScanGeneration() = 1L @>
+
+        // Control: admitted after the scan completed — a real scan, tree unchanged or not.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ daemon.GetScanGeneration() = 2L @>)
+
+/// The negative control: a project file edited after the running scan read it, before
+/// the queued request runs, means the tree is not the one that scan checked.
+[<Fact(Timeout = 120000)>]
+let ``a scan requested mid-scan is a real scan when an input changed after the scan read it`` () =
+    withHeldFirstScan "scan-mid-changed" (fun daemon projectPath entered release first ->
+        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+
+        let second =
+            daemon.AdmitScan().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+        File.AppendAllText(projectPath, "<!-- edited -->")
+        release ()
+        first.WaitAsync(TimeSpan.FromSeconds 60.0).GetAwaiter().GetResult()
+        second.WaitAsync(TimeSpan.FromSeconds 60.0).GetAwaiter().GetResult()
+        test <@ daemon.GetScanGeneration() = 2L @>)
+
+[<Fact(Timeout = 5000)>]
+let ``the tree differs from a scan's stamp by model, membership, source text or reference bytes`` () =
+    let stamp: Daemon.TreeStamp =
+        { ModelEpoch = 3L
+          Sources = Map.ofList [ "/r/A.fs", "hA"; "/r/B.fs", "hB" ]
+          References =
+            Map.ofList
+                [ "/r/obj/ref/Lib.dll", "hL"
+                  "/r/obj/ref/Gone.dll", Daemon.TreeStamp.AbsentFile ] }
+
+    let texts = Map.ofList [ "/r/A.fs", "hA"; "/r/B.fs", "hB" ]
+
+    let bytes =
+        Map.ofList
+            [ "/r/obj/ref/Lib.dll", "hL"
+              "/r/obj/ref/Gone.dll", Daemon.TreeStamp.AbsentFile ]
+
+    let registered = [ "/r/A.fs"; "/r/B.fs" ]
+
+    let differ texts bytes epoch registered =
+        Daemon.TreeStamp.firstDifference (fun p -> Map.find p texts) (fun p -> Map.find p bytes) epoch registered stamp
+
+    test <@ differ texts bytes 3L registered = None @>
+    test <@ differ texts bytes 4L registered = Some "the project model was re-discovered (epoch 3 -> 4)" @>
+    test <@ differ texts bytes 3L [ "/r/A.fs" ] = Some "the registered files are not the ones the last scan checked" @>
+    test <@ differ (Map.add "/r/B.fs" "changed" texts) bytes 3L registered = Some "B.fs changed since the last scan" @>
+
+    test
+        <@
+            differ texts (Map.add "/r/obj/ref/Lib.dll" "rebuilt" bytes) 3L registered = Some
+                "reference Lib.dll changed since the last scan"
+        @>
+
+    test
+        <@
+            differ texts (Map.add "/r/obj/ref/Gone.dll" "appeared" bytes) 3L registered = Some
+                "reference Gone.dll changed since the last scan"
+        @>
+
+    // A file that cannot be read now is a difference, even against a stamp that could
+    // not read it either.
+    let unreadable = FsHotWatch.ContentHash.UnhashableContent
+
+    let unreadableStamp =
+        { stamp with
+            References = Map.add "/r/obj/ref/Lib.dll" unreadable stamp.References }
+
+    test
+        <@
+            Daemon.TreeStamp.firstDifference
+                (fun p -> Map.find p texts)
+                (fun p -> Map.find p (Map.add "/r/obj/ref/Lib.dll" unreadable bytes))
+                3L
+                registered
+                unreadableStamp = Some "reference Lib.dll changed since the last scan"
+        @>
+
+    test
+        <@
+            Daemon.TreeStamp.inRepoReferences
+                "/r"
+                [ makeProjectOptions
+                      "/r/P.fsproj"
+                      []
+                      [ "-r:/r/obj/ref/Lib.dll"
+                        "-r:/nuget/Pkg.dll"
+                        "--debug"
+                        "-r:/r/obj/ref/Lib.dll" ] ] = [ "/r/obj/ref/Lib.dll" ]
+        @>
+
+/// A scan request can be answered without a new generation. A waiter bound to that
+/// request resolves when it settles, or `WaitForScan G` sent after `Scan` would wait for
+/// a generation nothing will make.
+[<Fact(Timeout = 5000)>]
+let ``a waiter bound to a request answered without a new generation resolves when it settles`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    signal.SignalGeneration 1L
+
+    let receipt =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    signal.ObserveScan(receipt.Task, (fun () -> 1L))
+    let waiter = signal.WaitForGeneration(1L, 1L)
+    signal.Drained().Wait(TimeSpan.FromSeconds 2.0) |> ignore
+    test <@ not waiter.IsCompleted @>
+
+    receipt.SetResult(())
+
+    test <@ waiter.Wait(TimeSpan.FromSeconds 2.0) @>
+
 /// A project with no `obj/project.assets.json` is restored before it is checked. The
 /// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
 /// `dotnet restore`.
