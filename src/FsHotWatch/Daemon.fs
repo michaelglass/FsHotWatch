@@ -4586,11 +4586,12 @@ module Daemon =
     ///
     /// That flag retains every symbol-use resolution for a project so that
     /// `GetAllUsesOfAllSymbolsInFile`, `GetUsesOfSymbolInFile` and the semantic
-    /// classification APIs can be answered later. This daemon calls none of them.
-    /// Audited across `src/`: exactly two things are read off a check result —
-    /// `checkResults.Diagnostics` and `.ImplementationFile` — and the second is fed
-    /// by `keepAssemblyContents`, not by this. The flag appeared nowhere but its own
-    /// construction site.
+    /// classification APIs can be answered later, for files other than the one just
+    /// checked. This daemon asks only about the file just checked: the analyzers key
+    /// reads `GetAllUsesOfAllSymbolsInFile` off that file's own foreground result
+    /// (`CacheInputs.usedShapes`), which answers with the flag off. Otherwise the
+    /// daemon reads `checkResults.Diagnostics` and `.ImplementationFile`, and the
+    /// second is fed by `keepAssemblyContents`, not by this.
     ///
     /// Retained resolutions are held for the whole project graph, so on a 2000-file
     /// tree this is retention proportional to the repository for a capability with
