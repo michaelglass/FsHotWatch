@@ -22,6 +22,8 @@ let private usage =
                    [--path-from TypeA --path-to TypeB [--block TypeC,…]]
   fshw-bench summarize <jsonl> [--allow-contended]
   fshw-bench hash-cost [--iterations 1000] [--warmup 100]
+  fshw-bench key-cost --project <fsproj> [--repo .]
+                      [--edit-file <repo-relative path> [--body "<before>=><after>"] [--shape "<before>=><after>"]]
 """
 
 /// Parse `--key value` / `--flag` arguments. Repeated keys accumulate.
@@ -243,6 +245,29 @@ let main argv =
         |> printfn "%s"
 
         0
+    | "key-cost" ->
+        match one opts "project" with
+        | None ->
+            eprintf "%s" usage
+            2
+        | Some project ->
+            let edits =
+                [ for label in [ "body"; "shape" ] do
+                      match one opts label, one opts "edit-file" with
+                      | Some replacement, Some file ->
+                          match KeyCost.parseReplacement replacement with
+                          | Ok(before, after) ->
+                              { KeyCost.Label = $"%s{label} edit"
+                                KeyCost.File = file
+                                KeyCost.Before = before
+                                KeyCost.After = after }
+                          | Error message -> failwith message
+                      | _ -> () ]
+
+            KeyCost.measure (one opts "repo" |> Option.defaultValue ".") project edits
+            |> List.iter (printfn "%s")
+
+            0
     | _ ->
         eprintf "%s" usage
         2

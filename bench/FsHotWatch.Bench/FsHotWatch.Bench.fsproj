@@ -26,6 +26,7 @@
     <Compile Include="Summary.fs" />
     <Compile Include="Instruments.fs" />
     <Compile Include="HashCost.fs" />
+    <Compile Include="KeyCost.fs" />
     <Compile Include="GraphReport.fs" />
     <Compile Include="Scenario.fs" />
     <Compile Include="Program.fs" />
