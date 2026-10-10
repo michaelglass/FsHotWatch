@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a cached analyzer result is no longer replayed after a type it depends on changes
+  shape in an earlier file or a referenced project. The key's only cross-file input was the
+  file's own compiler diagnostics, which stay the same when, say, a record becomes a union
+  and the file still compiles; a typed analyzer then answers differently, and the cache
+  served the old answer. The key now names the public shape of every symbol the file's
+  check resolved outside the file (`used-signatures`). An upstream edit that changes only
+  bodies, comments or line positions still hits. Salt bumped to `analyzers-merkle-v7`, so
+  every existing entry is re-run once.
+
 ## 0.7.0-alpha.44 - 2026-10-06
 
 - feat: logging. Ignoring a `FileChecked` captured against a replaced project model is
