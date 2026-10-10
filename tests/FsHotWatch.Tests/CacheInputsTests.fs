@@ -265,7 +265,7 @@ let ``every upstream shape change a downstream file can observe moves its used s
     let unchanged =
         edited |> List.filter (fun (_, shapes) -> shapes = baseline) |> List.map fst
 
-    test <@ unchanged = [] @>
+    test <@ List.isEmpty unchanged @>
 
 [<Fact(Timeout = 120000)>]
 let ``upstream edits a downstream file cannot observe leave its used shapes alone`` () =
@@ -282,7 +282,7 @@ let ``upstream edits a downstream file cannot observe leave its used shapes alon
     let changed =
         edited |> List.filter (fun (_, shapes) -> shapes <> baseline) |> List.map fst
 
-    test <@ changed = [] @>
+    test <@ List.isEmpty changed @>
 
 [<Fact(Timeout = 120000)>]
 let ``an assembly is described in full when it is a referenced project or under the root`` () =
