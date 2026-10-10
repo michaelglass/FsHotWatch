@@ -87,7 +87,8 @@ let private fromSources (projects: FSharpProjectOptions list) : FSharpProjectOpt
 type private FileKeys =
     {
         Without: ContentHash
-        With: ContentHash
+        /// None when the slot is unavailable: the plugin then has no key and always runs.
+        With: ContentHash option
         /// Time spent on the key without `used-signatures`.
         BaseTicks: int64
         /// Time spent on the `used-signatures` slot alone.
@@ -203,12 +204,12 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
                 let without = TaskCache.merkleCacheKey slots
                 let slotStarted = Stopwatch.GetTimestamp()
 
-                let used =
-                    CacheInputs.usedSignaturesHash (Some repo) options state
-                    |> Option.defaultValue "unavailable"
-
+                let used = CacheInputs.usedSignaturesHash (Some repo) options state
                 let slotEnded = Stopwatch.GetTimestamp()
-                let withSlot = TaskCache.merkleCacheKey (slots @ [ "used-signatures", used ])
+
+                let withSlot =
+                    used
+                    |> Option.map (fun used -> TaskCache.merkleCacheKey (slots @ [ "used-signatures", used ]))
 
                 file,
                 { Without = without
@@ -227,6 +228,7 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
         let slots = p.Keys |> Seq.map (fun kv -> ms kv.Value.SlotTicks) |> Seq.toList
 
         [ $"%s{label}: checks %.1f{p.CheckTime.TotalSeconds} s; key pass without used-signatures %.0f{baseMs} ms, with %.0f{baseMs + List.sum slots} ms"
+          $"  files with no key (used-signatures unavailable): %d{p.Keys |> Seq.filter (fun kv -> kv.Value.With.IsNone) |> Seq.length}"
           $"  used-signatures per file: mean %.2f{List.average slots} ms, p50 %.2f{percentile 50.0 slots} ms, p95 %.2f{percentile 95.0 slots} ms, max %.2f{List.max slots} ms" ]
 
     let lines = List<string>()
@@ -254,7 +256,7 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
         let edited = pass (index + 2)
         overrides.Remove path |> ignore
 
-        let moved (select: FileKeys -> ContentHash) =
+        let moved (select: FileKeys -> 'key) =
             baseline.Keys
             |> Seq.filter (fun kv -> kv.Key <> path && select edited.Keys[kv.Key] <> select kv.Value)
             |> Seq.map (fun kv -> kv.Key)
