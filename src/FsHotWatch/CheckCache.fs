@@ -165,8 +165,8 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
 /// records a change time to its own granularity, so a second write that soon after
 /// the first can leave the stamp as it was. Such a file is re-read until it ages past
 /// the window. Where no stamp can be read, every call re-reads the file. `now` is the
-/// clock the window is measured on.
-type FileContentHasher(now: unit -> DateTime) =
+/// clock the window is measured on; `stamp` reads a file's stamp (`FileStamp.read`).
+type FileContentHasher internal (now: unit -> DateTime, stamp: string -> FileStamp.Stamp voption) =
     let memo =
         System.Collections.Concurrent.ConcurrentDictionary<string, struct (FileStamp.Stamp * string)>()
 
@@ -178,13 +178,15 @@ type FileContentHasher(now: unit -> DateTime) =
     /// ext3), doubled.
     static member RacyWindow = TimeSpan.FromSeconds 2.0
 
+    new(now: unit -> DateTime) = FileContentHasher(now, FileStamp.read)
+
     new() = FileContentHasher(fun () -> DateTime.UtcNow)
 
     member _.Hash(path: string) : string =
         try
             let lookedAt = now ()
 
-            match FileStamp.read path with
+            match stamp path with
             | ValueSome stamp ->
                 match memo.TryGetValue path with
                 | true, struct (memoStamp, hash) when memoStamp = stamp -> hash

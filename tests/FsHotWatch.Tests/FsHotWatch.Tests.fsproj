@@ -59,6 +59,7 @@
     <Compile Include="CachePathIdentityTests.fs" />
     <Compile Include="CrossWorkspaceCacheTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
+    <Compile Include="FileStampTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="CacheInputsTests.fs" />
     <Compile Include="StructureFilesTests.fs" />
