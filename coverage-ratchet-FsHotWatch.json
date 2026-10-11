@@ -2,9 +2,9 @@
   "overrides": {
     "StoredName.fs": [
       {
-        "line": 93,
+        "line": 88,
         "branch": 85,
-        "reason": "macOS-native path file: the Linux (`AsGiven`) and other-platform (`Listing`) arms of `current` are unreachable on macOS, 2 of 32 lines. Measured 2026-09-28 on macOS by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 93.8% (30/32), branch 100% (12/12), rounded down. Every platform-neutral line (lookupWith over every Source, listNames) is covered by StoredNameTests on any platform. || 2026-09-30: branch 100 -> 85. The 12/12 was a targeted run; a full macOS coverage run counts 20 branch edges, 3 of them the `current` arms above (`IsLinux` false, and both `AsGiven` edges), unreachable here. 17/20 = 85% is every reachable edge; no test was lost.",
+        "reason": "macOS-native path file: the Linux (`AsGiven`) and other-platform (`Listing`) arms of `current` are unreachable on macOS, 2 of 32 lines. Measured 2026-09-28 on macOS by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 93.8% (30/32), branch 100% (12/12), rounded down. Every platform-neutral line (lookupWith over every Source, listNames) is covered by StoredNameTests on any platform. || 2026-09-30: branch 100 -> 85. The 12/12 was a targeted run; a full macOS coverage run counts 20 branch edges, 3 of them the `current` arms above (`IsLinux` false, and both `AsGiven` edges), unreachable here. 17/20 = 85% is every reachable edge; no test was lost. || 2026-10-11: line 93 -> 88. The getattrlist binding moved to MacAttrList.fs and the file now counts 18 lines; the same 2 lines (the Linux and other-platform arms of `current`) are uncovered. Measured on macOS by the unit suite (mise run test-direct): line 88.9% (16/18), branch 85% (17/20). No macOS-reachable line lost coverage.",
         "platform": "macos"
       },
       {
@@ -1063,6 +1063,12 @@
         "branch": 50,
         "platform": "linux",
         "reason": "Native stamp file with one arm per platform: `askMacOS` (the getattrlist call, 7 lines) and the macOS and other-platform arms of `read` are unreachable on Linux. Also uncovered on Linux: `askLinux`'s `stx_mask`-incomplete arm (a filesystem that does not fill ctime or ino) and the `with _ -> ValueNone` of the Linux arm of `read`. Measured on CI run 38112406166 (Linux, commit d4f70a40): line 58.3% (21/36), branch 50% (5/10), rounded down."
+      },
+      {
+        "line": 91,
+        "branch": 70,
+        "platform": "macos",
+        "reason": "Native stamp file with one arm per platform. The reply parsing of both platforms (askMacOSWith, askLinuxWith, including the `stx_mask`-incomplete arm) and the throw guard (orNone) take the native call as a function and are tested on every platform by FileStampTests. Unreachable on macOS: `askLinux` (the statx call, line 88) and the Linux and other-platform arms of `read` (lines 102-103). Measured 2026-10-11 on macOS by the unit suite (mise run test-direct): line 91.7% (33/36), branch 70% (7/10), rounded down."
       }
     ],
     "MacAttrList.fs": [
