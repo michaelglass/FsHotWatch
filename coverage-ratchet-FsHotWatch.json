@@ -8,9 +8,9 @@
         "platform": "macos"
       },
       {
-        "line": 62,
+        "line": 55,
         "branch": 60,
-        "reason": "macOS-native path file: `askMacOS` (the getattrlist call and its errno mapping, 11 lines) and the other-platform arm of `current` are unreachable on Linux. Measured 2026-09-28 on Linux (Docker, mcr.microsoft.com/dotnet/sdk:10.0.401, non-root) by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 62.5% (20/32), branch 60% (12/20), rounded down. Every platform-neutral line is covered.",
+        "reason": "macOS-native path file: `askMacOS` (the getattrlist call and its errno mapping, 11 lines) and the other-platform arm of `current` are unreachable on Linux. Measured 2026-09-28 on Linux (Docker, mcr.microsoft.com/dotnet/sdk:10.0.401, non-root) by a coverage run of StoredNameTests + RepositoryIdentityTests + CrossWorkspaceCacheTests: line 62.5% (20/32), branch 60% (12/20), rounded down. Every platform-neutral line is covered. || 2026-10-11: line 62 -> 55. The getattrlist binding moved to MacAttrList.fs, taking 14 counted lines with it, 10 of them covered on Linux; the file now counts 18 lines, and the 8 uncovered on Linux are exactly `askMacOS`'s body (7) and the other-platform arm of `current` (1). Measured on CI run 38112406166 (Linux, commit d4f70a40): line 55.6% (10/18), branch 60% (12/20). No Linux-reachable line lost coverage.",
         "platform": "linux"
       }
     ],
@@ -1055,6 +1055,22 @@
         "line": 98,
         "branch": 100,
         "reason": "(2026-09-25): new file. Measured line=98.5% branch=100% (26/26 branches) at the alpha.64 merge. The one uncovered line is the `hasRuntime` probe inside dotnetRootOfThisProcess, which runs only when neither DOTNET_HOST_PATH nor DOTNET_ROOT resolves a root in the test process's own environment; dotnetRoot's decision logic, including that probe's arm, is covered through TracedLaunchTests with an injected probe."
+      }
+    ],
+    "FileStamp.fs": [
+      {
+        "line": 58,
+        "branch": 50,
+        "platform": "linux",
+        "reason": "Native stamp file with one arm per platform: `askMacOS` (the getattrlist call, 7 lines) and the macOS and other-platform arms of `read` are unreachable on Linux. Also uncovered on Linux: `askLinux`'s `stx_mask`-incomplete arm (a filesystem that does not fill ctime or ino) and the `with _ -> ValueNone` of the Linux arm of `read`. Measured on CI run 38112406166 (Linux, commit d4f70a40): line 58.3% (21/36), branch 50% (5/10), rounded down."
+      }
+    ],
+    "MacAttrList.fs": [
+      {
+        "line": 0,
+        "branch": 0,
+        "platform": "linux",
+        "reason": "The getattrlist(2) binding, macOS-only: every line of `ask` (6 lines, 2 branches) is the macOS call, so nothing in the file runs on Linux. Measured on CI run 38112406166 (Linux, commit d4f70a40): line 0% (0/6), branch 0% (0/2)."
       }
     ]
   },
