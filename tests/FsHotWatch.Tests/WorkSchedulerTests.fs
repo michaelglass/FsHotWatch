@@ -166,6 +166,26 @@ let ``a lane keeps its place when one of its waiters gives up`` () =
     test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
 
 [<Fact(Timeout = 5000)>]
+let ``a waiter given up just after a slot was handed to it keeps the slot`` () =
+    use cts = new CancellationTokenSource()
+    // Gives up in the window between the hand-over and the waiter waking.
+    let scheduler = Scheduler(1, cts.Cancel)
+    let a = scheduler.Lane "A"
+    let b = scheduler.Lane "B"
+
+    test <@ a.Acquire CancellationToken.None |> Async.RunSynchronously @>
+    let handedOver = b.Acquire cts.Token |> Async.StartAsTask
+    waitUntil "B to queue" (fun () -> scheduler.Queued = 1)
+
+    a.Release()
+
+    test <@ cts.IsCancellationRequested @>
+    test <@ handedOver.Result @>
+    test <@ scheduler.Running = 1 && scheduler.Queued = 0 @>
+    b.Release()
+    test <@ scheduler.Running = 0 @>
+
+[<Fact(Timeout = 5000)>]
 let ``a caller that has already given up is refused at once`` () =
     let scheduler = Scheduler 1
     use cts = new CancellationTokenSource()
