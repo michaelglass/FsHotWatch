@@ -122,3 +122,70 @@ let ``checking every file of a project builds its snapshot once`` () =
         |> ignore
 
         test <@ pipeline.SnapshotBuilds = 1L @>)
+
+[<Fact(Timeout = 120000)>]
+let ``two sessions checking through one scheduler share its bound`` () =
+    withTempDir "check-bound-shared" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let sink = BlockingChecks(hold = 150)
+        let scheduler = WorkScheduler.Scheduler 2
+
+        let session name =
+            let root = Path.Combine(dir, name)
+            Directory.CreateDirectory root |> ignore
+
+            let pipeline =
+                CheckPipeline(checker, activity = sink, repoRoot = root, admission = scheduler.Lane name)
+
+            pipeline, manyFiles checker pipeline root 6
+
+        let a, aFiles = session "a"
+        let b, bFiles = session "b"
+
+        let results =
+            (aFiles |> List.map (fun f -> a.CheckFile f))
+            @ (bFiles |> List.map (fun f -> b.CheckFile f))
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        test <@ results |> Array.forall Option.isSome @>
+        // Each pipeline alone would allow 2, so 4 together without the shared bound.
+        test <@ sink.Peak >= 1 && sink.Peak <= 2 @>
+        test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a session flooding the checker cannot keep another session's check behind its queue`` () =
+    withTempDir "check-fair-shared" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let sink = BlockingChecks(hold = 100)
+        let scheduler = WorkScheduler.Scheduler 1
+
+        let session name count =
+            let root = Path.Combine(dir, name)
+            Directory.CreateDirectory root |> ignore
+
+            let pipeline =
+                CheckPipeline(checker, activity = sink, repoRoot = root, admission = scheduler.Lane name)
+
+            pipeline, manyFiles checker pipeline root count
+
+        let a, aFiles = session "a" 12
+        let b, bFiles = session "b" 1
+
+        let flood = [ for f in aFiles -> a.CheckFile f |> Async.StartAsTask ]
+
+        let deadline = System.DateTime.UtcNow.AddSeconds 30.0
+
+        while scheduler.Queued < 8 && System.DateTime.UtcNow < deadline do
+            Thread.Sleep 5
+
+        test <@ scheduler.Queued >= 8 @>
+
+        let one = b.CheckFile(List.head bFiles) |> Async.StartAsTask
+        test <@ one.Result |> Option.isSome @>
+        let aDoneWhenBFinished = flood |> List.filter _.IsCompleted |> List.length
+
+        // Served in turn, B waits behind the running check and at most one more of
+        // A's; in arrival order it would wait behind all eight or more queued.
+        test <@ aDoneWhenBFinished <= 4 @>
+        test <@ flood |> List.forall (fun t -> t.Result |> Option.isSome) @>)

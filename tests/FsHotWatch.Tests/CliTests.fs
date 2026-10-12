@@ -938,6 +938,44 @@ let ``executeCommand Status returns 0`` () =
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
+let ``executeCommand Status prints the daemon's scan progress while a scan runs`` () =
+    let mutable asked = 0
+
+    let ipc =
+        { fakeIpc () with
+            ScanStatus =
+                fun _ ->
+                    async {
+                        asked <- asked + 1
+                        return "scanning: 3/10 files (30%)"
+                    } }
+
+    let stderr, result = captureStderr (fun () -> exec ipc (Status(None, [])))
+
+    test <@ result = 0 @>
+    test <@ asked = 1 @>
+    test <@ stderr.Contains("scanning: 3/10 files (30%)") @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Status prints no scan line when no scan is running`` () =
+    for answer in [ "idle"; "complete: 10 files checked in 1.0s" ] do
+        let ipc =
+            { fakeIpc () with
+                ScanStatus = fun _ -> async { return answer } }
+
+        let stderr, result = captureStderr (fun () -> exec ipc (Status(None, [])))
+
+        test <@ result = 0 @>
+        test <@ not (stderr.Contains(answer)) @>
+
+[<Fact(Timeout = 15000)>]
+let ``scanProgressLine picks the scanning line out of a wedged answer`` () =
+    let answer = "WEDGED: scan stuck 300s\nscanning: 4/9 files (44%)"
+
+    test <@ IpcOutput.scanProgressLine answer = Some "scanning: 4/9 files (44%)" @>
+    test <@ IpcOutput.scanProgressLine "idle" = None @>
+
+[<Fact(Timeout = 15000)>]
 let ``executePluginCommand proxies a recognized command to IPC`` () =
     let mutable cmdName = ""
     let mutable argsSeen = ""

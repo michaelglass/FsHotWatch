@@ -99,6 +99,7 @@ let private withWorldUnder (framesOn: bool) (body: World -> unit) =
         let partitions =
             CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
 
+        let checks = WorkScheduler.Scheduler Environment.ProcessorCount
         let canonicalProjects = CanonicalProjects.Registry()
         let logged = ConcurrentQueue<string>()
 
@@ -116,7 +117,8 @@ let private withWorldUnder (framesOn: bool) (body: World -> unit) =
                             (if framesOn then
                                  SessionFrames.choice canonicalProjects root virtualRoot logged.Enqueue
                              else
-                                 PathFrame.realPaths) }
+                                 PathFrame.realPaths)
+                            checks }
 
         use registry = new SessionRegistry(factory)
         let a = resolved rootA

@@ -576,7 +576,8 @@ let private daemonFactory: SessionRegistry.SessionFactory =
             nullChecker
             spec.Worktree.Root.Value
             { watchingDaemonOptions with
-                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
+                Hosting =
+                    FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1) }
             inertWatcher
 
 [<Fact(Timeout = 120000)>]

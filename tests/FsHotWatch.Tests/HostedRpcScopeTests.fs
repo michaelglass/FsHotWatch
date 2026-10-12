@@ -249,7 +249,11 @@ let ``a command called through a repository host spawns and logs in its session'
                             nullChecker
                             spec.Worktree.Root.Value
                             { watchingDaemonOptions with
-                                Hosting = DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
+                                Hosting =
+                                    DaemonHosting.hostedBy
+                                        inertWatcher
+                                        (fun _ -> nullChecker)
+                                        (WorkScheduler.Scheduler 1) }
                             inertWatcher
 
                     daemon.RegisterHandler(spawner root pidFile outcome)

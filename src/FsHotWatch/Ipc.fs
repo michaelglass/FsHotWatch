@@ -380,7 +380,8 @@ type DaemonRpcTarget
 
     /// Get current scan progress without blocking. When the daemon is wedged on
     /// a stuck op, the scan line is prefixed with the `WEDGED: ...` report so a
-    /// plain `fshw scan-status` poll surfaces the wedge inline.
+    /// client polling only this RPC sees the wedge inline. `fshw status` prints the
+    /// scanning line from this answer.
     ///
     /// An answer that reports a scan in progress is logged at Info, so a cold scan's
     /// progress is in the daemon log and not only in the polling client's terminal. An

@@ -174,6 +174,7 @@
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="CheckPipelineCancellationTests.fs" />
+    <Compile Include="WorkSchedulerTests.fs" />
     <Compile Include="CheckPipelineConcurrencyTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
