@@ -17,9 +17,29 @@ type AffectedTest =
 /// A top-level declaration (test class or test module) in a test file, carrying
 /// the text of its own span for per-declaration URL match attribution.
 type private DeclarationSpan =
-    { Name: string
-      IsClass: bool
-      Text: string }
+    {
+        Name: string
+        IsClass: bool
+        Text: string
+        /// Offset of `Text` in its file.
+        Start: int
+    }
+
+/// Where a route is named inside a declaration: the 1-based line, and whether that line
+/// opens an attribute (`[<InlineData("/users/1")>]`), which belongs to the definition
+/// below it rather than the one above.
+type private RouteMention = { Line: int; InAttribute: bool }
+
+/// A declaration that carries a route edge, and where in it the route is named.
+type private EdgeParticipant =
+    {
+        Declaration: string
+        /// Repository-relative path of the declaring file, `/`-separated.
+        File: string
+        /// Empty when the route reaches the declaration as a whole (a match in the file
+        /// header, or a test class selected by fallback): every symbol of it carries the edge.
+        Mentions: RouteMention list
+    }
 
 /// The two DIFFERENT answers a route match has to give, kept apart because
 /// conflating them is a bug in one direction or the other.
@@ -46,7 +66,7 @@ type private RouteMatch =
         /// Declarations whose symbols participate in the route's dependency edge.
         /// A superset of `TestClasses`: every span whose OWN text matches the
         /// route, test-bearing or not.
-        EdgeParticipants: string list
+        EdgeParticipants: EdgeParticipant list
     }
 
 /// Route-based integration test filtering.
@@ -301,10 +321,14 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // under-selection silently skips affected tests. A file whose ONLY declarations are
     // non-selectable therefore contributes no TEST CLASS, though it can still contribute
     // EDGE PARTICIPANTS — see `RouteMatch`.
-    let matchDeclarationsInFiles (testFiles: (string * string) list) (regexes: Regex list) : RouteMatch =
+    let matchDeclarationsInFiles
+        (repoRoot: string)
+        (testFiles: (string * string) list)
+        (regexes: Regex list)
+        : RouteMatch =
         let perFile =
             testFiles
-            |> List.map (fun (_, content) ->
+            |> List.map (fun (path, content) ->
                 if regexes |> List.exists (fun regex -> regex.IsMatch(content)) |> not then
                     [], []
                 else
@@ -334,7 +358,8 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
 
                             { Name = name
                               IsClass = isClass
-                              Text = content.Substring(start, finish - start) })
+                              Text = content.Substring(start, finish - start)
+                              Start = start })
 
                     let matchesText (text: string) =
                         regexes |> List.exists (fun regex -> regex.IsMatch(text))
@@ -378,12 +403,55 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         else
                             spans |> List.filter (fun span -> matchesText span.Text)
 
-                    // Unioned with the test classes so a class the run path picked up
-                    // only through its own fallback still gets its edge.
-                    let edgeParticipants = routeCarriers @ testClasses
+                    let file = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+                    let lines = content.Split('\n')
 
-                    testClasses |> List.map (fun span -> span.Name),
-                    edgeParticipants |> List.map (fun span -> span.Name))
+                    let lineStarts =
+                        [| yield 0
+                           for i in 0 .. content.Length - 1 do
+                               if content[i] = '\n' then
+                                   yield i + 1 |]
+
+                    // 1-based line of `offset`: the number of line starts at or before it.
+                    let lineOf (offset: int) =
+                        match System.Array.BinarySearch(lineStarts, offset) with
+                        | found when found >= 0 -> found + 1
+                        | insertion -> ~~~insertion
+
+                    let mentionsIn (span: DeclarationSpan) =
+                        regexes
+                        |> List.collect (fun regex ->
+                            [ for matched in regex.Matches(span.Text) ->
+                                  let line = lineOf (span.Start + matched.Index)
+
+                                  { Line = line
+                                    InAttribute = lines[line - 1].TrimStart().StartsWith("[<") } ])
+                        |> List.distinct
+
+                    let wholeDeclaration (span: DeclarationSpan) =
+                        { Declaration = span.Name
+                          File = file
+                          Mentions = [] }
+
+                    // A carrier is attributed by where its span names the route, unless the
+                    // header made it a carrier. A class the run path picked up only through
+                    // its own fallback names no route itself, so it carries the edge whole.
+                    let carriers =
+                        if matchesText headerText then
+                            routeCarriers |> List.map wholeDeclaration
+                        else
+                            routeCarriers
+                            |> List.map (fun span ->
+                                { Declaration = span.Name
+                                  File = file
+                                  Mentions = mentionsIn span })
+
+                    let fallbackClasses =
+                        testClasses
+                        |> List.filter (fun span -> not (List.contains span routeCarriers))
+                        |> List.map wholeDeclaration
+
+                    testClasses |> List.map (fun span -> span.Name), carriers @ fallbackClasses)
 
         { TestClasses = perFile |> List.collect fst |> List.distinct
           EdgeParticipants = perFile |> List.collect snd |> List.distinct }
@@ -514,7 +582,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
 
             let testFiles = readTestFiles repoRoot
 
-            (matchDeclarationsInFiles testFiles (urlRegexes @ leafRegexes @ constantRegexes)).TestClasses
+            (matchDeclarationsInFiles repoRoot testFiles (urlRegexes @ leafRegexes @ constantRegexes)).TestClasses
             |> List.map (fun cls ->
                 { TestProject = integrationTestProject
                   TestClass = cls })
@@ -562,6 +630,58 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         declarationSymbols[declaration] <- symbols
                         symbols
 
+                // The symbols of `participant` that hold its mentions of the route. Symbols
+                // carry only the line of their definition, so a mention belongs to the
+                // nearest definition at or above it, and an attribute line also to the
+                // definition below it. A type or module found that way holds bindings the
+                // index does not name (a class's `let`s), so all of its members carry the
+                // edge. Wherever the index cannot place a mention, the whole declaration
+                // carries it.
+                let participantSymbols (participant: EdgeParticipant) =
+                    let declaration = symbolsForDeclaration participant.Declaration
+
+                    let located =
+                        declaration |> List.filter (fun symbol -> symbol.SourceFile = participant.File)
+
+                    let nearest (candidates: SymbolInfo list) (pick: SymbolInfo list -> int) =
+                        match candidates with
+                        | [] -> []
+                        | _ ->
+                            let line = pick candidates
+                            candidates |> List.filter (fun symbol -> symbol.LineStart = line)
+
+                    let membersOf (holder: SymbolInfo) =
+                        match holder.Kind with
+                        | Type
+                        | Module ->
+                            declaration
+                            |> List.filter (fun symbol ->
+                                symbol = holder || symbol.FullName.StartsWith(holder.FullName + "."))
+                        | _ -> [ holder ]
+
+                    let holders (mention: RouteMention) =
+                        let above =
+                            nearest
+                                (located |> List.filter (fun symbol -> symbol.LineStart <= mention.Line))
+                                (List.map _.LineStart >> List.max)
+
+                        let below =
+                            if mention.InAttribute then
+                                nearest
+                                    (located |> List.filter (fun symbol -> symbol.LineStart > mention.Line))
+                                    (List.map _.LineStart >> List.min)
+                            else
+                                []
+
+                        match above @ below with
+                        | [] -> declaration
+                        | found -> found |> List.collect membersOf
+
+                    if participant.Mentions.IsEmpty || located.IsEmpty then
+                        declaration
+                    else
+                        participant.Mentions |> List.collect holders |> List.distinct
+
                 let handlerFileSymbols =
                     System.Collections.Generic.Dictionary<string, SymbolInfo list>()
 
@@ -598,9 +718,11 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         StringRouteConstants.constantReferenceRegexes constantMap [ regex ]
 
                     let participants =
-                        (matchDeclarationsInFiles testFiles (regex :: (leafRegexes @ constantRegexes))).EdgeParticipants
+                        (matchDeclarationsInFiles repoRoot testFiles (regex :: (leafRegexes @ constantRegexes)))
+                            .EdgeParticipants
 
-                    let routeTestMethods = participants |> List.collect symbolsForDeclaration
+                    let routeTestMethods =
+                        participants |> List.collect participantSymbols |> List.distinct
 
                     let target =
                         match handlerFunction with

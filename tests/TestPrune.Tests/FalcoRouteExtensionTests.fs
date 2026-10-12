@@ -1963,6 +1963,135 @@ type UsersTests(fixture: OrdersFixture) =
                 test <@ pairs = set [ "App.Tests.UsersTests.GetUser", "App.Handlers.Users.getUser" ] @>
                 test <@ not (pairs.Contains("App.Tests.OrdersFixture.Setup", "App.Handlers.Users.getUser")) @>)
 
+/// A route edge starts at the symbol whose definition holds the URL, not at every symbol
+/// of the declaration the URL falls in. A test file that is one top-level `module` is one
+/// declaration, so declaration-level attribution gives every helper, union case and
+/// fixture in the file every route the file names.
+module ``AnalyzeEdges attributes a match to the symbol that holds it`` =
+
+    let private at (fullName: string) (kind: SymbolKind) (line: int) : SymbolInfo =
+        { FullName = fullName
+          Kind = kind
+          SourceFile = "tests/IntTests/BrowserTests.fs"
+          LineStart = line
+          LineEnd = line
+          ContentHash = "h"
+          IsExtern = false }
+
+    let private route =
+        { UrlPattern = "/api/users/{id}"
+          HttpMethod = "GET"
+          HandlerSourceFile = "src/Handlers/Users.fs"
+          HandlerFunction = Some "Users.getUser" }
+
+    let private handler = fn "App.Handlers.Users.getUser" route.HandlerSourceFile
+
+    let private sourcesOf (symbols: SymbolInfo list) (content: string) =
+        let mutable sources = Set.empty
+
+        withAnalyzeEdges [ route ] (handler :: symbols) [ ("BrowserTests.fs", content) ] (fun edges ->
+            sources <- edges |> List.map _.FromSymbol |> Set.ofList)
+
+        sources
+
+    [<Fact>]
+    let ``helpers and union cases of a single-module file carry no route they do not name`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+let shouldSkip () = false
+
+type Outcome =
+    | Ready
+    | Failed
+
+[<Fact>]
+let ``visits a user`` () =
+    if shouldSkip () then () else ignore "/api/users/1"
+
+[<Fact>]
+let ``visits nothing`` () = ignore Ready
+"""
+
+        let symbols =
+            [ at "App.Tests.BrowserTests" Module 1
+              at "App.Tests.BrowserTests.shouldSkip" Function 3
+              at "App.Tests.BrowserTests.Outcome" Type 5
+              at "App.Tests.BrowserTests.Outcome.Ready" DuCase 6
+              at "App.Tests.BrowserTests.Outcome.Failed" DuCase 7
+              at "App.Tests.BrowserTests.visits a user" Function 10
+              at "App.Tests.BrowserTests.visits nothing" Function 14 ]
+
+        test <@ sourcesOf symbols content = set [ "App.Tests.BrowserTests.visits a user" ] @>
+
+    [<Fact>]
+    let ``a URL in a test's attribute belongs to the test it decorates`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+let helper () = ()
+
+[<Theory>]
+[<InlineData("/api/users/1")>]
+let ``visits`` (url: string) = ignore url
+"""
+
+        let symbols =
+            [ at "App.Tests.BrowserTests.helper" Function 3
+              at "App.Tests.BrowserTests.visits" Function 7 ]
+
+        test <@ sourcesOf symbols content |> Set.contains "App.Tests.BrowserTests.visits" @>
+
+    [<Fact>]
+    let ``a URL in a class binding before its members reaches every member`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+let helper () = ()
+
+type UsersTests() =
+    let url = "/api/users/1"
+
+    [<Fact>]
+    member _.Visits() = ignore url
+
+    [<Fact>]
+    member _.VisitsAgain() = ignore url
+"""
+
+        let symbols =
+            [ at "App.Tests.BrowserTests.helper" Function 3
+              at "App.Tests.BrowserTests.UsersTests" Type 5
+              at "App.Tests.BrowserTests.UsersTests.Visits" Function 9
+              at "App.Tests.BrowserTests.UsersTests.VisitsAgain" Function 12 ]
+
+        test
+            <@
+                sourcesOf symbols content = set
+                    [ "App.Tests.BrowserTests.UsersTests"
+                      "App.Tests.BrowserTests.UsersTests.Visits"
+                      "App.Tests.BrowserTests.UsersTests.VisitsAgain" ]
+            @>
+
+    [<Fact>]
+    let ``a URL before any located symbol of its declaration falls back to the whole declaration`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+let url = "/api/users/1"
+
+let helper () = ignore url
+
+let other () = ()
+"""
+
+        // The index located nothing at or above the URL's line, so nothing can be said to hold it.
+        let symbols =
+            [ at "App.Tests.BrowserTests.helper" Function 5
+              at "App.Tests.BrowserTests.other" Function 7 ]
+
+        test <@ sourcesOf symbols content = set [ "App.Tests.BrowserTests.helper"; "App.Tests.BrowserTests.other" ] @>
+
 module ``AnalyzeEdges fallback`` =
 
     /// With HandlerFunction = None the route falls back to the coarse file-level
