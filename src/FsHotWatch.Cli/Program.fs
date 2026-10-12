@@ -2719,6 +2719,10 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let partitions =
             FsHotWatch.CheckerPartitions.Partitions Daemon.createCheckerWithCacheSizes
 
+        // Every session's checks take turns at one bound: the host's processors, not
+        // that many per session.
+        let checks = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
+
         // Every worktree is checked under one virtual root, so identical projects share
         // FCS's work. Which content of each project is shared, and by which sessions.
         let canonical = FsHotWatch.CanonicalProjects.Registry()
@@ -2792,6 +2796,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                     (pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
                     partitions.For
                     frames
+                    checks
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 

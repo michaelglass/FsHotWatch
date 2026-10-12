@@ -54,24 +54,30 @@ type Hosting =
     | Standalone
     /// One session of a repository host, watching through the host's shared stream,
     /// checking through its partition's shared checker, each project under the frame
-    /// `frames` gives it.
-    | Hosted of watcherFactory: WatcherFactory * checkers: CheckerFactory * frames: PathFrame.FrameChoice
+    /// `frames` gives it, and admitted to check by the host's one scheduler.
+    | Hosted of
+        watcherFactory: WatcherFactory *
+        checkers: CheckerFactory *
+        frames: PathFrame.FrameChoice *
+        checks: WorkScheduler.Scheduler
 
 /// A per-worktree daemon.
 let standalone () : Hosting = Hosting.Standalone
 
-/// A session of a repository host, watching through `sharedWatcher` and checking
-/// through the checker `checkers` hands out for its configuration.
-let hostedBy (sharedWatcher: WatcherFactory) (checkers: CheckerFactory) : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths)
+/// A session of a repository host, watching through `sharedWatcher`, checking
+/// through the checker `checkers` hands out for its configuration, and admitted to
+/// check by `checks`, the scheduler every session of the host shares.
+let hostedBy (sharedWatcher: WatcherFactory) (checkers: CheckerFactory) (checks: WorkScheduler.Scheduler) : Hosting =
+    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths, checks)
 
 /// `hostedBy`, with each project checked under the frame `frames` gives it.
 let hostedUnderFrames
     (sharedWatcher: WatcherFactory)
     (checkers: CheckerFactory)
     (frames: PathFrame.FrameChoice)
+    (checks: WorkScheduler.Scheduler)
     : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, frames)
+    Hosting.Hosted(sharedWatcher, checkers, frames, checks)
 
 /// Everything a hosted session does differently from a per-worktree daemon.
 [<NoComparison; NoEquality>]
@@ -88,6 +94,10 @@ type HostingSeams =
         Checker: CheckerFactory -> CheckerFactory
         /// The frame each project is checked under.
         Frames: PathFrame.FrameChoice
+        /// The scheduler that admits the daemon's checks, given the one it would build
+        /// for itself. A host's sessions share one, so the host's bound holds across
+        /// them and a session with a long queue takes turns with the others.
+        Checks: WorkScheduler.Scheduler -> WorkScheduler.Scheduler
     }
 
 /// The seams of a hosting mode.
@@ -98,10 +108,12 @@ let seams (hosting: Hosting) : HostingSeams =
           MayForceGc = true
           Watcher = id
           Checker = id
-          Frames = PathFrame.realPaths }
-    | Hosting.Hosted(sharedWatcher, checkers, frames) ->
+          Frames = PathFrame.realPaths
+          Checks = id }
+    | Hosting.Hosted(sharedWatcher, checkers, frames, checks) ->
         { ResourceScope = ResourceScope.Host
           MayForceGc = false
           Watcher = fun _ -> sharedWatcher
           Checker = fun _ -> checkers
-          Frames = frames }
+          Frames = frames
+          Checks = fun _ -> checks }

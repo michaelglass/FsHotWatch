@@ -126,11 +126,13 @@ let private withWorld (run: SessionRun) (body: World -> unit) =
         let partitions =
             CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
 
+        let checks = WorkScheduler.Scheduler Environment.ProcessorCount
+
         let factory (spec: SessionSpec) =
             Daemon.Daemon.create
                 spec.Worktree.Root.Value
                 { watchingDaemonOptions with
-                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher partitions.For }
+                    Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher partitions.For checks }
 
         use registry = new SessionRegistry(factory, run)
         let host = RepositoryHost(settings, registry, ignore, TimeSpan.FromSeconds 60.0)

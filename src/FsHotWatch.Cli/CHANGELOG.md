@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `fshw host` bounds the FCS checks of all its sessions together at the host's
+  processor count, and serves sessions waiting for a check slot in turn. Before, every
+  session had its own bound of that size, and one session's long queue (a cold scan or a
+  full confirm) kept another session's check waiting behind all of it.
+
 ## 0.14.0-alpha.95 - 2026-10-08
 
 - fix: `fshw host` ended by SIGTERM, SIGHUP or SIGINT kills the process trees EVERY

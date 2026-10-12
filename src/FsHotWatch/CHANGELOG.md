@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat!: `WorkScheduler`: a fixed number of slots shared by `Lane`s. A freed slot goes to
+  the next lane with a waiter, in turn, so a lane with fifty queued jobs and a lane with
+  one are served alternately; within a lane, jobs keep arrival order. A waiter whose
+  token is cancelled leaves the queue holding nothing. `CheckPipeline` takes an optional
+  `admission` lane and admits its checks through it (alone, it builds its own scheduler
+  of `maxConcurrentChecks` slots, as before). A repository host's sessions now check
+  through one scheduler of `Environment.ProcessorCount` slots: before, each session had
+  its own bound of that size, so N sessions could run N times as many checks on the
+  shared checker, and a session's queue (a cold scan, a full confirm) was served in
+  arrival order ahead of a later check from another session. Breaking:
+  `DaemonHosting.hostedBy` and `hostedUnderFrames` take the host's scheduler as a last
+  argument, `Hosting.Hosted` carries it, and `HostingSeams` has a `Checks` seam.
+
 - fix: two `check` clients on one cold daemon run one full scan, not two. A scan request
   that arrives while a scan is already checking the tree is answered by that scan when
   the tree is still exactly what it checked: the same project files and model, every

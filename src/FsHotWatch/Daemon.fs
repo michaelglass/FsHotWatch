@@ -4313,6 +4313,11 @@ module Daemon =
 
             let fcsSink = host.ActivitySinkFor(PluginActivity.FcsPluginName)
 
+            // This daemon's turn at the checks its host admits; a per-worktree daemon
+            // admits its own, bounded as `CheckPipeline` bounds them by default.
+            let checks =
+                (seams.Checks(WorkScheduler.Scheduler Environment.ProcessorCount)).Lane repoRoot
+
             let pipeline =
                 match cacheBackend, cacheKeyProvider with
                 | Some b, Some kp ->
@@ -4322,7 +4327,8 @@ module Daemon =
                         cacheKeyProvider = kp,
                         activity = fcsSink,
                         repoRoot = repoRoot,
-                        frames = seams.Frames
+                        frames = seams.Frames,
+                        admission = checks
                     )
                 | Some b, None ->
                     CheckPipeline(
@@ -4330,9 +4336,17 @@ module Daemon =
                         cacheBackend = b,
                         activity = fcsSink,
                         repoRoot = repoRoot,
-                        frames = seams.Frames
+                        frames = seams.Frames,
+                        admission = checks
                     )
-                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot, frames = seams.Frames)
+                | _ ->
+                    CheckPipeline(
+                        checker,
+                        activity = fcsSink,
+                        repoRoot = repoRoot,
+                        frames = seams.Frames,
+                        admission = checks
+                    )
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
 
