@@ -24,18 +24,24 @@ type Stamp =
 
 // ─── macOS: getattrlist(2), asked for the status-change time and the file id ───
 
-/// The stamp of what `path` names, following a symlink. The reply is a u32 length, a
-/// `timespec`, then the u64 file id.
-let internal askMacOS (path: string) : Stamp voption =
+/// The stamp in a getattrlist reply that `fill` wrote for `path`: a u32 length, a
+/// `timespec`, then the u64 file id. `fill` asks for exactly those attributes.
+let internal askMacOSWith (fill: string -> byte array -> Result<unit, int>) (path: string) : Stamp voption =
     let reply = Array.zeroCreate<byte> 32
 
-    match MacAttrList.ask path (MacAttrList.AttrCmnChgTime ||| MacAttrList.AttrCmnFileId) 0u reply with
+    match fill path reply with
     | Ok() ->
         ValueSome
             { ChangeSeconds = BitConverter.ToInt64(reply, 4)
               ChangeNanoseconds = BitConverter.ToInt64(reply, 12)
               FileId = BitConverter.ToUInt64(reply, 20) }
     | Error _ -> ValueNone
+
+/// The stamp of what `path` names, following a symlink.
+let internal askMacOS (path: string) : Stamp voption =
+    askMacOSWith
+        (fun target reply -> MacAttrList.ask target (MacAttrList.AttrCmnChgTime ||| MacAttrList.AttrCmnFileId) 0u reply)
+        path
 
 // ─── Linux: statx(2), whose `struct statx` has one layout on every architecture ───
 
@@ -52,21 +58,22 @@ extern int private statx(
 let private AtFdCwd = -100
 
 [<Literal>]
-let private StatxCtime = 0x00000080u
+let internal StatxCtime = 0x00000080u
 
 [<Literal>]
-let private StatxIno = 0x00000100u
+let internal StatxIno = 0x00000100u
 
 [<Literal>]
 let private Wanted = StatxCtime ||| StatxIno
 
-/// The stamp of what `path` names, following a symlink. `stx_ino` is at byte 32 and
-/// `stx_ctime` (i64 seconds, u32 nanoseconds) at byte 96 of the 256-byte `struct statx`;
-/// `stx_mask`, at byte 0, says which fields the filesystem filled in.
-let internal askLinux (path: string) : Stamp voption =
+/// The stamp in a `struct statx` that `fill` wrote for `path`, where `fill` returns the
+/// call's result. `stx_ino` is at byte 32 and `stx_ctime` (i64 seconds, u32
+/// nanoseconds) at byte 96 of the 256-byte struct; `stx_mask`, at byte 0, says which
+/// fields the filesystem filled in.
+let internal askLinuxWith (fill: string -> byte array -> int) (path: string) : Stamp voption =
     let buf = Array.zeroCreate<byte> 256
 
-    if statx (AtFdCwd, path, 0, Wanted, buf) <> 0 then
+    if fill path buf <> 0 then
         ValueNone
     elif (BitConverter.ToUInt32(buf, 0) &&& Wanted) <> Wanted then
         ValueNone
@@ -76,20 +83,21 @@ let internal askLinux (path: string) : Stamp voption =
               ChangeSeconds = BitConverter.ToInt64(buf, 96)
               ChangeNanoseconds = int64 (BitConverter.ToUInt32(buf, 104)) }
 
+/// The stamp of what `path` names, following a symlink.
+let internal askLinux (path: string) : Stamp voption =
+    askLinuxWith (fun target buf -> statx (AtFdCwd, target, 0, Wanted, buf)) path
+
+/// `ask`, with a call that throws (a missing native entry point, a marshalling
+/// failure) read as no stamp.
+let internal orNone (ask: string -> Stamp voption) (path: string) : Stamp voption =
+    try
+        ask path
+    with _ ->
+        ValueNone
+
 /// This platform's stamp of `path`, or `ValueNone` where it cannot be read: a missing
 /// file, an unsupported platform or filesystem, or a failed call.
 let read: string -> Stamp voption =
-    if OperatingSystem.IsMacOS() then
-        fun path ->
-            try
-                askMacOS path
-            with _ ->
-                ValueNone
-    elif OperatingSystem.IsLinux() then
-        fun path ->
-            try
-                askLinux path
-            with _ ->
-                ValueNone
-    else
-        fun _ -> ValueNone
+    if OperatingSystem.IsMacOS() then orNone askMacOS
+    elif OperatingSystem.IsLinux() then orNone askLinux
+    else fun _ -> ValueNone

@@ -196,6 +196,32 @@ let ``FileContentHasher does not remember a file changed within the racy window`
         test <@ hasher.Hash path = "unreadable" @>)
 
 [<Fact(Timeout = 15000)>]
+let ``FileContentHasher reads an existing file whose stamp cannot be read on every look`` () =
+    withTempDir "hasher-nostamp" (fun dir ->
+        let path = Path.Combine(dir, "Lib.dll")
+        File.WriteAllText(path, "original")
+        let mutable looks = 0
+
+        let noStamp (_: string) : FsHotWatch.FileStamp.Stamp voption =
+            looks <- looks + 1
+            ValueNone
+
+        // A clock past the racy window: a file with a stamp would be remembered.
+        let hasher =
+            FileContentHasher((fun () -> DateTime.UtcNow + TimeSpan.FromHours 1.0), noStamp)
+
+        let expected =
+            Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+
+        test <@ hasher.Hash path = expected @>
+        // Locked against reading: nothing was remembered, so the file is read again.
+        use _lock =
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+
+        test <@ hasher.Hash path = "unreadable" @>
+        test <@ looks = 2 @>)
+
+[<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns Some lowercase hex hash for readable file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
