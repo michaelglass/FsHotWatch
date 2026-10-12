@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.2 - 2026-10-13
+
 - fix: a route edge starts at the symbol whose definition names the route, not at
   every symbol of the declaration the URL sits in. A test file that is one top-level
   `module` is one declaration, so every helper, union case and fixture in it carried
