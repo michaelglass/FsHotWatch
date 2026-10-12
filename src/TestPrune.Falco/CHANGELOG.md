@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a route edge starts at the symbol whose definition names the route, not at
+  every symbol of the declaration the URL sits in. A test file that is one top-level
+  `module` is one declaration, so every helper, union case and fixture in it carried
+  every route the file named, and the impact walk selected every test that touched
+  any of them. A URL on an attribute line also reaches the definition below it; a
+  URL inside a type or module but above its first member reaches all of its members;
+  a URL the index cannot place still reaches the whole declaration.
+
 ## 4.0.1 - 2026-10-08
 
 - fix: a generic test class (`type UsersTests<'T>() =`) is recognised as a
