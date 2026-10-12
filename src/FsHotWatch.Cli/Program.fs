@@ -3369,6 +3369,14 @@ let internal executeCommandWatchingConfig
                     let output =
                         IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) scoped
 
+                    // Plugin states do not say whether a scan is running or how far it
+                    // got. `ScanStatus` answers from the published scan state and never
+                    // waits for the scan it reports on.
+                    ipc.ScanStatus pipeName
+                    |> Async.RunSynchronously
+                    |> IpcOutput.scanProgressLine
+                    |> Option.iter (eprintfn "%s")
+
                     eprintfn "%s" output
 
                     IpcParsing.heapValveOf json |> Option.iter (eprintfn "⚠ %s")

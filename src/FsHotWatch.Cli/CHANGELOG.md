@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `fshw status` prints the daemon's `scanning: N/M files (P%)` line while a scan is
+  running, read from the daemon's `ScanStatus`. An idle or finished scan adds nothing.
+  `IpcOutput.scanProgressLine` picks that line out of a `ScanStatus` answer.
+
 ## 0.14.0-alpha.95 - 2026-10-08
 
 - fix: `fshw host` ended by SIGTERM, SIGHUP or SIGINT kills the process trees EVERY

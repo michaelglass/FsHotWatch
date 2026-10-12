@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as
+  its check returns instead of after the whole tier's round, so a one-tier scan no longer
+  reports `scanning: 0/N files (0%)` until it completes. `emit` is now called
+  concurrently and must serialise itself.
 - fix: two `check` clients on one cold daemon run one full scan, not two. A scan request
   that arrives while a scan is already checking the tree is answered by that scan when
   the tree is still exactly what it checked: the same project files and model, every

@@ -3442,6 +3442,10 @@ let internal freshForTier
 /// content, so a NEWER user edit that legitimately superseded the in-flight check is
 /// observed on retry rather than duplicated. Each file is emitted at most once.
 ///
+/// A result is emitted as soon as its own check returns, not when the round does, so
+/// the scan's progress counter (advanced in `emit`) moves per file. `emit` is
+/// therefore called concurrently from the round's checks and must serialise itself.
+///
 /// The outcome is TYPED. The budget was always bounded, but
 /// exhausting it produced a bare `int` that the caller folded into a running
 /// total, so "this tier gave up on 4 files after 3 extra rounds" was
@@ -3464,23 +3468,19 @@ let internal runChecksWithRetry
         // Initial pass plus up to `maxRetries` retry rounds over the residual
         // `None` set. Converges (pending shrinks or we hit the budget).
         while not pending.IsEmpty && round <= maxRetries do
-            let! results =
+            let! stillPending =
                 pending
                 |> List.map (fun file ->
                     async {
-                        let! r = check file
-                        return file, r
+                        match! check file with
+                        | Some r ->
+                            emit r
+                            return None
+                        | None -> return Some file
                     })
                 |> Async.Parallel
 
-            let mutable stillPending = []
-
-            for file, result in results do
-                match result with
-                | Some r -> emit r
-                | None -> stillPending <- file :: stillPending
-
-            pending <- List.rev stillPending
+            pending <- stillPending |> Array.choose id |> Array.toList
             round <- round + 1
 
         // `round` counts the initial pass too, so extra rounds is `round - 1`
@@ -3895,6 +3895,8 @@ let private performScan
 
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
+                    // Called concurrently by the tier's checks: every write below is
+                    // inside `publishCurrent`, which holds the discovery state lock.
                     let emitChecked (checkResult: FileCheckResult) =
                         let sourceHash = ContentHash.ofText checkResult.Source
 
@@ -4557,7 +4559,7 @@ module Daemon =
             // idle-exit scheduler and heartbeat read it.
             let scanLeases = ScanActivity.ScanLeases.create ()
 
-            // Scans run one at a time under a supervisor. `scan-status` and the
+            // Scans run one at a time under a supervisor. `ScanStatus` and the
             // generation read its published row, so they never wait for discovery.
             let scanOwner =
                 SupervisedWork.Queue(
