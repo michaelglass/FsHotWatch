@@ -118,6 +118,7 @@
     <Compile Include="Watcher.fs" />
     <Compile Include="CommandPreprocessor.fs" />
     <Compile Include="SharedWatchPool.fs" />
+    <Compile Include="WorkScheduler.fs" />
     <Compile Include="CheckerPartitions.fs" />
     <Compile Include="CanonicalProjects.fs" />
     <Compile Include="DaemonHosting.fs" />

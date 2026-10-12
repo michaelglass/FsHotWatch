@@ -44,6 +44,14 @@ let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
     let msg = d.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
     $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{DiagnosticSeverity.toString d.Severity} %s{msg}"
 
+/// The line `status` adds while the daemon is scanning: the `scanning: N/M files (P%)`
+/// line of a `ScanStatus` answer, or `None` when no scan is running (idle, complete).
+/// Only that line is taken, so a wedge report the answer may lead with is never
+/// presented as scan progress.
+let scanProgressLine (scanStatus: string) : string option =
+    scanStatus.Split('\n')
+    |> Array.tryFind (fun line -> line.StartsWith("scanning:", System.StringComparison.Ordinal))
+
 /// Format the full errors response.
 ///
 /// Verbose/Compact: per-plugin progress block, then the colored by-file error block.

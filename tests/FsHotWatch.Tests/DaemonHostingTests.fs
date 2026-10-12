@@ -64,7 +64,7 @@ let ``a hosted session watches through the host's factory, never its own`` () =
                 nullChecker
                 tmpDir
                 { watchingDaemonOptions with
-                    Hosting = DaemonHosting.hostedBy shared unaskedCheckers }
+                    Hosting = DaemonHosting.hostedBy shared unaskedCheckers (WorkScheduler.Scheduler 1) }
                 throwingFactory
 
         test <@ calls.Value = 1 @>)
@@ -89,7 +89,9 @@ let ``a hosted session subtracts exactly the process-wide behaviours, and watche
             calls.Value <- calls.Value + 1
             inertWatcher
 
-    let seams = DaemonHosting.seams (DaemonHosting.hostedBy shared unaskedCheckers)
+    let seams =
+        DaemonHosting.seams (DaemonHosting.hostedBy shared unaskedCheckers (WorkScheduler.Scheduler 1))
+
     test <@ seams.ResourceScope = DaemonHosting.ResourceScope.Host @>
     test <@ not seams.MayForceGc @>
     // The session's own factory is never asked; the host's is.
@@ -107,7 +109,10 @@ let ``a standalone daemon builds its own checker`` () =
 let ``a hosted session checks through the host's partition`` () =
     let own, ownCalls = countingCheckers ()
     let shared, sharedCalls = countingCheckers ()
-    let seams = DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher shared)
+
+    let seams =
+        DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher shared (WorkScheduler.Scheduler 1))
+
     seams.Checker own sizes |> ignore
     test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
 
@@ -123,13 +128,54 @@ let ``a hosted daemon is built on its partition's checker, a standalone one on i
                 own
                 tmpDir
                 { oneShotDaemonOptions with
-                    Hosting = DaemonHosting.hostedBy hostWatcher shared })
+                    Hosting = DaemonHosting.hostedBy hostWatcher shared (WorkScheduler.Scheduler 1) })
             ignore
 
         test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
 
         using (Daemon.createUsing own tmpDir oneShotDaemonOptions) ignore
         test <@ ownCalls.Value = 1 && sharedCalls.Value = 1 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a host's sessions check through its one scheduler, a standalone daemon through its own`` () =
+    withTempDir "hosted-checks" (fun tmpDir ->
+        let rootOf name =
+            let root = Path.Combine(tmpDir, name)
+            Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+            root
+
+        let shared, _ = countingCheckers ()
+        let checks = WorkScheduler.Scheduler 3
+
+        let hosted name =
+            Daemon.createUsing
+                (fun _ -> nullChecker)
+                (rootOf name)
+                { oneShotDaemonOptions with
+                    Hosting = DaemonHosting.hostedBy hostWatcher shared checks }
+
+        use a = hosted "a"
+        use b = hosted "b"
+
+        use own =
+            Daemon.createUsing (fun _ -> nullChecker) (rootOf "own") oneShotDaemonOptions
+
+        test <@ obj.ReferenceEquals(a.Pipeline.Admission.Scheduler, checks) @>
+        test <@ obj.ReferenceEquals(b.Pipeline.Admission.Scheduler, checks) @>
+        test <@ not (obj.ReferenceEquals(a.Pipeline.Admission, b.Pipeline.Admission)) @>
+        test <@ not (obj.ReferenceEquals(own.Pipeline.Admission.Scheduler, checks)) @>
+        test <@ own.Pipeline.Admission.Scheduler.Capacity = Environment.ProcessorCount @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a hosted session's seam hands out the host's scheduler, a standalone one keeps its own`` () =
+    let own = WorkScheduler.Scheduler 2
+    let host = WorkScheduler.Scheduler 4
+
+    let hosted =
+        DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher unaskedCheckers host)
+
+    test <@ obj.ReferenceEquals(hosted.Checks own, host) @>
+    test <@ obj.ReferenceEquals((DaemonHosting.seams (DaemonHosting.standalone ())).Checks own, own) @>
 
 [<Fact(Timeout = 5000)>]
 let ``hosting defaults to standalone`` () =

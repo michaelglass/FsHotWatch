@@ -90,7 +90,8 @@ let private daemonFactory: SessionFactory =
             nullChecker
             spec.Worktree.Root.Value
             { watchingDaemonOptions with
-                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) }
+                Hosting =
+                    FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1) }
             inertWatcher
 
 let private requestFrom (worktree: ResolvedWorktree) (config: string) =
@@ -861,7 +862,8 @@ let private checkingFactory: SessionFactory =
             nullChecker
             spec.Worktree.Root.Value
             { watchingDaemonOptions with
-                Hosting = FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker)
+                Hosting =
+                    FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1)
                 VanishedRootCheckEvery = TimeSpan.FromMilliseconds 100.0 }
             inertWatcher
 

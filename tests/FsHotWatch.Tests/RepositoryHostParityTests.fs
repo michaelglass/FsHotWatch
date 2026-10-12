@@ -534,7 +534,7 @@ let private runHosted (root: string) =
     use registry =
         new SessionRegistry(fun spec ->
             build
-                (DaemonHosting.hostedBy inertWatcher unshared)
+                (DaemonHosting.hostedBy inertWatcher unshared (WorkScheduler.Scheduler Environment.ProcessorCount))
                 (Daemon.Daemon.createChecker ())
                 transitions
                 spec.Worktree.Root.Value)
@@ -569,6 +569,8 @@ let private runHostedBesideASibling (root: string) =
     let partitions =
         CheckerPartitions.Partitions Daemon.Daemon.createCheckerWithCacheSizes
 
+    let checks = WorkScheduler.Scheduler Environment.ProcessorCount
+
     let shared =
         partitions.For(Daemon.Daemon.checkerCacheSizes Daemon.Daemon.DefaultCheckerCacheSizeFactor)
 
@@ -592,7 +594,7 @@ let private runHostedBesideASibling (root: string) =
 
             let frames = SessionFrames.choice canonicalProjects worktreeRoot virtualRoot ignore
 
-            build (DaemonHosting.hostedUnderFrames inertWatcher partitions.For frames) shared queue worktreeRoot)
+            build (DaemonHosting.hostedUnderFrames inertWatcher partitions.For frames checks) shared queue worktreeRoot)
 
     // The sibling shares the observed session's task cache as well as its checker, so
     // lint's content-keyed results reach the observed session from the sibling's run.

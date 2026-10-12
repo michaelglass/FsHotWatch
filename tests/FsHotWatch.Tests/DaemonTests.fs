@@ -1279,6 +1279,34 @@ let ``runChecksWithRetry stops at the bound and never exceeds it`` () =
         test <@ outcome = ScanCheckOutcome.BudgetExhausted(files, budget, budget) @>
 
 [<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry emits each result as its check finishes, not when the round does`` () =
+    // The scan's progress counter advances in `emit`. Emitting only after the whole
+    // round returned held a one-tier scan at 0% until it finished. Here /slow.fs
+    // finishes only after it sees /fast.fs emitted, or gives up after a bound.
+    let fastEmitted = new System.Threading.ManualResetEventSlim(false)
+    let mutable slowSawFastEmitted = false
+
+    let check (f: AbsFilePath) =
+        async {
+            match AbsFilePath.value f with
+            | "/fast.fs" -> return Some "/fast.fs"
+            | path ->
+                slowSawFastEmitted <- fastEmitted.Wait(TimeSpan.FromSeconds(5.0))
+                return Some path
+        }
+
+    let emit (r: string) =
+        if r = "/fast.fs" then
+            fastEmitted.Set()
+
+    let outcome =
+        runChecksWithRetry 3 check emit ([ "/fast.fs"; "/slow.fs" ] |> List.map AbsFilePath.create)
+        |> Async.RunSynchronously
+
+    test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
+    test <@ slowSawFastEmitted @>
+
+[<Fact(Timeout = 15000)>]
 let ``runChecksWithRetry on an empty cohort converges with no rounds`` () =
     let outcome =
         runChecksWithRetry 3 (fun _ -> async { return Some 1 }) (fun (_: int) -> ()) []

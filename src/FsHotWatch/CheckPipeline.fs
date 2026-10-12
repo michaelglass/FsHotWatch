@@ -190,7 +190,8 @@ type CheckPipeline
         ?repoRoot: string,
         ?recheckCooldown: TimeSpan,
         ?frames: PathFrame.FrameChoice,
-        ?maxConcurrentChecks: int
+        ?maxConcurrentChecks: int,
+        ?admission: WorkScheduler.Lane
     ) =
     let activity = defaultArg activity noopSink
 
@@ -199,10 +200,18 @@ type CheckPipeline
     /// and a snapshot build blocks its thread, so without a bound here the thread pool
     /// grew by starvation to hundreds of threads, each building snapshots and holding
     /// their garbage live. Waiting for a slot holds no thread.
-    let maxConcurrentChecks =
-        max 1 (defaultArg maxConcurrentChecks Environment.ProcessorCount)
+    ///
+    /// The slots come from `admission`'s scheduler. Alone, a pipeline has its own with
+    /// `maxConcurrentChecks` slots; a repository host's sessions share the host's, so
+    /// the bound is the host's and a session with a long queue takes turns with the rest.
+    let admission =
+        match admission with
+        | Some lane -> lane
+        | None ->
+            (WorkScheduler.Scheduler(max 1 (defaultArg maxConcurrentChecks Environment.ProcessorCount))).Lane "pipeline"
 
-    let checkSlots = new SemaphoreSlim(maxConcurrentChecks, maxConcurrentChecks)
+    let maxConcurrentChecks = admission.Scheduler.Capacity
+
     let mutable checksInSlots = 0
     let mutable checksInSlotsPeak = 0
     let mutable checkStarts = 0L
@@ -216,15 +225,12 @@ type CheckPipeline
 
     let leaveSlot () =
         Interlocked.Decrement &checksInSlots |> ignore
-        checkSlots.Release() |> ignore
+        admission.Release()
 
     /// Wait for a check slot without holding a thread: true once one is held, false
     /// when `ct` gave up first.
-    let waitForSlot (ct: CancellationToken) : Async<bool> =
-        checkSlots
-            .WaitAsync(Timeout.Infinite, ct)
-            .ContinueWith(fun (t: Threading.Tasks.Task) -> t.IsCompletedSuccessfully)
-        |> Async.AwaitTask
+    let waitForSlot (ct: CancellationToken) : Async<bool> = admission.Acquire ct
+
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.
     let frames = defaultArg frames PathFrame.realPaths
@@ -366,6 +372,9 @@ type CheckPipeline
     /// How many checks this pipeline has started in FCS, cumulative: one per
     /// `check start` line, whether the check then completed or was cancelled.
     member internal _.CheckStarts: int64 = Volatile.Read &checkStarts
+
+    /// This pipeline's turn at the slots its checks are admitted by.
+    member internal _.Admission: WorkScheduler.Lane = admission
 
     /// How many checks may run at once (see `maxConcurrentChecks`).
     member internal _.CheckConcurrencyBound: int = maxConcurrentChecks
