@@ -432,6 +432,10 @@ let private observe (root: string) (config: DaemonRpcConfig) phases =
         | null -> "null"
         | node -> strip node
 
+    // A plugin command, answered by the session's own plugin host.
+    let pluginCommand =
+        normalize (DaemonRpcTarget(config).RunCommand("warnings", "").GetAwaiter().GetResult())
+
     {| Count = text diagnostics["count"]
        Files = text diagnostics["files"]
        Unchecked = text diagnostics["unchecked"]
@@ -446,7 +450,8 @@ let private observe (root: string) (config: DaemonRpcConfig) phases =
        StateFiles = files
        TestRuns = testRuns
        Coverage = coverage
-       ScanMetrics = scanMetrics |}
+       ScanMetrics = scanMetrics
+       PluginCommand = pluginCommand |}
 
 let private serveInto (served: TaskCompletionSource<DaemonRpcConfig>) =
     fun (config: DaemonRpcConfig) (cts: CancellationTokenSource) ->
@@ -694,6 +699,8 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test <@ hosted.Coverage = legacy.Coverage @>
         test <@ hosted.StateFiles = legacy.StateFiles @>
         test <@ hosted.ScanMetrics = legacy.ScanMetrics @>
+        test <@ legacy.PluginCommand.StartsWith "{\"files\"" @>
+        test <@ hosted.PluginCommand = legacy.PluginCommand @>
 
         // The same run through a checker a sibling session shares.
         test <@ besideASibling.Count = legacy.Count @>

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a root-level plugin command (`fshw <plugin-cmd>`, e.g. `fshw coverage-ratchet`) in a
+  worktree the repository host serves is sent to that worktree's session over the
+  repository endpoint, carrying its SessionId and an InvocationId. Before, it exited 2
+  with "plugin commands do not reach a repository host session yet". Without a live
+  host session it goes to the worktree's own daemon, as before; it never attaches or
+  starts one.
+
 ## 0.14.0-alpha.95 - 2026-10-08
 
 - fix: `fshw host` ended by SIGTERM, SIGHUP or SIGINT kills the process trees EVERY
