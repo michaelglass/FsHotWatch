@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- fix!: a peer that hangs up mid-frame on the repository endpoint is an ordinary,
+  named outcome instead of an exception. `FrameError.HungUp` is a read or write that
+  failed because the other end closed or reset the connection; `RepositoryIpc.writeFrame`
+  now returns `Task<Result<unit, FrameError>>`, and `readFrame` returns `HungUp` where it
+  raised. The client side reports `ExchangeError` (`Unreachable`, `NoReply`,
+  `UnreadableReply`, `Refused`, with `ExchangeError.describe`): `RepositoryIpc.attach` and
+  `invoke` return `Async<Result<string, ExchangeError>>` (an `invoke` RPC's own failures
+  still raise), and `exchangeException` turns an `ExchangeError` into the exception the
+  daemon RPC surface raises. A host whose client hangs up before its preamble answer
+  logs it and closes the connection. Breaking: `writeFrame`, `attach` and `invoke`
+  change their return types.
+
+- fix: a shared run whose executor fails to start hands the shared resource back in the
+  state it was handed. It used to release `Invalid "<plugin> shared work failed to start"`
+  without consulting the plugin's classifier, and a queued waiter that failed to start
+  handed `Invalid "shared waiter failed to start"` to the next one, so every later
+  claimant of `build-artifacts` was refused with the build named as the cause until a
+  build released `Ready`. The run's failure is still reported and its failure message
+  still folds; only the resource state is left as it was. A run that started and judged
+  the resource unusable still releases `Invalid`.
+
+- fix: declared bounded work is named where a wait reads it. `PluginWorkOwner.HostSnapshot`
+  gains `OverranOperations` (bounded operations still live whose deadline recorded a
+  failure). The wedge for a stalled plugin holding one names it as the work that OVERRAN
+  (`<plugin>: <label> <elapsed> of <bound>`) instead of a stuck inflight count. A wait's
+  timeout and its `[wait]` line name each owner's in-flight bounded work. That line is at
+  Info while declared work is in flight. Every wedge is logged before it is raised.
+
 ## 0.10.0-alpha.72 - 2026-10-13
 
 - feat: `PluginFramework.IFileReplayState` is public (it was internal, in `Events`). A

@@ -70,6 +70,7 @@ type private World =
 let private call (endpoint: string) (session: SessionId) (methodName: string) (args: obj array) =
     invoke endpoint (Preamble.Session(session, InvocationId.mint ())) methodName args
     |> Async.RunSynchronously
+    |> Result.defaultWith (exchangeException >> raise)
 
 let private attachWith (world: World) (worktree: ResolvedWorktree) (config: string) =
     let request =

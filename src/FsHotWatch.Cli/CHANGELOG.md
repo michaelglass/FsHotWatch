@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a repository host that hangs up mid-frame no longer crashes the CLI with an
+  unhandled "Broken pipe" (exit 134). During attach it is retried once and then refused
+  with "the repository host stopped answering during attach (… hung up …); see
+  <host.log>" (exit 2); `status --repository` and `stop --repository` print what
+  happened and exit 2.
+
 ## 0.14.0-alpha.97 - 2026-10-13
 
 - fix: `fshw invalidate` with no daemon running clears the persisted task-result stores

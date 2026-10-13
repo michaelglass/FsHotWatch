@@ -6039,6 +6039,27 @@ let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: 
         |> Array.length
     | ParseOnly -> 0
 
+/// The label the test-impact DB write declares over itself: how much it writes and where,
+/// so a wait or wedge line names the database rather than the plugin alone.
+let internal dbWriteLabel (dbPath: string) (fileCount: int) =
+    $"test-impact DB write: %d{fileCount} file(s) to %s{dbPath}"
+
+/// A test-impact DB write SQLite refused because another connection held the lock past
+/// Microsoft.Data.Sqlite's busy wait (`SQLITE_BUSY` 5 / `SQLITE_LOCKED` 6) is re-raised
+/// naming the database, the write and how long it waited; SQLite's own "database is locked"
+/// names neither. Every other failure passes through untouched, so schema-drift repair
+/// still reads the exception it raised.
+let internal namedDbWriteFailure (dbPath: string) (fileCount: int) (waited: TimeSpan) (ex: exn) : exn =
+    match ex with
+    | :? Microsoft.Data.Sqlite.SqliteException as sqlite when sqlite.SqliteErrorCode = 5 || sqlite.SqliteErrorCode = 6 ->
+        TimeoutException(
+            $"test-impact DB write blocked for %s{PluginWedge.formatElapsed waited}: %s{dbPath} is locked by another connection, so %d{fileCount} file(s) were not written ({sqlite.Message}). "
+            + "Another fshw daemon or CLI on the same .fshw/ directory, or any process holding a write transaction on that file, holds it.",
+            ex
+        )
+        :> exn
+    | other -> other
+
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
 /// call. Pure function: takes state, returns updated state.
 ///
@@ -6048,7 +6069,12 @@ let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: 
 /// A merged result carrying a signature (`.fsi`) and its implementation would credit the
 /// signature's facts to whichever file declared the shared name last, and a later flush
 /// of that file alone would delete them.
-let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
+let private flushPendingAnalysis
+    (db: Database)
+    (dbPath: string)
+    (declare: string -> IDisposable)
+    (state: TestPruneState)
+    =
     let allResults = ResizeArray<AnalysisResult>()
 
     let mutable newPending = state.PendingAnalysis
@@ -6064,7 +6090,27 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
     if allResults.Count > 0 then
         // Each file's analysis identity goes in the same transaction as its symbols, so
         // the index never claims an analysis it rolled back (`IndexedAnalysis`).
-        db.RebuildProjects(Seq.toList allResults, fileKeys = Map.toList state.PendingIdentities)
+        //
+        // Declared over itself, inside the impact selection's declaration: a write blocked on
+        // a lock or crawling through contention then reads as THIS write, with its size, its
+        // database and how far into its bound it is, rather than as a fold that never
+        // returned. Timed and logged when it returns, so daemon.log shows where the time went.
+        let label = dbWriteLabel dbPath allResults.Count
+        let clock = Diagnostics.Stopwatch.StartNew()
+
+        do
+            use _declaration = declare label
+
+            try
+                db.RebuildProjects(Seq.toList allResults, fileKeys = Map.toList state.PendingIdentities)
+            with ex ->
+                match namedDbWriteFailure dbPath allResults.Count clock.Elapsed ex with
+                | named when obj.ReferenceEquals(named, ex) -> reraise ()
+                | named -> raise named
+
+        Logging.info
+            "test-prune"
+            $"Wrote %d{allResults.Count} file(s) to %s{dbPath} in %s{PluginWedge.formatElapsed clock.Elapsed}"
 
     // Update in-memory snapshot so subsequent FileChecked reads see the
     // new symbols instead of hitting the DB mid-rebuild.
@@ -6943,7 +6989,9 @@ let internal createWithQueries
         persistQueueAdditions state.Debt
 
         let indexedSomething = not state.PendingAnalysis.IsEmpty
-        let flushedState = flushPendingAnalysis db state
+
+        let flushedState =
+            flushPendingAnalysis db dbPath (fun label -> ctx.DeclareBoundedWork label ImpactSelectionDeadline) state
 
         // The flush wrote these analyses and their identities in one transaction.
         let flushedState =

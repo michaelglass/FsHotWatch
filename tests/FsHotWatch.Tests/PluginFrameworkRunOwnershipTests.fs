@@ -35,7 +35,7 @@ let ``failed queued starter is acknowledged after the tail accepts handoff`` () 
         scheduler.ClaimOrQueue(
             "artifacts",
             fun state ->
-                Assert.Equal(Invalid "shared waiter failed to start", state)
+                Assert.Equal(Ready, state)
                 tailEntered.Set()
                 Assert.True(releaseTail.Wait(10000), "fixture must release the tail starter")
                 SharedStarted

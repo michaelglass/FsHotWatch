@@ -74,6 +74,47 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: an executor that fails to start no longer poisons the shared build-artifacts lease
+
+- **fix: a shared run that never started hands the resource back in the state it was
+  handed.** Before, a failure to start the executor released `Invalid` into the shared
+  lease without passing through the plugin's classifier, so every later test run on an
+  unchanged tree was refused as "artifacts unavailable", blaming the build, until a build
+  ran. A run that did start and found the build output unusable still invalidates it.
+
+### core, test-prune: a blocked test-impact DB write is named as that write, not as a wedge
+
+A test-impact DB write runs as one synchronous call inside test-prune's impact-selection
+fold, before the plugin reports Running. A write blocked on a lock another process held,
+or slowed by contention, used to look to every reader like an event whose handler never
+returned: the `[wait]` line was at debug, a wait that ran out named only the plugin, and
+the wedge said "stuck inflight count", which sent the operator after a lost hand-off.
+
+- **fix: the write declares itself.** It runs as bounded work labelled
+  `test-impact DB write: <n> file(s) to <db path>`, nested inside `impact selection`,
+  and logs `Wrote <n> file(s) to <db path> in <elapsed>` when it returns.
+- **fix: a write SQLite refused for a lock names the database.** `SQLITE_BUSY`/`SQLITE_LOCKED`
+  ("database is locked", raised once Microsoft.Data.Sqlite's busy wait expires) is re-raised
+  as `test-impact DB write blocked for <elapsed>: <db path> is locked by another connection,
+  so <n> file(s) were not written`, and that is the failed status test-prune reports.
+- **fix: a wait inside declared work says so.** While declared bounded work is in flight the
+  `[wait]` line is logged at Info, and it and the wait's timeout name the work and how far
+  into its bound it is (`test-prune — on: bounded work: test-impact DB write: 485 file(s)
+  to …/test-impact.db 3m 2s of 20m 0s`).
+- **fix: declared work past its bound is named as the work that overran.** The wedge still
+  starts `WaitForComplete: plugin(s) WEDGED`, so a caller matching that prefix keeps failing
+  closed, and then says `declared bounded work OVERRAN its deadline without returning:
+  <plugin>: <label> <elapsed> of <bound>` instead of the lost-hand-off text. That text is
+  unchanged for a fold that declared nothing. Every wedge is now also written to
+  `logs/daemon.log`, which the message tells the reader to inspect.
+
+Decision: no new or longer threshold. The selection, and with it the write, already runs
+under a stated 20-minute bound (`ImpactSelectionDeadline`), so the 5-minute generic wedge
+no longer fires on a slow write. What was missing was a status that says which work is
+running and how far into its bound it is. A longer bound would only have delayed the same
+misleading message. The work now reports its own progress, and the existing deadline still
+names a real hang.
+
 ### tests: a wait that expires fails the test instead of passing it
 
 - The `waitUntil` test helper discarded whether its condition held, so a wait that gave

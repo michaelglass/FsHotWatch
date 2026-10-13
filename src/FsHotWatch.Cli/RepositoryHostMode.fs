@@ -94,7 +94,7 @@ type Attach =
 /// request JSON → response JSON) supplied.
 let internal attachWith
     (probe: string -> bool)
-    (exchange: string -> string -> Async<string>)
+    (exchange: string -> string -> Async<Result<string, RepositoryIpc.ExchangeError>>)
     (stateHome: string)
     (launch: RepositoryControlPaths -> unit)
     (startupBound: TimeSpan)
@@ -132,13 +132,10 @@ let internal attachWith
                     Environment = SessionEnvironment.variables (SessionEnvironment.ofProcess repoRoot) }
 
             // No reply, or no connection, after the probe answered: the host exited in
-            // between (its idle grace ran out). Not a failure of this attach — relaunch
-            // if it is gone, and ask once more.
+            // between (its idle grace ran out), or hung up mid-frame. Not a failure of
+            // this attach — relaunch if it is gone, and ask once more.
             let exchangeOnce () =
-                try
-                    Ok(exchange control.Endpoint (encodeRequest request) |> Async.RunSynchronously)
-                with ex when (ex :? IOException) || (ex :? TimeoutException) ->
-                    Error ex.Message
+                exchange control.Endpoint (encodeRequest request) |> Async.RunSynchronously
 
             let answered =
                 match exchangeOnce () with
@@ -151,9 +148,9 @@ let internal attachWith
                 Attach.OwnDaemon message
             | Ok(Ok(RefusedReply(_, message, _))) -> Attach.Refused message
             | Ok(Error e) -> Attach.Refused $"the repository host's reply could not be read: %A{e}"
-            | Error reason ->
+            | Error e ->
                 Attach.Refused
-                    $"the repository host stopped answering during attach (%s{reason}); see %s{control.HostLog}"
+                    $"the repository host stopped answering during attach (%s{RepositoryIpc.ExchangeError.describe e}); see %s{control.HostLog}"
 
 /// Attach `repoRoot`, launching the host (`launch`) when nothing serves the
 /// repository's endpoint yet, and waiting at most `startupBound` for it. `stateHome`

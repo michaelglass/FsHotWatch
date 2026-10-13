@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the test-impact DB write declares itself as bounded work
+  (`test-impact DB write: <n> file(s) to <db path>`) inside the impact selection, logs its
+  elapsed time when it returns, and a write refused for a lock (`SQLITE_BUSY`/`SQLITE_LOCKED`)
+  is re-raised naming the database, the file count and how long it waited.
+
 ## 0.13.0-alpha.70 - 2026-10-13
 
 - fix: `test-results` and `test-scope` no longer report the previous run as settled while

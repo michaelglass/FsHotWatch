@@ -86,13 +86,85 @@ let ``a frame round-trips, and a short or oversized one is refused`` () =
     use oversized = new MemoryStream(huge)
     test <@ (readFrame oversized CancellationToken.None).Result = Error(FrameError.TooLarge(MaxFrameBytes + 1)) @>
 
-[<Fact(Timeout = 15000)>]
+/// A stream whose peer has gone: every read and write fails as a reset connection does.
+type private HungUpStream() =
+    inherit MemoryStream()
+
+    override _.ReadAsync(_: Memory<byte>, _: CancellationToken) =
+        Threading.Tasks.ValueTask<int>(Threading.Tasks.Task.FromException<int>(IOException "Connection reset by peer"))
+
+    override _.WriteAsync(_: ReadOnlyMemory<byte>, _: CancellationToken) =
+        Threading.Tasks.ValueTask(Threading.Tasks.Task.FromException(IOException "Broken pipe"))
+
+[<Fact(Timeout = 5000)>]
+let ``a peer that hangs up while a frame is read is a frame error, not an exception`` () =
+    use stream = new HungUpStream()
+
+    test <@ (readFrame stream CancellationToken.None).Result = Error(FrameError.HungUp "Connection reset by peer") @>
+
+[<Fact(Timeout = 5000)>]
+let ``a peer that hangs up while a frame is written is a frame error, not an exception`` () =
+    use stream = new HungUpStream()
+
+    test <@ (writeFrame stream "héllo" CancellationToken.None).Result = Error(FrameError.HungUp "Broken pipe") @>
+
+[<Fact(Timeout = 5000)>]
+let ``a cancelled write still raises: cancellation is the caller's, not a hang-up`` () =
+    use stream = new MemoryStream()
+    use cancelled = new CancellationTokenSource()
+    cancelled.Cancel()
+
+    let ex =
+        Assert.ThrowsAny<exn>(fun () -> (writeFrame stream "héllo" cancelled.Token).Wait())
+
+    test <@ (ex :? AggregateException) && (ex.InnerException :? OperationCanceledException) @>
+
+[<Fact(Timeout = 5000)>]
+let ``every exchange error says what happened, and raises as the daemon surface expects`` () =
+    let cases =
+        [ ExchangeError.Unreachable "timed out", "could not be reached: timed out"
+          ExchangeError.NoReply FrameError.Truncated, "before a whole frame arrived"
+          ExchangeError.NoReply(FrameError.TooLarge 7), "a 7-byte frame exceeds"
+          ExchangeError.NoReply(FrameError.HungUp "Broken pipe"), "hung up (Broken pipe)"
+          ExchangeError.UnreadableReply "nope", "unreadable: nope"
+          ExchangeError.Refused("stale-incarnation", "gone"), "refused the call (stale-incarnation): gone" ]
+
+    for error, says in cases do
+        test <@ (ExchangeError.describe error).Contains says @>
+
+    test
+        <@
+            match exchangeException (ExchangeError.Refused("stale-incarnation", "gone")) with
+            | RepositoryRefusedException("stale-incarnation", "gone") -> true
+            | _ -> false
+        @>
+
+    let hungUp =
+        exchangeException (ExchangeError.NoReply(FrameError.HungUp "Broken pipe"))
+
+    test <@ hungUp :? IOException && hungUp.Message.Contains "hung up" @>
+
+[<Fact(Timeout = 30000)>]
 let ``a client cannot reach an endpoint nobody serves`` () =
     let endpoint = "fshw-test-" + Guid.NewGuid().ToString "N"
     test <@ not (isRunning endpoint) @>
 
-    Assert.ThrowsAny<exn>(fun () -> attach endpoint "{}" |> Async.RunSynchronously |> ignore)
-    |> ignore
+    test
+        <@
+            match attach endpoint "{}" |> Async.RunSynchronously with
+            | Error(ExchangeError.Unreachable _) -> true
+            | _ -> false
+        @>
+
+    test
+        <@
+            match
+                invoke endpoint (Preamble.Repository(InvocationId.mint ())) "ListSessions" [||]
+                |> Async.RunSynchronously
+            with
+            | Error(ExchangeError.Unreachable _) -> true
+            | _ -> false
+        @>
 
 /// A server that reads one frame and then does `respond` with the connection.
 let private withFakeServer (respond: IO.Pipes.NamedPipeServerStream -> unit) (body: string -> unit) =
@@ -119,23 +191,27 @@ let private withFakeServer (respond: IO.Pipes.NamedPipeServerStream -> unit) (bo
 [<Fact(Timeout = 30000)>]
 let ``a host that hangs up without replying is an error, not an answer`` () =
     withFakeServer (fun server -> server.Disconnect()) (fun endpoint ->
-        let ex =
-            Assert.ThrowsAny<exn>(fun () -> attach endpoint "{}" |> Async.RunSynchronously |> ignore)
-
-        test <@ ex.Message.Contains "no reply" || ex.InnerException <> null @>)
+        test
+            <@
+                match attach endpoint "{}" |> Async.RunSynchronously with
+                | Error(ExchangeError.NoReply _) -> true
+                | _ -> false
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``a reply that is not a preamble reply is an error, not an answer`` () =
     withFakeServer
         (fun server -> (writeFrame server "{\"schema\":\"nope\"}" CancellationToken.None).Wait())
         (fun endpoint ->
-            let ex =
-                Assert.ThrowsAny<exn>(fun () ->
-                    invoke endpoint (Preamble.Repository(InvocationId.mint ())) "ListSessions" [||]
-                    |> Async.RunSynchronously
-                    |> ignore)
-
-            test <@ ex.Message.Contains "unreadable" @>)
+            test
+                <@
+                    match
+                        invoke endpoint (Preamble.Repository(InvocationId.mint ())) "ListSessions" [||]
+                        |> Async.RunSynchronously
+                    with
+                    | Error(ExchangeError.UnreadableReply _) -> true
+                    | _ -> false
+                @>)
 
 /// A real endpoint serving `handlers` for the length of `body`.
 let private withEndpoint (handlers: EndpointHandlers) (body: string -> unit) =
@@ -169,7 +245,7 @@ let ``an attach that outlasts the preamble bound is still answered`` () =
         "attached"
 
     withEndpoint (refusingHandlers slowAttach) (fun endpoint ->
-        test <@ attach endpoint attachPreamble |> Async.RunSynchronously = "attached" @>)
+        test <@ attach endpoint attachPreamble |> Async.RunSynchronously = Ok "attached" @>)
 
 /// The repository endpoint's opener for one connection, reading its preamble within
 /// `preambleBound`, with its log lines captured: no accept loop and no scheduling of it,
@@ -250,6 +326,35 @@ let ``an attach whose client left before the answer is undone`` () =
 
     test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
     test <@ undone.Task.IsCompleted && undone.Task.Result = "attached" @>
+    test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>
+
+[<Fact(Timeout = 60000)>]
+let ``a session call whose client left before it was accepted is not served`` () =
+    // The client sends its preamble and hangs up while the host looks the session up: the
+    // acceptance cannot be sent, and the connection closes instead of being served.
+    let clientGone = new ManualResetEventSlim(false)
+
+    let handlers =
+        { refusingHandlers (fun _ -> "attached") with
+            Session =
+                fun _ _ ->
+                    Threading.Tasks.Task.Run(fun () ->
+                        clientGone.Wait() |> ignore
+                        // Never served: the acceptance cannot reach the client.
+                        Ok Unchecked.defaultof<FsHotWatch.Ipc.DaemonRpcConfig>) }
+
+    let opened, logged =
+        openOnce (TimeSpan.FromMinutes 5.0) handlers (fun client ->
+            (writeFrame
+                client
+                (encodePreamble (Preamble.Session(session, InvocationId.mint ())))
+                CancellationToken.None)
+                .Wait()
+
+            client.Dispose()
+            clientGone.Set())
+
+    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>
 
 [<Fact(Timeout = 60000)>]

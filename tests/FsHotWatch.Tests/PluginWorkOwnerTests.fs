@@ -811,6 +811,31 @@ let ``an operation in flight is published with its name, start and declared dead
     store.EndOperation bounded
     Assert.Empty store.Snapshot.OperationsInFlight
 
+// Overran means a DECLARED bound expired while the work is still live. A failed ordinary
+// operation stated no bound, so it never reads as overrun; an ended one is gone.
+[<Fact>]
+let ``only a live bounded operation whose deadline failed it is published as overran`` () =
+    let store = Store()
+    let unbounded = store.BeginOperation "dispatch"
+
+    let bounded =
+        store.BeginOperation("test-prune: test-impact DB write", TimeSpan.FromMinutes 20.0)
+
+    Assert.Empty store.Snapshot.OverranOperations
+
+    Assert.True(store.FailOperation(unbounded, InvalidOperationException "dispatch failed"))
+    Assert.True(store.FailOperation(bounded, TimeoutException "deadline expired"))
+
+    let overran = store.Snapshot.OverranOperations
+    Assert.Equal(1, overran.Length)
+    let (name, _, deadline) = overran.Head
+    Assert.Equal("test-prune: test-impact DB write", name)
+    Assert.Equal(Some(TimeSpan.FromMinutes 20.0), deadline)
+
+    store.EndOperation unbounded
+    store.EndOperation bounded
+    Assert.Empty store.Snapshot.OverranOperations
+
 [<Fact>]
 let ``a plugin's pending events are counted from its own rows only`` () =
     let store = Store()
